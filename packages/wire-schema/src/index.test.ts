@@ -1,27 +1,44 @@
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
+  Alarm,
   Chunk,
   Manifest,
+  Node,
+  NodeStatus,
   PaintEvent,
   PaintPixels,
   PaintTile,
+  ServerInfo,
   Template,
   TemplateStatus,
   TileOffer,
+  TileOfferResponse,
 } from './index.js'
 
 const HASH = 'a'.repeat(64)
 const SECONDS = 1_750_000_000
 const MILLIS = SECONDS * 1_000
 
-const expectRejected = (schema: Schema.Schema.Any, value: unknown): void => {
+const SERVER_ID = '01890f3a-6b7c-7def-8123-456789abcdef'
+const NODE_ID = '01890f3a-6b7c-7def-8123-456789abcde0'
+const TEMPLATE_ID = '01890f3a-6b7c-7def-8123-456789abcde1'
+const VERSION_ID = '01890f3a-6b7c-7def-8123-456789abcde2'
+const EVENT_ID = '01890f3a-6b7c-7def-8123-456789abcde3'
+
+const uuid = (index: number): string =>
+  `01890f3a-6b7c-7def-8123-${index.toString(16).padStart(12, '0')}`
+
+const expectRejected = <S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
+  value: unknown,
+): void => {
   expect(() => Schema.decodeUnknownSync(schema)(value)).toThrow()
 }
 
 const validPixels = { x: [1], y: [2], colors: [3] }
 const validEvent = {
-  eventId: 'event-1',
+  eventId: EVENT_ID,
   wplaceUserId: 123,
   displayName: 'Painter',
   season: 1,
@@ -31,14 +48,44 @@ const validEvent = {
 }
 
 const validTemplate = {
-  id: 'template-1',
-  nodeId: 'node-1',
+  id: TEMPLATE_ID,
+  nodeId: NODE_ID,
   name: 'Template',
-  version: 'version-1',
+  version: VERSION_ID,
   bbox: { minX: 325_000, minY: 1_781_000, maxX: 326_000, maxY: 1_782_000 },
   totalPixels: 1,
   chunks: [{ tile: '325/1781', hash: HASH }],
 }
+
+const validNode = { id: NODE_ID, parentId: null, path: '/group', name: 'Group' }
+
+const validManifest = {
+  version: 'manifest-1',
+  server: { id: SERVER_ID, name: 'Server', requiresAuth: false },
+  nodes: [validNode],
+  templates: [validTemplate],
+  tiles: ['325/1781'],
+}
+
+const encoders = [
+  Schema.encodeSync(ServerInfo),
+  Schema.encodeSync(Node),
+  Schema.encodeSync(Chunk),
+  Schema.encodeSync(Template),
+  Schema.encodeSync(Manifest),
+  Schema.encodeSync(PaintPixels),
+  Schema.encodeSync(PaintTile),
+  Schema.encodeSync(PaintEvent),
+  Schema.encodeSync(TileOffer),
+  Schema.encodeSync(TileOfferResponse),
+  Schema.encodeSync(TemplateStatus),
+  Schema.encodeSync(NodeStatus),
+  Schema.encodeSync(Alarm),
+]
+
+it('exposes every exported wire schema as a bidirectional codec', () => {
+  expect(encoders).toHaveLength(13)
+})
 
 describe('tile and template schemas', () => {
   it.each(['2048/0', '999999/12', '01/2', '-1/2'])('rejects non-canonical tile key %s', (tile) => {
@@ -49,11 +96,37 @@ describe('tile and template schemas', () => {
     expectRejected(PaintTile, { x, y: 0, pixels: validPixels })
   })
 
-  it('rejects out-of-world and inverted bounding boxes', () => {
+  it('rejects an otherwise-valid inverted bounding box', () => {
     expectRejected(Template, {
       ...validTemplate,
-      bbox: { minX: 5_000_000, minY: 0, maxX: -3, maxY: 0.5 },
+      bbox: { minX: 1, minY: 0, maxX: 0, maxY: 1 },
     })
+  })
+
+  it('rejects an out-of-world bounding-box minimum', () => {
+    expectRejected(Template, {
+      ...validTemplate,
+      bbox: { minX: 2_048_000, minY: 0, maxX: 2_048_000, maxY: 1 },
+    })
+  })
+
+  it('accepts the world edge as an exclusive bounding-box maximum', () => {
+    const template = {
+      ...validTemplate,
+      bbox: { minX: 2_047_999, minY: 2_047_999, maxX: 2_048_000, maxY: 2_048_000 },
+    }
+    expect(Schema.decodeUnknownSync(Template)(template)).toEqual(template)
+  })
+
+  it('rejects a zero-area bounding box', () => {
+    expectRejected(Template, {
+      ...validTemplate,
+      bbox: { minX: 1, minY: 1, maxX: 1, maxY: 2 },
+    })
+  })
+
+  it('rejects identifiers that are not canonical UUIDv7 values', () => {
+    expectRejected(Template, { ...validTemplate, id: 'template-1' })
   })
 
   it('rejects a negative total pixel count', () => {
@@ -84,8 +157,27 @@ describe('PaintPixels', () => {
     expectRejected(PaintPixels, { x: [0], y: [0], colors: [color] })
   })
 
-  it('caps the number of submitted pixels', () => {
+  it('accepts palette indices above the incomplete recovered palette', () => {
+    expect(Schema.decodeUnknownSync(PaintPixels)({ x: [0], y: [0], colors: [255] })).toEqual({
+      x: [0],
+      y: [0],
+      colors: [255],
+    })
+  })
+
+  it('allows a paint payload above the old unevidenced 1,000-pixel cap', () => {
     const values = Array.from({ length: 1_001 }, () => 0)
+    expect(Schema.decodeUnknownSync(PaintPixels)({ x: values, y: values, colors: values })).toEqual(
+      {
+        x: values,
+        y: values,
+        colors: values,
+      },
+    )
+  })
+
+  it('caps one tile payload at the counter-store guardrail', () => {
+    const values = Array.from({ length: 100_001 }, () => 0)
     expectRejected(PaintPixels, { x: values, y: values, colors: values })
   })
 })
@@ -109,6 +201,10 @@ describe('PaintEvent', () => {
     expectRejected(PaintEvent, { ...validEvent, painted: 2 })
   })
 
+  it('rejects painted counts above the counter-store guardrail', () => {
+    expectRejected(PaintEvent, { ...validEvent, painted: 100_001 })
+  })
+
   it('caps display-name length', () => {
     expectRejected(PaintEvent, { ...validEvent, displayName: 'x'.repeat(65) })
   })
@@ -116,13 +212,68 @@ describe('PaintEvent', () => {
 
 describe('cross-field and time-unit schemas', () => {
   it('requires manifest tiles to exactly match the unique tiles referenced by chunks', () => {
-    expectRejected(Manifest, {
-      version: 'version-1',
-      server: { id: 'server-1', name: 'Server', requiresAuth: false },
-      nodes: [],
-      templates: [validTemplate],
-      tiles: [],
+    expectRejected(Manifest, { ...validManifest, tiles: [] })
+  })
+
+  it('rejects manifest tiles that contain an unreferenced extra tile', () => {
+    expectRejected(Manifest, { ...validManifest, tiles: ['325/1781', '0/0'] })
+  })
+
+  it('accepts a manifest covering more than 1,000 distinct canvas tiles', () => {
+    const templates = Array.from({ length: 120 }, (_, templateIndex) => {
+      const baseX = (templateIndex % 40) * 3
+      const baseY = Math.floor(templateIndex / 40) * 3
+      return {
+        id: uuid(100 + templateIndex),
+        nodeId: NODE_ID,
+        name: `Template ${templateIndex}`,
+        version: uuid(1_000 + templateIndex),
+        bbox: {
+          minX: baseX * 1_000,
+          minY: baseY * 1_000,
+          maxX: (baseX + 3) * 1_000,
+          maxY: (baseY + 3) * 1_000,
+        },
+        totalPixels: 1,
+        chunks: Array.from({ length: 9 }, (_, chunkIndex) => ({
+          tile: `${baseX + (chunkIndex % 3)}/${baseY + Math.floor(chunkIndex / 3)}`,
+          hash: HASH,
+        })),
+      }
     })
+    const manifest = {
+      ...validManifest,
+      templates,
+      tiles: templates.flatMap((template) => template.chunks.map((chunk) => chunk.tile)),
+    }
+
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+    expect(Schema.encodeSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it('rejects a template whose node reference is absent from the manifest', () => {
+    expectRejected(Manifest, { ...validManifest, nodes: [] })
+  })
+
+  it('rejects duplicate chunk tiles within a template', () => {
+    const duplicate = {
+      ...validTemplate,
+      chunks: [
+        ...validTemplate.chunks,
+        { tile: validTemplate.chunks[0]?.tile, hash: 'b'.repeat(64) },
+      ],
+    }
+    expectRejected(Manifest, { ...validManifest, templates: [duplicate] })
+  })
+
+  it('rejects overlapping templates within one group', () => {
+    const overlapping = {
+      ...validTemplate,
+      id: uuid(2),
+      version: uuid(3),
+      bbox: { ...validTemplate.bbox, minX: validTemplate.bbox.minX + 1 },
+    }
+    expectRejected(Manifest, { ...validManifest, templates: [validTemplate, overlapping] })
   })
 
   it('rejects milliseconds where seconds are required', () => {
@@ -131,12 +282,34 @@ describe('cross-field and time-unit schemas', () => {
 
   it('rejects seconds where milliseconds are required', () => {
     expectRejected(TemplateStatus, {
-      templateId: 'template-1',
+      templateId: TEMPLATE_ID,
       correct: 0,
       wrong: 0,
       blank: 0,
       total: 0,
       observedAt: SECONDS,
+    })
+  })
+
+  it('rejects template status components whose sum exceeds total', () => {
+    expectRejected(TemplateStatus, {
+      templateId: TEMPLATE_ID,
+      correct: 5,
+      wrong: 5,
+      blank: 5,
+      total: 1,
+      observedAt: MILLIS,
+    })
+  })
+
+  it('rejects node complete and correct counts above their totals', () => {
+    expectRejected(NodeStatus, {
+      nodeId: NODE_ID,
+      correct: 2,
+      total: 1,
+      templatesComplete: 7,
+      templatesTotal: 1,
+      observedAt: MILLIS,
     })
   })
 })

@@ -1,14 +1,22 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket } from '../../ports/index.js'
 import { D1SqlStore } from './d1-sql-store.js'
 
-const migration = readFileSync(
-  new URL('../../../migrations/0000_cool_pretty_boy.sql', import.meta.url),
-  'utf8',
-)
+/**
+ * Every migration in order, discovered rather than listed. drizzle-kit names files with a random
+ * suffix, so hardcoding them breaks silently on regeneration — which is exactly what happened when
+ * the migrations were squashed to a single baseline.
+ */
+const migrationsDir = new URL('../../../migrations/', import.meta.url)
+const migration = readdirSync(migrationsDir)
+  .filter((name) => name.endsWith('.sql'))
+  .sort()
+  .map((name) => readFileSync(new URL(name, migrationsDir), 'utf8'))
+  .join('\n')
+  .replaceAll('--> statement-breakpoint', '')
 
 const result = <T>(results: T[]): D1Result<T> =>
   ({ success: true, results, meta: {} }) as D1Result<T>
@@ -99,6 +107,20 @@ describe('D1SqlStore', () => {
     })
   })
 
+  it('issues no D1 calls when reading an empty template-id set', async () => {
+    const callsBeforeRead = d1.prepareCalls
+
+    await expect(
+      store.readBuckets({
+        templateIds: [],
+        resolution: 60,
+        fromSeconds: seconds(1_750_000_000),
+        toSeconds: seconds(1_750_000_120),
+      }),
+    ).resolves.toEqual([])
+    expect(d1.prepareCalls).toBe(callsBeforeRead)
+  })
+
   it('replaces an identical retry instead of double-counting', async () => {
     await store.appendBuckets([bucket()])
     await store.appendBuckets([bucket()])
@@ -148,5 +170,85 @@ describe('D1SqlStore', () => {
     expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM telemetry_buckets').get()).toEqual({
       count: 2,
     })
+  })
+
+  it('reads requested ids at one resolution over a half-open range in stable order', async () => {
+    const fromSeconds = seconds(1_750_000_000)
+    const middleSeconds = seconds(1_750_000_060)
+    const toSeconds = seconds(1_750_000_120)
+    const template1Start = bucket({ templateId: 'template-1', bucketStart: fromSeconds })
+    const template1Middle = bucket({
+      templateId: 'template-1',
+      bucketStart: middleSeconds,
+      placed: 11,
+    })
+    const template2Start = bucket({
+      templateId: 'template-2',
+      bucketStart: fromSeconds,
+      placed: 12,
+    })
+
+    await store.appendBuckets([
+      template2Start,
+      bucket({ templateId: 'template-3', bucketStart: fromSeconds }),
+      bucket({ templateId: 'template-1', resolution: 300, bucketStart: fromSeconds }),
+      bucket({ templateId: 'template-1', bucketStart: toSeconds }),
+      template1Middle,
+      template1Start,
+    ])
+
+    await expect(
+      store.readBuckets({
+        templateIds: ['template-2', 'template-1'],
+        resolution: 60,
+        fromSeconds,
+        toSeconds,
+      }),
+    ).resolves.toEqual([template1Start, template1Middle, template2Start])
+  })
+
+  it('enforces scope and resolution domains in SQL', () => {
+    expect(() =>
+      d1.sqlite
+        .prepare(
+          "INSERT INTO access_tokens VALUES ('hash', 'label', 'superadmin', 'creator', 1, NULL)",
+        )
+        .run(),
+    ).toThrow()
+    expect(() =>
+      d1.sqlite.prepare("INSERT INTO telemetry_buckets VALUES ('template', 42, 60, 1, 1, 0)").run(),
+    ).toThrow()
+    expect(() =>
+      d1.sqlite.prepare("INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 1)").run(),
+    ).toThrow()
+  })
+
+  it('requires native bounds to be complete, ordered and in latitude/longitude range', () => {
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('node', NULL, '/node', 'Node', 1);
+      INSERT INTO templates VALUES ('template', 'node', 'Template', 1, NULL, 1);
+    `)
+
+    expect(() =>
+      d1.sqlite
+        .prepare(
+          "INSERT INTO template_versions VALUES ('partial', 'template', 1, 'creator', 0, 0, 1, 1, 1, 45, NULL, NULL, NULL)",
+        )
+        .run(),
+    ).toThrow()
+    expect(() =>
+      d1.sqlite
+        .prepare(
+          "INSERT INTO template_versions VALUES ('range', 'template', 1, 'creator', 0, 0, 1, 1, 1, 91, -45, -10, 10)",
+        )
+        .run(),
+    ).toThrow()
+    expect(() =>
+      d1.sqlite
+        .prepare(
+          "INSERT INTO template_versions VALUES ('ordered', 'template', 1, 'creator', 0, 0, 1, 1, 1, -45, 45, -10, 10)",
+        )
+        .run(),
+    ).toThrow()
   })
 })

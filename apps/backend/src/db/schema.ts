@@ -1,6 +1,8 @@
 import type { Millis, Seconds } from '@wts/shared'
+import { sql } from 'drizzle-orm'
 import {
   type AnySQLiteColumn,
+  check,
   index,
   integer,
   primaryKey,
@@ -34,23 +36,36 @@ export const templates = sqliteTable('templates', {
   createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
 })
 
-export const templateVersions = sqliteTable('template_versions', {
-  id: text('id').primaryKey(),
-  templateId: text('template_id')
-    .notNull()
-    .references(() => templates.id),
-  createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
-  createdBy: text('created_by').notNull(),
-  minX: integer('min_x').notNull(),
-  minY: integer('min_y').notNull(),
-  maxX: integer('max_x').notNull(),
-  maxY: integer('max_y').notNull(),
-  totalPixels: integer('total_pixels').notNull(),
-  boundsNorth: real('bounds_north'),
-  boundsSouth: real('bounds_south'),
-  boundsWest: real('bounds_west'),
-  boundsEast: real('bounds_east'),
-})
+export const templateVersions = sqliteTable(
+  'template_versions',
+  {
+    id: text('id').primaryKey(),
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id),
+    createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
+    createdBy: text('created_by').notNull(),
+    minX: integer('min_x').notNull(),
+    minY: integer('min_y').notNull(),
+    maxX: integer('max_x').notNull(),
+    maxY: integer('max_y').notNull(),
+    totalPixels: integer('total_pixels').notNull(),
+    boundsNorth: real('bounds_north'),
+    boundsSouth: real('bounds_south'),
+    boundsWest: real('bounds_west'),
+    boundsEast: real('bounds_east'),
+  },
+  (table) => [
+    check(
+      'template_versions_bounds_all_or_none_check',
+      sql`(${table.boundsNorth} IS NULL AND ${table.boundsSouth} IS NULL AND ${table.boundsWest} IS NULL AND ${table.boundsEast} IS NULL) OR (${table.boundsNorth} IS NOT NULL AND ${table.boundsSouth} IS NOT NULL AND ${table.boundsWest} IS NOT NULL AND ${table.boundsEast} IS NOT NULL)`,
+    ),
+    check(
+      'template_versions_bounds_range_check',
+      sql`${table.boundsNorth} IS NULL OR (${table.boundsNorth} BETWEEN -90 AND 90 AND ${table.boundsSouth} BETWEEN -90 AND 90 AND ${table.boundsWest} BETWEEN -180 AND 180 AND ${table.boundsEast} BETWEEN -180 AND 180 AND ${table.boundsNorth} >= ${table.boundsSouth})`,
+    ),
+  ],
+)
 
 export const versionTiles = sqliteTable(
   'version_tiles',
@@ -68,14 +83,20 @@ export const versionTiles = sqliteTable(
   ],
 )
 
-export const accessTokens = sqliteTable('access_tokens', {
-  tokenHash: text('token_hash').primaryKey(),
-  label: text('label').notNull(),
-  scope: text('scope', { enum: ['read', 'report', 'admin'] }).notNull(),
-  createdBy: text('created_by').notNull(),
-  createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
-  revokedAtMs: integer('revoked_at_ms').$type<Millis>(),
-})
+export const accessTokens = sqliteTable(
+  'access_tokens',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    label: text('label').notNull(),
+    scope: text('scope', { enum: ['read', 'report', 'admin'] }).notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
+    revokedAtMs: integer('revoked_at_ms').$type<Millis>(),
+  },
+  (table) => [
+    check('access_tokens_scope_check', sql`${table.scope} IN ('read', 'report', 'admin')`),
+  ],
+)
 
 export const telemetryBuckets = sqliteTable(
   'telemetry_buckets',
@@ -87,7 +108,13 @@ export const telemetryBuckets = sqliteTable(
     correct: integer('correct').notNull(),
     repairs: integer('repairs').notNull(),
   },
-  (table) => [primaryKey({ columns: [table.templateId, table.resolution, table.bucketStartS] })],
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.resolution, table.bucketStartS] }),
+    check(
+      'telemetry_buckets_resolution_check',
+      sql`${table.resolution} IN (60, 300, 900, 3600, 21600)`,
+    ),
+  ],
 )
 
 export const contributions = sqliteTable(
@@ -116,7 +143,7 @@ export const tileHistory = sqliteTable(
   {
     tileX: integer('tile_x').notNull(),
     tileY: integer('tile_y').notNull(),
-    resolutionS: integer('resolution_s').notNull(),
+    resolutionS: integer('resolution_s').$type<Seconds>().notNull(),
     bucketStartS: integer('bucket_start_s').$type<Seconds>().notNull(),
     sha256: text('sha256').notNull(),
     reporters: integer('reporters').notNull(),
@@ -125,5 +152,6 @@ export const tileHistory = sqliteTable(
     primaryKey({
       columns: [table.tileX, table.tileY, table.resolutionS, table.bucketStartS],
     }),
+    check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
   ],
 )

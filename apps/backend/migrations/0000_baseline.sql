@@ -4,7 +4,8 @@ CREATE TABLE `access_tokens` (
 	`scope` text NOT NULL,
 	`created_by` text NOT NULL,
 	`created_at_ms` integer NOT NULL,
-	`revoked_at_ms` integer
+	`revoked_at_ms` integer,
+	CONSTRAINT "access_tokens_scope_check" CHECK("access_tokens"."scope" IN ('read', 'report', 'admin'))
 );
 --> statement-breakpoint
 CREATE TABLE `contributions` (
@@ -41,7 +42,8 @@ CREATE TABLE `telemetry_buckets` (
 	`placed` integer NOT NULL,
 	`correct` integer NOT NULL,
 	`repairs` integer NOT NULL,
-	PRIMARY KEY(`template_id`, `resolution`, `bucket_start_s`)
+	PRIMARY KEY(`template_id`, `resolution`, `bucket_start_s`),
+	CONSTRAINT "telemetry_buckets_resolution_check" CHECK("telemetry_buckets"."resolution" IN (60, 300, 900, 3600, 21600))
 );
 --> statement-breakpoint
 CREATE TABLE `template_versions` (
@@ -58,7 +60,9 @@ CREATE TABLE `template_versions` (
 	`bounds_south` real,
 	`bounds_west` real,
 	`bounds_east` real,
-	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "template_versions_bounds_all_or_none_check" CHECK(("template_versions"."bounds_north" IS NULL AND "template_versions"."bounds_south" IS NULL AND "template_versions"."bounds_west" IS NULL AND "template_versions"."bounds_east" IS NULL) OR ("template_versions"."bounds_north" IS NOT NULL AND "template_versions"."bounds_south" IS NOT NULL AND "template_versions"."bounds_west" IS NOT NULL AND "template_versions"."bounds_east" IS NOT NULL)),
+	CONSTRAINT "template_versions_bounds_range_check" CHECK("template_versions"."bounds_north" IS NULL OR ("template_versions"."bounds_north" BETWEEN -90 AND 90 AND "template_versions"."bounds_south" BETWEEN -90 AND 90 AND "template_versions"."bounds_west" BETWEEN -180 AND 180 AND "template_versions"."bounds_east" BETWEEN -180 AND 180 AND "template_versions"."bounds_north" >= "template_versions"."bounds_south"))
 );
 --> statement-breakpoint
 CREATE TABLE `templates` (
@@ -79,7 +83,8 @@ CREATE TABLE `tile_history` (
 	`bucket_start_s` integer NOT NULL,
 	`sha256` text NOT NULL,
 	`reporters` integer NOT NULL,
-	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`)
+	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`),
+	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400))
 );
 --> statement-breakpoint
 CREATE TABLE `version_tiles` (

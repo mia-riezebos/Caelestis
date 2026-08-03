@@ -1,4 +1,4 @@
-import type { Millis, Seconds } from '@wts/shared'
+import { type Millis, type Seconds, seconds } from '@wts/shared'
 
 /**
  * Live contribution counters. Durable Object today, a counters table later.
@@ -13,9 +13,9 @@ import type { Millis, Seconds } from '@wts/shared'
  * and retain activity identically; alarms remain an adapter detail.
  */
 
-export const RESOLUTION_SECONDS = 60
-export const GRACE_SECONDS = 30
-export const RETENTION_SECONDS = 3_600
+export const RESOLUTION_SECONDS: Seconds = seconds(60)
+export const GRACE_SECONDS: Seconds = seconds(30)
+export const RETENTION_SECONDS: Seconds = seconds(3_600)
 
 /**
  * Derived windows, exported so every implementation and the validator share one definition.
@@ -25,8 +25,8 @@ export const RETENTION_SECONDS = 3_600
  * row has already been pruned — and the promotion join then writes only the late portion, which D1's
  * replace semantics turn into a silent undercount. Derive, never restate.
  */
-export const FLUSHABLE_AFTER_SECONDS = RESOLUTION_SECONDS + GRACE_SECONDS
-export const EXPIRES_AFTER_SECONDS = FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS
+export const FLUSHABLE_AFTER_SECONDS: Seconds = seconds(RESOLUTION_SECONDS + GRACE_SECONDS)
+export const EXPIRES_AFTER_SECONDS: Seconds = seconds(FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS)
 
 /** Per-delta guardrail; a full Wplace charge drain is only around 10,000 pixels. */
 export const MAX_COUNTER_DELTA_VALUE = 100_000
