@@ -36,7 +36,6 @@ type SqliteBinding = null | number | bigint | string | NodeJS.ArrayBufferView
 type LocalRow = Record<string, SqlStorageValue>
 
 class SqliteSqlStorageCursor<T extends LocalRow> implements Iterable<T> {
-  readonly rowsRead: number
   readonly rowsWritten: number
   private position = 0
 
@@ -45,8 +44,11 @@ class SqliteSqlStorageCursor<T extends LocalRow> implements Iterable<T> {
     readonly columnNames: string[],
     rowsWritten = 0,
   ) {
-    this.rowsRead = rows.length
     this.rowsWritten = rowsWritten
+  }
+
+  get rowsRead(): number {
+    return this.position
   }
 
   next(): IteratorResult<T> {
@@ -57,18 +59,19 @@ class SqliteSqlStorageCursor<T extends LocalRow> implements Iterable<T> {
   }
 
   toArray(): T[] {
-    return [...this.rows]
+    return [...this]
   }
 
   one(): T {
-    if (this.rows.length !== 1) {
-      throw new Error(`Expected exactly one SQL row, received ${this.rows.length}`)
+    const remaining = this.rows.length - this.position
+    if (remaining !== 1) {
+      throw new Error(`Expected exactly one SQL row, received ${remaining}`)
     }
-    return this.rows[0] as T
+    return this.next().value as T
   }
 
   *raw<U extends SqlStorageValue[]>(): IterableIterator<U> {
-    for (const row of this.rows) {
+    for (const row of this) {
       yield this.columnNames.map((column) => row[column]) as U
     }
   }
@@ -233,7 +236,7 @@ class SqliteDurableObjectState {
    */
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
     const pending = this.storage.whileGated(callback)
-    this.blocked = pending.catch(() => undefined)
+    this.blocked = pending
     return pending
   }
 
@@ -719,6 +722,7 @@ describe('TelemetryShard', () => {
   })
 
   it('keeps the batch pending until D1 has committed', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const harness = await makeHarness(millis(150_000))
     await harness.shard.record([
       { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
@@ -731,6 +735,11 @@ describe('TelemetryShard', () => {
       { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
     ])
     expect(harness.d1Buckets()).toEqual([])
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.stringContaining('telemetry flush failed (attempt 1)'),
+      expect.any(Error),
+    )
+    errorLog.mockRestore()
   })
 
   it('measures retry backoff from the time D1 fails', async () => {
@@ -746,6 +755,52 @@ describe('TelemetryShard', () => {
     await harness.deliverAlarm()
 
     expect(await harness.nextAlarmAt()).toBe(262_000)
+  })
+
+  it('backs off every consecutive shard failure and caps retries at 60 seconds', async () => {
+    const harness = await makeHarness(millis(100_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    harness.clock.now = millis(200_000)
+
+    for (const expectedDelay of [1, 2, 4, 8, 16, 32, 60, 60]) {
+      harness.d1.failNextBatchAt('before-commit')
+      await harness.deliverAlarm()
+      expect(await harness.nextAlarmAt()).toBe(harness.clock.now + expectedDelay * 1_000)
+      harness.clock.now = millis((await harness.nextAlarmAt()) as number)
+    }
+  })
+
+  it('readPending re-arms a consumed alarm while a failed batch remains', async () => {
+    const harness = await makeHarness(millis(100_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    harness.clock.now = millis(200_000)
+    harness.d1.failNextBatchAt('before-commit')
+    await harness.deliverAlarm()
+    harness.storage.consumeAlarm()
+    expect(await harness.nextAlarmAt()).toBeNull()
+
+    await harness.shard.readPending(['template-a'])
+
+    expect(await harness.nextAlarmAt()).toBe(200_000)
+  })
+
+  it('cold construction re-arms a consumed alarm while a failed batch remains', async () => {
+    const harness = await makeHarness(millis(100_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    harness.clock.now = millis(200_000)
+    harness.d1.failNextBatchAt('before-commit')
+    await harness.deliverAlarm()
+    harness.storage.consumeAlarm()
+
+    await harness.coldRestart()
+
+    expect(await harness.nextAlarmAt()).toBe(200_000)
   })
 
   it('resolves rather than rethrowing when D1 fails, so the platform does not own the retry', async () => {
@@ -854,6 +909,26 @@ describe('TelemetryShard', () => {
     await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
       { templateId: 'template-a', placed: 2, correct: 1, repairs: 0, flushedAt: 150_000 },
     ])
+  })
+
+  it('prunes an expired retained row once no local state references it', async () => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    await harness.deliverAlarm()
+    expect(
+      harness.storageDatabase.prepare('SELECT COUNT(*) AS count FROM retained_counters').get(),
+    ).toEqual({ count: 1 })
+
+    harness.clock.now = millis(4_000_000)
+    await harness.shard.record([
+      { templateId: 'template-b', occurredAt: seconds(4_000), placed: 1, correct: 1, repairs: 0 },
+    ])
+
+    expect(
+      harness.storageDatabase.prepare('SELECT COUNT(*) AS count FROM retained_counters').get(),
+    ).toEqual({ count: 0 })
   })
 
   it('keeps a retained row alive past its expiry while pending activity still references it', async () => {

@@ -189,6 +189,51 @@ describe('D1SqlStore', () => {
     ).not.toThrow()
   })
 
+  it.each([
+    [-1, 0, 1, 1, 1],
+    [0, -1, 1, 1, 1],
+    [0, 0, 2_048_001, 1, 1],
+    [0, 0, 1, 2_048_001, 1],
+    [1, 0, 1, 1, 1],
+    [0, 1, 1, 1, 1],
+    [0, 0, 1, 1, -1],
+  ])(
+    'rejects template-version pixel bounds outside the wire domain: %j',
+    (minX, minY, maxX, maxY, totalPixels) => {
+      d1.sqlite.exec(`
+        INSERT OR IGNORE INTO nodes VALUES ('pixel-node', NULL, '/pixel', 'Pixel', 1);
+        INSERT OR IGNORE INTO templates VALUES ('pixel-template', 'pixel-node', 'T', 1, NULL, 1);
+      `)
+      expect(() =>
+        d1.sqlite
+          .prepare(
+            "INSERT INTO template_versions VALUES (?, 'pixel-template', 1, 'c', ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)",
+          )
+          .run(
+            `pixel-${minX}-${minY}-${maxX}-${maxY}-${totalPixels}`,
+            minX,
+            minY,
+            maxX,
+            maxY,
+            totalPixels,
+          ),
+      ).toThrow(/CHECK constraint failed/)
+    },
+  )
+
+  it.each([
+    [2048, 0],
+    [0, 2048],
+    [-1, 0],
+    [0, -1],
+  ])('rejects tile-history coordinates outside the canvas: %i/%i', (tileX, tileY) => {
+    expect(() =>
+      d1.sqlite
+        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 1)")
+        .run(tileX, tileY),
+    ).toThrow(/CHECK constraint failed/)
+  })
+
   it('requires native bounds to be complete, ordered and in latitude/longitude range', () => {
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('node', NULL, '/node', 'Node', 1);

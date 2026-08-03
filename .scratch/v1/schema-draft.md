@@ -32,7 +32,8 @@ to place templates and the backend needs it to import and export native files.
 
 ## The palette
 
-Lives in `packages/shared` as a constant array, **ordered by wplace's own palette index** — the paint
+Lives in `packages/shared` as a constant array, currently lexicographically ordered until wplace's
+palette-index order is recovered — the paint
 request sends indices, not RGB, so a list without indices cannot classify a report. 59 colours are
 recovered so far (`09-recon-palette`); the ordering and the free/premium split are still open.
 

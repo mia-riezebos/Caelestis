@@ -89,20 +89,43 @@ it('exposes every exported wire schema as a bidirectional codec', () => {
 })
 
 describe('tile and template schemas', () => {
-  it.each(['2048/0', '999999/12', '01/2', '-1/2'])('rejects non-canonical tile key %s', (tile) => {
-    expectRejected(TileOffer, { tile, sha256: HASH, ts: SECONDS })
-  })
+  it.each(['2048/0', '0/2048', '999999/12', '01/2', '2/01', '-1/2'])(
+    'rejects non-canonical tile key %s',
+    (tile) => {
+      expectRejected(TileOffer, { tile, sha256: HASH, ts: SECONDS })
+    },
+  )
 
   it.each([2048, -1, 1.5])('rejects invalid paint-tile coordinate %s', (x) => {
     expectRejected(PaintTile, { x, y: 0, pixels: validPixels })
+  })
+
+  it.each([2048, -1, 1.5])('rejects invalid paint-tile y coordinate %s', (y) => {
+    expectRejected(PaintTile, { x: 0, y, pixels: validPixels })
   })
 
   it('rejects an otherwise-valid vertically inverted bounding box', () => {
     // y does not wrap: Mercator clamps at the poles, so there is nothing to wrap through.
     expectRejected(Template, {
       ...validTemplate,
-      bbox: { minX: 0, minY: 1, maxX: 1, maxY: 0 },
+      bbox: { minX: 0, minY: 2, maxX: 1, maxY: 1 },
     })
+  })
+
+  it('rejects a bounding box with zero height', () => {
+    expectRejected(Template, {
+      ...validTemplate,
+      bbox: { minX: 0, minY: 1, maxX: 1, maxY: 1 },
+    })
+  })
+
+  it.each([
+    { minX: -1, minY: 0, maxX: 1, maxY: 1 },
+    { minX: 0, minY: -1, maxX: 1, maxY: 1 },
+    { minX: 0, minY: 0, maxX: 2_048_001, maxY: 1 },
+    { minX: 0, minY: 0, maxX: 1, maxY: 2_048_001 },
+  ])('rejects a bounding box outside the canvas domain: %j', (bbox) => {
+    expectRejected(Template, { ...validTemplate, bbox })
   })
 
   it('accepts a bounding box that wraps through zero in x', () => {
@@ -163,6 +186,14 @@ describe('tile and template schemas', () => {
     expectRejected(Template, { ...validTemplate, id: 'template-1' })
   })
 
+  it.each([
+    TEMPLATE_ID.toUpperCase(),
+    TEMPLATE_ID.replace('-7', '-4'),
+    TEMPLATE_ID.replace('-8123-', '-7123-'),
+  ])('rejects non-canonical UUIDv7 identifier %s', (id) => {
+    expectRejected(Template, { ...validTemplate, id })
+  })
+
   it('rejects a negative total pixel count', () => {
     expectRejected(Template, { ...validTemplate, totalPixels: -7 })
   })
@@ -179,8 +210,12 @@ describe('PaintPixels', () => {
     )
   })
 
-  it('rejects unequal-length coordinate and colour arrays', () => {
+  it('rejects an x/y length mismatch when colours match x', () => {
     expectRejected(PaintPixels, { x: [1, 2], y: [3], colors: [5, 6] })
+  })
+
+  it('rejects a y/colour length mismatch when x matches y', () => {
+    expectRejected(PaintPixels, { x: [1], y: [3], colors: [5, 6] })
   })
 
   it.each([-1, 1.5, 1_000])('rejects invalid tile-local coordinate %s', (x) => {
@@ -260,6 +295,18 @@ describe('PaintEvent', () => {
     expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
   })
 
+  it('accepts an ordinary paint event spanning two tiles', () => {
+    const event = {
+      ...validEvent,
+      tiles: [
+        { x: 0, y: 0, pixels: validPixels },
+        { x: 1, y: 0, pixels: validPixels },
+      ],
+      painted: 2,
+    }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
   it('rejects a tile carrying no pixels', () => {
     // Without this, MAX_PAINT_TILES empty entries are a legal payload that reports nothing.
     expectRejected(PaintEvent, {
@@ -286,6 +333,30 @@ describe('cross-field and time-unit schemas', () => {
 
   it('rejects manifest tiles that contain an unreferenced extra tile', () => {
     expectRejected(Manifest, { ...validManifest, tiles: ['325/1781', '0/0'] })
+  })
+
+  it('rejects a duplicate declared tile', () => {
+    expectRejected(Manifest, { ...validManifest, tiles: ['325/1781', '325/1781'] })
+  })
+
+  it('rejects a declared tile set that omits a referenced tile', () => {
+    expectRejected(Manifest, { ...validManifest, tiles: ['0/0'] })
+  })
+
+  it('rejects duplicate node identifiers', () => {
+    expectRejected(Manifest, { ...validManifest, nodes: [validNode, { ...validNode }] })
+  })
+
+  it('rejects duplicate template identifiers', () => {
+    const duplicate = { ...validTemplate, version: uuid(4) }
+    expectRejected(Manifest, { ...validManifest, templates: [validTemplate, duplicate] })
+  })
+
+  it('rejects a dangling parent-node reference', () => {
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [{ ...validNode, parentId: uuid(5) }],
+    })
   })
 
   it('accepts a manifest covering more than 1,000 distinct canvas tiles', () => {
@@ -422,6 +493,47 @@ describe('cross-field and time-unit schemas', () => {
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
+  it('accepts vertically adjacent templates in either manifest order', () => {
+    const adjacent = (id: number, minY: number, maxY: number) => ({
+      ...validTemplate,
+      id: uuid(920 + id),
+      version: uuid(930 + id),
+      bbox: { minX: 0, minY, maxX: 1_000, maxY },
+      chunks: [{ tile: tileKey({ x: 0, y: minY / 1_000 }), hash: HASH }],
+    })
+    const low = adjacent(1, 0, 1_000)
+    const high = adjacent(2, 1_000, 2_000)
+    for (const templates of [
+      [low, high],
+      [high, low],
+    ]) {
+      const manifest = { ...validManifest, templates, tiles: ['0/0', '0/1'] }
+      expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+    }
+  })
+
+  it.each([
+    [
+      { minX: 2_047_999, maxX: 2_048_000 },
+      { minX: 2_047_999, maxX: 2_048_000 },
+    ],
+    [
+      { minX: 0, maxX: 1 },
+      { minX: 0, maxX: 1 },
+    ],
+  ])('rejects overlap confined to a seam endpoint', (leftX, rightX) => {
+    const makeTemplate = (id: number, x: { minX: number; maxX: number }) => ({
+      ...validTemplate,
+      id: uuid(940 + id),
+      version: uuid(950 + id),
+      bbox: { ...x, minY: 0, maxY: 1 },
+    })
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [makeTemplate(1, leftX), makeTemplate(2, rightX)],
+    })
+  })
+
   it('rejects overlapping templates within one group', () => {
     const overlapping = {
       ...validTemplate,
@@ -447,25 +559,54 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
-  it('rejects template status components whose sum exceeds total', () => {
+  it('rejects template status components whose sum exceeds total by one', () => {
     expectRejected(TemplateStatus, {
       templateId: TEMPLATE_ID,
-      correct: 5,
-      wrong: 5,
-      blank: 5,
+      correct: 1,
+      wrong: 1,
+      blank: 0,
       total: 1,
       observedAt: MILLIS,
     })
   })
 
-  it('rejects node complete and correct counts above their totals', () => {
+  it('rejects a node correct count above its total', () => {
     expectRejected(NodeStatus, {
       nodeId: NODE_ID,
       correct: 2,
       total: 1,
-      templatesComplete: 7,
+      templatesComplete: 1,
       templatesTotal: 1,
       observedAt: MILLIS,
     })
   })
+
+  it('rejects a node complete count above its template total', () => {
+    expectRejected(NodeStatus, {
+      nodeId: NODE_ID,
+      correct: 1,
+      total: 1,
+      templatesComplete: 2,
+      templatesTotal: 1,
+      observedAt: MILLIS,
+    })
+  })
+
+  it.each([0, -1, 1_750_000_000.5])('rejects invalid seconds timestamp %s', (ts) => {
+    expectRejected(TileOffer, { tile: '0/0', sha256: HASH, ts })
+  })
+
+  it.each([1e15, 1_750_000_000_000.5])(
+    'rejects invalid milliseconds timestamp %s',
+    (observedAt) => {
+      expectRejected(TemplateStatus, {
+        templateId: TEMPLATE_ID,
+        correct: 0,
+        wrong: 0,
+        blank: 0,
+        total: 0,
+        observedAt,
+      })
+    },
+  )
 })

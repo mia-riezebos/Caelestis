@@ -1,4 +1,4 @@
-import { millis, type Seconds, seconds } from '@wts/shared'
+import { MAX_PAINT_COUNT, millis, type Seconds, seconds } from '@wts/shared'
 import { describe, expect, it } from 'vitest'
 import {
   type BucketQuery,
@@ -18,6 +18,9 @@ import { MemoryCounterStore } from './memory-counter-store.js'
 import { MemorySqlStore } from './memory-sql-store.js'
 
 describe('memory adapters', () => {
+  it('derives the counter guardrail from the shared paint limit', () => {
+    expect(MAX_COUNTER_DELTA_VALUE).toBe(MAX_PAINT_COUNT)
+  })
   it('hasAll returns exactly the hashes present in the requested namespace', async () => {
     const store = new MemoryBlobStore()
     await store.put('tiles', 'present-a', new Uint8Array([1]))
@@ -397,7 +400,7 @@ describe('memory adapters', () => {
     expect(store.nextAlarmAt()).toBeNull()
   })
 
-  it('readPending re-arms an alarm for flush-batch residue', async () => {
+  it('readPending re-arms a missing alarm for flush-batch residue', async () => {
     let nowSeconds = 100
     const sql: SqlStore = {
       async appendBuckets(_buckets: readonly TelemetryBucket[]): Promise<void> {
@@ -416,10 +419,13 @@ describe('memory adapters', () => {
     await store.alarm()
     expect(store.nextAlarmAt()).toBe(201_000)
 
+    ;(store as unknown as { alarmAt: number | null }).alarmAt = null
+    expect(store.nextAlarmAt()).toBeNull()
+
     nowSeconds = 200.5
     await store.readPending(['template-a'])
 
-    expect(store.nextAlarmAt()).toBe(201_000)
+    expect(store.nextAlarmAt()).toBe(200_500)
   })
 
   it('backs off consecutive flush failures and resets after a success', async () => {
@@ -881,6 +887,86 @@ describe('memory adapters', () => {
         correct: 1,
         repairs: 0,
         flushedAt: millis(150_000),
+      },
+    ])
+  })
+
+  it('keeps retained totals past expiry while a failed flush batch references them', async () => {
+    let nowSeconds = 150
+    let failing = false
+    const persisted = new MemorySqlStore()
+    const sql: SqlStore = {
+      async appendBuckets(buckets) {
+        if (failing) throw new Error('D1 unavailable')
+        await persisted.appendBuckets(buckets)
+      },
+      readBuckets: (query) => persisted.readBuckets(query),
+    }
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    await store.alarm()
+    nowSeconds = 200
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 0 },
+    ])
+    failing = true
+    await store.alarm()
+    nowSeconds = 4_000
+    await store.alarm()
+
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 2, correct: 1, repairs: 0, flushedAt: 150_000 },
+    ])
+  })
+
+  it('keeps retained totals past expiry while pending activity references them', async () => {
+    let nowSeconds = 150
+    let failing = false
+    const persisted = new MemorySqlStore()
+    const sql: SqlStore = {
+      async appendBuckets(buckets) {
+        if (failing) throw new Error('D1 unavailable')
+        await persisted.appendBuckets(buckets)
+      },
+      readBuckets: (query) => persisted.readBuckets(query),
+    }
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    await store.alarm()
+    nowSeconds = 400
+    await store.record([
+      { templateId: 'template-b', occurredAt: seconds(190), placed: 3, correct: 2, repairs: 0 },
+    ])
+    failing = true
+    await store.alarm()
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 6, correct: 4, repairs: 1 },
+    ])
+    nowSeconds = 4_000
+    await store.alarm()
+    failing = false
+    await store.alarm()
+    await store.alarm()
+
+    await expect(
+      persisted.readBuckets({
+        templateIds: ['template-a'],
+        resolution: RESOLUTION_SECONDS,
+        fromSeconds: seconds(60),
+        toSeconds: seconds(120),
+      }),
+    ).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        resolution: RESOLUTION_SECONDS,
+        bucketStart: seconds(60),
+        placed: 10,
+        correct: 7,
+        repairs: 2,
       },
     ])
   })

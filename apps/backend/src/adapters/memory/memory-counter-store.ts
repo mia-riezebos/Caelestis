@@ -62,15 +62,14 @@ export class MemoryCounterStore implements CounterStore {
   constructor(
     private readonly sql: SqlStore,
     private readonly clock: () => Millis = () => millis(Date.now()),
-  ) {
-    this.pruneRetained(seconds(Math.floor(this.clock() / 1_000)))
-  }
+  ) {}
 
   async record(deltas: readonly CounterDelta[]): Promise<void> {
     const nowMilliseconds = this.clock()
     const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
 
-    // Validation consults local traces, so sweep stale retained rows before asking that question.
+    // A successful flush leaves retained reconciliation state but no alarm. The next write is a
+    // lifecycle opportunity to reclaim expired rows that no pending or flush-batch state needs.
     this.pruneRetained(nowSeconds)
 
     const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)

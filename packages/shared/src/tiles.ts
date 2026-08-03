@@ -96,7 +96,7 @@ export const latLngToCanvasPixel = ({ lat, lng }: LatLng): CanvasPixel => {
   const latitudeRadians =
     clamp(lat, -MAX_MERCATOR_LATITUDE, MAX_MERCATOR_LATITUDE) * RADIANS_PER_DEGREE
   return {
-    x: (wrapUnitInterval((lng + 180) / 360) * WORLD_PIXELS) % WORLD_PIXELS,
+    x: wrapUnitInterval((lng + 180) / 360) * WORLD_PIXELS,
     y:
       ((1 - Math.log(Math.tan(latitudeRadians) + 1 / Math.cos(latitudeRadians)) / Math.PI) / 2) *
       WORLD_PIXELS,

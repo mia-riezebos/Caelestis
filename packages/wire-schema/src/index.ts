@@ -18,8 +18,9 @@ const MAX_MANIFEST_TEMPLATES = 100_000
  * Deliberately redundant, and it buys less than it looks like it does.
  *
  * The PaintEvent filters below already force every tile to carry a pixel and the event as a whole
- * to stay within MAX_PAINTED_PIXELS, so the tile count cannot exceed that on semantics alone —
- * mutating this constant changes no accept/reject outcome, and no test pins it.
+ * to stay within MAX_PAINTED_PIXELS, so the tile count cannot exceed that on semantics alone.
+ * Keeping the explicit cap documents the intended streaming-decoder limit; a multi-tile acceptance
+ * test prevents it from accidentally collapsing the protocol to one tile per event.
  *
  * It is not a cost bound either, which an earlier version of this comment claimed: `isMaxLength` is
  * a refinement over the already-decoded array, so every element is validated before the length is
