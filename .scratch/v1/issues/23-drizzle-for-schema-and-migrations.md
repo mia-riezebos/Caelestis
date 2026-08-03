@@ -1,7 +1,7 @@
 # Drizzle for schema & migrations
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: 22
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/24
 
