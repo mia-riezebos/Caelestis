@@ -76,3 +76,29 @@ Drizzle would defeat that.
 - Worker bundle size with Drizzle — measure, do not assume.
 - Squash `0001_telemetry.sql` plus whatever `22` adds into one generated baseline. Nothing is
   deployed, so preserving migration history nobody has run is pure cost.
+
+## Decisions — 2026-08-03 (schema design session)
+
+### Templates are immutable versions with a current pointer
+
+`templates` holds identity — id, node, name, sort order. `template_versions` holds content — bbox,
+total pixels, the chunk set — and `templates.current_version_id` points at the live one. An edit
+inserts a new version.
+
+Buys rollback, an exact "what changed since your manifest version" diff, and **safe chunk garbage
+collection**: a chunk is deletable only when no version references it. Costs a join on every manifest
+read. It is also the shape wplace's own alliance assets use (drafts / versions / select).
+
+### One object per chunk. No duplicate raw-index copy.
+
+An earlier proposal was to store a decoded `.idx` byte array beside each PNG so the Worker could
+classify pixels without decoding. Rejected — a PLTE indexed PNG *is* already one byte per pixel.
+
+What it is not is directly indexable: the pixel bytes sit in a DEFLATE-compressed `IDAT` stream with
+a filter byte per scanline. But Workers ship **`DecompressionStream('deflate')`** natively, so
+inflating costs nothing extra, and since **we control the encoder at upload** we emit every scanline
+with **filter type 0 (None)** — leaving decode as "inflate, then strip one byte per row". Roughly 60
+lines, exact, no WASM dependency.
+
+Slightly worse compression on upload in exchange for a trivial server-side decode path and no
+duplicated storage. Decoded arrays cache by hash, which is content-addressed and never invalidates.

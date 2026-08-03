@@ -58,3 +58,35 @@ breaks the wire contract mid-development — pin exactly, or track and absorb ch
 
 Blocked by `22-bucket-attribution-by-event-time`, which is reshaping `PaintEvent` right now.
 Converting the shared types to schemas should happen after that lands, not against a moving target.
+
+## Decisions — 2026-08-03
+
+### Effect proper in the backend
+
+Not Schema-only. `Effect` for error handling and `Layer`/`Context` for dependency injection, replacing
+hand-passed `Ports`. That is a real commitment to a beta on the path carrying all telemetry, and it
+rewrites adapter wiring that four review cycles just hardened — accepted knowingly.
+
+### No Effect in the userscript. Measured, not estimated.
+
+`effect@4.0.0-beta.102`, bundled with esbuild as iife, minified:
+
+| | raw | gzipped |
+|---|---|---|
+| current userscript | ~720 B | ~450 B |
+| `Effect` core alone | 149 KB | 52 KB |
+| **one-field** `Schema` | 416 KB | 135 KB |
+| realistic manifest `Schema` | 385 KB | 122 KB |
+
+A one-field schema costs *more* than the realistic manifest schema, so the weight is core runtime and
+**Effect Schema does not tree-shake**. There is no "use it sparingly" option.
+
+Transfer size is nearly irrelevant — Violentmonkey stores the script locally, so gzip cost is paid at
+install. **Parse and eval are per page load**, and that is the problem: the tile shim must install at
+`document-start` *before* wplace's bundle captures `fetch`. Parsing 400 KB first widens a race we
+currently win comfortably. That is a correctness risk, not a latency one.
+
+So the userscript validates nothing at runtime and **adheres to the wire contract optimistically**.
+The trust asymmetry justifies it: the server must validate client input because clients are
+untrusted, but a client that has chosen to connect to a server already extends it far more trust than
+a schema check withdraws.
