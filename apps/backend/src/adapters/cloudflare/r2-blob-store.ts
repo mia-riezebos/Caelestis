@@ -16,10 +16,7 @@ export class R2BlobStore implements BlobStore {
     return new Uint8Array(await object.arrayBuffer())
   }
 
-  async hasAll(
-    namespace: BlobNamespace,
-    hashes: readonly string[],
-  ): Promise<ReadonlySet<string>> {
+  async hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>> {
     // R2 has no bulk HEAD/existence operation for arbitrary keys. Listing would require scanning
     // and paginating the whole namespace, so parallel HEADs are the cheaper bounded operation here.
     const uniqueHashes = [...new Set(hashes)]

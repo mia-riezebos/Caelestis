@@ -70,3 +70,24 @@ Two corrections made during review:
 
 Still open from the original question, deferred rather than answered: lint and formatter choice, and
 whether the userscript gets tests in v1.
+
+## Follow-up — 2026-08-03: the two deferred questions, answered
+
+**Lint and format: Biome** (2.5.6), configured at the repo root rather than per package — one fast
+binary over the whole tree, so no turbo task is warranted. `pnpm lint` checks, `pnpm format` writes.
+Config matches the existing style (single quotes, no semicolons, 100 columns) so adopting it was not
+a reformatting event. `.wrangler/` and `.scratch/` are excluded.
+
+**The userscript gets deep modules and tests.** vitest wired in `apps/userscript` and
+`packages/shared`; the module carving itself happens as the userscript is built, per
+`/setup-ts-deep-modules`.
+
+### Two defects the new tests immediately found
+
+1. **`parseTileKey` accepted malformed keys.** `'325/'` and `'/1782'` both parsed as coordinate `0`,
+   because `Number('') === 0`, and `'325/1782/0'` silently ignored the trailing segment. A template
+   chunk keyed off a bad parse would have rendered on the wrong tile with nothing to indicate it.
+   Now matched against `/^-?\d+$/` per segment, with the segment count checked.
+2. **Compiled test files were being emitted into `dist/`**, so vitest ran each suite twice — once
+   from source, once from the build — and the published output carried test code. Both packages now
+   exclude `**/*.test.ts` from their tsconfig.

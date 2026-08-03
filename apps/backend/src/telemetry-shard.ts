@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
-import type { CounterDelta, TelemetryBucket, PendingCounters } from './ports/index.js'
+import type { CounterDelta, PendingCounters, TelemetryBucket } from './ports/index.js'
 
 const RESOLUTION_SECONDS = 60
 const ALARM_DELAY_MILLISECONDS = 60_000

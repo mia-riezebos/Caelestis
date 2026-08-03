@@ -18,12 +18,22 @@ export type TileKey = `${number}/${number}`
 
 export const tileKey = (t: TileCoord): TileKey => `${t.x}/${t.y}`
 
+/**
+ * Matched against each segment rather than parsing with `Number`, which accepts far too much:
+ * `Number('')` is 0, so an empty segment would silently become tile 0, and `Number(' 1')` and
+ * `Number('1e3')` both parse cleanly into coordinates nobody wrote.
+ */
+const INTEGER = /^-?\d+$/
+
 export const parseTileKey = (key: string): TileCoord | null => {
-  const [x, y] = key.split('/')
+  const parts = key.split('/')
+  if (parts.length !== 2) return null
+
+  const [x, y] = parts
   if (x === undefined || y === undefined) return null
-  const cx = Number(x)
-  const cy = Number(y)
-  return Number.isInteger(cx) && Number.isInteger(cy) ? { x: cx, y: cy } : null
+  if (!INTEGER.test(x) || !INTEGER.test(y)) return null
+
+  return { x: Number(x), y: Number(y) }
 }
 
 /** Edge length of a wplace canvas tile in pixels. Assumed, not yet verified — see recon ticket. */

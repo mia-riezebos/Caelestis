@@ -10,9 +10,13 @@
     "build": "turbo build",
     "dev": "turbo dev",
     "check": "turbo check",
+    "test": "turbo test",
+    "lint": "biome check .",
+    "format": "biome check --write .",
     "clean": "turbo clean && rm -rf node_modules"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.6",
     "turbo": "^2.5.0",
     "typescript": "^5.7.0"
   }
