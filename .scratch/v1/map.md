@@ -58,6 +58,13 @@ updated until v1 actually runs.
   `shardStrategy: 'single'` in v1, `per-template` and `dynamic` stubbed. `wrangler dev` locally.
   Free-tier viable for small alliances.
 
+## Deferred until a running prototype
+
+Sharp questions with known methods, waiting only on something that runs — kept as a standing
+register in [Deferred until a running prototype](issues/26-deferred-until-prototype.md). Distinct
+from the fog below: these are not unspecifiable, just unanswerable yet. Add to it whenever a decision
+rests on reasoning that only real behaviour can confirm.
+
 ## Not yet specified
 
 - **Telemetry wire schema and the functional CRUD surface** it maps onto. No longer blocked — the
