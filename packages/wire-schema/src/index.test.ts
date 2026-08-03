@@ -303,6 +303,39 @@ describe('cross-field and time-unit schemas', () => {
     expectRejected(Manifest, { ...validManifest, templates: [duplicate] })
   })
 
+  it('rejects two wrapped templates that overlap across the antimeridian seam', () => {
+    // A sort-and-sweep over minX misses this: both wrapped boxes start high and end low, so the
+    // early break skips the comparison and the forbidden same-group overlap decodes clean.
+    const wrapped = (id: number) => ({
+      ...validTemplate,
+      id: uuid(500 + id),
+      version: uuid(600 + id),
+      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
+    })
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [wrapped(1), wrapped(2)],
+      tiles: [tileKey({ x: 2047, y: 0 })],
+    })
+  })
+
+  it('accepts two wrapped templates that do not overlap in y', () => {
+    const wrapped = (id: number, minY: number, maxY: number) => ({
+      ...validTemplate,
+      id: uuid(700 + id),
+      version: uuid(800 + id),
+      bbox: { minX: 2_047_000, minY, maxX: 1_000, maxY },
+      chunks: [{ tile: tileKey({ x: 2047, y: minY / 1_000 }), hash: HASH }],
+    })
+    const manifest = {
+      ...validManifest,
+      templates: [wrapped(1, 0, 1_000), wrapped(2, 1_000, 2_000)],
+      tiles: [tileKey({ x: 2047, y: 0 }), tileKey({ x: 2047, y: 1 })],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
   it('rejects overlapping templates within one group', () => {
     const overlapping = {
       ...validTemplate,

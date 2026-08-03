@@ -65,7 +65,10 @@ export const templateVersions = sqliteTable(
       'template_versions_pixel_bounds_check',
       // x wraps through zero, so min_x > max_x is a legal antimeridian span; y does not wrap.
       // Zero width and zero height are rejected: a template covering no pixels is not a placement.
-      sql`${table.minX} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
+      sql`typeof(${table.minX}) = 'integer' AND typeof(${table.minY}) = 'integer'
+        AND typeof(${table.maxX}) = 'integer' AND typeof(${table.maxY}) = 'integer'
+        AND typeof(${table.totalPixels}) = 'integer'
+        AND ${table.minX} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
         AND ${table.minY} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
         AND ${table.maxX} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
         AND ${table.maxY} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
@@ -93,7 +96,9 @@ export const versionTiles = sqliteTable(
   (table) => [
     check(
       'version_tiles_coordinate_check',
-      sql`${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))} AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
     ),
     primaryKey({ columns: [table.versionId, table.tileX, table.tileY] }),
     index('version_tiles_tile_idx').on(table.tileX, table.tileY),
@@ -170,5 +175,11 @@ export const tileHistory = sqliteTable(
       columns: [table.tileX, table.tileY, table.resolutionS, table.bucketStartS],
     }),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
+    check(
+      'tile_history_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
   ],
 )

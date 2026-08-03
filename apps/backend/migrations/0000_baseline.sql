@@ -62,7 +62,10 @@ CREATE TABLE `template_versions` (
 	`bounds_east` real,
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "template_versions_bounds_all_or_none_check" CHECK(("template_versions"."bounds_north" IS NULL AND "template_versions"."bounds_south" IS NULL AND "template_versions"."bounds_west" IS NULL AND "template_versions"."bounds_east" IS NULL) OR ("template_versions"."bounds_north" IS NOT NULL AND "template_versions"."bounds_south" IS NOT NULL AND "template_versions"."bounds_west" IS NOT NULL AND "template_versions"."bounds_east" IS NOT NULL)),
-	CONSTRAINT "template_versions_pixel_bounds_check" CHECK("template_versions"."min_x" BETWEEN 0 AND 2047999
+	CONSTRAINT "template_versions_pixel_bounds_check" CHECK(typeof("template_versions"."min_x") = 'integer' AND typeof("template_versions"."min_y") = 'integer'
+        AND typeof("template_versions"."max_x") = 'integer' AND typeof("template_versions"."max_y") = 'integer'
+        AND typeof("template_versions"."total_pixels") = 'integer'
+        AND "template_versions"."min_x" BETWEEN 0 AND 2047999
         AND "template_versions"."min_y" BETWEEN 0 AND 2047999
         AND "template_versions"."max_x" BETWEEN 1 AND 2048000
         AND "template_versions"."max_y" BETWEEN 1 AND 2048000
@@ -91,7 +94,10 @@ CREATE TABLE `tile_history` (
 	`sha256` text NOT NULL,
 	`reporters` integer NOT NULL,
 	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`),
-	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400))
+	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
+	CONSTRAINT "tile_history_coordinate_check" CHECK(typeof("tile_history"."tile_x") = 'integer' AND typeof("tile_history"."tile_y") = 'integer'
+        AND "tile_history"."tile_x" BETWEEN 0 AND 2047
+        AND "tile_history"."tile_y" BETWEEN 0 AND 2047)
 );
 --> statement-breakpoint
 CREATE TABLE `version_tiles` (
@@ -101,7 +107,9 @@ CREATE TABLE `version_tiles` (
 	`hash` text NOT NULL,
 	PRIMARY KEY(`version_id`, `tile_x`, `tile_y`),
 	FOREIGN KEY (`version_id`) REFERENCES `template_versions`(`id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "version_tiles_coordinate_check" CHECK("version_tiles"."tile_x" BETWEEN 0 AND 2047 AND "version_tiles"."tile_y" BETWEEN 0 AND 2047)
+	CONSTRAINT "version_tiles_coordinate_check" CHECK(typeof("version_tiles"."tile_x") = 'integer' AND typeof("version_tiles"."tile_y") = 'integer'
+        AND "version_tiles"."tile_x" BETWEEN 0 AND 2047
+        AND "version_tiles"."tile_y" BETWEEN 0 AND 2047)
 );
 --> statement-breakpoint
 CREATE INDEX `version_tiles_tile_idx` ON `version_tiles` (`tile_x`,`tile_y`);

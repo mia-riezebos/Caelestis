@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "6d405ab0-4b28-4c2c-bed3-a19d496f8f6c",
+  "id": "28c0875d-5e62-4da9-b60b-17c2143b34e4",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -420,7 +420,7 @@
         },
         "template_versions_pixel_bounds_check": {
           "name": "template_versions_pixel_bounds_check",
-          "value": "\"template_versions\".\"min_x\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"min_y\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"max_x\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"max_y\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"min_x\" <> \"template_versions\".\"max_x\"\n        AND \"template_versions\".\"min_y\" < \"template_versions\".\"max_y\"\n        AND \"template_versions\".\"total_pixels\" >= 0"
+          "value": "typeof(\"template_versions\".\"min_x\") = 'integer' AND typeof(\"template_versions\".\"min_y\") = 'integer'\n        AND typeof(\"template_versions\".\"max_x\") = 'integer' AND typeof(\"template_versions\".\"max_y\") = 'integer'\n        AND typeof(\"template_versions\".\"total_pixels\") = 'integer'\n        AND \"template_versions\".\"min_x\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"min_y\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"max_x\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"max_y\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"min_x\" <> \"template_versions\".\"max_x\"\n        AND \"template_versions\".\"min_y\" < \"template_versions\".\"max_y\"\n        AND \"template_versions\".\"total_pixels\" >= 0"
         },
         "template_versions_bounds_range_check": {
           "name": "template_versions_bounds_range_check",
@@ -571,6 +571,10 @@
         "tile_history_resolution_s_check": {
           "name": "tile_history_resolution_s_check",
           "value": "\"tile_history\".\"resolution_s\" IN (0, 3600, 21600, 86400)"
+        },
+        "tile_history_coordinate_check": {
+          "name": "tile_history_coordinate_check",
+          "value": "typeof(\"tile_history\".\"tile_x\") = 'integer' AND typeof(\"tile_history\".\"tile_y\") = 'integer'\n        AND \"tile_history\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"tile_history\".\"tile_y\" BETWEEN 0 AND 2047"
         }
       }
     },
@@ -645,7 +649,7 @@
       "checkConstraints": {
         "version_tiles_coordinate_check": {
           "name": "version_tiles_coordinate_check",
-          "value": "\"version_tiles\".\"tile_x\" BETWEEN 0 AND 2047 AND \"version_tiles\".\"tile_y\" BETWEEN 0 AND 2047"
+          "value": "typeof(\"version_tiles\".\"tile_x\") = 'integer' AND typeof(\"version_tiles\".\"tile_y\") = 'integer'\n        AND \"version_tiles\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"version_tiles\".\"tile_y\" BETWEEN 0 AND 2047"
         }
       }
     }

@@ -201,6 +201,19 @@ export const Manifest = ManifestStruct.pipe(
       'a template may contain at most one chunk for each tile',
     ),
     booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      // x wraps, so a bounding box with minX > maxX spans the antimeridian and covers TWO x ranges.
+      // A sort-and-sweep over minX silently misses those: two fully-overlapping wrapped templates
+      // both start high and end low, so the early break skips the comparison entirely. Splitting
+      // into non-wrapping intervals first makes the comparison ordinary again.
+      const xRanges = ({
+        minX,
+        maxX,
+      }: {
+        minX: number
+        maxX: number
+      }): ReadonlyArray<readonly [number, number]> =>
+        minX < maxX ? [[minX, maxX] as const] : [[minX, WORLD_PIXELS] as const, [0, maxX] as const]
+
       const groups = new Map<string, Array<Schema.Schema.Type<typeof Template>>>()
       for (const template of manifest.templates) {
         const group = groups.get(template.nodeId)
@@ -208,14 +221,19 @@ export const Manifest = ManifestStruct.pipe(
         else group.push(template)
       }
       for (const group of groups.values()) {
-        group.sort((left, right) => left.bbox.minX - right.bbox.minX)
         for (let leftIndex = 0; leftIndex < group.length; leftIndex += 1) {
           const left = group[leftIndex]
           if (left === undefined) continue
           for (let rightIndex = leftIndex + 1; rightIndex < group.length; rightIndex += 1) {
             const right = group[rightIndex]
-            if (right === undefined || right.bbox.minX >= left.bbox.maxX) break
-            if (right.bbox.minY < left.bbox.maxY && left.bbox.minY < right.bbox.maxY) return false
+            if (right === undefined) continue
+            if (!(right.bbox.minY < left.bbox.maxY && left.bbox.minY < right.bbox.maxY)) continue
+            const overlapsX = xRanges(left.bbox).some(([leftStart, leftEnd]) =>
+              xRanges(right.bbox).some(
+                ([rightStart, rightEnd]) => rightStart < leftEnd && leftStart < rightEnd,
+              ),
+            )
+            if (overlapsX) return false
           }
         }
       }
