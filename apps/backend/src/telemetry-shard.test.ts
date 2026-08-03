@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +10,10 @@ import { MemoryCounterStore } from './adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from './adapters/memory/memory-sql-store.js'
 import {
   type CounterDelta,
+  EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
+  FLUSHABLE_AFTER_SECONDS,
+  MAX_COUNTER_DELTAS_PER_RECORD,
   RESOLUTION_SECONDS,
   type TelemetryBucket,
 } from './ports/index.js'
@@ -75,6 +79,9 @@ class SqliteSqlStorageCursor<T extends LocalRow> implements Iterable<T> {
 }
 
 class SqliteDurableObjectStorage {
+  private static readonly insideGate = new AsyncLocalStorage<symbol>()
+  private transactionDepth = 0
+  private gate: symbol | null = null
   readonly sql: SqlStorage
   private alarmAt: number | null = null
 
@@ -91,6 +98,7 @@ class SqliteDurableObjectStorage {
   }
 
   async getAlarm(): Promise<number | null> {
+    this.assertUngated()
     return this.alarmAt
   }
 
@@ -104,22 +112,62 @@ class SqliteDurableObjectStorage {
   }
 
   async setAlarm(scheduledTime: number | Date): Promise<void> {
+    this.assertUngated()
     this.alarmAt = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime
   }
 
   async deleteAlarm(): Promise<void> {
+    this.assertUngated()
     this.alarmAt = null
   }
 
+  /**
+   * The runtime nests these — an inner transactionSync rolls back to where it started without
+   * discarding the outer one's work. A plain BEGIN/COMMIT fake throws on the inner call, so it
+   * would reject code the runtime accepts. Savepoints past depth zero reproduce it.
+   */
   transactionSync<T>(closure: () => T): T {
-    this.database.exec('BEGIN IMMEDIATE')
+    this.assertUngated()
+    const savepoint = `wts_txn_${this.transactionDepth}`
+    this.database.exec(this.transactionDepth === 0 ? 'BEGIN IMMEDIATE' : `SAVEPOINT ${savepoint}`)
+    this.transactionDepth += 1
     try {
       const result = closure()
-      this.database.exec('COMMIT')
+      this.transactionDepth -= 1
+      this.database.exec(this.transactionDepth === 0 ? 'COMMIT' : `RELEASE ${savepoint}`)
       return result
     } catch (error) {
-      this.database.exec('ROLLBACK')
+      this.transactionDepth -= 1
+      this.database.exec(this.transactionDepth === 0 ? 'ROLLBACK' : `ROLLBACK TO ${savepoint}`)
       throw error
+    }
+  }
+
+  /**
+   * Run `callback` as the sole permitted user of this storage. Membership is tracked by async
+   * context rather than a flag, so the callback's own continuations after an `await` still count as
+   * inside while anything else does not.
+   */
+  async whileGated<T>(callback: () => Promise<T>): Promise<T> {
+    const token = Symbol('block')
+    this.gate = token
+    try {
+      return await SqliteDurableObjectStorage.insideGate.run(token, callback)
+    } finally {
+      if (this.gate === token) this.gate = null
+    }
+  }
+
+  /** Run `body` outside any gate's async context, so a gated storage rejects it. */
+  static outsideAnyGate<T>(body: () => T): T {
+    return SqliteDurableObjectStorage.insideGate.exit(body)
+  }
+
+  private assertUngated(): void {
+    if (this.gate !== null && SqliteDurableObjectStorage.insideGate.getStore() !== this.gate) {
+      throw new Error(
+        'storage touched during blockConcurrencyWhile; the runtime would have deferred it',
+      )
     }
   }
 
@@ -140,6 +188,7 @@ class SqliteDurableObjectStorage {
     query: string,
     bindings: readonly SqliteBinding[],
   ): SqlStorageCursor<T> {
+    this.assertUngated()
     const statements = query
       .split(';')
       .map((statement) => statement.trim())
@@ -171,9 +220,16 @@ class SqliteDurableObjectState {
 
   constructor(readonly storage: SqliteDurableObjectStorage) {}
 
+  /**
+   * The runtime defers every other request until the callback settles. A fake that merely runs the
+   * callback is *permissive*: a test could reach the shard mid-migration and pass, where the real
+   * runtime would never have delivered that call. Rather than half-model the deferral, the storage
+   * is gated so any such call throws — a fake that is wrong in the strict direction fails loudly
+   * instead of manufacturing confidence.
+   */
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
-    const pending = callback()
-    this.blocked = pending
+    const pending = this.storage.whileGated(callback)
+    this.blocked = pending.catch(() => undefined)
     return pending
   }
 
@@ -315,11 +371,110 @@ afterEach(() => {
   for (const harness of liveHarnesses.splice(0)) harness.close()
 })
 
+/**
+ * Fails the twin's writes in lockstep with the fake D1's, so the failure path is compared rather
+ * than merely verified twice. `before-commit` loses the write; `after-commit` lands it and loses
+ * only the acknowledgement, which is the mode that leaves the time series ahead of retained.
+ */
+class FailableMemorySqlStore extends MemorySqlStore {
+  private failAt: 'before-commit' | 'after-commit' | null = null
+
+  failNextBatchAt(failAt: 'before-commit' | 'after-commit'): void {
+    this.failAt = failAt
+  }
+
+  override async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
+    const failAt = this.failAt
+    this.failAt = null
+    if (failAt === 'before-commit') throw new Error('memory twin: write rejected')
+    await super.appendBuckets(buckets)
+    if (failAt === 'after-commit') throw new Error('memory twin: acknowledgement lost')
+  }
+}
+
+describe('the Durable Object fake', () => {
+  // Every claim the shard tests make rests on this fake. If its transaction or concurrency
+  // semantics are wrong, a green suite is evidence of nothing, so the substrate is tested directly.
+
+  it('rolls the whole transaction back when the closure throws', async () => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    const before = harness.storage.outstandingRowCount()
+
+    expect(() =>
+      harness.storage.transactionSync(() => {
+        harness.storage.sql.exec('DELETE FROM pending_counters')
+        throw new Error('abort')
+      }),
+    ).toThrow('abort')
+
+    expect(harness.storage.outstandingRowCount()).toBe(before)
+  })
+
+  it('nests transactions, rolling the inner one back without discarding the outer', async () => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+
+    harness.storage.transactionSync(() => {
+      harness.storage.sql.exec(
+        `INSERT INTO pending_counters (template_id, bucket_start_s, placed, correct, repairs)
+         VALUES ('outer', 60, 1, 1, 0)`,
+      )
+      expect(() =>
+        harness.storage.transactionSync(() => {
+          harness.storage.sql.exec(
+            `INSERT INTO pending_counters (template_id, bucket_start_s, placed, correct, repairs)
+             VALUES ('inner', 60, 1, 1, 0)`,
+          )
+          throw new Error('inner abort')
+        }),
+      ).toThrow('inner abort')
+    })
+
+    await expect(harness.shard.readPending(['outer', 'inner'])).resolves.toEqual([
+      { templateId: 'outer', placed: 1, correct: 1, repairs: 0, flushedAt: null },
+      { templateId: 'inner', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+    ])
+  })
+
+  it('refuses storage access while blockConcurrencyWhile is outstanding', async () => {
+    // The runtime defers such a call rather than rejecting it, but a fake that simply allowed it
+    // would let a test observe a half-migrated shard and call that a pass.
+    const harness = await makeHarness(millis(150_000))
+    let observed: unknown = null
+
+    await harness.state.blockConcurrencyWhile(async () => {
+      // Inside the callback's own async context the storage is reachable, before and after an await.
+      harness.storage.sql.exec('SELECT 1')
+      await Promise.resolve()
+      harness.storage.sql.exec('SELECT 1')
+      // Anything outside it is not.
+      observed = await Promise.resolve().then(() =>
+        SqliteDurableObjectStorage.outsideAnyGate(() => {
+          try {
+            harness.storage.sql.exec('SELECT 1')
+            return 'permitted'
+          } catch (error) {
+            return (error as Error).message
+          }
+        }),
+      )
+    })
+
+    expect(observed).toMatch(/the runtime would have deferred it/)
+    harness.storage.sql.exec('SELECT 1')
+  })
+})
+
 describe('TelemetryShard', () => {
   it('stays observationally identical to MemoryCounterStore after every operation', async () => {
     const clock = { now: millis(10_000_000) }
     const shard = await makeHarness(clock)
-    const memorySql = new MemorySqlStore()
+    const memorySql = new FailableMemorySqlStore()
     const memory = new MemoryCounterStore(memorySql, () => clock.now)
     const templateIds = ['template-a', 'template-b', 'missing']
 
@@ -328,6 +483,7 @@ describe('TelemetryShard', () => {
         await memory.readPending(templateIds),
       )
       expect(await shard.shard.readDroppedLateCount()).toBe(await memory.readDroppedLateCount())
+      expect(await shard.shard.readFlushFailureCount()).toBe(await memory.readFlushFailureCount())
       expect(await shard.nextAlarmAt()).toBe(memory.nextAlarmAt())
       expect(shard.d1Buckets()).toEqual(
         await memorySql.readBuckets({
@@ -357,6 +513,21 @@ describe('TelemetryShard', () => {
     await shard.deliverAlarm()
     await memory.alarm()
     await assertParity()
+
+    await shard.deliverAlarm()
+    await memory.alarm()
+    await assertParity()
+
+    // Both failure modes, driven through both implementations at once. Verified separately these
+    // only prove each side is self-consistent; driven together they prove the backoffs, the retained
+    // rows and the failure counters have not drifted apart.
+    for (const failAt of ['before-commit', 'after-commit'] as const) {
+      shard.d1.failNextBatchAt(failAt)
+      memorySql.failNextBatchAt(failAt)
+      await shard.deliverAlarm()
+      await memory.alarm()
+      await assertParity()
+    }
 
     await shard.deliverAlarm()
     await memory.alarm()
@@ -400,6 +571,35 @@ describe('TelemetryShard', () => {
     await memory.record(expired)
     await assertParity()
   }, 30_000)
+
+  it('schedules the alarm for when the next bucket becomes flushable, not for now', async () => {
+    // Every other test freezes the clock at or past the flushable instant, so Math.max(now, ...)
+    // collapses to `now` and the arithmetic never matters. Here the clock sits well before it, so a
+    // dropped grace window, a dropped flushability check, or a seconds value branded as millis all
+    // produce a visibly wrong deadline. Getting this wrong re-arms for "now" while nothing is
+    // flushable, and the next alarm promotes nothing and re-arms again — an unbounded hot loop.
+    const occurredAt = seconds(9_000)
+    const harness = await makeHarness(millis(9_010_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt, placed: 4, correct: 3, repairs: 1 },
+    ])
+
+    const bucketStart = Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS
+    expect(await harness.nextAlarmAt()).toBe((bucketStart + FLUSHABLE_AFTER_SECONDS) * 1_000)
+  })
+
+  it('does not promote or re-arm for now while the bucket is still inside its grace window', async () => {
+    const harness = await makeHarness(millis(9_010_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(9_000), placed: 4, correct: 3, repairs: 1 },
+    ])
+
+    await harness.deliverAlarm()
+
+    // Nothing is flushable yet, so D1 stays empty and the next alarm is still the future deadline.
+    expect(harness.d1Buckets()).toEqual([])
+    expect(await harness.nextAlarmAt()).toBeGreaterThan(9_010_000)
+  })
 
   it('keeps the batch pending until D1 has committed', async () => {
     const harness = await makeHarness(millis(150_000))
@@ -452,6 +652,36 @@ describe('TelemetryShard', () => {
     ])
   })
 
+  it('absorbs a rewrite an hour after the bucket and drops one past the retention window', async () => {
+    // The literals are the point. RETENTION_SECONDS is a contract value — every implementation has
+    // to retain activity for the same span or a client's late report is absorbed by one and dropped
+    // by another. Expressed in derived constants this test would follow the constant anywhere,
+    // including to a value nobody chose, so the window is stated in absolute seconds here.
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    await harness.deliverAlarm()
+
+    // Bucket 60, retained for an hour past the 90s grace window: expiry is 60 + 90 + 3600 = 3750.
+    harness.clock.now = millis(3_700_000)
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 0 },
+    ])
+    await expect(harness.shard.readDroppedLateCount()).resolves.toBe(0)
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 2, correct: 1, repairs: 0, flushedAt: 150_000 },
+    ])
+
+    await harness.deliverAlarm()
+    harness.clock.now = millis(3_800_000)
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 1, correct: 1, repairs: 0 },
+    ])
+
+    await expect(harness.shard.readDroppedLateCount()).resolves.toBe(1)
+  })
+
   it('subtracts the retained total from a failed late-arrival rewrite', async () => {
     const harness = await makeHarness(millis(150_000))
     await harness.shard.record([
@@ -475,6 +705,84 @@ describe('TelemetryShard', () => {
         flushedAt: millis(150_000),
       },
     ])
+  })
+
+  it('keeps a retained row alive past its expiry while an unflushed batch still references it', async () => {
+    // retained_counters is what stops a late rewrite being counted twice: readPending reports
+    // batch - retained, because D1 already holds the retained portion. Prune it while the batch is
+    // still stalled and the subtraction loses its subtrahend, so live totals read history + the
+    // whole batch. Reachable during any D1 outage that outlasts RETENTION_SECONDS.
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    await harness.deliverAlarm()
+
+    harness.clock.now = millis(200_000)
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 0 },
+    ])
+    harness.d1.failNextBatchAt('before-commit')
+    await harness.deliverAlarm()
+
+    // Push the clock well past the bucket's expiry with the batch still owed, so the prune runs
+    // against a row that flush_batch is the only remaining reference to.
+    const bucketStart = 60
+    harness.clock.now = millis((bucketStart + EXPIRES_AFTER_SECONDS + 600) * 1_000)
+    harness.d1.failNextBatchAt('before-commit')
+    await harness.deliverAlarm()
+
+    // 4 in D1 plus 2 still pending is the 6 that was accepted. Losing the retained row reads 10.
+    expect(sumBuckets(harness.d1Buckets())).toEqual({ placed: 4, correct: 3, repairs: 1 })
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 2, correct: 1, repairs: 0, flushedAt: 150_000 },
+    ])
+  })
+
+  it('drops deltas past MAX_COUNTER_DELTAS_PER_RECORD rather than writing them', async () => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record(
+      Array.from({ length: MAX_COUNTER_DELTAS_PER_RECORD + 5 }, () => ({
+        templateId: 'template-a',
+        occurredAt: seconds(100),
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      })),
+    )
+
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: MAX_COUNTER_DELTAS_PER_RECORD,
+        correct: MAX_COUNTER_DELTAS_PER_RECORD,
+        repairs: 0,
+        flushedAt: null,
+      },
+    ])
+    await expect(harness.shard.readDroppedLateCount()).resolves.toBe(5)
+  })
+
+  it('does not pull a pending retry forward when unrelated traffic arrives during an outage', async () => {
+    // scheduleNextAlarm runs on every record and every readPending. If it overwrote a future
+    // backoff deadline with `now`, a read during a D1 outage would collapse the backoff into an
+    // alarm loop that hammers the failing D1 once per request.
+    const harness = await makeHarness(millis(100_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    harness.clock.now = millis(200_000)
+    harness.d1.failNextBatchAt('before-commit')
+    await harness.deliverAlarm()
+    const backoffAt = await harness.nextAlarmAt()
+    expect(backoffAt).toBeGreaterThan(200_000)
+
+    await harness.shard.readPending(['template-a'])
+    await harness.shard.record([
+      { templateId: 'template-b', occurredAt: seconds(200), placed: 1, correct: 1, repairs: 0 },
+    ])
+
+    expect(await harness.nextAlarmAt()).toBe(backoffAt)
   })
 
   it('flushes chunks in the same template-first order as the memory adapter', async () => {

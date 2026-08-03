@@ -136,6 +136,17 @@ describe('tile and template schemas', () => {
     expect(Schema.decodeUnknownSync(Template)(template)).toEqual(template)
   })
 
+  it('rejects zero as a bounding-box maximum, so the seam has one encoding', () => {
+    // A span ending on the seam is WORLD_PIXELS. Admitting 0 as well would let the wire accept a
+    // bbox that template_versions_pixel_bounds_check then refuses to store.
+    // Only x is asserted: `minY < maxY` already rejects maxY = 0, so a y case here would pass with
+    // the bound deleted and claim cover it does not have.
+    expectRejected(Template, {
+      ...validTemplate,
+      bbox: { minX: 2_047_000, minY: 0, maxX: 0, maxY: 1_000 },
+    })
+  })
+
   it('rejects a zero-area bounding box', () => {
     expectRejected(Template, {
       ...validTemplate,
@@ -219,17 +230,36 @@ describe('PaintEvent', () => {
     expectRejected(PaintEvent, { ...validEvent, painted: 2 })
   })
 
-  it('rejects painted counts above the counter-store guardrail', () => {
-    // Must submit MORE pixels than `painted`, or the `painted <= submitted` filter does the
-    // rejecting and this test passes with the guardrail deleted.
+  it('caps the pixels submitted across the whole event, not merely per tile', () => {
+    // The per-tile cap bounds nothing on its own: MAX_PAINT_TILES tiles at the per-tile cap is a
+    // ten-billion-pixel payload. `painted` is well within its own bound here, so only the total
+    // can do the rejecting.
     const values = Array.from({ length: 100_000 }, () => 0)
     expectRejected(PaintEvent, {
       ...validEvent,
       tiles: [
         { x: 0, y: 0, pixels: { x: values, y: values, colors: values } },
-        { x: 1, y: 0, pixels: { x: values, y: values, colors: values } },
+        { x: 1, y: 0, pixels: { x: [0], y: [0], colors: [0] } },
       ],
-      painted: 100_001,
+      painted: 1,
+    })
+  })
+
+  it('accepts an event submitting exactly the pixel total', () => {
+    const values = Array.from({ length: 100_000 }, () => 0)
+    const event = {
+      ...validEvent,
+      tiles: [{ x: 0, y: 0, pixels: { x: values, y: values, colors: values } }],
+      painted: 100_000,
+    }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
+  it('rejects a tile carrying no pixels', () => {
+    // Without this, MAX_PAINT_TILES empty entries are a legal payload that reports nothing.
+    expectRejected(PaintEvent, {
+      ...validEvent,
+      tiles: [...validEvent.tiles, { x: 5, y: 5, pixels: { x: [], y: [], colors: [] } }],
     })
   })
 

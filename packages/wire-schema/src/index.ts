@@ -14,7 +14,15 @@ const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
 const MAX_TEMPLATE_CHUNKS = MAX_MANIFEST_TILES
 const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000
-const MAX_PAINT_TILES = WORLD_TILES * WORLD_TILES
+/**
+ * Deliberately redundant, and only meaningful as a cost bound. The PaintEvent filters below already
+ * force every tile to carry a pixel and the event as a whole to stay within MAX_PAINTED_PIXELS, so
+ * the tile count cannot exceed that on semantics alone — mutating this constant changes no
+ * accept/reject outcome and no test pins it. What it does is stop the decoder validating four
+ * million tile structs before the filters get a chance to reject the payload, which the previous
+ * WORLD_TILES-squared value did not.
+ */
+const MAX_PAINT_TILES = 100_000
 /**
  * Both mirror `MAX_COUNTER_DELTA_VALUE` in `apps/backend/src/ports/counter-store.ts`, which cannot be
  * imported here — the wire package must not depend on the backend. `counter-store.ts` says "derive,
@@ -110,8 +118,14 @@ const TileKey = Schema.declare<Shared.TileKey>(
 const BoundingBoxStruct = Schema.Struct({
   minX: integerBetween(0, WORLD_PIXELS - 1),
   minY: integerBetween(0, WORLD_PIXELS - 1),
-  maxX: integerBetween(0, WORLD_PIXELS),
-  maxY: integerBetween(0, WORLD_PIXELS),
+  // The exclusive end runs 1..WORLD_PIXELS, not 0..WORLD_PIXELS. A span ending exactly on the seam
+  // is WORLD_PIXELS; allowing 0 as well would give that one span two encodings that compare
+  // unequal, and the SQL CHECK on template_versions.max_x only accepts one of them — so a bbox the
+  // wire admitted would fail to persist. One representation, agreed on both sides.
+  maxX: integerBetween(1, WORLD_PIXELS),
+  // Stated for symmetry with the SQL CHECK; the `minY < maxY` filter below already implies it,
+  // since minY cannot be negative.
+  maxY: integerBetween(1, WORLD_PIXELS),
 })
 
 /**
@@ -281,9 +295,15 @@ export const PaintEvent = PaintEventStruct.pipe(
   Schema.check(
     booleanFilter(
       (event: Schema.Schema.Type<typeof PaintEventStruct>) =>
-        event.painted <= event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0),
-      'painted must not exceed the number of submitted pixels',
+        event.tiles.every((tile) => tile.pixels.x.length > 0),
+      'every submitted tile must carry at least one pixel',
     ),
+    // Without a total, the per-tile cap bounds nothing: MAX_PAINT_TILES tiles each holding
+    // MAX_PAINT_PIXELS_PER_TILE pixels is a ten-billion-pixel payload the schema would accept.
+    booleanFilter((event: Schema.Schema.Type<typeof PaintEventStruct>) => {
+      const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
+      return submitted <= MAX_PAINTED_PIXELS && event.painted <= submitted
+    }, `painted must not exceed the submitted pixels, of which there may be at most ${MAX_PAINTED_PIXELS}`),
   ),
 )
 

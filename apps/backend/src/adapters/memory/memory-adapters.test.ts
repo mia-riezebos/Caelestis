@@ -761,7 +761,7 @@ describe('memory adapters', () => {
     ])
   })
 
-  it('flushes a template-first sorted chunk across bucket starts (the Durable Object is unverified — see #27)', async () => {
+  it('flushes a template-first sorted chunk across bucket starts', async () => {
     const nowSeconds = 10_000
     const batches: TelemetryBucket[][] = []
     const sql: SqlStore = {
