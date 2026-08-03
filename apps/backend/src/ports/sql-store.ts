@@ -30,10 +30,11 @@ export interface BucketQuery {
 
 export interface SqlStore {
   /**
-   * Append folded buckets.
+   * Write full folded bucket totals with replace semantics.
    *
-   * Idempotent on `(templateId, resolution, bucketStart)` — a retried flush must not double-count,
-   * and the DO alarm is exactly the kind of thing that retries.
+   * Idempotent on `(templateId, resolution, bucketStart)` — a retried flush must not double-count.
+   * A retained bucket may be rewritten after a late arrival, but the value is always its new
+   * cumulative total, never an increment.
    */
   appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void>
 

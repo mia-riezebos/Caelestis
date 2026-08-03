@@ -6,18 +6,53 @@
  * Postgres delivers the same thing through row-level atomicity. Neither is more exact than the
  * other, so nothing degrades when this is ported.
  *
- * Flushing to the time series is deliberately **not** in this interface. That it happens on a 1m
- * alarm, and that empty buckets are skipped, is an implementation detail of the Cloudflare adapter.
- * Callers only ever promise to record and to read.
+ * Flushing to the time series is deliberately **not** in this interface. The bucket resolution,
+ * grace period, and retention window are contract values because every implementation must assign
+ * and retain activity identically; alarms remain an adapter detail.
  */
 
+export const RESOLUTION_SECONDS = 60
+export const GRACE_SECONDS = 30
+export const RETENTION_SECONDS = 3_600
+
+/**
+ * Derived windows, exported so every implementation and the validator share one definition.
+ *
+ * These were previously recomputed in three places and agreed only by coincidence. If the validator's
+ * notion of "expired" drifts from the store's by even a second, it accepts a bucket whose retained
+ * row has already been pruned — and the promotion join then writes only the late portion, which D1's
+ * replace semantics turn into a silent undercount. Derive, never restate.
+ */
+export const FLUSHABLE_AFTER_SECONDS = RESOLUTION_SECONDS + GRACE_SECONDS
+export const EXPIRES_AFTER_SECONDS = FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS
+
+/** Per-delta guardrail; a full Wplace charge drain is only around 10,000 pixels. */
+export const MAX_COUNTER_DELTA_VALUE = 100_000
+
+/** Prevent unbounded identifiers from creating permanent rows in the shared stores. */
+export const MAX_TEMPLATE_ID_LENGTH = 64
+
+/** Bound synchronous validation and writes on the single global counter shard. */
+export const MAX_COUNTER_DELTAS_PER_RECORD = 1_000
+
+/** D1's free plan allows 50 queries per invocation; leave headroom for transaction overhead. */
+export const FLUSH_BATCH_LIMIT = 40
+
 export interface CounterDelta {
+  /** Non-empty template identifier. */
   readonly templateId: string
-  /** Pixels painted, whether or not they matched the template. */
+  /**
+   * Safe-integer Unix seconds when the paint happened. This must be the true event time, not the
+   * time the caller happened to report it. At record time it must be no later than
+   * `now + GRACE_SECONDS`. Before its minute bucket expires, matching local pending, flush-batch,
+   * or retained state may absorb a cumulative rewrite. The exact expiry instant is exclusive.
+   */
+  readonly occurredAt: number
+  /** Non-negative integer no greater than MAX_COUNTER_DELTA_VALUE. */
   readonly placed: number
-  /** Of those, pixels that matched the template's colour at that coordinate. */
+  /** Non-negative integer no greater than placed. */
   readonly correct: number
-  /** Of the correct ones, pixels that were wrong before this paint — cleanup, not fresh fill. */
+  /** Non-negative integer no greater than correct. */
   readonly repairs: number
 }
 
@@ -31,7 +66,11 @@ export interface CounterDelta {
  * live total = time-series history (SqlStore) + pending (CounterStore)
  * ```
  */
-export interface PendingCounters extends CounterDelta {
+export interface PendingCounters {
+  readonly templateId: string
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
   /** When this shard last folded a bucket into the time series, or null if it never has. */
   readonly flushedAt: number | null
 }
@@ -44,4 +83,7 @@ export interface CounterStore {
    * Returns one entry per requested id, zeroed where there has been no activity.
    */
   readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]>
+
+  /** Number of deltas rejected as invalid or expired without any matching local bucket state. */
+  readDroppedLateCount(): Promise<number>
 }

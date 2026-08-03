@@ -48,6 +48,10 @@ updated until v1 actually runs.
   Cloudflare behind three port interfaces, `wrangler dev` locally, vitest against in-memory adapters.
 - [Rendering model](issues/05-rendering-model.md) — tile-fetch interception, culling by tile-index
   lookup, viewing modes as one `{shape, size, anchor, opacity}` parameterisation.
+- [Bucket attribution by event time](issues/22-bucket-attribution-by-event-time.md) — counters are
+  bucketed by event time, not flush time; only buckets closed past a 30s grace are flushed; flushed
+  buckets are retained an hour so a late arrival rewrites the cumulative total; past that, dropped
+  and counted. Hardened across a four-cycle review loop — see PR #26.
 - [Runtime & storage platform](issues/11-runtime-and-storage-platform.md) — Cloudflare Workers + R2
   + D1 + DO, with three narrow seams kept for a later port. D1 is the system of record and holds
   every ladder tier; the DO is a write-absorption buffer for live counters and sub-1m data.

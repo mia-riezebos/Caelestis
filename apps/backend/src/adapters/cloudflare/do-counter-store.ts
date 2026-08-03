@@ -17,4 +17,8 @@ export class DurableObjectCounterStore implements CounterStore {
   async readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]> {
     return this.shard.readPending(templateIds)
   }
+
+  async readDroppedLateCount(): Promise<number> {
+    return this.shard.readDroppedLateCount()
+  }
 }
