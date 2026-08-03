@@ -1013,6 +1013,32 @@ describe('TelemetryShard', () => {
     await expect(harness.shard.readDroppedLateCount()).resolves.toBe(5)
   })
 
+  it('reads a template group larger than one SQLite parameter batch', async () => {
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-777', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    const templateIds = Array.from({ length: 1_200 }, (_, index) => `template-${index}`)
+
+    const result = await harness.shard.readPending(templateIds)
+
+    expect(result).toHaveLength(1_200)
+    expect(result[777]).toEqual({
+      templateId: 'template-777',
+      placed: 4,
+      correct: 3,
+      repairs: 1,
+      flushedAt: null,
+    })
+    expect(result[1_199]).toEqual({
+      templateId: 'template-1199',
+      placed: 0,
+      correct: 0,
+      repairs: 0,
+      flushedAt: null,
+    })
+  })
+
   it('does not pull a pending retry forward when unrelated traffic arrives during an outage', async () => {
     // scheduleNextAlarm runs on every record and every readPending. If it overwrote a future
     // backoff deadline with `now`, a read during a D1 outage would collapse the backoff into an

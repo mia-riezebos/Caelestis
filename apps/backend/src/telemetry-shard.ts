@@ -15,6 +15,9 @@ import {
 
 const INITIAL_FLUSH_RETRY_DELAY_MILLISECONDS = 1_000
 const MAX_FLUSH_RETRY_DELAY_MILLISECONDS = 60_000
+// The counters query binds every id twice. Stay below SQLite's conservative 999-variable default,
+// not merely workerd's current higher limit, so large manifest groups remain portable.
+const READ_PENDING_CHUNK_SIZE = 400
 
 const flushRetryDelay = (failureCount: number): number =>
   Math.min(
@@ -136,10 +139,14 @@ export class TelemetryShard extends DurableObject<Env> {
     await this.scheduleNextAlarm(this.clock())
     if (templateIds.length === 0) return []
 
-    const placeholders = templateIds.map(() => '?').join(', ')
-    const counters = this.ctx.storage.sql
-      .exec<CounterRow>(
-        `
+    const countersByTemplate = new Map<string, CounterRow>()
+    const flushedAtByTemplate = new Map<string, Millis>()
+    for (let offset = 0; offset < templateIds.length; offset += READ_PENDING_CHUNK_SIZE) {
+      const chunk = templateIds.slice(offset, offset + READ_PENDING_CHUNK_SIZE)
+      const placeholders = chunk.map(() => '?').join(', ')
+      const counters = this.ctx.storage.sql
+        .exec<CounterRow>(
+          `
           SELECT
             template_id,
             0 AS bucket_start_s,
@@ -164,22 +171,23 @@ export class TelemetryShard extends DurableObject<Env> {
           )
           GROUP BY template_id
         `,
-        ...templateIds,
-        ...templateIds,
-      )
-      .toArray()
-    const metadata = this.ctx.storage.sql
-      .exec<FlushedAtRow>(
-        `
+          ...chunk,
+          ...chunk,
+        )
+        .toArray()
+      const metadata = this.ctx.storage.sql
+        .exec<FlushedAtRow>(
+          `
           SELECT template_id, flushed_at
           FROM counter_meta
           WHERE template_id IN (${placeholders})
         `,
-        ...templateIds,
-      )
-      .toArray()
-    const countersByTemplate = new Map(counters.map((row) => [row.template_id, row]))
-    const flushedAtByTemplate = new Map(metadata.map((row) => [row.template_id, row.flushed_at]))
+          ...chunk,
+        )
+        .toArray()
+      for (const row of counters) countersByTemplate.set(row.template_id, row)
+      for (const row of metadata) flushedAtByTemplate.set(row.template_id, row.flushed_at)
+    }
 
     return templateIds.map((templateId) => {
       const row = countersByTemplate.get(templateId)
