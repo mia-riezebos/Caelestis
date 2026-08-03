@@ -15,12 +15,24 @@ pull Effect in because it never depends on the package that contains it.
 
 ## D1 tables (Drizzle, `sqliteTable`)
 
-**?** Identifiers are `text` UUIDv7 — sortable by creation, no coordination, safe to expose since a
-server is single-tenant. Alternative is integer autoincrement plus opaque public ids, which is more
-machinery than a self-hosted server needs.
+**Identifiers: `text` UUIDv7.** Close call against nanoid. The only place ordering earns anything is
+`template_versions`, where "newest first" comes free from primary-key order rather than needing
+`created_at` plus an index plus tie-breaking. Everything else is indifferent, and 36 chars against 21
+is cosmetic when ids live in API paths rather than anything a person types. The usual objection —
+v7 leaks creation time — is moot when `created_at_ms` sits in the same row. Mixing the two schemes
+would be worse than either.
 
-**?** All timestamps are integer **unix seconds**, matching `CounterDelta.occurredAt`. Mixing seconds
-and milliseconds is how the bucket-attribution bug happened; one unit everywhere.
+**Timestamps: split by kind, with the unit in the column name.**
+
+- **Domain time** — `occurred_at_s`, `bucket_start` — is **seconds**. It gets floored to 60s on
+  arrival, so millisecond precision is discarded immediately.
+- **Bookkeeping time** — `created_at_ms`, `observed_at_ms`, `revoked_at_ms` — is **milliseconds**,
+  because ordering, last-write-wins and tie-breaking all need it. Two versions created in the same
+  second would otherwise tie.
+
+The lesson from the bucket-attribution bug was not "one unit everywhere" — it was that the unit lived
+in a comment. Naming the column `_s` or `_ms` makes it unmissable at the call site, which is where it
+went wrong.
 
 ### `nodes` — the group tree
 
@@ -65,27 +77,32 @@ total_pixels  integer not null                  -- non-transparent; progress den
 `templates.current_version_id` is nullable so a version can be uploaded before being made current —
 which is what a draft is, without needing a separate concept.
 
-### `version_chunks` — the sliced template
+### `version_tiles` — the sliced template, one full tile per row
 
 ```
 version_id    text not null → template_versions.id
 tile_x        integer not null
 tile_y        integer not null
-offset_x      integer not null      -- tile-local
-offset_y      integer not null
-width         integer not null
-height        integer not null
 hash          text not null         -- sha256; R2 key chunks/{hash}.png
 primary key (version_id, tile_x, tile_y)
 ```
 
-Index on `(tile_x, tile_y)` — the hot query is "which current-version chunks cover this tile", asked
-on every paint classification and to build the manifest tile index.
+**Chunks are full tiles**, padded to `TILE_SIZE` with transparency — not cropped sub-rectangles. That
+removes `offset_x`, `offset_y`, `width`, `height` entirely. Blitting becomes a direct copy and
+classification becomes `bytes[y * TILE_SIZE + x]` with no rectangle arithmetic on either side.
 
-One row per tile per version, so an edit to one tile of a 1000-tile template writes 1000 rows.
-**?** Accepted: rows are tiny, and normalising further still needs one row per (version, tile).
+Storage barely moves: DEFLATE crushes runs of transparent pixels, so a sparse tile compresses to
+roughly what a cropped one did. The real cost is **decoded memory — 1 MB per tile, always** — so
+classifying a paint spanning three tiles holds 3 MB. Acceptable, but it bounds how large the
+decoded-tile cache can grow.
 
-**Chunk GC** is `SELECT hash FROM version_chunks` minus the R2 listing — safe only because versions
+Chunks are not versioned independently. A new version owns a whole tile set; if a version changes,
+the affected tiles are replaced wholesale.
+
+Index on `(tile_x, tile_y)` — the hot query is "which current-version tiles cover this tile", asked on
+every paint classification and to build the manifest tile index.
+
+**Chunk GC** is `SELECT hash FROM version_tiles` minus the R2 listing — safe only because versions
 are immutable.
 
 ### `invites`
@@ -111,16 +128,27 @@ primary key (template_id, resolution, bucket_start)
 ### `contributions` — leaderboard rollups
 
 ```
-username     text not null
-template_id  text not null → templates.id
-day          integer not null      -- unix seconds, floored to a day
+wplace_user_id  integer not null
+template_id     text not null → templates.id
+day_s           integer not null      -- unix seconds, floored to a day
 placed, correct, repairs   integer not null
-primary key (username, template_id, day)
+primary key (wplace_user_id, template_id, day_s)
 ```
 
-**?** Keyed by `username` rather than a user id, because identity comes from wplace's `/me` and the
-payload discipline forbids transmitting wplace user ids. A rename orphans history — accepted, or
-needs an explicit rename story.
+```
+painters
+  wplace_user_id  integer pk
+  display_name    text not null      -- refreshed on every report
+  seen_at_ms      integer not null
+```
+
+Identity is wplace's public display form, `Cyphex #3822673` — name plus the numeric user id. Stored
+as two columns rather than the composite string, so a **rename updates a label instead of orphaning
+that person's entire history** under a dead key.
+
+**Amends the payload-discipline rule**, which said the userscript never transmits wplace user ids.
+The justification is that wplace displays `name#id` publicly itself, so it is not sensitive — but it
+is a real relaxation and is recorded here rather than happening quietly.
 
 ### `tile_history` — the mirror timeline
 
@@ -150,6 +178,6 @@ thing TypeScript cannot express is caught at the boundary where it matters.
 
 ## Deliberately absent
 
-- No `users` table. Identity is wplace's; we store a username string.
+- No accounts of our own. `painters` is a label cache for wplace's identity, not a user table.
 - No `templates.version` integer. The version *is* `current_version_id`.
 - No soft deletes yet.
