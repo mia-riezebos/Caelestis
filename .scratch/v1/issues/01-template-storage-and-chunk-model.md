@@ -55,3 +55,50 @@ distinct. Cache the decoded `Uint8Array` of indices per chunk — it is re-read 
 
 Fallback if a browser still misbehaves: inflate the PNG directly (pako) to read true PLTE indices.
 Heavier, exact, only if needed.
+
+## Amendment — 2026-08-03: the server quantises on ingest
+
+**Reverses this ticket's original rule** that uploads must arrive palette-conformant and are rejected
+otherwise.
+
+The trigger: a real `.wplace` file carries ±2 per-channel deviation from a colour-management or
+canvas-readback artefact upstream (see `28-native-wplace-format`). Under the original rule it would be
+rejected despite being, in substance, a correctly quantised image.
+
+**New behaviour: every non-transparent pixel is mapped to its nearest wplace palette colour in RGBA
+space. No dithering, no threshold, no rejection.**
+
+### What this gives up, stated plainly
+
+The reject rule existed so a malformed template could not poison every connected client's overlay.
+That guarantee is gone: a photograph now uploads successfully and produces a conformant-looking but
+meaningless template.
+
+Partial replacement — **the upload response reports what happened** rather than gating on it: share of
+pixels moved, mean and max distance moved, and the resulting distinct-colour count. An uploader who
+sees "94% of pixels moved, mean distance 31" knows immediately that something is wrong, without the
+server refusing on their behalf.
+
+For reference, the observed artefact sits at: 99.985% of pixels within distance 2, worst case 4. The
+palette's own closest pair is 8 apart (`#948C6B` vs `#9C846B`), so anything past 4 is ambiguous by
+construction.
+
+### Alpha
+
+wplace has no partial transparency — a pixel is painted or it is not. **?** Alpha ≥ 128 quantises to a
+palette colour; below that becomes fully transparent. Named here because "quantise in RGBA space" does
+not by itself say what happens to a half-transparent pixel, and silently averaging alpha into the
+distance metric would match opaque palette entries against translucent pixels.
+
+### Why this is affordable in a Worker
+
+Naively this is 4.16M pixels × 59 palette entries ≈ 245M distance computations for a single 1612×2584
+upload — far past any CPU budget.
+
+**Memoise by distinct colour.** Real images have very few: the observed file has 6,137, so the work is
+6,137 × 59 ≈ 362k comparisons, then one `Map` lookup per pixel. Three orders of magnitude cheaper, and
+it degrades gracefully — a genuine photograph has more distinct colours, but the cache still bounds
+the work at (distinct colours × palette size).
+
+A fixed 5-bit-per-channel lookup table was the obvious alternative and is worse here: it introduces up
+to ±4 of its own error before matching, which the palette's minimum separation of 8 cannot absorb.

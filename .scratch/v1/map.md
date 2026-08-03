@@ -94,8 +94,10 @@ rests on reasoning that only real behaviour can confirm.
   per-user contribution graphs. Explicitly deferred until v1 runs; returns as its own map. v1 still
   *captures* the data these need, and `packages/ui` is built to serve both hosts, so the frontend is
   deferred rather than designed out.
-- **Template creation and quantisation tooling** — a separate existing tool owns this. The server
-  validates that uploads are already palette-conformant and does not quantise.
+- **Template creation tooling** — a separate existing tool owns authoring. **Quantisation is no
+  longer out of scope**: as of 2026-08-03 the server quantises on ingest, mapping every pixel to the
+  nearest palette colour with no dithering and no rejection. See the amendment on
+  `01-template-storage-and-chunk-model`.
 - **Pixel-level attribution via wplace's pixel-info endpoint** — one request per pixel, so verifying
   anything meaningful would hit rate limits immediately and make us a bad neighbour. Attribution
   comes from self-reported paints; progress comes from tile diffs. Grief is *detected*, never
