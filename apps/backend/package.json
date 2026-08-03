@@ -6,17 +6,18 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx watch src/dev.ts",
+    "dev": "wrangler dev",
+    "test": "vitest run",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.0",
     "@wts/shared": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.114.0"
   }
 }

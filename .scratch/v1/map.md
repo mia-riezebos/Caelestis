@@ -44,6 +44,8 @@ updated until v1 actually runs.
   as ground-truth anchors and the only progress source, DO memory for live truth, time series on a decay ladder
   capped at 6h buckets. **Amended 2026-08-03**: tile history lives server-side, so the server (not
   the client) computes diffs, anchors, and repair classification.
+- [Repo layout & build pipeline](issues/12-repo-layout-and-build.md) — turborepo + pnpm, backend wired to
+  Cloudflare behind three port interfaces, `wrangler dev` locally, vitest against in-memory adapters.
 - [Rendering model](issues/05-rendering-model.md) — tile-fetch interception, culling by tile-index
   lookup, viewing modes as one `{shape, size, anchor, opacity}` parameterisation.
 - [Runtime & storage platform](issues/11-runtime-and-storage-platform.md) — Cloudflare Workers + R2

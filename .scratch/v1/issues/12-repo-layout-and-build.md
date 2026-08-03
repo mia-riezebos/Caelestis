@@ -1,7 +1,7 @@
 # Repo layout & build pipeline
 
 Type: grilling
-Status: claimed
+Status: resolved
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/13
 
@@ -39,3 +39,34 @@ becoming painful?
 - Lint, format, test runner, and whether the userscript gets tests at all in v1.
 
 Takeable now — nothing about it waits on wplace recon.
+
+## Answer
+
+Turborepo + pnpm workspaces, layout as recorded above. Backend wired to Cloudflare.
+
+- `apps/backend/wrangler.toml` — R2 `BLOBS`, D1 `DB`, DO `TELEMETRY` → `TelemetryShard` under
+  `new_sqlite_classes`, `SHARD_STRATEGY=single`.
+- `src/ports/` — the three portability seams. `src/adapters/cloudflare/` and `src/adapters/memory/`
+  implement them; the memory ones exist so the interfaces cannot quietly accrete Cloudflare
+  assumptions, and are what the tests run against.
+- `src/app.ts` imports no Cloudflare SDK. `src/worker.ts` constructs adapters from `env` and is the
+  only place that knows the platform.
+- `TelemetryShard` uses a two-phase flush (`pending_counters` → `flush_batch` → D1) so a crash
+  mid-flush retries safely against the idempotent `appendBuckets`.
+- Node dev entry deleted; `pnpm dev` is `wrangler dev`. vitest wired, `test` task added to turbo.
+- `pnpm-workspace.yaml` needs `allowBuilds` entries for `esbuild` and `workerd` — pnpm 11 blocks
+  postinstall scripts otherwise, and the failure surfaces as an unrelated-looking preflight error.
+
+Verified: `check`, `test` (6 passing), `build`, and `wrangler dev` + `curl /health` → `{"ok":true}`
+with CORS `*`.
+
+Two corrections made during review:
+
+- `CounterStore.read` renamed to **`readPending`**, `TemplateCounters` to `PendingCounters`. The
+  store holds counters *since the last flush*, not lifetime totals — live total is time-series
+  history plus pending. The old name invited a wrong reading of a number that resets every minute.
+- Bucket attribution uses flush time rather than event time. Filed as
+  `22-bucket-attribution-by-event-time`.
+
+Still open from the original question, deferred rather than answered: lint and formatter choice, and
+whether the userscript gets tests in v1.
