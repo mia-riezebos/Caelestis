@@ -1,4 +1,5 @@
 import type { Millis, Seconds } from '@wts/shared'
+import { WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { sql } from 'drizzle-orm'
 import {
   type AnySQLiteColumn,
@@ -61,8 +62,20 @@ export const templateVersions = sqliteTable(
       sql`(${table.boundsNorth} IS NULL AND ${table.boundsSouth} IS NULL AND ${table.boundsWest} IS NULL AND ${table.boundsEast} IS NULL) OR (${table.boundsNorth} IS NOT NULL AND ${table.boundsSouth} IS NOT NULL AND ${table.boundsWest} IS NOT NULL AND ${table.boundsEast} IS NOT NULL)`,
     ),
     check(
+      'template_versions_pixel_bounds_check',
+      // x wraps through zero, so min_x > max_x is a legal antimeridian span; y does not wrap.
+      // Zero width and zero height are rejected: a template covering no pixels is not a placement.
+      sql`${table.minX} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
+        AND ${table.minY} BETWEEN 0 AND ${sql.raw(String(WORLD_PIXELS - 1))}
+        AND ${table.maxX} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
+        AND ${table.maxY} BETWEEN 1 AND ${sql.raw(String(WORLD_PIXELS))}
+        AND ${table.minX} <> ${table.maxX}
+        AND ${table.minY} < ${table.maxY}
+        AND ${table.totalPixels} >= 0`,
+    ),
+    check(
       'template_versions_bounds_range_check',
-      sql`${table.boundsNorth} IS NULL OR (${table.boundsNorth} BETWEEN -90 AND 90 AND ${table.boundsSouth} BETWEEN -90 AND 90 AND ${table.boundsWest} BETWEEN -180 AND 180 AND ${table.boundsEast} BETWEEN -180 AND 180 AND ${table.boundsNorth} >= ${table.boundsSouth})`,
+      sql`${table.boundsNorth} IS NULL OR (${table.boundsNorth} BETWEEN -90 AND 90 AND ${table.boundsSouth} BETWEEN -90 AND 90 AND ${table.boundsWest} BETWEEN -180 AND 180 AND ${table.boundsEast} BETWEEN -180 AND 180 AND ${table.boundsNorth} > ${table.boundsSouth})`,
     ),
   ],
 )
@@ -78,6 +91,10 @@ export const versionTiles = sqliteTable(
     hash: text('hash').notNull(),
   },
   (table) => [
+    check(
+      'version_tiles_coordinate_check',
+      sql`${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))} AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
     primaryKey({ columns: [table.versionId, table.tileX, table.tileY] }),
     index('version_tiles_tile_idx').on(table.tileX, table.tileY),
   ],

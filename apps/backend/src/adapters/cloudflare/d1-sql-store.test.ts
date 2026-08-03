@@ -211,20 +211,60 @@ describe('D1SqlStore', () => {
     ).resolves.toEqual([template1Start, template1Middle, template2Start])
   })
 
-  it('enforces scope and resolution domains in SQL', () => {
+  // A bare .toThrow() accepts "no such table" as readily as a constraint failure, so these match the
+  // message. The accept cases matter more: a CHECK that rejects a valid scope or ladder tier would
+  // otherwise ship green, and nothing would notice until production.
+  it.each([
+    ["INSERT INTO access_tokens VALUES ('h', 'l', 'superadmin', 'c', 1, NULL)"],
+    ["INSERT INTO telemetry_buckets VALUES ('template', 42, 60, 1, 1, 0)"],
+    ["INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 1)"],
+    ["INSERT INTO version_tiles VALUES ('v', 2048, 0, 'hash')"],
+  ])('rejects a value outside its SQL domain: %s', (statement) => {
+    expect(() => d1.sqlite.prepare(statement).run()).toThrow(/CHECK constraint failed/)
+  })
+
+  it.each([['read'], ['report'], ['admin']])('accepts the %s scope', (scope) => {
+    expect(() =>
+      d1.sqlite
+        .prepare(`INSERT INTO access_tokens VALUES ('h-${scope}', 'l', ?, 'c', 1, NULL)`)
+        .run(scope),
+    ).not.toThrow()
+  })
+
+  it.each([[60], [300], [900], [3_600], [21_600]])(
+    'accepts telemetry ladder resolution %i',
+    (resolution) => {
+      expect(() =>
+        d1.sqlite
+          .prepare('INSERT INTO telemetry_buckets VALUES (?, ?, 60, 1, 1, 0)')
+          .run(`template-${resolution}`, resolution),
+      ).not.toThrow()
+    },
+  )
+
+  it.each([[0], [3_600], [21_600], [86_400]])(
+    'accepts tile-history ladder resolution %i',
+    (resolution) => {
+      expect(() =>
+        d1.sqlite
+          .prepare("INSERT INTO tile_history VALUES (0, 0, ?, ?, 'hash', 1)")
+          .run(resolution, resolution),
+      ).not.toThrow()
+    },
+  )
+
+  it('accepts a bounding box that wraps through zero in x', () => {
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('wrap-node', NULL, '/wrap', 'Wrap', 1);
+      INSERT INTO templates VALUES ('wrap-template', 'wrap-node', 'T', 1, NULL, 1);
+    `)
     expect(() =>
       d1.sqlite
         .prepare(
-          "INSERT INTO access_tokens VALUES ('hash', 'label', 'superadmin', 'creator', 1, NULL)",
+          "INSERT INTO template_versions VALUES ('wrap', 'wrap-template', 1, 'c', 2047000, 0, 1000, 1000, 5, NULL, NULL, NULL, NULL)",
         )
         .run(),
-    ).toThrow()
-    expect(() =>
-      d1.sqlite.prepare("INSERT INTO telemetry_buckets VALUES ('template', 42, 60, 1, 1, 0)").run(),
-    ).toThrow()
-    expect(() =>
-      d1.sqlite.prepare("INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 1)").run(),
-    ).toThrow()
+    ).not.toThrow()
   })
 
   it('requires native bounds to be complete, ordered and in latitude/longitude range', () => {

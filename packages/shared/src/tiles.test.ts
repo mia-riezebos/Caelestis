@@ -83,8 +83,24 @@ describe('latLngToCanvasPixel at the projection limits', () => {
     )
   })
 
-  it('keeps longitude inside the canvas when it exceeds a half turn', () => {
-    const { x } = latLngToCanvasPixel({ lat: 0, lng: 361 })
-    expect(x).toBe(WORLD_PIXELS)
+  it.each([
+    ['a full turn past the prime meridian', 361, 1],
+    ['the antimeridian', 180, -180],
+    ['a full turn back', -359, 1],
+  ])('wraps longitude at %s to the same pixel as its equivalent', (_label, lng, equivalent) => {
+    expect(latLngToCanvasPixel({ lat: 0, lng }).x).toBeCloseTo(
+      latLngToCanvasPixel({ lat: 0, lng: equivalent }).x,
+      6,
+    )
+  })
+
+  it('never places longitude on the non-existent tile past the last one', () => {
+    // Clamping put lng 180 at exactly WORLD_PIXELS, which floors to tile 2048 — one past the end,
+    // and rejected by parseTileKey. The canvas wraps in x, so 180 belongs at the same pixel as -180.
+    for (const lng of [180, 180.0001, 359.9999, 360, 720]) {
+      const { x } = latLngToCanvasPixel({ lat: 0, lng })
+      expect(x).toBeLessThan(WORLD_PIXELS)
+      expect(parseTileKey(`${Math.floor(x / TILE_SIZE)}/0`)).not.toBeNull()
+    }
   })
 })

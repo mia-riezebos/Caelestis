@@ -97,10 +97,27 @@ describe('tile and template schemas', () => {
     expectRejected(PaintTile, { x, y: 0, pixels: validPixels })
   })
 
-  it('rejects an otherwise-valid inverted bounding box', () => {
+  it('rejects an otherwise-valid vertically inverted bounding box', () => {
+    // y does not wrap: Mercator clamps at the poles, so there is nothing to wrap through.
     expectRejected(Template, {
       ...validTemplate,
-      bbox: { minX: 1, minY: 0, maxX: 0, maxY: 1 },
+      bbox: { minX: 0, minY: 1, maxX: 1, maxY: 0 },
+    })
+  })
+
+  it('accepts a bounding box that wraps through zero in x', () => {
+    // The canvas wraps in x, so minX > maxX means "spans the antimeridian" rather than "inverted".
+    const template = {
+      ...validTemplate,
+      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
+    }
+    expect(Schema.decodeUnknownSync(Template)(template)).toEqual(template)
+  })
+
+  it('rejects a bounding box with zero width', () => {
+    expectRejected(Template, {
+      ...validTemplate,
+      bbox: { minX: 5, minY: 0, maxX: 5, maxY: 1 },
     })
   })
 
@@ -203,11 +220,27 @@ describe('PaintEvent', () => {
   })
 
   it('rejects painted counts above the counter-store guardrail', () => {
-    expectRejected(PaintEvent, { ...validEvent, painted: 100_001 })
+    // Must submit MORE pixels than `painted`, or the `painted <= submitted` filter does the
+    // rejecting and this test passes with the guardrail deleted.
+    const values = Array.from({ length: 100_000 }, () => 0)
+    expectRejected(PaintEvent, {
+      ...validEvent,
+      tiles: [
+        { x: 0, y: 0, pixels: { x: values, y: values, colors: values } },
+        { x: 1, y: 0, pixels: { x: values, y: values, colors: values } },
+      ],
+      painted: 100_001,
+    })
   })
 
-  it('caps display-name length', () => {
-    expectRejected(PaintEvent, { ...validEvent, displayName: 'x'.repeat(65) })
+  it('accepts a display name longer than an identifier', () => {
+    // wplace display names are names, not identifiers; a 65-character one is ordinary.
+    const event = { ...validEvent, displayName: 'x'.repeat(65) }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
+  it('caps display-name length at the name bound', () => {
+    expectRejected(PaintEvent, { ...validEvent, displayName: 'x'.repeat(257) })
   })
 })
 

@@ -74,6 +74,13 @@ const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), max)
 
 /**
+ * Longitude wraps rather than clamps, because the canvas does: x = 0 and x = WORLD_PIXELS are the
+ * same meridian. Clamping put `lng: 180` at exactly WORLD_PIXELS, which floors to tile 2048 — one
+ * past the last tile, and rejected by `parseTileKey`.
+ */
+const wrapUnitInterval = (value: number): number => ((value % 1) + 1) % 1
+
+/**
  * Convert latitude/longitude to fractional global canvas-pixel coordinates.
  *
  * Latitude is clamped to the Mercator limit because the projection has no answer beyond it — `±90`
@@ -89,7 +96,7 @@ export const latLngToCanvasPixel = ({ lat, lng }: LatLng): CanvasPixel => {
   const latitudeRadians =
     clamp(lat, -MAX_MERCATOR_LATITUDE, MAX_MERCATOR_LATITUDE) * RADIANS_PER_DEGREE
   return {
-    x: ((clamp(lng, -180, 180) + 180) / 360) * WORLD_PIXELS,
+    x: (wrapUnitInterval((lng + 180) / 360) * WORLD_PIXELS) % WORLD_PIXELS,
     y:
       ((1 - Math.log(Math.tan(latitudeRadians) + 1 / Math.cos(latitudeRadians)) / Math.PI) / 2) *
       WORLD_PIXELS,

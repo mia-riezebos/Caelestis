@@ -5,8 +5,22 @@ import { Schema } from 'effect'
 const MAX_IDENTIFIER_LENGTH = 64
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4_096
-const MAX_ARRAY_LENGTH = 1_000
+/**
+ * Array caps sized from what each field actually bounds. A single shared round number was wrong
+ * three separate ways: it made a >1,000-tile manifest impossible to encode, capped a paint payload
+ * at a tenth of a real charge drain, and rejected an ordinary 40x30-tile template.
+ */
 const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
+const MAX_TEMPLATE_CHUNKS = MAX_MANIFEST_TILES
+const MAX_MANIFEST_NODES = 100_000
+const MAX_MANIFEST_TEMPLATES = 100_000
+const MAX_PAINT_TILES = WORLD_TILES * WORLD_TILES
+/**
+ * Both mirror `MAX_COUNTER_DELTA_VALUE` in `apps/backend/src/ports/counter-store.ts`, which cannot be
+ * imported here — the wire package must not depend on the backend. `counter-store.ts` says "derive,
+ * never restate"; this is the one place that is impossible, so the restatement is named as such and
+ * a test pins the two together.
+ */
 const MAX_PAINT_PIXELS_PER_TILE = 100_000
 const MAX_PAINTED_PIXELS = 100_000
 // 09-recon-palette has not recovered Wplace's complete index order yet. Keep this permissive until
@@ -25,7 +39,7 @@ const booleanFilter = <T>(predicate: (value: T) => boolean, message: string) =>
 const boundedString = (maximum: number) =>
   Schema.String.pipe(Schema.check(Schema.isLengthBetween(1, maximum)))
 
-const boundedArray = <S extends Schema.Constraint>(item: S, maximum = MAX_ARRAY_LENGTH) =>
+const boundedArray = <S extends Schema.Constraint>(item: S, maximum: number) =>
   Schema.Array(item).pipe(Schema.check(Schema.isMaxLength(maximum)))
 
 const integerBetween = (minimum: number, maximum: number) =>
@@ -100,12 +114,20 @@ const BoundingBoxStruct = Schema.Struct({
   maxY: integerBetween(0, WORLD_PIXELS),
 })
 
+/**
+ * The canvas wraps in x and does not in y. `minX > maxX` therefore means "spans the antimeridian",
+ * which is legal and which consumers must read as two ranges. `minY > maxY` has no such meaning:
+ * Mercator clamps at the poles, so there is nothing to wrap through.
+ *
+ * Zero-width and zero-height are rejected either way — a template covering no pixels is not a
+ * placement, and `maxX == minX` cannot be distinguished from a full-canvas wrap.
+ */
 const BoundingBox = BoundingBoxStruct.pipe(
   Schema.check(
     booleanFilter(
       (bbox: Schema.Schema.Type<typeof BoundingBoxStruct>) =>
-        bbox.minX < bbox.maxX && bbox.minY < bbox.maxY,
-      'minimum coordinates must be less than exclusive maximum coordinates',
+        bbox.minX !== bbox.maxX && bbox.minY < bbox.maxY,
+      'y must run low to high; x may wrap through zero but must span at least one pixel',
     ),
   ),
 )
@@ -136,14 +158,14 @@ export const Template = Schema.Struct({
   version: Identifier,
   bbox: BoundingBox,
   totalPixels: NonNegativeInteger,
-  chunks: boundedArray(Chunk),
+  chunks: boundedArray(Chunk, MAX_TEMPLATE_CHUNKS),
 })
 
 const ManifestStruct = Schema.Struct({
   version: VersionToken,
   server: ServerInfo,
-  nodes: boundedArray(Node),
-  templates: boundedArray(Template),
+  nodes: boundedArray(Node, MAX_MANIFEST_NODES),
+  templates: boundedArray(Template, MAX_MANIFEST_TEMPLATES),
   tiles: boundedArray(TileKey, MAX_MANIFEST_TILES),
 })
 
@@ -230,10 +252,10 @@ export const PaintTile = Schema.Struct({
 const PaintEventStruct = Schema.Struct({
   eventId: Identifier,
   wplaceUserId: NonNegativeInteger,
-  displayName: boundedString(MAX_IDENTIFIER_LENGTH),
+  displayName: Name,
   season: NonNegativeInteger,
   ts: Seconds,
-  tiles: boundedArray(PaintTile),
+  tiles: boundedArray(PaintTile, MAX_PAINT_TILES),
   painted: integerBetween(0, MAX_PAINTED_PIXELS),
 })
 
@@ -254,7 +276,7 @@ export const TileOffer = Schema.Struct({
 })
 
 export const TileOfferResponse = Schema.Struct({
-  wanted: boundedArray(TileKey),
+  wanted: boundedArray(TileKey, MAX_MANIFEST_TILES),
 })
 
 const TemplateStatusStruct = Schema.Struct({

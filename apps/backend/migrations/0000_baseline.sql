@@ -62,7 +62,14 @@ CREATE TABLE `template_versions` (
 	`bounds_east` real,
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "template_versions_bounds_all_or_none_check" CHECK(("template_versions"."bounds_north" IS NULL AND "template_versions"."bounds_south" IS NULL AND "template_versions"."bounds_west" IS NULL AND "template_versions"."bounds_east" IS NULL) OR ("template_versions"."bounds_north" IS NOT NULL AND "template_versions"."bounds_south" IS NOT NULL AND "template_versions"."bounds_west" IS NOT NULL AND "template_versions"."bounds_east" IS NOT NULL)),
-	CONSTRAINT "template_versions_bounds_range_check" CHECK("template_versions"."bounds_north" IS NULL OR ("template_versions"."bounds_north" BETWEEN -90 AND 90 AND "template_versions"."bounds_south" BETWEEN -90 AND 90 AND "template_versions"."bounds_west" BETWEEN -180 AND 180 AND "template_versions"."bounds_east" BETWEEN -180 AND 180 AND "template_versions"."bounds_north" >= "template_versions"."bounds_south"))
+	CONSTRAINT "template_versions_pixel_bounds_check" CHECK("template_versions"."min_x" BETWEEN 0 AND 2047999
+        AND "template_versions"."min_y" BETWEEN 0 AND 2047999
+        AND "template_versions"."max_x" BETWEEN 1 AND 2048000
+        AND "template_versions"."max_y" BETWEEN 1 AND 2048000
+        AND "template_versions"."min_x" <> "template_versions"."max_x"
+        AND "template_versions"."min_y" < "template_versions"."max_y"
+        AND "template_versions"."total_pixels" >= 0),
+	CONSTRAINT "template_versions_bounds_range_check" CHECK("template_versions"."bounds_north" IS NULL OR ("template_versions"."bounds_north" BETWEEN -90 AND 90 AND "template_versions"."bounds_south" BETWEEN -90 AND 90 AND "template_versions"."bounds_west" BETWEEN -180 AND 180 AND "template_versions"."bounds_east" BETWEEN -180 AND 180 AND "template_versions"."bounds_north" > "template_versions"."bounds_south"))
 );
 --> statement-breakpoint
 CREATE TABLE `templates` (
@@ -93,7 +100,8 @@ CREATE TABLE `version_tiles` (
 	`tile_y` integer NOT NULL,
 	`hash` text NOT NULL,
 	PRIMARY KEY(`version_id`, `tile_x`, `tile_y`),
-	FOREIGN KEY (`version_id`) REFERENCES `template_versions`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`version_id`) REFERENCES `template_versions`(`id`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "version_tiles_coordinate_check" CHECK("version_tiles"."tile_x" BETWEEN 0 AND 2047 AND "version_tiles"."tile_y" BETWEEN 0 AND 2047)
 );
 --> statement-breakpoint
 CREATE INDEX `version_tiles_tile_idx` ON `version_tiles` (`tile_x`,`tile_y`);
