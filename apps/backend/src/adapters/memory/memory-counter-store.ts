@@ -210,10 +210,13 @@ export class MemoryCounterStore implements CounterStore {
       // self-heals. Prefer that one-alarm crash window over incorrect totals for a whole outage.
       try {
         await this.sql.appendBuckets(buckets)
-      } catch (error) {
+      } catch {
+        // Mirrors TelemetryShard: schedule the retry and return rather than rethrowing. Cloudflare
+        // caps platform retries of a throwing alarm() at six, so owning the retry is what makes
+        // recovery from a long D1 outage indefinite. See the note in telemetry-shard.ts.
         this.consecutiveFlushFailures += 1
         this.alarmAt = millis(this.clock() + flushRetryDelay(this.consecutiveFlushFailures))
-        throw error
+        return
       }
 
       this.consecutiveFlushFailures = 0

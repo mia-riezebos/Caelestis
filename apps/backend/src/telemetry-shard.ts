@@ -273,9 +273,27 @@ export class TelemetryShard extends DurableObject<Env> {
       try {
         await new D1SqlStore(this.env.DB).appendBuckets(buckets)
       } catch (error) {
+        // Schedule the retry and return normally rather than rethrowing.
+        //
+        // Cloudflare retries a throwing alarm() with exponential backoff "starting at a 2 second
+        // delay from the first failure with up to 6 retries allowed", and its docs recommend
+        // catching inside the handler and scheduling a new alarm "if you want to make sure your
+        // alarm handler will be retried indefinitely". Rethrowing would cap recovery at six
+        // attempts — a D1 outage longer than roughly two minutes would exhaust them and strand
+        // flush_batch until unrelated traffic happened to re-arm the alarm. Owning the retry is the
+        // whole reason the backoff exists.
+        //
+        // The failure is not swallowed: readFlushFailureCount() is the operational signal, and the
+        // batch stays in flush_batch until D1 confirms.
+        // https://developers.cloudflare.com/durable-objects/api/alarms/
         const failureCount = this.incrementFlushFailureCount()
-        await this.ctx.storage.setAlarm(millis(this.clock() + flushRetryDelay(failureCount)))
-        throw error
+        const retryDelay = flushRetryDelay(failureCount)
+        console.error(
+          `telemetry flush failed (attempt ${failureCount}), retrying in ${retryDelay}ms`,
+          error,
+        )
+        await this.ctx.storage.setAlarm(millis(this.clock() + retryDelay))
+        return
       }
 
       this.ctx.storage.transactionSync(() => {

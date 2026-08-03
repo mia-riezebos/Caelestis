@@ -22,14 +22,24 @@ turns out to need a decision rather than a measurement, promote it to its own ti
 Established across the four-cycle review loop on #26. Every claim below currently rests on injected
 clocks and fake storage.
 
-- [ ] **Does the Durable Object runtime's own alarm retry pre-empt our explicit backoff?** The
-      platform retries a throwing `alarm()` on its own schedule. If it fires before our computed
-      deadline, the 1s→60s backoff is decorative. Needs miniflare with real alarm delivery. Also
-      tracked on `25-durable-object-test-harness`.
-- [ ] **A real alarm firing on wall-clock time.** Every test injects the clock. Record a delta under
-      `wrangler dev`, wait ~90s, confirm a D1 row appears with the correct `bucket_start`.
-- [ ] **A real D1 outage.** Backoff, retention, and the crash-window trade-off were all validated
-      against injected failures only.
+- [x] **Does the Durable Object runtime's own alarm retry pre-empt our explicit backoff?**
+      **Answered by the docs, and it found a bug.** Cloudflare retries a throwing `alarm()` with
+      exponential backoff "starting at a 2 second delay… with up to 6 retries allowed", and
+      recommends catching inside the handler and scheduling a new alarm "if you want to make sure
+      your alarm handler will be retried indefinitely". The shard was scheduling **and rethrowing**,
+      which capped recovery at six attempts — roughly two minutes of D1 outage — after which
+      `flush_batch` stranded until unrelated traffic re-armed the alarm. Now catches, logs, schedules
+      and returns, so our backoff is the only retry mechanism and is indefinite.
+      <https://developers.cloudflare.com/durable-objects/api/alarms/>
+- [x] **A real alarm firing on wall-clock time.** Done under `wrangler dev` with no injected clock:
+      recorded 7/5/1 at `t`, pending still 7/5/1 at t+30s, **0/0/0 at t+60s**, and D1 held
+      `bucket_start_s = 1785766080` — exactly `floor(1785766127 / 60) * 60`. Bucketed by event time,
+      not flush time, confirmed against the real runtime.
+- [~] **A real D1 outage.** Partly observed by accident: `wrangler dev` does not apply migrations, so
+      the first smoke run had no `telemetry_buckets` table and every flush failed. The shard retried
+      quietly with zero errors surfacing and no data loss — the outage path, in the real runtime.
+      Still unobserved: a mid-flight D1 failure after the table exists, and recovery across the full
+      1s→60s backoff curve.
 - [ ] **Whether the transient over-count after a crash is actually visible to a user**, and for how
       long in practice. The D1-first ordering accepts it deliberately; nobody has seen it.
 

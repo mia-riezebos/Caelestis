@@ -390,7 +390,7 @@ describe('TelemetryShard', () => {
     ])
     harness.d1.failNextBatchAt('before-commit')
 
-    await expect(harness.shard.alarm()).rejects.toThrow('D1 unavailable before commit')
+    await harness.shard.alarm()
 
     await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
       { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
@@ -408,9 +408,30 @@ describe('TelemetryShard', () => {
       harness.clock.now = millis(261_000)
     })
 
-    await expect(harness.shard.alarm()).rejects.toThrow('D1 unavailable before commit')
+    await harness.shard.alarm()
 
     expect(await harness.nextAlarmAt()).toBe(262_000)
+  })
+
+  it('resolves rather than rethrowing when D1 fails, so the platform does not own the retry', async () => {
+    // Cloudflare retries a throwing alarm() at most six times, starting at a 2s delay. Rethrowing
+    // would therefore cap recovery at roughly two minutes of D1 outage and then strand flush_batch
+    // until unrelated traffic re-armed the alarm. Owning the retry is why the backoff exists.
+    // https://developers.cloudflare.com/durable-objects/api/alarms/
+    const harness = await makeHarness(millis(100_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    harness.clock.now = millis(200_000)
+    harness.d1.failNextBatchAt('before-commit', () => {})
+
+    await expect(harness.shard.alarm()).resolves.toBeUndefined()
+
+    // The work is still owed, and an alarm is scheduled to come back for it.
+    expect(await harness.nextAlarmAt()).toBeGreaterThan(200_000)
+    await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
+    ])
   })
 
   it('subtracts the retained total from a failed late-arrival rewrite', async () => {
@@ -425,7 +446,7 @@ describe('TelemetryShard', () => {
       { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 0 },
     ])
     harness.d1.failNextBatchAt('before-commit')
-    await expect(harness.shard.alarm()).rejects.toThrow('D1 unavailable before commit')
+    await harness.shard.alarm()
 
     await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
       {
@@ -513,7 +534,7 @@ describe('TelemetryShard', () => {
           await harness.shard.record([delta])
         } else if ((await harness.nextAlarmAt()) !== null) {
           if (random() < 0.25) harness.d1.failNextBatchAt('before-commit')
-          await harness.shard.alarm().catch(() => undefined)
+          await harness.shard.alarm()
         }
 
         const observed = sumBuckets(harness.d1Buckets())
@@ -541,7 +562,7 @@ describe('TelemetryShard', () => {
           await harness.shard.record([generatedDelta(random)])
         } else if ((await harness.nextAlarmAt()) !== null) {
           if (random() < 0.3) harness.d1.failNextBatchAt('before-commit')
-          await harness.shard.alarm().catch(() => undefined)
+          await harness.shard.alarm()
         } else {
           await harness.coldRestart()
         }
@@ -562,7 +583,7 @@ describe('TelemetryShard', () => {
       { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     harness.d1.failNextBatchAt(failurePoint)
-    await expect(harness.shard.alarm()).rejects.toThrow()
+    await harness.shard.alarm()
 
     await harness.coldRestart()
     harness.clock.now = millis((await harness.nextAlarmAt()) as number)

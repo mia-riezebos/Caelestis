@@ -378,7 +378,7 @@ describe('memory adapters', () => {
     const preFailureAlarm = store.nextAlarmAt()
     nowSeconds = 200
 
-    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    await store.alarm()
     expect(store.nextAlarmAt()).toBe(201_000)
     expect(store.nextAlarmAt()).not.toBe(preFailureAlarm)
     await expect(store.readPending(['template-a'])).resolves.toEqual([
@@ -413,7 +413,7 @@ describe('memory adapters', () => {
       { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     nowSeconds = 200
-    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    await store.alarm()
     expect(store.nextAlarmAt()).toBe(201_000)
 
     nowSeconds = 200.5
@@ -442,11 +442,11 @@ describe('memory adapters', () => {
       { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     nowSeconds = 200
-    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    await store.alarm()
     expect(store.nextAlarmAt()).toBe(201_000)
 
     nowSeconds = 201
-    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    await store.alarm()
     expect(store.nextAlarmAt()).toBe(203_000)
 
     nowSeconds = 203
@@ -457,7 +457,7 @@ describe('memory adapters', () => {
       { templateId: 'template-b', occurredAt: seconds(203), placed: 2, correct: 1, repairs: 0 },
     ])
     nowSeconds = 270
-    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    await store.alarm()
     expect(store.nextAlarmAt()).toBe(271_000)
   })
 
@@ -480,7 +480,7 @@ describe('memory adapters', () => {
     nowMilliseconds = 200_000
 
     for (const expectedDelay of [1, 2, 4, 8, 16, 32, 60, 60]) {
-      await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+      await store.alarm()
       expect(store.nextAlarmAt()).toBe(nowMilliseconds + expectedDelay * 1_000)
       nowMilliseconds = store.nextAlarmAt() as number
     }
@@ -716,7 +716,7 @@ describe('memory adapters', () => {
       { templateId: 'template-00', occurredAt: seconds(9_950), placed: 1, correct: 1, repairs: 0 },
     ])
 
-    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    await store.alarm()
     expect(batches.map((batch) => batch.length)).toEqual([FLUSH_BATCH_LIMIT, 5])
     await expect(store.readPending(['template-00', 'template-40'])).resolves.toEqual([
       {
@@ -872,7 +872,7 @@ describe('memory adapters', () => {
       { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 0 },
     ])
     shouldReject = true
-    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    await store.alarm()
 
     await expect(store.readPending(['template-a'])).resolves.toEqual([
       {
