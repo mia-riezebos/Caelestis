@@ -73,3 +73,15 @@ scripts can read that.
 
 Auth is **optional per server**: public community servers and private alliance servers run the same
 code path with gating toggled off.
+
+## Amendment — 2026-08-03: optional alliance membership check
+
+`GET /me` returns `allianceId` and `allianceName`, so a server can verify that a connecting user is
+actually in the alliance it serves.
+
+**Optional, second-order, never the primary gate.** Invite codes remain the mechanism; this is a
+cheap additional check for invite-only alliances, and a pleasant onboarding shortcut — a member of
+the right alliance could be admitted without hunting for a code at all, if the operator enables it.
+
+Configured per server: `requireAllianceId?: number`. It is a claim from the client like any other, so
+it raises the bar rather than replacing anything.

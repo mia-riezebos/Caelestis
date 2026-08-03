@@ -38,3 +38,12 @@ never needs to hit them, because that keeps `report`/`read` scope narrow.
   almost certainly own alarm evaluation and the client just renders them — confirm.
 
 Prototype the panel rather than specifying it.
+
+## Amendment — 2026-08-03: detection, not attribution
+
+Alarms answer **"is there griefing here"**, never "who is griefing". Pixel-info is dropped from the
+design, so the identity of whoever overwrote a pixel is not available and will not be pursued —
+members can work that out for themselves. The alarm's job is to point them at the affected area.
+
+Removes the "severity by attacker" framing from the questions above. What remains: magnitude
+thresholds, whether alarms self-clear, and where they surface.

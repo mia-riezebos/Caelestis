@@ -1,7 +1,7 @@
 # Repo layout & build pipeline
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/13
 

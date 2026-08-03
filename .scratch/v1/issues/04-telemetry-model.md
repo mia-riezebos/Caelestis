@@ -157,3 +157,85 @@ Consequences:
   `17-server-tile-store`. Timelapse *rendering* stays with the deferred frontend; v1 captures the
   frames.
 - New cost to bound: tiles are 70–125 KB and served `no-store`, so upload offers need throttling.
+
+## Amendment — 2026-08-03: the real paint request breaks two assumptions
+
+Observed shape is recorded in `07-recon-paint-request`. Two things the model got wrong:
+
+### 1. A paint request spans multiple tiles
+
+The wire format assumed "the paint POST is already scoped to one tile, so the client groups by
+template before sending". The real body carries a `tiles` array, each with its own coordinate
+arrays. Revised:
+
+```
+wire: {
+  eventId, username, season, ts,
+  tiles: [{ x, y, pixels: { x: [], y: [], colors: [] } }],
+  submitted: number,   // total pixels across all tiles
+  painted: number      // what wplace reported accepting
+}
+```
+
+The client no longer groups by template at all — it forwards the tile structure as observed and the
+server maps pixels to templates. Less client logic, less client trust, and it stops the client
+needing to know which templates cover which tiles just to file a report.
+
+Storage is unchanged: aggregate to `(username, template_id, minute) → placed, correct, repairs` on
+receipt. A 10k-pixel paint is still a handful of rows.
+
+### 2. Acceptance is a count, not per-pixel
+
+wplace answers `{"painted": 5}`. So partial acceptance is detectable but not attributable — there is
+no way to learn *which* pixels landed.
+
+Crediting rule:
+
+- **`painted === submitted`** — the normal case. Classify and credit as designed.
+- **`painted < submitted`** — credit the user `painted` toward their **placed** total, since that
+  figure is still exact, but **do not credit template-level `correct` or `repairs`**. Mark the event
+  partial and let the next tile-diff anchor establish template correctness from ground truth.
+
+This keeps per-user contribution exact and per-template correctness honest, at the cost of a short
+window where a partial paint is invisible in template progress. The anchor mechanism exists for
+precisely this.
+
+### 3. Pixel-info is narrower than hoped
+
+It returns no timestamp and no colour. So it cannot date a change and cannot verify canvas state,
+and general attribution by polling is off the table.
+
+Its actual role: **identifying who overwrote our work**. Our own members' contributions arrive via
+paint interception with exact who and when; pixel-info answers the one question that data cannot —
+who made a change we did not make. That is grief attribution, and it only needs to run on pixels the
+server's own tile history already shows changing.
+
+### 4. Never forward `x-pawtect-token`
+
+wplace's anti-cheat header. We neither replicate nor circumvent it — it simply must never reach our
+server, under the same rule as cookies and session state.
+
+## Amendment — 2026-08-03: pixel-info is dropped entirely
+
+Attribution comes from **self-reported paints only**. Progress comes from **comparing current tiles
+against past tiles**. Pixel-info is not used anywhere in the design.
+
+**Why:** it answers one pixel per request. Verifying a template of any size means a request per
+pixel — a single tile is a million — which hits rate limits immediately and would make this project
+a bad neighbour on wplace's infrastructure. Whatever the endpoint could tell us is not worth that.
+
+### What changes
+
+- **Grief detection stays; grief attribution goes.** Drift between derived and observed still fires
+  an alarm — *that* there is griefing is the useful signal. *Who* is doing it is left to members to
+  work out themselves, with the userscript pointing them at the affected area.
+- **Non-member contributions become anonymous but still visible.** If `observed > derived`, someone
+  outside the alliance is helping; we count the pixels without knowing whose they are. That is fine.
+- The whole rate-limiting and courtesy concern around polling wplace disappears. The only requests
+  we make to wplace are the ones the user's own browser was making anyway.
+
+### What survives unchanged
+
+Paint interception gives exact who, what, and when for every member running the userscript — which
+is the entire leaderboard. Tile diffs give ground truth for progress. Neither needed pixel-info; it
+was only ever going to add attribution for changes we did not make.

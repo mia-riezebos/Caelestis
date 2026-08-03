@@ -40,7 +40,7 @@ updated until v1 actually runs.
 - [Auth model](issues/03-auth-model.md) — server-generated high-entropy invite codes, three scopes
   (read/report/admin), signed URLs for read, bearer for admin, one env admin token to bootstrap.
 - [Telemetry model](issues/04-telemetry-model.md) — POST events as the delta stream, tile snapshots
-  as ground-truth anchors, DO memory for live truth, time series on an exponential decay ladder
+  as ground-truth anchors and the only progress source, DO memory for live truth, time series on a decay ladder
   capped at 6h buckets. **Amended 2026-08-03**: tile history lives server-side, so the server (not
   the client) computes diffs, anchors, and repair classification.
 - [Rendering model](issues/05-rendering-model.md) — tile-fetch interception, culling by tile-index

@@ -43,3 +43,15 @@ Still open:
 - Which transport MapLibre uses for raster tiles — `fetch` vs `<img>`/`ImageRequest`. Decides the
   shim. Needs a browser observation.
 - Whether the renderer accepts an oversized image in place of a tile without misaligning.
+
+## Update — 2026-08-03: transport confirmed
+
+Canvas tiles are fetched via **`fetch`** (DevTools Type column, initiator the SvelteKit bundle), so
+wrapping `window.fetch` at `document-start` covers both tile reads and paint writes with one shim.
+The only `xhr` in the session came from an unrelated third-party script.
+
+Also visible: the basemap is MapLibre vector tiles (`.pbf`) from a separate host, entirely distinct
+from the canvas raster tiles. The shim must not touch those.
+
+Remaining open: verified pixel dimensions of a tile, and whether the renderer accepts an oversized
+image without misaligning.
