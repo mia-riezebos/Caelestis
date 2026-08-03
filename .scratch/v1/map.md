@@ -16,8 +16,9 @@ updated until v1 actually runs.
 - **Execution override.** This map carries execution, not just decisions. Wayfinder's plan-don't-do
   default is OFF for this effort: tickets may produce running code, and the spec is a living
   document updated as tickets resolve.
-- **Stack.** Server = Hono (runtime undecided, see `11-runtime-and-storage-platform`).
-  Userscript = TypeScript, deep modules, esbuild, Violentmonkey.
+- **Stack.** Server = Hono on Cloudflare Workers + R2 + D1 + DO. Userscript = TypeScript, deep
+  modules, esbuild, Violentmonkey. Turborepo + pnpm: `apps/{backend,userscript,frontend}`,
+  `packages/{shared,ui}`.
 - **All UI is userscript-side in v1**, and the userscript shows **current state and alarms only** —
   no charts, no history, no pace. Everything time-series is frontend-only for now, and may come back
   to the userscript once the frontend has designed that UI. This narrows the userscript's read
@@ -53,8 +54,9 @@ updated until v1 actually runs.
 
 ## Not yet specified
 
-- **Telemetry wire schema and the functional CRUD surface** it maps onto. Blocked on knowing the
-  real shape of the wplace paint request and pixel-info responses.
+- **Telemetry wire schema and the functional CRUD surface** it maps onto. No longer blocked — the
+  real paint request is recorded in `07-recon-paint-request` and `packages/shared` needs updating to
+  its multi-tile shape.
 - **Empty-tile synthesis behaviour** — confirmed that wplace returns a real HTTP 404 for unpainted
   tiles, so the shim branches on status. Still open: exactly what it hands back in that case, and
   whether fabricating a response perturbs MapLibre's or wplace's own logic.
@@ -81,3 +83,7 @@ updated until v1 actually runs.
   deferred rather than designed out.
 - **Template creation and quantisation tooling** — a separate existing tool owns this. The server
   validates that uploads are already palette-conformant and does not quantise.
+- **Pixel-level attribution via wplace's pixel-info endpoint** — one request per pixel, so verifying
+  anything meaningful would hit rate limits immediately and make us a bad neighbour. Attribution
+  comes from self-reported paints; progress comes from tile diffs. Grief is *detected*, never
+  attributed.
