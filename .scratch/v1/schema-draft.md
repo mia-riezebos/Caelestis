@@ -30,6 +30,51 @@ WORLD_PIXELS = 2_048_000     // WORLD_TILES * TILE_SIZE
 `packages/shared` also carries the lat/lng ↔ canvas-pixel conversion, since the userscript needs it
 to place templates and the backend needs it to import and export native files.
 
+## The palette
+
+Lives in `packages/shared` as a constant array, **ordered by wplace's own palette index** — the paint
+request sends indices, not RGB, so a list without indices cannot classify a report. 59 colours are
+recovered so far (`09-recon-palette`); the ordering and the free/premium split are still open.
+
+Not a table. It is wplace's, it changes only when they change it, and a migration is the wrong tool
+for a constant every layer needs at build time.
+
+## Ingest pipeline
+
+An upload runs: **decode → quantise → pad to tiles → encode → hash → store**.
+
+**Quantise.** Every non-transparent pixel maps to its nearest palette colour in RGBA space. No
+dithering, no threshold, no rejection — this reverses the original reject-on-nonconformance rule (see
+the amendment on `01-template-storage-and-chunk-model`) because a real `.wplace` file carries ±2
+per-channel deviation from a colour-management artefact upstream and would otherwise be refused
+despite being correct in substance.
+
+**Alpha.** wplace has no partial transparency. **?** Alpha ≥ 128 quantises to a palette colour; below
+becomes fully transparent. Alpha is *not* folded into the distance metric — doing so would match
+opaque palette entries against translucent pixels.
+
+**Memoise by distinct colour.** Naively 4.16M pixels × 59 entries ≈ 245M comparisons for one upload,
+far past any Worker CPU budget. Real images have few distinct colours (an observed file has 6,137), so
+caching nearest-match per distinct colour cuts it to ~362k comparisons plus one `Map` lookup per
+pixel. A fixed 5-bit LUT was the alternative and is worse: ±4 of its own error against a palette whose
+closest pair is 8 apart.
+
+**Pad to full tiles**, transparent outside the template's bounds — this is what removes offset and
+size columns from `version_tiles`.
+
+**Encode with PNG filter type 0 (None) on every scanline.** Costs a little compression ratio and buys
+a trivial server-side decode path: `DecompressionStream('deflate')` is native in Workers, so reading
+pixels back is inflate-then-strip-one-byte-per-row, with no WASM decoder.
+
+**Hash** the encoded bytes with SHA-256; that is both the R2 key and the dedup identity.
+
+### The upload response reports what it did
+
+Since nothing is rejected any more, the response carries what the quantiser changed: share of pixels
+moved, mean and max distance moved, resulting distinct-colour count. An uploader seeing "94% of pixels
+moved, mean distance 31" knows they uploaded a photograph — the server just declines to decide that
+for them.
+
 ## D1 tables (Drizzle, `sqliteTable`)
 
 **Identifiers: `text` UUIDv7.** Close call against nanoid. The only place ordering earns anything is
@@ -191,13 +236,13 @@ primary key (tile_x, tile_y, observed_at_ms)
 One schema per wire type, each `satisfies Schema.Schema<SharedType>`:
 
 - `Manifest`, `ServerInfo`, `Node`, `Template`, `Chunk`
+- `PaintEvent`, `PaintTile`, `PaintPixels`
+- `TileOffer`, `TileOfferResponse`
+- `TemplateStatus`, `NodeStatus`, `Alarm`
 
 **`Chunk` in `packages/shared` needs reshaping first.** It still carries `offsetX`, `offsetY`,
 `width`, `height` from the cropped-sub-rectangle model. Full tiles reduce it to `{ tile, hash }`,
 which also shrinks the manifest — the single largest thing the userscript downloads.
-- `PaintEvent`, `PaintTile`, `PaintPixels`
-- `TileOffer`, `TileOfferResponse`
-- `TemplateStatus`, `NodeStatus`, `Alarm`
 
 Decode at every request boundary in the backend; encode on the way out. The userscript adheres
 optimistically and validates nothing.
