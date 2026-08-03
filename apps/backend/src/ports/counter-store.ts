@@ -1,3 +1,5 @@
+import type { Millis, Seconds } from '@wts/shared'
+
 /**
  * Live contribution counters. Durable Object today, a counters table later.
  *
@@ -47,7 +49,7 @@ export interface CounterDelta {
    * `now + GRACE_SECONDS`. Before its minute bucket expires, matching local pending, flush-batch,
    * or retained state may absorb a cumulative rewrite. The exact expiry instant is exclusive.
    */
-  readonly occurredAt: number
+  readonly occurredAt: Seconds
   /** Non-negative integer no greater than MAX_COUNTER_DELTA_VALUE. */
   readonly placed: number
   /** Non-negative integer no greater than placed. */
@@ -72,7 +74,7 @@ export interface PendingCounters {
   readonly correct: number
   readonly repairs: number
   /** When this shard last folded a bucket into the time series, or null if it never has. */
-  readonly flushedAt: number | null
+  readonly flushedAt: Millis | null
 }
 
 export interface CounterStore {

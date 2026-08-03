@@ -1,3 +1,4 @@
+import { type Millis, millis, type Seconds, seconds } from '@wts/shared'
 import {
   type CounterDelta,
   type CounterStore,
@@ -14,22 +15,22 @@ import {
 
 interface BucketCounters {
   readonly templateId: string
-  readonly bucketStart: number
+  readonly bucketStart: Seconds
   readonly placed: number
   readonly correct: number
   readonly repairs: number
 }
 
-const bucketKey = (templateId: string, bucketStart: number): string =>
+const bucketKey = (templateId: string, bucketStart: Seconds): string =>
   `${templateId}\u0000${bucketStart}`
 
-const eventBucketStart = (occurredAt: number): number =>
-  Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS
+const eventBucketStart = (occurredAt: Seconds): Seconds =>
+  seconds(Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS)
 
-const flushableAt = (bucketStart: number): number =>
-  bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS
+const flushableAt = (bucketStart: Seconds): Seconds =>
+  seconds(bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS)
 
-const expiresAt = (bucketStart: number): number => bucketStart + EXPIRES_AFTER_SECONDS
+const expiresAt = (bucketStart: Seconds): Seconds => seconds(bucketStart + EXPIRES_AFTER_SECONDS)
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
   placed > 0 || correct > 0 || repairs > 0
@@ -53,21 +54,21 @@ export class MemoryCounterStore implements CounterStore {
   private readonly pending = new Map<string, BucketCounters>()
   private readonly flushBatch = new Map<string, BucketCounters>()
   private readonly retained = new Map<string, BucketCounters>()
-  private readonly flushedAt = new Map<string, number>()
+  private readonly flushedAt = new Map<string, Millis>()
   private droppedLateCount = 0
-  private alarmAt: number | null = null
+  private alarmAt: Millis | null = null
   private consecutiveFlushFailures = 0
 
   constructor(
     private readonly sql: SqlStore,
-    private readonly clock: () => number = Date.now,
+    private readonly clock: () => Millis = () => millis(Date.now()),
   ) {
-    this.pruneRetained(Math.floor(this.clock() / 1_000))
+    this.pruneRetained(seconds(Math.floor(this.clock() / 1_000)))
   }
 
   async record(deltas: readonly CounterDelta[]): Promise<void> {
     const nowMilliseconds = this.clock()
-    const nowSeconds = Math.floor(nowMilliseconds / 1_000)
+    const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
 
     // Validation consults local traces, so sweep stale retained rows before asking that question.
     this.pruneRetained(nowSeconds)
@@ -115,7 +116,7 @@ export class MemoryCounterStore implements CounterStore {
       const current = totals.get(counters.templateId)
       totals.set(counters.templateId, {
         templateId: counters.templateId,
-        bucketStart: 0,
+        bucketStart: seconds(0),
         placed: (current?.placed ?? 0) + counters.placed,
         correct: (current?.correct ?? 0) + counters.correct,
         repairs: (current?.repairs ?? 0) + counters.repairs,
@@ -131,7 +132,7 @@ export class MemoryCounterStore implements CounterStore {
       const current = totals.get(counters.templateId)
       totals.set(counters.templateId, {
         templateId: counters.templateId,
-        bucketStart: 0,
+        bucketStart: seconds(0),
         placed: (current?.placed ?? 0) + counters.placed - (retained?.placed ?? 0),
         correct: (current?.correct ?? 0) + counters.correct - (retained?.correct ?? 0),
         repairs: (current?.repairs ?? 0) + counters.repairs - (retained?.repairs ?? 0),
@@ -155,14 +156,14 @@ export class MemoryCounterStore implements CounterStore {
   }
 
   /** Scheduled Unix-millisecond alarm, exposed so adapter tests can verify scheduling. */
-  nextAlarmAt(): number | null {
+  nextAlarmAt(): Millis | null {
     return this.alarmAt
   }
 
   /** Emulates one Durable Object alarm delivery at the injected clock time. */
   async alarm(): Promise<void> {
     const nowMilliseconds = this.clock()
-    const nowSeconds = Math.floor(nowMilliseconds / 1_000)
+    const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
 
     this.pruneRetained(nowSeconds)
     this.pruneZeroPending()
@@ -211,7 +212,7 @@ export class MemoryCounterStore implements CounterStore {
         await this.sql.appendBuckets(buckets)
       } catch (error) {
         this.consecutiveFlushFailures += 1
-        this.alarmAt = this.clock() + flushRetryDelay(this.consecutiveFlushFailures)
+        this.alarmAt = millis(this.clock() + flushRetryDelay(this.consecutiveFlushFailures))
         throw error
       }
 
@@ -227,7 +228,7 @@ export class MemoryCounterStore implements CounterStore {
     this.recomputeAlarm(nowMilliseconds)
   }
 
-  private hasLocalTrace(templateId: string, bucketStart: number, nowSeconds: number): boolean {
+  private hasLocalTrace(templateId: string, bucketStart: Seconds, nowSeconds: Seconds): boolean {
     // The expiry instant is exclusive, so no local trace may rescue an expired bucket.
     if (expiresAt(bucketStart) <= nowSeconds) return false
 
@@ -235,7 +236,7 @@ export class MemoryCounterStore implements CounterStore {
     return this.pending.has(key) || this.flushBatch.has(key) || this.retained.has(key)
   }
 
-  private pruneRetained(nowSeconds: number): void {
+  private pruneRetained(nowSeconds: Seconds): void {
     for (const [key, counters] of this.retained) {
       if (
         expiresAt(counters.bucketStart) <= nowSeconds &&
@@ -257,7 +258,7 @@ export class MemoryCounterStore implements CounterStore {
     }
   }
 
-  private recomputeAlarm(nowMilliseconds: number): void {
+  private recomputeAlarm(nowMilliseconds: Millis): void {
     if (this.flushBatch.size > 0) {
       // readPending must preserve a future retry chosen by exponential backoff.
       if (this.alarmAt === null || this.alarmAt <= nowMilliseconds) {
@@ -266,9 +267,9 @@ export class MemoryCounterStore implements CounterStore {
       return
     }
 
-    let next: number | null = null
+    let next: Millis | null = null
     for (const counters of this.pending.values()) {
-      const candidate = Math.max(nowMilliseconds, flushableAt(counters.bucketStart) * 1_000)
+      const candidate = millis(Math.max(nowMilliseconds, flushableAt(counters.bucketStart) * 1_000))
       if (next === null || candidate < next) next = candidate
     }
     this.alarmAt = next

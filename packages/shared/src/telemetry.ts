@@ -1,11 +1,21 @@
 import type { TileKey } from './tiles.js'
+import type { Millis, Seconds } from './time.js'
+
+/** Stable public identity assigned by wplace. */
+export type WplaceUserId = number
+
+/** Attribution uses the stable id; the display name is a refreshable label. */
+export interface PainterIdentity {
+  readonly wplaceUserId: WplaceUserId
+  readonly displayName: string
+}
 
 /**
  * What the userscript sends after wplace accepts a paint.
  *
- * Payload discipline: event id, username, season, painted pixels, acceptance counts, and a timestamp
- * are the ceiling. Never a session cookie, session state, a captcha or `x-pawtect-token`, a wplace
- * user id, or a raw wplace request body.
+ * Payload discipline: event id, public wplace identity, season, painted pixels, acceptance counts,
+ * and a timestamp are the ceiling. Never a session cookie, session state, a captcha or
+ * `x-pawtect-token`, or a raw wplace request body.
  *
  * Raw coordinates are sent rather than counts because the **server** classifies them — it holds the
  * template chunks and the tile history, so on-template / wrong-colour / repair needs no trust in
@@ -20,12 +30,11 @@ import type { TileKey } from './tiles.js'
  *   `correct` or `repairs`: the response does not reveal which submitted pixels landed. The next
  *   tile-diff anchor re-establishes template correctness from ground truth.
  */
-export interface PaintEvent {
+export interface PaintEvent extends PainterIdentity {
   /** Client-generated, so a retry can never double-count. */
   readonly eventId: string
-  readonly username: string
   readonly season: number
-  readonly ts: number
+  readonly ts: Seconds
   readonly tiles: readonly PaintTile[]
   /** Number wplace reported accepting. */
   readonly painted: number
@@ -59,7 +68,7 @@ export interface PaintPixels {
 export interface TileOffer {
   readonly tile: TileKey
   readonly sha256: string
-  readonly ts: number
+  readonly ts: Seconds
 }
 
 export interface TileOfferResponse {
@@ -78,7 +87,7 @@ export interface TemplateStatus {
   readonly blank: number
   readonly total: number
   /** Newest tile observation feeding this figure. Stale coverage must be visible, not implied. */
-  readonly observedAt: number
+  readonly observedAt: Millis
 }
 
 export interface NodeStatus {
@@ -89,7 +98,7 @@ export interface NodeStatus {
   /** Unweighted companion — "3 of 7 complete" answers a different question to "94% by pixels". */
   readonly templatesComplete: number
   readonly templatesTotal: number
-  readonly observedAt: number
+  readonly observedAt: Millis
 }
 
 export type AlarmKind = 'regression' | 'sustained-griefing'
@@ -103,6 +112,6 @@ export interface Alarm {
   readonly templateId: string
   readonly kind: AlarmKind
   readonly pixelsLost: number
-  readonly firstSeen: number
-  readonly lastSeen: number
+  readonly firstSeen: Millis
+  readonly lastSeen: Millis
 }

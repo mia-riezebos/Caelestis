@@ -1,3 +1,4 @@
+import { type Seconds, seconds } from '@wts/shared'
 import {
   type CounterDelta,
   EXPIRES_AFTER_SECONDS,
@@ -26,8 +27,8 @@ const isBoundedCounter = (value: unknown): value is number =>
  */
 export const isValidCounterDelta = (
   delta: unknown,
-  nowSeconds: number,
-  hasLocalTrace: (templateId: string, bucketStart: number) => boolean = () => false,
+  nowSeconds: Seconds,
+  hasLocalTrace: (templateId: string, bucketStart: Seconds) => boolean = () => false,
 ): delta is CounterDelta => {
   if (typeof delta !== 'object' || delta === null) return false
 
@@ -45,8 +46,8 @@ export const isValidCounterDelta = (
   if (candidate.repairs > candidate.correct || candidate.correct > candidate.placed) return false
   if (!Number.isSafeInteger(candidate.occurredAt)) return false
 
-  const occurredAt = candidate.occurredAt as number
-  const bucketStart = Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS
+  const occurredAt = seconds(candidate.occurredAt as number)
+  const bucketStart = seconds(Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS)
   // Derived from the store's own window, never restated — see EXPIRES_AFTER_SECONDS.
   const bucketExpiresAt = bucketStart + EXPIRES_AFTER_SECONDS
   const latestAccepted = nowSeconds + EVENT_TIME_SKEW_SECONDS
