@@ -75,6 +75,27 @@ moved, mean and max distance moved, resulting distinct-colour count. An uploader
 moved, mean distance 31" knows they uploaded a photograph — the server just declines to decide that
 for them.
 
+## Ordering is client-side
+
+**Draw order is not stored.** No `sort_order` on nodes or templates, and none in the manifest. The
+userscript owns the whole ordering, across servers, groups and templates alike.
+
+`sort_order` had been doing two jobs: a viewer's presentation preference, which is genuinely
+client-side, and an author's layering intent — "the outline draws over the fill" — which is genuinely
+the alliance's. Only the first survives.
+
+The second is mostly moot because overlapping templates within a group are forbidden already (that
+rule exists so rollups cannot double-count). What remains is cross-group overlap inside one server,
+which is normally accidental rather than designed. Where it is designed, the alliance now has no way
+to express it, and different members may see different results.
+
+**?** The default order, since nothing is stored: sort by `created_at_ms`, oldest first — "the order
+things were added", stable, and free from UUIDv7's ordering. Deliberately *not* manifest array order,
+which would be server-side ordering smuggled back in through the ordering of a JSON array.
+
+Consequence for `28-native-wplace-format`: a `.wplace` file's `order` field has nowhere to land on
+import, and export has nothing to populate it from.
+
 ## D1 tables (Drizzle, `sqliteTable`)
 
 **Identifiers: `text` UUIDv7.** Close call against nanoid. The only place ordering earns anything is
@@ -103,9 +124,10 @@ id             text pk
 parent_id      text null → nodes.id
 path           text not null          -- '/canada/toronto', materialized
 name           text not null
-sort_order      integer not null       -- sparse: 100, 200, 300
 created_at_ms  integer not null
 ```
+
+**No `sort_order`.** Draw order is a userscript setting, not server state — see *Ordering* below.
 
 Index on `path` for prefix rollups. On rename or move, descendant paths are rewritten in one
 `UPDATE ... WHERE path LIKE '<old>/%'`. Moves are rare and trees are small, so no closure table.
@@ -116,7 +138,6 @@ Index on `path` for prefix rollups. On rename or move, descendant paths are rewr
 id                  text pk
 node_id             text not null → nodes.id
 name                text not null
-sort_order          integer not null
 season              integer not null      -- the canvas this is placed on
 current_version_id  text null → template_versions.id
 created_at_ms       integer not null

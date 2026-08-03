@@ -59,3 +59,26 @@ untouched with essentially zero overhead, which is the common case.
 - On version change, diff the manifest, fetch only new/changed chunks, and surface *what* changed
   ("griefwatch added 2 templates"). Doubles as the trust diff — a connected server can draw anything
   on your canvas, so changes should be visible.
+
+## Amendment — 2026-08-03: ordering moves entirely client-side
+
+**Reverses the sparse `sort_order` columns** on nodes and templates. Draw order is not stored and is
+not in the manifest; the userscript owns it end to end.
+
+The original z-order key was `[serverOrder, ...ancestorSortOrders, templateSortOrder]`, where only
+`serverOrder` was client-controlled. Now the whole tuple is.
+
+**What this gives up.** `sort_order` served two purposes and only one survives: a viewer's
+presentation preference (client-side, correctly) and an author's layering intent — "the outline draws
+over the fill" — which was the alliance's to decide. An alliance can no longer express that, and
+members may see different results where templates overlap.
+
+Largely defused by the existing rule forbidding overlapping templates *within* a group, which exists
+so rollups cannot double-count. What remains is cross-group overlap inside one server, normally
+accidental. Where it is deliberate, there is now no way to say so.
+
+**Default order**, since nothing is stored: oldest first by creation. Not manifest array order — that
+would be server-side ordering reintroduced through the order of a JSON array.
+
+Knock-on: a native `.wplace` file's `order` field has nowhere to land on import, and nothing to
+populate it from on export (`28-native-wplace-format`).
