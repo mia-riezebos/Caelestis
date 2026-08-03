@@ -79,11 +79,7 @@ export class MemoryCounterStore implements CounterStore {
     for (const delta of boundedDeltas) {
       // Match TelemetryShard: invalid and out-of-window input share the existing rejection counter
       // because both have the same operational outcome and remediation.
-      if (
-        !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
-          this.hasLocalTrace(templateId, bucketStart, nowSeconds),
-        )
-      ) {
+      if (!isValidCounterDelta(delta, nowSeconds)) {
         this.droppedLateCount += 1
         continue
       }
@@ -238,14 +234,6 @@ export class MemoryCounterStore implements CounterStore {
 
     this.pruneRetained(nowSeconds)
     this.recomputeAlarm(nowMilliseconds)
-  }
-
-  private hasLocalTrace(templateId: string, bucketStart: Seconds, nowSeconds: Seconds): boolean {
-    // The expiry instant is exclusive, so no local trace may rescue an expired bucket.
-    if (expiresAt(bucketStart) <= nowSeconds) return false
-
-    const key = bucketKey(templateId, bucketStart)
-    return this.pending.has(key) || this.flushBatch.has(key) || this.retained.has(key)
   }
 
   private pruneRetained(nowSeconds: Seconds): void {

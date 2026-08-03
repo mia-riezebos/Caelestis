@@ -90,11 +90,7 @@ export class TelemetryShard extends DurableObject<Env> {
     for (const delta of boundedDeltas) {
       // Keep one operational counter for all rejected input: both malformed and out-of-window
       // deltas have the same outcome and remediation, and splitting them would add schema surface.
-      if (
-        !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
-          this.hasLocalTrace(templateId, bucketStart, nowSeconds),
-        )
-      ) {
+      if (!isValidCounterDelta(delta, nowSeconds)) {
         droppedLate += 1
         continue
       }
@@ -417,36 +413,6 @@ export class TelemetryShard extends DurableObject<Env> {
         FLUSH_BATCH_LIMIT,
       )
       .toArray()
-  }
-
-  private hasLocalTrace(templateId: string, bucketStart: Seconds, nowSeconds: Seconds): boolean {
-    // The expiry instant is exclusive, so no local trace may rescue an expired bucket.
-    if (bucketStart + EXPIRES_AFTER_SECONDS <= nowSeconds) return false
-
-    return (
-      this.ctx.storage.sql
-        .exec<CountRow>(
-          `
-            SELECT COUNT(*) AS count
-            FROM (
-              SELECT 1
-              FROM pending_counters
-              WHERE template_id = ?1 AND bucket_start_s = ?2
-              UNION ALL
-              SELECT 1
-              FROM flush_batch
-              WHERE template_id = ?1 AND bucket_start_s = ?2
-              UNION ALL
-              SELECT 1
-              FROM retained_counters
-              WHERE template_id = ?1 AND bucket_start_s = ?2
-            )
-          `,
-          templateId,
-          bindSeconds(bucketStart),
-        )
-        .one().count > 0
-    )
   }
 
   private pruneRetained(nowSeconds: Seconds): void {

@@ -1,4 +1,4 @@
-import { type Millis, type Seconds, seconds } from '@wts/shared'
+import { MAX_PAINT_COUNT, type Millis, type Seconds, seconds } from '@wts/shared'
 
 /**
  * Live contribution counters. Durable Object today, a counters table later.
@@ -20,16 +20,21 @@ export const RETENTION_SECONDS: Seconds = seconds(3_600)
 /**
  * Derived windows, exported so every implementation and the validator share one definition.
  *
- * These were previously recomputed in three places and agreed only by coincidence. If the validator's
- * notion of "expired" drifts from the store's by even a second, it accepts a bucket whose retained
- * row has already been pruned — and the promotion join then writes only the late portion, which D1's
- * replace semantics turn into a silent undercount. Derive, never restate.
+ * These were previously recomputed in three places and agreed only by coincidence. Expiry is the
+ * sole authority on how late a delta may be, so if the validator's notion of "expired" drifts from
+ * the store's by even a second, it accepts a bucket whose retained row has already been pruned — and
+ * the promotion join then writes only the late portion, which D1's replace semantics turn into a
+ * silent undercount. Derive, never restate.
+ *
+ * The store's own pruning defends the same boundary from the other side: a retained row outlives its
+ * expiry for as long as pending or flush-batch state still references it, so an in-flight rewrite
+ * always has its subtrahend.
  */
 export const FLUSHABLE_AFTER_SECONDS: Seconds = seconds(RESOLUTION_SECONDS + GRACE_SECONDS)
 export const EXPIRES_AFTER_SECONDS: Seconds = seconds(FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS)
 
-/** Per-delta guardrail; a full Wplace charge drain is only around 10,000 pixels. */
-export const MAX_COUNTER_DELTA_VALUE = 100_000
+/** Per-delta guardrail, shared with the wire schemas so a payload cannot pass one and fail the other. */
+export const MAX_COUNTER_DELTA_VALUE = MAX_PAINT_COUNT
 
 /** Prevent unbounded identifiers from creating permanent rows in the shared stores. */
 export const MAX_TEMPLATE_ID_LENGTH = 64
@@ -46,8 +51,10 @@ export interface CounterDelta {
   /**
    * Safe-integer Unix seconds when the paint happened. This must be the true event time, not the
    * time the caller happened to report it. At record time it must be no later than
-   * `now + GRACE_SECONDS`. Before its minute bucket expires, matching local pending, flush-batch,
-   * or retained state may absorb a cumulative rewrite. The exact expiry instant is exclusive.
+   * `now + GRACE_SECONDS`, and its minute bucket must not yet have expired — see
+   * `EXPIRES_AFTER_SECONDS`. Until then a rewrite of an already-flushed bucket is absorbed
+   * cumulatively, against whatever retained state the store still holds. The exact expiry instant
+   * is exclusive.
    */
   readonly occurredAt: Seconds
   /** Non-negative integer no greater than MAX_COUNTER_DELTA_VALUE. */

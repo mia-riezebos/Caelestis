@@ -122,9 +122,14 @@ describe('tile and template schemas', () => {
   })
 
   it('rejects an out-of-world bounding-box minimum', () => {
+    // maxX must differ from minX, or the zero-width filter rejects this regardless of the minX
+    // bound and the test passes with that bound widened to WORLD_PIXELS — under which
+    // template_versions_pixel_bounds_check would refuse an INSERT the wire had accepted.
+    // Only x is asserted. `minY < maxY <= WORLD_PIXELS` already implies minY's upper bound, so a y
+    // case would pass with that bound deleted and claim cover it does not have.
     expectRejected(Template, {
       ...validTemplate,
-      bbox: { minX: 2_048_000, minY: 0, maxX: 2_048_000, maxY: 1 },
+      bbox: { minX: 2_048_000, minY: 0, maxX: 1, maxY: 1 },
     })
   })
 
@@ -348,6 +353,57 @@ describe('cross-field and time-unit schemas', () => {
       templates: [wrapped(1), wrapped(2)],
       tiles: [tileKey({ x: 2047, y: 0 })],
     })
+  })
+
+  it.each([
+    // Both halves of the wrapped span must be compared against the unwrapped one. Pairing two
+    // wrapped boxes — as the seam test above does — leaves either half deletable, because whichever
+    // half survives still reports the overlap. Only a wrapped-against-unwrapped pair separates them.
+    ['the low half, past the seam', { minX: 0, maxX: 500 }],
+    ['the high half, before the seam', { minX: 2_047_500, maxX: 2_048_000 }],
+  ])('rejects a wrapped template overlapping an unwrapped one on %s', (_, xs) => {
+    const wrapped = {
+      ...validTemplate,
+      id: uuid(900),
+      version: uuid(901),
+      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
+    }
+    const unwrapped = {
+      ...validTemplate,
+      id: uuid(902),
+      version: uuid(903),
+      bbox: { ...xs, minY: 0, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [wrapped, unwrapped],
+      tiles: [tileKey({ x: 2047, y: 0 }), tileKey({ x: 0, y: 0 })],
+    })
+  })
+
+  it('accepts a wrapped template beside an unwrapped one that clears both of its halves', () => {
+    const wrapped = {
+      ...validTemplate,
+      id: uuid(910),
+      version: uuid(911),
+      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
+    }
+    const unwrapped = {
+      ...validTemplate,
+      id: uuid(912),
+      version: uuid(913),
+      bbox: { minX: 1_000, minY: 0, maxX: 2_047_000, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 1, y: 0 }), hash: HASH }],
+    }
+    const manifest = {
+      ...validManifest,
+      templates: [wrapped, unwrapped],
+      tiles: [tileKey({ x: 2047, y: 0 }), tileKey({ x: 1, y: 0 })],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
   it('accepts two wrapped templates that do not overlap in y', () => {

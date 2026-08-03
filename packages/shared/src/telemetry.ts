@@ -2,6 +2,20 @@ import type { TileKey } from './tiles.js'
 import type { Millis, Seconds } from './time.js'
 
 /** Stable public identity assigned by wplace. */
+/**
+ * The most pixels one paint report may claim, per tile and in total.
+ *
+ * This lives in `@wts/shared` because both sides of the boundary have to agree on it and neither
+ * may depend on the other: `@wts/wire-schema` decides what a request is allowed to contain, and
+ * `apps/backend`'s CounterStore decides what a delta is allowed to contain. Restating it in both
+ * was a comment claiming a test pinned them together — there was no such test, and there could not
+ * be one, since nothing links the two packages. A shared constant needs no pinning.
+ *
+ * The value is a bound on absurdity, not on play: a full Wplace charge drain is around 10,000
+ * pixels, so this is an order of magnitude of headroom.
+ */
+export const MAX_PAINT_COUNT = 100_000
+
 export type WplaceUserId = number
 
 /** Attribution uses the stable id; the display name is a refreshable label. */

@@ -1,5 +1,5 @@
 import type * as Shared from '@wts/shared'
-import { TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { Schema } from 'effect'
 
 const MAX_IDENTIFIER_LENGTH = 64
@@ -15,22 +15,27 @@ const MAX_TEMPLATE_CHUNKS = MAX_MANIFEST_TILES
 const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000
 /**
- * Deliberately redundant, and only meaningful as a cost bound. The PaintEvent filters below already
- * force every tile to carry a pixel and the event as a whole to stay within MAX_PAINTED_PIXELS, so
- * the tile count cannot exceed that on semantics alone — mutating this constant changes no
- * accept/reject outcome and no test pins it. What it does is stop the decoder validating four
- * million tile structs before the filters get a chance to reject the payload, which the previous
- * WORLD_TILES-squared value did not.
+ * Deliberately redundant, and it buys less than it looks like it does.
+ *
+ * The PaintEvent filters below already force every tile to carry a pixel and the event as a whole
+ * to stay within MAX_PAINTED_PIXELS, so the tile count cannot exceed that on semantics alone —
+ * mutating this constant changes no accept/reject outcome, and no test pins it.
+ *
+ * It is not a cost bound either, which an earlier version of this comment claimed: `isMaxLength` is
+ * a refinement over the already-decoded array, so every element is validated before the length is
+ * checked. Measured, an over-cap payload reports its error at index 100_000, and decode time stays
+ * linear in what was *sent* — 800,000 tiles takes 1.6s whether the cap is 100,000 or four million.
+ * Bounding the work would need a limit the decoder applies while reading, which Effect's array
+ * combinator does not offer. What the cap does buy is an error naming the limit rather than a
+ * per-item complaint, and a stated intent for whoever adds streaming decode later.
  */
-const MAX_PAINT_TILES = 100_000
-/**
- * Both mirror `MAX_COUNTER_DELTA_VALUE` in `apps/backend/src/ports/counter-store.ts`, which cannot be
- * imported here — the wire package must not depend on the backend. `counter-store.ts` says "derive,
- * never restate"; this is the one place that is impossible, so the restatement is named as such and
- * a test pins the two together.
- */
-const MAX_PAINT_PIXELS_PER_TILE = 100_000
-const MAX_PAINTED_PIXELS = 100_000
+const MAX_PAINT_TILES = MAX_PAINT_COUNT
+// Both derive from the shared guardrail that `MAX_COUNTER_DELTA_VALUE` also derives from, so a
+// payload cannot pass this boundary and then be rejected by the CounterStore behind it. They were
+// restated here with a comment claiming a test pinned them to the backend's copy; no such test
+// existed and none could, since the two packages do not depend on each other.
+const MAX_PAINT_PIXELS_PER_TILE = MAX_PAINT_COUNT
+const MAX_PAINTED_PIXELS = MAX_PAINT_COUNT
 // 09-recon-palette has not recovered Wplace's complete index order yet. Keep this permissive until
 // that ticket establishes the real upper bound instead of deriving it from the incomplete palette.
 const MAX_PALETTE_INDEX = 65_535
@@ -117,6 +122,8 @@ const TileKey = Schema.declare<Shared.TileKey>(
 
 const BoundingBoxStruct = Schema.Struct({
   minX: integerBetween(0, WORLD_PIXELS - 1),
+  // Redundant, like maxY below: `minY < maxY <= WORLD_PIXELS` already implies it. Stated for
+  // symmetry with min_y's SQL CHECK.
   minY: integerBetween(0, WORLD_PIXELS - 1),
   // The exclusive end runs 1..WORLD_PIXELS, not 0..WORLD_PIXELS. A span ending exactly on the seam
   // is WORLD_PIXELS; allowing 0 as well would give that one span two encodings that compare

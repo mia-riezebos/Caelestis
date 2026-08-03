@@ -128,17 +128,21 @@ class SqliteDurableObjectStorage {
    */
   transactionSync<T>(closure: () => T): T {
     this.assertUngated()
-    const savepoint = `wts_txn_${this.transactionDepth}`
-    this.database.exec(this.transactionDepth === 0 ? 'BEGIN IMMEDIATE' : `SAVEPOINT ${savepoint}`)
-    this.transactionDepth += 1
+    const depth = this.transactionDepth
+    const savepoint = `wts_txn_${depth}`
+    this.database.exec(depth === 0 ? 'BEGIN IMMEDIATE' : `SAVEPOINT ${savepoint}`)
+    this.transactionDepth = depth + 1
+    // Restore the depth from the value captured on entry rather than decrementing. A decrement runs
+    // twice if the closing statement itself throws, leaving the depth at -1 and every later call
+    // emitting `SAVEPOINT wts_txn_-1`, which is a syntax error rather than a transaction.
     try {
       const result = closure()
-      this.transactionDepth -= 1
-      this.database.exec(this.transactionDepth === 0 ? 'COMMIT' : `RELEASE ${savepoint}`)
+      this.transactionDepth = depth
+      this.database.exec(depth === 0 ? 'COMMIT' : `RELEASE ${savepoint}`)
       return result
     } catch (error) {
-      this.transactionDepth -= 1
-      this.database.exec(this.transactionDepth === 0 ? 'ROLLBACK' : `ROLLBACK TO ${savepoint}`)
+      this.transactionDepth = depth
+      this.database.exec(depth === 0 ? 'ROLLBACK' : `ROLLBACK TO ${savepoint}`)
       throw error
     }
   }
@@ -441,6 +445,87 @@ describe('the Durable Object fake', () => {
     ])
   })
 
+  it('keeps the work of a nested transaction that succeeds', async () => {
+    // The nesting test above only covers the inner-throws path, so a fake whose RELEASE was really
+    // a ROLLBACK TO — silently discarding every successful nested transaction — passed it.
+    const harness = await makeHarness(millis(150_000))
+
+    harness.storage.transactionSync(() => {
+      harness.storage.transactionSync(() => {
+        harness.storage.sql.exec(
+          `INSERT INTO pending_counters (template_id, bucket_start_s, placed, correct, repairs)
+           VALUES ('inner', 60, 1, 1, 0)`,
+        )
+      })
+      harness.storage.sql.exec(
+        `INSERT INTO pending_counters (template_id, bucket_start_s, placed, correct, repairs)
+         VALUES ('outer', 60, 2, 2, 0)`,
+      )
+    })
+
+    await expect(harness.shard.readPending(['inner', 'outer'])).resolves.toEqual([
+      { templateId: 'inner', placed: 1, correct: 1, repairs: 0, flushedAt: null },
+      { templateId: 'outer', placed: 2, correct: 2, repairs: 0, flushedAt: null },
+    ])
+  })
+
+  it('unwinds three deep, rolling back only the innermost', async () => {
+    const harness = await makeHarness(millis(150_000))
+    const insert = (templateId: string): void => {
+      harness.storage.sql.exec(
+        `INSERT INTO pending_counters (template_id, bucket_start_s, placed, correct, repairs)
+         VALUES (?1, 60, 1, 1, 0)`,
+        templateId,
+      )
+    }
+
+    harness.storage.transactionSync(() => {
+      insert('depth-0')
+      harness.storage.transactionSync(() => {
+        insert('depth-1')
+        expect(() =>
+          harness.storage.transactionSync(() => {
+            insert('depth-2')
+            throw new Error('deepest abort')
+          }),
+        ).toThrow('deepest abort')
+      })
+    })
+
+    await expect(harness.shard.readPending(['depth-0', 'depth-1', 'depth-2'])).resolves.toEqual([
+      { templateId: 'depth-0', placed: 1, correct: 1, repairs: 0, flushedAt: null },
+      { templateId: 'depth-1', placed: 1, correct: 1, repairs: 0, flushedAt: null },
+      { templateId: 'depth-2', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+    ])
+  })
+
+  it('leaves the nesting depth usable when a closing statement throws', async () => {
+    // A depth left negative makes every later transactionSync emit `SAVEPOINT wts_txn_-1`, so the
+    // whole fake stops working several tests after the one that broke it.
+    const harness = await makeHarness(millis(150_000))
+    const original = harness.storageDatabase.exec.bind(harness.storageDatabase)
+    const failing = vi
+      .spyOn(harness.storageDatabase, 'exec')
+      .mockImplementation((sql: string, ...rest: unknown[]) => {
+        if (sql === 'COMMIT') throw new Error('commit rejected')
+        return (original as (sql: string, ...rest: unknown[]) => unknown)(sql, ...rest)
+      })
+
+    expect(() => harness.storage.transactionSync(() => undefined)).toThrow('commit rejected')
+    failing.mockRestore()
+
+    // Still a working transaction rather than a syntax error.
+    harness.storage.transactionSync(() => {
+      harness.storage.sql.exec(
+        `INSERT INTO pending_counters (template_id, bucket_start_s, placed, correct, repairs)
+         VALUES ('after', 60, 1, 1, 0)`,
+      )
+    })
+    await expect(harness.shard.readPending(['after'])).resolves.toEqual([
+      { templateId: 'after', placed: 1, correct: 1, repairs: 0, flushedAt: null },
+    ])
+  })
+
   it('refuses storage access while blockConcurrencyWhile is outstanding', async () => {
     // The runtime defers such a call rather than rejecting it, but a fake that simply allowed it
     // would let a test observe a half-migrated shard and call that a pass.
@@ -521,11 +606,43 @@ describe('TelemetryShard', () => {
     // Both failure modes, driven through both implementations at once. Verified separately these
     // only prove each side is self-consistent; driven together they prove the backoffs, the retained
     // rows and the failure counters have not drifted apart.
-    for (const failAt of ['before-commit', 'after-commit'] as const) {
+    //
+    // Each iteration must record fresh flushable activity first. The alarms above drained
+    // everything, and an alarm with nothing to flush returns before it ever reaches appendBuckets —
+    // so arming a failure against an empty shard arms it for whichever later alarm happens to have
+    // work, which is how the first version of this loop injected nothing at all. The failure-count
+    // assertion below is what makes that impossible to reintroduce silently.
+    let expectedFailures = 0
+    for (const [index, failAt] of (['before-commit', 'after-commit'] as const).entries()) {
+      const fresh = [
+        {
+          templateId: 'template-a',
+          occurredAt: seconds(8_100 - index * 60),
+          placed: 2,
+          correct: 1,
+          repairs: 1,
+        },
+      ]
+      await shard.shard.record(fresh)
+      await memory.record(fresh)
+      await assertParity()
+
       shard.d1.failNextBatchAt(failAt)
       memorySql.failNextBatchAt(failAt)
       await shard.deliverAlarm()
       await memory.alarm()
+
+      expectedFailures += 1
+      expect(await shard.shard.readFlushFailureCount()).toBe(expectedFailures)
+      await assertParity()
+
+      // Recover, so the next iteration starts from a healed shard rather than compounding backoff.
+      shard.clock.now = millis(shard.clock.now + 120_000)
+      clock.now = shard.clock.now
+      await shard.deliverAlarm()
+      await memory.alarm()
+      expectedFailures = 0
+      expect(await shard.shard.readFlushFailureCount()).toBe(0)
       await assertParity()
     }
 
@@ -736,6 +853,64 @@ describe('TelemetryShard', () => {
     expect(sumBuckets(harness.d1Buckets())).toEqual({ placed: 4, correct: 3, repairs: 1 })
     await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
       { templateId: 'template-a', placed: 2, correct: 1, repairs: 0, flushedAt: 150_000 },
+    ])
+  })
+
+  it('keeps a retained row alive past its expiry while pending activity still references it', async () => {
+    // The sibling of the flush_batch guard, and the more dangerous one. The promotion join writes
+    // pending + retained, and D1 replaces rather than adds — so if retained is pruned out from under
+    // a pending late rewrite, the flush writes only the late portion over the larger value D1
+    // already holds. That undercount is silent, permanent, and never heals.
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+    ])
+    await harness.deliverAlarm()
+
+    // Stall a *different* template in flush_batch, so the flush_batch guard cannot be what keeps
+    // template-a's retained row alive. Promotion only runs against an empty batch, so template-a's
+    // late rewrite stays in pending_counters for the whole outage.
+    harness.clock.now = millis(400_000)
+    await harness.shard.record([
+      { templateId: 'template-b', occurredAt: seconds(190), placed: 3, correct: 2, repairs: 0 },
+    ])
+    harness.d1.failNextBatchAt('before-commit')
+    await harness.deliverAlarm()
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 6, correct: 4, repairs: 1 },
+    ])
+
+    // Outlast bucket 60's expiry at 3750s with the batch still owed, so the prune runs against a
+    // retained row that only pending_counters still references.
+    harness.clock.now = millis(4_000_000)
+    harness.d1.failNextBatchAt('before-commit')
+    await harness.deliverAlarm()
+
+    // D1 recovers: the stalled batch drains, then the next alarm promotes the late rewrite.
+    await harness.deliverAlarm()
+    await harness.deliverAlarm()
+
+    expect(harness.d1Buckets()).toEqual([
+      {
+        templateId: 'template-a',
+        resolution: RESOLUTION_SECONDS,
+        bucketStart: 60,
+        placed: 10,
+        correct: 7,
+        repairs: 2,
+      },
+      {
+        templateId: 'template-b',
+        resolution: RESOLUTION_SECONDS,
+        bucketStart: 180,
+        placed: 3,
+        correct: 2,
+        repairs: 0,
+      },
+    ])
+    await expect(harness.shard.readPending(['template-a', 'template-b'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: 4_000_000 },
+      { templateId: 'template-b', placed: 0, correct: 0, repairs: 0, flushedAt: 4_000_000 },
     ])
   })
 
