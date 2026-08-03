@@ -24,7 +24,7 @@ would be worse than either.
 
 **Timestamps: split by kind, with the unit in the column name.**
 
-- **Domain time** — `occurred_at_s`, `bucket_start` — is **seconds**. It gets floored to 60s on
+- **Domain time** — `occurred_at_s`, `bucket_start_s`, `day_s` — is **seconds**. It gets floored to 60s on
   arrival, so millisecond precision is discarded immediately.
 - **Bookkeeping time** — `created_at_ms`, `observed_at_ms`, `revoked_at_ms` — is **milliseconds**,
   because ordering, last-write-wins and tie-breaking all need it. Two versions created in the same
@@ -42,7 +42,7 @@ parent_id      text null → nodes.id
 path           text not null          -- '/canada/toronto', materialized
 name           text not null
 sort_order      integer not null       -- sparse: 100, 200, 300
-created_at     integer not null
+created_at_ms  integer not null
 ```
 
 Index on `path` for prefix rollups. **?** On rename or move, descendant paths are rewritten in one
@@ -57,7 +57,7 @@ name                text not null
 sort_order          integer not null
 season              integer not null      -- the canvas this is placed on
 current_version_id  text null → template_versions.id
-created_at          integer not null
+created_at_ms       integer not null
 ```
 
 `season` lives here because a template is placed on a specific canvas, and the season is a runtime
@@ -68,7 +68,7 @@ value in both the tile URL and the paint body.
 ```
 id            text pk
 template_id   text not null → templates.id
-created_at    integer not null
+created_at_ms integer not null
 created_by    text not null
 min_x, min_y, max_x, max_y   integer not null   -- global canvas pixels
 total_pixels  integer not null                  -- non-transparent; progress denominator
@@ -112,8 +112,8 @@ code_hash    text pk               -- sha256 of a 128-bit base32 code
 label        text not null         -- 'discord-regulars'
 scope        text not null         -- 'read' | 'report' | 'admin'
 created_by   text not null
-created_at   integer not null
-revoked_at   integer null
+created_at_ms integer not null
+revoked_at_ms integer null
 ```
 
 Codes are server-generated high entropy, so SHA-256 is sufficient; no slow KDF.
@@ -121,8 +121,8 @@ Codes are server-generated high entropy, so SHA-256 is sufficient; no slow KDF.
 ### `telemetry_buckets` — exists, unchanged
 
 ```
-template_id, resolution, bucket_start, placed, correct, repairs
-primary key (template_id, resolution, bucket_start)
+template_id, resolution, bucket_start_s, placed, correct, repairs
+primary key (template_id, resolution, bucket_start_s)
 ```
 
 ### `contributions` — leaderboard rollups
@@ -154,10 +154,10 @@ is a real relaxation and is recorded here rather than happening quietly.
 
 ```
 tile_x, tile_y   integer not null
-observed_at      integer not null
+observed_at_ms   integer not null
 sha256           text not null     -- R2 key tiles/{sha256}.png
 reporter         text not null
-primary key (tile_x, tile_y, observed_at)
+primary key (tile_x, tile_y, observed_at_ms)
 ```
 
 ## Wire schemas (`packages/wire-schema`)
@@ -165,6 +165,10 @@ primary key (tile_x, tile_y, observed_at)
 One schema per wire type, each `satisfies Schema.Schema<SharedType>`:
 
 - `Manifest`, `ServerInfo`, `Node`, `Template`, `Chunk`
+
+**`Chunk` in `packages/shared` needs reshaping first.** It still carries `offsetX`, `offsetY`,
+`width`, `height` from the cropped-sub-rectangle model. Full tiles reduce it to `{ tile, hash }`,
+which also shrinks the manifest — the single largest thing the userscript downloads.
 - `PaintEvent`, `PaintTile`, `PaintPixels`
 - `TileOffer`, `TileOfferResponse`
 - `TemplateStatus`, `NodeStatus`, `Alarm`
