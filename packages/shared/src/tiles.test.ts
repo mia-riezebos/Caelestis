@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   canvasPixelToLatLng,
   latLngToCanvasPixel,
+  MAX_MERCATOR_LATITUDE,
   parseTileKey,
   TILE_SIZE,
   tileKey,
+  WORLD_PIXELS,
 } from './tiles.js'
 
 describe('tileKey', () => {
@@ -57,5 +59,32 @@ describe('canvas coordinate conversion', () => {
     const origin = latLngToCanvasPixel({ lat: 0, lng: 0 })
     expect(latLngToCanvasPixel({ lat: 0, lng: 1 }).x).toBeGreaterThan(origin.x)
     expect(latLngToCanvasPixel({ lat: -1, lng: 0 }).y).toBeGreaterThan(origin.y)
+  })
+})
+
+describe('latLngToCanvasPixel at the projection limits', () => {
+  // Web Mercator sends the poles to infinity, so an unclamped formula produces Infinity, a large
+  // negative, or NaN — each of which would flow into a bounding box and then into tile arithmetic.
+  it.each([
+    ['south pole', -90],
+    ['north pole', 90],
+    ['past the south pole', -120],
+    ['past the north pole', 120],
+  ])('produces a finite in-canvas y at the %s', (_label, lat) => {
+    const { y } = latLngToCanvasPixel({ lat, lng: 0 })
+    expect(Number.isFinite(y)).toBe(true)
+    expect(y).toBeGreaterThanOrEqual(0)
+    expect(y).toBeLessThanOrEqual(WORLD_PIXELS)
+  })
+
+  it('clamps to the same pixel as the Mercator limit itself', () => {
+    expect(latLngToCanvasPixel({ lat: -90, lng: 0 })).toEqual(
+      latLngToCanvasPixel({ lat: -MAX_MERCATOR_LATITUDE, lng: 0 }),
+    )
+  })
+
+  it('keeps longitude inside the canvas when it exceeds a half turn', () => {
+    const { x } = latLngToCanvasPixel({ lat: 0, lng: 361 })
+    expect(x).toBe(WORLD_PIXELS)
   })
 })

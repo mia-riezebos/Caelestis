@@ -64,11 +64,32 @@ export const WORLD_PIXELS = WORLD_TILES * TILE_SIZE
 const DEGREES_PER_RADIAN = 180 / Math.PI
 const RADIANS_PER_DEGREE = Math.PI / 180
 
-/** Convert latitude/longitude to fractional global canvas-pixel coordinates. */
+/**
+ * The latitude at which a Web Mercator projection becomes square, and therefore the edge of the
+ * canvas. Nothing exists above it to map to: the projection sends the poles to infinity.
+ */
+export const MAX_MERCATOR_LATITUDE = 85.05112877980659
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(Math.max(value, min), max)
+
+/**
+ * Convert latitude/longitude to fractional global canvas-pixel coordinates.
+ *
+ * Latitude is clamped to the Mercator limit because the projection has no answer beyond it — `±90`
+ * produces `±Infinity` and anything past a pole produces `NaN`, either of which would flow into a
+ * bounding box and then into tile arithmetic. Clamping is the projection's own semantics, not a
+ * guess: the canvas simply does not extend past that parallel.
+ *
+ * This is deliberately not validation. A caller handing over an out-of-range latitude has a bug
+ * worth surfacing, and the place to reject it is the wire boundary, where the range is a stated
+ * invariant rather than a projection detail.
+ */
 export const latLngToCanvasPixel = ({ lat, lng }: LatLng): CanvasPixel => {
-  const latitudeRadians = lat * RADIANS_PER_DEGREE
+  const latitudeRadians =
+    clamp(lat, -MAX_MERCATOR_LATITUDE, MAX_MERCATOR_LATITUDE) * RADIANS_PER_DEGREE
   return {
-    x: ((lng + 180) / 360) * WORLD_PIXELS,
+    x: ((clamp(lng, -180, 180) + 180) / 360) * WORLD_PIXELS,
     y:
       ((1 - Math.log(Math.tan(latitudeRadians) + 1 / Math.cos(latitudeRadians)) / Math.PI) / 2) *
       WORLD_PIXELS,
