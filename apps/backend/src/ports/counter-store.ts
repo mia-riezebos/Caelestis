@@ -44,9 +44,8 @@ export interface CounterDelta {
   /**
    * Safe-integer Unix seconds when the paint happened. This must be the true event time, not the
    * time the caller happened to report it. At record time it must be no later than
-   * `now + GRACE_SECONDS`. Its minute bucket must not have expired unless the store still has a
-   * local pending, flush-batch, or retained row at the retention boundary that can absorb a
-   * cumulative rewrite.
+   * `now + GRACE_SECONDS`. Before its minute bucket expires, matching local pending, flush-batch,
+   * or retained state may absorb a cumulative rewrite. The exact expiry instant is exclusive.
    */
   readonly occurredAt: number
   /** Non-negative integer no greater than MAX_COUNTER_DELTA_VALUE. */

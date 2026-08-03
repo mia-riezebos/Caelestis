@@ -258,9 +258,21 @@ export class TelemetryShard extends DurableObject<Env> {
         repairs: row.repairs,
       }))
 
-      // Publish the cumulative local value before the remote write. A crash can then only make the
-      // live display transiently under-count; flush_batch remains the retry source until D1 confirms.
+      // D1 must commit before retained_counters advances. Advancing retained first makes
+      // readPending subtract the batch from itself and report zero for an unbounded D1 outage.
+      // Writing D1 first instead risks a transient over-count if the isolate dies after D1 commits
+      // but before local bookkeeping; the next successful alarm rewrites the same cumulative value
+      // and self-heals. Prefer that one-alarm crash window over incorrect totals for a whole outage.
+      try {
+        await new D1SqlStore(this.env.DB).appendBuckets(buckets)
+      } catch (error) {
+        const failureCount = this.incrementFlushFailureCount()
+        await this.ctx.storage.setAlarm(this.clock() + flushRetryDelay(failureCount))
+        throw error
+      }
+
       this.ctx.storage.transactionSync(() => {
+        this.resetFlushFailureCount()
         for (const row of rows) {
           this.ctx.storage.sql.exec(
             `
@@ -278,20 +290,6 @@ export class TelemetryShard extends DurableObject<Env> {
             row.correct,
             row.repairs,
           )
-        }
-      })
-
-      try {
-        await new D1SqlStore(this.env.DB).appendBuckets(buckets)
-      } catch (error) {
-        const failureCount = this.incrementFlushFailureCount()
-        await this.ctx.storage.setAlarm(nowMilliseconds + flushRetryDelay(failureCount))
-        throw error
-      }
-
-      this.ctx.storage.transactionSync(() => {
-        this.resetFlushFailureCount()
-        for (const row of rows) {
           this.ctx.storage.sql.exec(
             `
               INSERT INTO counter_meta (template_id, flushed_at)
@@ -380,9 +378,8 @@ export class TelemetryShard extends DurableObject<Env> {
   }
 
   private hasLocalTrace(templateId: string, bucketStart: number, nowSeconds: number): boolean {
-    // A local row may rescue an event exactly at the retention edge, but it must never keep a
-    // long-dead bucket admissible throughout an extended outage.
-    if (bucketStart + EXPIRES_AFTER_SECONDS < nowSeconds) return false
+    // The expiry instant is exclusive, so no local trace may rescue an expired bucket.
+    if (bucketStart + EXPIRES_AFTER_SECONDS <= nowSeconds) return false
 
     return (
       this.ctx.storage.sql

@@ -21,8 +21,8 @@ const isBoundedCounter = (value: unknown): value is number =>
  *
  * The future bound matters because a future bucket cannot become flushable until wall time catches
  * up with it. Without that bound, pending rows could remain live and consume storage indefinitely.
- * At the exact retention boundary, an adapter may accept a bucket only while it still has local
- * state that can absorb a cumulative rewrite. Adapters must not let traces extend that boundary.
+ * Before the retention boundary, an adapter may accept an otherwise-old bucket only while it still
+ * has local state that can absorb a cumulative rewrite. The exact expiry instant is exclusive.
  */
 export const isValidCounterDelta = (
   delta: unknown,

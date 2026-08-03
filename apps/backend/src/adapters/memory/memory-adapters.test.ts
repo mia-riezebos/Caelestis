@@ -375,7 +375,7 @@ describe('memory adapters', () => {
     expect(store.nextAlarmAt()).toBe(201_000)
     expect(store.nextAlarmAt()).not.toBe(preFailureAlarm)
     await expect(store.readPending(['template-a'])).resolves.toEqual([
-      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
     ])
 
     nowSeconds = 201
@@ -454,6 +454,31 @@ describe('memory adapters', () => {
     expect(store.nextAlarmAt()).toBe(271_000)
   })
 
+  it('measures retry backoff from failure time and caps it at 60 seconds', async () => {
+    let nowMilliseconds = 100_000
+    const sql: SqlStore = {
+      async appendBuckets(_buckets: readonly TelemetryBucket[]): Promise<void> {
+        nowMilliseconds += 61_000
+        throw new Error('D1 unavailable')
+      },
+      async readBuckets(_query: BucketQuery): Promise<readonly TelemetryBucket[]> {
+        return []
+      },
+    }
+    const store = new MemoryCounterStore(sql, () => nowMilliseconds)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+    ])
+    nowMilliseconds = 200_000
+
+    for (const expectedDelay of [1, 2, 4, 8, 16, 32, 60, 60]) {
+      await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+      expect(store.nextAlarmAt()).toBe(nowMilliseconds + expectedDelay * 1_000)
+      nowMilliseconds = store.nextAlarmAt() as number
+    }
+  })
+
   it('rewrites a retained bucket with its cumulative total after a late arrival', async () => {
     let nowSeconds = 150
     const sql = new MemorySqlStore()
@@ -490,7 +515,7 @@ describe('memory adapters', () => {
     ])
   })
 
-  it('absorbs a late arrival past retention while its bucket remains pending locally', async () => {
+  it('absorbs a late arrival just before retention expires while its bucket remains pending', async () => {
     let nowSeconds = 150
     const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
 
@@ -498,7 +523,7 @@ describe('memory adapters', () => {
       { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
     ])
 
-    nowSeconds = 60 + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS
+    nowSeconds = 60 + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS - 1
     await store.record([
       { templateId: 'template-a', occurredAt: 110, placed: 2, correct: 1, repairs: 1 },
     ])
@@ -560,7 +585,7 @@ describe('memory adapters', () => {
     ])
   })
 
-  it('accepts a boundary delta when its only local trace is a preserved flush batch', async () => {
+  it('rejects a boundary delta because the exact expiry instant is exclusive', async () => {
     const bucketStart = 60
     const nowSeconds = bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS
     const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
@@ -590,9 +615,9 @@ describe('memory adapters', () => {
       { templateId: 'template-a', occurredAt: bucketStart + 1, placed: 2, correct: 1, repairs: 1 },
     ])
 
-    await expect(store.readDroppedLateCount()).resolves.toBe(0)
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
     await expect(store.readPending(['template-a'])).resolves.toEqual([
-      { templateId: 'template-a', placed: 6, correct: 4, repairs: 2, flushedAt: null },
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
     ])
   })
 
@@ -640,6 +665,114 @@ describe('memory adapters', () => {
         toSeconds: 9_960,
       }),
     ).resolves.toHaveLength(FLUSH_BATCH_LIMIT + 5)
+  })
+
+  it('preserves a partially drained chunk backlog across a D1 failure', async () => {
+    let nowSeconds = 10_000
+    let appendAttempt = 0
+    const persisted = new MemorySqlStore()
+    const batches: TelemetryBucket[][] = []
+    const sql: SqlStore = {
+      async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
+        appendAttempt += 1
+        batches.push(buckets.map((bucket) => ({ ...bucket })))
+        if (appendAttempt === 2) throw new Error('D1 unavailable')
+        await persisted.appendBuckets(buckets)
+      },
+      readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
+        return persisted.readBuckets(query)
+      },
+    }
+    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const templateIds = Array.from(
+      { length: FLUSH_BATCH_LIMIT + 5 },
+      (_, index) => `template-${index.toString().padStart(2, '0')}`,
+    )
+
+    await store.record(
+      templateIds.map((templateId) => ({
+        templateId,
+        occurredAt: 9_950,
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      })),
+    )
+    await store.alarm()
+    await store.record([
+      { templateId: 'template-00', occurredAt: 9_950, placed: 1, correct: 1, repairs: 0 },
+    ])
+
+    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    expect(batches.map((batch) => batch.length)).toEqual([FLUSH_BATCH_LIMIT, 5])
+    await expect(store.readPending(['template-00', 'template-40'])).resolves.toEqual([
+      { templateId: 'template-00', placed: 1, correct: 1, repairs: 0, flushedAt: 10_000_000 },
+      { templateId: 'template-40', placed: 1, correct: 1, repairs: 0, flushedAt: null },
+    ])
+
+    nowSeconds += 1
+    await store.alarm()
+    await store.alarm()
+
+    expect(batches.map((batch) => batch.length)).toEqual([FLUSH_BATCH_LIMIT, 5, 5, 1])
+    await expect(
+      sql.readBuckets({
+        templateIds,
+        resolution: RESOLUTION_SECONDS,
+        fromSeconds: 9_900,
+        toSeconds: 9_960,
+      }),
+    ).resolves.toHaveLength(FLUSH_BATCH_LIMIT + 5)
+    await expect(
+      sql.readBuckets({
+        templateIds: ['template-00'],
+        resolution: RESOLUTION_SECONDS,
+        fromSeconds: 9_900,
+        toSeconds: 9_960,
+      }),
+    ).resolves.toEqual([
+      {
+        templateId: 'template-00',
+        resolution: RESOLUTION_SECONDS,
+        bucketStart: 9_900,
+        placed: 2,
+        correct: 2,
+        repairs: 0,
+      },
+    ])
+  })
+
+  it('flushes the same sorted chunk as the Durable Object for reverse-recorded input', async () => {
+    const nowSeconds = 10_000
+    const batches: TelemetryBucket[][] = []
+    const sql: SqlStore = {
+      async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
+        batches.push(buckets.map((bucket) => ({ ...bucket })))
+      },
+      async readBuckets(_query: BucketQuery): Promise<readonly TelemetryBucket[]> {
+        return []
+      },
+    }
+    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const templateIds = Array.from(
+      { length: FLUSH_BATCH_LIMIT + 5 },
+      (_, index) => `template-${index.toString().padStart(2, '0')}`,
+    )
+
+    await store.record(
+      templateIds.toReversed().map((templateId) => ({
+        templateId,
+        occurredAt: 9_950,
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      })),
+    )
+    await store.alarm()
+
+    expect(batches[0]?.map((bucket) => bucket.templateId)).toEqual(
+      templateIds.slice(0, FLUSH_BATCH_LIMIT),
+    )
   })
 
   it('drops an expired bucket with no local trace at the validation edge', async () => {

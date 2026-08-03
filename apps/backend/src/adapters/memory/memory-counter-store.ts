@@ -126,7 +126,7 @@ export class MemoryCounterStore implements CounterStore {
       if (!requested.has(counters.templateId)) continue
 
       // A late rewrite carries the full cumulative bucket total to SqlStore. Only the difference
-      // from the retained, already-persisted value is still pending.
+      // from the last value confirmed persisted in SqlStore is still pending.
       const retained = this.retained.get(key)
       const current = totals.get(counters.templateId)
       totals.set(counters.templateId, {
@@ -185,7 +185,13 @@ export class MemoryCounterStore implements CounterStore {
       }
     }
 
-    const batchEntries = [...this.flushBatch.entries()].slice(0, FLUSH_BATCH_LIMIT)
+    const batchEntries = [...this.flushBatch.entries()]
+      .sort(([, left], [, right]) => {
+        if (left.templateId < right.templateId) return -1
+        if (left.templateId > right.templateId) return 1
+        return left.bucketStart - right.bucketStart
+      })
+      .slice(0, FLUSH_BATCH_LIMIT)
     const buckets: readonly TelemetryBucket[] = batchEntries.map(([, counters]) => ({
       templateId: counters.templateId,
       resolution: RESOLUTION_SECONDS,
@@ -196,22 +202,22 @@ export class MemoryCounterStore implements CounterStore {
     }))
 
     if (buckets.length > 0) {
-      // Publish the cumulative local value before the remote write. A crash can then only make the
-      // live display transiently under-count; flushBatch remains the retry source until D1 confirms.
-      for (const [key, counters] of batchEntries) {
-        this.retained.set(key, { ...counters })
-      }
-
+      // SqlStore must commit before retained advances. Advancing retained first makes readPending
+      // subtract the batch from itself and report zero for an unbounded SqlStore outage. Writing
+      // SqlStore first instead risks a transient over-count if the process dies after the commit but
+      // before local bookkeeping; the next successful alarm rewrites the same cumulative value and
+      // self-heals. Prefer that one-alarm crash window over incorrect totals for a whole outage.
       try {
         await this.sql.appendBuckets(buckets)
       } catch (error) {
         this.consecutiveFlushFailures += 1
-        this.alarmAt = nowMilliseconds + flushRetryDelay(this.consecutiveFlushFailures)
+        this.alarmAt = this.clock() + flushRetryDelay(this.consecutiveFlushFailures)
         throw error
       }
 
       this.consecutiveFlushFailures = 0
       for (const [key, counters] of batchEntries) {
+        this.retained.set(key, { ...counters })
         this.flushedAt.set(counters.templateId, nowMilliseconds)
         this.flushBatch.delete(key)
       }
@@ -222,9 +228,8 @@ export class MemoryCounterStore implements CounterStore {
   }
 
   private hasLocalTrace(templateId: string, bucketStart: number, nowSeconds: number): boolean {
-    // A local row may rescue an event exactly at the retention edge, but it must never keep a
-    // long-dead bucket admissible throughout an extended outage.
-    if (expiresAt(bucketStart) < nowSeconds) return false
+    // The expiry instant is exclusive, so no local trace may rescue an expired bucket.
+    if (expiresAt(bucketStart) <= nowSeconds) return false
 
     const key = bucketKey(templateId, bucketStart)
     return this.pending.has(key) || this.flushBatch.has(key) || this.retained.has(key)
