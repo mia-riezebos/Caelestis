@@ -3,28 +3,49 @@ import type { TileKey } from './tiles.js'
 /**
  * What the userscript sends after wplace accepts a paint.
  *
- * Payload discipline: username, painted pixels, and a timestamp are the ceiling. Never a session
- * cookie, a captcha token, a wplace user id, or a raw wplace request body.
+ * Payload discipline: event id, username, season, painted pixels, acceptance counts, and a timestamp
+ * are the ceiling. Never a session cookie, session state, a captcha or `x-pawtect-token`, a wplace
+ * user id, or a raw wplace request body.
  *
  * Raw coordinates are sent rather than counts because the **server** classifies them — it holds the
  * template chunks and the tile history, so on-template / wrong-colour / repair needs no trust in
  * the client at all.
+ *
+ * Crediting rule:
+ *
+ * - When `painted === submitted`, classify and credit the accepted pixels normally.
+ * - When `painted < submitted`, `painted` is still an exact placed total, but do not credit
+ *   template-level `correct` or `repairs`: the response does not reveal which submitted pixels
+ *   landed. The next tile-diff anchor re-establishes template correctness from ground truth.
  */
 export interface PaintEvent {
   /** Client-generated, so a retry can never double-count. */
   readonly eventId: string
   readonly username: string
-  readonly tile: TileKey
-  readonly pixels: readonly PaintedPixel[]
+  readonly season: number
   readonly ts: number
+  readonly tiles: readonly PaintTile[]
+  /** Total pixels submitted across every tile. */
+  readonly submitted: number
+  /** Number wplace reported accepting. */
+  readonly painted: number
 }
 
-export interface PaintedPixel {
-  /** Tile-local coordinates. */
+export interface PaintTile {
+  /** Canvas tile coordinates. */
   readonly x: number
   readonly y: number
-  /** wplace palette index. */
-  readonly color: number
+  readonly pixels: PaintPixels
+}
+
+/** Structure-of-arrays payload observed on wplace's paint request. Arrays are parallel. */
+export interface PaintPixels {
+  /** Tile-local x coordinates. */
+  readonly x: readonly number[]
+  /** Tile-local y coordinates. */
+  readonly y: readonly number[]
+  /** wplace palette indices. */
+  readonly colors: readonly number[]
 }
 
 /**

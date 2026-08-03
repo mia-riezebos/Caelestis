@@ -1,5 +1,12 @@
 export type { BlobNamespace, BlobStore } from './blob-store.js'
-export type { CounterDelta, CounterStore, PendingCounters } from './counter-store.js'
+export {
+  type CounterDelta,
+  type CounterStore,
+  GRACE_SECONDS,
+  type PendingCounters,
+  RESOLUTION_SECONDS,
+  RETENTION_SECONDS,
+} from './counter-store.js'
 export type { BucketQuery, SqlStore, TelemetryBucket } from './sql-store.js'
 
 import type { BlobStore } from './blob-store.js'

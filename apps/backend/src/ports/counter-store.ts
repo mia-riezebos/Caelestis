@@ -6,13 +6,22 @@
  * Postgres delivers the same thing through row-level atomicity. Neither is more exact than the
  * other, so nothing degrades when this is ported.
  *
- * Flushing to the time series is deliberately **not** in this interface. That it happens on a 1m
- * alarm, and that empty buckets are skipped, is an implementation detail of the Cloudflare adapter.
- * Callers only ever promise to record and to read.
+ * Flushing to the time series is deliberately **not** in this interface. The bucket resolution,
+ * grace period, and retention window are contract values because every implementation must assign
+ * and retain activity identically; alarms remain an adapter detail.
  */
+
+export const RESOLUTION_SECONDS = 60
+export const GRACE_SECONDS = 30
+export const RETENTION_SECONDS = 3_600
 
 export interface CounterDelta {
   readonly templateId: string
+  /**
+   * Unix seconds when the paint happened. This must be the true event time, not the time the caller
+   * happened to report it.
+   */
+  readonly occurredAt: number
   /** Pixels painted, whether or not they matched the template. */
   readonly placed: number
   /** Of those, pixels that matched the template's colour at that coordinate. */
@@ -31,7 +40,11 @@ export interface CounterDelta {
  * live total = time-series history (SqlStore) + pending (CounterStore)
  * ```
  */
-export interface PendingCounters extends CounterDelta {
+export interface PendingCounters {
+  readonly templateId: string
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
   /** When this shard last folded a bucket into the time series, or null if it never has. */
   readonly flushedAt: number | null
 }
@@ -44,4 +57,7 @@ export interface CounterStore {
    * Returns one entry per requested id, zeroed where there has been no activity.
    */
   readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]>
+
+  /** Number of non-empty deltas rejected because their event bucket was past retention. */
+  readDroppedLateCount(): Promise<number>
 }

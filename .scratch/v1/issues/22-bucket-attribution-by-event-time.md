@@ -1,7 +1,7 @@
 # Bucket attribution by event time, not flush time
 
 Type: grilling
-Status: open
+Status: resolved
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/23
 
@@ -51,3 +51,43 @@ settled yet.
 
 Found while reviewing the `#13` backend wiring. The wiring itself is correct and verified; this is a
 gap in the `CounterStore` port's design, not in its implementation.
+
+## Answer
+
+**Bucket by event time, flush only closed buckets after a grace period, and re-flush the full total
+when a late arrival lands in a bucket already written.**
+
+### Client batching: ~10 seconds
+
+Corrects the volume model this ticket was reasoning with. A drain is **one or a few very large
+requests** — the full 10k charges at once, or split into 2–5k jobs — followed by a short geometric
+tail as 10% cashback is spent down (1000, 100, 10, 1). Not a thousand small requests.
+
+So DO **request count is not a binding constraint**; a 10s window mostly just collapses the cashback
+tail. What it does move pressure onto: a single report can carry **10k pixels**, roughly 100–150 KB
+of JSON, every pixel of which the server classifies against template chunks. On the free plan that
+meets the CPU-time ceiling long before any request ceiling. Recorded on `21-capacity-estimates`.
+
+### Mechanism
+
+1. **`CounterDelta` carries `occurredAt`.** The shard cannot derive it; the paint handler has it.
+2. **`pending_counters` is keyed by `(template_id, bucket_start)`**, floored from `occurredAt`.
+3. **The alarm flushes only buckets closed longer than a grace period** —
+   `bucket_start + 60 + GRACE <= now`, `GRACE = 30s`. A closed-and-graced bucket cannot normally
+   receive more activity, so a single write with replace semantics is both correct and idempotent,
+   which is the property `appendBuckets` is specified on.
+4. **Flushed buckets are retained, not deleted**, with their totals, for one hour. A late arrival for
+   a retained bucket adds to that total and rewrites the D1 row with the new cumulative value —
+   correct attribution at the true event time, replace semantics still valid.
+5. **Past the retention window, late arrivals are dropped.** Unbounded retention is not an option and
+   an hour is far beyond any legitimate lateness. This case should be counted, not silent.
+
+### Consequence for `readPending`
+
+It must sum **only unflushed** buckets. Retained flushed buckets are already in D1, and including
+them would double-count against `live total = history + pending`.
+
+### Alarm scheduling
+
+Must be set for when the next pending bucket becomes flushable, not a blind +60s — otherwise a
+bucket can sit past its grace period waiting for unrelated activity to trigger an alarm.
