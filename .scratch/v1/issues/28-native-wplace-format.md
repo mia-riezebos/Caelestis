@@ -43,9 +43,18 @@ un-quantised source, because the file holds 6,137 distinct colours. It is not: c
 — 5³, every combination of −2…+2 on each channel, with the smaller counts explained by clipping at 0
 and 255.
 
-That is uniform ±2 jitter applied by the *producing* quantiser, not anything wplace did. Dithering
-would pick between palette entries; this perturbs the values themselves. So a `.wplace` file contains
-exactly the pixels it was given.
+That is a **colour-management or canvas-readback artefact** in the producing pipeline, not anything
+wplace did, and not deliberate jitter — dithering picks between palette entries rather than perturbing
+them, and would not spread evenly across all 125 combinations. An sRGB → display-profile → sRGB round
+trip through a canvas produces exactly this signature.
+
+It is the same hazard already recorded for the userscript's *decode* path in
+`01-template-storage-and-chunk-model`: the browser may colour-manage or premultiply, silently breaking
+exact palette matching. Same bug class, opposite end of the pipeline, same fix —
+`createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' })`, and
+`getContext('2d', { colorSpace: 'srgb' })` for a 2D readback.
+
+So a `.wplace` file contains exactly the pixels it was given.
 
 ## No tension after all
 
