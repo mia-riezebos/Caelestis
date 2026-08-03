@@ -1,0 +1,20 @@
+{
+  "name": "@wts/userscript",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@wts/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/greasemonkey": "^4.0.7",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}

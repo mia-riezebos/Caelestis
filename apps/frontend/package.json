@@ -1,0 +1,9 @@
+{
+  "name": "@wts/frontend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "clean": "rm -rf dist .turbo"
+  }
+}

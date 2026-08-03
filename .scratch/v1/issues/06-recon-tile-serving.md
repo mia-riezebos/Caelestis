@@ -1,0 +1,45 @@
+# Recon: wplace tile serving
+
+Type: research
+Status: open
+Blocked by: —
+GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/7
+
+## Question
+
+How exactly does wplace serve canvas tiles, and what happens for tiles that have never been painted?
+
+Specifically:
+
+- Tile URL scheme and host (confirm the `/files/sN/tiles/{x}/{y}.png` shape and which `sN`).
+- Image format, dimensions, and typical byte size.
+- Cache headers — are tiles CDN-cached, and with what TTL?
+- **Empty tiles**: a real 404, or a 200 with a blank/placeholder body? This decides whether the shim
+  branches on status or on content.
+- Does anything else on the page depend on that 404 (e.g. wplace treating a region as empty)?
+- Which transport does the tile request use — `fetch`, `XMLHttpRequest`, or an `<img>` element?
+  Determines what the shim has to wrap.
+- Does the renderer accept an oversized (upscaled) image in place of a tile without misaligning?
+
+## Findings (partial — 2026-08-03, AFK bundle + live probe)
+
+Confirmed from the SvelteKit bundle and direct requests:
+
+- **Tile URL**: `https://backend.wplace.live/files/s{season}/tiles/{x}/{y}.png`.
+  In the bundle as `` `${PP}/s${PT}/tiles/{x}/{y}.png` `` with `PP = "https://backend.wplace.live/files"`.
+  Season is a runtime variable (`Math.trunc(t.season)`), currently **s0** — the shim must read it
+  rather than hardcode it, since a season rollover would silently break every match.
+- **Format / size**: `image/png`, ~70–125 KB per populated tile (0/0 → 70 KB, 1082/667 → 122 KB).
+- **Empty tiles are a real HTTP 404** with a 146-byte `text/html` body. So the shim branches on
+  **status**, not content. Resolves the open question and unblocks the empty-tile fog.
+- **Caching**: `s-maxage=5, must-revalidate, no-store`, behind Cloudflare, with `ETag` and
+  `Last-Modified` present. `no-store` means the browser will not retain tiles — **the userscript's
+  own previous-tile cache is mandatory** for diffing; there is no browser cache to lean on.
+- Edge revalidation every 5s means tile data is near-live, so diff-driven telemetry is viable.
+
+Still open:
+
+- Actual pixel dimensions of a tile (assumed 1000×1000, not yet verified).
+- Which transport MapLibre uses for raster tiles — `fetch` vs `<img>`/`ImageRequest`. Decides the
+  shim. Needs a browser observation.
+- Whether the renderer accepts an oversized image in place of a tile without misaligning.
