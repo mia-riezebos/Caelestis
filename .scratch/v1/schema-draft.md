@@ -1,7 +1,6 @@
 # Schema draft — v1
 
-Working artifact for #24 and #25. **Not decided; react to it.** Anything marked **?** is an open
-question I picked a default for rather than asking.
+Settled artifact for #24 and #25 as of 2026-08-03. Everything below has been reviewed and agreed.
 
 ## Package layout
 
@@ -45,7 +44,7 @@ sort_order      integer not null       -- sparse: 100, 200, 300
 created_at_ms  integer not null
 ```
 
-Index on `path` for prefix rollups. **?** On rename or move, descendant paths are rewritten in one
+Index on `path` for prefix rollups. On rename or move, descendant paths are rewritten in one
 `UPDATE ... WHERE path LIKE '<old>/%'`. Moves are rare and trees are small, so no closure table.
 
 ### `templates` — identity
@@ -142,9 +141,13 @@ painters
   seen_at_ms      integer not null
 ```
 
-Identity is wplace's public display form, `Cyphex #3822673` — name plus the numeric user id. Stored
-as two columns rather than the composite string, so a **rename updates a label instead of orphaning
-that person's entire history** under a dead key.
+**Attribution is by `wplace_user_id`; display is by `display_name` alone.** The id is stable, so a
+rename updates a label instead of orphaning that person's entire history under a dead key. wplace's
+own public form is `Cyphex #3822673`, but we surface only the name.
+
+Consequence for the frontend, not the schema: two painters sharing a display name are
+indistinguishable in a leaderboard, which is exactly what wplace's `#id` suffix exists to prevent.
+Attribution stays correct regardless; only the label is ambiguous.
 
 **Amends the payload-discipline rule**, which said the userscript never transmits wplace user ids.
 The justification is that wplace displays `name#id` publicly itself, so it is not sensitive — but it
@@ -176,9 +179,9 @@ which also shrinks the manifest — the single largest thing the userscript down
 Decode at every request boundary in the backend; encode on the way out. The userscript adheres
 optimistically and validates nothing.
 
-**?** `PaintPixels` has three parallel arrays with no length invariant expressible in the type. The
-schema should carry a refinement asserting `x.length === y.length === colors.length`, so the one
-thing TypeScript cannot express is caught at the boundary where it matters.
+`PaintPixels` has three parallel arrays with no length invariant expressible in the type, so the
+schema carries a refinement asserting `x.length === y.length === colors.length`. The one thing
+TypeScript cannot express is caught at the boundary where the data arrives.
 
 ## Deliberately absent
 
