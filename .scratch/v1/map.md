@@ -45,6 +45,11 @@ updated until v1 actually runs.
   the client) computes diffs, anchors, and repair classification.
 - [Rendering model](issues/05-rendering-model.md) — tile-fetch interception, culling by tile-index
   lookup, viewing modes as one `{shape, size, anchor, opacity}` parameterisation.
+- [Runtime & storage platform](issues/11-runtime-and-storage-platform.md) — Cloudflare Workers + R2
+  + D1 + DO, with three narrow seams kept for a later port. D1 is the system of record and holds
+  every ladder tier; the DO is a write-absorption buffer for live counters and sub-1m data.
+  `shardStrategy: 'single'` in v1, `per-template` and `dynamic` stubbed. `wrangler dev` locally.
+  Free-tier viable for small alliances.
 
 ## Not yet specified
 
@@ -61,7 +66,12 @@ updated until v1 actually runs.
   functions for state columns vs delta columns.
 - **Abuse and rate limiting** at 1000+ user alliance scale, including report throttling and the
   quorum rules for trusting client-supplied data.
-- **Deployment, secrets, migrations, and testing strategy.**
+- **Deployment, secrets, migrations, and testing strategy** — now Cloudflare-shaped: `wrangler.toml`
+  bindings, D1 migrations, secret management, and how the three seams get in-memory implementations
+  for tests.
+- **Non-Cloudflare implementation** — the Node/Postgres/S3 side of the three portability seams.
+  Deferred to v2 or later; the interfaces exist in v1 but nothing exercises them, so they will need
+  a real audit before anyone trusts them.
 
 ## Out of scope
 
