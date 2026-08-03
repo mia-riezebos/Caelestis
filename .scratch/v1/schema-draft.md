@@ -193,18 +193,22 @@ every paint classification and to build the manifest tile index.
 **Chunk GC** is `SELECT hash FROM version_tiles` minus the R2 listing — safe only because versions
 are immutable.
 
-### `invites`
+### `access_tokens`
 
 ```
-code_hash    text pk               -- sha256 of a 128-bit base32 code
-label        text not null         -- 'discord-regulars'
-scope        text not null         -- 'read' | 'report' | 'admin'
-created_by   text not null
+token_hash    text pk               -- sha256 of a 128-bit base32 token
+label         text not null         -- 'discord-regulars'
+scope         text not null         -- 'read' | 'report' | 'admin'
+created_by    text not null
 created_at_ms integer not null
 revoked_at_ms integer null
 ```
 
-Codes are server-generated high entropy, so SHA-256 is sufficient; no slow KDF.
+Tokens are server-generated high entropy, so SHA-256 is sufficient; no slow KDF.
+
+Named `access_tokens` rather than `invites` because that is what they are: long-lived, named, scoped
+and individually revocable. "Invite" implies one-time onboarding, which these never were — the whole
+point of naming them is that one can be revoked without rotating everyone else's.
 
 ### `telemetry_buckets` — exists, unchanged
 

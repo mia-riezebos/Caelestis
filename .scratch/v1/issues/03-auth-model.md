@@ -85,3 +85,13 @@ the right alliance could be admitted without hunting for a code at all, if the o
 
 Configured per server: `requireAllianceId?: number`. It is a claim from the client like any other, so
 it raises the bar rather than replacing anything.
+
+## Amendment — 2026-08-03: "invite codes" are access tokens
+
+Renamed throughout. The table is `access_tokens`, keyed by `token_hash`.
+
+Nothing about the mechanism changes — server-generated 128-bit base32, SHA-256 at rest, named,
+scoped, individually revocable. Only the name was wrong: "invite" implies one-time onboarding, and
+these are long-lived credentials. The naming mattered because the revocation story — revoke one named
+credential without rotating everyone else's — is token behaviour, not invite behaviour, and calling
+them invites made that read as a special feature rather than the obvious consequence it is.
