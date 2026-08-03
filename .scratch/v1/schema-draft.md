@@ -246,15 +246,45 @@ Attribution stays correct regardless; only the label is ambiguous.
 The justification is that wplace displays `name#id` publicly itself, so it is not sensitive — but it
 is a real relaxation and is recorded here rather than happening quietly.
 
-### `tile_history` — the mirror timeline
+### `tile_history` — the mirror timeline, on a decay ladder
+
+Same mechanism as `telemetry_buckets`, so one compaction job serves both.
 
 ```
 tile_x, tile_y   integer not null
-observed_at_ms   integer not null
-sha256           text not null     -- R2 key tiles/{sha256}.png
-reporter         text not null
-primary key (tile_x, tile_y, observed_at_ms)
+resolution_s     integer not null   -- 0 = raw observation, else the folded tier
+bucket_start_s   integer not null
+sha256           text not null      -- R2 key tiles/{sha256}.png
+reporters        integer not null   -- distinct clients that reported this hash
+primary key (tile_x, tile_y, resolution_s, bucket_start_s)
 ```
+
+**Reconciled on write.** Several clients viewing the same area report the same hash; that is one row
+with `reporters` incremented, not one row each. The count is what the quorum rule reads — prefer a
+hash seen by two or more distinct clients — so it earns its place, unlike a per-reporter row.
+
+**The fold is latest-wins, not sum.** A tile observation is *state*, so folding a window keeps the
+last observation in it and discards the rest — the same distinction that governs `correct`/`wrong`/
+`blank` versus `placed`/`repairs` in the telemetry ladder. Getting this backwards would be
+meaningless here rather than merely wrong: you cannot add two hashes.
+
+**?** Tier configuration, deliberately coarser than telemetry's. A tile observation only exists when
+the tile actually changed, and each one pins a ~70–125 KB blob:
+
+| resolution | retention |
+|---|---|
+| raw (`0`) | 24h |
+| 1h | 7d |
+| 6h | 30d |
+| 1d | forever |
+
+**Blob GC is the point.** Rows are trivial; the blobs are not. Content addressing means one hash is
+referenced by many rows across time, so a blob is deletable only once **no surviving row references
+it**. Thinning without that sweep saves nothing.
+
+**What this costs:** timelapse resolution degrades with age. Yesterday plays back at every observed
+change; three months ago plays back one frame per day. That is the trade being made, and it is the
+right way round — recent detail is what anyone actually watches.
 
 ## Wire schemas (`packages/wire-schema`)
 
