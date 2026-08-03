@@ -1,11 +1,13 @@
 import {
   type CounterDelta,
   type CounterStore,
+  EXPIRES_AFTER_SECONDS,
+  FLUSH_BATCH_LIMIT,
   GRACE_SECONDS,
   isValidCounterDelta,
+  MAX_COUNTER_DELTAS_PER_RECORD,
   type PendingCounters,
   RESOLUTION_SECONDS,
-  RETENTION_SECONDS,
   type SqlStore,
   type TelemetryBucket,
 } from '../../ports/index.js'
@@ -27,10 +29,19 @@ const eventBucketStart = (occurredAt: number): number =>
 const flushableAt = (bucketStart: number): number =>
   bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS
 
-const expiresAt = (bucketStart: number): number => flushableAt(bucketStart) + RETENTION_SECONDS
+const expiresAt = (bucketStart: number): number => bucketStart + EXPIRES_AFTER_SECONDS
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
   placed > 0 || correct > 0 || repairs > 0
+
+const INITIAL_FLUSH_RETRY_DELAY_MILLISECONDS = 1_000
+const MAX_FLUSH_RETRY_DELAY_MILLISECONDS = 60_000
+
+const flushRetryDelay = (failureCount: number): number =>
+  Math.min(
+    INITIAL_FLUSH_RETRY_DELAY_MILLISECONDS * 2 ** Math.max(0, failureCount - 1),
+    MAX_FLUSH_RETRY_DELAY_MILLISECONDS,
+  )
 
 /**
  * Portable counter-buffer implementation used by tests and non-Cloudflare entry points.
@@ -45,22 +56,31 @@ export class MemoryCounterStore implements CounterStore {
   private readonly flushedAt = new Map<string, number>()
   private droppedLateCount = 0
   private alarmAt: number | null = null
+  private consecutiveFlushFailures = 0
 
   constructor(
     private readonly sql: SqlStore,
     private readonly clock: () => number = Date.now,
-  ) {}
+  ) {
+    this.pruneRetained(Math.floor(this.clock() / 1_000))
+  }
 
   async record(deltas: readonly CounterDelta[]): Promise<void> {
     const nowMilliseconds = this.clock()
     const nowSeconds = Math.floor(nowMilliseconds / 1_000)
 
-    for (const delta of deltas) {
+    // Validation consults local traces, so sweep stale retained rows before asking that question.
+    this.pruneRetained(nowSeconds)
+
+    const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)
+    this.droppedLateCount += deltas.length - boundedDeltas.length
+
+    for (const delta of boundedDeltas) {
       // Match TelemetryShard: invalid and out-of-window input share the existing rejection counter
       // because both have the same operational outcome and remediation.
       if (
         !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
-          this.hasLocalTrace(templateId, bucketStart),
+          this.hasLocalTrace(templateId, bucketStart, nowSeconds),
         )
       ) {
         this.droppedLateCount += 1
@@ -81,7 +101,6 @@ export class MemoryCounterStore implements CounterStore {
     }
 
     this.pruneZeroPending()
-    this.pruneRetained(nowSeconds)
     this.recomputeAlarm(nowMilliseconds)
   }
 
@@ -166,7 +185,8 @@ export class MemoryCounterStore implements CounterStore {
       }
     }
 
-    const buckets: readonly TelemetryBucket[] = [...this.flushBatch.values()].map((counters) => ({
+    const batchEntries = [...this.flushBatch.entries()].slice(0, FLUSH_BATCH_LIMIT)
+    const buckets: readonly TelemetryBucket[] = batchEntries.map(([, counters]) => ({
       templateId: counters.templateId,
       resolution: RESOLUTION_SECONDS,
       bucketStart: counters.bucketStart,
@@ -176,25 +196,36 @@ export class MemoryCounterStore implements CounterStore {
     }))
 
     if (buckets.length > 0) {
+      // Publish the cumulative local value before the remote write. A crash can then only make the
+      // live display transiently under-count; flushBatch remains the retry source until D1 confirms.
+      for (const [key, counters] of batchEntries) {
+        this.retained.set(key, { ...counters })
+      }
+
       try {
         await this.sql.appendBuckets(buckets)
       } catch (error) {
-        this.recomputeAlarm(nowMilliseconds)
+        this.consecutiveFlushFailures += 1
+        this.alarmAt = nowMilliseconds + flushRetryDelay(this.consecutiveFlushFailures)
         throw error
       }
 
-      for (const [key, counters] of this.flushBatch) {
-        this.retained.set(key, { ...counters })
+      this.consecutiveFlushFailures = 0
+      for (const [key, counters] of batchEntries) {
         this.flushedAt.set(counters.templateId, nowMilliseconds)
+        this.flushBatch.delete(key)
       }
-      this.flushBatch.clear()
     }
 
     this.pruneRetained(nowSeconds)
     this.recomputeAlarm(nowMilliseconds)
   }
 
-  private hasLocalTrace(templateId: string, bucketStart: number): boolean {
+  private hasLocalTrace(templateId: string, bucketStart: number, nowSeconds: number): boolean {
+    // A local row may rescue an event exactly at the retention edge, but it must never keep a
+    // long-dead bucket admissible throughout an extended outage.
+    if (expiresAt(bucketStart) < nowSeconds) return false
+
     const key = bucketKey(templateId, bucketStart)
     return this.pending.has(key) || this.flushBatch.has(key) || this.retained.has(key)
   }
@@ -212,6 +243,8 @@ export class MemoryCounterStore implements CounterStore {
   }
 
   private pruneZeroPending(): void {
+    // Defensive: valid deltas currently cannot create a zero row, but keep cleanup safe if input or
+    // migration rules change later.
     for (const [key, counters] of this.pending) {
       if (counters.placed === 0 && counters.correct === 0 && counters.repairs === 0) {
         this.pending.delete(key)
@@ -221,7 +254,10 @@ export class MemoryCounterStore implements CounterStore {
 
   private recomputeAlarm(nowMilliseconds: number): void {
     if (this.flushBatch.size > 0) {
-      this.alarmAt = nowMilliseconds
+      // readPending must preserve a future retry chosen by exponential backoff.
+      if (this.alarmAt === null || this.alarmAt <= nowMilliseconds) {
+        this.alarmAt = nowMilliseconds
+      }
       return
     }
 

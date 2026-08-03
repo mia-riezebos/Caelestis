@@ -2,16 +2,24 @@ import { DurableObject } from 'cloudflare:workers'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import {
   type CounterDelta,
-  GRACE_SECONDS,
+  EXPIRES_AFTER_SECONDS,
+  FLUSH_BATCH_LIMIT,
+  FLUSHABLE_AFTER_SECONDS,
   isValidCounterDelta,
+  MAX_COUNTER_DELTAS_PER_RECORD,
   type PendingCounters,
   RESOLUTION_SECONDS,
-  RETENTION_SECONDS,
   type TelemetryBucket,
 } from './ports/index.js'
 
-const FLUSHABLE_AFTER_SECONDS = RESOLUTION_SECONDS + GRACE_SECONDS
-const EXPIRES_AFTER_SECONDS = FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS
+const INITIAL_FLUSH_RETRY_DELAY_MILLISECONDS = 1_000
+const MAX_FLUSH_RETRY_DELAY_MILLISECONDS = 60_000
+
+const flushRetryDelay = (failureCount: number): number =>
+  Math.min(
+    INITIAL_FLUSH_RETRY_DELAY_MILLISECONDS * 2 ** Math.max(0, failureCount - 1),
+    MAX_FLUSH_RETRY_DELAY_MILLISECONDS,
+  )
 
 /**
  * Row shapes for `storage.sql.exec<T>`, which constrains `T` to `Record<string, SqlStorageValue>` —
@@ -67,14 +75,18 @@ export class TelemetryShard extends DurableObject<Env> {
   async record(deltas: readonly CounterDelta[]): Promise<void> {
     const nowMilliseconds = this.clock()
     const nowSeconds = Math.floor(nowMilliseconds / 1_000)
-    let droppedLate = 0
+    // Validation consults local traces, so sweep stale retained rows before asking that question.
+    this.pruneRetained(nowSeconds)
 
-    for (const delta of deltas) {
+    const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)
+    let droppedLate = deltas.length - boundedDeltas.length
+
+    for (const delta of boundedDeltas) {
       // Keep one operational counter for all rejected input: both malformed and out-of-window
       // deltas have the same outcome and remediation, and splitting them would add schema surface.
       if (
         !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
-          this.hasLocalTrace(templateId, bucketStart),
+          this.hasLocalTrace(templateId, bucketStart, nowSeconds),
         )
       ) {
         droppedLate += 1
@@ -114,7 +126,6 @@ export class TelemetryShard extends DurableObject<Env> {
       )
     }
 
-    this.pruneRetained(nowSeconds)
     await this.scheduleNextAlarm(nowMilliseconds)
   }
 
@@ -247,13 +258,8 @@ export class TelemetryShard extends DurableObject<Env> {
         repairs: row.repairs,
       }))
 
-      try {
-        await new D1SqlStore(this.env.DB).appendBuckets(buckets)
-      } catch (error) {
-        await this.scheduleNextAlarm(nowMilliseconds)
-        throw error
-      }
-
+      // Publish the cumulative local value before the remote write. A crash can then only make the
+      // live display transiently under-count; flush_batch remains the retry source until D1 confirms.
       this.ctx.storage.transactionSync(() => {
         for (const row of rows) {
           this.ctx.storage.sql.exec(
@@ -272,6 +278,20 @@ export class TelemetryShard extends DurableObject<Env> {
             row.correct,
             row.repairs,
           )
+        }
+      })
+
+      try {
+        await new D1SqlStore(this.env.DB).appendBuckets(buckets)
+      } catch (error) {
+        const failureCount = this.incrementFlushFailureCount()
+        await this.ctx.storage.setAlarm(nowMilliseconds + flushRetryDelay(failureCount))
+        throw error
+      }
+
+      this.ctx.storage.transactionSync(() => {
+        this.resetFlushFailureCount()
+        for (const row of rows) {
           this.ctx.storage.sql.exec(
             `
               INSERT INTO counter_meta (template_id, flushed_at)
@@ -281,8 +301,12 @@ export class TelemetryShard extends DurableObject<Env> {
             row.template_id,
             nowMilliseconds,
           )
+          this.ctx.storage.sql.exec(
+            'DELETE FROM flush_batch WHERE template_id = ?1 AND bucket_start = ?2',
+            row.template_id,
+            row.bucket_start,
+          )
         }
-        this.ctx.storage.sql.exec('DELETE FROM flush_batch')
       })
     }
 
@@ -333,6 +357,11 @@ export class TelemetryShard extends DurableObject<Env> {
         dropped_late_deltas INTEGER NOT NULL
       );
       INSERT OR IGNORE INTO counter_stats (singleton, dropped_late_deltas) VALUES (1, 0);
+      CREATE TABLE IF NOT EXISTS flush_retry_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        consecutive_failures INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO flush_retry_state (singleton, consecutive_failures) VALUES (1, 0);
     `)
   }
 
@@ -343,12 +372,18 @@ export class TelemetryShard extends DurableObject<Env> {
           SELECT template_id, bucket_start, placed, correct, repairs
           FROM flush_batch
           ORDER BY template_id, bucket_start
+          LIMIT ?1
         `,
+        FLUSH_BATCH_LIMIT,
       )
       .toArray()
   }
 
-  private hasLocalTrace(templateId: string, bucketStart: number): boolean {
+  private hasLocalTrace(templateId: string, bucketStart: number, nowSeconds: number): boolean {
+    // A local row may rescue an event exactly at the retention edge, but it must never keep a
+    // long-dead bucket admissible throughout an extended outage.
+    if (bucketStart + EXPIRES_AFTER_SECONDS < nowSeconds) return false
+
     return (
       this.ctx.storage.sql
         .exec<CountRow>(
@@ -399,6 +434,8 @@ export class TelemetryShard extends DurableObject<Env> {
   }
 
   private pruneZeroPending(): void {
+    // Defensive: valid deltas currently cannot create a zero row, but keep cleanup safe if input or
+    // migration rules change later.
     this.ctx.storage.sql.exec(
       'DELETE FROM pending_counters WHERE placed = 0 AND correct = 0 AND repairs = 0',
     )
@@ -409,7 +446,10 @@ export class TelemetryShard extends DurableObject<Env> {
       .exec<CountRow>('SELECT COUNT(*) AS count FROM flush_batch')
       .one().count
     if (flushBatchCount > 0) {
-      await this.ctx.storage.setAlarm(nowMilliseconds)
+      const scheduledAlarm = await this.ctx.storage.getAlarm()
+      if (scheduledAlarm === null || scheduledAlarm <= nowMilliseconds) {
+        await this.ctx.storage.setAlarm(nowMilliseconds)
+      }
       return
     }
 
@@ -429,5 +469,25 @@ export class TelemetryShard extends DurableObject<Env> {
 
     const flushableAtMilliseconds = (nextBucket + FLUSHABLE_AFTER_SECONDS) * 1_000
     await this.ctx.storage.setAlarm(Math.max(nowMilliseconds, flushableAtMilliseconds))
+  }
+
+  private incrementFlushFailureCount(): number {
+    const current = this.ctx.storage.sql
+      .exec<CountRow>(
+        'SELECT consecutive_failures AS count FROM flush_retry_state WHERE singleton = 1',
+      )
+      .one().count
+    const next = current + 1
+    this.ctx.storage.sql.exec(
+      'UPDATE flush_retry_state SET consecutive_failures = ?1 WHERE singleton = 1',
+      next,
+    )
+    return next
+  }
+
+  private resetFlushFailureCount(): void {
+    this.ctx.storage.sql.exec(
+      'UPDATE flush_retry_state SET consecutive_failures = 0 WHERE singleton = 1',
+    )
   }
 }

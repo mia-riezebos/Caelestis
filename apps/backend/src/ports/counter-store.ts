@@ -15,6 +15,29 @@ export const RESOLUTION_SECONDS = 60
 export const GRACE_SECONDS = 30
 export const RETENTION_SECONDS = 3_600
 
+/**
+ * Derived windows, exported so every implementation and the validator share one definition.
+ *
+ * These were previously recomputed in three places and agreed only by coincidence. If the validator's
+ * notion of "expired" drifts from the store's by even a second, it accepts a bucket whose retained
+ * row has already been pruned — and the promotion join then writes only the late portion, which D1's
+ * replace semantics turn into a silent undercount. Derive, never restate.
+ */
+export const FLUSHABLE_AFTER_SECONDS = RESOLUTION_SECONDS + GRACE_SECONDS
+export const EXPIRES_AFTER_SECONDS = FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS
+
+/** Per-delta guardrail; a full Wplace charge drain is only around 10,000 pixels. */
+export const MAX_COUNTER_DELTA_VALUE = 100_000
+
+/** Prevent unbounded identifiers from creating permanent rows in the shared stores. */
+export const MAX_TEMPLATE_ID_LENGTH = 64
+
+/** Bound synchronous validation and writes on the single global counter shard. */
+export const MAX_COUNTER_DELTAS_PER_RECORD = 1_000
+
+/** D1's free plan allows 50 queries per invocation; leave headroom for transaction overhead. */
+export const FLUSH_BATCH_LIMIT = 40
+
 export interface CounterDelta {
   /** Non-empty template identifier. */
   readonly templateId: string
@@ -22,14 +45,15 @@ export interface CounterDelta {
    * Safe-integer Unix seconds when the paint happened. This must be the true event time, not the
    * time the caller happened to report it. At record time it must be no later than
    * `now + GRACE_SECONDS`. Its minute bucket must not have expired unless the store still has a
-   * local pending, flush-batch, or retained row that can absorb a cumulative rewrite.
+   * local pending, flush-batch, or retained row at the retention boundary that can absorb a
+   * cumulative rewrite.
    */
   readonly occurredAt: number
-  /** Non-negative safe integer: pixels painted, whether or not they matched the template. */
+  /** Non-negative integer no greater than MAX_COUNTER_DELTA_VALUE. */
   readonly placed: number
-  /** Non-negative safe integer: pixels that matched the template's colour at that coordinate. */
+  /** Non-negative integer no greater than placed. */
   readonly correct: number
-  /** Non-negative safe integer: correct pixels that were cleanup rather than fresh fill. */
+  /** Non-negative integer no greater than correct. */
   readonly repairs: number
 }
 
