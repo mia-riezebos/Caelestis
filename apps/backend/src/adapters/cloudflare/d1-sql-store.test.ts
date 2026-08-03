@@ -1,86 +1,8 @@
-import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket } from '../../ports/index.js'
 import { D1SqlStore } from './d1-sql-store.js'
-
-/**
- * Every migration in order, discovered rather than listed. drizzle-kit names files with a random
- * suffix, so hardcoding them breaks silently on regeneration — which is exactly what happened when
- * the migrations were squashed to a single baseline.
- */
-const migrationsDir = join(import.meta.dirname, '../../../migrations')
-const migration = readdirSync(migrationsDir)
-  .filter((name) => name.endsWith('.sql'))
-  .sort()
-  .map((name) => readFileSync(join(migrationsDir, name), 'utf8'))
-  .join('\n')
-  .replaceAll('--> statement-breakpoint', '')
-
-/** `node:sqlite` declares this inside its module namespace without exporting it. */
-type SupportedValueType = null | number | bigint | string | NodeJS.ArrayBufferView
-
-const result = <T>(results: T[]): D1Result<T> =>
-  ({ success: true, results, meta: {} }) as D1Result<T>
-
-class SqliteD1Statement {
-  constructor(
-    private readonly statement: StatementSync,
-    private readonly bindings: readonly SupportedValueType[] = [],
-  ) {}
-
-  bind(...values: SupportedValueType[]): SqliteD1Statement {
-    return new SqliteD1Statement(this.statement, values)
-  }
-
-  async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    this.statement.run(...this.bindings)
-    return result<T>([])
-  }
-
-  async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    return result(this.statement.all(...this.bindings) as T[])
-  }
-
-  async raw<T = unknown[]>(): Promise<T[]> {
-    this.statement.setReturnArrays(true)
-    return this.statement.all(...this.bindings) as T[]
-  }
-}
-
-class SqliteD1Database {
-  readonly sqlite = new DatabaseSync(':memory:')
-  prepareCalls = 0
-  batchCalls = 0
-
-  constructor() {
-    this.sqlite.exec(migration)
-  }
-
-  prepare(query: string): SqliteD1Statement {
-    this.prepareCalls += 1
-    return new SqliteD1Statement(this.sqlite.prepare(query))
-  }
-
-  async batch<T = unknown>(statements: readonly SqliteD1Statement[]): Promise<D1Result<T>[]> {
-    this.batchCalls += 1
-    this.sqlite.exec('BEGIN')
-    try {
-      const results = await Promise.all(statements.map((statement) => statement.run<T>()))
-      this.sqlite.exec('COMMIT')
-      return results
-    } catch (error) {
-      this.sqlite.exec('ROLLBACK')
-      throw error
-    }
-  }
-
-  close(): void {
-    this.sqlite.close()
-  }
-}
+import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 
 const bucket = (overrides: Partial<TelemetryBucket> = {}): TelemetryBucket => ({
   templateId: 'template-1',
