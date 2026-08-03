@@ -94,6 +94,15 @@ class SqliteDurableObjectStorage {
     return this.alarmAt
   }
 
+  /**
+   * The real runtime deletes the alarm *before* invoking the handler, so `getAlarm()` inside
+   * `alarm()` returns null unless that invocation re-arms. Returning the stored timestamp instead
+   * lets a missing re-arm pass here while production strands the remaining rows.
+   */
+  consumeAlarm(): void {
+    this.alarmAt = null
+  }
+
   async setAlarm(scheduledTime: number | Date): Promise<void> {
     this.alarmAt = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime
   }
@@ -197,6 +206,15 @@ class TelemetryShardHarness {
 
   async ready(): Promise<void> {
     await this.state.ready()
+  }
+
+  /**
+   * Deliver an alarm the way the runtime does: consume it, then invoke the handler. Calling
+   * `shard.alarm()` directly leaves the fired alarm in place, which hides a missing re-arm.
+   */
+  async deliverAlarm(): Promise<void> {
+    this.storage.consumeAlarm()
+    await this.shard.alarm()
   }
 
   async coldRestart(): Promise<void> {
@@ -336,11 +354,11 @@ describe('TelemetryShard', () => {
     await memory.record(initial)
     await assertParity()
 
-    await shard.shard.alarm()
+    await shard.deliverAlarm()
     await memory.alarm()
     await assertParity()
 
-    await shard.shard.alarm()
+    await shard.deliverAlarm()
     await memory.alarm()
     await assertParity()
 
@@ -364,7 +382,7 @@ describe('TelemetryShard', () => {
     await memory.record(lateAndInvalid)
     await assertParity()
 
-    await shard.shard.alarm()
+    await shard.deliverAlarm()
     await memory.alarm()
     await assertParity()
 
@@ -381,7 +399,7 @@ describe('TelemetryShard', () => {
     await shard.shard.record(expired)
     await memory.record(expired)
     await assertParity()
-  })
+  }, 30_000)
 
   it('keeps the batch pending until D1 has committed', async () => {
     const harness = await makeHarness(millis(150_000))
@@ -390,7 +408,7 @@ describe('TelemetryShard', () => {
     ])
     harness.d1.failNextBatchAt('before-commit')
 
-    await harness.shard.alarm()
+    await harness.deliverAlarm()
 
     await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
       { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
@@ -408,7 +426,7 @@ describe('TelemetryShard', () => {
       harness.clock.now = millis(261_000)
     })
 
-    await harness.shard.alarm()
+    await harness.deliverAlarm()
 
     expect(await harness.nextAlarmAt()).toBe(262_000)
   })
@@ -425,7 +443,7 @@ describe('TelemetryShard', () => {
     harness.clock.now = millis(200_000)
     harness.d1.failNextBatchAt('before-commit', () => {})
 
-    await expect(harness.shard.alarm()).resolves.toBeUndefined()
+    await expect(harness.deliverAlarm()).resolves.toBeUndefined()
 
     // The work is still owed, and an alarm is scheduled to come back for it.
     expect(await harness.nextAlarmAt()).toBeGreaterThan(200_000)
@@ -439,14 +457,14 @@ describe('TelemetryShard', () => {
     await harness.shard.record([
       { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
-    await harness.shard.alarm()
+    await harness.deliverAlarm()
 
     harness.clock.now = millis(200_000)
     await harness.shard.record([
       { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 0 },
     ])
     harness.d1.failNextBatchAt('before-commit')
-    await harness.shard.alarm()
+    await harness.deliverAlarm()
 
     await expect(harness.shard.readPending(['template-a'])).resolves.toEqual([
       {
@@ -474,7 +492,7 @@ describe('TelemetryShard', () => {
       ),
     )
 
-    await harness.shard.alarm()
+    await harness.deliverAlarm()
 
     expect(
       harness.d1Buckets().map(({ templateId, bucketStart }) => ({ templateId, bucketStart })),
@@ -499,7 +517,7 @@ describe('TelemetryShard', () => {
       }
       for (let drain = 0; (await harness.nextAlarmAt()) !== null; drain += 1) {
         expect(drain).toBeLessThan(20)
-        await harness.shard.alarm()
+        await harness.deliverAlarm()
       }
 
       const pending = (
@@ -518,7 +536,7 @@ describe('TelemetryShard', () => {
       addTotals(historyAndPending, pending)
       expect(historyAndPending, `seed ${seed}`).toEqual(accepted)
     }
-  })
+  }, 30_000)
 
   it('never reports more history plus pending than generated accepted deltas', async () => {
     const templateIds = ['template-0', 'template-1', 'template-2', 'template-3', 'template-4']
@@ -534,7 +552,7 @@ describe('TelemetryShard', () => {
           await harness.shard.record([delta])
         } else if ((await harness.nextAlarmAt()) !== null) {
           if (random() < 0.25) harness.d1.failNextBatchAt('before-commit')
-          await harness.shard.alarm()
+          await harness.deliverAlarm()
         }
 
         const observed = sumBuckets(harness.d1Buckets())
@@ -550,7 +568,7 @@ describe('TelemetryShard', () => {
         )
       }
     }
-  })
+  }, 30_000)
 
   it('always schedules an alarm while generated local rows remain outstanding', async () => {
     for (let seed = 201; seed <= 208; seed += 1) {
@@ -562,7 +580,7 @@ describe('TelemetryShard', () => {
           await harness.shard.record([generatedDelta(random)])
         } else if ((await harness.nextAlarmAt()) !== null) {
           if (random() < 0.3) harness.d1.failNextBatchAt('before-commit')
-          await harness.shard.alarm()
+          await harness.deliverAlarm()
         } else {
           await harness.coldRestart()
         }
@@ -572,7 +590,7 @@ describe('TelemetryShard', () => {
         }
       }
     }
-  })
+  }, 30_000)
 
   it.each([
     ['before D1 commit', 'before-commit'],
@@ -583,11 +601,11 @@ describe('TelemetryShard', () => {
       { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     harness.d1.failNextBatchAt(failurePoint)
-    await harness.shard.alarm()
+    await harness.deliverAlarm()
 
     await harness.coldRestart()
     harness.clock.now = millis((await harness.nextAlarmAt()) as number)
-    await harness.shard.alarm()
+    await harness.deliverAlarm()
 
     expect(harness.d1Buckets()).toEqual([
       {

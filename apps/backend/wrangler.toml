@@ -23,3 +23,6 @@ new_sqlite_classes = ["TelemetryShard"]
 
 [vars]
 SHARD_STRATEGY = "single"
+
+[observability]
+enabled = true

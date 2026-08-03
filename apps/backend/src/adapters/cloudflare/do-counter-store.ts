@@ -21,4 +21,8 @@ export class DurableObjectCounterStore implements CounterStore {
   async readDroppedLateCount(): Promise<number> {
     return this.shard.readDroppedLateCount()
   }
+
+  async readFlushFailureCount(): Promise<number> {
+    return this.shard.readFlushFailureCount()
+  }
 }

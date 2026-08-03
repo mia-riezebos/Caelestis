@@ -88,4 +88,14 @@ export interface CounterStore {
 
   /** Number of deltas rejected as invalid or expired without any matching local bucket state. */
   readDroppedLateCount(): Promise<number>
+
+  /**
+   * Consecutive failed flushes to the time series, or 0 when the last flush succeeded.
+   *
+   * This exists because the flush path deliberately does not throw — see the note in
+   * `TelemetryShard.alarm()`. A throwing alarm registers as a platform error that is retained and
+   * alertable; returning normally reports success while flushing nothing. This counter is what
+   * replaces that signal, so it must be readable rather than merely written.
+   */
+  readFlushFailureCount(): Promise<number>
 }

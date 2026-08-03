@@ -209,6 +209,14 @@ export class TelemetryShard extends DurableObject<Env> {
       .one().count
   }
 
+  async readFlushFailureCount(): Promise<number> {
+    return this.ctx.storage.sql
+      .exec<CountRow>(
+        'SELECT consecutive_failures AS count FROM flush_retry_state WHERE singleton = 1',
+      )
+      .one().count
+  }
+
   override async alarm(): Promise<void> {
     const nowMilliseconds = this.clock()
     const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
@@ -267,9 +275,15 @@ export class TelemetryShard extends DurableObject<Env> {
 
       // D1 must commit before retained_counters advances. Advancing retained first makes
       // readPending subtract the batch from itself and report zero for an unbounded D1 outage.
-      // Writing D1 first instead risks a transient over-count if the isolate dies after D1 commits
-      // but before local bookkeeping; the next successful alarm rewrites the same cumulative value
-      // and self-heals. Prefer that one-alarm crash window over incorrect totals for a whole outage.
+      //
+      // The cost, stated accurately: if D1 commits but the response is lost, retained does not
+      // advance, so readPending keeps counting a batch D1 already holds and live totals read high
+      // by that batch. This is NOT a one-alarm window — it persists until the next flush succeeds,
+      // which during an outage means the whole outage, at up to 60s per retry. It always heals.
+      //
+      // Reporting high while recovering beats reporting zero for the duration, which is what the
+      // opposite ordering does. Both are wrong; only one of them is wrong in a direction that hides
+      // work rather than exaggerating it.
       try {
         await new D1SqlStore(this.env.DB).appendBuckets(buckets)
       } catch (error) {
@@ -283,8 +297,11 @@ export class TelemetryShard extends DurableObject<Env> {
         // flush_batch until unrelated traffic happened to re-arm the alarm. Owning the retry is the
         // whole reason the backoff exists.
         //
-        // The failure is not swallowed: readFlushFailureCount() is the operational signal, and the
-        // batch stays in flush_batch until D1 confirms.
+        // The failure is not silent: readFlushFailureCount() exposes the consecutive-failure count,
+        // console.error records the cause, and the batch stays in flush_batch until D1 confirms.
+        // Note what is given up — a throwing alarm() registers as a platform error that Cloudflare
+        // retains and can alert on. Returning normally reports success while flushing nothing, so
+        // the counter above is the replacement and has to be watched.
         // https://developers.cloudflare.com/durable-objects/api/alarms/
         const failureCount = this.incrementFlushFailureCount()
         const retryDelay = flushRetryDelay(failureCount)
