@@ -37,39 +37,38 @@ latitude span both give **2,048,000 px exactly** — so the canvas is **Web Merc
 2048 × 2048 tiles of 1000 px**. The file's computed position, tile (325, 1781), matches tiles
 observed in a live session. Recorded on `06-recon-tile-serving`, which it also corrected.
 
-**2. The embedded image is the un-quantised source.** `colorType: 6` (RGBA), and 6,137 distinct
-opaque colours — with tell-tale near-duplicates like `(60,60,60)` beside `(60,61,60)`, and
-`(170,170,170)` beside `(170,170,171)`. The dominant colours *are* palette colours with noise around
-them, so `dithering` / `colorPaletteMode` / `colorMetric` are editor settings applied at display
-time, not baked into the stored pixels.
+**2. The embedded image is stored verbatim — wplace does not re-encode it.** Initially misread as
+un-quantised source, because the file holds 6,137 distinct colours. It is not: clustering shows
+**59 modes accounting for 100.000% of pixels**, and 40 of those clusters have exactly **125 members**
+— 5³, every combination of −2…+2 on each channel, with the smaller counts explained by clipping at 0
+and 255.
 
-## The tension
+That is uniform ±2 jitter applied by the *producing* quantiser, not anything wplace did. Dithering
+would pick between palette entries; this perturbs the values themselves. So a `.wplace` file contains
+exactly the pixels it was given.
 
-**Import conflicts with a settled decision.** The server validates that uploads are already
-palette-conformant and explicitly does not quantise — that belongs to the separate creation tool. But
-a `.wplace` file is by definition not conformant, so accepting one either means quantising on the
-server or rejecting nearly every real file.
+## No tension after all
 
-Options:
+Import was thought to conflict with the server's contract of never quantising, on the assumption that
+`.wplace` always holds un-quantised source. It does not. **A file produced from a correctly quantised
+image is palette-conformant, and the server can accept it unchanged.**
 
-- **Import belongs in the creation tool.** It already owns quantisation; teaching it to read
-  `.wplace` costs nothing architecturally and keeps the server's contract intact. Probably right.
-- **Server accepts `.wplace` and quantises on import**, as a narrowly-scoped exception. Convenient
-  for users, but reopens a decision made deliberately, and quantisation quality is exactly what the
-  dedicated tool exists to get right.
-- **Server accepts `.wplace` metadata only**, pairing it with a separately-supplied conformant image.
-  Awkward, and it is not really "native support".
+Import and export are therefore both straightforward:
 
-**Export has no such tension and is a clean win.** We hold the pixels, the placement and the name, so
-we can emit a valid `.wplace` that opens in wplace's own editor. Worth doing regardless of what
-import does.
+- **Import**: parse JSON, decode the data URL, convert lat/lng `bounds` to canvas pixels, validate
+  palette conformance as with any upload, slice into tiles. `order` becomes `sort_order`, `name`
+  becomes the template name.
+- **Export**: emit the same shape from stored pixels and placement, so the file opens in wplace's own
+  editor.
+
+Non-conformant files are rejected by the existing upload validation, exactly like any other
+non-conformant image. No exception to the no-quantising rule is needed.
 
 ## To decide
 
-- Where import lives, per the above.
-- Whether templates store the **original lat/lng bounds** alongside derived canvas-pixel bounds. Round
-  trips are lossless if we do; if we only keep pixels, an export re-derives bounds and floating-point
-  drift creeps in.
+- Whether templates store the **original lat/lng bounds** alongside derived canvas-pixel bounds.
+  Recorded in the schema draft as `bounds_*`, nullable — round trips stay lossless instead of
+  re-deriving and accumulating float drift.
 - Whether `opacity`, `dithering`, `colorPaletteMode`, `colorMetric`, `locked` are preserved verbatim
   for round-trip fidelity, or dropped as editor state that means nothing to us.
 - Whether the wplace `id` is retained, so a re-import recognises a template it has seen before.
