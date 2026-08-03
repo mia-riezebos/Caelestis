@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -10,13 +11,16 @@ import { D1SqlStore } from './d1-sql-store.js'
  * suffix, so hardcoding them breaks silently on regeneration — which is exactly what happened when
  * the migrations were squashed to a single baseline.
  */
-const migrationsDir = new URL('../../../migrations/', import.meta.url)
+const migrationsDir = join(import.meta.dirname, '../../../migrations')
 const migration = readdirSync(migrationsDir)
   .filter((name) => name.endsWith('.sql'))
   .sort()
-  .map((name) => readFileSync(new URL(name, migrationsDir), 'utf8'))
+  .map((name) => readFileSync(join(migrationsDir, name), 'utf8'))
   .join('\n')
   .replaceAll('--> statement-breakpoint', '')
+
+/** `node:sqlite` declares this inside its module namespace without exporting it. */
+type SupportedValueType = null | number | bigint | string | NodeJS.ArrayBufferView
 
 const result = <T>(results: T[]): D1Result<T> =>
   ({ success: true, results, meta: {} }) as D1Result<T>
@@ -24,10 +28,10 @@ const result = <T>(results: T[]): D1Result<T> =>
 class SqliteD1Statement {
   constructor(
     private readonly statement: StatementSync,
-    private readonly bindings: readonly unknown[] = [],
+    private readonly bindings: readonly SupportedValueType[] = [],
   ) {}
 
-  bind(...values: unknown[]): SqliteD1Statement {
+  bind(...values: SupportedValueType[]): SqliteD1Statement {
     return new SqliteD1Statement(this.statement, values)
   }
 

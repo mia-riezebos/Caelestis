@@ -1,3 +1,4 @@
+import { millis, type Seconds, seconds } from '@wts/shared'
 import { describe, expect, it } from 'vitest'
 import {
   type BucketQuery,
@@ -38,7 +39,7 @@ describe('memory adapters', () => {
     const original: TelemetryBucket = {
       templateId: 'template-a',
       resolution: 60,
-      bucketStart: 1_800,
+      bucketStart: seconds(1_800),
       placed: 4,
       correct: 3,
       repairs: 1,
@@ -57,18 +58,18 @@ describe('memory adapters', () => {
       store.readBuckets({
         templateIds: ['template-a'],
         resolution: 60,
-        fromSeconds: 1_800,
-        toSeconds: 1_860,
+        fromSeconds: seconds(1_800),
+        toSeconds: seconds(1_860),
       }),
     ).resolves.toEqual([later])
   })
 
   it('counters read back all recorded deltas exactly', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
-      { templateId: 'template-a', occurredAt: 110, placed: 7, correct: 5, repairs: 2 },
-      { templateId: 'template-b', occurredAt: 100, placed: 2, correct: 2, repairs: 0 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 7, correct: 5, repairs: 2 },
+      { templateId: 'template-b', occurredAt: seconds(100), placed: 2, correct: 2, repairs: 0 },
     ])
 
     await expect(store.readPending(['template-a', 'template-b'])).resolves.toEqual([
@@ -80,7 +81,7 @@ describe('memory adapters', () => {
   it('shares flushed counter history with the SqlStore exposed through Ports', async () => {
     const nowSeconds = 150
     const sql = new MemorySqlStore()
-    const counters = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const counters = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
     const ports: Ports = {
       blobs: new MemoryBlobStore(),
       sql,
@@ -88,7 +89,7 @@ describe('memory adapters', () => {
     }
 
     await ports.counters.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     await counters.alarm()
 
@@ -96,14 +97,14 @@ describe('memory adapters', () => {
       ports.sql.readBuckets({
         templateIds: ['template-a'],
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 60,
-        toSeconds: 120,
+        fromSeconds: seconds(60),
+        toSeconds: seconds(120),
       }),
     ).resolves.toEqual([
       {
         templateId: 'template-a',
         resolution: RESOLUTION_SECONDS,
-        bucketStart: 60,
+        bucketStart: seconds(60),
         placed: 4,
         correct: 3,
         repairs: 1,
@@ -113,12 +114,12 @@ describe('memory adapters', () => {
 
   it('rejects a far-future event without adding it to pending counters', async () => {
     const nowSeconds = 100
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(nowSeconds * 1_000))
 
     await store.record([
       {
         templateId: 'template-a',
-        occurredAt: nowSeconds + GRACE_SECONDS + 1,
+        occurredAt: seconds(nowSeconds + GRACE_SECONDS + 1),
         placed: 4,
         correct: 3,
         repairs: 1,
@@ -133,10 +134,10 @@ describe('memory adapters', () => {
   })
 
   it('rejects a negative counter', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: -1, correct: 0, repairs: 0 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: -1, correct: 0, repairs: 0 },
     ])
 
     await expect(store.readPending(['template-a'])).resolves.toEqual([
@@ -146,26 +147,26 @@ describe('memory adapters', () => {
   })
 
   it('rejects every counter magnitude above the per-delta limit', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
 
     await store.record([
       {
         templateId: 'template-a',
-        occurredAt: 100,
+        occurredAt: seconds(100),
         placed: MAX_COUNTER_DELTA_VALUE + 1,
         correct: 0,
         repairs: 0,
       },
       {
         templateId: 'template-a',
-        occurredAt: 100,
+        occurredAt: seconds(100),
         placed: MAX_COUNTER_DELTA_VALUE,
         correct: MAX_COUNTER_DELTA_VALUE + 1,
         repairs: 0,
       },
       {
         templateId: 'template-a',
-        occurredAt: 100,
+        occurredAt: seconds(100),
         placed: MAX_COUNTER_DELTA_VALUE,
         correct: MAX_COUNTER_DELTA_VALUE,
         repairs: MAX_COUNTER_DELTA_VALUE + 1,
@@ -179,12 +180,12 @@ describe('memory adapters', () => {
   })
 
   it('rejects counters that do not satisfy repairs <= correct <= placed', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 0, correct: 1, repairs: 1 },
-      { templateId: 'template-a', occurredAt: 100, placed: 2, correct: 1, repairs: 2 },
-      { templateId: 'template-a', occurredAt: 100, placed: 3, correct: 2, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 0, correct: 1, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 2, correct: 1, repairs: 2 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 3, correct: 2, repairs: 1 },
     ])
 
     await expect(store.readDroppedLateCount()).resolves.toBe(2)
@@ -194,13 +195,13 @@ describe('memory adapters', () => {
   })
 
   it('rejects template ids above the length limit', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
     const acceptedId = 'a'.repeat(MAX_TEMPLATE_ID_LENGTH)
     const rejectedId = 'b'.repeat(MAX_TEMPLATE_ID_LENGTH + 1)
 
     await store.record([
-      { templateId: rejectedId, occurredAt: 100, placed: 1, correct: 1, repairs: 0 },
-      { templateId: acceptedId, occurredAt: 100, placed: 1, correct: 1, repairs: 0 },
+      { templateId: rejectedId, occurredAt: seconds(100), placed: 1, correct: 1, repairs: 0 },
+      { templateId: acceptedId, occurredAt: seconds(100), placed: 1, correct: 1, repairs: 0 },
     ])
 
     await expect(store.readDroppedLateCount()).resolves.toBe(1)
@@ -211,10 +212,10 @@ describe('memory adapters', () => {
   })
 
   it('caps work per record call and counts only the excess deltas as rejected', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
     const deltas = Array.from({ length: MAX_COUNTER_DELTAS_PER_RECORD + 1 }, () => ({
       templateId: 'template-a',
-      occurredAt: 100,
+      occurredAt: seconds(100),
       placed: 1,
       correct: 1,
       repairs: 0,
@@ -235,10 +236,16 @@ describe('memory adapters', () => {
   })
 
   it('rejects a NaN event time', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: Number.NaN, placed: 1, correct: 1, repairs: 0 },
+      {
+        templateId: 'template-a',
+        occurredAt: Number.NaN as unknown as Seconds,
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      },
     ])
 
     await expect(store.readPending(['template-a'])).resolves.toEqual([
@@ -248,11 +255,11 @@ describe('memory adapters', () => {
   })
 
   it('records valid deltas from a batch that also contains an invalid delta', async () => {
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: -1, correct: 0, repairs: 0 },
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: -1, correct: 0, repairs: 0 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
 
     await expect(store.readPending(['template-a'])).resolves.toEqual([
@@ -264,11 +271,11 @@ describe('memory adapters', () => {
   it('attributes deltas in different minutes to their event-time buckets', async () => {
     const nowSeconds = 240
     const sql = new MemorySqlStore()
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
-      { templateId: 'template-a', occurredAt: 125, placed: 7, correct: 5, repairs: 2 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(125), placed: 7, correct: 5, repairs: 2 },
     ])
     await store.alarm()
 
@@ -276,14 +283,14 @@ describe('memory adapters', () => {
       sql.readBuckets({
         templateIds: ['template-a'],
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 0,
-        toSeconds: 180,
+        fromSeconds: seconds(0),
+        toSeconds: seconds(180),
       }),
     ).resolves.toEqual([
       {
         templateId: 'template-a',
         resolution: RESOLUTION_SECONDS,
-        bucketStart: 60,
+        bucketStart: seconds(60),
         placed: 4,
         correct: 3,
         repairs: 1,
@@ -291,7 +298,7 @@ describe('memory adapters', () => {
       {
         templateId: 'template-a',
         resolution: RESOLUTION_SECONDS,
-        bucketStart: 120,
+        bucketStart: seconds(120),
         placed: 7,
         correct: 5,
         repairs: 2,
@@ -302,10 +309,10 @@ describe('memory adapters', () => {
   it('flushes only after the event bucket has closed and passed grace', async () => {
     let nowSeconds = 100
     const sql = new MemorySqlStore()
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     expect(store.nextAlarmAt()).toBe((60 + RESOLUTION_SECONDS + GRACE_SECONDS) * 1_000)
 
@@ -315,8 +322,8 @@ describe('memory adapters', () => {
       sql.readBuckets({
         templateIds: ['template-a'],
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 0,
-        toSeconds: 180,
+        fromSeconds: seconds(0),
+        toSeconds: seconds(180),
       }),
     ).resolves.toEqual([])
 
@@ -326,18 +333,18 @@ describe('memory adapters', () => {
       sql.readBuckets({
         templateIds: ['template-a'],
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 0,
-        toSeconds: 180,
+        fromSeconds: seconds(0),
+        toSeconds: seconds(180),
       }),
     ).resolves.toHaveLength(1)
   })
 
   it('clears the alarm after all pending counters have flushed', async () => {
     const nowSeconds = 150
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     await store.alarm()
 
@@ -363,10 +370,10 @@ describe('memory adapters', () => {
         return []
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     const preFailureAlarm = store.nextAlarmAt()
     nowSeconds = 200
@@ -385,7 +392,7 @@ describe('memory adapters', () => {
     expect(attempts[1]).toEqual(attempts[0])
     expect(successfulWrites).toEqual([attempts[0]])
     await expect(store.readPending(['template-a'])).resolves.toEqual([
-      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: 201_000 },
+      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: millis(201_000) },
     ])
     expect(store.nextAlarmAt()).toBeNull()
   })
@@ -400,10 +407,10 @@ describe('memory adapters', () => {
         return []
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     nowSeconds = 200
     await expect(store.alarm()).rejects.toThrow('D1 unavailable')
@@ -429,10 +436,10 @@ describe('memory adapters', () => {
         return []
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     nowSeconds = 200
     await expect(store.alarm()).rejects.toThrow('D1 unavailable')
@@ -447,7 +454,7 @@ describe('memory adapters', () => {
     expect(store.nextAlarmAt()).toBeNull()
 
     await store.record([
-      { templateId: 'template-b', occurredAt: 203, placed: 2, correct: 1, repairs: 0 },
+      { templateId: 'template-b', occurredAt: seconds(203), placed: 2, correct: 1, repairs: 0 },
     ])
     nowSeconds = 270
     await expect(store.alarm()).rejects.toThrow('D1 unavailable')
@@ -465,10 +472,10 @@ describe('memory adapters', () => {
         return []
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowMilliseconds)
+    const store = new MemoryCounterStore(sql, () => millis(nowMilliseconds))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     nowMilliseconds = 200_000
 
@@ -482,16 +489,16 @@ describe('memory adapters', () => {
   it('rewrites a retained bucket with its cumulative total after a late arrival', async () => {
     let nowSeconds = 150
     const sql = new MemorySqlStore()
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     await store.alarm()
 
     nowSeconds = 200
     await store.record([
-      { templateId: 'template-a', occurredAt: 110, placed: 2, correct: 1, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 1 },
     ])
     expect(store.nextAlarmAt()).toBe(nowSeconds * 1_000)
     await store.alarm()
@@ -500,14 +507,14 @@ describe('memory adapters', () => {
       sql.readBuckets({
         templateIds: ['template-a'],
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 60,
-        toSeconds: 120,
+        fromSeconds: seconds(60),
+        toSeconds: seconds(120),
       }),
     ).resolves.toEqual([
       {
         templateId: 'template-a',
         resolution: RESOLUTION_SECONDS,
-        bucketStart: 60,
+        bucketStart: seconds(60),
         placed: 6,
         correct: 4,
         repairs: 2,
@@ -517,15 +524,15 @@ describe('memory adapters', () => {
 
   it('absorbs a late arrival just before retention expires while its bucket remains pending', async () => {
     let nowSeconds = 150
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
 
     nowSeconds = 60 + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS - 1
     await store.record([
-      { templateId: 'template-a', occurredAt: 110, placed: 2, correct: 1, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 1 },
     ])
 
     await expect(store.readDroppedLateCount()).resolves.toBe(0)
@@ -543,16 +550,16 @@ describe('memory adapters', () => {
   it('rejects a long-expired bucket whose only trace is an unpruned retained row', async () => {
     let nowSeconds = 150
     const sql = new MemorySqlStore()
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     await store.alarm()
 
     nowSeconds += 30 * 24 * 60 * 60
     await store.record([
-      { templateId: 'template-a', occurredAt: 110, placed: 2, correct: 1, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 1 },
     ])
 
     await expect(store.readDroppedLateCount()).resolves.toBe(1)
@@ -562,7 +569,7 @@ describe('memory adapters', () => {
         placed: 0,
         correct: 0,
         repairs: 0,
-        flushedAt: 150_000,
+        flushedAt: millis(150_000),
       },
     ])
     await store.alarm()
@@ -570,14 +577,14 @@ describe('memory adapters', () => {
       sql.readBuckets({
         templateIds: ['template-a'],
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 60,
-        toSeconds: 120,
+        fromSeconds: seconds(60),
+        toSeconds: seconds(120),
       }),
     ).resolves.toEqual([
       {
         templateId: 'template-a',
         resolution: RESOLUTION_SECONDS,
-        bucketStart: 60,
+        bucketStart: seconds(60),
         placed: 4,
         correct: 3,
         repairs: 1,
@@ -588,7 +595,7 @@ describe('memory adapters', () => {
   it('rejects a boundary delta because the exact expiry instant is exclusive', async () => {
     const bucketStart = 60
     const nowSeconds = bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(nowSeconds * 1_000))
     const internals = store as unknown as {
       flushBatch: Map<
         string,
@@ -612,7 +619,13 @@ describe('memory adapters', () => {
     })
 
     await store.record([
-      { templateId: 'template-a', occurredAt: bucketStart + 1, placed: 2, correct: 1, repairs: 1 },
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(bucketStart + 1),
+        placed: 2,
+        correct: 1,
+        repairs: 1,
+      },
     ])
 
     await expect(store.readDroppedLateCount()).resolves.toBe(1)
@@ -634,7 +647,7 @@ describe('memory adapters', () => {
         return persisted.readBuckets(query)
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
     const templateIds = Array.from(
       { length: FLUSH_BATCH_LIMIT + 5 },
       (_, index) => `template-${index.toString().padStart(2, '0')}`,
@@ -643,7 +656,7 @@ describe('memory adapters', () => {
     await store.record(
       templateIds.map((templateId) => ({
         templateId,
-        occurredAt: 9_950,
+        occurredAt: seconds(9_950),
         placed: 1,
         correct: 1,
         repairs: 0,
@@ -661,8 +674,8 @@ describe('memory adapters', () => {
       sql.readBuckets({
         templateIds,
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 9_900,
-        toSeconds: 9_960,
+        fromSeconds: seconds(9_900),
+        toSeconds: seconds(9_960),
       }),
     ).resolves.toHaveLength(FLUSH_BATCH_LIMIT + 5)
   })
@@ -683,7 +696,7 @@ describe('memory adapters', () => {
         return persisted.readBuckets(query)
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
     const templateIds = Array.from(
       { length: FLUSH_BATCH_LIMIT + 5 },
       (_, index) => `template-${index.toString().padStart(2, '0')}`,
@@ -692,7 +705,7 @@ describe('memory adapters', () => {
     await store.record(
       templateIds.map((templateId) => ({
         templateId,
-        occurredAt: 9_950,
+        occurredAt: seconds(9_950),
         placed: 1,
         correct: 1,
         repairs: 0,
@@ -700,13 +713,19 @@ describe('memory adapters', () => {
     )
     await store.alarm()
     await store.record([
-      { templateId: 'template-00', occurredAt: 9_950, placed: 1, correct: 1, repairs: 0 },
+      { templateId: 'template-00', occurredAt: seconds(9_950), placed: 1, correct: 1, repairs: 0 },
     ])
 
     await expect(store.alarm()).rejects.toThrow('D1 unavailable')
     expect(batches.map((batch) => batch.length)).toEqual([FLUSH_BATCH_LIMIT, 5])
     await expect(store.readPending(['template-00', 'template-40'])).resolves.toEqual([
-      { templateId: 'template-00', placed: 1, correct: 1, repairs: 0, flushedAt: 10_000_000 },
+      {
+        templateId: 'template-00',
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+        flushedAt: millis(10_000_000),
+      },
       { templateId: 'template-40', placed: 1, correct: 1, repairs: 0, flushedAt: null },
     ])
 
@@ -719,22 +738,22 @@ describe('memory adapters', () => {
       sql.readBuckets({
         templateIds,
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 9_900,
-        toSeconds: 9_960,
+        fromSeconds: seconds(9_900),
+        toSeconds: seconds(9_960),
       }),
     ).resolves.toHaveLength(FLUSH_BATCH_LIMIT + 5)
     await expect(
       sql.readBuckets({
         templateIds: ['template-00'],
         resolution: RESOLUTION_SECONDS,
-        fromSeconds: 9_900,
-        toSeconds: 9_960,
+        fromSeconds: seconds(9_900),
+        toSeconds: seconds(9_960),
       }),
     ).resolves.toEqual([
       {
         templateId: 'template-00',
         resolution: RESOLUTION_SECONDS,
-        bucketStart: 9_900,
+        bucketStart: seconds(9_900),
         placed: 2,
         correct: 2,
         repairs: 0,
@@ -753,7 +772,7 @@ describe('memory adapters', () => {
         return []
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
     const templateIds = ['template-a', 'template-b']
     const bucketStarts = Array.from({ length: 30 }, (_, index) => 8_160 + index * 60)
 
@@ -761,7 +780,7 @@ describe('memory adapters', () => {
       templateIds.toReversed().flatMap((templateId) =>
         bucketStarts.toReversed().map((bucketStart) => ({
           templateId,
-          occurredAt: bucketStart + 1,
+          occurredAt: seconds(bucketStart + 1),
           placed: 1,
           correct: 1,
           repairs: 0,
@@ -783,12 +802,12 @@ describe('memory adapters', () => {
   it('drops an expired bucket with no local trace at the validation edge', async () => {
     const bucketStart = 60
     const nowSeconds = bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS + 1
-    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(nowSeconds * 1_000))
 
     await store.record([
       {
         templateId: 'template-a',
-        occurredAt: bucketStart + 1,
+        occurredAt: seconds(bucketStart + 1),
         placed: 2,
         correct: 1,
         repairs: 1,
@@ -810,10 +829,10 @@ describe('memory adapters', () => {
   it('excludes retained flushed buckets from pending totals', async () => {
     const nowSeconds = 150
     const sql = new MemorySqlStore()
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     await store.alarm()
 
@@ -823,7 +842,7 @@ describe('memory adapters', () => {
         placed: 0,
         correct: 0,
         repairs: 0,
-        flushedAt: 150_000,
+        flushedAt: millis(150_000),
       },
     ])
   })
@@ -841,16 +860,16 @@ describe('memory adapters', () => {
         return persisted.readBuckets(query)
       },
     }
-    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
 
     await store.record([
-      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 4, correct: 3, repairs: 1 },
     ])
     await store.alarm()
 
     nowSeconds = 200
     await store.record([
-      { templateId: 'template-a', occurredAt: 110, placed: 2, correct: 1, repairs: 0 },
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 2, correct: 1, repairs: 0 },
     ])
     shouldReject = true
     await expect(store.alarm()).rejects.toThrow('D1 unavailable')
@@ -861,7 +880,7 @@ describe('memory adapters', () => {
         placed: 2,
         correct: 1,
         repairs: 0,
-        flushedAt: 150_000,
+        flushedAt: millis(150_000),
       },
     ])
   })

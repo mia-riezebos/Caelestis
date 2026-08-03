@@ -13,7 +13,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.check.json",
     "clean": "rm -rf dist .turbo",
     "test": "vitest run"
   },

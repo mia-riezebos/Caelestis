@@ -1,3 +1,4 @@
+import { tileKey } from '@wts/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -236,7 +237,10 @@ describe('cross-field and time-unit schemas', () => {
         },
         totalPixels: 1,
         chunks: Array.from({ length: 9 }, (_, chunkIndex) => ({
-          tile: `${baseX + (chunkIndex % 3)}/${baseY + Math.floor(chunkIndex / 3)}`,
+          tile: tileKey({
+            x: baseX + (chunkIndex % 3),
+            y: baseY + Math.floor(chunkIndex / 3),
+          }),
           hash: HASH,
         })),
       }
