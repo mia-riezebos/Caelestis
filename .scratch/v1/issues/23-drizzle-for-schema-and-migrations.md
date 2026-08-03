@@ -55,9 +55,13 @@ schema stay separate concerns, so a storage change cannot silently reshape what 
 
 **Drizzle is not used in the Durable Object.** The shard keeps raw `ctx.storage.sql`. Reasoning:
 
-- The DO's tables (`pending_counters`, `flush_batch`, `counter_meta`) are a write-absorption buffer's
-  working state — **different tables** from D1's `telemetry_buckets`, not a copy. So there is no
-  shared schema to define, and the notional reuse does not exist.
+- **Nothing reuses it in either direction.** The DO's tables (`pending_counters`, `flush_batch`,
+  `retained_counters`, `counter_meta`) are a write-absorption buffer's working state — different
+  tables from D1's `telemetry_buckets`, not a copy. And the deferred portable implementation has no
+  Durable Object at all: its counter store is a Postgres table, and Drizzle schema definitions are
+  dialect-specific (`sqliteTable` vs `pgTable`), so it would need its own definitions regardless.
+  The only thing shared across that boundary is the *shape*, which is already pinned by the contract
+  constants (`RESOLUTION_SECONDS`, `GRACE_SECONDS`, `RETENTION_SECONDS`) on the port.
 - drizzle-kit's migration model does not fit a Durable Object anyway. DO schema is created
   per-object in the constructor with `CREATE TABLE IF NOT EXISTS`, not migrated against a binding —
   so the main reason to adopt Drizzle does not apply there.
