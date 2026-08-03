@@ -55,3 +55,35 @@ from the canvas raster tiles. The shim must not touch those.
 
 Remaining open: verified pixel dimensions of a tile, and whether the renderer accepts an oversized
 image without misaligning.
+
+## Correction — 2026-08-03: unpainted tiles are 200, not 404
+
+The earlier finding was **wrong**, and the error is instructive: the probe used tile `2200/1400`,
+which is off the map entirely.
+
+The canvas is **Web Mercator at zoom 11 — 2048 × 2048 tiles of 1000 px, world = 2,048,000 px**.
+Derived from the `bounds` in a native `.wplace` file: image width ÷ longitude span and height ÷
+latitude span both give 2,048,000.0 exactly, i.e. `2^11` tiles. Confirmed against a real file whose
+computed position, tile (325, 1781), matches the tiles observed in a live session.
+
+Re-probed:
+
+| tile | status | bytes |
+|---|---|---|
+| `227/1024` (mid-Pacific) | **200** | 392 |
+| `300/1024` | 200 | 7,644 |
+| `325/1781` | 200 | 6,686 |
+| `2047/2047` | 200 | 26,134 |
+| `2048/1000` (out of range) | **404** | 146 |
+
+So an unpainted but in-range tile returns a normal 200 with a tiny, essentially transparent PNG. A
+404 means the coordinate does not exist.
+
+### Consequences
+
+- **The shim does not need an empty-tile branch.** Every tile a template can legitimately cover
+  returns 200, so there is no synthesis path and nothing to fabricate. Simpler and less risky than
+  the design assumed.
+- **Telemetry loses a special case**: a blank tile is ordinary data arriving normally.
+- **Tile coordinates are bounded 0..2047**, which is a cheap validation both sides can apply.
+- A 404 now means a genuine bug — a template placed outside the canvas — rather than a normal state.

@@ -70,9 +70,9 @@ rests on reasoning that only real behaviour can confirm.
 - **Telemetry wire schema and the functional CRUD surface** it maps onto. No longer blocked — the
   real paint request is recorded in `07-recon-paint-request` and `packages/shared` needs updating to
   its multi-tile shape.
-- **Empty-tile synthesis behaviour** — confirmed that wplace returns a real HTTP 404 for unpainted
-  tiles, so the shim branches on status. Still open: exactly what it hands back in that case, and
-  whether fabricating a response perturbs MapLibre's or wplace's own logic.
+- ~~Empty-tile synthesis behaviour~~ — **dissolved.** In-range unpainted tiles return 200 with a
+  near-empty PNG; only out-of-range coordinates 404. The canvas is Web Mercator zoom 11, 2048×2048
+  tiles. There is no synthesis path and nothing to fabricate. See `06-recon-tile-serving`.
 - **Multi-server merge UX** — how conflicting/overlapping templates from different servers are
   surfaced, and where the "what did this server just add" trust diff lives in the userscript UI.
 - **Admin surface without a web frontend** — how an alliance leader provisions invite codes, uploads

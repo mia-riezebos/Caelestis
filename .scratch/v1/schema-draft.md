@@ -12,6 +12,24 @@ packages/wire-schema   Effect Schemas, depends on shared         → backend, fr
 Schemas are declared to satisfy the shared types, so drift is a build error. The userscript cannot
 pull Effect in because it never depends on the package that contains it.
 
+## Canvas geometry (shared constants)
+
+The canvas is **Web Mercator at zoom 11**: `2048 × 2048` tiles of `1000 px`, world = `2,048,000 px`.
+Derived from a native `.wplace` file's lat/lng bounds — width ÷ longitude span and height ÷ latitude
+span both give 2,048,000.0 exactly. Tile coordinates are therefore bounded `0..2047`, which is cheap
+validation on both sides, and a 404 from the tile endpoint means an out-of-range coordinate rather
+than an unpainted tile.
+
+```
+CANVAS_ZOOM  = 11
+TILE_SIZE    = 1000
+WORLD_TILES  = 2048          // 2 ** CANVAS_ZOOM
+WORLD_PIXELS = 2_048_000     // WORLD_TILES * TILE_SIZE
+```
+
+`packages/shared` also carries the lat/lng ↔ canvas-pixel conversion, since the userscript needs it
+to place templates and the backend needs it to import and export native files.
+
 ## D1 tables (Drizzle, `sqliteTable`)
 
 **Identifiers: `text` UUIDv7.** Close call against nanoid. The only place ordering earns anything is
@@ -69,9 +87,14 @@ id            text pk
 template_id   text not null → templates.id
 created_at_ms integer not null
 created_by    text not null
-min_x, min_y, max_x, max_y   integer not null   -- global canvas pixels
+min_x, min_y, max_x, max_y   integer not null   -- global canvas pixels, 0..2_047_999
 total_pixels  integer not null                  -- non-transparent; progress denominator
+bounds_north, bounds_south, bounds_west, bounds_east   real null   -- original lat/lng, if imported
 ```
+
+`bounds_*` preserve a native `.wplace` file's placement verbatim so a round trip is lossless.
+Re-deriving them from canvas pixels on export would introduce floating-point drift. Null for
+templates that did not come from a native file.
 
 `templates.current_version_id` is nullable so a version can be uploaded before being made current —
 which is what a draft is, without needing a separate concept.
