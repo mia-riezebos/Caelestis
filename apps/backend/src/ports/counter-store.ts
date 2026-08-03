@@ -16,17 +16,20 @@ export const GRACE_SECONDS = 30
 export const RETENTION_SECONDS = 3_600
 
 export interface CounterDelta {
+  /** Non-empty template identifier. */
   readonly templateId: string
   /**
-   * Unix seconds when the paint happened. This must be the true event time, not the time the caller
-   * happened to report it.
+   * Safe-integer Unix seconds when the paint happened. This must be the true event time, not the
+   * time the caller happened to report it. At record time it must be between
+   * `now - RETENTION_SECONDS - RESOLUTION_SECONDS - GRACE_SECONDS` and
+   * `now + GRACE_SECONDS`, inclusive.
    */
   readonly occurredAt: number
-  /** Pixels painted, whether or not they matched the template. */
+  /** Non-negative safe integer: pixels painted, whether or not they matched the template. */
   readonly placed: number
-  /** Of those, pixels that matched the template's colour at that coordinate. */
+  /** Non-negative safe integer: pixels that matched the template's colour at that coordinate. */
   readonly correct: number
-  /** Of the correct ones, pixels that were wrong before this paint — cleanup, not fresh fill. */
+  /** Non-negative safe integer: correct pixels that were cleanup rather than fresh fill. */
   readonly repairs: number
 }
 
@@ -58,6 +61,6 @@ export interface CounterStore {
    */
   readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]>
 
-  /** Number of non-empty deltas rejected because their event bucket was past retention. */
+  /** Number of deltas rejected as invalid or outside the accepted event-time window. */
   readDroppedLateCount(): Promise<number>
 }

@@ -3,6 +3,7 @@ import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import {
   type CounterDelta,
   GRACE_SECONDS,
+  isValidCounterDelta,
   type PendingCounters,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
@@ -42,7 +43,7 @@ interface NextBucketRow {
 }
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
-  placed !== 0 || correct !== 0 || repairs !== 0
+  placed > 0 || correct > 0 || repairs > 0
 
 const eventBucketStart = (occurredAt: number): number =>
   Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS
@@ -71,6 +72,12 @@ export class TelemetryShard extends DurableObject<Env> {
     let droppedLate = 0
 
     for (const delta of deltas) {
+      // Keep one operational counter for all rejected input: both malformed and out-of-window
+      // deltas have the same outcome and remediation, and splitting them would add schema surface.
+      if (!isValidCounterDelta(delta, nowSeconds)) {
+        droppedLate += 1
+        continue
+      }
       if (!hasActivity(delta)) continue
 
       const bucketStart = eventBucketStart(delta.occurredAt)
@@ -96,6 +103,8 @@ export class TelemetryShard extends DurableObject<Env> {
         delta.repairs,
       )
     }
+
+    this.pruneZeroPending()
 
     if (droppedLate > 0) {
       this.ctx.storage.sql.exec(
@@ -189,6 +198,7 @@ export class TelemetryShard extends DurableObject<Env> {
     const nowSeconds = Math.floor(nowMilliseconds / 1_000)
 
     this.pruneRetained(nowSeconds)
+    this.pruneZeroPending()
     let rows = this.readFlushBatch()
 
     if (rows.length === 0) {
@@ -237,7 +247,12 @@ export class TelemetryShard extends DurableObject<Env> {
         repairs: row.repairs,
       }))
 
-      await new D1SqlStore(this.env.DB).appendBuckets(buckets)
+      try {
+        await new D1SqlStore(this.env.DB).appendBuckets(buckets)
+      } catch (error) {
+        await this.scheduleNextAlarm(nowMilliseconds)
+        throw error
+      }
 
       this.ctx.storage.transactionSync(() => {
         for (const row of rows) {
@@ -353,6 +368,12 @@ export class TelemetryShard extends DurableObject<Env> {
       `,
       EXPIRES_AFTER_SECONDS,
       nowSeconds,
+    )
+  }
+
+  private pruneZeroPending(): void {
+    this.ctx.storage.sql.exec(
+      'DELETE FROM pending_counters WHERE placed = 0 AND correct = 0 AND repairs = 0',
     )
   }
 

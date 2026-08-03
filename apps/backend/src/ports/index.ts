@@ -1,4 +1,5 @@
 export type { BlobNamespace, BlobStore } from './blob-store.js'
+export { EVENT_TIME_SKEW_SECONDS, isValidCounterDelta } from './counter-delta.js'
 export {
   type CounterDelta,
   type CounterStore,

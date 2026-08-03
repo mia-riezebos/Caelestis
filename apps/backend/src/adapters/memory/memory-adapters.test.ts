@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  type BucketQuery,
   GRACE_SECONDS,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
+  type SqlStore,
   type TelemetryBucket,
 } from '../../ports/index.js'
 import { MemoryBlobStore } from './memory-blob-store.js'
@@ -68,6 +70,67 @@ describe('memory adapters', () => {
       { templateId: 'template-a', placed: 11, correct: 8, repairs: 3, flushedAt: null },
       { templateId: 'template-b', placed: 2, correct: 2, repairs: 0, flushedAt: null },
     ])
+  })
+
+  it('rejects a far-future event without adding it to pending counters', async () => {
+    const nowSeconds = 100
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+
+    await store.record([
+      {
+        templateId: 'template-a',
+        occurredAt: nowSeconds + GRACE_SECONDS + 1,
+        placed: 4,
+        correct: 3,
+        repairs: 1,
+      },
+    ])
+
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+    ])
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
+    expect(store.nextAlarmAt()).toBeNull()
+  })
+
+  it('rejects a negative counter', async () => {
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: 100, placed: -1, correct: 0, repairs: 0 },
+    ])
+
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+    ])
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
+  })
+
+  it('rejects a NaN event time', async () => {
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: Number.NaN, placed: 1, correct: 1, repairs: 0 },
+    ])
+
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+    ])
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
+  })
+
+  it('records valid deltas from a batch that also contains an invalid delta', async () => {
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => 100_000)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: 100, placed: -1, correct: 0, repairs: 0 },
+      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+    ])
+
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
+    ])
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
   })
 
   it('attributes deltas in different minutes to their event-time buckets', async () => {
@@ -139,6 +202,60 @@ describe('memory adapters', () => {
         toSeconds: 180,
       }),
     ).resolves.toHaveLength(1)
+  })
+
+  it('clears the alarm after all pending counters have flushed', async () => {
+    const nowSeconds = 150
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+    ])
+    await store.alarm()
+
+    expect(store.nextAlarmAt()).toBeNull()
+  })
+
+  it('retries the same flush batch immediately after appendBuckets fails', async () => {
+    let nowSeconds = 100
+    let shouldReject = true
+    const attempts: TelemetryBucket[][] = []
+    const successfulWrites: TelemetryBucket[][] = []
+    const sql: SqlStore = {
+      async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
+        const snapshot = buckets.map((bucket) => ({ ...bucket }))
+        attempts.push(snapshot)
+        if (shouldReject) {
+          shouldReject = false
+          throw new Error('D1 unavailable')
+        }
+        successfulWrites.push(snapshot)
+      },
+      async readBuckets(_query: BucketQuery): Promise<readonly TelemetryBucket[]> {
+        return []
+      },
+    }
+    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+    ])
+    const preFailureAlarm = store.nextAlarmAt()
+    nowSeconds = 200
+
+    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    expect(store.nextAlarmAt()).toBe(200_000)
+    expect(store.nextAlarmAt()).not.toBe(preFailureAlarm)
+
+    await store.alarm()
+
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1]).toEqual(attempts[0])
+    expect(successfulWrites).toEqual([attempts[0]])
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: 200_000 },
+    ])
+    expect(store.nextAlarmAt()).toBeNull()
   })
 
   it('rewrites a retained bucket with its cumulative total after a late arrival', async () => {

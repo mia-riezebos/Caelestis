@@ -2,6 +2,7 @@ import {
   type CounterDelta,
   type CounterStore,
   GRACE_SECONDS,
+  isValidCounterDelta,
   type PendingCounters,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
@@ -30,7 +31,7 @@ const flushableAt = (bucketStart: number): number =>
 const expiresAt = (bucketStart: number): number => flushableAt(bucketStart) + RETENTION_SECONDS
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
-  placed !== 0 || correct !== 0 || repairs !== 0
+  placed > 0 || correct > 0 || repairs > 0
 
 /**
  * Portable counter-buffer implementation used by tests and non-Cloudflare entry points.
@@ -56,6 +57,12 @@ export class MemoryCounterStore implements CounterStore {
     const nowSeconds = Math.floor(nowMilliseconds / 1_000)
 
     for (const delta of deltas) {
+      // Match TelemetryShard: invalid and out-of-window input share the existing rejection counter
+      // because both have the same operational outcome and remediation.
+      if (!isValidCounterDelta(delta, nowSeconds)) {
+        this.droppedLateCount += 1
+        continue
+      }
       if (!hasActivity(delta)) continue
 
       const bucketStart = eventBucketStart(delta.occurredAt)
@@ -75,6 +82,7 @@ export class MemoryCounterStore implements CounterStore {
       })
     }
 
+    this.pruneZeroPending()
     this.pruneRetained(nowSeconds)
     this.recomputeAlarm(nowMilliseconds)
   }
@@ -139,6 +147,7 @@ export class MemoryCounterStore implements CounterStore {
     const nowSeconds = Math.floor(nowMilliseconds / 1_000)
 
     this.pruneRetained(nowSeconds)
+    this.pruneZeroPending()
 
     if (this.flushBatch.size === 0) {
       for (const [key, counters] of this.pending) {
@@ -192,6 +201,14 @@ export class MemoryCounterStore implements CounterStore {
         !this.flushBatch.has(key)
       ) {
         this.retained.delete(key)
+      }
+    }
+  }
+
+  private pruneZeroPending(): void {
+    for (const [key, counters] of this.pending) {
+      if (counters.placed === 0 && counters.correct === 0 && counters.repairs === 0) {
+        this.pending.delete(key)
       }
     }
   }
