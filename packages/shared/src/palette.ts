@@ -1,8 +1,9 @@
 /**
  * Recovered wplace colours in the order listed by the reconstruction artifact.
  *
- * IMPORTANT: this index ordering is provisional. Correct it to wplace's actual palette indices
- * before paint classification relies on it: paint requests send palette indices, not RGB values.
+ * IMPORTANT: this array is lexicographically sorted by hex string, so it is definitely not in
+ * wplace's palette-index order. Recover and apply that order before paint classification relies on
+ * it: paint requests send palette indices, not RGB values.
  */
 export const WPLACE_PALETTE = [
   '#000000',

@@ -1,3 +1,4 @@
+import type { Millis, Seconds } from '@wts/shared'
 import {
   type AnySQLiteColumn,
   index,
@@ -15,7 +16,7 @@ export const nodes = sqliteTable(
     parentId: text('parent_id').references((): AnySQLiteColumn => nodes.id),
     path: text('path').notNull(),
     name: text('name').notNull(),
-    createdAtMs: integer('created_at_ms').notNull(),
+    createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
   (table) => [index('nodes_path_idx').on(table.path)],
 )
@@ -30,7 +31,7 @@ export const templates = sqliteTable('templates', {
   currentVersionId: text('current_version_id').references(
     (): AnySQLiteColumn => templateVersions.id,
   ),
-  createdAtMs: integer('created_at_ms').notNull(),
+  createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
 })
 
 export const templateVersions = sqliteTable('template_versions', {
@@ -38,7 +39,7 @@ export const templateVersions = sqliteTable('template_versions', {
   templateId: text('template_id')
     .notNull()
     .references(() => templates.id),
-  createdAtMs: integer('created_at_ms').notNull(),
+  createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   createdBy: text('created_by').notNull(),
   minX: integer('min_x').notNull(),
   minY: integer('min_y').notNull(),
@@ -72,8 +73,8 @@ export const accessTokens = sqliteTable('access_tokens', {
   label: text('label').notNull(),
   scope: text('scope', { enum: ['read', 'report', 'admin'] }).notNull(),
   createdBy: text('created_by').notNull(),
-  createdAtMs: integer('created_at_ms').notNull(),
-  revokedAtMs: integer('revoked_at_ms'),
+  createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
+  revokedAtMs: integer('revoked_at_ms').$type<Millis>(),
 })
 
 export const telemetryBuckets = sqliteTable(
@@ -81,7 +82,7 @@ export const telemetryBuckets = sqliteTable(
   {
     templateId: text('template_id').notNull(),
     resolution: integer('resolution').notNull(),
-    bucketStartS: integer('bucket_start_s').notNull(),
+    bucketStartS: integer('bucket_start_s').$type<Seconds>().notNull(),
     placed: integer('placed').notNull(),
     correct: integer('correct').notNull(),
     repairs: integer('repairs').notNull(),
@@ -96,7 +97,7 @@ export const contributions = sqliteTable(
     templateId: text('template_id')
       .notNull()
       .references(() => templates.id),
-    dayS: integer('day_s').notNull(),
+    dayS: integer('day_s').$type<Seconds>().notNull(),
     placed: integer('placed').notNull(),
     correct: integer('correct').notNull(),
     repairs: integer('repairs').notNull(),
@@ -107,7 +108,7 @@ export const contributions = sqliteTable(
 export const painters = sqliteTable('painters', {
   wplaceUserId: integer('wplace_user_id').primaryKey(),
   displayName: text('display_name').notNull(),
-  seenAtMs: integer('seen_at_ms').notNull(),
+  seenAtMs: integer('seen_at_ms').$type<Millis>().notNull(),
 })
 
 export const tileHistory = sqliteTable(
@@ -116,7 +117,7 @@ export const tileHistory = sqliteTable(
     tileX: integer('tile_x').notNull(),
     tileY: integer('tile_y').notNull(),
     resolutionS: integer('resolution_s').notNull(),
-    bucketStartS: integer('bucket_start_s').notNull(),
+    bucketStartS: integer('bucket_start_s').$type<Seconds>().notNull(),
     sha256: text('sha256').notNull(),
     reporters: integer('reporters').notNull(),
   },

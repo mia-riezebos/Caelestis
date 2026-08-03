@@ -33,7 +33,7 @@ export const tileKey = (t: TileCoord): TileKey => `${t.x}/${t.y}`
  * `Number('')` is 0, so an empty segment would silently become tile 0, and `Number(' 1')` and
  * `Number('1e3')` both parse cleanly into coordinates nobody wrote.
  */
-const INTEGER = /^-?\d+$/
+const CANONICAL_NON_NEGATIVE_INTEGER = /^(0|[1-9]\d*)$/
 
 export const parseTileKey = (key: string): TileCoord | null => {
   const parts = key.split('/')
@@ -41,9 +41,12 @@ export const parseTileKey = (key: string): TileCoord | null => {
 
   const [x, y] = parts
   if (x === undefined || y === undefined) return null
-  if (!INTEGER.test(x) || !INTEGER.test(y)) return null
+  if (!CANONICAL_NON_NEGATIVE_INTEGER.test(x) || !CANONICAL_NON_NEGATIVE_INTEGER.test(y))
+    return null
 
-  return { x: Number(x), y: Number(y) }
+  const tile = { x: Number(x), y: Number(y) }
+  if (tile.x >= WORLD_TILES || tile.y >= WORLD_TILES) return null
+  return tile
 }
 
 /** Web Mercator zoom used by the wplace canvas. */

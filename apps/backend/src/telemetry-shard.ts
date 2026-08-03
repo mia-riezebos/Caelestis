@@ -29,7 +29,7 @@ const flushRetryDelay = (failureCount: number): number =>
 interface CounterRow {
   readonly [column: string]: SqlStorageValue
   readonly template_id: string
-  readonly bucket_start_s: number
+  readonly bucket_start_s: Seconds
   readonly placed: number
   readonly correct: number
   readonly repairs: number
@@ -38,7 +38,7 @@ interface CounterRow {
 interface FlushedAtRow {
   readonly [column: string]: SqlStorageValue
   readonly template_id: string
-  readonly flushed_at: number
+  readonly flushed_at: Millis
 }
 
 interface CountRow {
@@ -48,8 +48,13 @@ interface CountRow {
 
 interface NextBucketRow {
   readonly [column: string]: SqlStorageValue
-  readonly bucket_start_s: number | null
+  readonly bucket_start_s: Seconds | null
 }
+
+// SqlStorage's variadic bind API accepts every numeric unit. Route timestamp values through these
+// unit-specific adapters so a seconds/milliseconds swap is rejected before it reaches that API.
+const bindSeconds = (value: Seconds): SqlStorageValue => value
+const bindMillis = (value: Millis): SqlStorageValue => value
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
   placed > 0 || correct > 0 || repairs > 0
@@ -107,7 +112,7 @@ export class TelemetryShard extends DurableObject<Env> {
             repairs = repairs + excluded.repairs
         `,
         delta.templateId,
-        bucketStart,
+        bindSeconds(bucketStart),
         delta.placed,
         delta.correct,
         delta.repairs,
@@ -187,7 +192,7 @@ export class TelemetryShard extends DurableObject<Env> {
         placed: row?.placed ?? 0,
         correct: row?.correct ?? 0,
         repairs: row?.repairs ?? 0,
-        flushedAt: flushedAt === undefined ? null : millis(flushedAt),
+        flushedAt: flushedAt ?? null,
       }
     })
   }
@@ -235,7 +240,7 @@ export class TelemetryShard extends DurableObject<Env> {
               AND (pending.placed <> 0 OR pending.correct <> 0 OR pending.repairs <> 0)
           `,
           FLUSHABLE_AFTER_SECONDS,
-          nowSeconds,
+          bindSeconds(nowSeconds),
         )
         this.ctx.storage.sql.exec(
           `
@@ -244,7 +249,7 @@ export class TelemetryShard extends DurableObject<Env> {
               AND (placed <> 0 OR correct <> 0 OR repairs <> 0)
           `,
           FLUSHABLE_AFTER_SECONDS,
-          nowSeconds,
+          bindSeconds(nowSeconds),
         )
       })
       rows = this.readFlushBatch()
@@ -254,7 +259,7 @@ export class TelemetryShard extends DurableObject<Env> {
       const buckets: readonly TelemetryBucket[] = rows.map((row) => ({
         templateId: row.template_id,
         resolution: RESOLUTION_SECONDS,
-        bucketStart: seconds(row.bucket_start_s),
+        bucketStart: row.bucket_start_s,
         placed: row.placed,
         correct: row.correct,
         repairs: row.repairs,
@@ -287,7 +292,7 @@ export class TelemetryShard extends DurableObject<Env> {
                 repairs = excluded.repairs
             `,
             row.template_id,
-            row.bucket_start_s,
+            bindSeconds(row.bucket_start_s),
             row.placed,
             row.correct,
             row.repairs,
@@ -299,12 +304,12 @@ export class TelemetryShard extends DurableObject<Env> {
               ON CONFLICT (template_id) DO UPDATE SET flushed_at = excluded.flushed_at
             `,
             row.template_id,
-            nowMilliseconds,
+            bindMillis(nowMilliseconds),
           )
           this.ctx.storage.sql.exec(
             'DELETE FROM flush_batch WHERE template_id = ?1 AND bucket_start_s = ?2',
             row.template_id,
-            row.bucket_start_s,
+            bindSeconds(row.bucket_start_s),
           )
         }
       })
@@ -403,7 +408,7 @@ export class TelemetryShard extends DurableObject<Env> {
             )
           `,
           templateId,
-          bucketStart,
+          bindSeconds(bucketStart),
         )
         .one().count > 0
     )
@@ -428,7 +433,7 @@ export class TelemetryShard extends DurableObject<Env> {
           )
       `,
       EXPIRES_AFTER_SECONDS,
-      nowSeconds,
+      bindSeconds(nowSeconds),
     )
   }
 
