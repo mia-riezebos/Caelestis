@@ -13,10 +13,12 @@ import type { TileKey } from './tiles.js'
  *
  * Crediting rule:
  *
- * - When `painted === submitted`, classify and credit the accepted pixels normally.
- * - When `painted < submitted`, `painted` is still an exact placed total, but do not credit
- *   template-level `correct` or `repairs`: the response does not reveal which submitted pixels
- *   landed. The next tile-diff anchor re-establishes template correctness from ground truth.
+ * - The server derives the submitted total from `tiles`.
+ * - When `painted` equals that server-derived total, classify and credit the accepted pixels
+ *   normally.
+ * - When `painted` is lower, it is still an exact placed total, but do not credit template-level
+ *   `correct` or `repairs`: the response does not reveal which submitted pixels landed. The next
+ *   tile-diff anchor re-establishes template correctness from ground truth.
  */
 export interface PaintEvent {
   /** Client-generated, so a retry can never double-count. */
@@ -25,8 +27,6 @@ export interface PaintEvent {
   readonly season: number
   readonly ts: number
   readonly tiles: readonly PaintTile[]
-  /** Total pixels submitted across every tile. */
-  readonly submitted: number
   /** Number wplace reported accepting. */
   readonly painted: number
 }
@@ -38,7 +38,10 @@ export interface PaintTile {
   readonly pixels: PaintPixels
 }
 
-/** Structure-of-arrays payload observed on wplace's paint request. Arrays are parallel. */
+/**
+ * Structure-of-arrays payload observed on wplace's paint request. All three arrays must have the
+ * same length; the server must reject a PaintTile when they do not.
+ */
 export interface PaintPixels {
   /** Tile-local x coordinates. */
   readonly x: readonly number[]

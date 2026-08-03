@@ -48,8 +48,6 @@ const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
 const eventBucketStart = (occurredAt: number): number =>
   Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS
 
-const expiresAt = (bucketStart: number): number => bucketStart + EXPIRES_AFTER_SECONDS
-
 export class TelemetryShard extends DurableObject<Env> {
   constructor(
     ctx: DurableObjectState,
@@ -74,18 +72,17 @@ export class TelemetryShard extends DurableObject<Env> {
     for (const delta of deltas) {
       // Keep one operational counter for all rejected input: both malformed and out-of-window
       // deltas have the same outcome and remediation, and splitting them would add schema surface.
-      if (!isValidCounterDelta(delta, nowSeconds)) {
+      if (
+        !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
+          this.hasLocalTrace(templateId, bucketStart),
+        )
+      ) {
         droppedLate += 1
         continue
       }
       if (!hasActivity(delta)) continue
 
       const bucketStart = eventBucketStart(delta.occurredAt)
-      if (expiresAt(bucketStart) <= nowSeconds) {
-        droppedLate += 1
-        continue
-      }
-
       this.ctx.storage.sql.exec(
         `
           INSERT INTO pending_counters (
@@ -122,6 +119,7 @@ export class TelemetryShard extends DurableObject<Env> {
   }
 
   async readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]> {
+    await this.scheduleNextAlarm(this.clock())
     if (templateIds.length === 0) return []
 
     const placeholders = templateIds.map(() => '?').join(', ')
@@ -202,6 +200,8 @@ export class TelemetryShard extends DurableObject<Env> {
     let rows = this.readFlushBatch()
 
     if (rows.length === 0) {
+      // Pending activity accumulated during a failed D1 write stays put. Once the preserved batch
+      // succeeds and clears, the next alarm promotes and drains that pending activity.
       this.ctx.storage.transactionSync(() => {
         this.ctx.storage.sql.exec(
           `
@@ -346,6 +346,33 @@ export class TelemetryShard extends DurableObject<Env> {
         `,
       )
       .toArray()
+  }
+
+  private hasLocalTrace(templateId: string, bucketStart: number): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec<CountRow>(
+          `
+            SELECT COUNT(*) AS count
+            FROM (
+              SELECT 1
+              FROM pending_counters
+              WHERE template_id = ?1 AND bucket_start = ?2
+              UNION ALL
+              SELECT 1
+              FROM flush_batch
+              WHERE template_id = ?1 AND bucket_start = ?2
+              UNION ALL
+              SELECT 1
+              FROM retained_counters
+              WHERE template_id = ?1 AND bucket_start = ?2
+            )
+          `,
+          templateId,
+          bucketStart,
+        )
+        .one().count > 0
+    )
   }
 
   private pruneRetained(nowSeconds: number): void {

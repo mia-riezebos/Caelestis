@@ -9,7 +9,6 @@ import {
   type SqlStore,
   type TelemetryBucket,
 } from '../../ports/index.js'
-import { MemorySqlStore } from './memory-sql-store.js'
 
 interface BucketCounters {
   readonly templateId: string
@@ -48,7 +47,7 @@ export class MemoryCounterStore implements CounterStore {
   private alarmAt: number | null = null
 
   constructor(
-    private readonly sql: SqlStore = new MemorySqlStore(),
+    private readonly sql: SqlStore,
     private readonly clock: () => number = Date.now,
   ) {}
 
@@ -59,18 +58,17 @@ export class MemoryCounterStore implements CounterStore {
     for (const delta of deltas) {
       // Match TelemetryShard: invalid and out-of-window input share the existing rejection counter
       // because both have the same operational outcome and remediation.
-      if (!isValidCounterDelta(delta, nowSeconds)) {
+      if (
+        !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
+          this.hasLocalTrace(templateId, bucketStart),
+        )
+      ) {
         this.droppedLateCount += 1
         continue
       }
       if (!hasActivity(delta)) continue
 
       const bucketStart = eventBucketStart(delta.occurredAt)
-      if (expiresAt(bucketStart) <= nowSeconds) {
-        this.droppedLateCount += 1
-        continue
-      }
-
       const key = bucketKey(delta.templateId, bucketStart)
       const current = this.pending.get(key)
       this.pending.set(key, {
@@ -88,6 +86,7 @@ export class MemoryCounterStore implements CounterStore {
   }
 
   async readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]> {
+    this.recomputeAlarm(this.clock())
     const requested = new Set(templateIds)
     const totals = new Map<string, BucketCounters>()
 
@@ -150,6 +149,8 @@ export class MemoryCounterStore implements CounterStore {
     this.pruneZeroPending()
 
     if (this.flushBatch.size === 0) {
+      // Pending activity accumulated during a failed SqlStore write stays put. Once the preserved
+      // batch succeeds and clears, the next alarm promotes and drains that pending activity.
       for (const [key, counters] of this.pending) {
         if (flushableAt(counters.bucketStart) > nowSeconds) continue
 
@@ -191,6 +192,11 @@ export class MemoryCounterStore implements CounterStore {
 
     this.pruneRetained(nowSeconds)
     this.recomputeAlarm(nowMilliseconds)
+  }
+
+  private hasLocalTrace(templateId: string, bucketStart: number): boolean {
+    const key = bucketKey(templateId, bucketStart)
+    return this.pending.has(key) || this.flushBatch.has(key) || this.retained.has(key)
   }
 
   private pruneRetained(nowSeconds: number): void {

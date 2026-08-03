@@ -20,9 +20,9 @@ export interface CounterDelta {
   readonly templateId: string
   /**
    * Safe-integer Unix seconds when the paint happened. This must be the true event time, not the
-   * time the caller happened to report it. At record time it must be between
-   * `now - RETENTION_SECONDS - RESOLUTION_SECONDS - GRACE_SECONDS` and
-   * `now + GRACE_SECONDS`, inclusive.
+   * time the caller happened to report it. At record time it must be no later than
+   * `now + GRACE_SECONDS`. Its minute bucket must not have expired unless the store still has a
+   * local pending, flush-batch, or retained row that can absorb a cumulative rewrite.
    */
   readonly occurredAt: number
   /** Non-negative safe integer: pixels painted, whether or not they matched the template. */
@@ -61,6 +61,6 @@ export interface CounterStore {
    */
   readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]>
 
-  /** Number of deltas rejected as invalid or outside the accepted event-time window. */
+  /** Number of deltas rejected as invalid or expired without any matching local bucket state. */
   readDroppedLateCount(): Promise<number>
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   type BucketQuery,
   GRACE_SECONDS,
+  type Ports,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
   type SqlStore,
@@ -69,6 +70,40 @@ describe('memory adapters', () => {
     await expect(store.readPending(['template-a', 'template-b'])).resolves.toEqual([
       { templateId: 'template-a', placed: 11, correct: 8, repairs: 3, flushedAt: null },
       { templateId: 'template-b', placed: 2, correct: 2, repairs: 0, flushedAt: null },
+    ])
+  })
+
+  it('shares flushed counter history with the SqlStore exposed through Ports', async () => {
+    const nowSeconds = 150
+    const sql = new MemorySqlStore()
+    const counters = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+    const ports: Ports = {
+      blobs: new MemoryBlobStore(),
+      sql,
+      counters,
+    }
+
+    await ports.counters.record([
+      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+    ])
+    await counters.alarm()
+
+    await expect(
+      ports.sql.readBuckets({
+        templateIds: ['template-a'],
+        resolution: RESOLUTION_SECONDS,
+        fromSeconds: 60,
+        toSeconds: 120,
+      }),
+    ).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        resolution: RESOLUTION_SECONDS,
+        bucketStart: 60,
+        placed: 4,
+        correct: 3,
+        repairs: 1,
+      },
     ])
   })
 
@@ -258,6 +293,31 @@ describe('memory adapters', () => {
     expect(store.nextAlarmAt()).toBeNull()
   })
 
+  it('readPending re-arms an alarm for flush-batch residue', async () => {
+    let nowSeconds = 100
+    const sql: SqlStore = {
+      async appendBuckets(_buckets: readonly TelemetryBucket[]): Promise<void> {
+        throw new Error('D1 unavailable')
+      },
+      async readBuckets(_query: BucketQuery): Promise<readonly TelemetryBucket[]> {
+        return []
+      },
+    }
+    const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+    ])
+    nowSeconds = 200
+    await expect(store.alarm()).rejects.toThrow('D1 unavailable')
+    expect(store.nextAlarmAt()).toBe(200_000)
+
+    nowSeconds = 250
+    await store.readPending(['template-a'])
+
+    expect(store.nextAlarmAt()).toBe(250_000)
+  })
+
   it('rewrites a retained bucket with its cumulative total after a late arrival', async () => {
     let nowSeconds = 150
     const sql = new MemorySqlStore()
@@ -294,7 +354,32 @@ describe('memory adapters', () => {
     ])
   })
 
-  it('drops a late arrival past retention and increments the observable count', async () => {
+  it('absorbs a late arrival past retention while its bucket remains pending locally', async () => {
+    let nowSeconds = 150
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: 100, placed: 4, correct: 3, repairs: 1 },
+    ])
+
+    nowSeconds = 60 + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS
+    await store.record([
+      { templateId: 'template-a', occurredAt: 110, placed: 2, correct: 1, repairs: 1 },
+    ])
+
+    await expect(store.readDroppedLateCount()).resolves.toBe(0)
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: 6,
+        correct: 4,
+        repairs: 2,
+        flushedAt: null,
+      },
+    ])
+  })
+
+  it('absorbs a late arrival past retention while its bucket remains retained locally', async () => {
     let nowSeconds = 150
     const sql = new MemorySqlStore()
     const store = new MemoryCounterStore(sql, () => nowSeconds * 1_000)
@@ -309,6 +394,33 @@ describe('memory adapters', () => {
       { templateId: 'template-a', occurredAt: 110, placed: 2, correct: 1, repairs: 1 },
     ])
 
+    await expect(store.readDroppedLateCount()).resolves.toBe(0)
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        placed: 2,
+        correct: 1,
+        repairs: 1,
+        flushedAt: 150_000,
+      },
+    ])
+  })
+
+  it('drops an expired bucket with no local trace at the validation edge', async () => {
+    const bucketStart = 60
+    const nowSeconds = bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS + RETENTION_SECONDS + 1
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => nowSeconds * 1_000)
+
+    await store.record([
+      {
+        templateId: 'template-a',
+        occurredAt: bucketStart + 1,
+        placed: 2,
+        correct: 1,
+        repairs: 1,
+      },
+    ])
+
     await expect(store.readDroppedLateCount()).resolves.toBe(1)
     await expect(store.readPending(['template-a'])).resolves.toEqual([
       {
@@ -316,7 +428,7 @@ describe('memory adapters', () => {
         placed: 0,
         correct: 0,
         repairs: 0,
-        flushedAt: 150_000,
+        flushedAt: null,
       },
     ])
   })
