@@ -153,10 +153,20 @@ id            text pk
 template_id   text not null → templates.id
 created_at_ms integer not null
 created_by    text not null
-min_x, min_y, max_x, max_y   integer not null   -- global canvas pixels, 0..2_047_999
+min_x, min_y                 integer not null   -- inclusive, 0..2_047_999
+max_x, max_y                 integer not null   -- exclusive, 1..2_048_000
 total_pixels  integer not null                  -- non-transparent; progress denominator
 bounds_north, bounds_south, bounds_west, bounds_east   real null   -- original lat/lng, if imported
 ```
+
+**`min` is inclusive, `max` is exclusive** — the same convention as `Array.slice`, so width is
+`max - min` and a template covering only the last pixel column is `{minX: 2_047_999, maxX: 2_048_000}`.
+`max` is therefore not a pixel index, which is why its range differs from `min`'s.
+
+**The canvas wraps in x and does not in y.** `minX > maxX` means the template spans the antimeridian
+and is legal; consumers must read it as two ranges. `minY > maxY` has no meaning — Mercator clamps at
+±85.05°, so there is nothing above or below to wrap through. Zero width and zero height are both
+rejected: a template covering no pixels is not a placement.
 
 `bounds_*` preserve a native `.wplace` file's placement verbatim so a round trip is lossless.
 Re-deriving them from canvas pixels on export would introduce floating-point drift. Null for
