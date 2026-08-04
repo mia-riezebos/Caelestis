@@ -18,6 +18,20 @@ import type { BucketQuery, SqlStore, TelemetryBucket } from '../../ports/index.j
  */
 const READ_BUCKETS_CHUNK_SIZE = 90
 
+/**
+ * Template ids one `readBuckets` call may ask for.
+ *
+ * Chunking fixed the 100-bound-parameter limit and walked into the next one: D1 allows 50 queries
+ * per Worker invocation on the free plan and 1,000 on paid, so at 90 ids per query a group of 4,501
+ * templates exceeded the free budget and failed the whole read with a D1_ERROR. The wire permits far
+ * more than that in one group.
+ *
+ * 40 chunks leaves headroom under the free budget for whatever else an invocation does. Reading a
+ * group larger than this needs paging, which belongs to the route layer that does not exist yet —
+ * so this fails immediately, naming the limit, rather than reaching D1 and failing there.
+ */
+const MAX_READ_BUCKETS_TEMPLATE_IDS = READ_BUCKETS_CHUNK_SIZE * 40
+
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
   resolution: row.resolution,
@@ -70,7 +84,15 @@ export class D1SqlStore implements SqlStore {
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
     if (query.templateIds.length === 0) return []
 
-    const templateIds = [...query.templateIds]
+    // Deduplicate before chunking. Each chunk returns its own rows and the merge does not join
+    // them, so an id repeated across two chunks came back twice and any consumer summing the result
+    // double-counted that template's history. It also keeps the query count honest.
+    const templateIds = [...new Set(query.templateIds)]
+    if (templateIds.length > MAX_READ_BUCKETS_TEMPLATE_IDS) {
+      throw new Error(
+        `readBuckets accepts at most ${MAX_READ_BUCKETS_TEMPLATE_IDS} template ids per call; received ${templateIds.length}`,
+      )
+    }
     const rows = []
     for (let offset = 0; offset < templateIds.length; offset += READ_BUCKETS_CHUNK_SIZE) {
       const chunk = templateIds.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)

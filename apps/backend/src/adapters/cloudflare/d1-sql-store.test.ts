@@ -150,6 +150,42 @@ describe('D1SqlStore', () => {
     expect(d1.prepareCalls - callsBeforeRead).toBe(4)
   })
 
+  it('returns a stored bucket once when an id repeats across chunks', async () => {
+    // Each chunk returns its own rows and the merge does not join them, so a repeated id came back
+    // once per chunk it landed in and any consumer summing the result double-counted.
+    const stored = bucket({ templateId: 'dup', bucketStart: seconds(60) })
+    await store.appendBuckets([stored])
+    const templateIds = [
+      'dup',
+      ...Array.from({ length: 89 }, (_, index) => `template-${index}`),
+      'dup',
+    ]
+
+    await expect(
+      store.readBuckets({
+        templateIds,
+        resolution: 60,
+        fromSeconds: seconds(0),
+        toSeconds: seconds(100),
+      }),
+    ).resolves.toEqual([stored])
+  })
+
+  it('refuses a template set beyond the D1 per-invocation query budget', async () => {
+    // Chunking solved the 100-parameter limit and met the next one: 50 queries per invocation on
+    // the free plan. Failing here names the limit; reaching D1 produces an opaque D1_ERROR.
+    const templateIds = Array.from({ length: 3_601 }, (_, index) => `template-${index}`)
+
+    await expect(
+      store.readBuckets({
+        templateIds,
+        resolution: 60,
+        fromSeconds: seconds(0),
+        toSeconds: seconds(100),
+      }),
+    ).rejects.toThrow(/at most 3600 template ids/)
+  })
+
   it('returns one ordering across chunk boundaries', async () => {
     // Each chunk is ordered on its own, but ids are spread across chunks in input order, so a bare
     // concatenation is unsorted. Reading these two in reverse order puts them in different chunks.
@@ -174,7 +210,7 @@ describe('D1SqlStore', () => {
   it.each([
     ["INSERT INTO access_tokens VALUES ('h', 'l', 'superadmin', 'c', 1, NULL)"],
     ["INSERT INTO telemetry_buckets VALUES ('template', 42, 60, 1, 1, 0)"],
-    ["INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 1)"],
+    ["INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 'tok')"],
     ["INSERT INTO version_tiles VALUES ('v', 2048, 0, 'hash')"],
   ])('rejects a value outside its SQL domain: %s', (statement) => {
     expect(() => d1.sqlite.prepare(statement).run()).toThrow(/CHECK constraint failed/)
@@ -204,7 +240,7 @@ describe('D1SqlStore', () => {
     (resolution) => {
       expect(() =>
         d1.sqlite
-          .prepare("INSERT INTO tile_history VALUES (0, 0, ?, ?, 'hash', 1)")
+          .prepare("INSERT INTO tile_history VALUES (0, 0, ?, ?, 'hash', 'tok')")
           .run(resolution, resolution),
       ).not.toThrow()
     },
@@ -286,7 +322,7 @@ describe('D1SqlStore', () => {
   ])('rejects tile-history coordinates outside the canvas: %i/%i', (tileX, tileY) => {
     expect(() =>
       d1.sqlite
-        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 1)")
+        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'tok')")
         .run(tileX, tileY),
     ).toThrow(/CHECK constraint failed/)
   })
@@ -297,7 +333,7 @@ describe('D1SqlStore', () => {
   ])('rejects fractional tile-history coordinates: %s/%s', (tileX, tileY) => {
     expect(() =>
       d1.sqlite
-        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 1)")
+        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'tok')")
         .run(tileX, tileY),
     ).toThrow(/CHECK constraint failed/)
   })
@@ -352,10 +388,8 @@ describe('D1SqlStore', () => {
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 'oops', 0)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 1, 0.5)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 2, 0)"],
-    ["INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', -9)"],
     ["INSERT INTO contributions VALUES (1, 'ct', -1, 'tok', 1, 1, 0)"],
     ["INSERT INTO contributions VALUES (1, 'ct', 1, 'tok', -5, -5, -5)"],
-    ["INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 1.5)"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
@@ -365,6 +399,36 @@ describe('D1SqlStore', () => {
     // or textual count persisted. isValidCounterDelta already refuses these — this is the second
     // half of the rule, for any writer that is not the shard.
     expect(() => d1.sqlite.prepare(statement).run()).toThrow(/CHECK constraint failed/)
+  })
+
+  it('counts a repeated report from one reporter once, and keeps competing hashes', () => {
+    // reporters used to be an aggregate integer on a row keyed only by tile, tier and bucket: one
+    // hostile client could increment it by replaying its own hash until it looked like quorum, and
+    // an honest competing hash could not be stored at all. One row per reporter per hash fixes both.
+    d1.sqlite.exec(`
+      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'tok-a');
+      INSERT OR IGNORE INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'tok-a');
+      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'honest-hash', 'tok-b');
+    `)
+    expect(
+      d1.sqlite
+        .prepare(
+          'SELECT sha256, COUNT(*) AS reporters FROM tile_history GROUP BY sha256 ORDER BY sha256',
+        )
+        .all(),
+    ).toEqual([
+      { sha256: 'attacker-hash', reporters: 1 },
+      { sha256: 'honest-hash', reporters: 1 },
+    ])
+  })
+
+  it('rejects a replayed event id regardless of the claimed user', () => {
+    // The replay guard has to key on the event id alone. Keying it with the attacker-supplied user
+    // would let one captured event be replayed once per fabricated identity.
+    d1.sqlite.exec("INSERT INTO applied_events VALUES ('e1', 100, 1000)")
+    expect(() =>
+      d1.sqlite.prepare("INSERT INTO applied_events VALUES ('e1', 200, 2000)").run(),
+    ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/)
   })
 
   it('rejects a replayed event id', () => {
@@ -377,14 +441,18 @@ describe('D1SqlStore', () => {
     ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/)
   })
 
-  it('rejects a second node claiming an existing path', () => {
-    // path is the prefix-rollup key and the subtree-rewrite key; duplicates make a rollup attribute
-    // one group's templates to another.
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('n1', NULL, '/canada', 'Canada', 1)")
-    expect(() =>
-      d1.sqlite.prepare("INSERT INTO nodes VALUES ('n2', NULL, '/canada', 'Other', 1)").run(),
-    ).toThrow(/UNIQUE constraint failed/)
-  })
+  it.each([['/canada'], ['/Canada']])(
+    'rejects a second node claiming the existing path as %s',
+    (path) => {
+      // path is the prefix-rollup key and the subtree-rewrite key; duplicates make a rollup
+      // attribute one group's templates to another. The case variant matters because SQLite's LIKE
+      // is ASCII-case-insensitive, so /Canada and /canada would capture each other on a move.
+      d1.sqlite.exec("INSERT INTO nodes VALUES ('n1', NULL, '/canada', 'Canada', 1)")
+      expect(() =>
+        d1.sqlite.prepare('INSERT INTO nodes VALUES (?, NULL, ?, ?, 1)').run('n2', path, 'Other'),
+      ).toThrow(/UNIQUE constraint failed|constraint failed/)
+    },
+  )
 
   it.each([
     ['south below -90', '45, -91, -10, 10'],
@@ -423,7 +491,7 @@ describe('D1SqlStore', () => {
     ],
     [
       'tile_history keeps one row per tile, tier and bucket',
-      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 1), (0, 0, 0, 60, 'h', 1)",
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'tok'), (0, 0, 0, 60, 'h', 'tok')",
     ],
   ])('%s', (_label, statement) => {
     // Each composite primary key is the identity the draft specifies. Dropping a component makes
