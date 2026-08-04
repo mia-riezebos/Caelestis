@@ -22,7 +22,9 @@ What is not settled is which combinations are worth exposing and what the contro
   three known-good looks. Presets that write into the same parameter object are probably right.
 - **Control surface**: where do the pixel-size slider, opacity slider, shape picker, and the
   server/group/template toggle tree live? All UI is userscript-side in v1, so this panel is the
-  entire product surface.
+  entire product surface. **Partly answered by
+  [29-per-overlay-map-controls](29-per-overlay-map-controls.md)**: per-overlay settings move to a
+  button on the map, and this panel keeps the global axis — servers, the tree, and defaults.
 
 Prototype the panel rather than specifying it — this is a "how should it look and behave" question.
 
