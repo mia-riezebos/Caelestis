@@ -38,6 +38,17 @@ const expectRejected = <S extends Schema.ConstraintDecoder<unknown>>(
 }
 
 const validPixels = { x: [1], y: [2], colors: [3] }
+
+/**
+ * `count` distinct tile-local coordinates. Bulk fixtures used to repeat one coordinate, which the
+ * uniqueness rule now rejects — and a fixture that repeats a coordinate cannot exercise a cap on
+ * how many *distinct* pixels an event may carry, which is what those tests are for.
+ */
+const distinctPixels = (count: number) => ({
+  x: Array.from({ length: count }, (_, index) => index % 1_000),
+  y: Array.from({ length: count }, (_, index) => Math.floor(index / 1_000)),
+  colors: Array.from({ length: count }, () => 0),
+})
 const validEvent = {
   eventId: EVENT_ID,
   wplaceUserId: 123,
@@ -242,6 +253,19 @@ describe('PaintPixels', () => {
     expectRejected(PaintPixels, { x: [0], y: [0], colors: [color] })
   })
 
+  it('rejects a repeated pixel coordinate', () => {
+    // `submitted` is derived by counting entries, and painted === submitted credits them all, so a
+    // repeated coordinate is credited once per repeat for one physically painted pixel.
+    expectRejected(PaintPixels, { x: [7, 7], y: [9, 9], colors: [1, 2] })
+  })
+
+  it('accepts coordinates that share only one axis', () => {
+    // The uniqueness key must be the pair. Keying on either axis alone would reject an ordinary
+    // horizontal or vertical stroke.
+    const pixels = { x: [7, 7, 8], y: [9, 10, 9], colors: [1, 2, 3] }
+    expect(Schema.decodeUnknownSync(PaintPixels)(pixels)).toEqual(pixels)
+  })
+
   it.each([
     // 999_999 above is far enough past the cap that the ceiling could move by one in either
     // direction and still reject it, so nothing pinned where the ceiling actually sits. The bound
@@ -264,14 +288,8 @@ describe('PaintPixels', () => {
   })
 
   it('allows a paint payload above the old unevidenced 1,000-pixel cap', () => {
-    const values = Array.from({ length: 1_001 }, () => 0)
-    expect(Schema.decodeUnknownSync(PaintPixels)({ x: values, y: values, colors: values })).toEqual(
-      {
-        x: values,
-        y: values,
-        colors: values,
-      },
-    )
+    const pixels = distinctPixels(1_001)
+    expect(Schema.decodeUnknownSync(PaintPixels)(pixels)).toEqual(pixels)
   })
 
   it('caps one tile payload at the counter-store guardrail', () => {
@@ -315,10 +333,9 @@ describe('PaintEvent', () => {
   })
 
   it('accepts an event submitting exactly the pixel total', () => {
-    const values = Array.from({ length: 100_000 }, () => 0)
     const event = {
       ...validEvent,
-      tiles: [{ x: 0, y: 0, pixels: { x: values, y: values, colors: values } }],
+      tiles: [{ x: 0, y: 0, pixels: distinctPixels(100_000) }],
       painted: 100_000,
     }
     expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
@@ -347,6 +364,27 @@ describe('PaintEvent', () => {
   it('accepts a display name longer than an identifier', () => {
     // wplace display names are names, not identifiers; a 65-character one is ordinary.
     const event = { ...validEvent, displayName: 'x'.repeat(65) }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
+  it('rejects a repeated tile entry', () => {
+    // Per-tile uniqueness does not cover this: repeating the whole entry reaches the same canvas
+    // coordinates again, and submitted counts each entry.
+    const tile = { x: 3, y: 4, pixels: { x: [1], y: [1], colors: [2] } }
+    expectRejected(PaintEvent, { ...validEvent, tiles: [tile, tile], painted: 2 })
+  })
+
+  it('accepts two distinct tiles carrying the same tile-local coordinate', () => {
+    // The same offset in different tiles is a different canvas pixel, so it must stay legal.
+    const pixels = { x: [1], y: [1], colors: [2] }
+    const event = {
+      ...validEvent,
+      tiles: [
+        { x: 3, y: 4, pixels },
+        { x: 3, y: 5, pixels },
+      ],
+      painted: 2,
+    }
     expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
   })
 

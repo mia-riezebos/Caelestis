@@ -280,6 +280,26 @@ export const PaintPixels = PaintPixelsStruct.pipe(
         pixels.x.length === pixels.y.length && pixels.y.length === pixels.colors.length,
       'x, y and colors must have equal lengths',
     ),
+    /**
+     * A coordinate may appear once. `submitted` is derived by counting these entries, and equal
+     * `painted`/`submitted` means "classify and credit them all" — so without this a reporter
+     * claims one on-template pixel MAX_PAINT_PIXELS_PER_TILE times and is credited for every
+     * repeat. The same anti-double-count rule is already enforced on the server-authored side, for
+     * chunks within a template and for overlapping templates within a group; this is the
+     * client-authored side of it.
+     *
+     * Colour is deliberately not part of the key: two different colours claimed for one coordinate
+     * are contradictory, not additive, and must not both be credited.
+     */
+    booleanFilter((pixels: Schema.Schema.Type<typeof PaintPixelsStruct>) => {
+      const seen = new Set<number>()
+      for (let index = 0; index < pixels.x.length; index += 1) {
+        // Pack into one number rather than a string key: the arrays run to 100_000 entries and
+        // both coordinates are bounded by TILE_SIZE, so this stays exact and allocation-free.
+        seen.add((pixels.x[index] ?? 0) * TILE_SIZE + (pixels.y[index] ?? 0))
+      }
+      return seen.size === pixels.x.length
+    }, 'each pixel coordinate may be submitted once'),
   ),
 )
 
@@ -305,6 +325,14 @@ export const PaintEvent = PaintEventStruct.pipe(
       (event: Schema.Schema.Type<typeof PaintEventStruct>) =>
         event.tiles.every((tile) => tile.pixels.x.length > 0),
       'every submitted tile must carry at least one pixel',
+    ),
+    // Per-tile uniqueness is not enough on its own: repeating the whole tile entry reaches the same
+    // canvas coordinates again, and `submitted` counts each entry.
+    booleanFilter(
+      (event: Schema.Schema.Type<typeof PaintEventStruct>) =>
+        new Set(event.tiles.map((tile) => tile.x * WORLD_TILES + tile.y)).size ===
+        event.tiles.length,
+      'each tile may appear once per event',
     ),
     // Without a total, the per-tile cap bounds nothing: MAX_PAINT_TILES tiles each holding
     // MAX_PAINT_PIXELS_PER_TILE pixels is a ten-billion-pixel payload the schema would accept.
