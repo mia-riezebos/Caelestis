@@ -58,6 +58,7 @@ CREATE TABLE `telemetry_buckets` (
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`template_id`, `resolution`, `bucket_start_s`),
 	CONSTRAINT "telemetry_buckets_resolution_check" CHECK("telemetry_buckets"."resolution" IN (60, 300, 900, 3600, 21600)),
+	CONSTRAINT "telemetry_buckets_alignment_check" CHECK("telemetry_buckets"."bucket_start_s" % "telemetry_buckets"."resolution" = 0),
 	CONSTRAINT "telemetry_buckets_counter_check" CHECK(typeof("telemetry_buckets"."placed") = 'integer' AND typeof("telemetry_buckets"."correct") = 'integer'
         AND typeof("telemetry_buckets"."repairs") = 'integer'
         AND "telemetry_buckets"."repairs" >= 0

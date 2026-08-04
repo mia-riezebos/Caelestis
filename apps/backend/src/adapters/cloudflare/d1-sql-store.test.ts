@@ -7,7 +7,7 @@ import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 const bucket = (overrides: Partial<TelemetryBucket> = {}): TelemetryBucket => ({
   templateId: 'template-1',
   resolution: 60,
-  bucketStart: seconds(1_750_000_000),
+  bucketStart: seconds(1_749_988_800),
   placed: 10,
   correct: 8,
   repairs: 2,
@@ -40,8 +40,8 @@ describe('D1SqlStore', () => {
       store.readBuckets({
         templateIds: [],
         resolution: 60,
-        fromSeconds: seconds(1_750_000_000),
-        toSeconds: seconds(1_750_000_120),
+        fromSeconds: seconds(1_749_988_800),
+        toSeconds: seconds(1_749_988_920),
       }),
     ).resolves.toEqual([])
     expect(d1.prepareCalls).toBe(callsBeforeRead)
@@ -89,7 +89,7 @@ describe('D1SqlStore', () => {
   it('writes a multi-row append with one batch call', async () => {
     await store.appendBuckets([
       bucket(),
-      bucket({ templateId: 'template-2', bucketStart: seconds(1_750_000_060) }),
+      bucket({ templateId: 'template-2', bucketStart: seconds(1_749_988_860) }),
     ])
 
     expect(d1.batchCalls).toBe(1)
@@ -99,9 +99,9 @@ describe('D1SqlStore', () => {
   })
 
   it('reads requested ids at one resolution over a half-open range in stable order', async () => {
-    const fromSeconds = seconds(1_750_000_000)
-    const middleSeconds = seconds(1_750_000_060)
-    const toSeconds = seconds(1_750_000_120)
+    const fromSeconds = seconds(1_749_988_800)
+    const middleSeconds = seconds(1_749_988_860)
+    const toSeconds = seconds(1_749_988_920)
     const template1Start = bucket({ templateId: 'template-1', bucketStart: fromSeconds })
     const template1Middle = bucket({
       templateId: 'template-1',
@@ -190,8 +190,8 @@ describe('D1SqlStore', () => {
     // Each chunk is ordered on its own, but ids are spread across chunks in input order, so a bare
     // concatenation is unsorted. Reading these two in reverse order puts them in different chunks.
     const templateIds = Array.from({ length: 91 }, (_, index) => `template-${index}`).reverse()
-    const early = bucket({ templateId: 'template-0', bucketStart: seconds(10) })
-    const late = bucket({ templateId: 'template-90', bucketStart: seconds(10) })
+    const early = bucket({ templateId: 'template-0', bucketStart: seconds(0) })
+    const late = bucket({ templateId: 'template-90', bucketStart: seconds(0) })
     await store.appendBuckets([late, early])
 
     await expect(
@@ -229,7 +229,7 @@ describe('D1SqlStore', () => {
     (resolution) => {
       expect(() =>
         d1.sqlite
-          .prepare('INSERT INTO telemetry_buckets VALUES (?, ?, 60, 1, 1, 0)')
+          .prepare('INSERT INTO telemetry_buckets VALUES (?, ?, 0, 1, 1, 0)')
           .run(`template-${resolution}`, resolution),
       ).not.toThrow()
     },
@@ -385,6 +385,10 @@ describe('D1SqlStore', () => {
     // All three negative, so repairs <= correct <= placed still holds and only the sign clause can
     // reject: a single negative counter is caught by the ordering instead, leaving the sign free.
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, -5, -5, -5)"],
+    // A bucket start is the floor of an event time to its resolution, so it is always a multiple of
+    // it. 61 at resolution 60 is a row no reader can align with any other tier of the ladder.
+    ["INSERT INTO telemetry_buckets VALUES ('t', 60, 61, 1, 1, 0)"],
+    ["INSERT INTO telemetry_buckets VALUES ('t', 300, 60, 1, 1, 0)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 'oops', 0)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 1, 0.5)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 2, 0)"],

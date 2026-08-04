@@ -142,6 +142,13 @@ export const telemetryBuckets = sqliteTable(
       'telemetry_buckets_resolution_check',
       sql`${table.resolution} IN (60, 300, 900, 3600, 21600)`,
     ),
+    // A bucket start is the floor of an event time to its resolution, so it is always a multiple of
+    // it. Without this, {resolution: 60, bucketStart: 61} persists as a row no reader can align
+    // with any other tier of the ladder, and the decay fold silently produces overlapping buckets.
+    check(
+      'telemetry_buckets_alignment_check',
+      sql`${table.bucketStartS} % ${table.resolution} = 0`,
+    ),
     // The geometry columns get typeof + range; the counters got neither, so `placed = -5`,
     // `correct = 'oops'` and `repairs = 0.5` all persisted. SQLite INTEGER is an affinity, not a
     // type. isValidCounterDelta already refuses these, which is exactly why nothing here would ever

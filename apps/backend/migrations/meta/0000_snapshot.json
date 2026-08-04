@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ed7572f5-a651-4013-ad55-1335600b8874",
+  "id": "4729ecc6-b8a9-4693-925d-b6dc259c5721",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -362,6 +362,10 @@
         "telemetry_buckets_resolution_check": {
           "name": "telemetry_buckets_resolution_check",
           "value": "\"telemetry_buckets\".\"resolution\" IN (60, 300, 900, 3600, 21600)"
+        },
+        "telemetry_buckets_alignment_check": {
+          "name": "telemetry_buckets_alignment_check",
+          "value": "\"telemetry_buckets\".\"bucket_start_s\" % \"telemetry_buckets\".\"resolution\" = 0"
         },
         "telemetry_buckets_counter_check": {
           "name": "telemetry_buckets_counter_check",

@@ -952,6 +952,58 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it.each([
+    ['a path at the cap', 256, true],
+    ['a path one character past the cap', 257, false],
+  ])('%s is accepted: %s', (_label, length, accepted) => {
+    // Paths had the description bound, so MAX_MANIFEST_NODES of them was ~442 MB on an array the
+    // decoder refines only after building it.
+    const node = { ...validNode, path: `/${'a'.repeat(length - 1)}` }
+    const manifest = { ...validManifest, nodes: [node] }
+    if (accepted) expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+    else expectRejected(Manifest, manifest)
+  })
+
+  it('rejects a node whose path skips a level below its parent', () => {
+    // startsWith alone accepts /a/b/c under /a, which claims a level of hierarchy no node declares:
+    // a rollup over /a/b finds nothing while /a/b/c's templates sit below it.
+    const parent = { id: uuid(140), parentId: null, path: '/canada', name: 'Canada' }
+    const child = { id: uuid(141), parentId: parent.id, path: '/canada/on/toronto', name: 'T' }
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [parent, child],
+      templates: [{ ...validTemplate, nodeId: child.id }],
+    })
+  })
+
+  it('rejects a total pixel count larger than its chunks can carry', () => {
+    // The box is the outer ceiling; the chunks are the real one. A box spanning many tiles while
+    // declaring one chunk cannot hold more painted pixels than that tile does.
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [
+        {
+          ...validTemplate,
+          bbox: { minX: 0, minY: 0, maxX: 3_000, maxY: 3_000 },
+          totalPixels: 1_000_001,
+          chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+        },
+      ],
+      tiles: [tileKey({ x: 0, y: 0 })],
+    })
+  })
+
+  it('accepts a total pixel count filling exactly one chunk', () => {
+    const template = {
+      ...validTemplate,
+      bbox: { minX: 0, minY: 0, maxX: 3_000, maxY: 3_000 },
+      totalPixels: 1_000_000,
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }
+    const manifest = { ...validManifest, templates: [template], tiles: [tileKey({ x: 0, y: 0 })] }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
   it('rejects a node whose path is not under its parent', () => {
     const parent = { id: uuid(50), parentId: null, path: '/canada', name: 'Canada' }
     const child = { id: uuid(51), parentId: parent.id, path: '/usa/x', name: 'Stray' }

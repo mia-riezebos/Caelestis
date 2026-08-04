@@ -6,6 +6,13 @@ const MAX_IDENTIFIER_LENGTH = 64
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4_096
 /**
+ * A materialized path is a handful of group names joined by slashes, not prose. Reusing the
+ * description bound made MAX_MANIFEST_NODES paths worth ~442 MB — 22x the ceiling MAX_MANIFEST_CHUNKS
+ * is sized to, on an array the decoder refines only after building it. That is the same "one shared
+ * round number" mistake the array caps above already had to unlearn.
+ */
+const MAX_PATH_LENGTH = 256
+/**
  * Array caps sized from what each field actually bounds. A single shared round number was wrong
  * three separate ways: it made a >1,000-tile manifest impossible to encode, capped a paint payload
  * at a tenth of a real charge drain, and rejected an ordinary 40x30-tile template.
@@ -188,7 +195,7 @@ export const ServerInfo = Schema.Struct({
  */
 const NodePath = Schema.String.pipe(
   Schema.check(
-    Schema.isLengthBetween(1, MAX_DESCRIPTION_LENGTH),
+    Schema.isLengthBetween(1, MAX_PATH_LENGTH),
     Schema.isPattern(/^(\/[\p{L}\p{N}][\p{L}\p{N}. -]*)+$/u, {
       description: 'a slash-separated group path without LIKE metacharacters',
     }),
@@ -394,7 +401,12 @@ export const Manifest = ManifestStruct.pipe(
       return manifest.nodes.every((node) => {
         if (node.parentId === null) return node.path.indexOf('/', 1) === -1
         const parentPath = pathById.get(node.parentId)
-        return parentPath !== undefined && node.path.startsWith(`${parentPath}/`)
+        if (parentPath === undefined) return false
+        // Immediate child, not merely a descendant: `startsWith` alone accepts /a/b/c under /a,
+        // which claims a level of hierarchy the manifest never declares a node for, so a rollup
+        // over /a/b finds nothing while /a/b/c's templates sit below it.
+        const suffix = node.path.slice(parentPath.length)
+        return suffix.startsWith('/') && suffix.indexOf('/', 1) === -1
       })
       // This also makes the hierarchy acyclic, so no separate cycle check is needed: a non-root
       // path strictly extends its parent's, so walking up strictly shortens the path and must
@@ -413,6 +425,10 @@ export const Manifest = ManifestStruct.pipe(
           const width = xSpans(template).reduce((total, span) => total + (span.end - span.start), 0)
           const height = template.bbox.maxY - template.bbox.minY
           if (template.totalPixels > width * height) return false
+          // The box is the outer ceiling; the chunks are the real one. A box spanning many tiles
+          // while declaring a single chunk cannot hold more painted pixels than that one tile does,
+          // and a totalPixels above it pins progress below 100% forever.
+          if (template.totalPixels > template.chunks.length * TILE_SIZE * TILE_SIZE) return false
           return true
         }) &&
         manifest.templates.every((template) => {
