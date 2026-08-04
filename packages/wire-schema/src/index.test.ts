@@ -201,6 +201,22 @@ describe('tile and template schemas', () => {
   it.each(['', '../../etc/passwd', 'A'.repeat(64)])('rejects invalid SHA-256 digest %s', (hash) => {
     expectRejected(Chunk, { tile: '0/0', hash })
   })
+
+  it.each([
+    // Nothing exercised the description cap at all, so it could move freely. It bounds both
+    // ServerInfo.description and Node.path, and a network client controls both.
+    ['a description at the cap', 4_096, true],
+    ['a description one character past the cap', 4_097, false],
+  ])('%s is accepted: %s', (_label, length, accepted) => {
+    const server = {
+      id: SERVER_ID,
+      name: 'Server',
+      requiresAuth: false,
+      description: 'x'.repeat(length),
+    }
+    if (accepted) expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
+    else expectRejected(ServerInfo, server)
+  })
 })
 
 describe('PaintPixels', () => {
@@ -224,6 +240,19 @@ describe('PaintPixels', () => {
 
   it.each([-1, 1.5, 999_999, Number.NaN])('rejects invalid palette index %s', (color) => {
     expectRejected(PaintPixels, { x: [0], y: [0], colors: [color] })
+  })
+
+  it.each([
+    // 999_999 above is far enough past the cap that the ceiling could move by one in either
+    // direction and still reject it, so nothing pinned where the ceiling actually sits. The bound
+    // is deliberately permissive until 09-recon-palette recovers the real index order, but
+    // permissive is a decision about the value, not a licence for it to drift untested.
+    ['the highest accepted palette index', 65_535, true],
+    ['one past the palette ceiling', 65_536, false],
+  ])('%s is accepted: %s', (_label, color, accepted) => {
+    const pixels = { x: [0], y: [0], colors: [color] }
+    if (accepted) expect(Schema.decodeUnknownSync(PaintPixels)(pixels)).toEqual(pixels)
+    else expectRejected(PaintPixels, pixels)
   })
 
   it('accepts palette indices above the incomplete recovered palette', () => {
@@ -591,6 +620,19 @@ describe('cross-field and time-unit schemas', () => {
 
   it('rejects milliseconds where seconds are required', () => {
     expectRejected(TileOffer, { tile: '0/0', sha256: HASH, ts: MILLIS })
+  })
+
+  it.each([
+    // The disjointness tests above pin that seconds and milliseconds cannot be confused, and the
+    // invalid-timestamp cases use 0, -1 and a fraction — all rejected by the sign or integer guard
+    // whatever the epoch floor is. So the floor itself was free to move: raising it to 2021-01-01
+    // survived the suite while silently rejecting every legitimate 2020 timestamp.
+    ['the first instant of 2020, the epoch floor', 1_577_836_800, true],
+    ['one second before the epoch floor', 1_577_836_799, false],
+  ])('%s is accepted: %s', (_label, ts, accepted) => {
+    const offer = { tile: '0/0', sha256: HASH, ts }
+    if (accepted) expect(Schema.decodeUnknownSync(TileOffer)(offer)).toEqual(offer)
+    else expectRejected(TileOffer, offer)
   })
 
   it('rejects seconds where milliseconds are required', () => {
