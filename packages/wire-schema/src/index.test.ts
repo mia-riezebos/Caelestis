@@ -689,6 +689,78 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('rejects an alarm that ends before it began', () => {
+    // Both timestamps independently satisfy Millis, so a reversed interval decoded clean and any
+    // consumer deriving a duration from it got a negative one.
+    expectRejected(Alarm, {
+      id: uuid(60),
+      templateId: TEMPLATE_ID,
+      kind: 'regression',
+      pixelsLost: 1,
+      firstSeen: MILLIS + 1,
+      lastSeen: MILLIS,
+    })
+  })
+
+  it('accepts an alarm observed within a single millisecond', () => {
+    const alarm = {
+      id: uuid(61),
+      templateId: TEMPLATE_ID,
+      kind: 'regression' as const,
+      pixelsLost: 1,
+      firstSeen: MILLIS,
+      lastSeen: MILLIS,
+    }
+    expect(Schema.decodeUnknownSync(Alarm)(alarm)).toEqual(alarm)
+  })
+
+  it('rejects a template with a zero progress denominator', () => {
+    // totalPixels divides every progress figure, so zero makes them NaN.
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [{ ...validTemplate, totalPixels: 0 }],
+    })
+  })
+
+  it('rejects a published template carrying no chunk', () => {
+    // It would contribute to progress while advertising no tile and no content to draw.
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [{ ...validTemplate, chunks: [] }],
+      tiles: [],
+    })
+  })
+
+  it('rejects a total pixel count larger than the bounding box', () => {
+    // The non-transparent pixels of a template live inside its own box; a larger count pins every
+    // progress figure near zero forever.
+    // The chunk has to move with the box, or the chunk-in-bounds rule rejects this first and the
+    // area bound stays deletable.
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [
+        {
+          ...validTemplate,
+          bbox: { minX: 0, minY: 0, maxX: 2, maxY: 2 },
+          totalPixels: 5,
+          chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+        },
+      ],
+      tiles: [tileKey({ x: 0, y: 0 })],
+    })
+  })
+
+  it('accepts a template painting every pixel of its bounding box', () => {
+    const template = {
+      ...validTemplate,
+      bbox: { minX: 0, minY: 0, maxX: 2, maxY: 2 },
+      totalPixels: 4,
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }
+    const manifest = { ...validManifest, templates: [template], tiles: [tileKey({ x: 0, y: 0 })] }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
   it('rejects a root node carrying a nested path', () => {
     // A node with no parent sits at the top of the tree, so its path has exactly one segment.
     // Without this, a rootless-looking '/canada/toronto' rolls up under a '/canada' it never

@@ -369,6 +369,19 @@ export const Manifest = ManifestStruct.pipe(
     booleanFilter(
       (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
         manifest.templates.every((template) => {
+          // totalPixels is the denominator of every progress figure for this template, so zero
+          // makes them NaN or a division by zero. A template that covers a box and declares chunks
+          // has painted something; one that has not is not a published template.
+          if (template.totalPixels === 0 || template.chunks.length === 0) return false
+          // It also cannot exceed the box it is counted within — the non-transparent pixels of a
+          // template live inside its own bounding box. Without this, an arbitrarily large
+          // totalPixels pins progress near zero forever.
+          const width = xSpans(template).reduce((total, span) => total + (span.end - span.start), 0)
+          const height = template.bbox.maxY - template.bbox.minY
+          if (template.totalPixels > width * height) return false
+          return true
+        }) &&
+        manifest.templates.every((template) => {
           // A chunk is a full tile of painted pixels, so a chunk outside the box that declares the
           // template's extent is a contradiction: culling watches the bbox tiles and would never
           // fetch it, or would render it in the wrong place.
@@ -520,7 +533,7 @@ export const NodeStatus = NodeStatusStruct.pipe(
   ),
 )
 
-export const Alarm = Schema.Struct({
+const AlarmStruct = Schema.Struct({
   id: Identifier,
   templateId: Identifier,
   kind: Schema.Literals(['regression', 'sustained-griefing']),
@@ -528,6 +541,15 @@ export const Alarm = Schema.Struct({
   firstSeen: Millis,
   lastSeen: Millis,
 })
+
+export const Alarm = AlarmStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (alarm: Schema.Schema.Type<typeof AlarmStruct>) => alarm.firstSeen <= alarm.lastSeen,
+      'an alarm may not end before it began',
+    ),
+  ),
+)
 
 type Exact<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
