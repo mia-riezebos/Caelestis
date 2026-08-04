@@ -2,7 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // The PNG codec uses Blob, Response and Compression/DecompressionStream. Both hosts of this
+    // package provide them — workerd and the browser — but they are web globals, not ES ones, so
+    // the DOM lib has to be named or they typecheck as missing while the tests still pass.
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["src"],
   "exclude": ["**/*.test.ts"]
