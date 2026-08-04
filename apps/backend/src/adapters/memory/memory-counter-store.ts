@@ -203,10 +203,17 @@ export class MemoryCounterStore implements CounterStore {
 
     if (buckets.length > 0) {
       // SqlStore must commit before retained advances. Advancing retained first makes readPending
-      // subtract the batch from itself and report zero for an unbounded SqlStore outage. Writing
-      // SqlStore first instead risks a transient over-count if the process dies after the commit but
-      // before local bookkeeping; the next successful alarm rewrites the same cumulative value and
-      // self-heals. Prefer that one-alarm crash window over incorrect totals for a whole outage.
+      // subtract the batch from itself and report zero for an unbounded SqlStore outage.
+      //
+      // The cost, stated accurately: if SqlStore commits but the response is lost, retained does not
+      // advance, so readPending keeps counting a batch the store already holds and live totals read
+      // high by that batch. This is NOT a one-alarm window — it persists until the next flush
+      // succeeds, which during an outage means the whole outage. It always heals.
+      //
+      // Reporting high while recovering beats reporting zero for the duration, which is what the
+      // opposite ordering does. Both are wrong; only one is wrong in a direction that exaggerates
+      // work rather than hiding it. Kept identical to TelemetryShard's note, because this adapter is
+      // the oracle that one is measured against.
       try {
         await this.sql.appendBuckets(buckets)
       } catch (error) {

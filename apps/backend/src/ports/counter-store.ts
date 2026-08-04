@@ -93,7 +93,13 @@ export interface CounterStore {
    */
   readPending(templateIds: readonly string[]): Promise<readonly PendingCounters[]>
 
-  /** Number of deltas rejected as invalid or expired without any matching local bucket state. */
+  /**
+   * Number of deltas rejected as invalid or expired.
+   *
+   * This counts every rejection. It used to say "without any matching local bucket state", which is
+   * not what happens: at the exact expiry instant a matching flush-batch row can still exist and the
+   * delta is counted anyway. Monitoring cannot infer "nothing local to reconcile against" from it.
+   */
   readDroppedLateCount(): Promise<number>
 
   /**

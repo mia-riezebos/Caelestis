@@ -353,8 +353,8 @@ describe('D1SqlStore', () => {
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 1, 0.5)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 2, 0)"],
     ["INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', -9)"],
-    ["INSERT INTO contributions VALUES (1, 'ct', -1, 1, 1, 0)"],
-    ["INSERT INTO contributions VALUES (1, 'ct', 1, -5, -5, -5)"],
+    ["INSERT INTO contributions VALUES (1, 'ct', -1, 'tok', 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES (1, 'ct', 1, 'tok', -5, -5, -5)"],
     ["INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 1.5)"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
@@ -365,6 +365,16 @@ describe('D1SqlStore', () => {
     // or textual count persisted. isValidCounterDelta already refuses these — this is the second
     // half of the rule, for any writer that is not the shard.
     expect(() => d1.sqlite.prepare(statement).run()).toThrow(/CHECK constraint failed/)
+  })
+
+  it('rejects a replayed event id', () => {
+    // PaintEvent.eventId is documented as "client-generated, so a retry can never double-count",
+    // and nothing stored it — the pending path is purely additive, so replaying one captured event
+    // N times multiplied the counters by N.
+    d1.sqlite.exec("INSERT INTO applied_events VALUES ('e1', 1, 1000)")
+    expect(() =>
+      d1.sqlite.prepare("INSERT INTO applied_events VALUES ('e1', 1, 2000)").run(),
+    ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/)
   })
 
   it('rejects a second node claiming an existing path', () => {
@@ -404,8 +414,12 @@ describe('D1SqlStore', () => {
       "INSERT INTO version_tiles VALUES ('v1', 0, 0, 'h'), ('v1', 0, 1, 'h')",
     ],
     [
-      'contributions keeps one row per user, template and day',
-      "INSERT INTO contributions VALUES (1, 'ct', 1, 1, 1, 0), (1, 'ct', 2, 1, 1, 0)",
+      'contributions keeps one row per user, template, day and reporter',
+      "INSERT INTO contributions VALUES (1, 'ct', 1, 'tok', 1, 1, 0), (1, 'ct', 2, 'tok', 1, 1, 0)",
+    ],
+    [
+      'contributions separate two reporters of the same user, template and day',
+      "INSERT INTO contributions VALUES (2, 'ct', 1, 'tok-a', 1, 1, 0), (2, 'ct', 1, 'tok-b', 1, 1, 0)",
     ],
     [
       'tile_history keeps one row per tile, tier and bucket',

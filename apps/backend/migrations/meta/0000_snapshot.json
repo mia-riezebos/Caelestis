@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "bad10542-f583-4ea0-8cbf-964904e80ab9",
+  "id": "bef96fbf-f82b-42f9-99b5-7aea47638bc2",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -61,6 +61,45 @@
         }
       }
     },
+    "applied_events": {
+      "name": "applied_events",
+      "columns": {
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "wplace_user_id": {
+          "name": "wplace_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "seen_at_ms": {
+          "name": "seen_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "applied_events_seen_at_idx": {
+          "name": "applied_events_seen_at_idx",
+          "columns": [
+            "seen_at_ms"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "contributions": {
       "name": "contributions",
       "columns": {
@@ -81,6 +120,13 @@
         "day_s": {
           "name": "day_s",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reported_by": {
+          "name": "reported_by",
+          "type": "text",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
@@ -124,13 +170,14 @@
         }
       },
       "compositePrimaryKeys": {
-        "contributions_wplace_user_id_template_id_day_s_pk": {
+        "contributions_wplace_user_id_template_id_day_s_reported_by_pk": {
           "columns": [
             "wplace_user_id",
             "template_id",
-            "day_s"
+            "day_s",
+            "reported_by"
           ],
-          "name": "contributions_wplace_user_id_template_id_day_s_pk"
+          "name": "contributions_wplace_user_id_template_id_day_s_reported_by_pk"
         }
       },
       "uniqueConstraints": {},

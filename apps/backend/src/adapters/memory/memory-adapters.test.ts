@@ -266,6 +266,25 @@ describe('memory adapters', () => {
     ])
   })
 
+  it('accepts exactly one thousand deltas in a single record call', async () => {
+    // MAX_COUNTER_DELTAS_PER_RECORD is the DoS guardrail on the single global shard, and both tests
+    // that name it derive their expectations from it — so 1_000 -> 2_000 changed no outcome. Stated
+    // in absolute terms here, it fails in both directions.
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
+    const deltas = Array.from({ length: 1_001 }, (_, index) => ({
+      templateId: `template-${index}`,
+      occurredAt: seconds(100),
+      placed: 1,
+      correct: 1,
+      repairs: 0,
+    }))
+
+    await store.record(deltas)
+
+    const pending = await store.readPending(deltas.map((delta) => delta.templateId))
+    expect(pending.filter((entry) => entry.placed === 1)).toHaveLength(1_000)
+  })
+
   it('rejects template ids above the length limit', async () => {
     const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
     const acceptedId = 'a'.repeat(MAX_TEMPLATE_ID_LENGTH)
@@ -285,6 +304,8 @@ describe('memory adapters', () => {
 
   it('caps work per record call and counts only the excess deltas as rejected', async () => {
     const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
+    // Derived from the constant, so it tracks whatever the constant says and pins only that the
+    // slice exists. The absolute case below is what pins the value.
     const deltas = Array.from({ length: MAX_COUNTER_DELTAS_PER_RECORD + 1 }, () => ({
       templateId: 'template-a',
       occurredAt: seconds(100),

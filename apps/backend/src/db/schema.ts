@@ -165,12 +165,16 @@ export const contributions = sqliteTable(
       .notNull()
       .references(() => templates.id),
     dayS: integer('day_s').$type<Seconds>().notNull(),
+    // Which token reported this. wplace_user_id is attacker-supplied and nothing bound it to the
+    // authenticated caller, so a report-scope holder could attribute fabricated work to any other
+    // painter — and with no reporter column, neither attributable nor reversible afterwards.
+    reportedBy: text('reported_by').notNull(),
     placed: integer('placed').notNull(),
     correct: integer('correct').notNull(),
     repairs: integer('repairs').notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.wplaceUserId, table.templateId, table.dayS] }),
+    primaryKey({ columns: [table.wplaceUserId, table.templateId, table.dayS, table.reportedBy] }),
     check(
       'contributions_counter_check',
       sql`typeof(${table.dayS}) = 'integer' AND ${table.dayS} >= 0
@@ -180,6 +184,27 @@ export const contributions = sqliteTable(
         AND ${table.repairs} <= ${table.correct} AND ${table.correct} <= ${table.placed}`,
     ),
   ],
+)
+
+/**
+ * Paint events already applied, so a retry cannot double-count.
+ *
+ * `PaintEvent.eventId` is documented as "client-generated, so a retry can never double-count", and
+ * nothing stored it — the pending path is purely additive (`placed = placed + excluded.placed`), so
+ * replaying one captured event N times multiplied the counters by N. The guarantee was stated as a
+ * property of the design with nowhere in the schema to hold it.
+ *
+ * `seen_at_ms` is what a sweeper prunes on. The row only has to outlive the window in which a retry
+ * is plausible, not the event itself.
+ */
+export const appliedEvents = sqliteTable(
+  'applied_events',
+  {
+    eventId: text('event_id').primaryKey(),
+    wplaceUserId: integer('wplace_user_id').notNull(),
+    seenAtMs: integer('seen_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [index('applied_events_seen_at_idx').on(table.seenAtMs)],
 )
 
 export const painters = sqliteTable('painters', {

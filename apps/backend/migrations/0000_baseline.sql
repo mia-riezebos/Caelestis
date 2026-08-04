@@ -8,14 +8,22 @@ CREATE TABLE `access_tokens` (
 	CONSTRAINT "access_tokens_scope_check" CHECK("access_tokens"."scope" IN ('read', 'report', 'admin'))
 );
 --> statement-breakpoint
+CREATE TABLE `applied_events` (
+	`event_id` text PRIMARY KEY NOT NULL,
+	`wplace_user_id` integer NOT NULL,
+	`seen_at_ms` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `applied_events_seen_at_idx` ON `applied_events` (`seen_at_ms`);--> statement-breakpoint
 CREATE TABLE `contributions` (
 	`wplace_user_id` integer NOT NULL,
 	`template_id` text NOT NULL,
 	`day_s` integer NOT NULL,
+	`reported_by` text NOT NULL,
 	`placed` integer NOT NULL,
 	`correct` integer NOT NULL,
 	`repairs` integer NOT NULL,
-	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`),
+	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
         AND typeof("contributions"."placed") = 'integer' AND typeof("contributions"."correct") = 'integer'
