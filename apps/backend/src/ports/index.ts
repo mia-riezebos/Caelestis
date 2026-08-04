@@ -15,8 +15,10 @@ export {
   RETENTION_SECONDS,
 } from './counter-store.js'
 export {
+  type AccessToken,
   assertValidBuckets,
   type BucketQuery,
+  type BucketStore,
   compareBuckets,
   invalidBucket,
   MAX_READ_BUCKETS_TEMPLATE_IDS,

@@ -1,5 +1,6 @@
 import { type Millis, millis, type Seconds, seconds } from '@wts/shared'
 import {
+  type BucketStore,
   type CounterDelta,
   type CounterStore,
   EXPIRES_AFTER_SECONDS,
@@ -9,7 +10,6 @@ import {
   MAX_COUNTER_DELTAS_PER_RECORD,
   type PendingCounters,
   RESOLUTION_SECONDS,
-  type SqlStore,
   type TelemetryBucket,
 } from '../../ports/index.js'
 
@@ -60,7 +60,7 @@ export class MemoryCounterStore implements CounterStore {
   private consecutiveFlushFailures = 0
 
   constructor(
-    private readonly sql: SqlStore,
+    private readonly sql: BucketStore,
     private readonly clock: () => Millis = () => millis(Date.now()),
   ) {}
 

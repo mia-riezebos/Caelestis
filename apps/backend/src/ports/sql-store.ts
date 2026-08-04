@@ -1,4 +1,5 @@
-import type { Seconds } from '@wts/shared'
+import type { Millis, Seconds } from '@wts/shared'
+import type { Scope } from '../auth/tokens.js'
 
 /**
  * Relational storage. D1 today, Postgres later.
@@ -24,31 +25,18 @@ export interface TelemetryBucket {
 }
 
 /**
- * Distinct template ids one `readBuckets` call may ask for.
- *
- * D1's budget is where the number comes from. Chunking its reads fixed the 100-bound-parameter
- * limit and walked into the next one: 50 queries per Worker invocation on the free plan, so at 90
- * ids per query a group of 4,501 templates failed the whole read with a D1_ERROR. 40 of those
- * chunks leaves headroom for whatever else an invocation does. The wire permits far more than that
- * in one group, so reading one needs paging — which belongs to the route layer that does not exist
- * yet, and until it does every adapter fails immediately, naming the limit.
- *
- * The bound lives on the port rather than in the D1 adapter because the memory store is the oracle
- * the differential tests measure against: a limit only one adapter enforces is a limit the oracle
- * says does not exist, and a caller written against it meets the real one in production.
- *
- * Derived from the chunk size rather than restating it. Written as a bare `90 * 40` the two numbers
- * drift apart silently: adding one binding to the WHERE clause makes 45 the correct chunk size, and
- * a cap still admitting 3,600 ids then issues 80 queries against the 50-query budget this constant
- * exists to respect — a D1_ERROR on a call the port declares legal and the oracle accepts.
- */
-/**
  * Template ids per query. D1 accepts at most 100 bound parameters, ten times tighter than the SQLite
  * default; 90 leaves room for the three non-id bindings in the WHERE clause and a little slack. The
  * test fake is `node:sqlite`, whose limit is 32_766, so no test can observe the real ceiling —
  * `readBuckets issues one statement per parameter chunk` counts statements instead.
  */
 export const READ_BUCKETS_CHUNK_SIZE = 90
+/**
+ * Distinct template ids one `readBuckets` call may ask for, derived from the chunk size rather than
+ * restating it: D1 allows 50 queries per Worker invocation on the free plan, and 40 of these chunks
+ * leaves headroom. The bound lives on the port because the memory store is the oracle the
+ * differential tests measure against — a limit only one adapter enforces is one the oracle denies.
+ */
 const READ_BUCKETS_CHUNK_BUDGET = 40
 export const MAX_READ_BUCKETS_TEMPLATE_IDS = READ_BUCKETS_CHUNK_SIZE * READ_BUCKETS_CHUNK_BUDGET
 
@@ -121,7 +109,55 @@ export interface BucketQuery {
   readonly toSeconds: Seconds
 }
 
+/**
+ * The bucket half of `SqlStore`.
+ *
+ * The counter path writes and reads buckets and touches nothing else, so it depends on this rather
+ * than on the whole store — a narrower dependency, and one that keeps its test doubles honest
+ * instead of stubbing out credential methods they never call.
+ */
+export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets'>
+
+/** A stored credential. The plaintext token exists only in the response that mints it. */
+export interface AccessToken {
+  /** Lowercase hex SHA-256 of the token. The primary key. */
+  readonly tokenHash: string
+  /** Human-facing name, so one leaked credential can be revoked without rotating everyone. */
+  readonly label: string
+  readonly scope: Scope
+  readonly createdBy: string
+  readonly createdAt: Millis
+}
+
 export interface SqlStore {
+  /**
+   * Store a freshly minted token.
+   *
+   * Rejects a hash that already exists rather than overwriting: a collision here would silently
+   * transfer one holder's credential to another.
+   */
+  insertAccessToken(token: AccessToken): Promise<void>
+
+  /** The token with this hash, live or revoked, or null if there is none. */
+  readAccessToken(tokenHash: string): Promise<AccessToken | null>
+
+  /** Every token, revoked included, newest first. Never returns plaintext, which is not stored. */
+  listAccessTokens(): Promise<readonly AccessToken[]>
+
+  /**
+   * Revoke a token by deleting it, idempotently.
+   *
+   * Revocation is a hard delete, not a flag. A soft `revoked_at_ms` obliged every reader to
+   * remember to filter on it, and nothing made them; deleting the row needs no cooperation. A
+   * credential is never re-provisioned, so the row has no reason to outlive its usefulness.
+   *
+   * What this deliberately does **not** touch is what the token already reported. Reported state is
+   * canonical — it records what was actually on wplace — so it stays regardless of what later
+   * happens to the credential that carried it. Revoking ends a holder's future access; it does not
+   * rewrite history.
+   */
+  revokeAccessToken(tokenHash: string): Promise<void>
+
   /**
    * Write full folded bucket totals with replace semantics.
    *

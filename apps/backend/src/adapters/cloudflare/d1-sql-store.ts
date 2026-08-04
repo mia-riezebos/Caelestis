@@ -1,8 +1,9 @@
-import { seconds } from '@wts/shared'
-import { and, asc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
+import { type Millis, millis, seconds } from '@wts/shared'
+import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
-import { telemetryBuckets } from '../../db/schema.js'
+import { accessTokens, telemetryBuckets } from '../../db/schema.js'
 import {
+  type AccessToken,
   assertValidBuckets,
   type BucketQuery,
   compareBuckets,
@@ -12,6 +13,14 @@ import {
   type TelemetryBucket,
   tooManyTemplateIds,
 } from '../../ports/index.js'
+
+const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
+  tokenHash: row.tokenHash,
+  label: row.label,
+  scope: row.scope,
+  createdBy: row.createdBy,
+  createdAt: row.createdAtMs,
+})
 
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
@@ -63,6 +72,45 @@ export class D1SqlStore implements SqlStore {
     await this.database.batch(
       statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
     )
+  }
+
+  async insertAccessToken(token: AccessToken): Promise<void> {
+    // No onConflict clause: the primary key must reject a duplicate hash rather than overwrite it,
+    // which would silently transfer one holder's credential to another.
+    await this.database.insert(accessTokens).values({
+      tokenHash: token.tokenHash,
+      label: token.label,
+      scope: token.scope,
+      createdBy: token.createdBy,
+      createdAtMs: token.createdAt,
+    })
+  }
+
+  async readAccessToken(tokenHash: string): Promise<AccessToken | null> {
+    const rows = await this.database
+      .select()
+      .from(accessTokens)
+      .where(eq(accessTokens.tokenHash, tokenHash))
+      .limit(1)
+    const row = rows[0]
+    return row === undefined ? null : toAccessToken(row)
+  }
+
+  async listAccessTokens(): Promise<readonly AccessToken[]> {
+    const rows = await this.database
+      .select()
+      .from(accessTokens)
+      .orderBy(desc(accessTokens.createdAtMs))
+    return rows.map(toAccessToken)
+  }
+
+  async revokeAccessToken(tokenHash: string): Promise<void> {
+    // A delete, not a flag. Idempotent because deleting an absent row is a no-op, and nothing
+    // references this table — the reporter and author digests are shape-checked, not foreign keys —
+    // so the reports this credential wrote survive it. That is deliberate: reported state records
+    // what was on wplace, and revoking a credential ends its future access rather than editing the
+    // past.
+    await this.database.delete(accessTokens).where(eq(accessTokens.tokenHash, tokenHash))
   }
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
