@@ -24,3 +24,7 @@ declare namespace Cloudflare {
     ADMIN_TOKEN?: string
   }
 }
+
+interface Env {
+  readonly ADMIN_TOKEN?: string
+}

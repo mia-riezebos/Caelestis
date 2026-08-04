@@ -9,6 +9,7 @@ import {
   MAX_COUNTER_DELTA_VALUE,
   MAX_COUNTER_DELTAS_PER_RECORD,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
+  NodeNotFoundError,
   type Ports,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
@@ -115,7 +116,6 @@ describe('memory adapters', () => {
         templateId: 'valid-t',
         nodeId: 'valid-n',
         name: 'T',
-        season: 1,
         versionId: 'valid-v',
         createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         createdByUserId: 7,
@@ -132,6 +132,23 @@ describe('memory adapters', () => {
         ...overrides,
       }),
     ).rejects.toThrow(/insertTemplateVersion rejected/)
+  })
+
+  it('refuses a template version whose node does not exist', async () => {
+    await expect(
+      new MemorySqlStore().insertTemplateVersion({
+        templateId: 'valid-t',
+        nodeId: 'missing-n',
+        name: 'T',
+        versionId: 'valid-v',
+        createdWithToken: 'a'.repeat(64),
+        createdByUserId: null,
+        createdAt: millis(1_000),
+        bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+        totalPixels: 1,
+        chunks: [{ tileX: 0, tileY: 0, hash: 'b'.repeat(64) }],
+      }),
+    ).rejects.toBeInstanceOf(NodeNotFoundError)
   })
 
   it('counters read back all recorded deltas exactly', async () => {

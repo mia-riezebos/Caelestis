@@ -1,6 +1,9 @@
-import { millis, seconds } from '@wts/shared'
+import { encodeIndexedPng, millis, seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
+import { NodeNotFoundError } from '../../ports/index.js'
+import { storeTemplate } from '../../templates/store.js'
+import { MemoryBlobStore } from '../memory/memory-blob-store.js'
 import { D1SqlStore } from './d1-sql-store.js'
 import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 
@@ -22,7 +25,6 @@ const templateVersion = (
   templateId: 'template-1',
   nodeId: 'node-1',
   name: 'Template',
-  season: 1,
   versionId: 'version-1',
   createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   createdByUserId: null,
@@ -47,8 +49,49 @@ describe('D1SqlStore', () => {
 
   afterEach(() => d1.close())
 
+  it('stores through the real D1 adapter only when the node exists', async () => {
+    const blobs = new MemoryBlobStore()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const nodeId = '01890f3a-6b7c-7def-8123-456789abcde0'
+    const input = {
+      nodeId,
+      name: 'Template',
+      createdWithToken: 'a'.repeat(64),
+      createdByUserId: null,
+      originX: 0,
+      originY: 0,
+      png,
+    }
+
+    await expect(store.insertTemplateVersion(templateVersion({ nodeId }))).rejects.toBeInstanceOf(
+      NodeNotFoundError,
+    )
+    await expect(storeTemplate({ sql: store, blobs }, input)).rejects.toBeInstanceOf(
+      NodeNotFoundError,
+    )
+    await store.insertNode({
+      id: nodeId,
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_750_000_000_000),
+    })
+
+    const stored = await storeTemplate({ sql: store, blobs }, input)
+
+    expect(d1.sqlite.prepare('SELECT node_id, published_at FROM templates').get()).toEqual({
+      node_id: nodeId,
+      published_at: null,
+    })
+    await expect(store.readTemplateVersion(stored.versionId)).resolves.toMatchObject({ nodeId })
+  })
+
   it('writes a template, version, tile index and current pointer in one batch', async () => {
-    d1.sqlite.prepare("INSERT INTO nodes VALUES ('node-1', NULL, '/node-1', 'Node', 1)").run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
     const version = templateVersion()
 
     await store.insertTemplateVersion(version)
@@ -68,7 +111,9 @@ describe('D1SqlStore', () => {
   })
 
   it('rolls the whole template write back when one tile row fails', async () => {
-    d1.sqlite.prepare("INSERT INTO nodes VALUES ('node-1', NULL, '/node-1', 'Node', 1)").run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
     const firstTile = { tileX: 0, tileY: 0, hash: 'a'.repeat(64) }
     const duplicateTile = { tileX: 0, tileY: 0, hash: 'b'.repeat(64) }
     const version = templateVersion({ chunks: [firstTile, duplicateTile] })
@@ -335,8 +380,8 @@ describe('D1SqlStore', () => {
 
   it('accepts a bounding box that wraps through zero in x', () => {
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('wrap-node', NULL, '/wrap', 'Wrap', 1);
-      INSERT INTO templates VALUES ('wrap-template', 'wrap-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT INTO nodes VALUES ('wrap-node', 1, NULL, '/wrap', 'Wrap', NULL, 1);
+      INSERT INTO templates VALUES ('wrap-template', 'wrap-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -381,8 +426,8 @@ describe('D1SqlStore', () => {
     'rejects template-version pixel bounds outside the wire domain: %j',
     (minX, minY, maxX, maxY, totalPixels) => {
       d1.sqlite.exec(`
-        INSERT OR IGNORE INTO nodes VALUES ('pixel-node', NULL, '/pixel', 'Pixel', 1);
-        INSERT OR IGNORE INTO templates VALUES ('pixel-template', 'pixel-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+        INSERT OR IGNORE INTO nodes VALUES ('pixel-node', 1, NULL, '/pixel', 'Pixel', NULL, 1);
+        INSERT OR IGNORE INTO templates VALUES ('pixel-template', 'pixel-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
       `)
       expect(() =>
         d1.sqlite
@@ -449,8 +494,8 @@ describe('D1SqlStore', () => {
 
   it('requires native bounds to be complete, ordered and in latitude/longitude range', () => {
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('node', NULL, '/node', 'Node', 1);
-      INSERT INTO templates VALUES ('template', 'node', 'Template', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT INTO nodes VALUES ('node', 1, NULL, '/node', 'Node', NULL, 1);
+      INSERT INTO templates VALUES ('template', 'node', 'Template', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
     `)
 
     expect(() =>
@@ -614,8 +659,8 @@ describe('D1SqlStore', () => {
     ["INSERT INTO version_tiles VALUES ('v1', 0, 0, 'short')"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
-      INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('cn', 1, NULL, '/cn', 'CN', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
     `)
     // The geometry columns get typeof + range; the counters got neither, so a negative, fractional
     // or textual count persisted. isValidCounterDelta already refuses these — this is the second
@@ -669,7 +714,9 @@ describe('D1SqlStore', () => {
       // subtree-rewrite key, so `/canada%` captures sibling subtrees on the documented
       // `LIKE '<old>/%'` move and `/%` captures the entire tree.
       expect(() =>
-        d1.sqlite.prepare('INSERT INTO nodes VALUES (?, NULL, ?, ?, 1)').run('bad', path, 'Bad'),
+        d1.sqlite
+          .prepare('INSERT INTO nodes VALUES (?, 1, NULL, ?, ?, NULL, 1)')
+          .run('bad', path, 'Bad'),
       ).toThrow(/CHECK constraint failed/)
     },
   )
@@ -679,9 +726,9 @@ describe('D1SqlStore', () => {
     // template_versions(id) alone lets one template point at another's version, so it would serve
     // that template's geometry under its own identity — wrong pixels, wrong progress denominator.
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('own-node', NULL, '/own', 'Own', 1);
-      INSERT INTO templates VALUES ('t-a', 'own-node', 'A', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
-      INSERT INTO templates VALUES ('t-b', 'own-node', 'B', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT INTO nodes VALUES ('own-node', 1, NULL, '/own', 'Own', NULL, 1);
+      INSERT INTO templates VALUES ('t-a', 'own-node', 'A', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT INTO templates VALUES ('t-b', 'own-node', 'B', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
       INSERT INTO template_versions VALUES ('v-a', 't-a', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(() =>
@@ -697,8 +744,8 @@ describe('D1SqlStore', () => {
     // and no author — only its versions recorded one. Attribution is the same pair a report is
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('attr-node', NULL, '/attr', 'Attr', 1);
-      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700);
+      INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, 1);
+      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700);
       INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(
@@ -723,10 +770,12 @@ describe('D1SqlStore', () => {
   it.each([['short'], ['g'.repeat(64)]])(
     'rejects the malformed template author digest %o',
     (createdWithToken) => {
-      d1.sqlite.exec("INSERT OR IGNORE INTO nodes VALUES ('bad-node', NULL, '/bad', 'Bad', 1)")
+      d1.sqlite.exec(
+        "INSERT OR IGNORE INTO nodes VALUES ('bad-node', 1, NULL, '/bad', 'Bad', NULL, 1)",
+      )
       expect(() =>
         d1.sqlite
-          .prepare("INSERT INTO templates VALUES ('bad-t', 'bad-node', 'T', 1, NULL, ?, 7, 1)")
+          .prepare("INSERT INTO templates VALUES ('bad-t', 'bad-node', 'T', NULL, NULL, ?, 7, 1)")
           .run(createdWithToken),
       ).toThrow(/CHECK constraint failed/)
     },
@@ -737,7 +786,9 @@ describe('D1SqlStore', () => {
     // satisfies the foreign key, hangs any recursive ancestor walk, and makes the manifest
     // undecodable for every client.
     expect(() =>
-      d1.sqlite.prepare("INSERT INTO nodes VALUES ('self', 'self', '/self', 'Self', 1)").run(),
+      d1.sqlite
+        .prepare("INSERT INTO nodes VALUES ('self', 1, 'self', '/self', 'Self', NULL, 1)")
+        .run(),
     ).toThrow(/CHECK constraint failed/)
   })
 
@@ -802,8 +853,8 @@ describe('D1SqlStore', () => {
   it('keeps a contribution whose token is gone', () => {
     // Same reason as tile_history: the reporter record has to outlive the credential it names.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('fk-node', NULL, '/fk', 'FK', 1);
-      INSERT OR IGNORE INTO templates VALUES ('fk-t', 'fk-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('fk-node', 1, NULL, '/fk', 'FK', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('fk-t', 'fk-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -873,8 +924,8 @@ describe('D1SqlStore', () => {
     // Both tables carry reported state, so both have to survive. Seeding only tile_history left a
     // cascade on contributions passing green.
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('rev-node', NULL, '/rev', 'Rev', 1);
-      INSERT INTO templates VALUES ('rev-t', 'rev-node', 'T', 1, NULL, '${'a'.repeat(64)}', 7, 1);
+      INSERT INTO nodes VALUES ('rev-node', 1, NULL, '/rev', 'Rev', NULL, 1);
+      INSERT INTO templates VALUES ('rev-t', 'rev-node', 'T', NULL, NULL, '${'a'.repeat(64)}', 7, 1);
       INSERT INTO tile_history VALUES (9, 9, 0, 0, '7777777777777777777777777777777777777777777777777777777777777777', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
       INSERT INTO contributions VALUES (5, 'rev-t', 0, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7, 1, 1, 0);
     `)
@@ -905,14 +956,13 @@ describe('D1SqlStore', () => {
       tileY: 0,
       hash: index.toString(16).padStart(64, '0'),
     }))
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('bulk-node', NULL, '/bulk', 'Bulk', 1)")
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('bulk-node', 1, NULL, '/bulk', 'Bulk', NULL, 1)")
     const before = d1.batchStatements
 
     await store.insertTemplateVersion({
       templateId: 'bulk-t',
       nodeId: 'bulk-node',
       name: 'Bulk',
-      season: 1,
       versionId: 'bulk-v',
       createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       createdByUserId: null,
@@ -991,9 +1041,11 @@ describe('D1SqlStore', () => {
       // path is the prefix-rollup key and the subtree-rewrite key; duplicates make a rollup
       // attribute one group's templates to another. The case variant matters because SQLite's LIKE
       // is ASCII-case-insensitive, so /Canada and /canada would capture each other on a move.
-      d1.sqlite.exec("INSERT INTO nodes VALUES ('n1', NULL, '/canada', 'Canada', 1)")
+      d1.sqlite.exec("INSERT INTO nodes VALUES ('n1', 1, NULL, '/canada', 'Canada', NULL, 1)")
       expect(() =>
-        d1.sqlite.prepare('INSERT INTO nodes VALUES (?, NULL, ?, ?, 1)').run('n2', path, 'Other'),
+        d1.sqlite
+          .prepare('INSERT INTO nodes VALUES (?, 1, NULL, ?, ?, NULL, 1)')
+          .run('n2', path, 'Other'),
       ).toThrow(/UNIQUE constraint failed|constraint failed/)
     },
   )
@@ -1015,8 +1067,8 @@ describe('D1SqlStore', () => {
     // "no such table" as readily as a constraint failure, which this file's own comment argues
     // against.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('bounds-node', NULL, '/bounds', 'Bounds', 1);
-      INSERT OR IGNORE INTO templates VALUES ('bounds-template', 'bounds-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('bounds-node', 1, NULL, '/bounds', 'Bounds', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('bounds-template', 'bounds-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -1051,8 +1103,8 @@ describe('D1SqlStore', () => {
     // these two rows collide, so the insert throws — nothing else in the suite writes two rows that
     // differ only in the trailing key column.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('pk-node', NULL, '/pk', 'PK', 1);
-      INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('pk-node', 1, NULL, '/pk', 'PK', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
       INSERT OR IGNORE INTO template_versions VALUES ('v1', 'ct', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(() => d1.sqlite.prepare(statement).run()).not.toThrow()

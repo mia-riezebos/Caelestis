@@ -1,9 +1,9 @@
-import { decodePng, encodeIndexedPng, PALETTE_RGB, type PixelBounds } from '@wts/shared'
+import { decodePng, encodeIndexedPng, millis, PALETTE_RGB, type PixelBounds } from '@wts/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import type { BlobNamespace, BlobStore } from '../ports/index.js'
-import { storeTemplate } from './store.js'
+import { StoreTemplateError, storeTemplate } from './store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
@@ -29,19 +29,23 @@ class CountingBlobStore implements BlobStore {
 
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 
-// The node has to exist: templates.node_id is a foreign key, and the oracle now models that because
-// D1 always did. Without this the store answers "no node with id ...", which is the 400 the route
-// gives a caller who names a group that is not there.
-const harness = () => {
+const harness = async () => {
   const sql = new MemorySqlStore()
-  sql.insertNode(NODE_ID)
+  await sql.insertNode({
+    id: NODE_ID,
+    season: 1,
+    parentId: null,
+    path: '/test',
+    name: 'Test',
+    description: null,
+    createdAt: millis(Date.now()),
+  })
   return { blobs: new CountingBlobStore(), sql }
 }
 
 const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
   name: 'Test template',
-  season: 1,
   createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   createdByUserId: null,
   originX: overrides.originX ?? 0,
@@ -60,7 +64,7 @@ const rgba = (indices: readonly number[]): Uint8Array =>
 
 describe('storeTemplate', () => {
   it('round-trips exact palette colours through the stored chunk', async () => {
-    const ports = harness()
+    const ports = await harness()
     const png = await encodeIndexedPng(2, 2, new Uint8Array([0, 1, 2, 3]))
 
     const stored = await storeTemplate(ports, input(png))
@@ -86,7 +90,7 @@ describe('storeTemplate', () => {
   })
 
   it('stores separate hashes when painted pixels straddle a tile boundary', async () => {
-    const ports = harness()
+    const ports = await harness()
     const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
 
     const stored = await storeTemplate(ports, input(png, { originX: 999 }))
@@ -97,7 +101,7 @@ describe('storeTemplate', () => {
   })
 
   it('reuses identical chunk content without putting it again', async () => {
-    const ports = harness()
+    const ports = await harness()
     const png = await encodeIndexedPng(2, 2, new Uint8Array([4, 4, 4, 4]))
 
     const first = await storeTemplate(ports, input(png))
@@ -107,5 +111,16 @@ describe('storeTemplate', () => {
     expect(ports.blobs.puts).toHaveLength(1)
     expect(ports.blobs.hasAllCalls).toHaveLength(2)
     expect(ports.blobs.hasAllCalls.every(({ hashes }) => hashes.length === 1)).toBe(true)
+  })
+
+  it('refuses an upload spanning more than 512 tiles before encoding or storing chunks', async () => {
+    const ports = await harness()
+    const png = await encodeIndexedPng(513_000, 1, new Uint8Array(513_000))
+
+    const error = await storeTemplate(ports, input(png)).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(StoreTemplateError)
+    expect(error).toHaveProperty('message', expect.stringMatching(/more than the 512/))
+    expect(ports.blobs.hasAllCalls).toHaveLength(0)
+    expect(ports.blobs.puts).toHaveLength(0)
   })
 })

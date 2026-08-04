@@ -84,13 +84,16 @@ const decodes = (boxes: readonly Box[]): boolean => {
     // the comparison stops being about overlap at all.
     totalPixels: 1,
     chunks: [{ tile: tileKey({ x: Math.floor(bbox.minX / 1_000), y: 0 }), hash: HASH }],
+    published: true,
+    createdAt: 1_750_000_000_000,
   }))
   const tiles = [...new Set(templates.flatMap((t) => t.chunks.map((c) => c.tile)))]
   try {
     Schema.decodeUnknownSync(Manifest)({
       version: 'manifest-1',
-      server: { id: SERVER_ID, name: 'S', requiresAuth: false },
-      nodes: [{ id: NODE_ID, parentId: null, path: '/g', name: 'G' }],
+      season: 1,
+      server: { id: SERVER_ID, name: 'S', auth: 'none' },
+      nodes: [{ id: NODE_ID, parentId: null, path: '/g', name: 'G', createdAt: 1_750_000_000_000 }],
       templates,
       tiles,
     })

@@ -212,7 +212,6 @@ export interface TemplateVersionRecord {
   readonly templateId: string
   readonly nodeId: string
   readonly name: string
-  readonly season: number
   readonly versionId: string
   /**
    * Who uploaded this — the digest of the access token used, and the wplace `/me` id of the account
@@ -233,25 +232,76 @@ export interface TemplateVersionRecord {
   }[]
 }
 
-export interface SqlStore {
-  /** Atomically add a version, its tile index, and make it the template's current version. */
-  /**
-   * Whether a node with this id exists.
-   *
-   * `templates.node_id` is a foreign key, so storing a version under an unknown node is a database
-   * error rather than a validation one — and an error the caller cannot tell from an outage. The
-   * upload route asks first so it can answer 400 instead of 500.
-   *
-   * Shape validation cannot cover this: `assertValidTemplateVersion` checks what a row looks like,
-   * and referential existence is not a property of the row. That is why the two adapters could
-   * agree on every field and still disagree about whether the insert succeeds.
-   */
-  nodeExists(nodeId: string): Promise<boolean>
+export interface NodeRecord {
+  readonly id: string
+  readonly season: number
+  readonly parentId: string | null
+  readonly path: string
+  readonly name: string
+  readonly description: string | null
+  readonly createdAt: Millis
+}
 
+export interface ManifestTemplateRecord {
+  readonly id: string
+  readonly nodeId: string
+  readonly name: string
+  readonly versionId: string
+  readonly bbox: PixelBounds
+  readonly totalPixels: number
+  readonly published: boolean
+  readonly createdAt: Millis
+}
+
+export interface ManifestTileRecord {
+  readonly templateId: string
+  readonly tileX: number
+  readonly tileY: number
+  readonly hash: string
+}
+
+export class NodePathConflictError extends Error {
+  override readonly name = 'NodePathConflictError'
+}
+
+export class InvalidNodeParentError extends Error {
+  override readonly name = 'InvalidNodeParentError'
+}
+
+export class NodeNotFoundError extends Error {
+  override readonly name = 'NodeNotFoundError'
+}
+
+export class NodeNotEmptyError extends Error {
+  override readonly name = 'NodeNotEmptyError'
+}
+
+export interface SqlStore {
+  insertNode(node: NodeRecord): Promise<void>
+
+  readNode(nodeId: string): Promise<NodeRecord | null>
+
+  listNodes(season: number): Promise<readonly NodeRecord[]>
+
+  deleteNode(nodeId: string): Promise<void>
+
+  /** Atomically add a version, its tile index, and make it the template's current version. */
   insertTemplateVersion(version: TemplateVersionRecord): Promise<void>
 
   /** A version with its template metadata and complete tile index, or null if absent. */
   readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null>
+
+  setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean>
+
+  listManifestTemplates(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTemplateRecord[]>
+
+  listManifestTiles(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTileRecord[]>
 
   /**
    * Store a freshly minted token.

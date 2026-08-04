@@ -40,9 +40,11 @@ CREATE TABLE `contributions` (
 --> statement-breakpoint
 CREATE TABLE `nodes` (
 	`id` text PRIMARY KEY NOT NULL,
+	`season` integer NOT NULL,
 	`parent_id` text,
 	`path` text NOT NULL,
 	`name` text NOT NULL,
+	`description` text,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "nodes_path_check" CHECK("nodes"."path" GLOB '/*' AND "nodes"."path" NOT GLOB '*[%_]*'
@@ -51,7 +53,7 @@ CREATE TABLE `nodes` (
 	CONSTRAINT "nodes_parent_not_self_check" CHECK("nodes"."parent_id" IS NULL OR "nodes"."parent_id" <> "nodes"."id")
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `nodes_path_idx` ON `nodes` (lower("path"));--> statement-breakpoint
+CREATE UNIQUE INDEX `nodes_season_path_idx` ON `nodes` (`season`,lower("path"));--> statement-breakpoint
 CREATE TABLE `painters` (
 	`wplace_user_id` integer PRIMARY KEY NOT NULL,
 	`display_name` text NOT NULL,
@@ -114,8 +116,8 @@ CREATE TABLE `templates` (
 	`id` text PRIMARY KEY NOT NULL,
 	`node_id` text NOT NULL,
 	`name` text NOT NULL,
-	`season` integer NOT NULL,
 	`current_version_id` text,
+	`published_at` integer,
 	`created_with_token` text NOT NULL,
 	`created_by_user_id` integer,
 	`created_at_ms` integer NOT NULL,

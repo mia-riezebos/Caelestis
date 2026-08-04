@@ -1,3 +1,4 @@
+import type { Millis } from '@wts/shared'
 import {
   type AccessToken,
   assertValidAccessToken,
@@ -6,7 +7,14 @@ import {
   type BucketQuery,
   compareAccessTokens,
   compareBuckets,
+  InvalidNodeParentError,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
+  type ManifestTemplateRecord,
+  type ManifestTileRecord,
+  NodeNotEmptyError,
+  NodeNotFoundError,
+  NodePathConflictError,
+  type NodeRecord,
   type SqlStore,
   type TelemetryBucket,
   type TemplateVersionRecord,
@@ -18,34 +26,65 @@ const bucketKey = (bucket: TelemetryBucket): string =>
 
 export class MemorySqlStore implements SqlStore {
   private readonly buckets = new Map<string, TelemetryBucket>()
+  private readonly nodes = new Map<string, NodeRecord>()
   private readonly templates = new Map<
     string,
-    Pick<TemplateVersionRecord, 'nodeId' | 'name' | 'season' | 'createdAt'> & {
+    Pick<TemplateVersionRecord, 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
+      publishedAt: Millis | null
     }
   >()
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
 
-  /**
-   * Nodes this store knows about.
-   *
-   * The oracle has to be able to represent the one thing D1 checks and it could not: a template's
-   * node either exists or the insert fails. Node CRUD proper belongs to the slice that adds it —
-   * this is the seam that lets a test put the database in a state the route can succeed from.
-   */
-  private readonly nodes = new Set<string>()
-
-  insertNode(nodeId: string): void {
-    this.nodes.add(nodeId)
+  async insertNode(node: NodeRecord): Promise<void> {
+    if (this.nodes.has(node.id)) throw new Error(`node already exists: ${node.id}`)
+    if (
+      [...this.nodes.values()].some(
+        (candidate) =>
+          candidate.season === node.season &&
+          candidate.path.toLowerCase() === node.path.toLowerCase(),
+      )
+    ) {
+      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+    }
+    if (node.parentId !== null) {
+      const parent = this.nodes.get(node.parentId)
+      if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
+      if (parent.season !== node.season) {
+        throw new InvalidNodeParentError('parent node belongs to a different season')
+      }
+    }
+    this.nodes.set(node.id, { ...node })
   }
 
-  async nodeExists(nodeId: string): Promise<boolean> {
-    return this.nodes.has(nodeId)
+  async readNode(nodeId: string): Promise<NodeRecord | null> {
+    const node = this.nodes.get(nodeId)
+    return node === undefined ? null : { ...node }
+  }
+
+  async listNodes(season: number): Promise<readonly NodeRecord[]> {
+    return [...this.nodes.values()]
+      .filter((node) => node.season === season)
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((node) => ({ ...node }))
+  }
+
+  async deleteNode(nodeId: string): Promise<void> {
+    if (!this.nodes.has(nodeId)) return
+    const hasChildren = [...this.nodes.values()].some((node) => node.parentId === nodeId)
+    const hasTemplates = [...this.templates.values()].some((template) => template.nodeId === nodeId)
+    if (hasChildren || hasTemplates) {
+      throw new NodeNotEmptyError('node has children or templates')
+    }
+    this.nodes.delete(nodeId)
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
     assertValidTemplateVersion(version)
+    if (!this.nodes.has(version.nodeId)) {
+      throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+    }
     if (this.templateVersions.has(version.versionId)) {
       throw new Error(`template version already exists: ${version.versionId}`)
     }
@@ -58,9 +97,9 @@ export class MemorySqlStore implements SqlStore {
     const template = existingTemplate ?? {
       nodeId: version.nodeId,
       name: version.name,
-      season: version.season,
       createdAt: version.createdAt,
       currentVersionId: version.versionId,
+      publishedAt: null,
     }
     this.templateVersions.set(version.versionId, {
       ...version,
@@ -80,10 +119,67 @@ export class MemorySqlStore implements SqlStore {
       ...version,
       nodeId: template.nodeId,
       name: template.name,
-      season: template.season,
       bbox: { ...version.bbox },
       chunks: version.chunks.map((chunk) => ({ ...chunk })),
     }
+  }
+
+  async setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean> {
+    const template = this.templates.get(templateId)
+    if (template === undefined) return false
+    this.templates.set(templateId, { ...template, publishedAt })
+    return true
+  }
+
+  async listManifestTemplates(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTemplateRecord[]> {
+    const records: ManifestTemplateRecord[] = []
+    for (const [id, template] of this.templates) {
+      const node = this.nodes.get(template.nodeId)
+      const version = this.templateVersions.get(template.currentVersionId)
+      if (
+        node === undefined ||
+        node.season !== season ||
+        version === undefined ||
+        (!includeUnpublished && template.publishedAt === null)
+      ) {
+        continue
+      }
+      records.push({
+        id,
+        nodeId: template.nodeId,
+        name: template.name,
+        versionId: version.versionId,
+        bbox: { ...version.bbox },
+        totalPixels: version.totalPixels,
+        published: template.publishedAt !== null,
+        createdAt: template.createdAt,
+      })
+    }
+    return records.sort((left, right) => left.id.localeCompare(right.id))
+  }
+
+  async listManifestTiles(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTileRecord[]> {
+    const records: ManifestTileRecord[] = []
+    for (const [templateId, template] of this.templates) {
+      const node = this.nodes.get(template.nodeId)
+      const version = this.templateVersions.get(template.currentVersionId)
+      if (
+        node === undefined ||
+        node.season !== season ||
+        version === undefined ||
+        (!includeUnpublished && template.publishedAt === null)
+      ) {
+        continue
+      }
+      records.push(...version.chunks.map((chunk) => ({ templateId, ...chunk })))
+    }
+    return records
   }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
