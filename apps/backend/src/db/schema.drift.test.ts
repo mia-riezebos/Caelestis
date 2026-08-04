@@ -1,68 +1,55 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getTableConfig, type SQLiteTable } from 'drizzle-orm/sqlite-core'
+import { generateSQLiteDrizzleJson, generateSQLiteMigration } from 'drizzle-kit/api'
 import { describe, expect, it } from 'vitest'
 import * as schema from './schema.js'
 
 /**
- * The Drizzle schema is the source `db:generate` reads; the migration is what actually runs, both
- * in production and in every test. Nothing connected the two, so deleting any `check(...)` from
+ * The Drizzle schema is the source `db:generate` reads; the migration is what actually runs, both in
+ * production and in every test. Nothing connected the two, so deleting any `check(...)` from
  * `schema.ts` left the whole suite green — the constraint stayed in the committed SQL, the tests
  * kept exercising it, and the schema quietly stopped describing the database.
  *
- * Regenerating and diffing would be the complete answer, but drizzle-kit names files with a random
- * suffix and needs a writable directory, which makes it a poor fit for a unit test. Comparing the
- * declared constraint *names* against the migration text catches the drift that matters — a
- * constraint added, removed or renamed on one side only — without that cost.
+ * An earlier version of this file compared constraint *names*. That was far weaker than it read:
+ * weakening a CHECK body, changing a primary key, dropping a column, removing a foreign key or
+ * making a unique index non-unique all kept their names and so all passed. Nine such mutations
+ * survived it.
+ *
+ * This regenerates the migration from `schema.ts` through drizzle-kit's own API — the same code path
+ * `db:generate` uses — and compares it to what is committed. Any divergence at all fails, which is
+ * the only version of this check that means what it says.
  */
 const migrationsDir = join(import.meta.dirname, '../../migrations')
-const migrationSql = readdirSync(migrationsDir)
+
+/**
+ * Statements, whitespace-normalised and sorted, so neither formatting nor emission order is a
+ * failure — drizzle-kit's API and its CLI order tables differently, and SQLite does not care.
+ */
+const statements = (sql: string): string[] =>
+  sql
+    .split('--> statement-breakpoint')
+    .flatMap((chunk) => chunk.split(';'))
+    .map((statement) => statement.replace(/\s+/g, ' ').trim())
+    .filter((statement) => statement.length > 0)
+    .sort()
+
+const committed = readdirSync(migrationsDir)
   .filter((name) => name.endsWith('.sql'))
   .sort()
   .map((name) => readFileSync(join(migrationsDir, name), 'utf8'))
   .join('\n')
 
-const isTable = (value: unknown): value is SQLiteTable => {
-  try {
-    getTableConfig(value as SQLiteTable)
-    return true
-  } catch {
-    return false
-  }
-}
+describe('the Drizzle schema and the baseline migration agree', () => {
+  it('regenerates the committed migration exactly', async () => {
+    const empty = await generateSQLiteDrizzleJson({})
+    // biome-ignore lint/suspicious/noExplicitAny: drizzle-kit's api types are not exported
+    const current = await generateSQLiteDrizzleJson(schema as any)
+    const generated = await generateSQLiteMigration(empty, current)
 
-const tables: ReadonlyArray<SQLiteTable> = Object.values<unknown>(schema).filter(isTable)
-
-const declaredChecks = tables.flatMap((table) =>
-  getTableConfig(table).checks.map((check) => check.name),
-)
-
-const migrationChecks = [...migrationSql.matchAll(/CONSTRAINT\s+"([^"]+)"\s+CHECK/g)].map(
-  (match) => match[1],
-)
-
-describe('Drizzle schema and the baseline migration agree', () => {
-  it('declares at least one table and one check, so the comparison is not vacuous', () => {
-    expect(tables.length).toBeGreaterThan(0)
-    expect(declaredChecks.length).toBeGreaterThan(0)
+    expect(statements(generated.join('\n'))).toEqual(statements(committed))
   })
 
-  it('names the same set of CHECK constraints on both sides', () => {
-    expect([...declaredChecks].sort()).toEqual([...migrationChecks].sort())
-  })
-
-  it('creates every table the schema declares', () => {
-    for (const table of tables) {
-      const { name } = getTableConfig(table)
-      expect(migrationSql).toContain(`CREATE TABLE \`${name}\``)
-    }
-  })
-
-  it('creates every index the schema declares', () => {
-    for (const table of tables) {
-      for (const index of getTableConfig(table).indexes) {
-        expect(migrationSql).toContain(`\`${index.config.name}\``)
-      }
-    }
+  it('compares a non-empty set of statements, so agreement is not vacuous', () => {
+    expect(statements(committed).length).toBeGreaterThan(10)
   })
 })
