@@ -6,7 +6,10 @@
  *
  * - **The season is a runtime value**, not a constant. Hardcoding it means a season rollover
  *   silently stops every template from matching.
- * - **Unpainted tiles are a real HTTP 404.** Consumers branch on status, not on body content.
+ * - **An unpainted in-range tile is a 200, not a 404** — the body is a near-empty PNG. Only
+ *   coordinates outside `0..WORLD_TILES - 1` return 404, and `parseTileKey` already rejects those.
+ *   Status therefore does not distinguish blank from painted; consumers that need that must read
+ *   the body. See `.scratch/v1/issues/06-recon-tile-serving`.
  */
 export interface TileCoord {
   readonly x: number
