@@ -20,6 +20,7 @@ export type {
   BucketStore,
   SqlStore,
   TelemetryBucket,
+  TemplateVersionRecord,
 } from './sql-store.js'
 
 import type { BlobStore } from './blob-store.js'

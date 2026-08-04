@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { Ports } from './ports/index.js'
+import { createChunkRoutes, createTemplateRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
 
 /**
@@ -21,16 +22,16 @@ export interface AppOptions {
 
 export const createApp = (ports: Ports, options: AppOptions = {}) => {
   const app = new Hono()
+  const auth = { sql: ports.sql, bootstrapAdminToken: options.bootstrapAdminToken }
 
   // The userscript runs on wplace.live and calls this server cross-origin.
   app.use('/*', cors())
 
   app.get('/health', (c) => c.json({ ok: true }))
 
-  app.route(
-    '/admin/tokens',
-    createTokenRoutes({ sql: ports.sql, bootstrapAdminToken: options.bootstrapAdminToken }),
-  )
+  app.route('/admin/tokens', createTokenRoutes(auth))
+  app.route('/admin/templates', createTemplateRoutes(ports, auth))
+  app.route('/chunks', createChunkRoutes(ports, auth))
 
   return app
 }

@@ -1,4 +1,4 @@
-import type { Millis, Seconds } from '@wts/shared'
+import type { Millis, PixelBounds, Seconds } from '@wts/shared'
 import type { Scope } from '../auth/tokens.js'
 
 /**
@@ -53,7 +53,31 @@ export interface AccessToken {
   readonly revokedAt: Millis | null
 }
 
+export interface TemplateVersionRecord {
+  readonly templateId: string
+  readonly nodeId: string
+  readonly name: string
+  readonly season: number
+  readonly versionId: string
+  readonly createdBy: string
+  /** Used for both rows when the template is new; existing templates retain their original date. */
+  readonly createdAt: Millis
+  readonly bbox: PixelBounds
+  readonly totalPixels: number
+  readonly chunks: readonly {
+    readonly tileX: number
+    readonly tileY: number
+    readonly hash: string
+  }[]
+}
+
 export interface SqlStore {
+  /** Atomically add a version, its tile index, and make it the template's current version. */
+  insertTemplateVersion(version: TemplateVersionRecord): Promise<void>
+
+  /** A version with its template metadata and complete tile index, or null if absent. */
+  readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null>
+
   /**
    * Store a freshly minted token.
    *

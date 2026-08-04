@@ -1,8 +1,20 @@
 import { type Millis, millis, seconds } from '@wts/shared'
 import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
-import { accessTokens, telemetryBuckets } from '../../db/schema.js'
-import type { AccessToken, BucketQuery, SqlStore, TelemetryBucket } from '../../ports/index.js'
+import {
+  accessTokens,
+  telemetryBuckets,
+  templates,
+  templateVersions,
+  versionTiles,
+} from '../../db/schema.js'
+import type {
+  AccessToken,
+  BucketQuery,
+  SqlStore,
+  TelemetryBucket,
+  TemplateVersionRecord,
+} from '../../ports/index.js'
 
 /**
  * D1 accepts at most 100 bound parameters per query, which is ten times tighter than the SQLite
@@ -55,6 +67,94 @@ export class D1SqlStore implements SqlStore {
 
   constructor(database: D1Database) {
     this.database = drizzle(database)
+  }
+
+  async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
+    const statements = [
+      this.database
+        .insert(templates)
+        .values({
+          id: version.templateId,
+          nodeId: version.nodeId,
+          name: version.name,
+          season: version.season,
+          currentVersionId: null,
+          createdAtMs: version.createdAt,
+        })
+        .onConflictDoNothing({ target: templates.id }),
+      this.database.insert(templateVersions).values({
+        id: version.versionId,
+        templateId: version.templateId,
+        createdAtMs: version.createdAt,
+        createdBy: version.createdBy,
+        minX: version.bbox.minX,
+        minY: version.bbox.minY,
+        maxX: version.bbox.maxX,
+        maxY: version.bbox.maxY,
+        totalPixels: version.totalPixels,
+      }),
+      ...version.chunks.map((chunk) =>
+        this.database.insert(versionTiles).values({
+          versionId: version.versionId,
+          tileX: chunk.tileX,
+          tileY: chunk.tileY,
+          hash: chunk.hash,
+        }),
+      ),
+      // The referenced version exists before this statement runs. D1 executes batch statements in
+      // order, so the circular template/version relationship never needs deferred foreign keys.
+      this.database
+        .update(templates)
+        .set({ currentVersionId: version.versionId })
+        .where(eq(templates.id, version.templateId)),
+    ]
+
+    await this.database.batch(
+      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+    )
+  }
+
+  async readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null> {
+    const rows = await this.database
+      .select({
+        templateId: templates.id,
+        nodeId: templates.nodeId,
+        name: templates.name,
+        season: templates.season,
+        versionId: templateVersions.id,
+        createdBy: templateVersions.createdBy,
+        createdAt: templateVersions.createdAtMs,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+        totalPixels: templateVersions.totalPixels,
+      })
+      .from(templateVersions)
+      .innerJoin(templates, eq(templates.id, templateVersions.templateId))
+      .where(eq(templateVersions.id, versionId))
+      .limit(1)
+    const row = rows[0]
+    if (row === undefined) return null
+
+    const chunks = await this.database
+      .select({ tileX: versionTiles.tileX, tileY: versionTiles.tileY, hash: versionTiles.hash })
+      .from(versionTiles)
+      .where(eq(versionTiles.versionId, versionId))
+      .orderBy(asc(versionTiles.tileY), asc(versionTiles.tileX))
+
+    return {
+      templateId: row.templateId,
+      nodeId: row.nodeId,
+      name: row.name,
+      season: row.season,
+      versionId: row.versionId,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt,
+      bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
+      totalPixels: row.totalPixels,
+      chunks,
+    }
   }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
