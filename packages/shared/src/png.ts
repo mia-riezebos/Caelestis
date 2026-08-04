@@ -19,6 +19,8 @@
  * there is no bundled zlib.
  */
 
+import { PALETTE_RGB, PALETTE_SIZE, TRANSPARENT_INDEX } from './palette.js'
+
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
 /** Bytes per pixel for each supported colour type, indexed by the type's own code. */
@@ -238,11 +240,16 @@ const chunk = (type: string, data: Uint8Array): Uint8Array => {
 }
 
 /**
- * Encode 8-bit palette indices as an indexed PNG.
+ * Encode wplace palette indices as an indexed PNG.
  *
- * **Index 0 is transparent by convention**, and `palette` supplies the opaque colours from index 1
- * up. Putting the transparent entry first makes `tRNS` a single byte instead of a table as long as
- * the palette, and gives "absent" the same representation as a zeroed buffer.
+ * **The full 64-entry palette is written every time**, even for an image using three colours. The
+ * PLTE costs 192 bytes and buys the thing that matters: a byte in the stored chunk *is* wplace's
+ * palette index, with no per-image mapping to carry alongside it or to get wrong later. A subset
+ * palette would make the same index mean different colours in different chunks.
+ *
+ * Transparent is index 63, wplace's own convention, so `tRNS` has to be a 64-byte table — opaque for
+ * every real colour and zero for the last. Storing it anywhere else would mean translating on every
+ * read.
  *
  * Scanlines are written with filter 0. Filtering helps photographic data and does nothing useful for
  * palette indices, where neighbouring bytes are unrelated small integers — deflate does the work.
@@ -251,12 +258,14 @@ export const encodeIndexedPng = async (
   width: number,
   height: number,
   indices: Uint8Array,
-  palette: ReadonlyArray<readonly [number, number, number]>,
+  palette: ReadonlyArray<readonly [number, number, number]> = PALETTE_RGB,
 ): Promise<Uint8Array> => {
   if (indices.length !== width * height) {
     throw new PngError(`expected ${width * height} indices, received ${indices.length}`)
   }
-  if (palette.length > 255) throw new PngError('palette exceeds 255 opaque entries')
+  if (palette.length > TRANSPARENT_INDEX) {
+    throw new PngError(`palette exceeds ${TRANSPARENT_INDEX} opaque entries`)
+  }
 
   const ihdr = new Uint8Array(13)
   const header = new DataView(ihdr.buffer)
@@ -265,12 +274,15 @@ export const encodeIndexedPng = async (
   ihdr[8] = 8
   ihdr[9] = 3
 
-  const plte = new Uint8Array((palette.length + 1) * 3)
+  const plte = new Uint8Array(PALETTE_SIZE * 3)
   for (const [index, [red, green, blue]] of palette.entries()) {
-    plte[(index + 1) * 3] = red
-    plte[(index + 1) * 3 + 1] = green
-    plte[(index + 1) * 3 + 2] = blue
+    plte[index * 3] = red
+    plte[index * 3 + 1] = green
+    plte[index * 3 + 2] = blue
   }
+  // Opaque for every real colour, zero for the transparent slot at the end.
+  const trns = new Uint8Array(PALETTE_SIZE).fill(255)
+  trns[TRANSPARENT_INDEX] = 0
 
   const raw = new Uint8Array((width + 1) * height)
   for (let row = 0; row < height; row += 1) {
@@ -282,7 +294,7 @@ export const encodeIndexedPng = async (
     new Uint8Array(SIGNATURE),
     chunk('IHDR', ihdr),
     chunk('PLTE', plte),
-    chunk('tRNS', new Uint8Array([0])),
+    chunk('tRNS', trns),
     chunk('IDAT', await deflate(raw)),
     chunk('IEND', new Uint8Array(0)),
   ]
