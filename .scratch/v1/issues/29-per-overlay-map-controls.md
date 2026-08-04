@@ -9,11 +9,14 @@ GitHub: —
 
 Every overlay gets a small three-dot button **rendered on the map beside the overlay itself**, which
 expands into that overlay's own controls: display mode, opacity, mismatch highlighting, per-colour
-toggles, and possibly progress.
+toggles, focus, and possibly progress.
 
-This is deliberately *not* the userscript menu. That menu still exists elsewhere and owns the global
-axis — connecting servers, browsing the group tree, toggling overlays on and off. This ticket owns
-the per-overlay axis, anchored to the thing it affects.
+This is deliberately *not* the primary menu. That is a **button added to wplace's own button rail on
+the right**, opening a **drawer showing every template in the tree** — the folder/node structure the
+manifest already describes. It owns the global axis: servers, the tree, toggling overlays on and off,
+and whatever settings are genuinely per-user rather than per-overlay.
+
+This ticket owns the per-overlay axis, anchored to the thing it affects.
 
 The split is the point: **the tree answers "which overlays exist", the map button answers "how does
 *this* one look".** Today `14-v1-viewing-modes` assumes one panel holds both, and that panel would
@@ -59,6 +62,53 @@ Open questions that follow from that choice:
   re-renders on its own schedule. Whether it is positioned per frame, or drawn into the overlay
   canvas itself and hit-tested manually, is a real implementation fork — the second avoids fighting
   their render loop but means building the menu without DOM.
+
+### The primary menu: a drawer off wplace's own button rail
+
+Sitting in their rail rather than floating our own control means the userscript looks like part of
+the page and costs no screen space when closed. It also means depending on their DOM:
+
+- **The rail is not ours.** Class names and structure change without warning, and a selector that
+  silently matches nothing leaves the product with no entry point at all. Whatever finds the rail has
+  to fail *loudly* and fall back to a floating button rather than degrade to nothing.
+- **Their buttons have a visual language** — size, iconography, hover and active states, and whatever
+  they do at mobile widths. Matching it is most of the work of not looking bolted on, and it moves
+  when they restyle.
+- **Drawer over map.** It covers canvas while open, which is fine for browsing the tree and wrong
+  while painting, so it wants to be dismissable without hunting for the button again.
+
+The tree in the drawer is the same structure `02-manifest-group-tree-and-z-order` settles: nodes with
+one parent each, roots carrying a null parent. Toggling a node toggles its subtree, which is the
+behaviour that makes a 200-template server usable.
+
+### Focus: temporarily suppress everything else
+
+A **focus** action in the per-overlay menu, which hides or dims every *other* visible overlay so the
+one you are working on stands alone. Configurable between hiding them outright and reducing them to a
+chosen opacity.
+
+This is the strongest item on the list, because it is the only one that addresses the actual failure
+mode of a dense alliance canvas: several overlapping templates from possibly several servers, all
+competing for the same pixels, none individually legible.
+
+- **Focus must not mutate toggle state.** It is a temporary display filter layered *over* the tree's
+  on/off state, not a bulk edit of it. If focusing turns 200 templates off and unfocusing turns them
+  back on, any failure in between loses the configuration — and "which ones were on before?" is not a
+  question the userscript should have to answer from memory.
+- **What is "in the area"?** Everything in the viewport, everything overlapping the focused
+  template's bounding box, or everything full stop? Overlapping-only is the most useful and the most
+  surprising: a template on the far side of the canvas staying visible is correct but may read as the
+  feature not working.
+- **Focus a template or its group?** Focusing one tile of a mural and dimming the rest of that same
+  mural is almost never what is wanted — so the default unit is probably the group, with the template
+  as an explicit narrower choice.
+- **How does it end?** Sticky until dismissed, or held while the menu is open? Sticky is more useful
+  while painting and needs a visible, obvious exit, since a user who forgets they are focused will
+  report the other overlays as broken.
+- **One at a time.** Two simultaneous focuses is a contradiction; focusing a second overlay should
+  replace the first rather than intersect with it.
+- **Where the dim/hide setting lives.** It is a preference, not a per-overlay property, so it belongs
+  in the primary menu with the focus action reading it — one number, set once.
 
 ### Per template or per group?
 
