@@ -846,6 +846,30 @@ describe('cross-field and time-unit schemas', () => {
     expectRejected(Manifest, { ...validManifest, nodes, templates, tiles })
   })
 
+  it('accepts a manifest with exactly the total chunk cap', () => {
+    // The reject case uses 201,000, comfortably over either way, so the boundary itself was free to
+    // move and a manifest carrying exactly the documented cap would have been refused.
+    const tiles = Array.from({ length: 1_000 }, (_, index) => tileKey({ x: index, y: 0 }))
+    const chunks = tiles.map((tile) => ({ tile, hash: HASH }))
+    const nodes = Array.from({ length: 200 }, (_, index) => ({
+      id: uuid(60_000 + index),
+      parentId: null,
+      path: `/cap${index}`,
+      name: 'Cap',
+    }))
+    const templates = nodes.map((node, index) => ({
+      ...validTemplate,
+      id: uuid(61_000 + index),
+      nodeId: node.id,
+      version: uuid(62_000 + index),
+      bbox: { minX: 0, minY: 0, maxX: 1_000_000, maxY: 1_000 },
+      totalPixels: 1_000,
+      chunks,
+    }))
+    const manifest = { ...validManifest, nodes, templates, tiles }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
   it('rejects an alarm that ends before it began', () => {
     // Both timestamps independently satisfy Millis, so a reversed interval decoded clean and any
     // consumer deriving a duration from it got a negative one.

@@ -389,6 +389,11 @@ describe('D1SqlStore', () => {
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 1, 0.5)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 2, 0)"],
     ["INSERT INTO contributions VALUES (1, 'ct', -1, 'tok', 1, 1, 0)"],
+    // All non-negative, so only the ordering clause can reject. telemetry_buckets has this case and
+    // contributions never got the equivalent, leaving its whole ordering half uncovered — and the
+    // drift test compares constraint names, not bodies, so it cannot see that either.
+    ["INSERT INTO contributions VALUES (3, 'ct', 1, 'tok', 1, 2, 0)"],
+    ["INSERT INTO contributions VALUES (4, 'ct', 1, 'tok', 2, 1, 2)"],
     ["INSERT INTO contributions VALUES (1, 'ct', 1, 'tok', -5, -5, -5)"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
