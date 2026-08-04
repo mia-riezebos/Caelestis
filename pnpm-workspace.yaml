@@ -3,4 +3,5 @@ packages:
   - packages/*
 allowBuilds:
   esbuild: true
+  msgpackr-extract: true
   workerd: true

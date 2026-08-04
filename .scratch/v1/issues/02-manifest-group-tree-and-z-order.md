@@ -82,3 +82,19 @@ would be server-side ordering reintroduced through the order of a JSON array.
 
 Knock-on: a native `.wplace` file's `order` field has nowhere to land on import, and nothing to
 populate it from on export (`28-native-wplace-format`).
+
+## Amendment — 2026-08-03: overlap is direct-group only, and prefix rollups can double-count
+
+The no-overlap rule compares templates sharing a `node_id`. It deliberately does **not** extend to a
+node's subtree, so two templates on `/g` and `/g/child` may claim the same canvas pixels.
+
+Rollups are prefix queries on `path`, so a rollup at `/g` sums both and credits twice the pixels the
+region contains. **That is accepted, and is recorded here rather than left implied** — the earlier
+wording ("so rollups cannot double-count") described an outcome the rule does not actually deliver.
+
+The reasoning for keeping it narrow: nesting is usually deliberate, a sub-group may legitimately
+refine a parent's region, and a subtree check costs a prefix comparison against every ancestor on
+every upload.
+
+If double-counted parent rollups turn out to matter in practice, the fix is a subtree check, not a
+change to how rollups are computed.

@@ -1,0 +1,667 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "28c0875d-5e62-4da9-b60b-17c2143b34e4",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "access_tokens": {
+      "name": "access_tokens",
+      "columns": {
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revoked_at_ms": {
+          "name": "revoked_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "access_tokens_scope_check": {
+          "name": "access_tokens_scope_check",
+          "value": "\"access_tokens\".\"scope\" IN ('read', 'report', 'admin')"
+        }
+      }
+    },
+    "contributions": {
+      "name": "contributions",
+      "columns": {
+        "wplace_user_id": {
+          "name": "wplace_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "day_s": {
+          "name": "day_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "placed": {
+          "name": "placed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct": {
+          "name": "correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "repairs": {
+          "name": "repairs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "contributions_template_id_templates_id_fk": {
+          "name": "contributions_template_id_templates_id_fk",
+          "tableFrom": "contributions",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "contributions_wplace_user_id_template_id_day_s_pk": {
+          "columns": [
+            "wplace_user_id",
+            "template_id",
+            "day_s"
+          ],
+          "name": "contributions_wplace_user_id_template_id_day_s_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "nodes": {
+      "name": "nodes",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "nodes_path_idx": {
+          "name": "nodes_path_idx",
+          "columns": [
+            "path"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "nodes_parent_id_nodes_id_fk": {
+          "name": "nodes_parent_id_nodes_id_fk",
+          "tableFrom": "nodes",
+          "tableTo": "nodes",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "painters": {
+      "name": "painters",
+      "columns": {
+        "wplace_user_id": {
+          "name": "wplace_user_id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "seen_at_ms": {
+          "name": "seen_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "telemetry_buckets": {
+      "name": "telemetry_buckets",
+      "columns": {
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resolution": {
+          "name": "resolution",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bucket_start_s": {
+          "name": "bucket_start_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "placed": {
+          "name": "placed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct": {
+          "name": "correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "repairs": {
+          "name": "repairs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "telemetry_buckets_template_id_resolution_bucket_start_s_pk": {
+          "columns": [
+            "template_id",
+            "resolution",
+            "bucket_start_s"
+          ],
+          "name": "telemetry_buckets_template_id_resolution_bucket_start_s_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "telemetry_buckets_resolution_check": {
+          "name": "telemetry_buckets_resolution_check",
+          "value": "\"telemetry_buckets\".\"resolution\" IN (60, 300, 900, 3600, 21600)"
+        }
+      }
+    },
+    "template_versions": {
+      "name": "template_versions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "min_x": {
+          "name": "min_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "min_y": {
+          "name": "min_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_x": {
+          "name": "max_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_y": {
+          "name": "max_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_pixels": {
+          "name": "total_pixels",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bounds_north": {
+          "name": "bounds_north",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bounds_south": {
+          "name": "bounds_south",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bounds_west": {
+          "name": "bounds_west",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bounds_east": {
+          "name": "bounds_east",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "template_versions_template_id_templates_id_fk": {
+          "name": "template_versions_template_id_templates_id_fk",
+          "tableFrom": "template_versions",
+          "tableTo": "templates",
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "template_versions_bounds_all_or_none_check": {
+          "name": "template_versions_bounds_all_or_none_check",
+          "value": "(\"template_versions\".\"bounds_north\" IS NULL AND \"template_versions\".\"bounds_south\" IS NULL AND \"template_versions\".\"bounds_west\" IS NULL AND \"template_versions\".\"bounds_east\" IS NULL) OR (\"template_versions\".\"bounds_north\" IS NOT NULL AND \"template_versions\".\"bounds_south\" IS NOT NULL AND \"template_versions\".\"bounds_west\" IS NOT NULL AND \"template_versions\".\"bounds_east\" IS NOT NULL)"
+        },
+        "template_versions_pixel_bounds_check": {
+          "name": "template_versions_pixel_bounds_check",
+          "value": "typeof(\"template_versions\".\"min_x\") = 'integer' AND typeof(\"template_versions\".\"min_y\") = 'integer'\n        AND typeof(\"template_versions\".\"max_x\") = 'integer' AND typeof(\"template_versions\".\"max_y\") = 'integer'\n        AND typeof(\"template_versions\".\"total_pixels\") = 'integer'\n        AND \"template_versions\".\"min_x\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"min_y\" BETWEEN 0 AND 2047999\n        AND \"template_versions\".\"max_x\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"max_y\" BETWEEN 1 AND 2048000\n        AND \"template_versions\".\"min_x\" <> \"template_versions\".\"max_x\"\n        AND \"template_versions\".\"min_y\" < \"template_versions\".\"max_y\"\n        AND \"template_versions\".\"total_pixels\" >= 0"
+        },
+        "template_versions_bounds_range_check": {
+          "name": "template_versions_bounds_range_check",
+          "value": "\"template_versions\".\"bounds_north\" IS NULL OR (\"template_versions\".\"bounds_north\" BETWEEN -90 AND 90 AND \"template_versions\".\"bounds_south\" BETWEEN -90 AND 90 AND \"template_versions\".\"bounds_west\" BETWEEN -180 AND 180 AND \"template_versions\".\"bounds_east\" BETWEEN -180 AND 180 AND \"template_versions\".\"bounds_north\" > \"template_versions\".\"bounds_south\")"
+        }
+      }
+    },
+    "templates": {
+      "name": "templates",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "node_id": {
+          "name": "node_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "season": {
+          "name": "season",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "current_version_id": {
+          "name": "current_version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at_ms": {
+          "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "templates_node_id_nodes_id_fk": {
+          "name": "templates_node_id_nodes_id_fk",
+          "tableFrom": "templates",
+          "tableTo": "nodes",
+          "columnsFrom": [
+            "node_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "templates_current_version_id_template_versions_id_fk": {
+          "name": "templates_current_version_id_template_versions_id_fk",
+          "tableFrom": "templates",
+          "tableTo": "template_versions",
+          "columnsFrom": [
+            "current_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "tile_history": {
+      "name": "tile_history",
+      "columns": {
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resolution_s": {
+          "name": "resolution_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bucket_start_s": {
+          "name": "bucket_start_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reporters": {
+          "name": "reporters",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_pk": {
+          "columns": [
+            "tile_x",
+            "tile_y",
+            "resolution_s",
+            "bucket_start_s"
+          ],
+          "name": "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "tile_history_resolution_s_check": {
+          "name": "tile_history_resolution_s_check",
+          "value": "\"tile_history\".\"resolution_s\" IN (0, 3600, 21600, 86400)"
+        },
+        "tile_history_coordinate_check": {
+          "name": "tile_history_coordinate_check",
+          "value": "typeof(\"tile_history\".\"tile_x\") = 'integer' AND typeof(\"tile_history\".\"tile_y\") = 'integer'\n        AND \"tile_history\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"tile_history\".\"tile_y\" BETWEEN 0 AND 2047"
+        }
+      }
+    },
+    "version_tiles": {
+      "name": "version_tiles",
+      "columns": {
+        "version_id": {
+          "name": "version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_x": {
+          "name": "tile_x",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tile_y": {
+          "name": "tile_y",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "hash": {
+          "name": "hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "version_tiles_tile_idx": {
+          "name": "version_tiles_tile_idx",
+          "columns": [
+            "tile_x",
+            "tile_y"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "version_tiles_version_id_template_versions_id_fk": {
+          "name": "version_tiles_version_id_template_versions_id_fk",
+          "tableFrom": "version_tiles",
+          "tableTo": "template_versions",
+          "columnsFrom": [
+            "version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "version_tiles_version_id_tile_x_tile_y_pk": {
+          "columns": [
+            "version_id",
+            "tile_x",
+            "tile_y"
+          ],
+          "name": "version_tiles_version_id_tile_x_tile_y_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "version_tiles_coordinate_check": {
+          "name": "version_tiles_coordinate_check",
+          "value": "typeof(\"version_tiles\".\"tile_x\") = 'integer' AND typeof(\"version_tiles\".\"tile_y\") = 'integer'\n        AND \"version_tiles\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"version_tiles\".\"tile_y\" BETWEEN 0 AND 2047"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

@@ -1,71 +1,74 @@
+import { seconds } from '@wts/shared'
+import { and, asc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
+import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
+import { telemetryBuckets } from '../../db/schema.js'
 import type { BucketQuery, SqlStore, TelemetryBucket } from '../../ports/index.js'
 
-interface TelemetryBucketRow {
-  readonly template_id: string
-  readonly resolution: number
-  readonly bucket_start: number
-  readonly placed: number
-  readonly correct: number
-  readonly repairs: number
-}
-
-const APPEND_BUCKET = `
-  INSERT INTO telemetry_buckets (
-    template_id, resolution, bucket_start, placed, correct, repairs
-  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-  ON CONFLICT (template_id, resolution, bucket_start) DO UPDATE SET
-    placed = excluded.placed,
-    correct = excluded.correct,
-    repairs = excluded.repairs
-`
-
-const fromRow = (row: TelemetryBucketRow): TelemetryBucket => ({
-  templateId: row.template_id,
+const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
+  templateId: row.templateId,
   resolution: row.resolution,
-  bucketStart: row.bucket_start,
+  bucketStart: seconds(row.bucketStartS),
   placed: row.placed,
   correct: row.correct,
   repairs: row.repairs,
 })
 
 export class D1SqlStore implements SqlStore {
-  constructor(private readonly database: D1Database) {}
+  private readonly database: DrizzleD1Database
+
+  constructor(database: D1Database) {
+    this.database = drizzle(database)
+  }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
     if (buckets.length === 0) return
 
-    const statement = this.database.prepare(APPEND_BUCKET)
+    const statements = buckets.map((bucket) =>
+      this.database
+        .insert(telemetryBuckets)
+        .values({
+          templateId: bucket.templateId,
+          resolution: bucket.resolution,
+          bucketStartS: bucket.bucketStart,
+          placed: bucket.placed,
+          correct: bucket.correct,
+          repairs: bucket.repairs,
+        })
+        .onConflictDoUpdate({
+          target: [
+            telemetryBuckets.templateId,
+            telemetryBuckets.resolution,
+            telemetryBuckets.bucketStartS,
+          ],
+          set: {
+            placed: sql`excluded.placed`,
+            correct: sql`excluded.correct`,
+            repairs: sql`excluded.repairs`,
+          },
+        }),
+    )
+
     await this.database.batch(
-      buckets.map((bucket) =>
-        statement.bind(
-          bucket.templateId,
-          bucket.resolution,
-          bucket.bucketStart,
-          bucket.placed,
-          bucket.correct,
-          bucket.repairs,
-        ),
-      ),
+      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
     )
   }
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
     if (query.templateIds.length === 0) return []
 
-    const placeholders = query.templateIds.map(() => '?').join(', ')
-    const statement = this.database.prepare(`
-      SELECT template_id, resolution, bucket_start, placed, correct, repairs
-      FROM telemetry_buckets
-      WHERE resolution = ?
-        AND bucket_start >= ?
-        AND bucket_start < ?
-        AND template_id IN (${placeholders})
-      ORDER BY template_id, bucket_start
-    `)
-    const result = await statement
-      .bind(query.resolution, query.fromSeconds, query.toSeconds, ...query.templateIds)
-      .all<TelemetryBucketRow>()
+    const rows = await this.database
+      .select()
+      .from(telemetryBuckets)
+      .where(
+        and(
+          eq(telemetryBuckets.resolution, query.resolution),
+          gte(telemetryBuckets.bucketStartS, query.fromSeconds),
+          lt(telemetryBuckets.bucketStartS, query.toSeconds),
+          inArray(telemetryBuckets.templateId, [...query.templateIds]),
+        ),
+      )
+      .orderBy(asc(telemetryBuckets.templateId), asc(telemetryBuckets.bucketStartS))
 
-    return result.results.map(fromRow)
+    return rows.map(fromRow)
   }
 }
