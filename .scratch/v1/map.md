@@ -73,9 +73,10 @@ rests on reasoning that only real behaviour can confirm.
 - ~~Empty-tile synthesis behaviour~~ — **dissolved.** In-range unpainted tiles return 200 with a
   near-empty PNG; only out-of-range coordinates 404. The canvas is Web Mercator zoom 11, 2048×2048
   tiles. There is no synthesis path and nothing to fabricate. See `06-recon-tile-serving`.
-- **Per-overlay controls on the map** — a three-dot button to the right of each overlay, top-aligned,
-  expanding into that overlay's own display mode, opacity, mismatch highlighting and colour filters,
-  with the userscript menu keeping the global axis. Captured in
+- **The two userscript surfaces** — a primary menu button in wplace's own right-hand rail opening a
+  drawer with the whole node tree, and a three-dot button to the right of each overlay, top-aligned,
+  expanding into that overlay's display mode, opacity, mismatch highlighting, colour filters and
+  focus. Captured in
   [Per-overlay controls on the map](issues/29-per-overlay-map-controls.md). Carries two things the
   viewing-modes ticket does not: mismatch highlighting is a new axis outside
   `{shape, size, anchor, opacity}`, and a progress chart there would contradict the userscript's
