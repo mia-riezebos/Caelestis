@@ -12,3 +12,7 @@ dist/
 .wrangler/
 .codex-mutants/
 .pnpm-store/
+
+# Agent scratch space. Subagent git worktrees land in .claude/worktrees/, and each one carries its
+# own biome.json — which biome reads as a nested root configuration and refuses to run against.
+.claude/
