@@ -91,24 +91,57 @@ This is the strongest item on the list, because it is the only one that addresse
 mode of a dense alliance canvas: several overlapping templates from possibly several servers, all
 competing for the same pixels, none individually legible.
 
-- **Focus must not mutate toggle state.** It is a temporary display filter layered *over* the tree's
-  on/off state, not a bulk edit of it. If focusing turns 200 templates off and unfocusing turns them
-  back on, any failure in between loses the configuration — and "which ones were on before?" is not a
-  question the userscript should have to answer from memory.
-- **What is "in the area"?** Everything in the viewport, everything overlapping the focused
-  template's bounding box, or everything full stop? Overlapping-only is the most useful and the most
-  surprising: a template on the far side of the canvas staying visible is correct but may read as the
-  feature not working.
-- **Focus a template or its group?** Focusing one tile of a mural and dimming the rest of that same
-  mural is almost never what is wanted — so the default unit is probably the group, with the template
-  as an explicit narrower choice.
-- **How does it end?** Sticky until dismissed, or held while the menu is open? Sticky is more useful
-  while painting and needs a visible, obvious exit, since a user who forgets they are focused will
-  report the other overlays as broken.
-- **One at a time.** Two simultaneous focuses is a contradiction; focusing a second overlay should
-  replace the first rather than intersect with it.
+**Focus must not mutate toggle state.** It is a temporary display filter layered *over* the tree's
+on/off state, not a bulk edit of it. If focusing turns 200 templates off and unfocusing turns them
+back on, any failure in between loses the configuration — and "which ones were on before?" is not a
+question the userscript should have to answer from memory.
+
+Settled:
+
+- **Scope: every other loaded overlay, viewport or not.** Not "overlapping the focused bounding box"
+  and not "on screen" — anything currently loaded and rendered is suppressed. This makes focus a
+  *live predicate over the load set* rather than a snapshot: an overlay that loads while focus is
+  active is born suppressed, and one that unloads simply stops mattering. Simpler to hold in your
+  head than any viewport-relative rule, and it means panning does not reveal a creeping edge of
+  un-dimmed templates.
+- **Unit: per template.** Group focus is a separate question deferred below.
+- **Exit: an explicit control, and nothing else.** While focused, the floating menu button carries a
+  highlighted magnifying-glass toggle that must be switched off to unfocus. No timeout, no
+  click-away.
+- **Automatic release on unload.** Navigating away so the focused overlay unloads clears focus, as
+  does a page reload. **Focus never survives a refresh** — it is ephemeral session state and is not
+  written to `GM_setValue`. That is the right call: a persisted focus is a mode you re-enter without
+  choosing it, and the report it generates is "the userscript hid all my templates".
+- **One at a time.** Two simultaneous focuses is a contradiction; focusing a second overlay replaces
+  the first rather than intersecting with it.
 - **Where the dim/hide setting lives.** It is a preference, not a per-overlay property, so it belongs
   in the primary menu with the focus action reading it — one number, set once.
+
+Open, and the one gap the exit rule leaves:
+
+- **Reaching the exit control when the focused overlay is loaded but off-screen.** Loaded is a wider
+  set than visible — that is the whole point of the scope rule — so a user can pan until the focused
+  overlay's button is outside the viewport while focus is still active and every other overlay is
+  still suppressed. The exit lives on a button they cannot see. Either the focused overlay's button
+  clamps to the viewport edge for as long as focus is active (a special case of the clamping question
+  above, and probably the cheapest fix), or the magnifying glass is mirrored somewhere always
+  present — the primary menu button being the obvious candidate, which also gives focus a global
+  indicator rather than only a local one.
+
+### Group focus — two options, decide later
+
+Focusing one tile of a mural and dimming the rest of that same mural is rarely what is wanted, so
+group focus wants to exist. Two ways in, not yet chosen:
+
+1. **Per-group buttons on the canvas**, distinguished from template buttons by icon, shape or colour.
+   Direct, and consistent with the per-overlay surface — but it puts a second class of button on a
+   canvas that already has one per template, and the anchoring and overlap questions above get harder
+   rather than reusing their answers.
+2. **Group focus only through the drawer.** Nothing new on the canvas; the tree is already the place
+   groups are the unit. Costs a trip to the drawer for an action taken while painting.
+
+Worth noting they are not exclusive in the long run — but shipping both first is how the canvas ends
+up unreadable.
 
 ### Per template or per group?
 
