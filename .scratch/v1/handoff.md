@@ -69,16 +69,12 @@ Minimum for "I can see my alliance's template on the canvas":
 
 Read-only: no toggles, no menus, no telemetry. It proves the chain end to end.
 
-**This is browser-heavy, and there is no cheap way around that.** Claude cannot drive a browser here;
-codex can, via the `codex-computer-use` skill. But **codex has its own weekly cap** and is not a free
-escape hatch — as of 2026-08-04 it was at 94% with three days to reset, while the Claude cap had
-longer to run. Plan the slice assuming both budgets are real.
+**Do as much as possible headlessly.** The manifest fetch, the tile-key `Set`, chunk fetching, PNG
+decode and the composite step are all pure and testable in vitest with no browser at all. Only the
+shim's install timing and the interception itself genuinely need the live page.
 
-What that means practically: do as much as possible **headlessly**. The manifest fetch, the tile-key
-`Set`, chunk fetching, PNG decode and the composite step are all pure and testable in vitest with no
-browser at all. Only the shim's install timing and the interception itself genuinely need the live
-page — so get everything else green first, and spend browser rounds on the one part that cannot be
-verified any other way.
+So: get everything else green first, and spend browser rounds only on the part nothing else can
+verify. Claude cannot drive a browser here; codex can, via the `codex-computer-use` skill.
 
 ## Working agreements — several changed
 
