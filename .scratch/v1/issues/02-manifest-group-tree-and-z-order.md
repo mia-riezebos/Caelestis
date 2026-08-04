@@ -134,3 +134,57 @@ opaque token.
 That requires the assembled manifest to be **deterministic** — nodes, templates, chunks and tiles all
 emitted in a fixed order — or the same content would hash differently between requests and every poll
 would be a full transfer.
+
+## Amendment — 2026-08-04: the settled manifest shape
+
+### Wire
+
+```
+ServerInfo = { id, name, description?, auth: 'none' | 'access_token' }
+Node       = { id, parentId, path, name, description?, createdAt }
+Chunk      = { tile, hash }
+Template   = { id, nodeId, name, version, bbox, totalPixels, chunks, published, createdAt }
+Manifest   = { version, season, server, nodes, templates, tiles }
+```
+
+`auth` replaces `requiresAuth: boolean`. A boolean cannot distinguish a bearer token from a future
+signed-URL or OAuth flow, and a client that has to guess will guess wrong exactly once.
+
+### Two endpoints, not one shape with two meanings
+
+- **`GET /server`** — public, always `ServerInfo`. The "who is this" request a userscript makes when
+  someone adds a server, so it can see whether a token is needed before asking for one. Identical for
+  every caller, so trivially cacheable.
+- **`GET /manifest`** — full manifest, 401 without a token. `read`/`report` see published templates;
+  `admin` additionally sees unpublished ones, flagged.
+
+Serving both shapes from one path would make a client sniff for the presence of `templates` to know
+what it received. Two types deserve two endpoints.
+
+### Season scopes the whole document, and the tree with it
+
+`nodes` gains a `season` column and its unique index becomes `(season, lower(path))`. Each season is
+a separate namespace: `/canada` in season 1 and season 2 are unrelated nodes, and an alliance rebuilds
+its tree at a rollover.
+
+**`templates.season` is dropped.** Every template hangs off a node, and nodes are now per-season, so a
+template's season is its node's season. Storing both admits a template in season 2 hanging off a
+season-1 node — incoherent state the schema would otherwise happily hold. Same reasoning that keeps
+`offset`/`w`/`h` off the chunk record.
+
+`Node` carries no `season` either: the manifest is season-scoped, so every node in it shares the
+document's season.
+
+### Publication
+
+`templates` gains a nullable `published_at`. The wire exposes only `published: boolean` — the client
+does not need the instant, but the admin drawer and draft ordering do.
+
+This is **not** the same as `current_version_id IS NULL`. A template can have content uploaded and
+still be deliberately held back.
+
+### The manifest is scope-dependent, so caching must be too
+
+An admin and a member receive different documents with different content hashes. Anything caching on
+URL alone — a CDN, or `caches.default` in the Worker — could serve one to the other. The cache key
+has to include the scope, and the response needs `Vary: Authorization`.
