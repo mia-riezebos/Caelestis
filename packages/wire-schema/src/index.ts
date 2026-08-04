@@ -359,10 +359,12 @@ export const Manifest = ManifestStruct.pipe(
       return (
         nodeIds.size === manifest.nodes.length &&
         templateIds.size === manifest.templates.length &&
-        manifest.nodes.every((node) => node.parentId === null || nodeIds.has(node.parentId)) &&
         manifest.templates.every((template) => nodeIds.has(template.nodeId))
       )
-    }, 'node and template ids must be unique and every parent reference must resolve'),
+      // Parent references are not checked here. The path rule below resolves each parent to look up
+      // its path, so a dangling parentId already fails there — a conjunct here would be unreachable
+      // and no test could pin it.
+    }, 'node and template ids must be unique and every template must name a node that exists'),
     booleanFilter(
       (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
         manifest.templates.every(
@@ -375,8 +377,12 @@ export const Manifest = ManifestStruct.pipe(
       // Paths are the prefix-rollup key, so two nodes sharing one path make a rollup attribute one
       // group's templates to another. parent_id and path must also describe the same hierarchy: a
       // child of /canada carrying /usa/x rolls up under a group it does not belong to.
+      // Compare paths to paths. Deriving the set from an id-keyed Map instead would collapse
+      // duplicate ids and reject them here, which silently subsumes the id rule above and leaves it
+      // deletable — each filter should fail for its own reason.
+      const paths = manifest.nodes.map((node) => node.path)
+      if (new Set(paths).size !== paths.length) return false
       const pathById = new Map(manifest.nodes.map((node) => [node.id, node.path]))
-      if (new Set(pathById.values()).size !== manifest.nodes.length) return false
       return manifest.nodes.every((node) => {
         if (node.parentId === null) return node.path.indexOf('/', 1) === -1
         const parentPath = pathById.get(node.parentId)

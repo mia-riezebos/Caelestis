@@ -384,6 +384,30 @@ describe('PaintEvent', () => {
     expectRejected(PaintEvent, { ...validEvent, tiles: [tile, tile], painted: 2 })
   })
 
+  it('accepts tiles that only a correct packing keeps distinct', () => {
+    // The duplicate-tile rule packs (x, y) as x * WORLD_TILES + y. Tiles (0, 1000) and (1, 0) are
+    // distinct under that and collide under any smaller multiplier, so this is what pins the
+    // constant — the existing multi-tile case uses tiles that stay distinct either way.
+    const pixels = { x: [1], y: [1], colors: [2] }
+    const event = {
+      ...validEvent,
+      tiles: [
+        { x: 0, y: 1_000, pixels },
+        { x: 1, y: 0, pixels },
+      ],
+      painted: 2,
+    }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
+  it('accepts pixel coordinates that only a correct packing keeps distinct', () => {
+    // Same argument one level down: the coordinate key is x * TILE_SIZE + y, so (0, 999) and (1, 0)
+    // collide under any smaller multiplier and a legitimate two-pixel stroke would be rejected as a
+    // repeat.
+    const pixels = { x: [0, 1], y: [999, 0], colors: [1, 2] }
+    expect(Schema.decodeUnknownSync(PaintPixels)(pixels)).toEqual(pixels)
+  })
+
   it('accepts two distinct tiles carrying the same tile-local coordinate', () => {
     // The same offset in different tiles is a different canvas pixel, so it must stay legal.
     const pixels = { x: [1], y: [1], colors: [2] }
@@ -424,6 +448,18 @@ describe('cross-field and time-unit schemas', () => {
 
   it('rejects a declared tile set that omits a referenced tile', () => {
     expectRejected(Manifest, { ...validManifest, tiles: ['0/0'] })
+  })
+
+  it('rejects duplicate node identifiers carrying different paths', () => {
+    // Duplicating the whole node makes the path-uniqueness rule do the rejecting, which leaves the
+    // id rule deletable. Distinct paths isolate it.
+    const first = { id: uuid(100), parentId: null, path: '/one', name: 'One' }
+    const second = { id: uuid(100), parentId: null, path: '/two', name: 'Two' }
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [first, second],
+      templates: [{ ...validTemplate, nodeId: first.id }],
+    })
   })
 
   it('rejects duplicate node identifiers', () => {
