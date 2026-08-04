@@ -689,6 +689,30 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('rejects a manifest whose chunks exceed the total cap', () => {
+    // The per-template cap bounds no total. Each template sits in its OWN group, so the same tiles
+    // may be covered repeatedly without tripping the same-group overlap rule — that is what keeps
+    // the declared union at 1,000 tiles while the chunk arrays sum past the cap.
+    const tiles = Array.from({ length: 1_000 }, (_, index) => tileKey({ x: index, y: 0 }))
+    const chunks = tiles.map((tile) => ({ tile, hash: HASH }))
+    const nodes = Array.from({ length: 201 }, (_, index) => ({
+      id: uuid(70_000 + index),
+      parentId: null,
+      path: `/bulk${index}`,
+      name: 'Bulk',
+    }))
+    const templates = nodes.map((node, index) => ({
+      ...validTemplate,
+      id: uuid(80_000 + index),
+      nodeId: node.id,
+      version: uuid(90_000 + index),
+      bbox: { minX: 0, minY: 0, maxX: 1_000_000, maxY: 1_000 },
+      totalPixels: 1_000,
+      chunks,
+    }))
+    expectRejected(Manifest, { ...validManifest, nodes, templates, tiles })
+  })
+
   it('rejects an alarm that ends before it began', () => {
     // Both timestamps independently satisfy Millis, so a reversed interval decoded clean and any
     // consumer deriving a duration from it got a negative one.

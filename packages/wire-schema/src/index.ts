@@ -13,6 +13,18 @@ const MAX_DESCRIPTION_LENGTH = 4_096
 const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
 const MAX_TEMPLATE_CHUNKS = MAX_MANIFEST_TILES
 const MAX_MANIFEST_NODES = 100_000
+/**
+ * Chunks summed across every template, checked before anything flattens them.
+ *
+ * The per-template cap bounds no total: templates in different groups may cover the same tiles, so
+ * the declared tile union stays small while the chunk arrays do not, and the manifest filters below
+ * build a flatMap and several Sets over all of them.
+ *
+ * Sized to a payload that can actually be processed rather than to the canvas. Each chunk record is
+ * a tile key and a 64-character hash, so 200,000 of them is already ~20 MB of JSON — past what a
+ * manifest response should be, and far short of the 4,194,304 the per-template cap allowed.
+ */
+const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_TEMPLATES = 100_000
 /**
  * Deliberately redundant, and it buys less than it looks like it does.
@@ -322,6 +334,14 @@ const hasNoGroupOverlap = (
 
 export const Manifest = ManifestStruct.pipe(
   Schema.check(
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        // Ahead of every filter that flattens chunks, so an oversized manifest is refused before
+        // anything materialises an array or a Set over them.
+        manifest.templates.reduce((total, template) => total + template.chunks.length, 0) <=
+        MAX_MANIFEST_CHUNKS,
+      `a manifest may carry at most ${MAX_MANIFEST_CHUNKS} chunks in total`,
+    ),
     booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
       const declaredTiles = new Set(manifest.tiles)
       const referencedTiles = new Set(
