@@ -10,6 +10,7 @@ import {
   real,
   sqliteTable,
   text,
+  uniqueIndex,
 } from 'drizzle-orm/sqlite-core'
 
 export const nodes = sqliteTable(
@@ -21,7 +22,10 @@ export const nodes = sqliteTable(
     name: text('name').notNull(),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
-  (table) => [index('nodes_path_idx').on(table.path)],
+  // path is the prefix-rollup key and the subtree-rewrite key. Two nodes sharing one path make a
+  // rollup attribute one group's templates to another, and make the documented
+  // `UPDATE ... WHERE path LIKE '<old>/%'` move rewrite both subtrees when either is renamed.
+  (table) => [uniqueIndex('nodes_path_idx').on(table.path)],
 )
 
 export const templates = sqliteTable('templates', {
@@ -136,6 +140,20 @@ export const telemetryBuckets = sqliteTable(
       'telemetry_buckets_resolution_check',
       sql`${table.resolution} IN (60, 300, 900, 3600, 21600)`,
     ),
+    // The geometry columns get typeof + range; the counters got neither, so `placed = -5`,
+    // `correct = 'oops'` and `repairs = 0.5` all persisted. SQLite INTEGER is an affinity, not a
+    // type. isValidCounterDelta already refuses these, which is exactly why nothing here would ever
+    // trip: this is the second half of the rule, for any writer that is not the shard.
+    //
+    // Only `repairs >= 0` is stated. `repairs <= correct <= placed` carries the sign to the other
+    // two, so a bound on either would be unreachable and no test could pin it.
+    check(
+      'telemetry_buckets_counter_check',
+      sql`typeof(${table.placed}) = 'integer' AND typeof(${table.correct}) = 'integer'
+        AND typeof(${table.repairs}) = 'integer'
+        AND ${table.repairs} >= 0
+        AND ${table.repairs} <= ${table.correct} AND ${table.correct} <= ${table.placed}`,
+    ),
   ],
 )
 
@@ -151,7 +169,17 @@ export const contributions = sqliteTable(
     correct: integer('correct').notNull(),
     repairs: integer('repairs').notNull(),
   },
-  (table) => [primaryKey({ columns: [table.wplaceUserId, table.templateId, table.dayS] })],
+  (table) => [
+    primaryKey({ columns: [table.wplaceUserId, table.templateId, table.dayS] }),
+    check(
+      'contributions_counter_check',
+      sql`typeof(${table.dayS}) = 'integer' AND ${table.dayS} >= 0
+        AND typeof(${table.placed}) = 'integer' AND typeof(${table.correct}) = 'integer'
+        AND typeof(${table.repairs}) = 'integer'
+        AND ${table.repairs} >= 0
+        AND ${table.repairs} <= ${table.correct} AND ${table.correct} <= ${table.placed}`,
+    ),
+  ],
 )
 
 export const painters = sqliteTable('painters', {
@@ -175,6 +203,10 @@ export const tileHistory = sqliteTable(
       columns: [table.tileX, table.tileY, table.resolutionS, table.bucketStartS],
     }),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
+    check(
+      'tile_history_reporters_check',
+      sql`typeof(${table.reporters}) = 'integer' AND ${table.reporters} >= 0`,
+    ),
     check(
       'tile_history_coordinate_check',
       sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'

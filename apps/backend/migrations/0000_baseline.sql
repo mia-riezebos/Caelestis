@@ -16,7 +16,12 @@ CREATE TABLE `contributions` (
 	`correct` integer NOT NULL,
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`),
-	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
+        AND typeof("contributions"."placed") = 'integer' AND typeof("contributions"."correct") = 'integer'
+        AND typeof("contributions"."repairs") = 'integer'
+        AND "contributions"."repairs" >= 0
+        AND "contributions"."repairs" <= "contributions"."correct" AND "contributions"."correct" <= "contributions"."placed")
 );
 --> statement-breakpoint
 CREATE TABLE `nodes` (
@@ -28,7 +33,7 @@ CREATE TABLE `nodes` (
 	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
-CREATE INDEX `nodes_path_idx` ON `nodes` (`path`);--> statement-breakpoint
+CREATE UNIQUE INDEX `nodes_path_idx` ON `nodes` (`path`);--> statement-breakpoint
 CREATE TABLE `painters` (
 	`wplace_user_id` integer PRIMARY KEY NOT NULL,
 	`display_name` text NOT NULL,
@@ -43,7 +48,11 @@ CREATE TABLE `telemetry_buckets` (
 	`correct` integer NOT NULL,
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`template_id`, `resolution`, `bucket_start_s`),
-	CONSTRAINT "telemetry_buckets_resolution_check" CHECK("telemetry_buckets"."resolution" IN (60, 300, 900, 3600, 21600))
+	CONSTRAINT "telemetry_buckets_resolution_check" CHECK("telemetry_buckets"."resolution" IN (60, 300, 900, 3600, 21600)),
+	CONSTRAINT "telemetry_buckets_counter_check" CHECK(typeof("telemetry_buckets"."placed") = 'integer' AND typeof("telemetry_buckets"."correct") = 'integer'
+        AND typeof("telemetry_buckets"."repairs") = 'integer'
+        AND "telemetry_buckets"."repairs" >= 0
+        AND "telemetry_buckets"."repairs" <= "telemetry_buckets"."correct" AND "telemetry_buckets"."correct" <= "telemetry_buckets"."placed")
 );
 --> statement-breakpoint
 CREATE TABLE `template_versions` (
@@ -95,6 +104,7 @@ CREATE TABLE `tile_history` (
 	`reporters` integer NOT NULL,
 	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`),
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
+	CONSTRAINT "tile_history_reporters_check" CHECK(typeof("tile_history"."reporters") = 'integer' AND "tile_history"."reporters" >= 0),
 	CONSTRAINT "tile_history_coordinate_check" CHECK(typeof("tile_history"."tile_x") = 'integer' AND typeof("tile_history"."tile_y") = 'integer'
         AND "tile_history"."tile_x" BETWEEN 0 AND 2047
         AND "tile_history"."tile_y" BETWEEN 0 AND 2047)

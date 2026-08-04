@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "28c0875d-5e62-4da9-b60b-17c2143b34e4",
+  "id": "bad10542-f583-4ea0-8cbf-964904e80ab9",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -134,7 +134,12 @@
         }
       },
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "contributions_counter_check": {
+          "name": "contributions_counter_check",
+          "value": "typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
+        }
+      }
     },
     "nodes": {
       "name": "nodes",
@@ -181,7 +186,7 @@
           "columns": [
             "path"
           ],
-          "isUnique": false
+          "isUnique": true
         }
       },
       "foreignKeys": {
@@ -297,6 +302,10 @@
         "telemetry_buckets_resolution_check": {
           "name": "telemetry_buckets_resolution_check",
           "value": "\"telemetry_buckets\".\"resolution\" IN (60, 300, 900, 3600, 21600)"
+        },
+        "telemetry_buckets_counter_check": {
+          "name": "telemetry_buckets_counter_check",
+          "value": "typeof(\"telemetry_buckets\".\"placed\") = 'integer' AND typeof(\"telemetry_buckets\".\"correct\") = 'integer'\n        AND typeof(\"telemetry_buckets\".\"repairs\") = 'integer'\n        AND \"telemetry_buckets\".\"repairs\" >= 0\n        AND \"telemetry_buckets\".\"repairs\" <= \"telemetry_buckets\".\"correct\" AND \"telemetry_buckets\".\"correct\" <= \"telemetry_buckets\".\"placed\""
         }
       }
     },
@@ -571,6 +580,10 @@
         "tile_history_resolution_s_check": {
           "name": "tile_history_resolution_s_check",
           "value": "\"tile_history\".\"resolution_s\" IN (0, 3600, 21600, 86400)"
+        },
+        "tile_history_reporters_check": {
+          "name": "tile_history_reporters_check",
+          "value": "typeof(\"tile_history\".\"reporters\") = 'integer' AND \"tile_history\".\"reporters\" >= 0"
         },
         "tile_history_coordinate_check": {
           "name": "tile_history_coordinate_check",

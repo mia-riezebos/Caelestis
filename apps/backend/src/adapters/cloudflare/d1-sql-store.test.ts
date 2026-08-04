@@ -346,6 +346,37 @@ describe('D1SqlStore', () => {
   })
 
   it.each([
+    // All three negative, so repairs <= correct <= placed still holds and only the sign clause can
+    // reject: a single negative counter is caught by the ordering instead, leaving the sign free.
+    ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, -5, -5, -5)"],
+    ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 'oops', 0)"],
+    ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 1, 0.5)"],
+    ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1, 2, 0)"],
+    ["INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', -9)"],
+    ["INSERT INTO contributions VALUES (1, 'ct', -1, 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES (1, 'ct', 1, -5, -5, -5)"],
+    ["INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 1.5)"],
+  ])('rejects a counter outside its SQL domain: %s', (statement) => {
+    d1.sqlite.exec(`
+      INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', 1, NULL, 1);
+    `)
+    // The geometry columns get typeof + range; the counters got neither, so a negative, fractional
+    // or textual count persisted. isValidCounterDelta already refuses these — this is the second
+    // half of the rule, for any writer that is not the shard.
+    expect(() => d1.sqlite.prepare(statement).run()).toThrow(/CHECK constraint failed/)
+  })
+
+  it('rejects a second node claiming an existing path', () => {
+    // path is the prefix-rollup key and the subtree-rewrite key; duplicates make a rollup attribute
+    // one group's templates to another.
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('n1', NULL, '/canada', 'Canada', 1)")
+    expect(() =>
+      d1.sqlite.prepare("INSERT INTO nodes VALUES ('n2', NULL, '/canada', 'Other', 1)").run(),
+    ).toThrow(/UNIQUE constraint failed/)
+  })
+
+  it.each([
     ['south below -90', '45, -91, -10, 10'],
     ['west below -180', '45, -45, -181, 10'],
     ['east above 180', '45, -45, -10, 181'],
