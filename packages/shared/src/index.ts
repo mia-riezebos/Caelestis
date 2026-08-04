@@ -1,5 +1,3 @@
 export * from './manifest.js'
-export * from './palette.js'
 export * from './telemetry.js'
 export * from './tiles.js'
-export * from './time.js'

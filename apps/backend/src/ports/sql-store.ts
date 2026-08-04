@@ -1,5 +1,3 @@
-import type { Seconds } from '@wts/shared'
-
 /**
  * Relational storage. D1 today, Postgres later.
  *
@@ -17,7 +15,7 @@ export interface TelemetryBucket {
   /** Bucket width in seconds — 60, 300, 900, 3600, 21600. */
   readonly resolution: number
   /** Unix seconds, floored to `resolution`. */
-  readonly bucketStart: Seconds
+  readonly bucketStart: number
   readonly placed: number
   readonly correct: number
   readonly repairs: number
@@ -26,8 +24,8 @@ export interface TelemetryBucket {
 export interface BucketQuery {
   readonly templateIds: readonly string[]
   readonly resolution: number
-  readonly fromSeconds: Seconds
-  readonly toSeconds: Seconds
+  readonly fromSeconds: number
+  readonly toSeconds: number
 }
 
 export interface SqlStore {

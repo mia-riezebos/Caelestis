@@ -1,7 +1,7 @@
 # Durable Object test harness
 
 Type: task
-Status: claimed
+Status: open
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/27
 

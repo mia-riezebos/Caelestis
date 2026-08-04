@@ -36,6 +36,11 @@ export interface Node {
   /** e.g. `/canada/toronto/skyline` */
   readonly path: string
   readonly name: string
+  /**
+   * Sparse integers (100, 200, 300) so inserting a sibling never rewrites the list.
+   * Participates in the z-order key.
+   */
+  readonly sortOrder: number
 }
 
 export interface Template {
@@ -43,6 +48,8 @@ export interface Template {
   readonly nodeId: string
   readonly name: string
   readonly version: string
+  /** Sparse, same convention as {@link Node.sortOrder}. */
+  readonly sortOrder: number
   readonly bbox: BoundingBox
   /** Non-transparent pixel count — the denominator for every progress figure. */
   readonly totalPixels: number
@@ -63,6 +70,18 @@ export interface BoundingBox {
  */
 export interface Chunk {
   readonly tile: TileKey
+  /** Offset within the tile, in tile-local pixels. */
+  readonly offsetX: number
+  readonly offsetY: number
+  readonly width: number
+  readonly height: number
   /** sha256 of the stored indexed PNG; also its storage key. */
   readonly hash: string
 }
+
+/**
+ * Compositing order key, compared left to right: server first (client-controlled, since servers
+ * merged from different origins have never heard of each other), then each ancestor's sort order,
+ * then the template's own. Draw ascending; last write wins.
+ */
+export type ZKey = readonly number[]
