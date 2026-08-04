@@ -841,6 +841,31 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('rejects two paths differing only in case', () => {
+    // SQLite's LIKE is ASCII-case-insensitive, so with both stored the documented
+    // `LIKE '<old>/%'` subtree move rewrites the other one's descendants too.
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [
+        { id: uuid(110), parentId: null, path: '/Canada', name: 'Upper' },
+        { id: uuid(111), parentId: null, path: '/canada', name: 'Lower' },
+      ],
+      templates: [{ ...validTemplate, nodeId: uuid(110) }],
+    })
+  })
+
+  it('accepts a path with non-ASCII letters', () => {
+    // Alliances are not all anglophone, and D1 stores these happily — an ASCII-only pattern made a
+    // legitimate stored path impossible to emit in a manifest.
+    const node = { id: uuid(112), parentId: null, path: '/québec', name: 'Québec' }
+    const manifest = {
+      ...validManifest,
+      nodes: [node],
+      templates: [{ ...validTemplate, nodeId: node.id }],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
   it.each(['/canada%', '/canada_x', 'canada', '/', '/canada/', '/canada//x'])(
     'rejects the unusable node path %o',
     (path) => {
@@ -852,6 +877,32 @@ describe('cross-field and time-unit schemas', () => {
       })
     },
   )
+
+  it('rejects an overlap the sweep meets on its upper side', () => {
+    // The two neighbour branches must each fail on their own. Every other overlap fixture is caught
+    // by the lower-neighbour branch, so deleting the upper one left the suite green while these two
+    // same-group boxes decoded clean — the second sorts before the first by minY, so it is the
+    // successor comparison that has to reject it.
+    const first = {
+      ...validTemplate,
+      id: uuid(120),
+      version: uuid(121),
+      bbox: { minX: 0, minY: 10, maxX: 100, maxY: 20 },
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }
+    const second = {
+      ...validTemplate,
+      id: uuid(122),
+      version: uuid(123),
+      bbox: { minX: 0, minY: 0, maxX: 100, maxY: 15 },
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [first, second],
+      tiles: [tileKey({ x: 0, y: 0 })],
+    })
+  })
 
   it('accepts many templates stacked in one x column', () => {
     // The sweep's structural worst case: every span shares an x interval, so all of them stay

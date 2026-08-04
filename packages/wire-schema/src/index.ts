@@ -181,11 +181,15 @@ export const ServerInfo = Schema.Struct({
  * any single character — so a node created as `/canada%` rewrites every sibling subtree when it
  * moves, and `/%` captures the whole tree. Callers should still pass ESCAPE; excluding the two
  * metacharacters means a missing ESCAPE cannot be exploited from the wire.
+ *
+ * Segments accept Unicode letters and digits. An earlier ASCII-only pattern rejected `/québec`,
+ * which D1 stores happily — alliances are not all anglophone, and the restriction bought nothing
+ * that excluding the two metacharacters does not already buy.
  */
 const NodePath = Schema.String.pipe(
   Schema.check(
     Schema.isLengthBetween(1, MAX_DESCRIPTION_LENGTH),
-    Schema.isPattern(/^(\/[A-Za-z0-9][A-Za-z0-9. -]*)+$/, {
+    Schema.isPattern(/^(\/[\p{L}\p{N}][\p{L}\p{N}. -]*)+$/u, {
       description: 'a slash-separated group path without LIKE metacharacters',
     }),
   ),
@@ -380,7 +384,11 @@ export const Manifest = ManifestStruct.pipe(
       // Compare paths to paths. Deriving the set from an id-keyed Map instead would collapse
       // duplicate ids and reject them here, which silently subsumes the id rule above and leaves it
       // deletable — each filter should fail for its own reason.
-      const paths = manifest.nodes.map((node) => node.path)
+      //
+      // Case-insensitively, because SQLite's LIKE is ASCII-case-insensitive by default: with both
+      // /Canada and /canada stored, moving either one rewrites the other's subtree as well. Two
+      // paths differing only in case cannot coexist.
+      const paths = manifest.nodes.map((node) => node.path.toLowerCase())
       if (new Set(paths).size !== paths.length) return false
       const pathById = new Map(manifest.nodes.map((node) => [node.id, node.path]))
       return manifest.nodes.every((node) => {
