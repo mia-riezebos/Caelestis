@@ -42,3 +42,31 @@ versus premium split, and how transparency is represented.
 
 The ordering matters most — the paint body carries indices, not RGB, so a list without indices cannot
 classify a paint report.
+
+## Answered — 2026-08-04: the ordered palette, from ditherette
+
+Source: `mia-cx/ditherette`, `src/lib/palette/wplace.ts`. **31 free colours at indices 0–30, 32
+premium at 31–62, transparent at 63** — a 64-entry palette. Committed to `packages/shared/palette.ts`
+as `WPLACE_PALETTE`, carrying index, hex, RGB and free/premium kind. That resolves both open items:
+the ordering and how transparency is represented.
+
+Names in that file are known to lag wplace's own labels; the hex values are good and are what was
+taken.
+
+### The 59-colour recovery above was wrong, not merely short
+
+This ticket recorded that "the image had ±2 noise on every channel ... but the underlying modes are
+exact palette values". That claim does not hold, and the difference matters because those values were
+the validation source of truth:
+
+- **Five entries sat 1–2 off the real colour** — `#F8A90A` for `#F6AA09`, `#F7DB3B` for `#F9DD3B`,
+  `#60F9F4` for `#60F7F2`, `#E0A1F9` for `#E09FF9`, `#CB007B` for `#CB007A`.
+- **`#180006` is not a wplace colour at all**, sitting 24 from black — a spurious cluster.
+- **Ten real colours were missing**, being ones that artwork did not use.
+
+Clustering recovers modes, and the mode of a noisy distribution is not the value that generated it.
+Under the old rule — reject anything not exactly palette-conformant — five real colours would have
+been rejected and one non-colour accepted.
+
+The free/premium split also arrives with this, which `14-v1-viewing-modes` needs for "hide colours I
+cannot place".

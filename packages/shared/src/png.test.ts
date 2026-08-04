@@ -1,5 +1,6 @@
 import { deflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
+import { PALETTE_SIZE, TRANSPARENT_INDEX } from './palette.js'
 import { decodePng, encodeIndexedPng, PngError } from './png.js'
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
@@ -232,30 +233,48 @@ describe('decoding', () => {
 })
 
 describe('encoding', () => {
-  const palette: Array<readonly [number, number, number]> = [
-    [255, 0, 0],
-    [0, 255, 0],
-  ]
-
-  it('round-trips indices through its own decoder', async () => {
-    const indices = new Uint8Array([0, 1, 2, 2, 1, 0])
-    const png = await encodeIndexedPng(3, 2, indices, palette)
+  it('round-trips wplace indices through its own decoder', async () => {
+    // Index 0 is Black and index 4 is White in wplace's order, so this also pins that the encoder
+    // writes the palette at wplace's positions rather than packing it.
+    const png = await encodeIndexedPng(3, 1, new Uint8Array([0, 4, TRANSPARENT_INDEX]))
 
     const { width, height, pixels } = await decodePng(png)
 
-    expect({ width, height }).toEqual({ width: 3, height: 2 })
-    expect([...pixels.subarray(0, 8)]).toEqual([0, 0, 0, 0, 255, 0, 0, 255])
+    expect({ width, height }).toEqual({ width: 3, height: 1 })
+    expect([...pixels]).toEqual([0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 0])
   })
 
-  it('makes index 0 transparent', async () => {
-    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]), palette)
+  it('makes index 63 transparent and every real colour opaque', async () => {
+    const indices = new Uint8Array(PALETTE_SIZE).map((_, index) => index)
+    const png = await encodeIndexedPng(PALETTE_SIZE, 1, indices)
+
     const { pixels } = await decodePng(png)
-    expect(pixels[3]).toBe(0)
+
+    for (let index = 0; index < TRANSPARENT_INDEX; index += 1) {
+      expect(pixels[index * 4 + 3]).toBe(255)
+    }
+    expect(pixels[TRANSPARENT_INDEX * 4 + 3]).toBe(0)
+  })
+
+  it('writes the whole palette even for a one-colour image', async () => {
+    // A subset palette would make the same byte mean different colours in different chunks. 64
+    // entries at 3 bytes each.
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const view = new DataView(png.buffer, png.byteOffset, png.byteLength)
+    let offset = 8
+    const lengths = new Map<string, number>()
+    while (offset + 8 <= png.length) {
+      const length = view.getUint32(offset)
+      lengths.set(String.fromCharCode(...png.subarray(offset + 4, offset + 8)), length)
+      offset += 12 + length
+    }
+    expect(lengths.get('PLTE')).toBe(PALETTE_SIZE * 3)
+    expect(lengths.get('tRNS')).toBe(PALETTE_SIZE)
   })
 
   it('produces a real PNG signature and an IEND terminator', async () => {
     // Cheap, but it is what makes the output openable by anything other than us.
-    const png = await encodeIndexedPng(1, 1, new Uint8Array([1]), palette)
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([1]))
     expect([...png.subarray(0, 8)]).toEqual(SIGNATURE)
     expect(String.fromCharCode(...png.subarray(png.length - 8, png.length - 4))).toBe('IEND')
   })
@@ -263,7 +282,7 @@ describe('encoding', () => {
   it('writes chunk CRCs that validate', async () => {
     // A wrong CRC still decodes here, because this decoder does not check them — but every other
     // PNG reader in the world does, so nothing else would open our chunks.
-    const png = await encodeIndexedPng(2, 2, new Uint8Array([0, 1, 2, 0]), palette)
+    const png = await encodeIndexedPng(2, 2, new Uint8Array([0, 1, 2, TRANSPARENT_INDEX]))
     let offset = 8
     let checked = 0
     while (offset + 8 <= png.length) {
@@ -278,13 +297,13 @@ describe('encoding', () => {
   })
 
   it('rejects an index buffer that does not match the dimensions', async () => {
-    await expect(encodeIndexedPng(2, 2, new Uint8Array([0, 1]), palette)).rejects.toThrow(
+    await expect(encodeIndexedPng(2, 2, new Uint8Array([0, 1]))).rejects.toThrow(
       /expected 4 indices/,
     )
   })
 
   it('rejects a palette that leaves no room for the transparent entry', async () => {
-    const oversized = Array.from({ length: 256 }, () => [0, 0, 0] as const)
-    await expect(encodeIndexedPng(1, 1, new Uint8Array([0]), oversized)).rejects.toThrow(/255/)
+    const oversized = Array.from({ length: PALETTE_SIZE }, () => [0, 0, 0] as const)
+    await expect(encodeIndexedPng(1, 1, new Uint8Array([0]), oversized)).rejects.toThrow(/63/)
   })
 })
