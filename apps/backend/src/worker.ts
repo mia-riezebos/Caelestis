@@ -18,6 +18,11 @@ export default {
       counters: new DurableObjectCounterStore(env.TELEMETRY),
     }
 
-    return createApp(ports, { bootstrapAdminToken: env.ADMIN_TOKEN }).fetch(request)
+    return createApp(ports, {
+      bootstrapAdminToken: env.ADMIN_TOKEN,
+      serverId: env.SERVER_ID,
+      serverName: env.SERVER_NAME,
+      serverDescription: env.SERVER_DESCRIPTION,
+    }).fetch(request)
   },
 } satisfies ExportedHandler<Env>

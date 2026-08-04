@@ -18,9 +18,18 @@ export type {
   AccessToken,
   BucketQuery,
   BucketStore,
+  ManifestTemplateRecord,
+  ManifestTileRecord,
+  NodeRecord,
   SqlStore,
   TelemetryBucket,
   TemplateVersionRecord,
+} from './sql-store.js'
+export {
+  InvalidNodeParentError,
+  NodeNotEmptyError,
+  NodeNotFoundError,
+  NodePathConflictError,
 } from './sql-store.js'
 
 import type { BlobStore } from './blob-store.js'

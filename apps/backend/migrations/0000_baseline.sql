@@ -35,14 +35,16 @@ CREATE TABLE `contributions` (
 --> statement-breakpoint
 CREATE TABLE `nodes` (
 	`id` text PRIMARY KEY NOT NULL,
+	`season` integer NOT NULL,
 	`parent_id` text,
 	`path` text NOT NULL,
 	`name` text NOT NULL,
+	`description` text,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `nodes_path_idx` ON `nodes` (lower("path"));--> statement-breakpoint
+CREATE UNIQUE INDEX `nodes_season_path_idx` ON `nodes` (`season`,lower("path"));--> statement-breakpoint
 CREATE TABLE `painters` (
 	`wplace_user_id` integer PRIMARY KEY NOT NULL,
 	`display_name` text NOT NULL,
@@ -98,8 +100,8 @@ CREATE TABLE `templates` (
 	`id` text PRIMARY KEY NOT NULL,
 	`node_id` text NOT NULL,
 	`name` text NOT NULL,
-	`season` integer NOT NULL,
 	`current_version_id` text,
+	`published_at` integer,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`node_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`current_version_id`) REFERENCES `template_versions`(`id`) ON UPDATE no action ON DELETE no action

@@ -17,17 +17,19 @@ export const nodes = sqliteTable(
   'nodes',
   {
     id: text('id').primaryKey(),
+    season: integer('season').notNull(),
     parentId: text('parent_id').references((): AnySQLiteColumn => nodes.id),
     path: text('path').notNull(),
     name: text('name').notNull(),
+    description: text('description'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
-  // path is the prefix-rollup key and the subtree-rewrite key. Two nodes sharing one path make a
-  // rollup attribute one group's templates to another, and make the documented
+  // Within a season, path is the prefix-rollup key and subtree-rewrite key. Two nodes sharing one
+  // path make a rollup attribute one group's templates to another, and make the documented
   // `UPDATE ... WHERE path LIKE '<old>/%'` move rewrite both subtrees when either is renamed.
-  // NOCASE, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
+  // Lowercase, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
   // the documented `LIKE '<old>/%'` subtree move rewrites the other one's descendants too.
-  (table) => [uniqueIndex('nodes_path_idx').on(sql`lower(${table.path})`)],
+  (table) => [uniqueIndex('nodes_season_path_idx').on(table.season, sql`lower(${table.path})`)],
 )
 
 export const templates = sqliteTable('templates', {
@@ -36,10 +38,10 @@ export const templates = sqliteTable('templates', {
     .notNull()
     .references(() => nodes.id),
   name: text('name').notNull(),
-  season: integer('season').notNull(),
   currentVersionId: text('current_version_id').references(
     (): AnySQLiteColumn => templateVersions.id,
   ),
+  publishedAt: integer('published_at').$type<Millis>(),
   createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
 })
 

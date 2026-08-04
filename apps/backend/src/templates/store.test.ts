@@ -1,4 +1,4 @@
-import { decodePng, encodeIndexedPng, PALETTE_RGB, type PixelBounds } from '@wts/shared'
+import { decodePng, encodeIndexedPng, millis, PALETTE_RGB, type PixelBounds } from '@wts/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -27,12 +27,23 @@ class CountingBlobStore implements BlobStore {
   }
 }
 
-const harness = () => ({ blobs: new CountingBlobStore(), sql: new MemorySqlStore() })
+const harness = async () => {
+  const sql = new MemorySqlStore()
+  await sql.insertNode({
+    id: '01890f3e-7b2c-7abc-8def-0123456789ab',
+    season: 1,
+    parentId: null,
+    path: '/test',
+    name: 'Test',
+    description: null,
+    createdAt: millis(Date.now()),
+  })
+  return { blobs: new CountingBlobStore(), sql }
+}
 
 const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
   name: 'Test template',
-  season: 1,
   createdBy: 'bootstrap',
   originX: overrides.originX ?? 0,
   originY: overrides.originY ?? 0,
@@ -50,7 +61,7 @@ const rgba = (indices: readonly number[]): Uint8Array =>
 
 describe('storeTemplate', () => {
   it('round-trips exact palette colours through the stored chunk', async () => {
-    const ports = harness()
+    const ports = await harness()
     const png = await encodeIndexedPng(2, 2, new Uint8Array([0, 1, 2, 3]))
 
     const stored = await storeTemplate(ports, input(png))
@@ -76,7 +87,7 @@ describe('storeTemplate', () => {
   })
 
   it('stores separate hashes when painted pixels straddle a tile boundary', async () => {
-    const ports = harness()
+    const ports = await harness()
     const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
 
     const stored = await storeTemplate(ports, input(png, { originX: 999 }))
@@ -87,7 +98,7 @@ describe('storeTemplate', () => {
   })
 
   it('reuses identical chunk content without putting it again', async () => {
-    const ports = harness()
+    const ports = await harness()
     const png = await encodeIndexedPng(2, 2, new Uint8Array([4, 4, 4, 4]))
 
     const first = await storeTemplate(ports, input(png))

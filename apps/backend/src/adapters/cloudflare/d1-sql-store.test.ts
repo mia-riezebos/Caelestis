@@ -1,6 +1,9 @@
-import { millis, seconds } from '@wts/shared'
+import { encodeIndexedPng, millis, seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
+import { NodeNotFoundError } from '../../ports/index.js'
+import { storeTemplate } from '../../templates/store.js'
+import { MemoryBlobStore } from '../memory/memory-blob-store.js'
 import { D1SqlStore } from './d1-sql-store.js'
 import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 
@@ -20,7 +23,6 @@ const templateVersion = (
   templateId: 'template-1',
   nodeId: 'node-1',
   name: 'Template',
-  season: 1,
   versionId: 'version-1',
   createdBy: 'bootstrap',
   createdAt: millis(1_000),
@@ -44,8 +46,45 @@ describe('D1SqlStore', () => {
 
   afterEach(() => d1.close())
 
+  it('stores through the real D1 adapter only when the node exists', async () => {
+    const blobs = new MemoryBlobStore()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const nodeId = '01890f3a-6b7c-7def-8123-456789abcde0'
+    const input = {
+      nodeId,
+      name: 'Template',
+      createdBy: 'bootstrap',
+      originX: 0,
+      originY: 0,
+      png,
+    }
+
+    await expect(storeTemplate({ sql: store, blobs }, input)).rejects.toBeInstanceOf(
+      NodeNotFoundError,
+    )
+    await store.insertNode({
+      id: nodeId,
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_750_000_000_000),
+    })
+
+    const stored = await storeTemplate({ sql: store, blobs }, input)
+
+    expect(d1.sqlite.prepare('SELECT node_id, published_at FROM templates').get()).toEqual({
+      node_id: nodeId,
+      published_at: null,
+    })
+    await expect(store.readTemplateVersion(stored.versionId)).resolves.toMatchObject({ nodeId })
+  })
+
   it('writes a template, version, tile index and current pointer in one batch', async () => {
-    d1.sqlite.prepare("INSERT INTO nodes VALUES ('node-1', NULL, '/node-1', 'Node', 1)").run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
     const version = templateVersion()
 
     await store.insertTemplateVersion(version)
@@ -65,7 +104,9 @@ describe('D1SqlStore', () => {
   })
 
   it('rolls the whole template write back when one tile row fails', async () => {
-    d1.sqlite.prepare("INSERT INTO nodes VALUES ('node-1', NULL, '/node-1', 'Node', 1)").run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
     const firstTile = { tileX: 0, tileY: 0, hash: 'a'.repeat(64) }
     const duplicateTile = { tileX: 0, tileY: 0, hash: 'b'.repeat(64) }
     const version = templateVersion({ chunks: [firstTile, duplicateTile] })
@@ -304,8 +345,8 @@ describe('D1SqlStore', () => {
 
   it('accepts a bounding box that wraps through zero in x', () => {
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('wrap-node', NULL, '/wrap', 'Wrap', 1);
-      INSERT INTO templates VALUES ('wrap-template', 'wrap-node', 'T', 1, NULL, 1);
+      INSERT INTO nodes VALUES ('wrap-node', 1, NULL, '/wrap', 'Wrap', NULL, 1);
+      INSERT INTO templates VALUES ('wrap-template', 'wrap-node', 'T', NULL, NULL, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -350,8 +391,8 @@ describe('D1SqlStore', () => {
     'rejects template-version pixel bounds outside the wire domain: %j',
     (minX, minY, maxX, maxY, totalPixels) => {
       d1.sqlite.exec(`
-        INSERT OR IGNORE INTO nodes VALUES ('pixel-node', NULL, '/pixel', 'Pixel', 1);
-        INSERT OR IGNORE INTO templates VALUES ('pixel-template', 'pixel-node', 'T', 1, NULL, 1);
+        INSERT OR IGNORE INTO nodes VALUES ('pixel-node', 1, NULL, '/pixel', 'Pixel', NULL, 1);
+        INSERT OR IGNORE INTO templates VALUES ('pixel-template', 'pixel-node', 'T', NULL, NULL, 1);
       `)
       expect(() =>
         d1.sqlite
@@ -410,8 +451,8 @@ describe('D1SqlStore', () => {
 
   it('requires native bounds to be complete, ordered and in latitude/longitude range', () => {
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('node', NULL, '/node', 'Node', 1);
-      INSERT INTO templates VALUES ('template', 'node', 'Template', 1, NULL, 1);
+      INSERT INTO nodes VALUES ('node', 1, NULL, '/node', 'Node', NULL, 1);
+      INSERT INTO templates VALUES ('template', 'node', 'Template', NULL, NULL, 1);
     `)
 
     expect(() =>
@@ -457,8 +498,8 @@ describe('D1SqlStore', () => {
     ["INSERT INTO contributions VALUES (1, 'ct', 1, 'tok', -5, -5, -5)"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
-      INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', 1, NULL, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('cn', 1, NULL, '/cn', 'CN', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', NULL, NULL, 1);
       INSERT OR IGNORE INTO access_tokens VALUES ('tok', 'l', 'report', 'c', 1, NULL);
     `)
     // The geometry columns get typeof + range; the counters got neither, so a negative, fractional
@@ -492,8 +533,8 @@ describe('D1SqlStore', () => {
     // Without the foreign key any string is a fresh primary-key component, so one caller could
     // multiply its own rows for a painter without limit.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('fk-node', NULL, '/fk', 'FK', 1);
-      INSERT OR IGNORE INTO templates VALUES ('fk-t', 'fk-node', 'T', 1, NULL, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('fk-node', 1, NULL, '/fk', 'FK', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('fk-t', 'fk-node', 'T', NULL, NULL, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -601,9 +642,11 @@ describe('D1SqlStore', () => {
       // path is the prefix-rollup key and the subtree-rewrite key; duplicates make a rollup
       // attribute one group's templates to another. The case variant matters because SQLite's LIKE
       // is ASCII-case-insensitive, so /Canada and /canada would capture each other on a move.
-      d1.sqlite.exec("INSERT INTO nodes VALUES ('n1', NULL, '/canada', 'Canada', 1)")
+      d1.sqlite.exec("INSERT INTO nodes VALUES ('n1', 1, NULL, '/canada', 'Canada', NULL, 1)")
       expect(() =>
-        d1.sqlite.prepare('INSERT INTO nodes VALUES (?, NULL, ?, ?, 1)').run('n2', path, 'Other'),
+        d1.sqlite
+          .prepare('INSERT INTO nodes VALUES (?, 1, NULL, ?, ?, NULL, 1)')
+          .run('n2', path, 'Other'),
       ).toThrow(/UNIQUE constraint failed|constraint failed/)
     },
   )
@@ -618,8 +661,8 @@ describe('D1SqlStore', () => {
     // "no such table" as readily as a constraint failure, which this file's own comment argues
     // against.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('bounds-node', NULL, '/bounds', 'Bounds', 1);
-      INSERT OR IGNORE INTO templates VALUES ('bounds-template', 'bounds-node', 'T', 1, NULL, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('bounds-node', 1, NULL, '/bounds', 'Bounds', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('bounds-template', 'bounds-node', 'T', NULL, NULL, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -653,8 +696,8 @@ describe('D1SqlStore', () => {
     // these two rows collide, so the insert throws — nothing else in the suite writes two rows that
     // differ only in the trailing key column.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO nodes VALUES ('pk-node', NULL, '/pk', 'PK', 1);
-      INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', 1, NULL, 1);
+      INSERT OR IGNORE INTO nodes VALUES ('pk-node', 1, NULL, '/pk', 'PK', NULL, 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', NULL, NULL, 1);
       INSERT OR IGNORE INTO template_versions VALUES ('v1', 'ct', 1, 'c', 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
       INSERT OR IGNORE INTO access_tokens VALUES ('tok', 'l', 'report', 'c', 1, NULL);
       INSERT OR IGNORE INTO access_tokens VALUES ('tok-a', 'l', 'report', 'c', 1, NULL);

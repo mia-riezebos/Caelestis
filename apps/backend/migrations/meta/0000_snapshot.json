@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4729ecc6-b8a9-4693-925d-b6dc259c5721",
+  "id": "8fec4806-b85f-4d16-b3e1-a0791cca11aa",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -211,6 +211,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "season": {
+          "name": "season",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "parent_id": {
           "name": "parent_id",
           "type": "text",
@@ -232,6 +239,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at_ms": {
           "name": "created_at_ms",
           "type": "integer",
@@ -241,9 +255,10 @@
         }
       },
       "indexes": {
-        "nodes_path_idx": {
-          "name": "nodes_path_idx",
+        "nodes_season_path_idx": {
+          "name": "nodes_season_path_idx",
           "columns": [
+            "season",
             "lower(\"path\")"
           ],
           "isUnique": true
@@ -525,16 +540,16 @@
           "notNull": true,
           "autoincrement": false
         },
-        "season": {
-          "name": "season",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "current_version_id": {
           "name": "current_version_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
@@ -738,7 +753,7 @@
   },
   "internal": {
     "indexes": {
-      "nodes_path_idx": {
+      "nodes_season_path_idx": {
         "columns": {
           "lower(\"path\")": {
             "isExpression": true

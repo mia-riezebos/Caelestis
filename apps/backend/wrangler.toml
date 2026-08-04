@@ -23,6 +23,9 @@ new_sqlite_classes = ["TelemetryShard"]
 
 [vars]
 SHARD_STRATEGY = "single"
+SERVER_ID = "00000000-0000-7000-8000-000000000000"
+SERVER_NAME = "Wplace Template Server"
+SERVER_DESCRIPTION = "A self-hosted Wplace template server"
 
 [observability]
 enabled = true

@@ -1,4 +1,4 @@
-import { tileKey } from '@wts/shared'
+import { millis, tileKey } from '@wts/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -19,7 +19,7 @@ import {
 
 const HASH = 'a'.repeat(64)
 const SECONDS = 1_750_000_000
-const MILLIS = SECONDS * 1_000
+const MILLIS = millis(SECONDS * 1_000)
 
 const SERVER_ID = '01890f3a-6b7c-7def-8123-456789abcdef'
 const NODE_ID = '01890f3a-6b7c-7def-8123-456789abcde0'
@@ -67,13 +67,22 @@ const validTemplate = {
   bbox: { minX: 325_000, minY: 1_781_000, maxX: 326_000, maxY: 1_782_000 },
   totalPixels: 1,
   chunks: [{ tile: '325/1781', hash: HASH }],
+  published: true,
+  createdAt: MILLIS,
 }
 
-const validNode = { id: NODE_ID, parentId: null, path: '/group', name: 'Group' }
+const validNode = {
+  id: NODE_ID,
+  parentId: null,
+  path: '/group',
+  name: 'Group',
+  createdAt: MILLIS,
+}
 
 const validManifest = {
   version: 'manifest-1',
-  server: { id: SERVER_ID, name: 'Server', requiresAuth: false },
+  season: 1,
+  server: { id: SERVER_ID, name: 'Server', auth: 'none' as const },
   nodes: [validNode],
   templates: [validTemplate],
   tiles: ['325/1781'],
@@ -227,7 +236,7 @@ describe('tile and template schemas', () => {
     const server = {
       id: SERVER_ID,
       name: 'Server',
-      requiresAuth: false,
+      auth: 'none',
       description: 'x'.repeat(length),
     }
     if (accepted) expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
@@ -479,8 +488,8 @@ describe('cross-field and time-unit schemas', () => {
   it('rejects duplicate node identifiers carrying different paths', () => {
     // Duplicating the whole node makes the path-uniqueness rule do the rejecting, which leaves the
     // id rule deletable. Distinct paths isolate it.
-    const first = { id: uuid(100), parentId: null, path: '/one', name: 'One' }
-    const second = { id: uuid(100), parentId: null, path: '/two', name: 'Two' }
+    const first = { id: uuid(100), parentId: null, path: '/one', name: 'One', createdAt: MILLIS }
+    const second = { id: uuid(100), parentId: null, path: '/two', name: 'Two', createdAt: MILLIS }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [first, second],
@@ -538,6 +547,8 @@ describe('cross-field and time-unit schemas', () => {
           }),
           hash: HASH,
         })),
+        published: true,
+        createdAt: MILLIS,
       }
     })
     const manifest = {
@@ -780,12 +791,15 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it.each([
-    ['a node that is its own parent', [{ id: NODE_ID, parentId: NODE_ID, path: '/g', name: 'G' }]],
+    [
+      'a node that is its own parent',
+      [{ id: NODE_ID, parentId: NODE_ID, path: '/g', name: 'G', createdAt: MILLIS }],
+    ],
     [
       'two nodes that name each other',
       [
-        { id: uuid(20), parentId: uuid(21), path: '/a', name: 'A' },
-        { id: uuid(21), parentId: uuid(20), path: '/b', name: 'B' },
+        { id: uuid(20), parentId: uuid(21), path: '/a', name: 'A', createdAt: MILLIS },
+        { id: uuid(21), parentId: uuid(20), path: '/b', name: 'B', createdAt: MILLIS },
       ],
     ],
   ])('rejects %s', (_label, nodes) => {
@@ -800,8 +814,20 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('accepts a genuine two-level group tree', () => {
-    const parent = { id: uuid(30), parentId: null, path: '/canada', name: 'Canada' }
-    const child = { id: uuid(31), parentId: parent.id, path: '/canada/toronto', name: 'Toronto' }
+    const parent = {
+      id: uuid(30),
+      parentId: null,
+      path: '/canada',
+      name: 'Canada',
+      createdAt: MILLIS,
+    }
+    const child = {
+      id: uuid(31),
+      parentId: parent.id,
+      path: '/canada/toronto',
+      name: 'Toronto',
+      createdAt: MILLIS,
+    }
     const manifest = {
       ...validManifest,
       nodes: [parent, child],
@@ -813,8 +839,8 @@ describe('cross-field and time-unit schemas', () => {
   it('rejects two nodes sharing one path', () => {
     // path is the prefix-rollup key, so duplicates make a rollup attribute one group's templates to
     // another.
-    const first = { id: uuid(40), parentId: null, path: '/canada', name: 'A' }
-    const second = { id: uuid(41), parentId: null, path: '/canada', name: 'B' }
+    const first = { id: uuid(40), parentId: null, path: '/canada', name: 'A', createdAt: MILLIS }
+    const second = { id: uuid(41), parentId: null, path: '/canada', name: 'B', createdAt: MILLIS }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [first, second],
@@ -833,6 +859,7 @@ describe('cross-field and time-unit schemas', () => {
       parentId: null,
       path: `/bulk${index}`,
       name: 'Bulk',
+      createdAt: MILLIS,
     }))
     const templates = nodes.map((node, index) => ({
       ...validTemplate,
@@ -856,6 +883,7 @@ describe('cross-field and time-unit schemas', () => {
       parentId: null,
       path: `/cap${index}`,
       name: 'Cap',
+      createdAt: MILLIS,
     }))
     const templates = nodes.map((node, index) => ({
       ...validTemplate,
@@ -967,8 +995,20 @@ describe('cross-field and time-unit schemas', () => {
   it('rejects a node whose path skips a level below its parent', () => {
     // startsWith alone accepts /a/b/c under /a, which claims a level of hierarchy no node declares:
     // a rollup over /a/b finds nothing while /a/b/c's templates sit below it.
-    const parent = { id: uuid(140), parentId: null, path: '/canada', name: 'Canada' }
-    const child = { id: uuid(141), parentId: parent.id, path: '/canada/on/toronto', name: 'T' }
+    const parent = {
+      id: uuid(140),
+      parentId: null,
+      path: '/canada',
+      name: 'Canada',
+      createdAt: MILLIS,
+    }
+    const child = {
+      id: uuid(141),
+      parentId: parent.id,
+      path: '/canada/on/toronto',
+      name: 'T',
+      createdAt: MILLIS,
+    }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [parent, child],
@@ -1005,8 +1045,20 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('rejects a node whose path is not under its parent', () => {
-    const parent = { id: uuid(50), parentId: null, path: '/canada', name: 'Canada' }
-    const child = { id: uuid(51), parentId: parent.id, path: '/usa/x', name: 'Stray' }
+    const parent = {
+      id: uuid(50),
+      parentId: null,
+      path: '/canada',
+      name: 'Canada',
+      createdAt: MILLIS,
+    }
+    const child = {
+      id: uuid(51),
+      parentId: parent.id,
+      path: '/usa/x',
+      name: 'Stray',
+      createdAt: MILLIS,
+    }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [parent, child],
@@ -1020,8 +1072,8 @@ describe('cross-field and time-unit schemas', () => {
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [
-        { id: uuid(110), parentId: null, path: '/Canada', name: 'Upper' },
-        { id: uuid(111), parentId: null, path: '/canada', name: 'Lower' },
+        { id: uuid(110), parentId: null, path: '/Canada', name: 'Upper', createdAt: MILLIS },
+        { id: uuid(111), parentId: null, path: '/canada', name: 'Lower', createdAt: MILLIS },
       ],
       templates: [{ ...validTemplate, nodeId: uuid(110) }],
     })
@@ -1030,7 +1082,13 @@ describe('cross-field and time-unit schemas', () => {
   it('accepts a path with non-ASCII letters', () => {
     // Alliances are not all anglophone, and D1 stores these happily — an ASCII-only pattern made a
     // legitimate stored path impossible to emit in a manifest.
-    const node = { id: uuid(112), parentId: null, path: '/québec', name: 'Québec' }
+    const node = {
+      id: uuid(112),
+      parentId: null,
+      path: '/québec',
+      name: 'Québec',
+      createdAt: MILLIS,
+    }
     const manifest = {
       ...validManifest,
       nodes: [node],

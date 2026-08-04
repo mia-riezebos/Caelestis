@@ -12,11 +12,11 @@ import {
   uuidV7,
 } from '@wts/shared'
 import type { Ports, TemplateVersionRecord } from '../ports/index.js'
+import { NodeNotFoundError } from '../ports/index.js'
 
 export interface StoreTemplateInput {
   readonly nodeId: string
   readonly name: string
-  readonly season: number
   readonly createdBy: string
   readonly originX: number
   readonly originY: number
@@ -30,12 +30,16 @@ export interface StoredTemplate {
   readonly totalPixels: number
   readonly chunks: readonly { readonly tile: TileKey; readonly hash: string }[]
   readonly report: QuantiseReport
+  readonly published: false
 }
 
 export const storeTemplate = async (
   ports: Pick<Ports, 'blobs' | 'sql'>,
   input: StoreTemplateInput,
 ): Promise<StoredTemplate> => {
+  const node = await ports.sql.readNode(input.nodeId)
+  if (node === null) throw new NodeNotFoundError(`node does not exist: ${input.nodeId}`)
+
   const { width, height, pixels } = await decodePng(input.png)
   const { indices, report } = quantiseToPalette(pixels)
   const sliced = sliceTemplate(indices, width, height, input.originX, input.originY)
@@ -69,7 +73,6 @@ export const storeTemplate = async (
     templateId,
     nodeId: input.nodeId,
     name: input.name,
-    season: input.season,
     versionId,
     createdBy: input.createdBy,
     createdAt,
@@ -89,5 +92,6 @@ export const storeTemplate = async (
       hash,
     })),
     report,
+    published: false,
   }
 }

@@ -57,7 +57,6 @@ export interface TemplateVersionRecord {
   readonly templateId: string
   readonly nodeId: string
   readonly name: string
-  readonly season: number
   readonly versionId: string
   readonly createdBy: string
   /** Used for both rows when the template is new; existing templates retain their original date. */
@@ -71,12 +70,76 @@ export interface TemplateVersionRecord {
   }[]
 }
 
+export interface NodeRecord {
+  readonly id: string
+  readonly season: number
+  readonly parentId: string | null
+  readonly path: string
+  readonly name: string
+  readonly description: string | null
+  readonly createdAt: Millis
+}
+
+export interface ManifestTemplateRecord {
+  readonly id: string
+  readonly nodeId: string
+  readonly name: string
+  readonly versionId: string
+  readonly bbox: PixelBounds
+  readonly totalPixels: number
+  readonly published: boolean
+  readonly createdAt: Millis
+}
+
+export interface ManifestTileRecord {
+  readonly templateId: string
+  readonly tileX: number
+  readonly tileY: number
+  readonly hash: string
+}
+
+export class NodePathConflictError extends Error {
+  override readonly name = 'NodePathConflictError'
+}
+
+export class InvalidNodeParentError extends Error {
+  override readonly name = 'InvalidNodeParentError'
+}
+
+export class NodeNotFoundError extends Error {
+  override readonly name = 'NodeNotFoundError'
+}
+
+export class NodeNotEmptyError extends Error {
+  override readonly name = 'NodeNotEmptyError'
+}
+
 export interface SqlStore {
+  insertNode(node: NodeRecord): Promise<void>
+
+  readNode(nodeId: string): Promise<NodeRecord | null>
+
+  listNodes(season: number): Promise<readonly NodeRecord[]>
+
+  deleteNode(nodeId: string): Promise<void>
+
   /** Atomically add a version, its tile index, and make it the template's current version. */
   insertTemplateVersion(version: TemplateVersionRecord): Promise<void>
 
   /** A version with its template metadata and complete tile index, or null if absent. */
   readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null>
+
+  setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean>
+
+  listManifestTemplates(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTemplateRecord[]>
+
+  listManifestTiles(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTileRecord[]>
 
   /**
    * Store a freshly minted token.

@@ -177,7 +177,7 @@ export const ServerInfo = Schema.Struct({
   id: Identifier,
   name: Name,
   description: Schema.optionalKey(Description),
-  requiresAuth: Schema.Boolean,
+  auth: Schema.Literals(['none', 'access_token']),
 })
 
 /**
@@ -207,6 +207,8 @@ export const Node = Schema.Struct({
   parentId: Schema.NullOr(Identifier),
   path: NodePath,
   name: Name,
+  description: Schema.optionalKey(Description),
+  createdAt: Millis,
 })
 
 export const Chunk = Schema.Struct({
@@ -222,10 +224,13 @@ export const Template = Schema.Struct({
   bbox: BoundingBox,
   totalPixels: NonNegativeInteger,
   chunks: boundedArray(Chunk, MAX_TEMPLATE_CHUNKS),
+  published: Schema.Boolean,
+  createdAt: Millis,
 })
 
 const ManifestStruct = Schema.Struct({
   version: VersionToken,
+  season: NonNegativeInteger,
   server: ServerInfo,
   nodes: boundedArray(Node, MAX_MANIFEST_NODES),
   templates: boundedArray(Template, MAX_MANIFEST_TEMPLATES),
