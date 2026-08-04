@@ -95,3 +95,23 @@ scoped, individually revocable. Only the name was wrong: "invite" implies one-ti
 these are long-lived credentials. The naming mattered because the revocation story — revoke one named
 credential without rotating everyone else's — is token behaviour, not invite behaviour, and calling
 them invites made that read as a special feature rather than the obvious consequence it is.
+
+## Amendment — 2026-08-04: pre-v1 has no frontend, so the userscript is the admin surface
+
+The first deployable cut ships without a server frontend. The credential chain is therefore exactly
+what PR #35 implements and nothing more:
+
+1. **One private admin token in the environment** (`ADMIN_TOKEN`), set by the operator as a secret.
+   The root credential, and the only one that exists before anyone talks to the server.
+2. **Admin tokens mint every other token** through `POST /admin/tokens` — read tokens for members,
+   report tokens for the userscript.
+3. **The UI for that lives in the userscript**, in the primary drawer, behind admin scope.
+
+Nothing here changes the model above; it fixes which parts are load-bearing first. Signed URLs for
+`read` are not in the pre-v1 path — a bearer token the userscript already holds is enough for one
+alliance, and the CDN-caching tension that motivates signed URLs is a scale problem this cut does not
+have. That stays with `15-chunk-delivery-auth`.
+
+The one thing this adds to the model: **the userscript becomes an admin client.** Token
+administration is a write surface, and it must be invisible — not merely disabled — for a read or
+report holder, since the drawer is shared with the ordinary tree UI.
