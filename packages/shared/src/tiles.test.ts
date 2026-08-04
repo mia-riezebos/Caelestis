@@ -53,6 +53,11 @@ describe('canvas coordinate conversion', () => {
       x: 325,
       y: 1781,
     })
+    // The tile assertion alone is invariant under TILE_SIZE: WORLD_PIXELS is WORLD_TILES *
+    // TILE_SIZE, so the division cancels and the fixture lands in the same tile at any edge length.
+    // The absolute pixel does not cancel, so it is what actually pins the constant.
+    expect(pixel.x).toBeCloseTo(325_051.733, 3)
+    expect(pixel.y).toBeCloseTo(1_781_645.679, 3)
   })
 
   it('moves x eastward and y southward', () => {
@@ -80,6 +85,18 @@ describe('latLngToCanvasPixel at the projection limits', () => {
   it('clamps to the same pixel as the Mercator limit itself', () => {
     expect(latLngToCanvasPixel({ lat: -90, lng: 0 })).toEqual(
       latLngToCanvasPixel({ lat: -MAX_MERCATOR_LATITUDE, lng: 0 }),
+    )
+  })
+
+  it('puts the Mercator limit exactly on the canvas edges', () => {
+    // The test above routes both operands through the same clamp with the same constant, so it
+    // holds for any value of MAX_MERCATOR_LATITUDE and pins nothing. What defines the constant is
+    // that it is the parallel where the projection becomes square: it maps to the canvas edge.
+    // Asserting that makes the value itself falsifiable.
+    expect(latLngToCanvasPixel({ lat: MAX_MERCATOR_LATITUDE, lng: 0 }).y).toBeCloseTo(0, 6)
+    expect(latLngToCanvasPixel({ lat: -MAX_MERCATOR_LATITUDE, lng: 0 }).y).toBeCloseTo(
+      WORLD_PIXELS,
+      6,
     )
   })
 

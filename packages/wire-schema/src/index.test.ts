@@ -324,6 +324,12 @@ describe('PaintEvent', () => {
   it('caps display-name length at the name bound', () => {
     expectRejected(PaintEvent, { ...validEvent, displayName: 'x'.repeat(257) })
   })
+
+  it('rejects an empty display name', () => {
+    // Every bounded string runs 1..max, not 0..max. Only the upper half was pinned, so lowering the
+    // minimum to zero admitted empty names, paths, versions and descriptions across the whole wire.
+    expectRejected(PaintEvent, { ...validEvent, displayName: '' })
+  })
 })
 
 describe('cross-field and time-unit schemas', () => {
@@ -453,6 +459,45 @@ describe('cross-field and time-unit schemas', () => {
       tiles: [tileKey({ x: 2047, y: 0 }), tileKey({ x: 0, y: 0 })],
     })
   })
+
+  it.each([
+    // The tests above pin which halves the wrap splits into, but not where those halves end: both
+    // spans overlap by hundreds of pixels, so moving an endpoint one pixel changes no outcome.
+    // These two overlap on exactly one column each — the first on WORLD_PIXELS - 1, the last column
+    // before the seam, and the second on column 0, the first one after it. Shrinking the high half
+    // to WORLD_PIXELS - 1 or lifting the low half to 1 empties that interval and the overlap
+    // disappears, so each endpoint now fails on its own.
+    [
+      'the last column before the seam',
+      { minX: 2_047_999, maxX: 1_000 },
+      { minX: 2_047_999, maxX: 2_048_000 },
+      2047,
+    ],
+    ['the first column after the seam', { minX: 2_047_000, maxX: 1 }, { minX: 0, maxX: 1 }, 0],
+  ])(
+    'rejects a wrapped template overlapping an unwrapped one on %s',
+    (_, wrappedX, unwrappedX, tile) => {
+      const wrapped = {
+        ...validTemplate,
+        id: uuid(920),
+        version: uuid(921),
+        bbox: { ...wrappedX, minY: 0, maxY: 1_000 },
+        chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
+      }
+      const unwrapped = {
+        ...validTemplate,
+        id: uuid(922),
+        version: uuid(923),
+        bbox: { ...unwrappedX, minY: 0, maxY: 1_000 },
+        chunks: [{ tile: tileKey({ x: tile, y: 0 }), hash: HASH }],
+      }
+      expectRejected(Manifest, {
+        ...validManifest,
+        templates: [wrapped, unwrapped],
+        tiles: [...new Set([tileKey({ x: 2047, y: 0 }), tileKey({ x: tile, y: 0 })])],
+      })
+    },
+  )
 
   it('accepts a wrapped template beside an unwrapped one that clears both of its halves', () => {
     const wrapped = {
