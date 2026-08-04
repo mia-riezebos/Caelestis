@@ -13,7 +13,9 @@
       "!**/.wrangler",
       "!**/worker-configuration.d.ts",
       "!**/pnpm-lock.yaml",
-      "!.scratch"
+      "!.scratch",
+      "!**/migrations/meta",
+      "!**/migrations/**/*.sql"
     ]
   },
   "formatter": {
