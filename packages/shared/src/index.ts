@@ -1,5 +1,6 @@
 export * from './manifest.js'
 export * from './palette.js'
+export { decodePng, encodeIndexedPng, PngError, type RgbaImage } from './png.js'
 export * from './telemetry.js'
 export * from './tiles.js'
 export * from './time.js'
