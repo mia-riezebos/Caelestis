@@ -191,11 +191,24 @@ class SqliteDurableObjectStorage {
     return row.count
   }
 
+  /**
+   * Every statement issued, so a test can assert that a read was chunked. Nothing else can: this
+   * fake is node:sqlite, whose 32_766-variable limit is far above the workerd ceiling the chunking
+   * exists for, so an unchunked read returns the right answer here and fails only in production.
+   */
+  readonly execLog: string[] = []
+
+  /** How many statements issued so far match `pattern`. */
+  countStatements(pattern: RegExp): number {
+    return this.execLog.filter((query) => pattern.test(query)).length
+  }
+
   private exec<T extends LocalRow>(
     query: string,
     bindings: readonly SqliteBinding[],
   ): SqlStorageCursor<T> {
     this.assertUngated()
+    this.execLog.push(query)
     const statements = query
       .split(';')
       .map((statement) => statement.trim())
@@ -1011,6 +1024,21 @@ describe('TelemetryShard', () => {
       },
     ])
     await expect(harness.shard.readDroppedLateCount()).resolves.toBe(5)
+  })
+
+  it('issues one statement per parameter chunk when reading a large template group', async () => {
+    // The test below verifies the *result* is right for 1,200 ids, which it is whether or not the
+    // read was chunked — raising READ_PENDING_CHUNK_SIZE to 100_000 left it green. Counting
+    // statements is what actually pins the chunking.
+    const harness = await makeHarness(millis(150_000))
+    const templateIds = Array.from({ length: 1_200 }, (_, index) => `template-${index}`)
+    const selectsPendingByIdList = /FROM pending_counters[\s\S]*template_id IN \(/
+    const before = harness.storage.countStatements(selectsPendingByIdList)
+
+    await harness.shard.readPending(templateIds)
+
+    // 1_200 ids at READ_PENDING_CHUNK_SIZE = 400.
+    expect(harness.storage.countStatements(selectsPendingByIdList) - before).toBe(3)
   })
 
   it('reads a template group larger than one SQLite parameter batch', async () => {

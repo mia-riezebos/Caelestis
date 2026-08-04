@@ -133,6 +133,41 @@ describe('D1SqlStore', () => {
     ).resolves.toEqual([template1Start, template1Middle, template2Start])
   })
 
+  it('issues one statement per parameter chunk when reading a large template set', async () => {
+    // D1 allows 100 bound parameters per query. The fake is node:sqlite, whose limit is 32_766, so
+    // an unchunked read passes here and fails only in production — the statement count is the one
+    // observable that distinguishes them.
+    const templateIds = Array.from({ length: 271 }, (_, index) => `template-${index}`)
+    const callsBeforeRead = d1.prepareCalls
+
+    await store.readBuckets({
+      templateIds,
+      resolution: 60,
+      fromSeconds: seconds(0),
+      toSeconds: seconds(100),
+    })
+
+    expect(d1.prepareCalls - callsBeforeRead).toBe(4)
+  })
+
+  it('returns one ordering across chunk boundaries', async () => {
+    // Each chunk is ordered on its own, but ids are spread across chunks in input order, so a bare
+    // concatenation is unsorted. Reading these two in reverse order puts them in different chunks.
+    const templateIds = Array.from({ length: 91 }, (_, index) => `template-${index}`).reverse()
+    const early = bucket({ templateId: 'template-0', bucketStart: seconds(10) })
+    const late = bucket({ templateId: 'template-90', bucketStart: seconds(10) })
+    await store.appendBuckets([late, early])
+
+    await expect(
+      store.readBuckets({
+        templateIds,
+        resolution: 60,
+        fromSeconds: seconds(0),
+        toSeconds: seconds(100),
+      }),
+    ).resolves.toEqual([early, late])
+  })
+
   // A bare .toThrow() accepts "no such table" as readily as a constraint failure, so these match the
   // message. The accept cases matter more: a CHECK that rejects a valid scope or ladder tier would
   // otherwise ship green, and nothing would notice until production.
