@@ -98,3 +98,39 @@ every upload.
 
 If double-counted parent rollups turn out to matter in practice, the fix is a subtree check, not a
 change to how rollups are computed.
+
+## Amendment — 2026-08-04: `kind` is dropped, and the manifest gains creation times and season
+
+**`kind` is removed** from the node schema above. It appeared in the original sketch and was never
+defined anywhere — not in this ticket, not in the draft, and not in the D1 table. The one meaning it
+plausibly had, distinguishing roots from subnodes, is already carried by `parentId`: a root is a node
+with a null parent, and the wire enforces that a root's path has exactly one segment. Storing it
+would be a second source of truth for something the tree already says.
+
+### `createdAt` becomes required on nodes and templates
+
+The 2026-08-03 amendment above moved ordering client-side and set the default to "oldest first by
+creation", explicitly ruling out manifest array order. **The manifest exposed no timestamp, so no
+client could implement that default.** Its only options were array order, which that amendment
+forbids, or UUID order — which happens to work because ids are UUIDv7, but is a coincidence the
+contract does not promise and would break the moment an id came from anywhere else.
+
+Both columns already exist in D1. This closes the gap between the stated default and what a client
+can actually compute.
+
+### `season` becomes required on templates
+
+`templates.season` exists in D1 and the wire dropped it, so a client could not tell whether a
+template's chunks belong to the current canvas. A season rollover would silently render stale
+templates over a fresh one.
+
+### `version` is a content hash
+
+This ticket already asks for an ETag'd manifest polled with `If-None-Match`. Defining `version` as a
+hash of the manifest body makes the ETag and the version the same value: 304s are correct by
+construction, and the "what changed" diff has a stable identity to compare against rather than an
+opaque token.
+
+That requires the assembled manifest to be **deterministic** — nodes, templates, chunks and tiles all
+emitted in a fixed order — or the same content would hash differently between requests and every poll
+would be a full transfer.
