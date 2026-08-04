@@ -17,7 +17,9 @@ updated until v1 actually runs.
   default is OFF for this effort: tickets may produce running code, and the spec is a living
   document updated as tickets resolve.
 - **Stack.** Server = Hono on Cloudflare Workers + R2 + D1 + DO. Userscript = TypeScript, deep
-  modules, esbuild, Violentmonkey. Turborepo + pnpm: `apps/{backend,userscript,frontend}`,
+  modules, esbuild, Violentmonkey. **wplace itself is SvelteKit + Tailwind + DaisyUI, and the
+  userscript should look at home in it** — by adopting DaisyUI's theme variables through the shadow
+  boundary, never their purged utility classes. See `19-shared-ui-components`. Turborepo + pnpm: `apps/{backend,userscript,frontend}`,
   `packages/{shared,ui}`.
 - **All UI is userscript-side in v1**, and the userscript shows **current state and alarms only** —
   no charts, no history, no pace. Everything time-series is frontend-only for now, and may come back

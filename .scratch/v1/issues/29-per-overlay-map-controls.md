@@ -73,7 +73,10 @@ the page and costs no screen space when closed. It also means depending on their
   to fail *loudly* and fall back to a floating button rather than degrade to nothing.
 - **Their buttons have a visual language** — size, iconography, hover and active states, and whatever
   they do at mobile widths. Matching it is most of the work of not looking bolted on, and it moves
-  when they restyle.
+  when they restyle. The mechanism is settled in
+  [19-shared-ui-components](19-shared-ui-components.md): take DaisyUI's theme variables across the
+  shadow boundary, never their Tailwind classes, which are purged to whatever their own markup
+  happens to use.
 - **Drawer over map.** It covers canvas while open, which is fine for browsing the tree and wrong
   while painting, so it wants to be dismissable without hunting for the button again.
 
