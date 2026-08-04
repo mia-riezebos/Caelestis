@@ -33,12 +33,16 @@ authoring choice, not a validation rule. It belongs with whoever is looking at t
 
 ## Constraints, in order of how likely they are to kill it
 
-### Threads are out
+### Single-threaded build, settled
 
-The crate has a `threads` feature on `rayon` + `wasm-bindgen-rayon`. That needs `SharedArrayBuffer`,
-which needs cross-origin isolation — `COOP`/`COEP` response headers **on the page**. The userscript
-runs on wplace.live and cannot set their headers, so **only the single-threaded build is usable**.
-Whatever the benchmark numbers say for the threaded build, they do not apply here.
+Ditherette builds optimised single- **and** multi-threaded algorithms. **The userscript takes the
+single-threaded one**, and that is a decision rather than a limitation to work around.
+
+The multi-threaded build is not available here at any price: `threads` uses `rayon` +
+`wasm-bindgen-rayon`, which needs `SharedArrayBuffer`, which needs cross-origin isolation —
+`COOP`/`COEP` response headers **on the page**. The userscript runs on wplace.live and cannot set
+their headers. Benchmark numbers for the threaded build therefore do not describe anything the
+userscript can do, and should not be used to size expectations here.
 
 Worth measuring the single-threaded build against a realistic template before committing: a large
 image dithering on the main thread will jank the canvas, so it likely wants a Worker regardless — and
@@ -79,8 +83,9 @@ size limits entirely — at the cost of the module no longer being available bef
 
 ## Deferred to v3 or later
 
-**Not v1, and not pre-v1.** Recorded because the reasoning is worth keeping, not because it is
-scheduled. Nothing before it depends on it: the server accepts any PNG and quantises it, so authoring
+**Not v1, not pre-v1, and no ditherette or template-creation work happens before v3.** Recorded
+because the reasoning is worth keeping, not because it is scheduled — nothing in this ticket should be
+read as a task list for the current effort. Nothing before it depends on it: the server accepts any PNG and quantises it, so authoring
 stays in ditherette proper until well after the userscript's admin surface exists and has proven
 itself.
 
