@@ -14,7 +14,13 @@ export {
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
 } from './counter-store.js'
-export type { BucketQuery, SqlStore, TelemetryBucket } from './sql-store.js'
+export type {
+  AccessToken,
+  BucketQuery,
+  BucketStore,
+  SqlStore,
+  TelemetryBucket,
+} from './sql-store.js'
 
 import type { BlobStore } from './blob-store.js'
 import type { CounterStore } from './counter-store.js'

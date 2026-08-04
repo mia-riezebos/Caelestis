@@ -2,6 +2,7 @@ import { MAX_PAINT_COUNT, millis, type Seconds, seconds } from '@wts/shared'
 import { describe, expect, it } from 'vitest'
 import {
   type BucketQuery,
+  type BucketStore,
   EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
   GRACE_SECONDS,
@@ -10,7 +11,6 @@ import {
   type Ports,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
-  type SqlStore,
   type TelemetryBucket,
 } from '../../ports/index.js'
 import { MemoryBlobStore } from './memory-blob-store.js'
@@ -451,7 +451,7 @@ describe('memory adapters', () => {
     let shouldReject = true
     const attempts: TelemetryBucket[][] = []
     const successfulWrites: TelemetryBucket[][] = []
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
         const snapshot = buckets.map((bucket) => ({ ...bucket }))
         attempts.push(snapshot)
@@ -494,7 +494,7 @@ describe('memory adapters', () => {
 
   it('readPending re-arms a missing alarm for flush-batch residue', async () => {
     let nowSeconds = 100
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(_buckets: readonly TelemetryBucket[]): Promise<void> {
         throw new Error('D1 unavailable')
       },
@@ -523,7 +523,7 @@ describe('memory adapters', () => {
   it('backs off consecutive flush failures and resets after a success', async () => {
     let nowSeconds = 100
     let attempt = 0
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(_buckets: readonly TelemetryBucket[]): Promise<void> {
         attempt += 1
         if (attempt === 1 || attempt === 2 || attempt === 4) {
@@ -561,7 +561,7 @@ describe('memory adapters', () => {
 
   it('measures retry backoff from failure time and caps it at 60 seconds', async () => {
     let nowMilliseconds = 100_000
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(_buckets: readonly TelemetryBucket[]): Promise<void> {
         nowMilliseconds += 61_000
         throw new Error('D1 unavailable')
@@ -736,7 +736,7 @@ describe('memory adapters', () => {
     const nowSeconds = 10_000
     const persisted = new MemorySqlStore()
     const batches: TelemetryBucket[][] = []
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
         batches.push(buckets.map((bucket) => ({ ...bucket })))
         await persisted.appendBuckets(buckets)
@@ -783,7 +783,7 @@ describe('memory adapters', () => {
     let appendAttempt = 0
     const persisted = new MemorySqlStore()
     const batches: TelemetryBucket[][] = []
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
         appendAttempt += 1
         batches.push(buckets.map((bucket) => ({ ...bucket })))
@@ -862,7 +862,7 @@ describe('memory adapters', () => {
   it('flushes a template-first sorted chunk across bucket starts', async () => {
     const nowSeconds = 10_000
     const batches: TelemetryBucket[][] = []
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
         batches.push(buckets.map((bucket) => ({ ...bucket })))
       },
@@ -949,7 +949,7 @@ describe('memory adapters', () => {
     let nowSeconds = 150
     let shouldReject = false
     const persisted = new MemorySqlStore()
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
         if (shouldReject) throw new Error('D1 unavailable')
         await persisted.appendBuckets(buckets)
@@ -987,7 +987,7 @@ describe('memory adapters', () => {
     let nowSeconds = 150
     let failing = false
     const persisted = new MemorySqlStore()
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(buckets) {
         if (failing) throw new Error('D1 unavailable')
         await persisted.appendBuckets(buckets)
@@ -1025,7 +1025,7 @@ describe('memory adapters', () => {
     const bucketStart = 60
     let nowSeconds = 150
     const persisted = new MemorySqlStore()
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       appendBuckets: (buckets) => persisted.appendBuckets(buckets),
       readBuckets: (query) => persisted.readBuckets(query),
     }
@@ -1066,7 +1066,7 @@ describe('memory adapters', () => {
     let nowSeconds = 150
     let failing = false
     const persisted = new MemorySqlStore()
-    const sql: SqlStore = {
+    const sql: BucketStore = {
       async appendBuckets(buckets) {
         if (failing) throw new Error('D1 unavailable')
         await persisted.appendBuckets(buckets)

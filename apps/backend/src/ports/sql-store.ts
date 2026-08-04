@@ -1,4 +1,5 @@
-import type { Seconds } from '@wts/shared'
+import type { Millis, Seconds } from '@wts/shared'
+import type { Scope } from '../auth/tokens.js'
 
 /**
  * Relational storage. D1 today, Postgres later.
@@ -30,7 +31,51 @@ export interface BucketQuery {
   readonly toSeconds: Seconds
 }
 
+/**
+ * The bucket half of `SqlStore`.
+ *
+ * The counter path writes and reads buckets and touches nothing else, so it depends on this rather
+ * than on the whole store — a narrower dependency, and one that keeps its test doubles honest
+ * instead of stubbing out credential methods they never call.
+ */
+export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets'>
+
+/** A stored credential. The plaintext token exists only in the response that mints it. */
+export interface AccessToken {
+  /** Lowercase hex SHA-256 of the token. The primary key. */
+  readonly tokenHash: string
+  /** Human-facing name, so one leaked credential can be revoked without rotating everyone. */
+  readonly label: string
+  readonly scope: Scope
+  readonly createdBy: string
+  readonly createdAt: Millis
+  /** Null while live. */
+  readonly revokedAt: Millis | null
+}
+
 export interface SqlStore {
+  /**
+   * Store a freshly minted token.
+   *
+   * Rejects a hash that already exists rather than overwriting: a collision here would silently
+   * transfer one holder's credential to another.
+   */
+  insertAccessToken(token: AccessToken): Promise<void>
+
+  /** The token with this hash, live or revoked, or null if there is none. */
+  readAccessToken(tokenHash: string): Promise<AccessToken | null>
+
+  /** Every token, revoked included, newest first. Never returns plaintext, which is not stored. */
+  listAccessTokens(): Promise<readonly AccessToken[]>
+
+  /**
+   * Mark a token revoked, idempotently.
+   *
+   * Re-revoking keeps the original instant: the audit question is when a credential stopped being
+   * usable, and a second call must not move that.
+   */
+  revokeAccessToken(tokenHash: string, revokedAt: Millis): Promise<void>
+
   /**
    * Write full folded bucket totals with replace semantics.
    *

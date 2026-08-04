@@ -1,4 +1,4 @@
-import { seconds } from '@wts/shared'
+import { millis, seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket } from '../../ports/index.js'
 import { D1SqlStore } from './d1-sql-store.js'
@@ -444,6 +444,80 @@ describe('D1SqlStore', () => {
         .prepare("INSERT INTO contributions VALUES (1, 'fk-t', 1, 'no-such-token', 1, 1, 0)")
         .run(),
     ).toThrow(/FOREIGN KEY constraint failed/)
+  })
+
+  it('stores, reads back and revokes an access token', async () => {
+    // The memory adapter is tested directly; this is the one that talks to real D1, and the two must
+    // agree or the parity the ports exist for is fiction.
+    const token = {
+      tokenHash: 'a'.repeat(64),
+      label: 'discord-regulars',
+      scope: 'report' as const,
+      createdBy: 'bootstrap',
+      createdAt: millis(1_000),
+      revokedAt: null,
+    }
+    await store.insertAccessToken(token)
+
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toEqual(token)
+    await expect(store.readAccessToken('missing')).resolves.toBeNull()
+
+    await store.revokeAccessToken(token.tokenHash, millis(5_000))
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toMatchObject({
+      revokedAt: 5_000,
+    })
+  })
+
+  it('refuses to overwrite an existing token hash', async () => {
+    const token = {
+      tokenHash: 'b'.repeat(64),
+      label: 'first',
+      scope: 'read' as const,
+      createdBy: 'bootstrap',
+      createdAt: millis(1_000),
+      revokedAt: null,
+    }
+    await store.insertAccessToken(token)
+
+    await expect(store.insertAccessToken({ ...token, label: 'second' })).rejects.toThrow()
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toMatchObject({ label: 'first' })
+  })
+
+  it('keeps the first revocation instant when revoked twice', async () => {
+    const token = {
+      tokenHash: 'c'.repeat(64),
+      label: 'leaked',
+      scope: 'read' as const,
+      createdBy: 'bootstrap',
+      createdAt: millis(1_000),
+      revokedAt: null,
+    }
+    await store.insertAccessToken(token)
+
+    await store.revokeAccessToken(token.tokenHash, millis(5_000))
+    await store.revokeAccessToken(token.tokenHash, millis(9_000))
+
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toMatchObject({
+      revokedAt: 5_000,
+    })
+  })
+
+  it('lists tokens newest first', async () => {
+    for (const [index, createdAt] of [3_000, 1_000, 2_000].entries()) {
+      await store.insertAccessToken({
+        tokenHash: `${index}`.repeat(64),
+        label: `${createdAt}`,
+        scope: 'read',
+        createdBy: 'bootstrap',
+        createdAt: millis(createdAt),
+        revokedAt: null,
+      })
+    }
+    await expect(store.listAccessTokens()).resolves.toMatchObject([
+      { label: '3000' },
+      { label: '2000' },
+      { label: '1000' },
+    ])
   })
 
   it('rejects a replayed event id regardless of the claimed user', () => {

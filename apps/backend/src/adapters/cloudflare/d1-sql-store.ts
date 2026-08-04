@@ -1,8 +1,8 @@
-import { seconds } from '@wts/shared'
-import { and, asc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
+import { type Millis, millis, seconds } from '@wts/shared'
+import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
-import { telemetryBuckets } from '../../db/schema.js'
-import type { BucketQuery, SqlStore, TelemetryBucket } from '../../ports/index.js'
+import { accessTokens, telemetryBuckets } from '../../db/schema.js'
+import type { AccessToken, BucketQuery, SqlStore, TelemetryBucket } from '../../ports/index.js'
 
 /**
  * D1 accepts at most 100 bound parameters per query, which is ten times tighter than the SQLite
@@ -31,6 +31,15 @@ const READ_BUCKETS_CHUNK_SIZE = 90
  * so this fails immediately, naming the limit, rather than reaching D1 and failing there.
  */
 const MAX_READ_BUCKETS_TEMPLATE_IDS = READ_BUCKETS_CHUNK_SIZE * 40
+
+const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
+  tokenHash: row.tokenHash,
+  label: row.label,
+  scope: row.scope,
+  createdBy: row.createdBy,
+  createdAt: row.createdAtMs,
+  revokedAt: row.revokedAtMs === null ? null : millis(row.revokedAtMs),
+})
 
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
@@ -79,6 +88,46 @@ export class D1SqlStore implements SqlStore {
     await this.database.batch(
       statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
     )
+  }
+
+  async insertAccessToken(token: AccessToken): Promise<void> {
+    // No onConflict clause: the primary key must reject a duplicate hash rather than overwrite it,
+    // which would silently transfer one holder's credential to another.
+    await this.database.insert(accessTokens).values({
+      tokenHash: token.tokenHash,
+      label: token.label,
+      scope: token.scope,
+      createdBy: token.createdBy,
+      createdAtMs: token.createdAt,
+      revokedAtMs: token.revokedAt,
+    })
+  }
+
+  async readAccessToken(tokenHash: string): Promise<AccessToken | null> {
+    const rows = await this.database
+      .select()
+      .from(accessTokens)
+      .where(eq(accessTokens.tokenHash, tokenHash))
+      .limit(1)
+    const row = rows[0]
+    return row === undefined ? null : toAccessToken(row)
+  }
+
+  async listAccessTokens(): Promise<readonly AccessToken[]> {
+    const rows = await this.database
+      .select()
+      .from(accessTokens)
+      .orderBy(desc(accessTokens.createdAtMs))
+    return rows.map(toAccessToken)
+  }
+
+  async revokeAccessToken(tokenHash: string, revokedAt: Millis): Promise<void> {
+    // `IS NULL` makes this idempotent in one statement and keeps the first instant: re-revoking must
+    // not move the moment the credential stopped being usable.
+    await this.database
+      .update(accessTokens)
+      .set({ revokedAtMs: revokedAt })
+      .where(and(eq(accessTokens.tokenHash, tokenHash), sql`${accessTokens.revokedAtMs} IS NULL`))
   }
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
