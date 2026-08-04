@@ -167,10 +167,24 @@ export const contributions = sqliteTable(
       .notNull()
       .references(() => templates.id),
     dayS: integer('day_s').$type<Seconds>().notNull(),
-    // Which token reported this. wplace_user_id is attacker-supplied and nothing bound it to the
-    // authenticated caller, so a report-scope holder could attribute fabricated work to any other
-    // painter — and with no reporter column, neither attributable nor reversible afterwards.
-    reportedBy: text('reported_by').notNull(),
+    /**
+     * Which token reported this. `wplace_user_id` is attacker-supplied and nothing binds it to the
+     * authenticated caller, so a report-scope holder could attribute fabricated work to any other
+     * painter — and with no reporter column that was neither attributable nor reversible.
+     *
+     * **It is part of the primary key, so `(wplace_user_id, template_id, day_s)` is not unique.**
+     * On a self-hosted alliance server every member holds a report token, so two members reporting
+     * the same painter's day is the normal case, not an attack. A rollup written as
+     * `SUM(placed) ... GROUP BY wplace_user_id` therefore multiplies that painter's credit by the
+     * number of reporters. Rollups must reduce to one row per (user, template, day) first — take
+     * the maximum, since a reporter that saw less of the day cannot disprove one that saw more.
+     *
+     * The foreign key keeps this a token, not free text: without it any string is a fresh key and
+     * one caller can multiply its own rows without limit.
+     */
+    reportedBy: text('reported_by')
+      .notNull()
+      .references(() => accessTokens.tokenHash),
     placed: integer('placed').notNull(),
     correct: integer('correct').notNull(),
     repairs: integer('repairs').notNull(),

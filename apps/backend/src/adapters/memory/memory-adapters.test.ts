@@ -7,7 +7,6 @@ import {
   GRACE_SECONDS,
   MAX_COUNTER_DELTA_VALUE,
   MAX_COUNTER_DELTAS_PER_RECORD,
-  MAX_TEMPLATE_ID_LENGTH,
   type Ports,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
@@ -285,10 +284,13 @@ describe('memory adapters', () => {
     expect(pending.filter((entry) => entry.placed === 1)).toHaveLength(1_000)
   })
 
-  it('rejects template ids above the length limit', async () => {
+  it('rejects template ids longer than sixty-four characters', async () => {
+    // Stated absolutely. Deriving both fixtures from the constant pins the boundary relative to
+    // whatever the constant says, so the value itself could move — and its comment calls it the
+    // guard that stops unbounded identifiers creating permanent rows in the shared stores.
     const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
-    const acceptedId = 'a'.repeat(MAX_TEMPLATE_ID_LENGTH)
-    const rejectedId = 'b'.repeat(MAX_TEMPLATE_ID_LENGTH + 1)
+    const acceptedId = 'a'.repeat(64)
+    const rejectedId = 'b'.repeat(65)
 
     await store.record([
       { templateId: rejectedId, occurredAt: seconds(100), placed: 1, correct: 1, repairs: 0 },

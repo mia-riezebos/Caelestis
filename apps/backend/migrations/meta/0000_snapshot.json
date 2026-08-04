@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2972ea47-29e2-46c7-ae46-58b7bf26a573",
+  "id": "ed7572f5-a651-4013-ad55-1335600b8874",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -164,6 +164,19 @@
           ],
           "columnsTo": [
             "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "contributions_reported_by_access_tokens_token_hash_fk": {
+          "name": "contributions_reported_by_access_tokens_token_hash_fk",
+          "tableFrom": "contributions",
+          "tableTo": "access_tokens",
+          "columnsFrom": [
+            "reported_by"
+          ],
+          "columnsTo": [
+            "token_hash"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"

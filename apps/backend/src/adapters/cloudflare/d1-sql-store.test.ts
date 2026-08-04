@@ -394,6 +394,7 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
       INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', 1, NULL, 1);
+      INSERT OR IGNORE INTO access_tokens VALUES ('tok', 'l', 'report', 'c', 1, NULL);
     `)
     // The geometry columns get typeof + range; the counters got neither, so a negative, fractional
     // or textual count persisted. isValidCounterDelta already refuses these — this is the second
@@ -420,6 +421,20 @@ describe('D1SqlStore', () => {
       { sha256: 'attacker-hash', reporters: 1 },
       { sha256: 'honest-hash', reporters: 1 },
     ])
+  })
+
+  it('rejects a contribution from a token that does not exist', () => {
+    // Without the foreign key any string is a fresh primary-key component, so one caller could
+    // multiply its own rows for a painter without limit.
+    d1.sqlite.exec(`
+      INSERT OR IGNORE INTO nodes VALUES ('fk-node', NULL, '/fk', 'FK', 1);
+      INSERT OR IGNORE INTO templates VALUES ('fk-t', 'fk-node', 'T', 1, NULL, 1);
+    `)
+    expect(() =>
+      d1.sqlite
+        .prepare("INSERT INTO contributions VALUES (1, 'fk-t', 1, 'no-such-token', 1, 1, 0)")
+        .run(),
+    ).toThrow(/FOREIGN KEY constraint failed/)
   })
 
   it('rejects a replayed event id regardless of the claimed user', () => {
@@ -494,6 +509,7 @@ describe('D1SqlStore', () => {
       "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'tok'), (0, 0, 0, 60, 'h', 'tok')",
     ],
   ])('%s', (_label, statement) => {
+    // reported_by is a foreign key to access_tokens, so the tokens have to exist.
     // Each composite primary key is the identity the draft specifies. Dropping a component makes
     // these two rows collide, so the insert throws — nothing else in the suite writes two rows that
     // differ only in the trailing key column.
@@ -501,6 +517,9 @@ describe('D1SqlStore', () => {
       INSERT OR IGNORE INTO nodes VALUES ('pk-node', NULL, '/pk', 'PK', 1);
       INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', 1, NULL, 1);
       INSERT OR IGNORE INTO template_versions VALUES ('v1', 'ct', 1, 'c', 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
+      INSERT OR IGNORE INTO access_tokens VALUES ('tok', 'l', 'report', 'c', 1, NULL);
+      INSERT OR IGNORE INTO access_tokens VALUES ('tok-a', 'l', 'report', 'c', 1, NULL);
+      INSERT OR IGNORE INTO access_tokens VALUES ('tok-b', 'l', 'report', 'c', 1, NULL);
     `)
     expect(() => d1.sqlite.prepare(statement).run()).not.toThrow()
   })

@@ -115,6 +115,11 @@ export class D1SqlStore implements SqlStore {
     // Each chunk is ordered, but the concatenation of ordered chunks is not: template ids are
     // distributed across chunks in input order, not sort order. The contract is a single ordered
     // result, so the merge has to re-sort.
+    //
+    // The bucketStart tiebreak is redundant today and kept for explicitness: chunking is by template
+    // id, so one template's buckets always land in a single chunk already ordered by SQL, and
+    // Array.prototype.sort is stable. Dropping it changes no outcome, so no test can pin it — said
+    // here rather than left looking load-bearing.
     return rows
       .map(fromRow)
       .sort(

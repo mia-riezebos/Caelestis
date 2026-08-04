@@ -25,6 +25,7 @@ CREATE TABLE `contributions` (
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
         AND typeof("contributions"."placed") = 'integer' AND typeof("contributions"."correct") = 'integer'
         AND typeof("contributions"."repairs") = 'integer'
