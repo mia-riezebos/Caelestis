@@ -14,6 +14,13 @@ export {
   type QuantiseResult,
   quantiseToPalette,
 } from './quantise.js'
+export {
+  type PixelBounds,
+  SliceError,
+  type SliceResult,
+  sliceTemplate,
+  type TemplateChunk,
+} from './slice.js'
 export * from './telemetry.js'
 export * from './tiles.js'
 export * from './time.js'
