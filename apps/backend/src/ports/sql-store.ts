@@ -1,4 +1,4 @@
-import type { Millis, Seconds } from '@wts/shared'
+import type { Millis, PixelBounds, Seconds } from '@wts/shared'
 import { SCOPES, type Scope } from '../auth/tokens.js'
 
 /**
@@ -156,7 +156,38 @@ export interface AccessToken {
   readonly createdAt: Millis
 }
 
+export interface TemplateVersionRecord {
+  readonly templateId: string
+  readonly nodeId: string
+  readonly name: string
+  readonly season: number
+  readonly versionId: string
+  /**
+   * Who uploaded this — the digest of the access token used, and the wplace `/me` id of the account
+   * that used it when the client presented one. The account is optional here and mandatory on the
+   * reporter columns, because quorum counts distinct accounts while authorship only has to name the
+   * credential that acted: a server-side admin upload has a token and no wplace session.
+   */
+  readonly createdBy: string
+  readonly createdByUserId: number | null
+  /** Used for both rows when the template is new; existing templates retain their original date. */
+  readonly createdAt: Millis
+  readonly bbox: PixelBounds
+  readonly totalPixels: number
+  readonly chunks: readonly {
+    readonly tileX: number
+    readonly tileY: number
+    readonly hash: string
+  }[]
+}
+
 export interface SqlStore {
+  /** Atomically add a version, its tile index, and make it the template's current version. */
+  insertTemplateVersion(version: TemplateVersionRecord): Promise<void>
+
+  /** A version with its template metadata and complete tile index, or null if absent. */
+  readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null>
+
   /**
    * Store a freshly minted token.
    *

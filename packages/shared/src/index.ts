@@ -1,3 +1,4 @@
+export { sha256Hex } from './hash.js'
 export * from './manifest.js'
 export {
   PALETTE_RGB,
@@ -24,3 +25,4 @@ export {
 export * from './telemetry.js'
 export * from './tiles.js'
 export * from './time.js'
+export { uuidV7 } from './uuid.js'

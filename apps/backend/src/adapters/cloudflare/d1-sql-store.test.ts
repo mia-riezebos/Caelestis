@@ -1,6 +1,6 @@
 import { millis, seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { TelemetryBucket } from '../../ports/index.js'
+import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
 import { D1SqlStore } from './d1-sql-store.js'
 import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 
@@ -16,6 +16,26 @@ const bucket = (overrides: Partial<TelemetryBucket> = {}): TelemetryBucket => ({
   ...overrides,
 })
 
+const templateVersion = (
+  overrides: Partial<TemplateVersionRecord> = {},
+): TemplateVersionRecord => ({
+  templateId: 'template-1',
+  nodeId: 'node-1',
+  name: 'Template',
+  season: 1,
+  versionId: 'version-1',
+  createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  createdByUserId: null,
+  createdAt: millis(1_000),
+  bbox: { minX: 0, minY: 0, maxX: 1001, maxY: 1 },
+  totalPixels: 2,
+  chunks: [
+    { tileX: 0, tileY: 0, hash: 'a'.repeat(64) },
+    { tileX: 1, tileY: 0, hash: 'b'.repeat(64) },
+  ],
+  ...overrides,
+})
+
 describe('D1SqlStore', () => {
   let d1: SqliteD1Database
   let store: D1SqlStore
@@ -26,6 +46,43 @@ describe('D1SqlStore', () => {
   })
 
   afterEach(() => d1.close())
+
+  it('writes a template, version, tile index and current pointer in one batch', async () => {
+    d1.sqlite.prepare("INSERT INTO nodes VALUES ('node-1', NULL, '/node-1', 'Node', 1)").run()
+    const version = templateVersion()
+
+    await store.insertTemplateVersion(version)
+
+    expect(d1.batchCalls).toBe(1)
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM templates').get()).toEqual({ count: 1 })
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM template_versions').get()).toEqual({
+      count: 1,
+    })
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM version_tiles').get()).toEqual({
+      count: 2,
+    })
+    expect(d1.sqlite.prepare('SELECT current_version_id FROM templates').get()).toEqual({
+      current_version_id: version.versionId,
+    })
+    await expect(store.readTemplateVersion(version.versionId)).resolves.toEqual(version)
+  })
+
+  it('rolls the whole template write back when one tile row fails', async () => {
+    d1.sqlite.prepare("INSERT INTO nodes VALUES ('node-1', NULL, '/node-1', 'Node', 1)").run()
+    const firstTile = { tileX: 0, tileY: 0, hash: 'a'.repeat(64) }
+    const duplicateTile = { tileX: 0, tileY: 0, hash: 'b'.repeat(64) }
+    const version = templateVersion({ chunks: [firstTile, duplicateTile] })
+
+    await expect(store.insertTemplateVersion(version)).rejects.toThrow(/UNIQUE constraint failed/)
+    expect(d1.batchCalls).toBe(1)
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM templates').get()).toEqual({ count: 0 })
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM template_versions').get()).toEqual({
+      count: 0,
+    })
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM version_tiles').get()).toEqual({
+      count: 0,
+    })
+  })
 
   it('issues no D1 calls for empty input', async () => {
     await store.appendBuckets([])

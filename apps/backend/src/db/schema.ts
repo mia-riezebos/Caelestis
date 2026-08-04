@@ -75,7 +75,7 @@ export const templateVersions = sqliteTable(
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
     /** Who uploaded this version — token digest and wplace account, as everywhere else. */
     createdBy: text('created_by').notNull(),
-    createdByUserId: integer('created_by_user_id').notNull(),
+    createdByUserId: integer('created_by_user_id'),
     minX: integer('min_x').notNull(),
     minY: integer('min_y').notNull(),
     maxX: integer('max_x').notNull(),
@@ -94,7 +94,8 @@ export const templateVersions = sqliteTable(
       'template_versions_created_by_check',
       sql`typeof(${table.createdBy}) = 'text' AND length(${table.createdBy}) = 64
         AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
-        AND typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0`,
+        AND (${table.createdByUserId} IS NULL
+          OR (typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0))`,
     ),
 
     check(
@@ -134,13 +135,17 @@ export const templates = sqliteTable(
     season: integer('season').notNull(),
     currentVersionId: text('current_version_id'),
     /**
-     * Who created this template, as the same pair a report is attributed to: the digest of the
+     * Who created this template. The account is nullable where the reporter columns' is not, and
+     * the asymmetry is the point: quorum counts distinct accounts, so a report without one is
+     * meaningless, while authorship only has to name the credential that acted. An admin uploading
+     * through a server-side route presents a token and no wplace session; a userscript upload can
+     * supply both. Recorded as the same pair a report is attributed to: the digest of the
      * access token used, and the wplace `/me` id of the account that used it. `template_versions`
      * records this per upload; without it here, the template itself — the thing that gets renamed,
      * moved and deleted — had a creation time and no author.
      */
     createdBy: text('created_by').notNull(),
-    createdByUserId: integer('created_by_user_id').notNull(),
+    createdByUserId: integer('created_by_user_id'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
   // The version this template currently serves has to be one of *its own* versions. Referencing
@@ -158,7 +163,8 @@ export const templates = sqliteTable(
       'templates_created_by_check',
       sql`typeof(${table.createdBy}) = 'text' AND length(${table.createdBy}) = 64
         AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
-        AND typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0`,
+        AND (${table.createdByUserId} IS NULL
+          OR (typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0))`,
     ),
     foreignKey({
       columns: [table.currentVersionId, table.id],
