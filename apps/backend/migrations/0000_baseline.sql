@@ -41,7 +41,7 @@ CREATE TABLE `nodes` (
 	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `nodes_path_idx` ON `nodes` (`path`);--> statement-breakpoint
+CREATE UNIQUE INDEX `nodes_path_idx` ON `nodes` (lower("path"));--> statement-breakpoint
 CREATE TABLE `painters` (
 	`wplace_user_id` integer PRIMARY KEY NOT NULL,
 	`display_name` text NOT NULL,
@@ -109,10 +109,9 @@ CREATE TABLE `tile_history` (
 	`resolution_s` integer NOT NULL,
 	`bucket_start_s` integer NOT NULL,
 	`sha256` text NOT NULL,
-	`reporters` integer NOT NULL,
-	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`),
+	`reported_by` text NOT NULL,
+	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by`),
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
-	CONSTRAINT "tile_history_reporters_check" CHECK(typeof("tile_history"."reporters") = 'integer' AND "tile_history"."reporters" >= 0),
 	CONSTRAINT "tile_history_coordinate_check" CHECK(typeof("tile_history"."tile_x") = 'integer' AND typeof("tile_history"."tile_y") = 'integer'
         AND "tile_history"."tile_x" BETWEEN 0 AND 2047
         AND "tile_history"."tile_y" BETWEEN 0 AND 2047)

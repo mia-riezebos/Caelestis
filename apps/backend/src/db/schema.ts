@@ -25,7 +25,9 @@ export const nodes = sqliteTable(
   // path is the prefix-rollup key and the subtree-rewrite key. Two nodes sharing one path make a
   // rollup attribute one group's templates to another, and make the documented
   // `UPDATE ... WHERE path LIKE '<old>/%'` move rewrite both subtrees when either is renamed.
-  (table) => [uniqueIndex('nodes_path_idx').on(table.path)],
+  // NOCASE, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
+  // the documented `LIKE '<old>/%'` subtree move rewrites the other one's descendants too.
+  (table) => [uniqueIndex('nodes_path_idx').on(sql`lower(${table.path})`)],
 )
 
 export const templates = sqliteTable('templates', {
@@ -221,17 +223,25 @@ export const tileHistory = sqliteTable(
     resolutionS: integer('resolution_s').$type<Seconds>().notNull(),
     bucketStartS: integer('bucket_start_s').$type<Seconds>().notNull(),
     sha256: text('sha256').notNull(),
-    reporters: integer('reporters').notNull(),
+    // One row per reporter per observation. `reporters` used to be an aggregate integer on a row
+    // keyed only by tile, tier and bucket: a single hostile client could increment it by replaying
+    // its own hash until it looked like multi-client quorum, and an honest competing hash could not
+    // be stored at all because the key admitted one hash per bucket. The count is now COUNT(*) over
+    // distinct reporters, which cannot be forged by repetition.
+    reportedBy: text('reported_by').notNull(),
   },
   (table) => [
     primaryKey({
-      columns: [table.tileX, table.tileY, table.resolutionS, table.bucketStartS],
+      columns: [
+        table.tileX,
+        table.tileY,
+        table.resolutionS,
+        table.bucketStartS,
+        table.sha256,
+        table.reportedBy,
+      ],
     }),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
-    check(
-      'tile_history_reporters_check',
-      sql`typeof(${table.reporters}) = 'integer' AND ${table.reporters} >= 0`,
-    ),
     check(
       'tile_history_coordinate_check',
       sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
