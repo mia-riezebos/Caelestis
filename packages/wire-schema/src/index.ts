@@ -161,10 +161,28 @@ export const ServerInfo = Schema.Struct({
   requiresAuth: Schema.Boolean,
 })
 
+/**
+ * A materialized group path: a leading slash and at least one segment.
+ *
+ * `%` and `_` are excluded because this value is the subtree-rewrite key. The documented move is
+ * `UPDATE ... WHERE path LIKE '<old>/%'`, and in a LIKE pattern `%` matches any run and `_` matches
+ * any single character — so a node created as `/canada%` rewrites every sibling subtree when it
+ * moves, and `/%` captures the whole tree. Callers should still pass ESCAPE; excluding the two
+ * metacharacters means a missing ESCAPE cannot be exploited from the wire.
+ */
+const NodePath = Schema.String.pipe(
+  Schema.check(
+    Schema.isLengthBetween(1, MAX_DESCRIPTION_LENGTH),
+    Schema.isPattern(/^(\/[A-Za-z0-9][A-Za-z0-9. -]*)+$/, {
+      description: 'a slash-separated group path without LIKE metacharacters',
+    }),
+  ),
+)
+
 export const Node = Schema.Struct({
   id: Identifier,
   parentId: Schema.NullOr(Identifier),
-  path: boundedString(MAX_DESCRIPTION_LENGTH),
+  path: NodePath,
   name: Name,
 })
 
@@ -190,6 +208,12 @@ const ManifestStruct = Schema.Struct({
   templates: boundedArray(Template, MAX_MANIFEST_TEMPLATES),
   tiles: boundedArray(TileKey, MAX_MANIFEST_TILES),
 })
+
+/** Split a validated tile key back into its coordinates. */
+const parseTile = (tile: string): { x: number; y: number } => {
+  const separator = tile.indexOf('/')
+  return { x: Number(tile.slice(0, separator)), y: Number(tile.slice(separator + 1)) }
+}
 
 /** One non-wrapping x span of a template's bounding box, carrying that box's y range. */
 type XSpan = {
@@ -326,6 +350,40 @@ export const Manifest = ManifestStruct.pipe(
             new Set(template.chunks.map((chunk) => chunk.tile)).size === template.chunks.length,
         ),
       'a template may contain at most one chunk for each tile',
+    ),
+    booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      // Paths are the prefix-rollup key, so two nodes sharing one path make a rollup attribute one
+      // group's templates to another. parent_id and path must also describe the same hierarchy: a
+      // child of /canada carrying /usa/x rolls up under a group it does not belong to.
+      const pathById = new Map(manifest.nodes.map((node) => [node.id, node.path]))
+      if (new Set(pathById.values()).size !== manifest.nodes.length) return false
+      return manifest.nodes.every((node) => {
+        if (node.parentId === null) return node.path.indexOf('/', 1) === -1
+        const parentPath = pathById.get(node.parentId)
+        return parentPath !== undefined && node.path.startsWith(`${parentPath}/`)
+      })
+      // This also makes the hierarchy acyclic, so no separate cycle check is needed: a non-root
+      // path strictly extends its parent's, so walking up strictly shortens the path and must
+      // terminate at a root. A cycle check here would be unreachable and could not be tested.
+    }, 'every node path must be unique and sit directly under its parent'),
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        manifest.templates.every((template) => {
+          // A chunk is a full tile of painted pixels, so a chunk outside the box that declares the
+          // template's extent is a contradiction: culling watches the bbox tiles and would never
+          // fetch it, or would render it in the wrong place.
+          const spans = xSpans(template)
+          return template.chunks.every((chunk) => {
+            const { x, y } = parseTile(chunk.tile)
+            const tileMinX = x * TILE_SIZE
+            const tileMinY = y * TILE_SIZE
+            if (tileMinY + TILE_SIZE <= template.bbox.minY || tileMinY >= template.bbox.maxY) {
+              return false
+            }
+            return spans.some((span) => tileMinX < span.end && span.start < tileMinX + TILE_SIZE)
+          })
+        }),
+      'every chunk tile must intersect its template bounding box',
     ),
     booleanFilter(
       (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>

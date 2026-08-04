@@ -610,6 +610,117 @@ describe('cross-field and time-unit schemas', () => {
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
+  it.each([
+    // Each case is outside the box on ONE axis only. A corner-to-corner fixture is rejected by
+    // either half alone, which leaves both halves individually deletable.
+    ['x', { minX: 2_047_999, minY: 0, maxX: 2_048_000, maxY: 1_000 }],
+    ['y', { minX: 0, minY: 2_047_999, maxX: 1_000, maxY: 2_048_000 }],
+  ])('rejects a chunk tile outside its template bounding box in %s', (_axis, bbox) => {
+    // Every reference still resolves, so this decoded clean: culling watches tile 0/0 while the
+    // painted pixels are elsewhere on the canvas.
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [
+        { ...validTemplate, bbox, chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }] },
+      ],
+      tiles: [tileKey({ x: 0, y: 0 })],
+    })
+  })
+
+  it('accepts a chunk on each tile a wrapped bounding box touches', () => {
+    // The chunk check has to respect the antimeridian split, or a legal wrapped template loses its
+    // chunks on the low side of the seam.
+    const template = {
+      ...validTemplate,
+      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
+      chunks: [
+        { tile: tileKey({ x: 2047, y: 0 }), hash: HASH },
+        { tile: tileKey({ x: 0, y: 0 }), hash: HASH },
+      ],
+    }
+    const manifest = {
+      ...validManifest,
+      templates: [template],
+      tiles: [tileKey({ x: 2047, y: 0 }), tileKey({ x: 0, y: 0 })],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it.each([
+    ['a node that is its own parent', [{ id: NODE_ID, parentId: NODE_ID, path: '/g', name: 'G' }]],
+    [
+      'two nodes that name each other',
+      [
+        { id: uuid(20), parentId: uuid(21), path: '/a', name: 'A' },
+        { id: uuid(21), parentId: uuid(20), path: '/b', name: 'B' },
+      ],
+    ],
+  ])('rejects %s', (_label, nodes) => {
+    // Every reference resolves, so the existence check accepts these and the result has no root.
+    // They are rejected by the path rule rather than a cycle check — see the note on that filter.
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes,
+      // biome-ignore lint/style/noNonNullAssertion: the fixtures above are non-empty
+      templates: [{ ...validTemplate, nodeId: nodes[0]!.id }],
+    })
+  })
+
+  it('accepts a genuine two-level group tree', () => {
+    const parent = { id: uuid(30), parentId: null, path: '/canada', name: 'Canada' }
+    const child = { id: uuid(31), parentId: parent.id, path: '/canada/toronto', name: 'Toronto' }
+    const manifest = {
+      ...validManifest,
+      nodes: [parent, child],
+      templates: [{ ...validTemplate, nodeId: child.id }],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it('rejects two nodes sharing one path', () => {
+    // path is the prefix-rollup key, so duplicates make a rollup attribute one group's templates to
+    // another.
+    const first = { id: uuid(40), parentId: null, path: '/canada', name: 'A' }
+    const second = { id: uuid(41), parentId: null, path: '/canada', name: 'B' }
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [first, second],
+      templates: [{ ...validTemplate, nodeId: first.id }],
+    })
+  })
+
+  it('rejects a root node carrying a nested path', () => {
+    // A node with no parent sits at the top of the tree, so its path has exactly one segment.
+    // Without this, a rootless-looking '/canada/toronto' rolls up under a '/canada' it never
+    // declared a parent link to.
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [{ ...validNode, parentId: null, path: '/canada/toronto' }],
+    })
+  })
+
+  it('rejects a node whose path is not under its parent', () => {
+    const parent = { id: uuid(50), parentId: null, path: '/canada', name: 'Canada' }
+    const child = { id: uuid(51), parentId: parent.id, path: '/usa/x', name: 'Stray' }
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [parent, child],
+      templates: [{ ...validTemplate, nodeId: child.id }],
+    })
+  })
+
+  it.each(['/canada%', '/canada_x', 'canada', '/', '/canada/', '/canada//x'])(
+    'rejects the unusable node path %o',
+    (path) => {
+      // % and _ are LIKE metacharacters, and path is the subtree-rewrite key: '/canada%' captures
+      // sibling subtrees on a move and '/%' captures the whole tree.
+      expectRejected(Manifest, {
+        ...validManifest,
+        nodes: [{ ...validNode, path }],
+      })
+    },
+  )
+
   it('accepts many templates stacked in one x column', () => {
     // The sweep's structural worst case: every span shares an x interval, so all of them stay
     // active at once and only the y ordering separates them. It is also a shape the all-pairs scan
