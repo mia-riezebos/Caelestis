@@ -232,6 +232,28 @@ describe('D1SqlStore', () => {
     [1, 0, 1, 1, 1],
     [0, 1, 1, 1, 1],
     [0, 0, 1, 1, -1],
+    // min is inclusive and max exclusive, so the minima stop one short of the world edge and the
+    // maxima start at 1. Only the far side of each was covered, leaving both near bounds free to
+    // move by one.
+    [2_048_000, 0, 1, 1, 1],
+    [0, 2_048_000, 1, 1, 1],
+    // min_x must differ from max_x, so a max_x of 0 needs an unequal min_x or the zero-width clause
+    // does the rejecting and the lower bound stays free. max_y has no equivalent case: `min_y >= 0
+    // AND min_y < max_y` already implies `max_y >= 1`, so its BETWEEN lower bound is genuinely
+    // redundant and a test here would only appear to pin it.
+    [5, 0, 0, 1, 1],
+    // y does not wrap, so min_y > max_y is illegal — not merely unequal. Nothing covered the
+    // ordering, so the CHECK could weaken to <> and store a pole-wrapping box whose height is
+    // negative for every consumer.
+    [0, 1_000, 1, 500, 1],
+    // SQLite INTEGER is an affinity, not a type: without typeof(...) = 'integer' a fractional
+    // coordinate satisfies BETWEEN and is stored as a REAL, putting every later
+    // `y * TILE_SIZE + x` off the grid.
+    [0.5, 0, 1, 1, 1],
+    [0, 0.5, 1, 1, 1],
+    [0, 0, 1.5, 1, 1],
+    [0, 0, 1, 1.5, 1],
+    [0, 0, 1, 1, 0.5],
   ])(
     'rejects template-version pixel bounds outside the wire domain: %j',
     (minX, minY, maxX, maxY, totalPixels) => {
@@ -269,6 +291,31 @@ describe('D1SqlStore', () => {
     ).toThrow(/CHECK constraint failed/)
   })
 
+  it.each([
+    [0.5, 0],
+    [0, 0.5],
+  ])('rejects fractional tile-history coordinates: %s/%s', (tileX, tileY) => {
+    expect(() =>
+      d1.sqlite
+        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 1)")
+        .run(tileX, tileY),
+    ).toThrow(/CHECK constraint failed/)
+  })
+
+  it.each([
+    [2048, 0],
+    [0, 2048],
+    [-1, 0],
+    [0, -1],
+    [0.5, 0],
+    [0, 0.5],
+  ])('rejects version-tile coordinates outside the canvas: %s/%s', (tileX, tileY) => {
+    // Only tile_x = 2048 was covered here, so the y bound and both integer guards were free.
+    expect(() =>
+      d1.sqlite.prepare("INSERT INTO version_tiles VALUES ('v', ?, ?, 'hash')").run(tileX, tileY),
+    ).toThrow(/CHECK constraint failed/)
+  })
+
   it('requires native bounds to be complete, ordered and in latitude/longitude range', () => {
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('node', NULL, '/node', 'Node', 1);
@@ -296,5 +343,52 @@ describe('D1SqlStore', () => {
         )
         .run(),
     ).toThrow()
+  })
+
+  it.each([
+    ['south below -90', '45, -91, -10, 10'],
+    ['west below -180', '45, -45, -181, 10'],
+    ['east above 180', '45, -45, -10, 181'],
+  ])('rejects native bounds with %s', (label, bounds) => {
+    // The test above names longitude and only ever probes bounds_north, so the south range and both
+    // longitude ranges were deletable. Matching the message too: a bare .toThrow() accepts
+    // "no such table" as readily as a constraint failure, which this file's own comment argues
+    // against.
+    d1.sqlite.exec(`
+      INSERT OR IGNORE INTO nodes VALUES ('bounds-node', NULL, '/bounds', 'Bounds', 1);
+      INSERT OR IGNORE INTO templates VALUES ('bounds-template', 'bounds-node', 'T', 1, NULL, 1);
+    `)
+    expect(() =>
+      d1.sqlite
+        .prepare(
+          `INSERT INTO template_versions VALUES ('${label.replace(/\s/g, '-')}', 'bounds-template', 1, 'c', 0, 0, 1, 1, 1, ${bounds})`,
+        )
+        .run(),
+    ).toThrow(/CHECK constraint failed/)
+  })
+
+  it.each([
+    [
+      'version_tiles keeps one row per tile of a version',
+      "INSERT INTO version_tiles VALUES ('v1', 0, 0, 'h'), ('v1', 0, 1, 'h')",
+    ],
+    [
+      'contributions keeps one row per user, template and day',
+      "INSERT INTO contributions VALUES (1, 'ct', 1, 1, 1, 0), (1, 'ct', 2, 1, 1, 0)",
+    ],
+    [
+      'tile_history keeps one row per tile, tier and bucket',
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 1), (0, 0, 0, 60, 'h', 1)",
+    ],
+  ])('%s', (_label, statement) => {
+    // Each composite primary key is the identity the draft specifies. Dropping a component makes
+    // these two rows collide, so the insert throws — nothing else in the suite writes two rows that
+    // differ only in the trailing key column.
+    d1.sqlite.exec(`
+      INSERT OR IGNORE INTO nodes VALUES ('pk-node', NULL, '/pk', 'PK', 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', 1, NULL, 1);
+      INSERT OR IGNORE INTO template_versions VALUES ('v1', 'ct', 1, 'c', 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
+    `)
+    expect(() => d1.sqlite.prepare(statement).run()).not.toThrow()
   })
 })
