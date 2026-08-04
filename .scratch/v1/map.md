@@ -121,6 +121,16 @@ rests on reasoning that only real behaviour can confirm.
   Deferred to v2 or later; the interfaces exist in v1 but nothing exercises them, so they will need
   a real audit before anyone trusts them.
 
+## Deferred beyond v1
+
+- **Authoring templates on wplace itself** — shipping ditherette's Rust/WASM resize, dither and
+  quantisation core in the userscript, so an alliance leader crops, dithers and places a template
+  against the live canvas rather than exporting from a separate tool. **v3 or later**; captured in
+  [Ditherette's WASM core in the userscript](issues/30-ditherette-wasm-in-the-userscript.md). Two v1
+  choices keep it possible at no cost: the palette stays a parameter rather than being embedded, and
+  the server quantises on ingest regardless of what a client did — which is what makes client-side
+  dithering an enhancement rather than a dependency.
+
 ## Out of scope
 
 - **Web frontend** — dashboard, progress/pace/ETA charts, timelapse, server-rendered composites,
