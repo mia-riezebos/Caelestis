@@ -191,6 +191,111 @@ const ManifestStruct = Schema.Struct({
   tiles: boundedArray(TileKey, MAX_MANIFEST_TILES),
 })
 
+/** One non-wrapping x span of a template's bounding box, carrying that box's y range. */
+type XSpan = {
+  readonly start: number
+  readonly end: number
+  readonly minY: number
+  readonly maxY: number
+}
+
+/**
+ * x wraps, so a bounding box with minX > maxX spans the antimeridian and covers TWO x ranges.
+ * Splitting into non-wrapping spans first makes every later comparison ordinary.
+ */
+const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
+  const { minX, maxX, minY, maxY } = template.bbox
+  const base = { minY, maxY }
+  return minX < maxX
+    ? [{ ...base, start: minX, end: maxX }]
+    : [
+        { ...base, start: minX, end: WORLD_PIXELS },
+        { ...base, start: 0, end: maxX },
+      ]
+}
+
+/**
+ * Reject a group whose templates overlap, in O(n log n).
+ *
+ * This was an all-pairs scan. It was correct — an earlier sort-and-sweep over `minX` missed wrapped
+ * boxes, because two fully-overlapping wrapped templates both start high and end low, so the early
+ * break skipped the comparison — but its cost was never re-bounded afterwards. With
+ * MAX_MANIFEST_TEMPLATES templates in one group it is ~5e9 comparisons: measured at 31.7s for
+ * 32,000 templates and 150s for 100,000, against a 30s Worker CPU limit. A schema-valid 23.6MB
+ * manifest was a remote CPU kill, reachable by any client that can read a manifest.
+ *
+ * The sweep keeps wrap correctness by sorting *spans* rather than boxes. The y test rests on an
+ * invariant this function maintains itself: it returns on the first overlap found, so every span
+ * still active is pairwise y-disjoint from every other. Actives are therefore an ordered set of
+ * disjoint y intervals, and a new span can only overlap its immediate neighbours by `minY` —
+ * everything beyond them is separated by whichever neighbour lies between.
+ *
+ * Expired spans are dropped when a neighbour walk reaches them rather than in a sweep of their own.
+ * Each is removed once, and a span nobody walks past cannot affect an answer.
+ *
+ * A template is never compared against itself, and needs no guard to say so: a wrapped box's two
+ * spans are `[minX, WORLD_PIXELS)` and `[0, maxX)` with `maxX < minX`, so the low half has always
+ * expired by the time the high half is swept. A guard here would be unreachable, and a test for it
+ * would only appear to pin something.
+ */
+const hasNoGroupOverlap = (
+  templates: ReadonlyArray<Schema.Schema.Type<typeof Template>>,
+): boolean => {
+  const groups = new Map<string, XSpan[]>()
+  for (const template of templates) {
+    const spans = groups.get(template.nodeId)
+    if (spans === undefined) groups.set(template.nodeId, xSpans(template))
+    else spans.push(...xSpans(template))
+  }
+
+  for (const spans of groups.values()) {
+    spans.sort((left, right) => left.start - right.start)
+    // Active spans, ordered by minY and pairwise y-disjoint.
+    const active: XSpan[] = []
+
+    for (const span of spans) {
+      // First index whose minY is greater than this span's, so the two candidates are the entries
+      // on either side of it.
+      let low = 0
+      let high = active.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        // biome-ignore lint/style/noNonNullAssertion: middle is inside the array
+        if (active[middle]!.minY <= span.minY) low = middle + 1
+        else high = middle
+      }
+
+      let before = low - 1
+      while (before >= 0) {
+        // biome-ignore lint/style/noNonNullAssertion: before is inside the array
+        const candidate = active[before]!
+        if (candidate.end <= span.start) {
+          active.splice(before, 1)
+          before -= 1
+          low -= 1
+          continue
+        }
+        if (candidate.maxY > span.minY) return false
+        break
+      }
+
+      while (low < active.length) {
+        // biome-ignore lint/style/noNonNullAssertion: low is inside the array
+        const candidate = active[low]!
+        if (candidate.end <= span.start) {
+          active.splice(low, 1)
+          continue
+        }
+        if (span.maxY > candidate.minY) return false
+        break
+      }
+
+      active.splice(low, 0, span)
+    }
+  }
+  return true
+}
+
 export const Manifest = ManifestStruct.pipe(
   Schema.check(
     booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
@@ -222,45 +327,11 @@ export const Manifest = ManifestStruct.pipe(
         ),
       'a template may contain at most one chunk for each tile',
     ),
-    booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
-      // x wraps, so a bounding box with minX > maxX spans the antimeridian and covers TWO x ranges.
-      // A sort-and-sweep over minX silently misses those: two fully-overlapping wrapped templates
-      // both start high and end low, so the early break skips the comparison entirely. Splitting
-      // into non-wrapping intervals first makes the comparison ordinary again.
-      const xRanges = ({
-        minX,
-        maxX,
-      }: {
-        minX: number
-        maxX: number
-      }): ReadonlyArray<readonly [number, number]> =>
-        minX < maxX ? [[minX, maxX] as const] : [[minX, WORLD_PIXELS] as const, [0, maxX] as const]
-
-      const groups = new Map<string, Array<Schema.Schema.Type<typeof Template>>>()
-      for (const template of manifest.templates) {
-        const group = groups.get(template.nodeId)
-        if (group === undefined) groups.set(template.nodeId, [template])
-        else group.push(template)
-      }
-      for (const group of groups.values()) {
-        for (let leftIndex = 0; leftIndex < group.length; leftIndex += 1) {
-          const left = group[leftIndex]
-          if (left === undefined) continue
-          for (let rightIndex = leftIndex + 1; rightIndex < group.length; rightIndex += 1) {
-            const right = group[rightIndex]
-            if (right === undefined) continue
-            if (!(right.bbox.minY < left.bbox.maxY && left.bbox.minY < right.bbox.maxY)) continue
-            const overlapsX = xRanges(left.bbox).some(([leftStart, leftEnd]) =>
-              xRanges(right.bbox).some(
-                ([rightStart, rightEnd]) => rightStart < leftEnd && leftStart < rightEnd,
-              ),
-            )
-            if (overlapsX) return false
-          }
-        }
-      }
-      return true
-    }, 'templates within one group must not overlap'),
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        hasNoGroupOverlap(manifest.templates),
+      'templates within one group must not overlap',
+    ),
   ),
 )
 

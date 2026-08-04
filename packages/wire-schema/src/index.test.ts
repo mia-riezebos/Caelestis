@@ -610,6 +610,45 @@ describe('cross-field and time-unit schemas', () => {
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
+  it('accepts many templates stacked in one x column', () => {
+    // The sweep's structural worst case: every span shares an x interval, so all of them stay
+    // active at once and only the y ordering separates them. It is also a shape the all-pairs scan
+    // this replaced handled by brute force, so it has to keep working.
+    const templates = Array.from({ length: 400 }, (_, index) => ({
+      ...validTemplate,
+      id: uuid(3_000 + index),
+      version: uuid(4_000 + index),
+      bbox: { minX: 1, minY: 2 * index, maxX: 2, maxY: 2 * index + 1 },
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }))
+    const manifest = { ...validManifest, templates, tiles: [tileKey({ x: 0, y: 0 })] }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it('rejects an overlap between the first and last of a large group', () => {
+    // The sweep returns on the first overlap it finds, so a pair far apart in sweep order is the
+    // case most likely to be missed by a wrong active-set or ordering.
+    const templates = Array.from({ length: 400 }, (_, index) => ({
+      ...validTemplate,
+      id: uuid(5_000 + index),
+      version: uuid(6_000 + index),
+      bbox: { minX: 2 * index + 1, minY: 0, maxX: 2 * index + 2, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }))
+    templates.push({
+      ...validTemplate,
+      id: uuid(7_000),
+      version: uuid(7_001),
+      bbox: { minX: 1, minY: 0, maxX: 2, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    })
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates,
+      tiles: [tileKey({ x: 0, y: 0 })],
+    })
+  })
+
   it('accepts two wrapped templates that do not overlap in y', () => {
     const wrapped = (id: number, minY: number, maxY: number) => ({
       ...validTemplate,
