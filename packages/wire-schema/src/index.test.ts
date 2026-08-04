@@ -209,9 +209,14 @@ describe('tile and template schemas', () => {
     expectRejected(Template, { ...validTemplate, totalPixels: -7 })
   })
 
-  it.each(['', '../../etc/passwd', 'A'.repeat(64)])('rejects invalid SHA-256 digest %s', (hash) => {
-    expectRejected(Chunk, { tile: '0/0', hash })
-  })
+  it.each(['', '../../etc/passwd', 'A'.repeat(64), 'a', 'a'.repeat(63), 'a'.repeat(65)])(
+    // The short cases matter: the pattern's {64} could become {1,64} with nothing failing, and this
+    // value is both the R2 object key and the dedup identity, reachable via TileOffer.sha256.
+    'rejects invalid SHA-256 digest %s',
+    (hash) => {
+      expectRejected(Chunk, { tile: '0/0', hash })
+    },
+  )
 
   it.each([
     // Nothing exercised the description cap at all, so it could move freely. It bounds both
@@ -243,6 +248,11 @@ describe('PaintPixels', () => {
 
   it('rejects a y/colour length mismatch when x matches y', () => {
     expectRejected(PaintPixels, { x: [1], y: [3], colors: [5, 6] })
+  })
+
+  it('rejects an x/y length mismatch when y matches colours', () => {
+    // The existing x/y case also breaks y === colors, so the first conjunct alone was deletable.
+    expectRejected(PaintPixels, { x: [1, 2], y: [3], colors: [9] })
   })
 
   it.each([-1, 1.5, 1_000])('rejects invalid tile-local coordinate %s', (x) => {
@@ -421,8 +431,19 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('rejects duplicate template identifiers', () => {
-    const duplicate = { ...validTemplate, version: uuid(4) }
-    expectRejected(Manifest, { ...validManifest, templates: [validTemplate, duplicate] })
+    // The bboxes must NOT overlap. Reusing validTemplate's bbox makes the overlap filter do the
+    // rejecting, and the uniqueness conjunct this test names becomes deletable.
+    const duplicate = {
+      ...validTemplate,
+      version: uuid(4),
+      bbox: { minX: 1_000, minY: 1_000, maxX: 2_000, maxY: 2_000 },
+      chunks: [{ tile: tileKey({ x: 1, y: 1 }), hash: HASH }],
+    }
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [validTemplate, duplicate],
+      tiles: ['325/1781', tileKey({ x: 1, y: 1 })],
+    })
   })
 
   it('rejects a dangling parent-node reference', () => {
@@ -690,6 +711,20 @@ describe('cross-field and time-unit schemas', () => {
       correct: 1,
       wrong: 1,
       blank: 0,
+      total: 1,
+      observedAt: MILLIS,
+    })
+  })
+
+  it('counts blank towards the status total', () => {
+    // The case above is satisfied by correct + wrong alone, so the `blank` term was droppable —
+    // leaving the one invariant that ties the three classification buckets to the progress
+    // denominator enforced for two of its three terms.
+    expectRejected(TemplateStatus, {
+      templateId: TEMPLATE_ID,
+      correct: 0,
+      wrong: 0,
+      blank: 5,
       total: 1,
       observedAt: MILLIS,
     })
