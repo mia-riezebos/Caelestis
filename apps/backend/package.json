@@ -5,21 +5,17 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.check.json",
-    "db:generate": "drizzle-kit generate",
+    "check": "tsc -p tsconfig.json --noEmit",
     "dev": "wrangler dev",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
     "@wts/shared": "workspace:*",
-    "drizzle-orm": "0.45.2",
     "hono": "^4.6.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
-    "@types/node": "^26.1.2",
-    "drizzle-kit": "0.31.10",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.114.0"

@@ -1,5 +1,4 @@
 import { DurableObject } from 'cloudflare:workers'
-import { type Millis, millis, type Seconds, seconds } from '@wts/shared'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import {
   type CounterDelta,
@@ -15,9 +14,6 @@ import {
 
 const INITIAL_FLUSH_RETRY_DELAY_MILLISECONDS = 1_000
 const MAX_FLUSH_RETRY_DELAY_MILLISECONDS = 60_000
-// The counters query binds every id twice. Stay below SQLite's conservative 999-variable default,
-// not merely workerd's current higher limit, so large manifest groups remain portable.
-const READ_PENDING_CHUNK_SIZE = 400
 
 const flushRetryDelay = (failureCount: number): number =>
   Math.min(
@@ -32,7 +28,7 @@ const flushRetryDelay = (failureCount: number): number =>
 interface CounterRow {
   readonly [column: string]: SqlStorageValue
   readonly template_id: string
-  readonly bucket_start_s: Seconds
+  readonly bucket_start: number
   readonly placed: number
   readonly correct: number
   readonly repairs: number
@@ -41,7 +37,7 @@ interface CounterRow {
 interface FlushedAtRow {
   readonly [column: string]: SqlStorageValue
   readonly template_id: string
-  readonly flushed_at: Millis
+  readonly flushed_at: number
 }
 
 interface CountRow {
@@ -51,41 +47,35 @@ interface CountRow {
 
 interface NextBucketRow {
   readonly [column: string]: SqlStorageValue
-  readonly bucket_start_s: Seconds | null
+  readonly bucket_start: number | null
 }
-
-// SqlStorage's variadic bind API accepts every numeric unit. Route timestamp values through these
-// unit-specific adapters so a seconds/milliseconds swap is rejected before it reaches that API.
-const bindSeconds = (value: Seconds): SqlStorageValue => value
-const bindMillis = (value: Millis): SqlStorageValue => value
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
   placed > 0 || correct > 0 || repairs > 0
 
-const eventBucketStart = (occurredAt: Seconds): Seconds =>
-  seconds(Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS)
+const eventBucketStart = (occurredAt: number): number =>
+  Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS
 
 export class TelemetryShard extends DurableObject<Env> {
   constructor(
     ctx: DurableObjectState,
     env: Env,
-    private readonly clock: () => Millis = () => millis(Date.now()),
+    private readonly clock: () => number = Date.now,
   ) {
     super(ctx, env)
 
     void ctx.blockConcurrencyWhile(async () => {
       this.initializeSchema()
       const nowMilliseconds = this.clock()
-      this.pruneRetained(seconds(Math.floor(nowMilliseconds / 1_000)))
+      this.pruneRetained(Math.floor(nowMilliseconds / 1_000))
       await this.scheduleNextAlarm(nowMilliseconds)
     })
   }
 
   async record(deltas: readonly CounterDelta[]): Promise<void> {
     const nowMilliseconds = this.clock()
-    const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
-    // A successful flush leaves retained reconciliation state but no alarm. The next write is a
-    // lifecycle opportunity to reclaim expired rows that no pending or flush-batch state needs.
+    const nowSeconds = Math.floor(nowMilliseconds / 1_000)
+    // Validation consults local traces, so sweep stale retained rows before asking that question.
     this.pruneRetained(nowSeconds)
 
     const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)
@@ -94,7 +84,11 @@ export class TelemetryShard extends DurableObject<Env> {
     for (const delta of boundedDeltas) {
       // Keep one operational counter for all rejected input: both malformed and out-of-window
       // deltas have the same outcome and remediation, and splitting them would add schema surface.
-      if (!isValidCounterDelta(delta, nowSeconds)) {
+      if (
+        !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
+          this.hasLocalTrace(templateId, bucketStart, nowSeconds),
+        )
+      ) {
         droppedLate += 1
         continue
       }
@@ -104,15 +98,15 @@ export class TelemetryShard extends DurableObject<Env> {
       this.ctx.storage.sql.exec(
         `
           INSERT INTO pending_counters (
-            template_id, bucket_start_s, placed, correct, repairs
+            template_id, bucket_start, placed, correct, repairs
           ) VALUES (?1, ?2, ?3, ?4, ?5)
-          ON CONFLICT (template_id, bucket_start_s) DO UPDATE SET
+          ON CONFLICT (template_id, bucket_start) DO UPDATE SET
             placed = placed + excluded.placed,
             correct = correct + excluded.correct,
             repairs = repairs + excluded.repairs
         `,
         delta.templateId,
-        bindSeconds(bucketStart),
+        bucketStart,
         delta.placed,
         delta.correct,
         delta.repairs,
@@ -139,17 +133,13 @@ export class TelemetryShard extends DurableObject<Env> {
     await this.scheduleNextAlarm(this.clock())
     if (templateIds.length === 0) return []
 
-    const countersByTemplate = new Map<string, CounterRow>()
-    const flushedAtByTemplate = new Map<string, Millis>()
-    for (let offset = 0; offset < templateIds.length; offset += READ_PENDING_CHUNK_SIZE) {
-      const chunk = templateIds.slice(offset, offset + READ_PENDING_CHUNK_SIZE)
-      const placeholders = chunk.map(() => '?').join(', ')
-      const counters = this.ctx.storage.sql
-        .exec<CounterRow>(
-          `
+    const placeholders = templateIds.map(() => '?').join(', ')
+    const counters = this.ctx.storage.sql
+      .exec<CounterRow>(
+        `
           SELECT
             template_id,
-            0 AS bucket_start_s,
+            0 AS bucket_start,
             SUM(placed) AS placed,
             SUM(correct) AS correct,
             SUM(repairs) AS repairs
@@ -166,38 +156,36 @@ export class TelemetryShard extends DurableObject<Env> {
             FROM flush_batch AS batch
             LEFT JOIN retained_counters AS retained
               ON retained.template_id = batch.template_id
-             AND retained.bucket_start_s = batch.bucket_start_s
+             AND retained.bucket_start = batch.bucket_start
             WHERE batch.template_id IN (${placeholders})
           )
           GROUP BY template_id
         `,
-          ...chunk,
-          ...chunk,
-        )
-        .toArray()
-      const metadata = this.ctx.storage.sql
-        .exec<FlushedAtRow>(
-          `
+        ...templateIds,
+        ...templateIds,
+      )
+      .toArray()
+    const metadata = this.ctx.storage.sql
+      .exec<FlushedAtRow>(
+        `
           SELECT template_id, flushed_at
           FROM counter_meta
           WHERE template_id IN (${placeholders})
         `,
-          ...chunk,
-        )
-        .toArray()
-      for (const row of counters) countersByTemplate.set(row.template_id, row)
-      for (const row of metadata) flushedAtByTemplate.set(row.template_id, row.flushed_at)
-    }
+        ...templateIds,
+      )
+      .toArray()
+    const countersByTemplate = new Map(counters.map((row) => [row.template_id, row]))
+    const flushedAtByTemplate = new Map(metadata.map((row) => [row.template_id, row.flushed_at]))
 
     return templateIds.map((templateId) => {
       const row = countersByTemplate.get(templateId)
-      const flushedAt = flushedAtByTemplate.get(templateId)
       return {
         templateId,
         placed: row?.placed ?? 0,
         correct: row?.correct ?? 0,
         repairs: row?.repairs ?? 0,
-        flushedAt: flushedAt ?? null,
+        flushedAt: flushedAtByTemplate.get(templateId) ?? null,
       }
     })
   }
@@ -214,17 +202,9 @@ export class TelemetryShard extends DurableObject<Env> {
       .one().count
   }
 
-  async readFlushFailureCount(): Promise<number> {
-    return this.ctx.storage.sql
-      .exec<CountRow>(
-        'SELECT consecutive_failures AS count FROM flush_retry_state WHERE singleton = 1',
-      )
-      .one().count
-  }
-
   override async alarm(): Promise<void> {
     const nowMilliseconds = this.clock()
-    const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
+    const nowSeconds = Math.floor(nowMilliseconds / 1_000)
 
     this.pruneRetained(nowSeconds)
     this.pruneZeroPending()
@@ -237,32 +217,32 @@ export class TelemetryShard extends DurableObject<Env> {
         this.ctx.storage.sql.exec(
           `
             INSERT INTO flush_batch (
-              template_id, bucket_start_s, placed, correct, repairs
+              template_id, bucket_start, placed, correct, repairs
             )
             SELECT
               pending.template_id,
-              pending.bucket_start_s,
+              pending.bucket_start,
               pending.placed + COALESCE(retained.placed, 0),
               pending.correct + COALESCE(retained.correct, 0),
               pending.repairs + COALESCE(retained.repairs, 0)
             FROM pending_counters AS pending
             LEFT JOIN retained_counters AS retained
               ON retained.template_id = pending.template_id
-             AND retained.bucket_start_s = pending.bucket_start_s
-            WHERE pending.bucket_start_s + ?1 <= ?2
+             AND retained.bucket_start = pending.bucket_start
+            WHERE pending.bucket_start + ?1 <= ?2
               AND (pending.placed <> 0 OR pending.correct <> 0 OR pending.repairs <> 0)
           `,
           FLUSHABLE_AFTER_SECONDS,
-          bindSeconds(nowSeconds),
+          nowSeconds,
         )
         this.ctx.storage.sql.exec(
           `
             DELETE FROM pending_counters
-            WHERE bucket_start_s + ?1 <= ?2
+            WHERE bucket_start + ?1 <= ?2
               AND (placed <> 0 OR correct <> 0 OR repairs <> 0)
           `,
           FLUSHABLE_AFTER_SECONDS,
-          bindSeconds(nowSeconds),
+          nowSeconds,
         )
       })
       rows = this.readFlushBatch()
@@ -272,7 +252,7 @@ export class TelemetryShard extends DurableObject<Env> {
       const buckets: readonly TelemetryBucket[] = rows.map((row) => ({
         templateId: row.template_id,
         resolution: RESOLUTION_SECONDS,
-        bucketStart: row.bucket_start_s,
+        bucketStart: row.bucket_start,
         placed: row.placed,
         correct: row.correct,
         repairs: row.repairs,
@@ -280,42 +260,15 @@ export class TelemetryShard extends DurableObject<Env> {
 
       // D1 must commit before retained_counters advances. Advancing retained first makes
       // readPending subtract the batch from itself and report zero for an unbounded D1 outage.
-      //
-      // The cost, stated accurately: if D1 commits but the response is lost, retained does not
-      // advance, so readPending keeps counting a batch D1 already holds and live totals read high
-      // by that batch. This is NOT a one-alarm window — it persists until the next flush succeeds,
-      // which during an outage means the whole outage, at up to 60s per retry. It always heals.
-      //
-      // Reporting high while recovering beats reporting zero for the duration, which is what the
-      // opposite ordering does. Both are wrong; only one of them is wrong in a direction that hides
-      // work rather than exaggerating it.
+      // Writing D1 first instead risks a transient over-count if the isolate dies after D1 commits
+      // but before local bookkeeping; the next successful alarm rewrites the same cumulative value
+      // and self-heals. Prefer that one-alarm crash window over incorrect totals for a whole outage.
       try {
         await new D1SqlStore(this.env.DB).appendBuckets(buckets)
       } catch (error) {
-        // Schedule the retry and return normally rather than rethrowing.
-        //
-        // Cloudflare retries a throwing alarm() with exponential backoff "starting at a 2 second
-        // delay from the first failure with up to 6 retries allowed", and its docs recommend
-        // catching inside the handler and scheduling a new alarm "if you want to make sure your
-        // alarm handler will be retried indefinitely". Rethrowing would cap recovery at six
-        // attempts — a D1 outage longer than roughly two minutes would exhaust them and strand
-        // flush_batch until unrelated traffic happened to re-arm the alarm. Owning the retry is the
-        // whole reason the backoff exists.
-        //
-        // The failure is not silent: readFlushFailureCount() exposes the consecutive-failure count,
-        // console.error records the cause, and the batch stays in flush_batch until D1 confirms.
-        // Note what is given up — a throwing alarm() registers as a platform error that Cloudflare
-        // retains and can alert on. Returning normally reports success while flushing nothing, so
-        // the counter above is the replacement and has to be watched.
-        // https://developers.cloudflare.com/durable-objects/api/alarms/
         const failureCount = this.incrementFlushFailureCount()
-        const retryDelay = flushRetryDelay(failureCount)
-        console.error(
-          `telemetry flush failed (attempt ${failureCount}), retrying in ${retryDelay}ms`,
-          error,
-        )
-        await this.ctx.storage.setAlarm(millis(this.clock() + retryDelay))
-        return
+        await this.ctx.storage.setAlarm(this.clock() + flushRetryDelay(failureCount))
+        throw error
       }
 
       this.ctx.storage.transactionSync(() => {
@@ -324,15 +277,15 @@ export class TelemetryShard extends DurableObject<Env> {
           this.ctx.storage.sql.exec(
             `
               INSERT INTO retained_counters (
-                template_id, bucket_start_s, placed, correct, repairs
+                template_id, bucket_start, placed, correct, repairs
               ) VALUES (?1, ?2, ?3, ?4, ?5)
-              ON CONFLICT (template_id, bucket_start_s) DO UPDATE SET
+              ON CONFLICT (template_id, bucket_start) DO UPDATE SET
                 placed = excluded.placed,
                 correct = excluded.correct,
                 repairs = excluded.repairs
             `,
             row.template_id,
-            bindSeconds(row.bucket_start_s),
+            row.bucket_start,
             row.placed,
             row.correct,
             row.repairs,
@@ -344,12 +297,12 @@ export class TelemetryShard extends DurableObject<Env> {
               ON CONFLICT (template_id) DO UPDATE SET flushed_at = excluded.flushed_at
             `,
             row.template_id,
-            bindMillis(nowMilliseconds),
+            nowMilliseconds,
           )
           this.ctx.storage.sql.exec(
-            'DELETE FROM flush_batch WHERE template_id = ?1 AND bucket_start_s = ?2',
+            'DELETE FROM flush_batch WHERE template_id = ?1 AND bucket_start = ?2',
             row.template_id,
-            bindSeconds(row.bucket_start_s),
+            row.bucket_start,
           )
         }
       })
@@ -371,27 +324,27 @@ export class TelemetryShard extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS pending_counters (
         template_id TEXT NOT NULL,
-        bucket_start_s INTEGER NOT NULL,
+        bucket_start INTEGER NOT NULL,
         placed INTEGER NOT NULL,
         correct INTEGER NOT NULL,
         repairs INTEGER NOT NULL,
-        PRIMARY KEY (template_id, bucket_start_s)
+        PRIMARY KEY (template_id, bucket_start)
       );
       CREATE TABLE IF NOT EXISTS flush_batch (
         template_id TEXT NOT NULL,
-        bucket_start_s INTEGER NOT NULL,
+        bucket_start INTEGER NOT NULL,
         placed INTEGER NOT NULL,
         correct INTEGER NOT NULL,
         repairs INTEGER NOT NULL,
-        PRIMARY KEY (template_id, bucket_start_s)
+        PRIMARY KEY (template_id, bucket_start)
       );
       CREATE TABLE IF NOT EXISTS retained_counters (
         template_id TEXT NOT NULL,
-        bucket_start_s INTEGER NOT NULL,
+        bucket_start INTEGER NOT NULL,
         placed INTEGER NOT NULL,
         correct INTEGER NOT NULL,
         repairs INTEGER NOT NULL,
-        PRIMARY KEY (template_id, bucket_start_s)
+        PRIMARY KEY (template_id, bucket_start)
       );
       CREATE TABLE IF NOT EXISTS counter_meta (
         template_id TEXT PRIMARY KEY,
@@ -414,9 +367,9 @@ export class TelemetryShard extends DurableObject<Env> {
     return this.ctx.storage.sql
       .exec<CounterRow>(
         `
-          SELECT template_id, bucket_start_s, placed, correct, repairs
+          SELECT template_id, bucket_start, placed, correct, repairs
           FROM flush_batch
-          ORDER BY template_id, bucket_start_s
+          ORDER BY template_id, bucket_start
           LIMIT ?1
         `,
         FLUSH_BATCH_LIMIT,
@@ -424,26 +377,56 @@ export class TelemetryShard extends DurableObject<Env> {
       .toArray()
   }
 
-  private pruneRetained(nowSeconds: Seconds): void {
+  private hasLocalTrace(templateId: string, bucketStart: number, nowSeconds: number): boolean {
+    // The expiry instant is exclusive, so no local trace may rescue an expired bucket.
+    if (bucketStart + EXPIRES_AFTER_SECONDS <= nowSeconds) return false
+
+    return (
+      this.ctx.storage.sql
+        .exec<CountRow>(
+          `
+            SELECT COUNT(*) AS count
+            FROM (
+              SELECT 1
+              FROM pending_counters
+              WHERE template_id = ?1 AND bucket_start = ?2
+              UNION ALL
+              SELECT 1
+              FROM flush_batch
+              WHERE template_id = ?1 AND bucket_start = ?2
+              UNION ALL
+              SELECT 1
+              FROM retained_counters
+              WHERE template_id = ?1 AND bucket_start = ?2
+            )
+          `,
+          templateId,
+          bucketStart,
+        )
+        .one().count > 0
+    )
+  }
+
+  private pruneRetained(nowSeconds: number): void {
     this.ctx.storage.sql.exec(
       `
         DELETE FROM retained_counters
-        WHERE bucket_start_s + ?1 <= ?2
+        WHERE bucket_start + ?1 <= ?2
           AND NOT EXISTS (
             SELECT 1
             FROM pending_counters
             WHERE pending_counters.template_id = retained_counters.template_id
-              AND pending_counters.bucket_start_s = retained_counters.bucket_start_s
+              AND pending_counters.bucket_start = retained_counters.bucket_start
           )
           AND NOT EXISTS (
             SELECT 1
             FROM flush_batch
             WHERE flush_batch.template_id = retained_counters.template_id
-              AND flush_batch.bucket_start_s = retained_counters.bucket_start_s
+              AND flush_batch.bucket_start = retained_counters.bucket_start
           )
       `,
       EXPIRES_AFTER_SECONDS,
-      bindSeconds(nowSeconds),
+      nowSeconds,
     )
   }
 
@@ -455,7 +438,7 @@ export class TelemetryShard extends DurableObject<Env> {
     )
   }
 
-  private async scheduleNextAlarm(nowMilliseconds: Millis): Promise<void> {
+  private async scheduleNextAlarm(nowMilliseconds: number): Promise<void> {
     const flushBatchCount = this.ctx.storage.sql
       .exec<CountRow>('SELECT COUNT(*) AS count FROM flush_batch')
       .one().count
@@ -470,18 +453,18 @@ export class TelemetryShard extends DurableObject<Env> {
     const nextBucket = this.ctx.storage.sql
       .exec<NextBucketRow>(
         `
-          SELECT MIN(bucket_start_s) AS bucket_start_s
+          SELECT MIN(bucket_start) AS bucket_start
           FROM pending_counters
           WHERE placed <> 0 OR correct <> 0 OR repairs <> 0
         `,
       )
-      .one().bucket_start_s
+      .one().bucket_start
     if (nextBucket === null) {
       await this.ctx.storage.deleteAlarm()
       return
     }
 
-    const flushableAtMilliseconds = millis((nextBucket + FLUSHABLE_AFTER_SECONDS) * 1_000)
+    const flushableAtMilliseconds = (nextBucket + FLUSHABLE_AFTER_SECONDS) * 1_000
     await this.ctx.storage.setAlarm(Math.max(nowMilliseconds, flushableAtMilliseconds))
   }
 
