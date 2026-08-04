@@ -303,8 +303,10 @@ describe('PaintPixels', () => {
   })
 
   it('caps one tile payload at the counter-store guardrail', () => {
-    const values = Array.from({ length: 100_001 }, () => 0)
-    expectRejected(PaintPixels, { x: values, y: values, colors: values })
+    // Distinct coordinates, or the duplicate-coordinate rule does the rejecting and the cap this
+    // test names can be raised a hundredfold with the suite green. `distinctPixels` exists for
+    // exactly this and was applied to some fixtures and not this one.
+    expectRejected(PaintPixels, distinctPixels(100_001))
   })
 })
 
@@ -330,13 +332,37 @@ describe('PaintEvent', () => {
   it('caps the pixels submitted across the whole event, not merely per tile', () => {
     // The per-tile cap bounds nothing on its own: MAX_PAINT_TILES tiles at the per-tile cap is a
     // ten-billion-pixel payload. `painted` is well within its own bound here, so only the total
-    // can do the rejecting.
-    const values = Array.from({ length: 100_000 }, () => 0)
+    // can do the rejecting — provided the pixels are distinct. With repeated coordinates the
+    // duplicate rule rejects first and this conjunct becomes deletable, which is what it was.
     expectRejected(PaintEvent, {
       ...validEvent,
       tiles: [
-        { x: 0, y: 0, pixels: { x: values, y: values, colors: values } },
+        { x: 0, y: 0, pixels: distinctPixels(100_000) },
         { x: 1, y: 0, pixels: { x: [0], y: [0], colors: [0] } },
+      ],
+      painted: 1,
+    })
+  })
+
+  it('accepts a two-tile event summing to exactly the pixel total', () => {
+    // The accept side of the same bound, so it fails whichever way the cap moves.
+    const event = {
+      ...validEvent,
+      tiles: [
+        { x: 0, y: 0, pixels: distinctPixels(50_000) },
+        { x: 1, y: 0, pixels: distinctPixels(50_000) },
+      ],
+      painted: 100_000,
+    }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
+  it('rejects a two-tile event one pixel over the total', () => {
+    expectRejected(PaintEvent, {
+      ...validEvent,
+      tiles: [
+        { x: 0, y: 0, pixels: distinctPixels(50_000) },
+        { x: 1, y: 0, pixels: distinctPixels(50_001) },
       ],
       painted: 1,
     })
@@ -661,6 +687,77 @@ describe('cross-field and time-unit schemas', () => {
       ],
       tiles: [tileKey({ x: 0, y: 0 })],
     })
+  })
+
+  it.each([
+    // Each case is one tile away from the box on one axis, so it pins that boundary comparison and
+    // no other. The existing cases sit ~2,000 tiles away and hold for any comparison at all.
+    ['the tile row directly above', { minX: 0, minY: 1_000, maxX: 1_000, maxY: 2_000 }, 0, 0],
+    ['the tile row directly below', { minX: 0, minY: 0, maxX: 1_000, maxY: 1_000 }, 0, 1],
+    ['the tile column directly left', { minX: 1_000, minY: 0, maxX: 2_000, maxY: 1_000 }, 0, 0],
+    ['the tile column directly right', { minX: 0, minY: 0, maxX: 1_000, maxY: 1_000 }, 1, 0],
+  ])('rejects a chunk on %s of its bounding box', (_label, bbox, tileX, tileY) => {
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [
+        {
+          ...validTemplate,
+          bbox,
+          totalPixels: 1,
+          chunks: [{ tile: tileKey({ x: tileX, y: tileY }), hash: HASH }],
+        },
+      ],
+      tiles: [tileKey({ x: tileX, y: tileY })],
+    })
+  })
+
+  it.each([
+    // The accept side of the same four boundaries: one pixel of overlap is enough.
+    ['above', { minX: 0, minY: 999, maxX: 1_000, maxY: 2_000 }, 0, 0],
+    ['below', { minX: 0, minY: 0, maxX: 1_000, maxY: 1_001 }, 0, 1],
+    ['left', { minX: 999, minY: 0, maxX: 2_000, maxY: 1_000 }, 0, 0],
+    ['right', { minX: 0, minY: 0, maxX: 1_001, maxY: 1_000 }, 1, 0],
+  ])(
+    'accepts a chunk overlapping its bounding box by one pixel from %s',
+    (_l, bbox, tileX, tileY) => {
+      const template = {
+        ...validTemplate,
+        bbox,
+        totalPixels: 1,
+        chunks: [{ tile: tileKey({ x: tileX, y: tileY }), hash: HASH }],
+      }
+      const manifest = {
+        ...validManifest,
+        templates: [template],
+        tiles: [tileKey({ x: tileX, y: tileY })],
+      }
+      expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+    },
+  )
+
+  it('accepts two horizontally adjacent templates in one group', () => {
+    // The ordinary way an alliance tiles a large mural. The forward walk's expiry comparison decides
+    // this, and only the vertical case was covered.
+    const left = {
+      ...validTemplate,
+      id: uuid(130),
+      version: uuid(131),
+      bbox: { minX: 0, minY: 0, maxX: 1_000, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
+    }
+    const right = {
+      ...validTemplate,
+      id: uuid(132),
+      version: uuid(133),
+      bbox: { minX: 1_000, minY: 0, maxX: 2_000, maxY: 1_000 },
+      chunks: [{ tile: tileKey({ x: 1, y: 0 }), hash: HASH }],
+    }
+    const manifest = {
+      ...validManifest,
+      templates: [left, right],
+      tiles: [tileKey({ x: 0, y: 0 }), tileKey({ x: 1, y: 0 })],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
   it('accepts a chunk on each tile a wrapped bounding box touches', () => {
