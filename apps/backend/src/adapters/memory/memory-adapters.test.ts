@@ -150,6 +150,74 @@ describe('memory adapters', () => {
     await expect(store.readDroppedLateCount()).resolves.toBe(1)
   })
 
+  it('rejects counters that are negative without violating the ordering', async () => {
+    // 'rejects a negative counter' above uses {placed: -1, correct: 0}, which `correct > placed`
+    // rejects on its own — so the sign check was free to disappear. All-negative satisfies
+    // repairs <= correct <= placed and isolates it.
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: -5, correct: -5, repairs: -5 },
+    ])
+
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+    ])
+  })
+
+  it.each([
+    ['fractional', 1.5],
+    ['infinite', Number.POSITIVE_INFINITY],
+  ])('rejects a %s counter magnitude', async (_label, placed) => {
+    // Only occurredAt had a non-integer case, so dropping Number.isSafeInteger from the counter
+    // guard survived: 1.5 and Infinity were both accepted as valid deltas.
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
+
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed, correct: 0, repairs: 0 },
+    ])
+
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
+  })
+
+  it('rejects an empty template id', async () => {
+    // Nothing recorded one, so the guard was deletable — and an empty id keys permanent pending and
+    // retained rows that no template can ever claim or clear.
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
+
+    await store.record([
+      { templateId: '', occurredAt: seconds(100), placed: 1, correct: 1, repairs: 0 },
+    ])
+
+    await expect(store.readDroppedLateCount()).resolves.toBe(1)
+    await expect(store.readPending([''])).resolves.toEqual([
+      { templateId: '', placed: 0, correct: 0, repairs: 0, flushedAt: null },
+    ])
+  })
+
+  it('accepts an event exactly at the future bound', async () => {
+    // The reject case uses now + GRACE + 1, so the accepted edge itself was unpinned and `<=` could
+    // silently become `<` — dropping every report from a client whose clock is exactly GRACE fast.
+    const nowSeconds = 100
+    const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(nowSeconds * 1_000))
+
+    await store.record([
+      {
+        templateId: 'template-a',
+        occurredAt: seconds(nowSeconds + GRACE_SECONDS),
+        placed: 4,
+        correct: 3,
+        repairs: 1,
+      },
+    ])
+
+    await expect(store.readDroppedLateCount()).resolves.toBe(0)
+    await expect(store.readPending(['template-a'])).resolves.toEqual([
+      { templateId: 'template-a', placed: 4, correct: 3, repairs: 1, flushedAt: null },
+    ])
+  })
+
   it('rejects every counter magnitude above the per-delta limit', async () => {
     const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
 
