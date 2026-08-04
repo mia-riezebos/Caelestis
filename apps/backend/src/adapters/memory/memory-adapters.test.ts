@@ -2,6 +2,7 @@ import { MAX_PAINT_COUNT, millis, type Seconds, seconds } from '@wts/shared'
 import { describe, expect, it } from 'vitest'
 import {
   type BucketQuery,
+  EXPIRES_AFTER_SECONDS,
   FLUSH_BATCH_LIMIT,
   GRACE_SECONDS,
   MAX_COUNTER_DELTA_VALUE,
@@ -918,6 +919,55 @@ describe('memory adapters', () => {
 
     await expect(store.readPending(['template-a'])).resolves.toEqual([
       { templateId: 'template-a', placed: 2, correct: 1, repairs: 0, flushedAt: 150_000 },
+    ])
+  })
+
+  it('absorbs a rewrite arriving on the last second the validator still accepts', async () => {
+    // The store's prune boundary and the validator's expiry must stay exactly complementary.
+    // Nothing checked that: moving the store's boundary one second earlier — in either
+    // implementation — left the whole suite green, while a rewrite the validator still accepts
+    // finds its retained row already pruned. The promotion join then contributes
+    // COALESCE(retained, 0) = 0 and appendBuckets *replaces*, so D1 lands on the late portion
+    // alone and the earlier work disappears with no error.
+    //
+    // Both stores drifting identically is why the differential test cannot see this either.
+    const bucketStart = 60
+    let nowSeconds = 150
+    const persisted = new MemorySqlStore()
+    const sql: SqlStore = {
+      appendBuckets: (buckets) => persisted.appendBuckets(buckets),
+      readBuckets: (query) => persisted.readBuckets(query),
+    }
+    const store = new MemoryCounterStore(sql, () => millis(nowSeconds * 1_000))
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 10, correct: 8, repairs: 2 },
+    ])
+    await store.alarm()
+
+    // The last instant at which isValidCounterDelta still accepts a rewrite of this bucket:
+    // expiry is exclusive, so bucketStart + EXPIRES_AFTER_SECONDS - 1 is inside the window.
+    nowSeconds = bucketStart + EXPIRES_AFTER_SECONDS - 1
+    await store.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 5, correct: 4, repairs: 1 },
+    ])
+    await store.alarm()
+
+    await expect(
+      persisted.readBuckets({
+        templateIds: ['template-a'],
+        resolution: RESOLUTION_SECONDS,
+        fromSeconds: seconds(bucketStart),
+        toSeconds: seconds(bucketStart + RESOLUTION_SECONDS),
+      }),
+    ).resolves.toEqual([
+      {
+        templateId: 'template-a',
+        resolution: RESOLUTION_SECONDS,
+        bucketStart: seconds(bucketStart),
+        placed: 15,
+        correct: 12,
+        repairs: 3,
+      },
     ])
   })
 

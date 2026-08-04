@@ -867,6 +867,43 @@ describe('TelemetryShard', () => {
     await expect(harness.shard.readDroppedLateCount()).resolves.toBe(1)
   })
 
+  it('absorbs a rewrite arriving on the last second the validator still accepts', async () => {
+    // The store's prune boundary and the validator's expiry have to stay exactly complementary.
+    // Nothing checked that: moving this boundary one second earlier left the whole suite green,
+    // while a rewrite the validator still accepts finds its retained row already pruned. The
+    // promotion join then contributes COALESCE(retained, 0) = 0 and appendBuckets *replaces*, so
+    // D1 lands on the late portion alone and the earlier work vanishes with no error.
+    //
+    // The memory adapter has the identical boundary and the identical gap, which is why the
+    // differential test cannot see this — both implementations drift together.
+    const harness = await makeHarness(millis(150_000))
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(100), placed: 10, correct: 8, repairs: 2 },
+    ])
+    await harness.deliverAlarm()
+
+    // Bucket 60 expires at 60 + FLUSHABLE_AFTER_SECONDS + RETENTION_SECONDS. Expiry is exclusive,
+    // so one second earlier is the last instant a rewrite is still accepted.
+    const bucketStart = 60
+    harness.clock.now = millis((bucketStart + EXPIRES_AFTER_SECONDS - 1) * 1_000)
+    await harness.shard.record([
+      { templateId: 'template-a', occurredAt: seconds(110), placed: 5, correct: 4, repairs: 1 },
+    ])
+    await expect(harness.shard.readDroppedLateCount()).resolves.toBe(0)
+    await harness.deliverAlarm()
+
+    expect(harness.d1Buckets()).toEqual([
+      {
+        templateId: 'template-a',
+        resolution: RESOLUTION_SECONDS,
+        bucketStart: seconds(bucketStart),
+        placed: 15,
+        correct: 12,
+        repairs: 3,
+      },
+    ])
+  })
+
   it('subtracts the retained total from a failed late-arrival rewrite', async () => {
     const harness = await makeHarness(millis(150_000))
     await harness.shard.record([
