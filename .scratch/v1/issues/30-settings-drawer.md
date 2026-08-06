@@ -53,11 +53,20 @@ they already have, and its button sits directly beneath theirs. Two consequences
   icon's job is to *distinguish*, not to describe. Anything template- or layer-shaped would read as a
   duplicate of the button above it, and `layers` is literally already theirs. A puzzle piece says
   "something added on", which collides with nothing.
-- **Do not call ours "Templates".** That word is taken by the button above, and two things called
-  Templates in one rail is a bad first thirty seconds. "Shared templates" is accurate, neutral, and
-  names the actual difference — theirs are yours alone, ours come from a server your alliance runs.
-  Nothing in the drawer should try to manage wplace's own overlays; they are a separate system that
-  happens to sit next door.
+- **The name is Caelestis**, after the alliance it was built for — from Latin `caelum`, sky or
+  heavens, so it carries "shared" and "above everything" without saying either. A proper noun is the
+  right shape here precisely because the buttons around it are functional labels: ours should not
+  read as another wplace feature. The tooltip is "Caelestis — shared templates", since the name
+  alone teaches a first-time user nothing.
+
+  It also settles a collision. "Templates" is taken by the button directly above, and two things
+  called Templates in one rail is a bad first thirty seconds. Nothing in the panel should try to
+  manage wplace's own overlays; they are a separate system that happens to sit next door.
+
+  One tension worth stating rather than discovering later: the software is self-hostable by any
+  alliance, so everyone running it sees one alliance's name. That is common enough in software named
+  after the group that built it, and `caelestis` reads as a word rather than a claim, so it is
+  liveable — but it is a choice, not an accident.
 
 ## The inventory
 

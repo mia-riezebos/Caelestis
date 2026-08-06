@@ -49,8 +49,17 @@ const findRail = (): { rail: Element; after: Element } | null => {
 const BUTTON_ID = 'wts-rail-button'
 const PANEL_ID = 'wts-panel'
 
-/** wplace's Overlays button is theirs and also means "templates", so ours cannot use that word. */
-const PANEL_TITLE = 'Shared templates'
+/**
+ * Named for the alliance it was built for. From Latin `caelum` — sky, heavens — so it carries
+ * "shared" and "above everything" without having to say either.
+ *
+ * A proper noun rather than a functional label like the buttons around it, which is right for a
+ * third-party addition: it should not read as another wplace feature. The tooltip carries the
+ * explanation, since "Caelestis" alone teaches a first-time user nothing.
+ */
+const APP_NAME = 'Caelestis'
+const PANEL_TITLE = APP_NAME
+const BUTTON_TOOLTIP = `${APP_NAME} — shared templates`
 
 type View = 'tree' | 'settings'
 
@@ -64,8 +73,8 @@ const railButton = (): HTMLButtonElement => {
   button.id = BUTTON_ID
   // Exactly the classes wplace's own rail buttons carry.
   button.className = 'btn btn-square shadow-md relative'
-  button.title = PANEL_TITLE
-  button.setAttribute('aria-label', PANEL_TITLE)
+  button.title = BUTTON_TOOLTIP
+  button.setAttribute('aria-label', BUTTON_TOOLTIP)
   button.setAttribute('aria-expanded', 'false')
   button.setAttribute('aria-controls', PANEL_ID)
   button.appendChild(icon('extension'))

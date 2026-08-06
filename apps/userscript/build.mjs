@@ -11,10 +11,10 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
  * bundle gets a chance to capture `fetch`.
  */
 const metadata = `// ==UserScript==
-// @name         wplace Template Server
+// @name         Caelestis
 // @namespace    https://github.com/mia-riezebos/wplace-template-server
 // @version      ${pkg.version}
-// @description  Overlay alliance templates from one or more template servers onto wplace.live
+// @description  Shared pixel-art templates for wplace.live, overlaid from one or more alliance servers
 // @author       mia-riezebos
 // @match        https://wplace.live/*
 // @run-at       document-start
