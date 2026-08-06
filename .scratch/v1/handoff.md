@@ -1,7 +1,9 @@
-# Handoff — 2026-08-03
+# Handoff — 2026-08-04
 
-Written for a fresh agent picking this up on a remote devbox. Everything is committed and pushed;
-`feat/schema` is the working branch.
+Supersedes the 2026-08-03 handoff entirely. That one described PR #32, which was **merged and then
+reverted**; almost nothing in it is still true.
+
+Everything is committed and pushed. Working tree clean.
 
 ## What this project is
 
@@ -11,117 +13,155 @@ each exposes a tree of groups/templates, individually toggleable.
 
 Read these rather than re-deriving anything:
 
-- `.scratch/v1/map.md` — the wayfinder map. Destination, decisions taken, what is deliberately
-  deferred, what is out of scope. Mirrored to GitHub issue #1.
-- `.scratch/v1/schema-draft.md` — **the specification and the acceptance criteria** for the current
-  PR. Package layout, canvas geometry, palette, ingest pipeline, the nine D1 tables, wire schemas.
-- `.scratch/v1/issues/` — one file per decision ticket, numbered. Mirrored to GitHub issues.
-- Issue #28 — "Deferred until a running prototype": everything we agreed we cannot answer until
-  there is a prototype to look at. Add to it rather than guessing.
+- `.scratch/v1/map.md` — the wayfinder map. Destination, decisions taken, what is deferred, what is
+  out of scope. Mirrored to GitHub issue #1.
+- `.scratch/v1/schema-draft.md` — the specification.
+- `.scratch/v1/issues/` — one file per decision ticket, numbered. **Read the amendments at the bottom
+  of a ticket**; several reverse the body.
 
-## Where the work stands
+## Where the work is
 
-**PR #32 (`feat/schema`) — open, not merged.** Builds the schema layer: Drizzle tables + baseline
-migration, `packages/wire-schema` on Effect Schema, branded `Seconds`/`Millis`, and `TelemetryShard`
-(the Durable Object that buffers counter writes in front of D1).
+Four stacked PRs. Merge order is strictly bottom-up.
 
-Green at `55ed33e`: `pnpm -w lint`, `pnpm -w check`, `pnpm -w test` (165), `pnpm -w build`.
+| PR | branch → base | tests | what |
+|---|---|---|---|
+| #34 | `feat/schema-reland` → `main` | 336 | Drizzle tables, baseline migration, `packages/wire-schema`, branded `Seconds`/`Millis`, `TelemetryShard` |
+| #35 | `feat/access-tokens` → #34 | 377 | Access tokens, scope ladder, `/admin/tokens` |
+| #36 | `feat/template-ingest` → #35 | 454 | PNG codec, wplace palette, quantise, slice, R2 storage, `/admin/templates`, `/chunks/:hash` |
+| #37 | `feat/nodes-and-manifest` → #36 | 469 | Seasons, node CRUD, publication, manifest assembly, `/server`, `/manifest` |
 
-Five review cycles have run on it. The full findings and reasoning for each are in the PR comments —
-read those before re-reviewing anything, they are the real record. The short version of the pattern,
-because it has held five times running and will probably hold again:
+All four gates green on every branch: `pnpm -w lint`, `check`, `test`, `build`.
 
-> **Every cycle's worst finding has been inside the previous cycle's fix.**
+#34 has been through two full review rounds (six reviewers each) and has zero unresolved threads.
+#35–#37 have **not** been reviewed — deliberately, see the working agreements.
 
-Cycle 5 found that cycle 4's differential failure-injection loop injected nothing at all — the
-buckets were already drained, so the armed failure was never consumed, and the mutation it exists to
-catch left every test green. It also found a contract rule (`hasLocalTrace`) that no code
-implemented, and two code comments asserting things that were false.
+`git stash list` holds one entry: an abandoned first attempt at #37 built against a superseded spec.
+Safe to drop.
 
-**Cycle 6 was dispatched and never completed** — the reviewers were killed when the previous session
-ended. Its brief is at `/tmp/wts-rl/brief10.md`, which will not exist on a new machine; rewrite it
-from the cycle-5 PR comment. It should target cycle 5's own fixes: the `hasLocalTrace` deletion, the
-rewritten differential loop, the `MAX_PAINT_COUNT` consolidation, and the wrapped-vs-unwrapped
-overlap tests.
+## What exists
 
-## How this codebase is reviewed
+**Server read surface is complete.** A client can discover a server, fetch its manifest, and fetch
+the chunks it names:
 
-This is the part that is easy to get wrong, and the reason the PR is in the state it is.
+- `GET /server` — public, always `ServerInfo`, so a userscript can see whether a token is needed
+  before asking for one.
+- `GET /manifest` — authenticated, season-scoped, ETagged on a content hash, `Vary: Authorization`.
+- `GET /chunks/:hash` — read scope, immutable cache headers (safe because the name is the content
+  hash).
 
-**Reading is not evidence. Deletion and mutation are.** Every claim about behaviour gets confirmed by
-breaking the source and watching a specific test fail. If a mutation survives, the behaviour is
-unverified regardless of how many tests pass. Things this has caught that review-by-reading did not:
+**Admin surface**: `/admin/tokens`, `/admin/nodes`, `/admin/templates` (upload + publish).
 
-- Both of the PR's original type-safety claims were false.
-- No test file in the repo was type-checked (98 errors on enabling it).
-- `TelemetryShard` had zero tests — `throw new Error('MUTANT')` in every method left 38/38 passing.
-- The alarm arithmetic was verified by nothing; a mutation dropping the seconds→millis conversion
-  **type-checks cleanly**, because `millis()` is an unchecked cast.
+**Not built**: telemetry ingest (`TelemetryShard` exists, no route), tile snapshots, status/progress
+endpoints, alarms. And **the userscript is 18 lines of scaffold** — nothing renders yet.
 
-**A test that passes for a reason other than its name is a finding.** Several have been retargeted
-for this. When a constraint turns out to be genuinely redundant, say so in the code rather than
-writing a test that appears to pin it.
+## Next step: the userscript render path
 
-**A code comment asserting something false is a finding.** Two of mine were.
+Nothing built so far is visible without it, and it is the only part that has to survive contact with
+wplace's real page. Tickets 13 and 14 both say prototype rather than specify.
 
-### Traps that have cost real time
+Minimum for "I can see my alliance's template on the canvas":
 
-- **`@wts/shared` is consumed as built `dist/`, not source.** Mutating it without
-  `pnpm --filter @wts/shared build` first tests a stale artefact and reads as a survivor.
-- **`pnpm test` does not type-check; `pnpm check` does.** Running only `test` will miss arity and
-  type errors entirely.
-- **Never `git checkout --` in this tree** to revert a probe. Take a `/tmp` copy first and restore
-  from that. A careless revert nearly destroyed uncommitted work once.
-- **Never apply a string replacement without asserting the target was found.** Silent no-op
-  replacements have twice produced confident, wrong conclusions — once because Biome had reformatted
-  the target between reading and writing.
-- **Don't commit while a reviewer is reading the tree.** One had the tree move underneath it
-  mid-review.
-- The GitHub codex bot has reviewed every cycle and has not once found something the adversarial
-  reviewers did not. It reported "didn't find any major issues" on the commit they found eight real
-  findings in. Don't weight it.
+1. Fetch the manifest, build the `Set<TileKey>` union of covered tiles.
+2. Install the tile shim at `document-start`, before wplace's bundle captures `fetch`. This is the
+   fiddly part and cannot be reasoned out — it needs the real page.
+3. On a tile hit, fetch covering chunks by hash, decode with `decodePng` from `@wts/shared`,
+   composite. On a miss, pass through untouched.
 
-## Working agreements with Mia
+Read-only: no toggles, no menus, no telemetry. It proves the chain end to end.
 
-- **Feature branch per ticket, push, open a PR.** Never merge to main directly. Docs-only changes can
-  go straight to main without a PR.
-- **Codex on `gpt-5.6-sol:high` does implementation.** Claude does the wayfinding, prompting,
-  planning and verification. **Fixes arising from review are Claude's, not codex's** — this was
-  explicit.
-- **Dispatch codex as a tracked background task, never `nohup`-detached.** Completion has to signal
-  back; Mia should not have to ask for status.
-- **Use the AskUserQuestion tool for grilling questions**, not prose.
-- **Keep going without pausing** between units of work. Don't ask permission between steps.
-- Chromium.app has a logged-in wplace session and can be driven directly for recon. (Not available
-  on a headless devbox — recon tickets will need Mia's machine.)
-- Don't report unauthenticated MCP connectors. Mia knows and doesn't want them.
+**Do as much as possible headlessly.** The manifest fetch, the tile-key `Set`, chunk fetching, PNG
+decode and the composite step are all pure and testable in vitest with no browser at all. Only the
+shim's install timing and the interception itself genuinely need the live page.
+
+So: get everything else green first, and spend browser rounds only on the part nothing else can
+verify.
+
+**The browser half has its own handoff**: `handoff-userscript-browser.md`. It covers which branch to
+check out, how the stack is arranged, how to run the server and seed a template locally, how to build
+and install the userscript, and — most importantly — the six recon questions that have to be answered
+on a real page before any shim code is worth writing. Three of them decide whether the interception
+model in `05-rendering-model` is viable at all.
+
+## Working agreements — several changed
+
+- **Prototype first, review later.** Keep stacking PRs until something works naively; *then* do
+  slice-by-slice review loops. Do not run the six-reviewer fan-out per slice, and do not offer to.
+- **Codex does implementation** (`gpt-5.6-sol:high`, `-s workspace-write`, task text on stdin from a
+  file). Claude does wayfinding, prompting, verification, and **all fixes arising from review**.
+- **Verify codex's work rather than trusting the report** — read the diff, run all four gates, and
+  mutation-test whatever the brief called non-obvious. Its self-report is a claim.
+- **Intermediate red commits are fine.** Fix in a later commit; do not flag it as an incident. The
+  bar is at the end of a slice, not each commit.
+- **Docs placement**: `.scratch` wayfinder docs may go straight to `main`; docs about the repo's
+  actual working state travel with the code that makes them true.
+- Feature branch per slice, stacked. Never merge to `main` directly.
+- Use `AskUserQuestion` for grilling questions, not prose.
+- Keep going between units of work without asking permission.
+
+## Traps that have cost real time
+
+- **`pnpm test` does not typecheck; `pnpm check` does.** A `Tasks: N successful, M total` line where
+  `N < M` is a failure — read that line, not the green test count.
+- **`@wts/shared` is consumed as built `dist/`.** Mutating `packages/shared/src` without
+  `pnpm --filter @wts/shared build` tests a stale artefact. Rebuild on restore too.
+- **`npx vitest` does not resolve in this workspace.** Use `pnpm --filter @wts/<pkg> test`. A runner
+  printing no `Tests` line has failed, not passed.
+- **Assert every string replacement landed** before trusting a mutation run.
+- **`MemorySqlStore` used to not enforce the foreign keys D1 does**, which made a broken upload path
+  green in CI. Fixed in #37, but the class recurs: **test parity-sensitive behaviour against
+  `SqliteD1Database`, not the memory adapter.**
+- **Do not `git add -A` while codex is working in the same tree.** It sweeps that work into your
+  commit. This happened once and needed a history rewrite to unpick.
+- **Turbo caches** — a `FULL TURBO` line after a mutation means it was not in turbo's inputs.
+- **Biome rejects nested `biome.json`**, so subagent worktrees under `.claude/worktrees/` break
+  `pnpm lint` until removed. `.claude/` is gitignored and biome-ignored now.
+
+## The recurring defect class
+
+Across seven review rounds the same shape kept surfacing, and it is worth assuming still present:
+
+> **A test passes for a reason other than its name**, because its fixture violates two rules at once,
+> so either rule alone still satisfies the assertion.
+
+It has appeared in bounding boxes, paint caps, node-id uniqueness, chunk placement, scope gating and
+manifest determinism. When adding a rule, build a fixture that violates *only* that rule — then mutate
+to confirm it fails.
+
+Corollary that also recurred: **four checks turned out to be unreachable** and were deleted with the
+reasoning recorded, rather than kept as guards no test could pin.
+
+Also note the earlier guidance to discount the GitHub codex bot **no longer holds** — its threads were
+right about the quadratic scan, chunks outside bounds, path metacharacters, event-id persistence and
+reporter identity. Weight it like any other reviewer.
+
+## Known-open, deliberately
+
+- **No foreign key on `telemetry_buckets.template_id`.** Adding it would turn a client-supplied
+  unknown id into a permanent flush-retry loop. Ingest is the right place to reject it and does not
+  exist yet.
+- **Wrapped template placement is rejected**, not supported. The wire allows `minX > maxX`, but
+  nothing has decided which of the two runs is the bbox's `minX`.
+- **No pre-JSON body limit.** `isMaxLength` refines an already-decoded array, so a large payload is
+  fully parsed before rejection. That is a route-layer limit; no wire change provides it.
+- **The overlap sweep's active-set insert is O(n²) worst case** (all-wrapped boxes, ~1.15 s end-to-end
+  at the declared cap — about 4% of the CPU budget). Fine now; the next optimisation if caps rise.
+- **Ditherette's WASM core in the userscript** — deferred to v3, ticket 30. Single-threaded build
+  only: the threaded one needs `SharedArrayBuffer`, which needs COOP/COEP headers a userscript cannot
+  set on wplace's page.
 
 ## Environment
 
-pnpm 11.13.0, Node 26.5.0 (engines: >=22). Turborepo workspaces: `apps/{backend,userscript,frontend}`,
-`packages/{shared,wire-schema,ui}`. Cloudflare Workers + R2 + D1 + Durable Objects; `wrangler dev`
-runs it locally via workerd/miniflare.
+pnpm 11.13.0, Node 26.5.0 (engines `>=22.13` — `node:sqlite` needs it). Turborepo workspaces:
+`apps/{backend,userscript,frontend}`, `packages/{shared,wire-schema,ui}`. Cloudflare Workers + R2 +
+D1 + Durable Objects; `wrangler dev` runs it locally.
 
-Root scripts: `lint`, `check`, `test`, `build` — all four should be green before any commit.
-
-Note for the devbox: `wrangler dev` orphans easily. Three dev servers were left running for up to
-14 hours on the last machine. Kill the tree, and check `lsof -iTCP -sTCP:LISTEN` for stragglers on
+`wrangler dev` orphans easily — kill the tree and check `lsof -iTCP -sTCP:LISTEN` for stragglers on
 8787–8800.
-
-## What to do next
-
-1. **Run cycle 6 on PR #32.** Rewrite the brief from the cycle-5 PR comment, aimed at cycle 5's own
-   fixes. Two adversarial reviewers in parallel, split shard-side and wire-side, with the mandate
-   that a surviving mutation is a finding.
-2. **Then decide: another cycle, or merge.** The cycles are still finding real defects, so the
-   stopping condition is genuinely open. That call is Mia's.
-3. After #32 lands, the next tickets in `.scratch/v1/issues/` are the ingest pipeline and the HTTP
-   routes, both deliberately out of scope for this PR.
 
 ## Suggested skills
 
-- `review-loop` (`~/.agents/skills`) — the review process described above; this is the main one.
-- `wayfinder` (Matt Pocock's) — for charting new work as decision tickets, as `map.md` was built.
-- `i-have-adhd` and `say-less` (`~/.agents/skills`) — Mia's preferred output style; keep things
-  scannable and short.
-- `codex-subagents` — for dispatching implementation to codex.
+- `codex-subagents` — dispatching implementation.
+- `codex-computer-use` — browser verification, the next slice's bottleneck.
+- `wayfinder` — the map and decision tickets under `.scratch/v1/`.
+- `review-loop` — **later**, once the prototype runs.
+- `say-less` / `i-have-adhd` — Mia's preferred output style.

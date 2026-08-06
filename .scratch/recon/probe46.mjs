@@ -1,0 +1,37 @@
+import { readFileSync, writeFileSync } from 'node:fs'
+import { Session, closeTab, newTab, sleep } from './cdp.mjs'
+const bundle = readFileSync('apps/userscript/dist/wplace-template-server.user.js', 'utf8')
+const SERVER = "https://epic-recognised-raises-cube.trycloudflare.com", TOKEN = "SMRRRT591GCFQGQBKJP5974YDY"
+const tab = await newTab('about:blank')
+const cdp = await Session.attach(tab.webSocketDebuggerUrl)
+await cdp.send('Page.enable'); await cdp.send('Runtime.enable')
+await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 950, deviceScaleFactor: 2, mobile: false })
+await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: "try{localStorage.removeItem('caelestis.state.v1')}catch{}" })
+await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: 'if (/^https:\\/\\/wplace\\.live\\//.test(location.href)) {\n' + bundle + '\n}' })
+await cdp.send('Page.navigate', { url: 'https://wplace.live/?lat=52.429222&lng=5.009766&zoom=11' })
+await cdp.waitFor((m) => m.method === 'Page.loadEventFired', { timeout: 60000, label: 'load' })
+for (let i = 0; i < 24; i++) { if (await cdp.evaluate("!!document.getElementById('wts-rail-button')")) break; await sleep(500) }
+await sleep(1200)
+const ev = (js) => cdp.evaluate(js)
+const shot = async (n) => { const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }); writeFileSync(n, Buffer.from(data, 'base64')) }
+await ev("document.getElementById('wts-rail-button').click()")
+await sleep(400)
+await ev("document.querySelector('#wts-panel [data-wts-settings]').click()")
+await sleep(400)
+await ev("(() => { const i = document.querySelector('#wts-panel input[type=url]'); i.value = " + JSON.stringify(SERVER) + "; i.dispatchEvent(new Event('input',{bubbles:true})) })()")
+await ev("[...document.querySelectorAll('#wts-panel button')].find(b=>b.textContent.trim()==='Add').click()")
+await sleep(3000)
+await ev("(() => { const i = document.querySelector('#wts-panel input[type=password]'); i.value = " + JSON.stringify(TOKEN) + "; i.dispatchEvent(new Event('input',{bubbles:true})) })()")
+await ev("[...document.querySelectorAll('#wts-panel button')].find(b=>b.textContent.trim()==='Connect').click()")
+await sleep(3500)
+console.log('isAdmin        :', await ev("JSON.parse(localStorage.getItem('caelestis.state.v1')).servers[0].isAdmin"))
+console.log('presets        :', await ev("[...document.querySelectorAll('#wts-panel .btn-xs')].map(b=>b.textContent.trim()).filter(Boolean).join(' | ')"))
+console.log('swatches       :', await ev("document.querySelectorAll('#wts-panel .wts-swatch').length"))
+console.log('labels         :', await ev("[...document.querySelectorAll('#wts-panel h3')].map(h=>h.textContent).join(' | ')"))
+await shot('/tmp/wts-settings-colours.png')
+// Free preset should leave exactly the free colours on.
+await ev("[...document.querySelectorAll('#wts-panel .btn-xs')].find(b=>b.textContent.trim()==='Free').click()")
+await sleep(600)
+console.log('after Free     :', await ev("document.querySelectorAll('#wts-panel .wts-swatch[data-on=true]').length + ' on / ' + document.querySelectorAll('#wts-panel .wts-swatch').length"))
+await shot('/tmp/wts-settings-free.png')
+cdp.close(); await closeTab(tab.id)
