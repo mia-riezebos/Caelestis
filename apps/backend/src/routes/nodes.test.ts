@@ -62,14 +62,54 @@ describe('node routes', () => {
         body: JSON.stringify({ season: 1, parentId: null, name: 'Sneaky' }),
       })
       const listed = await app.request('/admin/nodes?season=1', { headers: holder })
+      const patched = await app.request('/admin/nodes/whatever', {
+        method: 'PATCH',
+        headers: holder,
+        body: JSON.stringify({ name: 'Sneaky' }),
+      })
       const deleted = await app.request('/admin/nodes/whatever', {
         method: 'DELETE',
         headers: holder,
       })
 
-      expect([created.status, listed.status, deleted.status]).toEqual([403, 403, 403])
+      expect([created.status, listed.status, patched.status, deleted.status]).toEqual([
+        403, 403, 403, 403,
+      ])
     },
   )
+
+  it('renames a node and carries its descendants along', async () => {
+    // `path` is a materialized prefix, so a rename is not a one-row update: every descendant holds
+    // the old path as a prefix. Leaving them behind breaks every rollup silently rather than loudly.
+    const { sql, app } = harness()
+    const parent = await createNode(app, { season: 1, parentId: null, name: 'Parent' })
+    const child = await createNode(app, { season: 1, parentId: parent.body.id, name: 'Child' })
+    expect(child.body.path).toBe('/parent/child')
+
+    const response = await app.request(`/admin/nodes/${parent.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Renamed' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ name: 'Renamed', path: '/renamed' })
+    await expect(sql.readNode(child.body.id)).resolves.toMatchObject({ path: '/renamed/child' })
+  })
+
+  it('refuses a rename that would collide with a sibling', async () => {
+    const { app } = harness()
+    await createNode(app, { season: 1, parentId: null, name: 'Taken' })
+    const other = await createNode(app, { season: 1, parentId: null, name: 'Other' })
+
+    const response = await app.request(`/admin/nodes/${other.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Taken' }),
+    })
+
+    expect(response.status).toBe(409)
+  })
 
   it('round-trips a root and child with server-derived paths', async () => {
     const { app } = harness()

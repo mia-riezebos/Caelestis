@@ -1,5 +1,5 @@
 import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull, like, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -64,16 +64,21 @@ const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
  * right error, so every test agreed with the route and only production disagreed.
  *
  * Walks the chain rather than reading `cause` once: D1 adds its own `D1_ERROR:` wrapper on top of
- * drizzle's, and neither depth is something to hard-code.
+ * drizzle's, and neither depth is something to hard-code. Bounded anyway, because `cause` is an
+ * ordinary property and nothing stops a chain from pointing back at itself.
  *
  * The `UNIQUE` translation is covered by a test. The two `FOREIGN KEY` ones guard races between a
  * guard read and the write that follows it, which a single-threaded test cannot open — they are here
  * because the constraint, not the read, is the authority, and losing that race should give the same
  * answer as failing the check.
  */
+const MAX_CAUSE_DEPTH = 5
+
 const mentions = (error: unknown, text: string): boolean => {
-  for (let current = error; current instanceof Error; current = current.cause) {
+  let current: unknown = error
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth += 1) {
     if (current.message.includes(text)) return true
+    current = current.cause
   }
   return false
 }
@@ -152,6 +157,32 @@ export class D1SqlStore implements SqlStore {
       .where(eq(nodes.season, season))
       .orderBy(asc(nodes.id))
     return rows.map(toNode)
+  }
+
+  async renameNode(nodeId: string, name: string, path: string): Promise<boolean> {
+    const node = await this.readNode(nodeId)
+    if (node === null) return false
+
+    // One batch: the node and every descendant move together or not at all. A half-applied rename
+    // leaves children whose path no longer starts with their parent's, which silently breaks every
+    // prefix rollup rather than failing loudly.
+    const oldPrefix = `${node.path}/`
+    const statements = [
+      this.database.update(nodes).set({ name, path }).where(eq(nodes.id, nodeId)),
+      this.database
+        .update(nodes)
+        .set({ path: sql`${path} || substr(${nodes.path}, ${oldPrefix.length + 1})` })
+        .where(and(eq(nodes.season, node.season), like(nodes.path, `${oldPrefix}%`))),
+    ] as const
+    try {
+      await this.database.batch([statements[0], statements[1]])
+    } catch (error) {
+      if (mentions(error, 'UNIQUE constraint failed')) {
+        throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+      }
+      throw error
+    }
+    return true
   }
 
   async deleteNode(nodeId: string): Promise<void> {
