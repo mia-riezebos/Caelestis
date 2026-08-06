@@ -574,8 +574,15 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
   const box = menu.getBoundingClientRect()
   if (box.right > window.innerWidth) menu.style.left = `${window.innerWidth - box.width - 8}px`
   if (box.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - box.height - 8}px`
+  // Dismiss on a pointerdown *outside* the menu.
+  //
+  // Dismissing on any pointerdown looked right and made every item dead: pointerdown precedes
+  // click, so the menu was removed from the document before the click could reach the button it
+  // was pressed on, and nothing happened. The synthetic `.click()` in the first test bypassed
+  // pointerdown entirely and so never saw it.
   setTimeout(() => {
-    const dismiss = (): void => {
+    const dismiss = (event: PointerEvent): void => {
+      if (event.target instanceof Node && menu.contains(event.target)) return
       menu.remove()
       window.removeEventListener('pointerdown', dismiss)
     }
