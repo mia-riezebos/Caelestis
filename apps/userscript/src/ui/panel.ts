@@ -2,17 +2,22 @@ import { log, warn } from '../debug.js'
 import {
   type ConnectedServer,
   createNode,
+  deleteNode as deleteNodeOnServer,
   getState,
+  listNodes,
   loadState,
   probeServer,
   removeServer,
+  renameNode as renameNodeOnServer,
   setState,
   upsertServer,
 } from '../state.js'
+import { coloursSection } from './colours.js'
+import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
-import { treeContents } from './tree.js'
+import { refreshNodes, startRenaming, type TreeTarget, treeContents } from './tree.js'
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -197,19 +202,20 @@ const treeView = (): HTMLElement => {
       treeContents(
         {
           onAddServer: () => showView('settings'),
-          onImportLocal: () => warn('install', 'local import is not built yet'),
-          onCreateFolder: ({ server, nodeId }) => void createFolder(server, nodeId, renderTree),
-          onCreateTemplate: ({ server }) => {
-            // Deliberately not stubbed as a no-op: a template is an image plus a placement, and
-            // neither the picker nor the placement UI exists yet. Say so rather than opening
-            // something that cannot finish. See 32-local-templates.
+          onCreateFolder: (target) => void createFolder(target, renderTree),
+          onImportTemplate: (target) => {
+            // Not stubbed as a silent no-op: a template is an image plus a placement, and neither
+            // the picker nor the placement step exists. See 32-local-templates.
             toast(
-              server === null
-                ? 'Importing a template needs the file picker — not built yet.'
-                : 'Creating a template needs a placement step — not built yet.',
+              target.server === null
+                ? 'Importing needs the file picker — not built yet.'
+                : 'Importing needs a placement step — not built yet.',
               'warning',
             )
           },
+          onRename: (target, name) => void applyRename(target, name, renderTree),
+          onDelete: (target) => void applyDelete(target, renderTree),
+          onContextMenu: (target, event) => openContextMenu(target, event, renderTree),
         },
         renderTree,
       ),
@@ -428,42 +434,29 @@ const settingsView = (): HTMLElement => {
   view.appendChild(sectionHeader('Appearance'))
   view.appendChild(
     settingRow(
-      'Progress',
+      'Display progress bars',
       null,
       select([
-        ['inline', 'On every row'],
-        ['expanded', 'Only when expanded'],
-        ['hidden', 'Hidden'],
-      ]),
-    ),
-  )
-  view.appendChild(
-    settingRow(
-      'Colours',
-      null,
-      select([
-        ['all', 'All colours'],
-        ['free', 'Free only'],
-        ['premium', 'Premium only'],
-        ['owned', 'Colours I own'],
+        ['inline', 'Inline'],
+        ['expanded', 'When expanded'],
+        ['hidden', 'Never'],
       ]),
     ),
   )
 
+  view.appendChild(sectionHeader('Colours'))
+  view.appendChild(coloursSection(() => showView('settings')))
+
   view.appendChild(sectionHeader('Contributing'))
   view.appendChild(
     settingRow(
-      'Report my paints',
-      'Sends what you painted, so progress and totals stay live',
+      'Report my activity',
+      'Sends your paint activity on templates to the respective servers.',
       checkbox(),
     ),
   )
   view.appendChild(
-    settingRow(
-      'Share tiles I load',
-      'Sends canvas tiles you already downloaded, so the server can track history',
-      checkbox(),
-    ),
+    settingRow('Share tiles', 'Forwards tiles with templates to respective servers.', checkbox()),
   )
 
   view.appendChild(sectionHeader('Diagnostics'))
@@ -491,24 +484,124 @@ const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): vo
   setTimeout(() => el.remove(), 6000)
 }
 
-const createFolder = async (
-  server: ConnectedServer | null,
-  nodeId: string | null,
+/** A name nobody has to type: "New folder", then "New folder 2", and so on. */
+const freeFolderName = (taken: ReadonlySet<string>): string => {
+  const base = 'New folder'
+  if (!taken.has(base.toLowerCase())) return base
+  for (let n = 2; n < 500; n++) {
+    const candidate = `${base} ${n}`
+    if (!taken.has(candidate.toLowerCase())) return candidate
+  }
+  return `${base} ${Date.now()}`
+}
+
+const applyRename = async (
+  target: TreeTarget,
+  name: string,
   rerender: () => void,
 ): Promise<void> => {
+  if (target.server === null || target.nodeId === null) {
+    toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
+    rerender()
+    return
+  }
+  const result = await renameNodeOnServer(target.server, target.nodeId, name)
+  if (!result.ok) toast(result.message, 'error')
+  await refreshNodes(target.server, rerender)
+}
+
+const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+  if (target.server === null || target.nodeId === null) {
+    toast('Nothing to delete here yet.', 'warning')
+    return
+  }
+  const result = await deleteNodeOnServer(target.server, target.nodeId)
+  if (!result.ok) toast(result.message, 'error')
+  await refreshNodes(target.server, rerender)
+}
+
+/**
+ * A right-click menu carrying the same actions as the row, plus the two that have no room on it.
+ *
+ * Dismissed by the next pointerdown anywhere, which is what every native menu does and what people
+ * try first.
+ */
+const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => void): void => {
+  document.querySelector('[data-wts-menu]')?.remove()
+  const menu = document.createElement('ul')
+  menu.setAttribute('data-wts-menu', '')
+  menu.className = 'menu bg-base-100 shadow-2xl'
+  Object.assign(menu.style, {
+    position: 'fixed',
+    left: `${event.clientX}px`,
+    top: `${event.clientY}px`,
+    zIndex: '60',
+    borderRadius: '0.5rem',
+    padding: '0.25rem',
+    width: '11rem',
+  })
+
+  const entries: ReadonlyArray<readonly [IconName, string, () => void]> = [
+    ['createFolder', 'New folder', () => void createFolder(target, rerender)],
+    ['uploadFile', 'Import template', () => toast('Importing is not built yet.', 'warning')],
+    [
+      'rename',
+      'Rename',
+      () => {
+        startRenaming(target.key)
+        rerender()
+      },
+    ],
+    ['trash', 'Delete', () => void applyDelete(target, rerender)],
+  ]
+  for (const [glyph, label, run] of entries) {
+    const item = document.createElement('li')
+    const button = document.createElement('button')
+    button.className = label === 'Delete' ? 'text-error' : ''
+    button.appendChild(icon(glyph, 'size-4'))
+    const text = document.createElement('span')
+    text.textContent = label
+    button.appendChild(text)
+    button.addEventListener('click', () => {
+      menu.remove()
+      run()
+    })
+    item.appendChild(button)
+    menu.appendChild(item)
+  }
+  document.body.appendChild(menu)
+  // Keep it on screen when the click lands near an edge.
+  const box = menu.getBoundingClientRect()
+  if (box.right > window.innerWidth) menu.style.left = `${window.innerWidth - box.width - 8}px`
+  if (box.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - box.height - 8}px`
+  setTimeout(() => {
+    const dismiss = (): void => {
+      menu.remove()
+      window.removeEventListener('pointerdown', dismiss)
+    }
+    window.addEventListener('pointerdown', dismiss)
+  }, 0)
+}
+
+const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+  const { server, nodeId } = target
   if (server === null) {
     toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
     return
   }
-  const name = prompt('Folder name')?.trim()
-  if (name === undefined || name === '') return
+  // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
+  // before the thing exists is a question with no context; renaming one that is on screen is not.
+  const existing = await listNodes(server)
+  const name = freeFolderName(new Set(existing.map((node) => node.name.toLowerCase())))
   const result = await createNode(server, name, nodeId)
-  if (result.ok) {
-    toast(`Created "${name}".`)
-    rerender()
+  if (!result.ok) {
+    toast(result.message, 'error')
     return
   }
-  toast(result.message, 'error')
+  // Refresh before rendering: the row we are about to put into rename mode does not exist in the
+  // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
+  startRenaming(`node:${result.node.id}`)
+  await refreshNodes(server, rerender)
 }
 
 const buildPanel = (): HTMLElement => {

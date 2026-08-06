@@ -65,6 +65,32 @@ export class MemorySqlStore implements SqlStore {
       .map((node) => ({ ...node }))
   }
 
+  async renameNode(nodeId: string, name: string, path: string): Promise<boolean> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) return false
+    const taken = [...this.nodes.values()].some(
+      (candidate) =>
+        candidate.id !== nodeId &&
+        candidate.season === node.season &&
+        candidate.path.toLowerCase() === path.toLowerCase(),
+    )
+    if (taken)
+      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+
+    const oldPrefix = `${node.path}/`
+    const descendants = [...this.nodes.values()].filter(
+      (candidate) => candidate.season === node.season && candidate.path.startsWith(oldPrefix),
+    )
+    this.nodes.set(nodeId, { ...node, name, path })
+    for (const descendant of descendants) {
+      this.nodes.set(descendant.id, {
+        ...descendant,
+        path: `${path}/${descendant.path.slice(oldPrefix.length)}`,
+      })
+    }
+    return true
+  }
+
   async deleteNode(nodeId: string): Promise<void> {
     if (!this.nodes.has(nodeId)) return
     const hasChildren = [...this.nodes.values()].some((node) => node.parentId === nodeId)

@@ -41,6 +41,39 @@ const createNode = async (
 }
 
 describe('node routes', () => {
+  it('renames a node and carries its descendants along', async () => {
+    // `path` is a materialized prefix, so a rename is not a one-row update: every descendant holds
+    // the old path as a prefix. Leaving them behind breaks every rollup silently rather than loudly.
+    const { sql, app } = harness()
+    const parent = await createNode(app, { season: 0, parentId: null, name: 'Parent' })
+    const child = await createNode(app, { season: 0, parentId: parent.body.id, name: 'Child' })
+    expect(child.body.path).toBe('/parent/child')
+
+    const response = await app.request(`/admin/nodes/${parent.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Renamed' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ name: 'Renamed', path: '/renamed' })
+    await expect(sql.readNode(child.body.id)).resolves.toMatchObject({ path: '/renamed/child' })
+  })
+
+  it('refuses a rename that would collide with a sibling', async () => {
+    const { app } = harness()
+    await createNode(app, { season: 0, parentId: null, name: 'Taken' })
+    const other = await createNode(app, { season: 0, parentId: null, name: 'Other' })
+
+    const response = await app.request(`/admin/nodes/${other.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Taken' }),
+    })
+
+    expect(response.status).toBe(409)
+  })
+
   it('round-trips a root and child with server-derived paths', async () => {
     const { app } = harness()
     const root = await createNode(app, {

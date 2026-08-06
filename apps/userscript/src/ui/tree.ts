@@ -1,4 +1,4 @@
-import { type ConnectedServer, getState, setState } from '../state.js'
+import { type ConnectedServer, getState, listNodes, setState, type TreeNode } from '../state.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -14,20 +14,47 @@ import { isReorderable } from './sort.js'
  * between them is dead space otherwise.
  */
 
+export interface TreeTarget {
+  readonly server: ConnectedServer | null
+  readonly nodeId: string | null
+  readonly key: string
+  readonly name: string
+}
+
 export interface TreeCallbacks {
   readonly onAddServer: () => void
-  readonly onImportLocal: () => void
-  readonly onCreateFolder: (parent: {
-    server: ConnectedServer | null
-    nodeId: string | null
-  }) => void
-  readonly onCreateTemplate: (parent: {
-    server: ConnectedServer | null
-    nodeId: string | null
-  }) => void
+  readonly onCreateFolder: (target: TreeTarget) => void
+  readonly onImportTemplate: (target: TreeTarget) => void
+  readonly onRename: (target: TreeTarget, name: string) => void
+  readonly onDelete: (target: TreeTarget) => void
+  readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
 }
 
 const collapsed = new Set<string>()
+/** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
+let renaming: string | null = null
+
+/**
+ * Nodes per server, fetched once and refreshed on demand.
+ *
+ * Rendering happens synchronously, so the tree draws what it has and fills in when the fetch lands.
+ * A server with no nodes yet and a server whose nodes have not arrived look the same for a moment,
+ * which is the right trade against blocking the whole panel on a network call.
+ */
+const nodesByServer = new Map<string, readonly TreeNode[]>()
+
+export const refreshNodes = async (
+  server: ConnectedServer,
+  rerender: () => void,
+): Promise<void> => {
+  if (!server.isAdmin) return
+  nodesByServer.set(server.url, await listNodes(server))
+  rerender()
+}
+
+export const startRenaming = (key: string): void => {
+  renaming = key
+}
 const disabled = new Set<string>()
 
 const isExpanded = (key: string): boolean => !collapsed.has(key)
@@ -73,7 +100,10 @@ interface RowOptions {
   readonly meta?: string
   /** Containers accept a drop *into* them; leaves only reorder between siblings. */
   readonly container: boolean
-  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
+  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  /** Present only where the user can actually change things; absent means no rename affordance. */
+  readonly onRename?: ((name: string) => void) | undefined
+  readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly siblings: readonly string[]
   readonly rerender: () => void
   readonly onDropInto?: (draggedKey: string) => void
@@ -104,14 +134,30 @@ const treeRow = (options: RowOptions): HTMLElement => {
   kind.style.flex = '0 0 auto'
   row.appendChild(kind)
 
+  const editing = renaming === options.key && options.onRename !== undefined
+  const input = document.createElement('input')
   const name = document.createElement('span')
-  name.className = 'wts-name text-sm'
-  name.textContent = options.name
-  row.appendChild(name)
-  // A tooltip that repeats fully visible text is noise; only label what is actually clipped.
-  requestAnimationFrame(() => {
-    if (name.scrollWidth > name.clientWidth) name.title = options.name
-  })
+  if (editing) {
+    input.type = 'text'
+    input.className = 'input input-xs input-bordered'
+    input.value = options.name
+    input.style.flex = '1'
+    input.style.minWidth = '0'
+    input.addEventListener('click', (event) => event.stopPropagation())
+    row.appendChild(input)
+    requestAnimationFrame(() => {
+      input.focus()
+      input.select()
+    })
+  } else {
+    name.className = 'wts-name text-sm'
+    name.textContent = options.name
+    row.appendChild(name)
+    // A tooltip that repeats fully visible text is noise; only label what is actually clipped.
+    requestAnimationFrame(() => {
+      if (name.scrollWidth > name.clientWidth) name.title = options.name
+    })
+  }
 
   if (options.meta !== undefined) {
     const meta = document.createElement('span')
@@ -121,7 +167,44 @@ const treeRow = (options: RowOptions): HTMLElement => {
     row.appendChild(meta)
   }
 
-  if (options.actions !== undefined && options.actions.length > 0) {
+  if (editing) {
+    // Confirm and cancel take the place of the row's own actions while renaming, so the row never
+    // offers two different things to do with the same click.
+    const group = document.createElement('span')
+    group.className = 'flex items-center gap-0.5'
+    group.style.flex = '0 0 auto'
+    const commit = (): void => {
+      const value = input.value.trim()
+      renaming = null
+      if (value !== '' && value !== options.name) options.onRename?.(value)
+      else options.rerender()
+    }
+    const cancel = (): void => {
+      renaming = null
+      options.rerender()
+    }
+    for (const [glyphName, label, run] of [
+      ['check', 'Save', commit],
+      ['close', 'Cancel', cancel],
+    ] as ReadonlyArray<readonly [IconName, string, () => void]>) {
+      const button = document.createElement('button')
+      button.className = 'btn btn-ghost btn-xs btn-circle'
+      button.title = label
+      button.setAttribute('aria-label', label)
+      button.appendChild(icon(glyphName, 'size-4'))
+      button.addEventListener('click', (event) => {
+        event.stopPropagation()
+        run()
+      })
+      group.appendChild(button)
+    }
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation()
+      if (event.key === 'Enter') commit()
+      if (event.key === 'Escape') cancel()
+    })
+    row.appendChild(group)
+  } else if (options.actions !== undefined && options.actions.length > 0) {
     const group = document.createElement('span')
     group.className = 'wts-actions flex items-center gap-0.5'
     group.style.flex = '0 0 auto'
@@ -157,7 +240,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
     toggle(collapsed, options.key)
     options.rerender()
   }
-  row.addEventListener('click', expand)
+  if (!editing) row.addEventListener('click', expand)
   row.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
@@ -165,7 +248,14 @@ const treeRow = (options: RowOptions): HTMLElement => {
     }
   })
 
-  if (!draggable) return row
+  if (options.onContextMenu !== undefined) {
+    row.addEventListener('contextmenu', (event) => {
+      event.preventDefault()
+      options.onContextMenu?.(event)
+    })
+  }
+
+  if (!draggable || editing) return row
 
   row.addEventListener('dragstart', (event) => {
     event.dataTransfer?.setData('text/plain', options.key)
@@ -237,31 +327,104 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
     const isLocal = key === 'local'
     if (!isLocal && server === undefined) continue
 
+    const target: TreeTarget = {
+      server: server ?? null,
+      nodeId: null,
+      key,
+      name: isLocal ? 'Local' : (server?.info?.name ?? server?.url ?? ''),
+    }
+    // Only where the code can actually act. Offering create to someone who will only ever get a
+    // 403 is worse than not offering it — Local always can, since nothing gates it.
+    const canEdit = isLocal || (server?.isAdmin ?? false)
+
     wrap.appendChild(
       treeRow({
         key,
-        name: isLocal ? 'Local' : (server?.info?.name ?? server?.url ?? ''),
+        name: target.name,
         // A rack and a folder are different things and read differently at a glance.
         kind: isLocal ? 'folder' : 'server',
         depth: 0,
         container: true,
         siblings: ordered,
         rerender,
-        actions: [
-          {
-            icon: 'createFolder',
-            label: 'New folder',
-            run: () => callbacks.onCreateFolder({ server: server ?? null, nodeId: null }),
-          },
-          {
-            icon: 'addPhoto',
-            label: 'New template',
-            run: () => callbacks.onCreateTemplate({ server: server ?? null, nodeId: null }),
-          },
-        ],
+        onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
+        onRename: canEdit ? (value) => callbacks.onRename(target, value) : undefined,
+        actions: canEdit
+          ? [
+              {
+                icon: 'createFolder',
+                label: 'New folder',
+                run: () => callbacks.onCreateFolder(target),
+              },
+              {
+                icon: 'uploadFile',
+                label: 'Import template',
+                run: () => callbacks.onImportTemplate(target),
+              },
+            ]
+          : undefined,
       }),
     )
     if (!isExpanded(key)) continue
+
+    if (server !== undefined && server.status === 'connected') {
+      const known = nodesByServer.get(server.url)
+      if (known === undefined) {
+        // First sight of this server: kick off the fetch, draw nothing extra this pass.
+        void refreshNodes(server, rerender)
+      } else {
+        const byParent = new Map<string | null, TreeNode[]>()
+        for (const node of known) {
+          const siblings = byParent.get(node.parentId) ?? []
+          siblings.push(node)
+          byParent.set(node.parentId, siblings)
+        }
+        const renderChildren = (parentId: string | null, depth: number): void => {
+          for (const node of byParent.get(parentId) ?? []) {
+            const nodeKey = `node:${node.id}`
+            const nodeTarget: TreeTarget = {
+              server,
+              nodeId: node.id,
+              key: nodeKey,
+              name: node.name,
+            }
+            wrap.appendChild(
+              treeRow({
+                key: nodeKey,
+                name: node.name,
+                kind: 'folder',
+                depth,
+                container: true,
+                siblings: (byParent.get(parentId) ?? []).map((n) => `node:${n.id}`),
+                rerender,
+                onContextMenu: canEdit
+                  ? (event) => callbacks.onContextMenu(nodeTarget, event)
+                  : undefined,
+                onRename: canEdit ? (value) => callbacks.onRename(nodeTarget, value) : undefined,
+                actions: canEdit
+                  ? [
+                      {
+                        icon: 'createFolder',
+                        label: 'New folder',
+                        run: () => callbacks.onCreateFolder(nodeTarget),
+                      },
+                      {
+                        icon: 'uploadFile',
+                        label: 'Import template',
+                        run: () => callbacks.onImportTemplate(nodeTarget),
+                      },
+                    ]
+                  : undefined,
+              }),
+            )
+            if (isExpanded(nodeKey)) renderChildren(node.id, depth + 1)
+          }
+        }
+        renderChildren(null, 1)
+        if (known.length === 0) wrap.appendChild(childText('No templates published yet.', 0))
+        continue
+      }
+    }
 
     if (isLocal) {
       wrap.appendChild(childText('No local templates yet.', 0))

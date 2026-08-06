@@ -31,10 +31,25 @@ export interface ConnectedServer {
   readonly token: string | null
   readonly status: 'connected' | 'needs-token' | 'unreachable'
   readonly error?: string
+  /**
+   * Whether our code can administer this server.
+   *
+   * Nothing in `GET /server` reports scope, so this is established by calling an admin endpoint and
+   * seeing what comes back. It gates the create and import controls: offering them to someone who
+   * will only ever get a 403 is worse than not offering them.
+   */
+  readonly isAdmin: boolean
+}
+
+export interface TreeNode {
+  readonly id: string
+  readonly parentId: string | null
+  readonly path: string
+  readonly name: string
 }
 
 export type ProgressPlacement = 'inline' | 'expanded' | 'hidden'
-export type ColourFilter = 'all' | 'free' | 'premium' | 'owned'
+export type ColourPreset = 'all' | 'free' | 'premium' | 'owned'
 
 export interface State {
   readonly servers: readonly ConnectedServer[]
@@ -44,7 +59,8 @@ export interface State {
   readonly panelWidth: number
   readonly sort: SortOrder
   readonly progress: ProgressPlacement
-  readonly colours: ColourFilter
+  /** Palette indices deliberately hidden. Empty means every colour draws. */
+  readonly hiddenColours: readonly number[]
   readonly reportPaints: boolean
   readonly shareTiles: boolean
 }
@@ -55,7 +71,7 @@ const DEFAULT_STATE: State = {
   panelWidth: 320,
   sort: DEFAULT_SORT,
   progress: 'inline',
-  colours: 'all',
+  hiddenColours: [],
   reportPaints: false,
   shareTiles: false,
 }
@@ -126,6 +142,18 @@ export const removeServer = (url: string): void => {
   setState({ servers: getState().servers.filter((s) => s.url !== url) })
 }
 
+/** Can this code administer the server? The only way to know is to ask it to do something admin. */
+const probeAdmin = async (base: string, token: string | null): Promise<boolean> => {
+  try {
+    const response = await fetch(`${base}/admin/nodes?season=0`, {
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 /**
  * Ask a server who it is.
  *
@@ -146,13 +174,18 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
         token,
         status: 'unreachable',
         error: `HTTP ${response.status}`,
+        isAdmin: false,
       }
     }
     const info = (await response.json()) as ServerInfo
     log('install', `probed ${base}`, { name: info.name, auth: info.auth })
 
-    if (info.auth !== 'access_token') return { url: base, info, token, status: 'connected' }
-    if (token === null) return { url: base, info, token: null, status: 'needs-token' }
+    if (info.auth !== 'access_token') {
+      return { url: base, info, token, status: 'connected', isAdmin: await probeAdmin(base, token) }
+    }
+    if (token === null) {
+      return { url: base, info, token: null, status: 'needs-token', isAdmin: false }
+    }
 
     // `GET /server` is public and never looks at the Authorization header, so reaching it proves
     // nothing about a code. Without this second call any non-empty string read as "connected" and
@@ -162,16 +195,37 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     })
     if (authed.status === 401 || authed.status === 403) {
       log('install', `${base} rejected the code`, { status: authed.status })
-      return { url: base, info, token: null, status: 'needs-token', error: 'rejected' }
+      return {
+        url: base,
+        info,
+        token: null,
+        status: 'needs-token',
+        error: 'rejected',
+        isAdmin: false,
+      }
     }
     if (!authed.ok) {
-      return { url: base, info, token, status: 'unreachable', error: `HTTP ${authed.status}` }
+      return {
+        url: base,
+        info,
+        token,
+        status: 'unreachable',
+        error: `HTTP ${authed.status}`,
+        isAdmin: false,
+      }
     }
-    return { url: base, info, token, status: 'connected' }
+    return { url: base, info, token, status: 'connected', isAdmin: await probeAdmin(base, token) }
   } catch (error) {
     // A bad hostname, a refused connection, or a server without CORS all land here, and the
     // distinction is not visible to us — the browser withholds it deliberately.
-    return { url: base, info: null, token, status: 'unreachable', error: String(error) }
+    return {
+      url: base,
+      info: null,
+      token,
+      status: 'unreachable',
+      error: String(error),
+      isAdmin: false,
+    }
   }
 }
 
@@ -186,7 +240,7 @@ export const createNode = async (
   server: ConnectedServer,
   name: string,
   parentId: string | null,
-): Promise<{ ok: true } | { ok: false; message: string }> => {
+): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   try {
     const response = await fetch(`${server.url}/admin/nodes`, {
       method: 'POST',
@@ -196,7 +250,7 @@ export const createNode = async (
       },
       body: JSON.stringify({ season: 0, parentId, name }),
     })
-    if (response.ok) return { ok: true }
+    if (response.ok) return { ok: true, node: (await response.json()) as TreeNode }
     if (response.status === 401 || response.status === 403) {
       return { ok: false, message: 'That code cannot create folders — it needs admin access.' }
     }
@@ -204,5 +258,63 @@ export const createNode = async (
     return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
   } catch (error) {
     return { ok: false, message: String(error) }
+  }
+}
+
+const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
+  'content-type': 'application/json',
+  ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
+})
+
+const failure = (response: Response, body: { error?: string } | null): string =>
+  response.status === 401 || response.status === 403
+    ? 'That code cannot change this server — it needs admin access.'
+    : (body?.error ?? `Server said ${response.status}.`)
+
+export const renameNode = async (
+  server: ConnectedServer,
+  nodeId: string,
+  name: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ name }),
+    })
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+export const deleteNode = async (
+  server: ConnectedServer,
+  nodeId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
+      method: 'DELETE',
+      headers: adminHeaders(server),
+    })
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/** Existing sibling names, so a new folder can pick one that is free without asking. */
+export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> => {
+  try {
+    const response = await fetch(`${server.url}/admin/nodes?season=0`, {
+      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+    })
+    if (!response.ok) return []
+    const body = (await response.json()) as { nodes?: TreeNode[] } | TreeNode[]
+    return Array.isArray(body) ? body : (body.nodes ?? [])
+  } catch {
+    return []
   }
 }

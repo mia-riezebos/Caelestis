@@ -78,6 +78,23 @@ const CSS = `
 .wts-row:focus-within .wts-actions {
   opacity: 1;
 }
+.wts-swatch {
+  aspect-ratio: 1;
+  border-radius: 0.25rem;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  transition: opacity 100ms ease-out, outline-color 100ms ease-out;
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+}
+/* Off reads as drained rather than hidden: the swatch has to stay identifiable as *which* colour
+   it is even while it is not drawing. */
+.wts-swatch[data-on='false'] {
+  opacity: 0.25;
+}
+.wts-swatch[data-on='true'] {
+  outline-color: var(--color-base-content, currentColor);
+}
 .wts-name {
   flex: 1;
   min-width: 0;

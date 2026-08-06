@@ -101,6 +101,38 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
     return c.json((await sql.listNodes(season)).map(publicNode))
   })
 
+  routes.patch('/:id', async (c) => {
+    const nodeId = c.req.param('id')
+    if (!UUID_V7.test(nodeId)) {
+      return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
+    }
+    const body: unknown = await c.req.json().catch(() => null)
+    if (typeof body !== 'object' || body === null) return c.json({ error: 'invalid body' }, 400)
+    const { name } = body as { name?: unknown }
+    if (typeof name !== 'string' || name.length === 0 || name.length > MAX_NAME_LENGTH) {
+      return c.json({ error: 'name must be 1..256 characters' }, 400)
+    }
+    const segment = slug(name)
+    if (segment.length === 0) return c.json({ error: 'name must contain a letter or number' }, 400)
+
+    const node = await sql.readNode(nodeId)
+    if (node === null) return c.json({ error: 'not found' }, 404)
+    // The path is the parent's plus this node's own segment, so a rename only ever rewrites the
+    // last segment — the prefix is whatever the parent already established.
+    const parentPath = node.path.slice(0, node.path.lastIndexOf('/'))
+    const path = `${parentPath}/${segment}`
+    if (path.length > MAX_PATH_LENGTH) return c.json({ error: 'derived path is too long' }, 400)
+
+    try {
+      const renamed = await sql.renameNode(nodeId, name, path)
+      if (!renamed) return c.json({ error: 'not found' }, 404)
+    } catch (error) {
+      if (error instanceof NodePathConflictError) return c.json({ error: error.message }, 409)
+      throw error
+    }
+    return c.json(publicNode({ ...node, name, path }))
+  })
+
   routes.delete('/:id', async (c) => {
     const nodeId = c.req.param('id')
     if (!UUID_V7.test(nodeId)) {

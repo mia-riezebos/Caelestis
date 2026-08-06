@@ -121,6 +121,15 @@ export interface SqlStore {
 
   listNodes(season: number): Promise<readonly NodeRecord[]>
 
+  /**
+   * Rename a node and rewrite the paths of everything beneath it.
+   *
+   * `path` is a materialized prefix, so a rename is not a one-row update: every descendant carries
+   * the old path as a prefix and has to move with it, atomically. Returns false when the id does not
+   * exist, and throws `NodePathConflictError` when the new path collides with a sibling.
+   */
+  renameNode(nodeId: string, name: string, path: string): Promise<boolean>
+
   deleteNode(nodeId: string): Promise<void>
 
   /** Atomically add a version, its tile index, and make it the template's current version. */
