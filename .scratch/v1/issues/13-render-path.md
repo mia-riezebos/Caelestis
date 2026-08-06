@@ -161,3 +161,67 @@ proportional to what is on screen rather than to tile area × template count.
 
 The open question is not whether to do this but how to reach the map — see the three routes in
 `10-recon-map-stack-and-triangle-mode`.
+
+## Alignment is solved: MapLibre tells us exactly where every tile is drawn
+
+The overlay does not need the `Map` instance, and it does not need the URL (which does not update
+during cursor interaction anyway). The transform is readable straight off the GL context.
+
+**The key that unlocked it:** `gl.getUniformLocation(program, name)` takes the uniform's name as a
+*string*. Hooking it builds a `WebGLUniformLocation → name` map, after which `uniformMatrix4fv` stops
+being an anonymous blob of 16 floats. The uniforms MapLibre uploads are:
+
+| uniform | uploads per load |
+|---|---|
+| `u_projection_matrix` | 20,304 |
+| `u_label_plane_matrix` | 133 |
+| `u_coord_matrix` | 133 |
+
+**The method**, all of it installable from `document-start`:
+
+1. Patch `HTMLCanvasElement.prototype.getContext` to wrap the WebGL2 context before MapLibre gets
+   it — proved working.
+2. Patch `getUniformLocation` to learn which location is `u_projection_matrix`.
+3. Patch `uniformMatrix4fv` to keep the current value of that uniform.
+4. Patch `texImage2D` to note which textures are 1000×1000 — those are wplace's tiles, and nothing
+   else on the map is that size.
+5. Patch `drawArrays`/`drawElements`; when the bound texture is one of those, the live
+   `u_projection_matrix` is that tile's transform.
+
+Transforming tile-local `(0,0)` and `(8192, 8192)` — MapLibre's tile extent, not our 1000 — through
+that matrix gives the tile's screen rectangle in CSS pixels. Measured on a 1200×800 canvas at
+zoom 11:
+
+```
+tile A   top-left (664, 373)    512 x 512
+tile B   top-left (1176, 373)   512 x 512     664 + 512 = 1176
+tile C   top-left (1176, -139)  512 x 512     373 - 512 = -139
+```
+
+A perfect grid, exact to the pixel, with no drift and nothing reimplemented — it is MapLibre's own
+matrix, so it is correct by construction under pan, zoom, rotation and pitch alike.
+
+**This fits our chunk model exactly.** Our chunks are whole tiles, so "where does tile `(x, y)` land
+on screen" is precisely and only what an overlay needs. Draw each covered chunk into its quad on our
+own canvas, stacked over `canvas.maplibregl-canvas`.
+
+### The one remaining piece: which quad is which tile
+
+The quads arrive without identity. Attribution by blob identity does **not** work — `Response.blob()`
+returns a fresh `Blob`, so a `WeakMap` keyed on the blob we saw in the fetch shim never matches. That
+was tried and returned zero attributions.
+
+It only needs solving once per view, because the grid is uniform: given one correct attribution and
+the spacing `S`, every other tile follows from
+`screenTopLeft(x₂, y₂) = screenTopLeft(x₁, y₁) + ((x₂ - x₁)·S, (y₂ - y₁)·S)`.
+
+Two ways to get that one anchor, neither yet built:
+
+- **By byte length.** The fetch shim knows each tile's URL and its response size; match a texture
+  upload to the tile whose PNG had that length. Unambiguous for painted tiles; empty ones are all
+  73 bytes, but they are also the ones where attribution does not matter.
+- **By position.** The shim knows the *set* of tiles in view. Sort the quads by screen position and
+  the tile coordinates by `(x, y)`; on a uniform grid the two orderings agree.
+
+Prefer the second — it needs no content inspection and cannot be confused by two tiles that happen to
+compress to the same size.
