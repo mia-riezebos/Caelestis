@@ -208,6 +208,11 @@ export const install = (): void => {
       if (boundTexture !== null && source instanceof ImageBitmap) {
         const tile = tileOfBitmap.get(source)
         if (tile !== undefined) tileOfTexture.set(boundTexture, tile)
+        // MapLibre pools textures. If one we had attributed is re-uploaded with an image we cannot
+        // attribute, the old coordinate is now a lie, and keeping it would draw a template on
+        // whatever tile inherited that texture. Forget it instead — a tile we cannot name is a tile
+        // we decline to draw on.
+        else tileOfTexture.delete(boundTexture)
       }
       return (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs)
     }) as typeof gl.texImage2D
@@ -218,9 +223,19 @@ export const install = (): void => {
       // when the user zooms out past the point where wplace serves tiles at all.
       if (!scheduled) {
         scheduled = true
-        // After MapLibre's frame rather than during it: our canvas is separate, so there is nothing
-        // to interleave, and drawing mid-frame would fight its GL state.
-        requestAnimationFrame(flush)
+        // A microtask, deliberately, not requestAnimationFrame.
+        //
+        // MapLibre renders from inside its own rAF callback, so an rAF scheduled from here does not
+        // run until the *next* frame: the overlay lands one frame behind, and during a pan it visibly
+        // swims against the tiles it is supposed to be pinned to. Measured over a real drag, 37 of 57
+        // samples were a whole task late that way.
+        //
+        // A microtask runs at the end of MapLibre's current task — after every draw call in the
+        // frame, so the quad set is complete, but before the browser paints. Same frame, 57 of 57.
+        // This is also why the overlay needs no motion prediction: there is no lag left to predict
+        // away, and predicting would mean reproducing the transform, which is the drift this whole
+        // approach exists to avoid.
+        queueMicrotask(flush)
       }
       if (boundTexture === null || projection === null) return
       const tile = tileOfTexture.get(boundTexture)
