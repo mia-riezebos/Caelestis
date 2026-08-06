@@ -74,7 +74,13 @@ decode and the composite step are all pure and testable in vitest with no browse
 shim's install timing and the interception itself genuinely need the live page.
 
 So: get everything else green first, and spend browser rounds only on the part nothing else can
-verify. Claude cannot drive a browser here; codex can, via the `codex-computer-use` skill.
+verify.
+
+**The browser half has its own handoff**: `handoff-userscript-browser.md`. It covers which branch to
+check out, how the stack is arranged, how to run the server and seed a template locally, how to build
+and install the userscript, and — most importantly — the six recon questions that have to be answered
+on a real page before any shim code is worth writing. Three of them decide whether the interception
+model in `05-rendering-model` is viable at all.
 
 ## Working agreements — several changed
 
@@ -91,7 +97,6 @@ verify. Claude cannot drive a browser here; codex can, via the `codex-computer-u
 - Feature branch per slice, stacked. Never merge to `main` directly.
 - Use `AskUserQuestion` for grilling questions, not prose.
 - Keep going between units of work without asking permission.
-- Chromium.app has a logged-in wplace session on Mia's machine and can be driven for recon.
 
 ## Traps that have cost real time
 
