@@ -103,3 +103,61 @@ and **must not read `response.ok` as "there is a tile here"**. Detect empty by c
 404 as an ordinary, expected outcome rather than an error path. Getting this wrong makes the
 behaviour depend on whether the user has visited before, which is about the worst possible shape for
 a bug.
+
+## How BlueMarble and SkirkMarble actually do it — read, not assumed
+
+Both were cloned and read at `1f0…`/HEAD on 2026-08-06. **SkirkMarble is a fork of BlueMarble** —
+same injected bridge, same message `source: 'blue-marble-canvas-change'`, same
+`resolve(new Response(blobProcessed, …))`. Architecturally there is one design here, not two.
+
+**They rewrite the tile. Neither draws a canvas over the map.** The chain, in BlueMarble's
+`src/main.js`:
+
+1. The script runs in the manager's sandbox (`@grant GM_getValue`, `GM_addStyle`, `GM.setValue`, …).
+2. It `inject()`s a `<script>` element into the page so it can patch `window.fetch` in page context —
+   the sandbox cannot do that directly.
+3. The page-context patch clones every response. JSON goes to the sandbox as data. Anything
+   `image/*` that is not the basemap is held: it generates a UUID, parks a resolver in a
+   `fetchedBlobQueue`, and `postMessage`s the blob out.
+4. The sandbox composites templates into the blob and posts it back.
+5. The parked resolver returns `new Response(blobProcessed, { headers, status, statusText })`.
+
+**This is worth knowing for us: `@grant` is not a fork in the road.** The earlier note here said
+recon proved only the `@grant none` path. BlueMarble shows the sandboxed path works too, via the
+injected-`<script>` bridge — at the cost of a `postMessage` round trip per tile, with the blob
+crossing the boundary twice.
+
+### Why it gets slow, which is the reason not to copy it
+
+`templateManager.js` sets `drawMult = 3` — every template pixel is drawn as a dot inside a 3×3 cell,
+so the template reads as sparse dots over wplace's real pixels rather than hiding them. That is a
+neat trick for visibility without occlusion, and it is what makes it expensive:
+
+- `drawSize = tileSize * drawMult` = **3000×3000**, so an `OffscreenCanvas` of 9 M pixels per tile.
+- `context.getImageData(0, 0, drawSize, drawSize)` materialises **36 MB per tile** as an RGBA array.
+- That is per tile, per pan — a dozen visible tiles is on the order of half a gigabyte of pixel work
+  per view change, before any template compositing happens.
+- Every template covering a tile is composited into that same canvas, so cost grows with template
+  count as well as with view area.
+
+Neither project has any cache invalidation tied to a filter change — no `reload`, no `refreshTile`,
+no invalidate hook in `WindowFilter.js` or `templateManager.js`. Changing a colour filter therefore
+does not repaint what is on screen; the user has to pan or zoom to make MapLibre re-request tiles.
+That is the concrete cost of putting our pixels inside wplace's, and it is the argument for keeping
+them in a layer of our own.
+
+### What this means for our design
+
+The interception stays, but as a **tap**, not a rewrite:
+
+- strip the coordinates → know which tiles are in view
+- keep wplace's actual pixels → offer to the server (ticket 17), and diff against the template for
+  progress
+- **return the response untouched**
+
+Rendering goes on our own layer, so a per-colour toggle or a view-mode change is a redraw of our
+layer alone: no re-fetch, no re-decode, no interaction with MapLibre's tile cache, and cost
+proportional to what is on screen rather than to tile area × template count.
+
+The open question is not whether to do this but how to reach the map — see the three routes in
+`10-recon-map-stack-and-triangle-mode`.
