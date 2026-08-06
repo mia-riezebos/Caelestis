@@ -1,4 +1,4 @@
-import { TILE_SIZE } from '@wts/shared'
+import { TILE_SIZE, tileKey } from '@wts/shared'
 import {
   canvasPixelAtIn,
   pixelsPerCanvasPixelIn,
@@ -8,6 +8,14 @@ import {
 import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
+import { DEFAULT_APPEARANCE } from './templates/appearance.js'
+import {
+  levelFor,
+  localTemplates,
+  onLocalChange,
+  restoreLocalTemplates,
+  stampTile,
+} from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 
 /**
@@ -18,8 +26,7 @@ import { install, onTileFrame, type TileFrame } from './tile-transform.js'
  * showing — nothing is composited into wplace's own tiles, so per-colour filters and view modes
  * stay possible for whatever draws here later.
  *
- * This module owns the canvas and the screen/canvas coordinate conversions. It does not know what
- * gets drawn on it.
+ * This module owns the canvas, painter registration, and the screen/canvas coordinate conversions.
  */
 
 let retainedOverlayCanvas: HTMLCanvasElement | null = null
@@ -119,6 +126,50 @@ export const pixelsPerCanvasPixel = (): number => {
  * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
  * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
  */
+/** Draws every visible template over the tiles wplace is currently showing. */
+const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
+  const visible = localTemplates().filter((template) => template.visible)
+  if (visible.length === 0) return
+
+  let drawn = 0
+  for (const quad of frame.quads) {
+    const key = tileKey(quad.tile)
+    // Match wplace's own texture filtering, measured off their GL calls: LINEAR when minifying,
+    // NEAREST when magnifying. Pixel art must stay crisp past 100%, and must stop shimmering below
+    // it — one setting cannot do both, which is why they switch and so do we.
+    const magnifying = quad.width >= TILE_SIZE
+    context.imageSmoothingEnabled = !magnifying
+    if (!magnifying) context.imageSmoothingQuality = 'high'
+
+    for (const template of visible) {
+      const appearance = template.appearance ?? DEFAULT_APPEARANCE
+      // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
+      // per frame; the stamp is rebuilt only when the appearance changes.
+      const tile = stampTile(template, key, appearance)
+      if (tile === undefined) continue
+      context.globalAlpha = appearance.opacity
+      // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
+      // than 2x. One drawImage per tile per template, whatever the template's size.
+      const bitmap = magnifying ? (tile.levels[0] as ImageBitmap) : levelFor(tile, quad.width)
+      // Snap both edges to whole device pixels, and derive width from the snapped edges rather
+      // than rounding the width itself.
+      //
+      // MapLibre hands us fractional quads, and two neighbours that abut exactly in canvas space
+      // land on edges like 511.6 and 511.9 — so one tile stops a fraction before the next starts
+      // and the background shows through as a hairline seam. Rounding each edge with the same rule
+      // makes a shared boundary land on the same integer from both sides, so they meet exactly.
+      const left = Math.round(quad.x)
+      const top = Math.round(quad.y)
+      const right = Math.round(quad.x + quad.width)
+      const bottom = Math.round(quad.y + quad.height)
+      context.drawImage(bitmap, left, top, right - left, bottom - top)
+      context.globalAlpha = 1
+      drawn++
+    }
+  }
+  if (drawn > 0) log('draw', `painted ${drawn} template tiles`, { quads: frame.quads.length })
+}
+
 let marked: { x: number; y: number } | null = null
 
 const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
@@ -154,8 +205,13 @@ const main = (): void => {
   } catch {
     // Browser hooks are best-effort around page-owned surfaces.
   }
+  // Templates outlive a page load, which is what makes navigating to one survivable at all.
+  void restoreLocalTemplates()
+  onPaint(paintTemplates)
   onPaint(paintMark)
   onTileFrame(draw)
+  // A template appearing or moving has to repaint even if MapLibre is idle.
+  onLocalChange(repaint)
   try {
     console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
   } catch {

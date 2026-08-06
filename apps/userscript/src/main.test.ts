@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   draw: null as ((frame: unknown) => void) | null,
   debugApi: null as Record<string, unknown> | null,
+  localChange: null as (() => void) | null,
   paintFrame: vi.fn(),
+  restoreLocalTemplates: vi.fn(async () => {}),
 }))
 
 vi.mock('./debug.js', () => ({
@@ -15,6 +17,15 @@ vi.mock('./debug.js', () => ({
 }))
 vi.mock('./map-handle.js', () => ({ installMapCapture: vi.fn() }))
 vi.mock('./paint.js', () => ({ paintFrame: harness.paintFrame }))
+vi.mock('./templates/local-store.js', () => ({
+  levelFor: vi.fn(),
+  localTemplates: vi.fn(() => []),
+  onLocalChange: vi.fn((listener: () => void) => {
+    harness.localChange = listener
+  }),
+  restoreLocalTemplates: harness.restoreLocalTemplates,
+  stampTile: vi.fn(),
+}))
 vi.mock('./tile-transform.js', () => ({
   install: vi.fn(),
   onTileFrame: vi.fn((draw: (frame: unknown) => void) => {
@@ -28,6 +39,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   harness.draw = null
   harness.debugApi = null
+  harness.localChange = null
 })
 
 describe('overlay canvas lifecycle', () => {
@@ -152,9 +164,9 @@ describe('overlay canvas lifecycle', () => {
     const painters = harness.paintFrame.mock.calls[0]?.[2] as
       | Array<(context: unknown, frame: unknown) => void>
       | undefined
-    if (painters?.[0] === undefined) throw new Error('main must register its mark painter')
+    if (painters?.[1] === undefined) throw new Error('main must register its mark painter')
 
-    painters[0](context, frame)
+    painters[1](context, frame)
 
     expect(context.fillStyle).toBe('rgba(0, 0, 0, 0.6)')
     expect(context.fillRect).toHaveBeenCalledOnce()
