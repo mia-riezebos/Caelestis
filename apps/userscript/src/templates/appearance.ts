@@ -44,10 +44,27 @@ export const DEFAULT_APPEARANCE: Appearance = {
  */
 export const scaleFor = (appearance: Appearance): number => (appearance.shape === 'full' ? 1 : 3)
 
+/**
+ * Whether a template pixel of this index should be left unpainted by the overlay.
+ *
+ * Index 63 is not "transparent" in a template — it is **wildcard**: this pixel may be anything.
+ * wplace does let you paint 63, so it is a real colour on their palette, but a template that stored
+ * it as a requirement would be demanding the canvas be *erased* there, which is a different and much
+ * stronger claim than the one templates make. So the overlay draws nothing over a wildcard, leaving
+ * whatever is underneath visible and correct.
+ *
+ * Progress must read it the same way when it is built: a wildcard matches whatever is already on
+ * the canvas and can never be counted wrong.
+ */
 export const isColourHidden = (appearance: Appearance, index: number): boolean =>
   index === TRANSPARENT_INDEX || appearance.hiddenColours.includes(index)
 
-/** Every drawable palette index, in palette order. */
+/**
+ * Every index a template can *require*, in palette order.
+ *
+ * Excludes the wildcard, which is why this is not simply the palette: a wildcard is a statement
+ * about not caring, so it is never something to filter, count, or offer a switch for.
+ */
 export const drawableIndices = (): readonly number[] =>
   Array.from({ length: PALETTE_SIZE }, (_, index) => index).filter(
     (index) => index !== TRANSPARENT_INDEX,
