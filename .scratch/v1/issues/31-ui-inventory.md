@@ -4,9 +4,9 @@ Type: reference
 Status: living
 GitHub: —
 
-Written after a settings panel shipped a "sort by name / progress / server order" dropdown that
-contradicted a decision taken weeks earlier. The decisions were all recorded; they were just spread
-across five documents and none of them was named "UI". This is the index.
+Written after a settings panel shipped a sort dropdown in the wrong place, against a decision taken
+weeks earlier about how ordering works. The decisions were all recorded; they were just spread across
+five documents and none of them was named "UI". This is the index.
 
 **Read this before adding any control.** If a control offers a choice, check here first that the
 choice has not already been made.
@@ -16,7 +16,8 @@ choice has not already been made.
 | Decision | Where | What it forbids |
 |---|---|---|
 | **Draw order is the user's own, always.** Client-side, no accounts, no sync. New templates sort most-recent-first. | `02` amendment 2026-08-06, `schema-draft` | Any server-supplied ordering. Sort modes changing what draws on top. |
-| **The tree has sort modes as *views***: custom, created, activity, progress, name, each with a direction. `custom` is the resting state and the only one that is the draw order. | `02` amendment 2026-08-06 | Sorting silently reshuffling the canvas. |
+| **Sort lives above the tree, beside search** — never in settings. Modes are custom, created, activity, progress, name, each with a direction. | `02` amendment 2026-08-06 | A sort control in the settings view. |
+| **Sort modes are *views***; `custom` is the resting state and the only one that is the draw order. | `02` amendment 2026-08-06 | Sorting silently reshuffling the canvas. |
 | **Draw order is not stored server-side.** No `sort_order` anywhere; the client owns the whole z-tuple including cross-server priority. | `02` amendment, `schema-draft` | A server expressing layering intent. Server order in the manifest. |
 | **The drawer owns *which overlays exist*. A map-anchored button owns *how each one looks*.** | `29` | Per-overlay opacity/shape/colour controls in the drawer, and the "which template am I configuring" selector they would require. |
 | **Checkmarks, not switches**, tri-state on nodes. | `30` | Toggle switches in the tree. |

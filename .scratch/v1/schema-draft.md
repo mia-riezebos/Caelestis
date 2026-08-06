@@ -93,10 +93,10 @@ to express it, and different members may see different results.
 **Settled 2026-08-06: draw order is always the user's own.** The userscript stores a custom order
 client-side, with no account behind it and nothing synced.
 
-The tree does offer sort modes — `created`, `activity`, `progress`, `name`, each with a direction —
-but they are **views for finding something**, not orderings of the canvas. `custom` is the resting
-state and the only one that is the draw order. Sorting by progress to see what needs work must not
-reshuffle what draws on top of what.
+The tree's toolbar offers sort modes — `created`, `activity`, `progress`, `name`, each with a
+direction — but they are **views for finding something**, not orderings of the canvas. `custom` is
+the resting state and the only one that is the draw order. Sorting by progress to see what needs work
+must not reshuffle what draws on top of what.
 
 **Newly-seen templates arrive most-recent-first**, not oldest-first as previously written here. The
 moment that matters is connecting to a server, or a server publishing a batch: dropping a hundred
