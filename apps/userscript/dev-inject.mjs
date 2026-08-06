@@ -71,18 +71,19 @@ class Tab {
       if (message.id !== undefined) {
         const settle = tab.#pending.get(message.id)
         tab.#pending.delete(message.id)
-        if (settle) (message.error ? settle.reject : settle.resolve)(message.error ?? message.result)
+        if (settle)
+          (message.error ? settle.reject : settle.resolve)(message.error ?? message.result)
         return
       }
       if (message.method === 'Runtime.consoleAPICalled') {
-        const text = message.params.args
-          .map((a) => a.value ?? a.description ?? a.type)
-          .join(' ')
+        const text = message.params.args.map((a) => a.value ?? a.description ?? a.type).join(' ')
         if (text.includes('[wts]')) console.log(`  page> ${text}`)
       }
       if (message.method === 'Runtime.exceptionThrown') {
-        console.error(`  page! ${message.params.exceptionDetails.text}`,
-          message.params.exceptionDetails.exception?.description ?? '')
+        console.error(
+          `  page! ${message.params.exceptionDetails.text}`,
+          message.params.exceptionDetails.exception?.description ?? '',
+        )
       }
     })
     return tab
@@ -108,7 +109,8 @@ const load = async () => {
   // harness runs the script in places the shipped script never would, and any bug that causes
   // shows up only here.
   const source = `if (/^https:\\/\\/wplace\\.live\\//.test(location.href)) {\n${bundle}\n}`
-  if (installed) await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: installed })
+  if (installed)
+    await tab.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: installed })
   const { identifier } = await tab.send('Page.addScriptToEvaluateOnNewDocument', { source })
   installed = identifier
   await tab.send('Page.navigate', { url })
