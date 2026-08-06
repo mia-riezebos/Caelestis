@@ -30,10 +30,37 @@ await cdp.evaluate("document.querySelector('#wts-panel [data-wts-back]').click()
 await sleep(600)
 console.log('checkboxes all on?', await cdp.evaluate("[...document.querySelectorAll('#wts-panel [data-wts-body] input[type=checkbox]')].map(c=>c.checked).join(',')"))
 console.log('caret rotations  :', await cdp.evaluate("[...document.querySelectorAll('#wts-panel [data-wts-body] svg')].map(s=>s.style.transform||'-').join(' ')"))
+// Hover the first row so the card treatment shows in the screenshot.
+const box = await cdp.evaluate("(() => { const r = document.querySelector('#wts-panel .wts-row').getBoundingClientRect(); return JSON.stringify([r.left + r.width/2, r.top + r.height/2]) })()")
+const [hx, hy] = JSON.parse(box)
+await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hx, y: hy })
+await sleep(300)
+console.log('draggable rows  :', await cdp.evaluate("[...document.querySelectorAll('#wts-panel .wts-row')].map(r=>r.draggable).join(',')"))
+console.log('hovered bg      :', await cdp.evaluate("getComputedStyle(document.querySelector('#wts-panel .wts-row')).backgroundColor"))
 await shot('/tmp/wts-tree-expanded.png')
+// Click the row body (not the checkbox) to confirm the whole row toggles.
+await cdp.evaluate("document.querySelector('#wts-panel .wts-row .wts-name').click()")
+await sleep(400)
+console.log('row click toggles:', await cdp.evaluate("document.querySelector('#wts-panel .wts-row').getAttribute('aria-expanded')"))
 // Collapse Local and confirm the caret turns and children vanish.
 await cdp.evaluate("document.querySelectorAll('#wts-panel [data-wts-body] button[aria-expanded]')[0].click()")
 await sleep(500)
 console.log('after collapse   :', await cdp.evaluate("document.querySelectorAll('#wts-panel [data-wts-body] button[aria-expanded]')[0].getAttribute('aria-expanded') + ' rot=' + document.querySelector('#wts-panel [data-wts-body] svg').style.transform"))
 await shot('/tmp/wts-tree-collapsed.png')
+
+// Drag the second root above the first and confirm the stored order actually changes.
+console.log('order before    :', await cdp.evaluate("[...document.querySelectorAll('#wts-panel .wts-row')].map(r=>r.dataset.wtsKey).join(' | ')"))
+await cdp.evaluate(`(() => {
+  const rows = [...document.querySelectorAll('#wts-panel .wts-row')]
+  const from = rows[1], to = rows[0]
+  const dt = new DataTransfer()
+  from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }))
+  const box = to.getBoundingClientRect()
+  const opts = { bubbles: true, dataTransfer: dt, clientY: box.top + 2 }
+  to.dispatchEvent(new DragEvent('dragover', opts))
+  to.dispatchEvent(new DragEvent('drop', opts))
+})()`)
+await sleep(500)
+console.log('order after     :', await cdp.evaluate("[...document.querySelectorAll('#wts-panel .wts-row')].map(r=>r.dataset.wtsKey).join(' | ')"))
+console.log('persisted       :', await cdp.evaluate("JSON.parse(localStorage.getItem('caelestis.state.v1')).customOrder.join(' | ')"))
 cdp.close(); await closeTab(tab.id)

@@ -38,6 +38,8 @@ export type ColourFilter = 'all' | 'free' | 'premium' | 'owned'
 
 export interface State {
   readonly servers: readonly ConnectedServer[]
+  /** Row keys in the user's own order. Keys absent from this list sort after those present. */
+  readonly customOrder: readonly string[]
   readonly sort: SortOrder
   readonly progress: ProgressPlacement
   readonly colours: ColourFilter
@@ -47,6 +49,7 @@ export interface State {
 
 const DEFAULT_STATE: State = {
   servers: [],
+  customOrder: [],
   sort: DEFAULT_SORT,
   progress: 'inline',
   colours: 'all',

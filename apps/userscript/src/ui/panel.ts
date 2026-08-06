@@ -9,6 +9,7 @@ import {
 } from '../state.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
+import { installStyles } from './styles.js'
 import { treeContents } from './tree.js'
 
 /**
@@ -574,6 +575,7 @@ const setOpen = (next: boolean): void => {
  */
 export const installPanel = (): void => {
   loadState()
+  installStyles()
   let warned = false
   const attach = (): void => {
     const existing = document.getElementById(BUTTON_ID)
