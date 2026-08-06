@@ -189,12 +189,18 @@ const treeView = (): HTMLElement => {
 
   const body = document.createElement('div')
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
-  body.appendChild(
-    treeContents({
-      onAddServer: () => showView('settings'),
-      onImportLocal: () => warn('install', 'local import is not built yet'),
-    }),
-  )
+  const renderTree = (): void => {
+    body.replaceChildren(
+      treeContents(
+        {
+          onAddServer: () => showView('settings'),
+          onImportLocal: () => warn('install', 'local import is not built yet'),
+        },
+        renderTree,
+      ),
+    )
+  }
+  renderTree()
 
   view.append(toolbar, body)
   return view
@@ -401,12 +407,6 @@ const settingsView = (): HTMLElement => {
   addRow.append(url, add)
   view.appendChild(addRow)
   view.appendChild(status)
-  const noServers = document.createElement('p')
-  noServers.className = 'text-xs opacity-60 px-3 pb-2'
-  // Asking for a code before knowing one is needed is the likeliest place to lose someone on
-  // first run, so say when it will be asked for rather than asking pre-emptively.
-  noServers.textContent = 'You will only be asked for an access code if the server needs one.'
-  view.appendChild(noServers)
 
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
