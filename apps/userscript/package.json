@@ -8,7 +8,9 @@
     "dev": "node build.mjs --watch",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist .turbo",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "inject": "node dev-inject.mjs",
+    "inject:watch": "node dev-inject.mjs --watch"
   },
   "dependencies": {
     "@wts/shared": "workspace:*"
