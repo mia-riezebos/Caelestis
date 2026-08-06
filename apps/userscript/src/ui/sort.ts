@@ -23,6 +23,16 @@ export interface SortOrder {
 
 export const DEFAULT_SORT: SortOrder = { field: 'custom', direction: 'asc' }
 
+/**
+ * Dragging to reorder is only possible in `custom`.
+ *
+ * The alternative — letting a drag happen under a name or progress sort — means editing an order
+ * the user cannot currently see, and then showing them a list that does not reflect the edit. This
+ * predicate exists so the tree cannot forget to ask: reordering is a capability of a mode, not of
+ * the tree.
+ */
+export const isReorderable = (order: SortOrder): boolean => order.field === 'custom'
+
 /** Label, plus what its two directions actually mean — "ascending" tells nobody anything. */
 const FIELDS: ReadonlyArray<{
   readonly field: SortField
@@ -58,8 +68,11 @@ export const sortControl = (
   const trigger = document.createElement('button')
   trigger.type = 'button'
   trigger.className = 'btn btn-sm btn-ghost btn-square'
-  trigger.title = `Sort: ${labelFor(current)}`
-  trigger.setAttribute('aria-label', `Sort: ${labelFor(current)}`)
+  const tooltip = isReorderable(current)
+    ? `Sort: ${labelFor(current)}`
+    : `Sort: ${labelFor(current)} — switch to Custom to reorder`
+  trigger.title = tooltip
+  trigger.setAttribute('aria-label', tooltip)
   trigger.setAttribute('tabindex', '0')
   trigger.appendChild(icon('sort', 'size-4'))
   // Custom is the resting state, so it gets no directional mark; anything else is a deliberate

@@ -18,6 +18,7 @@ choice has not already been made.
 | **Draw order is the user's own, always.** Client-side, no accounts, no sync. New templates sort most-recent-first. | `02` amendment 2026-08-06, `schema-draft` | Any server-supplied ordering. Sort modes changing what draws on top. |
 | **Sort lives above the tree, beside search** — never in settings. Modes are custom, created, activity, progress, name, each with a direction. | `02` amendment 2026-08-06 | A sort control in the settings view. |
 | **Sort modes are *views***; `custom` is the resting state and the only one that is the draw order. | `02` amendment 2026-08-06 | Sorting silently reshuffling the canvas. |
+| **Drag to reorder is disabled outside `custom`.** Enforced by `isReorderable()` in `ui/sort.ts`. | `02` amendment 2026-08-06 | Dragging under a name or progress sort. |
 | **Draw order is not stored server-side.** No `sort_order` anywhere; the client owns the whole z-tuple including cross-server priority. | `02` amendment, `schema-draft` | A server expressing layering intent. Server order in the manifest. |
 | **The drawer owns *which overlays exist*. A map-anchored button owns *how each one looks*.** | `29` | Per-overlay opacity/shape/colour controls in the drawer, and the "which template am I configuring" selector they would require. |
 | **Checkmarks, not switches**, tri-state on nodes. | `30` | Toggle switches in the tree. |
@@ -57,9 +58,6 @@ probes.
   position.
 - **Where reordering happens** — drag in the tree is assumed but not specified, and drag on a
   tri-state tree with collapsed nodes is not a small design.
-- **What dragging does while a non-custom sort is showing.** Either it is disabled, or it switches
-  back to custom and applies the drag, or it silently edits an order you cannot see. The third is
-  clearly wrong; the first two are both defensible.
 - **Alarm magnitude thresholds**, and whether alarms self-clear (`20`).
 - **Which display modes ship**, shapes, anchors, render scale (`14`).
 - **Per-overlay button anchoring lifecycle** (`29`).

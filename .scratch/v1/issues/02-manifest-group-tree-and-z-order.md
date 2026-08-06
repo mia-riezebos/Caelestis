@@ -202,7 +202,9 @@ Closes the "default order" question left open above and in `schema-draft.md`.
   is rather than two clicks away behind a gear.
 
   **Sorting is a view; draw order stays custom.** `custom` is the resting state and the only mode
-  that *is* the order. Sorting by progress to see what needs work must not silently reshuffle which
+  that *is* the order, and **dragging to reorder is disabled in every other mode** — a drag under a
+  name or progress sort would edit an order the user cannot see and then show them a list that does
+  not reflect it. Sorting by progress to see what needs work must not silently reshuffle which
   template draws on top of which. A viewer's presentation preference and the compositing order were
   separated once already, higher up this ticket; this keeps them separated on the client too.
 - **Templates the client has not seen before sort most-recent-first.** Reverses "oldest first by
