@@ -1,6 +1,8 @@
 import { log, warn } from '../debug.js'
+import { getState, loadState, probeServer, setState } from '../state.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
+import { treeContents } from './tree.js'
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -179,9 +181,13 @@ const treeView = (): HTMLElement => {
   )
 
   const body = document.createElement('div')
-  body.className = ''
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
-  body.appendChild(emptyState())
+  body.appendChild(
+    treeContents({
+      onAddServer: () => showView('settings'),
+      onImportLocal: () => warn('install', 'local import is not built yet'),
+    }),
+  )
 
   view.append(toolbar, body)
   return view
@@ -246,8 +252,40 @@ const settingsView = (): HTMLElement => {
   const add = document.createElement('button')
   add.className = 'btn btn-sm btn-primary'
   add.textContent = 'Add'
+  const status = document.createElement('p')
+  status.className = 'text-xs px-3 pb-2'
+  status.style.display = 'none'
+
+  const connect = async (): Promise<void> => {
+    const value = url.value.trim()
+    if (value === '') return
+    add.classList.add('btn-disabled')
+    status.style.display = ''
+    status.className = 'text-xs px-3 pb-2 opacity-60'
+    status.textContent = 'Connecting…'
+    const server = await probeServer(value, null)
+    add.classList.remove('btn-disabled')
+    if (server.status === 'unreachable') {
+      status.className = 'text-xs px-3 pb-2 text-error'
+      status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
+      return
+    }
+    setState({ servers: [...getState().servers.filter((s) => s.url !== server.url), server] })
+    status.className = 'text-xs px-3 pb-2 text-success'
+    status.textContent =
+      server.status === 'needs-token'
+        ? `Found ${server.info?.name ?? server.url} — it needs an access code.`
+        : `Connected to ${server.info?.name ?? server.url}.`
+    url.value = ''
+  }
+
+  add.addEventListener('click', () => void connect())
+  url.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') void connect()
+  })
   addRow.append(url, add)
   view.appendChild(addRow)
+  view.appendChild(status)
   const noServers = document.createElement('p')
   noServers.className = 'text-xs opacity-60 px-3 pb-2'
   // Asking for a code before knowing one is needed is the likeliest place to lose someone on
@@ -353,7 +391,9 @@ const buildPanel = (): HTMLElement => {
   settingsButton.setAttribute('aria-label', 'Settings')
   settingsButton.setAttribute('aria-pressed', 'false')
   settingsButton.appendChild(icon('settings', 'size-4'))
-  settingsButton.addEventListener('click', () => showView('settings'))
+  settingsButton.addEventListener('click', () =>
+    showView(currentView === 'settings' ? 'tree' : 'settings'),
+  )
 
   const closeButton = document.createElement('button')
   closeButton.className = 'btn btn-ghost btn-xs btn-circle'
@@ -416,6 +456,7 @@ const setOpen = (next: boolean): void => {
  * a non-event.
  */
 export const installPanel = (): void => {
+  loadState()
   let warned = false
   const attach = (): void => {
     const existing = document.getElementById(BUTTON_ID)
