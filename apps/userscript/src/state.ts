@@ -106,6 +106,20 @@ export const onStateChange = (listener: (next: State) => void): void => {
   listeners.push(listener)
 }
 
+/** Replace one server in place, keyed by url, preserving the order of the rest. */
+export const upsertServer = (server: ConnectedServer): void => {
+  const servers = getState().servers
+  const index = servers.findIndex((s) => s.url === server.url)
+  setState({
+    servers:
+      index === -1 ? [...servers, server] : servers.map((s, i) => (i === index ? server : s)),
+  })
+}
+
+export const removeServer = (url: string): void => {
+  setState({ servers: getState().servers.filter((s) => s.url !== url) })
+}
+
 /**
  * Ask a server who it is.
  *
@@ -129,14 +143,25 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
       }
     }
     const info = (await response.json()) as ServerInfo
-    const needsToken = info.auth === 'access_token' && token === null
-    log('install', `probed ${base}`, { name: info.name, auth: info.auth, needsToken })
-    return {
-      url: base,
-      info,
-      token,
-      status: needsToken ? 'needs-token' : 'connected',
+    log('install', `probed ${base}`, { name: info.name, auth: info.auth })
+
+    if (info.auth !== 'access_token') return { url: base, info, token, status: 'connected' }
+    if (token === null) return { url: base, info, token: null, status: 'needs-token' }
+
+    // `GET /server` is public and never looks at the Authorization header, so reaching it proves
+    // nothing about a code. Without this second call any non-empty string read as "connected" and
+    // every later request failed with 401 — caught by typing a deliberately wrong code.
+    const authed = await fetch(`${base}/manifest`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    if (authed.status === 401 || authed.status === 403) {
+      log('install', `${base} rejected the code`, { status: authed.status })
+      return { url: base, info, token: null, status: 'needs-token', error: 'rejected' }
     }
+    if (!authed.ok) {
+      return { url: base, info, token, status: 'unreachable', error: `HTTP ${authed.status}` }
+    }
+    return { url: base, info, token, status: 'connected' }
   } catch (error) {
     // A bad hostname, a refused connection, or a server without CORS all land here, and the
     // distinction is not visible to us — the browser withholds it deliberately.

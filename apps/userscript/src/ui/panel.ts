@@ -1,5 +1,12 @@
 import { log, warn } from '../debug.js'
-import { getState, loadState, probeServer, setState } from '../state.js'
+import {
+  type ConnectedServer,
+  getState,
+  loadState,
+  probeServer,
+  removeServer,
+  upsertServer,
+} from '../state.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { treeContents } from './tree.js'
@@ -236,6 +243,115 @@ const checkbox = (): HTMLInputElement => {
   return el
 }
 
+/**
+ * One connected server, and the single action its status implies.
+ *
+ * The code field only exists once the server has said it wants one. Asking up front is the fastest
+ * way to lose someone whose server does not need a code at all, which most will not.
+ */
+const serverRow = (server: ConnectedServer): HTMLElement => {
+  const wrap = document.createElement('div')
+  wrap.className = 'px-3 py-2'
+
+  const top = document.createElement('div')
+  top.className = 'flex items-center gap-2'
+  const name = document.createElement('span')
+  name.className = 'text-sm'
+  name.style.flex = '1'
+  name.style.overflow = 'hidden'
+  name.style.textOverflow = 'ellipsis'
+  name.style.whiteSpace = 'nowrap'
+  name.textContent = server.info?.name ?? server.url
+  name.title = server.url
+
+  const badge = document.createElement('span')
+  badge.className =
+    server.status === 'connected'
+      ? 'badge badge-xs badge-success'
+      : server.status === 'needs-token'
+        ? 'badge badge-xs badge-warning'
+        : 'badge badge-xs badge-error'
+  badge.textContent =
+    server.status === 'connected'
+      ? 'connected'
+      : server.status === 'needs-token'
+        ? 'code'
+        : 'offline'
+
+  const remove = document.createElement('button')
+  remove.className = 'btn btn-ghost btn-xs btn-circle'
+  remove.title = 'Disconnect'
+  remove.setAttribute('aria-label', `Disconnect ${server.info?.name ?? server.url}`)
+  remove.appendChild(icon('close', 'size-3'))
+  remove.addEventListener('click', () => {
+    removeServer(server.url)
+    showView('settings')
+  })
+
+  top.append(name, badge, remove)
+  wrap.appendChild(top)
+
+  if (server.status !== 'needs-token') {
+    if (server.status === 'unreachable') {
+      const why = document.createElement('p')
+      why.className = 'text-xs opacity-60'
+      why.textContent = server.error ?? 'Could not be reached.'
+      wrap.appendChild(why)
+    }
+    return wrap
+  }
+
+  const codeRow = document.createElement('div')
+  codeRow.className = 'flex gap-2'
+  codeRow.style.marginTop = '0.375rem'
+  const code = document.createElement('input')
+  code.type = 'password'
+  code.autocomplete = 'off'
+  code.className = 'input input-sm input-bordered'
+  code.style.flex = '1'
+  code.style.minWidth = '0'
+  code.placeholder = 'Access code'
+  const submit = document.createElement('button')
+  submit.className = 'btn btn-sm btn-primary'
+  submit.textContent = 'Connect'
+
+  const status = document.createElement('p')
+  status.className = 'text-xs opacity-60'
+  status.style.marginTop = '0.25rem'
+  status.textContent = 'This server needs an access code from whoever runs it.'
+
+  const attempt = async (): Promise<void> => {
+    const value = code.value.trim()
+    if (value === '') return
+    submit.classList.add('btn-disabled')
+    status.className = 'text-xs opacity-60'
+    status.textContent = 'Checking…'
+    const next = await probeServer(server.url, value)
+    submit.classList.remove('btn-disabled')
+    if (next.status === 'connected') {
+      upsertServer(next)
+      showView('settings')
+      return
+    }
+    // A wrong code and an unreachable server are different problems with different fixes, so they
+    // must not share a message.
+    status.className = 'text-xs text-error'
+    status.textContent =
+      next.status === 'needs-token'
+        ? 'That code was not accepted. Ask whoever runs the server for a current one.'
+        : `Could not reach the server. ${next.error ?? ''}`.trim()
+  }
+
+  submit.addEventListener('click', () => void attempt())
+  code.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') void attempt()
+  })
+
+  codeRow.append(code, submit)
+  wrap.append(codeRow, status)
+  return wrap
+}
+
 const settingsView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
@@ -270,13 +386,12 @@ const settingsView = (): HTMLElement => {
       status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
       return
     }
-    setState({ servers: [...getState().servers.filter((s) => s.url !== server.url), server] })
-    status.className = 'text-xs px-3 pb-2 text-success'
-    status.textContent =
-      server.status === 'needs-token'
-        ? `Found ${server.info?.name ?? server.url} — it needs an access code.`
-        : `Connected to ${server.info?.name ?? server.url}.`
+    upsertServer(server)
     url.value = ''
+    // Re-render so the new server's row appears — it is what carries the status badge and, when the
+    // server wants one, the access-code field. Without this the panel reported "needs a code" and
+    // then offered nowhere to type one.
+    showView('settings')
   }
 
   add.addEventListener('click', () => void connect())
@@ -292,6 +407,8 @@ const settingsView = (): HTMLElement => {
   // first run, so say when it will be asked for rather than asking pre-emptively.
   noServers.textContent = 'You will only be asked for an access code if the server needs one.'
   view.appendChild(noServers)
+
+  for (const server of getState().servers) view.appendChild(serverRow(server))
 
   view.appendChild(sectionHeader('Appearance'))
   view.appendChild(
@@ -346,7 +463,7 @@ const buildPanel = (): HTMLElement => {
   panel.setAttribute('aria-label', PANEL_TITLE)
   // Fixed to the right edge, clear of the rail. Not a modal: no backdrop and nothing to dismiss, so
   // the map stays live and you can watch a setting take effect while you change it.
-  panel.className = 'bg-base-100 shadow-xl border border-base-300'
+  panel.className = 'bg-base-100 shadow-2xl'
   // Layout inline: these must not depend on whether wplace happens to use the same utility.
   Object.assign(panel.style, {
     position: 'fixed',
@@ -364,7 +481,7 @@ const buildPanel = (): HTMLElement => {
     flexDirection: 'column',
     minHeight: '0',
     color: 'var(--color-base-content, inherit)',
-    borderRadius: 'var(--radius-box, 1rem)',
+    borderRadius: '0.5rem',
     overflow: 'hidden',
   } satisfies Partial<CSSStyleDeclaration>)
 

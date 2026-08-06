@@ -85,7 +85,7 @@ export const sortControl = (
 
   const menu = document.createElement('ul')
   menu.className = 'dropdown-content menu bg-base-100 shadow-2xl z-50 p-1'
-  Object.assign(menu.style, { borderRadius: '0.75rem', width: '13rem' })
+  Object.assign(menu.style, { borderRadius: '0.5rem', width: '13rem' })
   menu.setAttribute('tabindex', '0')
 
   for (const entry of FIELDS) {
