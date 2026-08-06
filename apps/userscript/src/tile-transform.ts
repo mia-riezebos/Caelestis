@@ -42,22 +42,19 @@ const MIN_TILE_SCREEN_WIDTH = 4
 const MAX_TILE_SCREEN_WIDTH = 1e9
 
 /**
- * How long the map must render with no tile in it before the overlay is cleared.
+ * There is no grace period before clearing, deliberately.
  *
- * This began at 250ms to absorb tile-less frames seen during a load, but most of what it was
- * hiding turned out to be the texSubImage2D attribution bug. With that fixed, a measurement over
- * 703 frames of heavy panning and zooming armed this timer exactly **zero** times — mid-session
- * tile-less frames do not happen — so the whole 250ms was latency on the one case that does reach
- * it: zooming out past the point where wplace stops serving tiles.
+ * The frame in which MapLibre stops drawing tiles *is* the frame in which wplace's pixels vanish,
+ * and the flush is a microtask, so clearing there composites in the same browser frame. Any delay
+ * added here is delay the user sees the overlay hanging over a map that no longer has tiles under
+ * it — this started at 250ms, went to 50ms, and is now none.
  *
- * It is not zero, because "zero in 703 frames" is not "never", and a stray frame would otherwise
- * flicker the overlay. 50ms absorbs about three frames at 60Hz and is short enough not to read as
- * a delay.
- *
- * Note the remaining lag when zooming out is not this: MapLibre keeps drawing tiles through its own
- * zoom animation, and we deliberately mirror whatever wplace is showing rather than predicting it.
+ * The grace was originally there to absorb a stray tile-less frame. Two things retired it: the
+ * texSubImage2D attribution bug turned out to be what it was really hiding, and a measurement over
+ * 703 frames of heavy panning and zooming produced no stray frames at all. If one ever does occur
+ * the cost is a single frame of missing overlay — about 16ms, and self-correcting — which is
+ * cheaper than making every genuine clear late.
  */
-const CLEAR_AFTER_TILELESS_MILLISECONDS = 50
 
 /**
  * How much rotation in the projection matrix is tolerated before a quad is refused.
@@ -162,7 +159,6 @@ const quadFromMatrix = (
   return { tile, x, y, width, height: Math.abs(height) }
 }
 
-let clearTimer: ReturnType<typeof setTimeout> | null = null
 let frameDraws = 0
 let frameTileDraws = 0
 /** Whether the overlay currently has anything painted on it, so a clear is worth doing once. */
@@ -190,11 +186,6 @@ const flush = (): void => {
   frameTileDraws = 0
 
   if (quads.length > 0) {
-    if (clearTimer !== null) {
-      clearTimeout(clearTimer)
-      clearTimer = null
-      log('clear', 'cancelled — tiles are back')
-    }
     if (!overlayHasContent) log('clear', 'overlay has content again')
     overlayHasContent = true
     emit(quads)
@@ -209,17 +200,10 @@ const flush = (): void => {
     return
   }
 
-  // No tiles in this frame. Leave the overlay showing what it already has, and only believe the
-  // absence if it lasts — see CLEAR_AFTER_TILELESS_MILLISECONDS.
-  if (clearTimer === null) {
-    log('clear', `no tiles this frame — arming ${CLEAR_AFTER_TILELESS_MILLISECONDS}ms grace`)
-    clearTimer = setTimeout(() => {
-      clearTimer = null
-      overlayHasContent = false
-      warn('clear', 'grace elapsed with no tiles — clearing overlay')
-      emit([])
-    }, CLEAR_AFTER_TILELESS_MILLISECONDS)
-  }
+  // No tiles this frame, and the overlay has ink on it: clear now, in this same frame.
+  overlayHasContent = false
+  log('clear', 'no tiles this frame — clearing now')
+  emit([])
 }
 
 /**
