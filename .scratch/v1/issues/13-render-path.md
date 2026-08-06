@@ -47,15 +47,12 @@ magenta lands exactly on the tile grid.
 | 3 | does wplace capture `fetch` early? | **No — we win.** Our shim saw every tile request. `window.fetch` is *not* our function afterwards, so the page does wrap it, but downstream of us: we are still in the chain. |
 | 4 | CSP | `content-security-policy-report-only` only — **not enforced** — with `script-src 'unsafe-inline' 'unsafe-eval'`. No obstacle to blob workers or WASM. |
 | 5 | is the tile response opaque? | **No.** Every tile carries `access-control-allow-origin: https://wplace.live`. Pixels are readable, so compositing over the real tile is available — we are not forced into draw-only-our-chunks. |
-| 6 | what does a missing tile look like? | Out-of-range coordinates return **HTTP 404 with a 499-byte HTML body**, not a PNG. In-range tiles are always 200 with a real image. |
+| 6 | what does a missing tile look like? | **Depends where you stand — see below.** The backend 404s; a service worker rewrites that to a 200. |
 
 ### Worth knowing beyond the six
 
 - **Tiles are 1000×1000, 8-bit palette PNGs** — the same format `encodeIndexedPng` emits. No format
   negotiation needed between our chunks and theirs.
-- `06-recon-tile-serving`'s "in-range unpainted tiles are 200 with a near-empty PNG" was not
-  reproduced: the emptiest in-range tile sampled was 33 KB. Either genuinely empty tiles are rarer
-  than assumed or the claim needs re-testing. **The render model must not assume small means empty.**
 - Tile responses are `cache-control: s-maxage=5, must-revalidate, no-store`. The browser will not
   cache them, so the shim is hit on every pan — decode cost is per view, not per session, and our own
   chunk cache carries the weight.
@@ -73,3 +70,36 @@ sandbox, where patching `window.fetch` may not be visible to the page at all. Th
 proves the *page-context* path and says nothing about the sandboxed one. Build for `@grant none`, and
 if token storage needs `GM_getValue`, verify the sandboxed path separately before depending on it —
 see the note at the end of `handoff-userscript-browser.md`.
+
+### Correction, and the reason for it: wplace runs a service worker
+
+An earlier version of this write-up said `06-recon-tile-serving`'s "in-range unpainted tiles are 200
+with a near-empty PNG" was not reproduced. That was wrong — it was bad sampling. The tiles used were
+painted, and the out-of-range probes went straight to the origin, bypassing the layer that makes the
+claim true.
+
+`https://wplace.live/service-worker.js` intercepts tile requests. Measured, same three tiles, same
+session, with `Network.setBypassServiceWorker` as the only difference:
+
+| tile | service worker active | service worker bypassed |
+|---|---|---|
+| painted (`325/1782`) | 200, 58,252 b | 200, 58,252 b |
+| empty in-range (`1015/1816`) | **200, 73 b** | **404**, 548 b HTML |
+| out of range (`2048/1782`) | **200, 73 b** | **404**, 548 b HTML |
+
+So the origin 404s for *any* tile it holds no data for, and does not distinguish "in range but
+unpainted" from "not a tile". The service worker collapses both into a 73-byte blank PNG. What
+`06-recon-tile-serving` recorded is what the page sees, and it is correct at that layer.
+
+**The consequence for our shim, which is what matters.** A `window.fetch` shim sits *above* the
+service worker, so what it observes depends on whether the page is SW-controlled at that moment —
+and on a first visit or a hard reload it is not:
+
+- **SW-controlled** — we see `200` with a 73-byte blank PNG. Status tells us nothing.
+- **Not SW-controlled** — we see the real `404`.
+
+Both mean the same thing: wplace holds nothing for this tile. The shim must treat them identically
+and **must not read `response.ok` as "there is a tile here"**. Detect empty by content, and handle
+404 as an ordinary, expected outcome rather than an error path. Getting this wrong makes the
+behaviour depend on whether the user has visited before, which is about the worst possible shape for
+a bug.

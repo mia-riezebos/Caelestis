@@ -45,3 +45,38 @@ Still open:
 - How the top-left-triangle view mode is actually drawn (shader vs stamp vs mask).
 - Zoom thresholds at which wplace switches rendering strategy.
 - Whether a userscript can practically obtain the MapLibre map instance.
+
+## Findings — 2026-08-06, live page
+
+**wplace is MapLibre GL JS on WebGL2, inside SvelteKit.** One canvas, `canvas.maplibregl-canvas`,
+under `.maplibregl-canvas-container.maplibregl-interactive`, with the full
+`maplibregl-ctrl-*` control scaffolding. Basemap style is OpenFreeMap `liberty`
+(`maps.wplace.live/styles/liberty`, sprites `ofm_f384`).
+
+This is the branch `13-render-path` called the good one: MapLibre means a custom layer would let us
+draw per screen pixel rather than per tile pixel, stay sharp at high zoom, and put shape/size/anchor
+into fragment-shader math.
+
+**But the `Map` instance is not reachable from a userscript.** Probed for it directly:
+
+- nothing map-shaped on `window` — the only matches are DOM built-ins and `__paraglide`
+- no `_`/`__` back-references on `canvas.maplibregl-canvas` or on `.maplibregl-map`
+- no `$$`/svelte keys on the container — Svelte 5 keeps component state in module scope, not on the
+  element
+
+So `map.addLayer(...)` is not available by simply finding the map. What *is* available, proved by
+probe: a `document-start` patch of `HTMLCanvasElement.prototype.getContext` captures the map's canvas
+and its WebGL2 context before MapLibre gets it.
+
+That leaves three routes, and choosing between them is the open decision:
+
+1. **Wrap the captured WebGL2 context** and inject our own draw calls into MapLibre's frame. Most
+   powerful, deepest coupling to MapLibre's internals, most likely to break on their upgrade.
+2. **Own canvas positioned over theirs**, reproducing the transform. Needs lat/lng/zoom and the exact
+   projection; `13-render-path` warns one-pixel drift is constantly visible when the transform is
+   reimplemented. Zoom is in the URL, which helps, but rotation/pitch would not be.
+3. **Get the instance anyway** by patching something MapLibre touches during construction — e.g. its
+   own container element methods — so we capture `this` at map-construction time. Worth one attempt
+   before falling back to 1 or 2; it would give the supported public API rather than internals.
+
+Route 3 first, then 1. Route 2 is the fallback that always works and always drifts.
