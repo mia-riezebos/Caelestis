@@ -196,9 +196,15 @@ Closes the "default order" question left open above and in `schema-draft.md`.
 
 - **The order is always the user's own**, arranged in the userscript and stored client-side. No
   accounts, no sync.
-- **There is therefore no sort control**, and the settings panel must not grow one. A "sort by name /
-  progress / server order" dropdown offers alternatives to a decision already made, and the first
-  draft of `30-settings-drawer` shipped exactly that dropdown before this was caught.
+- **Sort modes exist, but as views, not as order.** Revised the same day: the tree carries a sort
+  control offering `custom`, `created`, `activity`, `progress` and `name`, each with a direction.
+  `custom` is the resting state and is the only one that *is* the order — the rest are ways to find
+  something in a long tree.
+
+  **The distinction that makes this safe: sorting is a view, draw order stays custom.** Sorting by
+  progress to see what needs work must not silently reshuffle which template draws on top of which.
+  A viewer's presentation preference and the compositing order were separated once already, higher
+  up this ticket; this keeps them separated on the client too.
 - **Templates the client has not seen before sort most-recent-first.** Reverses "oldest first by
   creation". The case that matters is connecting to a new server, or a server publishing a batch:
   putting a hundred unfamiliar templates at the bottom in creation order buries the change. Recency

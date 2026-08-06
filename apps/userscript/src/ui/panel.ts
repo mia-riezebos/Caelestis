@@ -1,5 +1,6 @@
 import { log, warn } from '../debug.js'
 import { icon } from './icons.js'
+import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -65,6 +66,7 @@ type View = 'tree' | 'settings'
 
 let currentView: View = 'tree'
 let open = false
+let sortOrder: SortOrder = DEFAULT_SORT
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -151,9 +153,15 @@ const treeView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
 
+  // Search and sort share a row: both are ways of finding one template among many, and giving sort
+  // its own row would push the tree down for a control most people set once.
+  const toolbar = document.createElement('div')
+  toolbar.className = 'flex items-center gap-1'
+  Object.assign(toolbar.style, { margin: '0.75rem 0.75rem 0' })
+
   const search = document.createElement('label')
   search.className = 'input input-sm input-bordered flex items-center gap-2'
-  Object.assign(search.style, { margin: '0.75rem 0.75rem 0' })
+  Object.assign(search.style, { flex: '1', minWidth: '0' })
   const searchIcon = icon('search', 'size-4 opacity-50')
   const searchInput = document.createElement('input')
   searchInput.type = 'search'
@@ -162,12 +170,20 @@ const treeView = (): HTMLElement => {
   searchInput.placeholder = 'Search templates'
   search.append(searchIcon, searchInput)
 
+  toolbar.append(
+    search,
+    sortControl(sortOrder, (next) => {
+      sortOrder = next
+      showView('tree')
+    }),
+  )
+
   const body = document.createElement('div')
   body.className = ''
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
   body.appendChild(emptyState())
 
-  view.append(search, body)
+  view.append(toolbar, body)
   return view
 }
 
