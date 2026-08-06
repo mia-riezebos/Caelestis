@@ -1,4 +1,5 @@
 import { TILE_SIZE, tileKey } from '@wts/shared'
+import { installDebugApi, log } from './debug.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 
 /**
@@ -64,6 +65,12 @@ const draw = ({ canvas: mapCanvas, quads }: TileFrame): void => {
     )
   }
 
+  log('draw', `painted ${mine.length}`, {
+    onScreen: quads.map((quad) => tileKey(quad.tile)),
+    target: DEMO_TILE,
+    rects: mine.map((q) => `${Math.round(q.x)},${Math.round(q.y)} ${Math.round(q.width)}px`),
+  })
+
   if (mine.length !== lastReported) {
     lastReported = mine.length
     const identified = quads.map((quad) => tileKey(quad.tile)).join(' ')
@@ -74,6 +81,7 @@ const draw = ({ canvas: mapCanvas, quads }: TileFrame): void => {
 }
 
 const main = (): void => {
+  installDebugApi({ demoTile: DEMO_TILE })
   install()
   onTileFrame(draw)
   console.info(`[wts] loaded — tile size ${TILE_SIZE}, watching MapLibre for tile transforms`)

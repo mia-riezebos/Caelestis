@@ -1,4 +1,5 @@
 import type { TileCoord } from '@wts/shared'
+import { count, log, warn } from './debug.js'
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -100,6 +101,18 @@ let scheduled = false
 const tilesByByteLength = new Map<number, TileCoord[]>()
 const tileOfBitmap = new WeakMap<ImageBitmap, TileCoord>()
 
+/**
+ * The exact route, in two hops.
+ *
+ * wplace reads a tile with `arrayBuffer()` — measured, 16 calls and not one `blob()` — and builds
+ * its own `Blob` from the bytes, so handing back a tagged `Blob` achieves nothing. Instead the
+ * *buffer* is tagged, and the `Blob` constructor is wrapped to carry the tag onto whatever `Blob`
+ * gets built from it. Byte length stays only as a fallback for anything reaching
+ * `createImageBitmap` by another path.
+ */
+const tileOfBlob = new WeakMap<Blob, TileCoord>()
+const tileOfBuffer = new WeakMap<ArrayBufferLike, TileCoord>()
+
 /** Column-major 4x4, the layout WebGL uses. */
 const project = (m: ArrayLike<number>, x: number, y: number): readonly [number, number] => {
   const at = (index: number): number => m[index] ?? 0
@@ -127,14 +140,24 @@ const quadFromMatrix = (
   // rejects the others; bounding the width alone let one undersized rectangle through.
   const at = (index: number): number => m[index] ?? 0
   const scale = Math.max(Math.abs(at(0)), Math.abs(at(5))) || 1
-  if (Math.max(Math.abs(at(1)), Math.abs(at(4))) / scale > ROTATION_TOLERANCE) return null
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return null
-  if (width < MIN_TILE_SCREEN_WIDTH || width > MAX_TILE_SCREEN_WIDTH) return null
-  if (Math.abs(Math.abs(height) - width) > width * SQUARENESS_TOLERANCE) return null
+  const skew = Math.max(Math.abs(at(1)), Math.abs(at(4))) / scale
+  const reject = (why: string, data: unknown): null => {
+    log('quad', `rejected ${tile.x}/${tile.y}: ${why}`, data)
+    return null
+  }
+  if (skew > ROTATION_TOLERANCE) return reject('map is rotated', { skew })
+  if (!Number.isFinite(width) || !Number.isFinite(height))
+    return reject('non-finite', { width, height })
+  if (width < MIN_TILE_SCREEN_WIDTH) return reject('too small', { width })
+  if (width > MAX_TILE_SCREEN_WIDTH) return reject('too large', { width })
+  if (Math.abs(Math.abs(height) - width) > width * SQUARENESS_TOLERANCE)
+    return reject('not square', { width, height })
   return { tile, x, y, width, height: Math.abs(height) }
 }
 
 let clearTimer: ReturnType<typeof setTimeout> | null = null
+let frameDraws = 0
+let frameTileDraws = 0
 
 const emit = (quads: readonly TileQuad[]): void => {
   if (mapCanvas === null) return
@@ -148,10 +171,20 @@ const flush = (): void => {
   const quads = pending
   pending = []
 
+  log('frame', 'rendered', {
+    draws: frameDraws,
+    tileTextureDraws: frameTileDraws,
+    quads: quads.length,
+    tiles: quads.map((q) => `${q.tile.x}/${q.tile.y}`),
+  })
+  frameDraws = 0
+  frameTileDraws = 0
+
   if (quads.length > 0) {
     if (clearTimer !== null) {
       clearTimeout(clearTimer)
       clearTimer = null
+      log('clear', 'cancelled — tiles are back')
     }
     emit(quads)
     return
@@ -160,8 +193,10 @@ const flush = (): void => {
   // No tiles in this frame. Leave the overlay showing what it already has, and only believe the
   // absence if it lasts — see CLEAR_AFTER_TILELESS_MILLISECONDS.
   if (clearTimer === null) {
+    log('clear', `no tiles this frame — arming ${CLEAR_AFTER_TILELESS_MILLISECONDS}ms grace`)
     clearTimer = setTimeout(() => {
       clearTimer = null
+      warn('clear', 'grace elapsed with no tiles — clearing overlay')
       emit([])
     }, CLEAR_AFTER_TILELESS_MILLISECONDS)
   }
@@ -188,17 +223,68 @@ const installFetchTap = (): void => {
     // A tap, not a rewrite: the response is handed back untouched. Compositing into wplace's own
     // tiles would make our pixels indistinguishable from theirs, which is exactly what per-colour
     // toggles and view modes need to be able to tell apart.
+    const tile: TileCoord = { x: Number(match[1]), y: Number(match[2]) }
     try {
-      const bytes = (await response.clone().arrayBuffer()).byteLength
-      const tile: TileCoord = { x: Number(match[1]), y: Number(match[2]) }
-      const queue = tilesByByteLength.get(bytes)
-      if (queue === undefined) tilesByByteLength.set(bytes, [tile])
-      else queue.push(tile)
-    } catch {
-      // A body that cannot be read is one we cannot attribute; that tile simply goes undrawn.
+      // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
+      // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
+      // inferred. Overriding blob()/arrayBuffer() as own properties shadows Response.prototype;
+      // without that the platform mints a fresh Blob on every call and the tag is lost, which is
+      // the whole reason the first attempt at this matched zero tiles.
+      const buffer = await response.clone().arrayBuffer()
+      tileOfBuffer.set(buffer, tile)
+      tilesByByteLength.set(buffer.byteLength, [
+        ...(tilesByByteLength.get(buffer.byteLength) ?? []),
+        tile,
+      ])
+      log('fetch', `tile ${tile.x}/${tile.y}`, {
+        bytes: buffer.byteLength,
+        status: response.status,
+        sizesWaiting: tilesByByteLength.size,
+      })
+
+      const wrapped = new Response(buffer, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      })
+      // Own properties shadow Response.prototype, so wplace receives the tagged instances rather
+      // than fresh ones the platform mints per call.
+      Object.defineProperty(wrapped, 'arrayBuffer', { value: () => Promise.resolve(buffer) })
+      Object.defineProperty(wrapped, 'blob', {
+        value: () => {
+          const blob = new Blob([buffer], { type: 'image/png' })
+          tileOfBlob.set(blob, tile)
+          return Promise.resolve(blob)
+        },
+      })
+      return wrapped
+    } catch (error) {
+      // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
+      warn('fetch', `could not read body for ${tile.x}/${tile.y}`, String(error))
+      return response
     }
-    return response
   } as typeof window.fetch
+}
+
+const installBlobTap = (): void => {
+  const NativeBlob = window.Blob
+  // biome-ignore lint/suspicious/noExplicitAny: standing in for the Blob constructor overloads
+  const Wrapped = function (this: unknown, parts?: any[], options?: BlobPropertyBag) {
+    const blob = new NativeBlob(parts ?? [], options)
+    for (const part of parts ?? []) {
+      const buffer =
+        part instanceof ArrayBuffer ? part : ArrayBuffer.isView(part) ? part.buffer : undefined
+      const tile = buffer === undefined ? undefined : tileOfBuffer.get(buffer)
+      if (tile !== undefined) {
+        tileOfBlob.set(blob, tile)
+        log('bitmap', `blob built from tagged buffer ${tile.x}/${tile.y}`, { bytes: blob.size })
+        break
+      }
+    }
+    return blob
+  } as unknown as typeof Blob
+  Wrapped.prototype = NativeBlob.prototype
+  window.Blob = Wrapped
 }
 
 const installBitmapTap = (): void => {
@@ -210,11 +296,30 @@ const installBitmapTap = (): void => {
     )
     const source = args[0]
     if (source instanceof Blob) {
+      // Exact first: this is the Blob we handed back from the fetch tap.
+      const exact = tileOfBlob.get(source)
+      if (exact !== undefined) {
+        tileOfBitmap.set(bitmap, exact)
+        log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: source.size })
+        return bitmap
+      }
+      count('bitmap:fell-back-to-byte-length')
       const queue = tilesByByteLength.get(source.size)
       const tile = queue?.shift()
       if (tile !== undefined) {
         tileOfBitmap.set(bitmap, tile)
         if (queue !== undefined && queue.length === 0) tilesByByteLength.delete(source.size)
+        log('bitmap', `matched ${tile.x}/${tile.y}`, {
+          bytes: source.size,
+          left: queue?.length ?? 0,
+        })
+      } else if (bitmap.width === 1000 && bitmap.height === 1000) {
+        // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
+        // thins out: it will overwrite a texture's identity below.
+        warn('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
+          bytes: source.size,
+          sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8),
+        })
       }
     }
     return bitmap
@@ -223,6 +328,7 @@ const installBitmapTap = (): void => {
 
 export const install = (): void => {
   installFetchTap()
+  installBlobTap()
   installBitmapTap()
 
   const nativeGetContext = HTMLCanvasElement.prototype.getContext
@@ -235,6 +341,10 @@ export const install = (): void => {
     if (wrapped || !type.startsWith('webgl') || context === null) return context
     wrapped = true
     mapCanvas = this
+    log('install', 'wrapped the map WebGL context', {
+      type,
+      canvas: `${this.width}x${this.height}`,
+    })
 
     const gl = context as WebGL2RenderingContext
     const uniformNames = new Map<WebGLUniformLocation, string>()
@@ -270,12 +380,31 @@ export const install = (): void => {
       const source = texArgs[texArgs.length - 1]
       if (boundTexture !== null && source instanceof ImageBitmap) {
         const tile = tileOfBitmap.get(source)
-        if (tile !== undefined) tileOfTexture.set(boundTexture, tile)
-        // MapLibre pools textures. If one we had attributed is re-uploaded with an image we cannot
-        // attribute, the old coordinate is now a lie, and keeping it would draw a template on
-        // whatever tile inherited that texture. Forget it instead — a tile we cannot name is a tile
-        // we decline to draw on.
-        else tileOfTexture.delete(boundTexture)
+        if (tile !== undefined) {
+          const had = tileOfTexture.get(boundTexture)
+          tileOfTexture.set(boundTexture, tile)
+          log('texture', `attributed ${tile.x}/${tile.y}`, {
+            size: `${source.width}x${source.height}`,
+            replaced: had ? `${had.x}/${had.y}` : null,
+          })
+        } else {
+          // MapLibre pools textures. If one we had attributed is re-uploaded with an image we
+          // cannot attribute, the old coordinate is now a lie, and keeping it would draw a template
+          // on whatever tile inherited that texture. Forget it instead.
+          const had = tileOfTexture.get(boundTexture)
+          if (had !== undefined) {
+            warn('texture', `DROPPED attribution ${had.x}/${had.y} — re-uploaded unattributed`, {
+              size: `${source.width}x${source.height}`,
+            })
+            tileOfTexture.delete(boundTexture)
+          }
+        }
+      } else if (boundTexture !== null && tileOfTexture.has(boundTexture)) {
+        const had = tileOfTexture.get(boundTexture)
+        warn('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
+          sourceKind: source === null ? 'null' : (source?.constructor?.name ?? typeof source),
+        })
+        tileOfTexture.delete(boundTexture)
       }
       return (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs)
     }) as typeof gl.texImage2D
@@ -300,9 +429,17 @@ export const install = (): void => {
         // approach exists to avoid.
         queueMicrotask(flush)
       }
-      if (boundTexture === null || projection === null) return
+      frameDraws++
+      if (boundTexture === null || projection === null) {
+        count('draw:no-texture-or-matrix')
+        return
+      }
       const tile = tileOfTexture.get(boundTexture)
-      if (tile === undefined) return
+      if (tile === undefined) {
+        count('draw:texture-not-a-known-tile')
+        return
+      }
+      frameTileDraws++
       const quad = quadFromMatrix(projection, tile, this)
       if (quad !== null) pending.push(quad)
     }
