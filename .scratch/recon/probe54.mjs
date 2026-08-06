@@ -32,8 +32,13 @@ if (!has) {
     await sleep(1000)
   }
 }
-await ev("document.getElementById('wts-panel') && document.getElementById('wts-rail-button').click()")
-await sleep(3000)
+// Open the panel and read what the tree actually lists.
+if (!(await ev("!!document.getElementById('wts-panel')"))) await ev("document.getElementById('wts-rail-button').click()")
+await sleep(1500)
+console.log('tree rows  :', await ev("[...document.querySelectorAll('#wts-panel .wts-row')].map(r=>r.dataset.wtsKey + '=' + (r.querySelector('.wts-name')?.textContent ?? '')).join(' | ')"))
+console.log('local rows :', await ev("[...document.querySelectorAll('#wts-panel .wts-row')].filter(r=>r.dataset.wtsKey.startsWith('local:')).length"))
+await ev("document.getElementById('wts-rail-button').click()")
+await sleep(2500)
 console.log('overlay ink:', await ev(`(() => {
   const c = document.querySelector('canvas[data-wts-overlay]')
   if (!c) return 'no overlay canvas'

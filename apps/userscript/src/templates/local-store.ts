@@ -120,6 +120,12 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
 export const restoreLocalTemplates = async (): Promise<void> => {
   const stored = await loadTemplates()
   for (const template of stored) {
+    // Drop anything zero-sized. An earlier build read ImageBitmap dimensions after closing the
+    // bitmap and stored 0x0 templates; they can never render and would sit in the tree forever.
+    if (template.width <= 0 || template.height <= 0) {
+      void deleteTemplate(template.id)
+      continue
+    }
     templates.set(template.id, { ...template, tiles: await slice(template) })
   }
   if (stored.length > 0) log('install', `restored ${stored.length} local templates`)

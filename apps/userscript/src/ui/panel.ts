@@ -213,6 +213,11 @@ const treeView = (): HTMLElement => {
           onRename: (target, name) => void applyRename(target, name, renderTree),
           onDelete: (target) => void applyDelete(target, renderTree),
           onContextMenu: (target, event) => openContextMenu(target, event, renderTree),
+          onGoTo: (id) => {
+            const template = localTemplates().find((t) => t.id === id)
+            if (template !== undefined) navigateTo(centreOf(template))
+          },
+          onPlace: (id) => beginMove(id, renderTree),
         },
         renderTree,
       ),

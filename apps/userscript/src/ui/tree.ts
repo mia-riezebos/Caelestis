@@ -1,4 +1,5 @@
 import { type ConnectedServer, getState, listNodes, setState, type TreeNode } from '../state.js'
+import { localTemplates, removeLocalTemplate, setLocalVisible } from '../templates/local-store.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -28,6 +29,9 @@ export interface TreeCallbacks {
   readonly onRename: (target: TreeTarget, name: string) => void
   readonly onDelete: (target: TreeTarget) => void
   readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
+  /** Frame a local template on the map. */
+  readonly onGoTo: (templateId: string) => void
+  readonly onPlace: (templateId: string) => void
 }
 
 const collapsed = new Set<string>()
@@ -106,7 +110,10 @@ interface RowOptions {
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly siblings: readonly string[]
   readonly rerender: () => void
-  readonly onDropInto?: (draggedKey: string) => void
+  readonly onDropInto?: ((draggedKey: string) => void) | undefined
+  /** When present, the row reflects this instead of the tree's own disabled set. */
+  readonly checked?: boolean | undefined
+  readonly onToggleChecked?: ((on: boolean) => void) | undefined
 }
 
 const treeRow = (options: RowOptions): HTMLElement => {
@@ -124,11 +131,19 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.setAttribute('role', 'treeitem')
   row.setAttribute('aria-expanded', String(isExpanded(options.key)))
 
-  const glyph = icon('caret', 'size-4 opacity-60')
-  glyph.style.flex = '0 0 auto'
-  glyph.style.transition = 'transform 120ms ease-out'
-  glyph.style.transform = isExpanded(options.key) ? 'rotate(90deg)' : 'rotate(0deg)'
-  row.appendChild(glyph)
+  if (options.container) {
+    const glyph = icon('caret', 'size-4 opacity-60')
+    glyph.style.flex = '0 0 auto'
+    glyph.style.transition = 'transform 120ms ease-out'
+    glyph.style.transform = isExpanded(options.key) ? 'rotate(90deg)' : 'rotate(0deg)'
+    row.appendChild(glyph)
+  } else {
+    // A leaf still needs the caret's width, or its name hangs left of every sibling's.
+    const spacer = document.createElement('span')
+    spacer.style.flex = '0 0 auto'
+    spacer.style.width = '1rem'
+    row.appendChild(spacer)
+  }
 
   const kind = icon(options.kind, 'size-4 opacity-60')
   kind.style.flex = '0 0 auto'
@@ -227,10 +242,14 @@ const treeRow = (options: RowOptions): HTMLElement => {
   check.type = 'checkbox'
   check.className = 'checkbox checkbox-sm'
   check.style.flex = '0 0 auto'
-  check.checked = isEnabled(options.key)
+  check.checked = options.checked ?? isEnabled(options.key)
   check.setAttribute('aria-label', `Show ${options.name}`)
   check.addEventListener('click', (event) => event.stopPropagation())
   check.addEventListener('change', () => {
+    if (options.onToggleChecked !== undefined) {
+      options.onToggleChecked(check.checked)
+      return
+    }
     toggle(disabled, options.key)
     options.rerender()
   })
@@ -427,7 +446,39 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
     }
 
     if (isLocal) {
-      wrap.appendChild(childText('No local templates yet.', 0))
+      const mine = localTemplates()
+      for (const template of mine) {
+        const key = `local:${template.id}`
+        const row = treeRow({
+          key,
+          name: template.name,
+          kind: 'image',
+          depth: 1,
+          meta: `${template.width}×${template.height}`,
+          container: false,
+          siblings: mine.map((t) => `local:${t.id}`),
+          rerender,
+          checked: template.visible,
+          onToggleChecked: (on) => {
+            setLocalVisible(template.id, on)
+            rerender()
+          },
+          actions: [
+            { icon: 'search', label: 'Go to', run: () => callbacks.onGoTo(template.id) },
+            { icon: 'rename', label: 'Move', run: () => callbacks.onPlace(template.id) },
+            {
+              icon: 'trash',
+              label: 'Remove',
+              run: () => {
+                removeLocalTemplate(template.id)
+                rerender()
+              },
+            },
+          ],
+        })
+        wrap.appendChild(row)
+      }
+      if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.
       const actions = document.createElement('div')
