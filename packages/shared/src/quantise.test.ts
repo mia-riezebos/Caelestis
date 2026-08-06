@@ -36,7 +36,29 @@ describe('the palette', () => {
     // the cheapest guard against the list being reordered or resorted.
     expect(WPLACE_PALETTE[0]?.hex).toBe('#000000')
     expect(WPLACE_PALETTE[4]?.hex).toBe('#FFFFFF')
-    expect(WPLACE_PALETTE[62]?.hex).toBe('#B3B9D1')
+    expect(WPLACE_PALETTE[62]?.hex).toBe('#CDC59E')
+  })
+
+  it('puts the free/premium boundary exactly where wplace puts it', () => {
+    // wplace's own accessor is `t < 32 ? free : bit (t - 32) of extraColorsBitmap`, over an array
+    // whose index 0 is Transparent. Dropping Transparent to the end leaves 31 free then 32 premium,
+    // so this boundary is what makes the ownership bit `1 << (index - 31)` land on the right colour.
+    expect(WPLACE_PALETTE.filter((colour) => colour.kind === 'free')).toHaveLength(31)
+    expect(WPLACE_PALETTE.filter((colour) => colour.kind === 'premium')).toHaveLength(32)
+    expect(WPLACE_PALETTE[30]?.kind).toBe('free')
+    expect(WPLACE_PALETTE[31]?.kind).toBe('premium')
+    // Contiguous, or the bit arithmetic above is meaningless.
+    expect(WPLACE_PALETTE.findIndex((colour) => colour.kind === 'premium')).toBe(31)
+  })
+
+  it('holds the ordering that the previous ditherette-derived table got wrong', () => {
+    // That table had the right set of colours and the right split, but 31 of 63 at the wrong index
+    // from position 18 onward — silent, because a self-consistent wrong table still round-trips.
+    // These four are where it diverged first and worst.
+    expect(WPLACE_PALETTE[17]?.hex).toBe('#28509E') // Dark Blue, which it had at 18
+    expect(WPLACE_PALETTE[19]?.hex).toBe('#60F7F2') // Cyan, which it had at 17
+    expect(WPLACE_PALETTE[35]?.hex).toBe('#D6B594') // Light Tan, which it had at 54
+    expect(WPLACE_PALETTE[15]?.hex).toBe('#10AEA6') // Teal — it carried #10AE82, not a wplace colour
   })
 
   it('holds no duplicate colours', () => {
