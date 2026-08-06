@@ -1,6 +1,7 @@
 import { TILE_SIZE, tileKey } from '@wts/shared'
 import { installDebugApi, log } from './debug.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
+import { installPanel } from './ui/panel.js'
 
 /**
  * Entry point.
@@ -86,6 +87,12 @@ const draw = ({ canvas: mapCanvas, quads }: TileFrame): void => {
 const main = (): void => {
   installDebugApi({ demoTile: DEMO_TILE })
   install()
+  // The rail is rendered by wplace's own app, so wait for the document before reaching for it.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installPanel, { once: true })
+  } else {
+    installPanel()
+  }
   onTileFrame(draw)
   console.info(`[wts] loaded — tile size ${TILE_SIZE}, watching MapLibre for tile transforms`)
 }
