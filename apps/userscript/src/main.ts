@@ -70,7 +70,18 @@ const draw = (frame: TileFrame): void => {
       // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
       // than 2x. One drawImage per tile per template, whatever the template's size.
       const bitmap = magnifying ? (tile.levels[0] as ImageBitmap) : levelFor(tile, quad.width)
-      context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
+      // Snap both edges to whole device pixels, and derive width from the snapped edges rather
+      // than rounding the width itself.
+      //
+      // MapLibre hands us fractional quads, and two neighbours that abut exactly in canvas space
+      // land on edges like 511.6 and 511.9 — so one tile stops a fraction before the next starts
+      // and the background shows through as a hairline seam. Rounding each edge with the same rule
+      // makes a shared boundary land on the same integer from both sides, so they meet exactly.
+      const left = Math.round(quad.x)
+      const top = Math.round(quad.y)
+      const right = Math.round(quad.x + quad.width)
+      const bottom = Math.round(quad.y + quad.height)
+      context.drawImage(bitmap, left, top, right - left, bottom - top)
       drawn++
     }
   }

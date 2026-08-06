@@ -49,14 +49,8 @@ export const navigateTo = (target: NavigateTarget): void => {
   const map = getMap()
 
   if (map !== null) {
-    const distance = Math.hypot(lng - map.getCenter().lng, lat - map.getCenter().lat)
-    log('install', 'moving the camera', { lat, lng, zoom, distance: Math.round(distance) })
-    // `easeTo`, not `flyTo`: flyTo arcs out to altitude and back down, which is charming over a few
-    // streets and interminable across the world — a cross-globe flight was still climbing after six
-    // seconds, below the zoom where wplace serves tiles, so the destination looked empty. easeTo
-    // interpolates centre and zoom directly, so distance costs nothing and the move stays animated
-    // rather than teleporting.
-    map.easeTo({ center: [lng, lat], zoom, duration: distance > 5 ? 900 : 600 })
+    log('install', 'flying', { lat, lng, zoom })
+    map.flyTo({ center: [lng, lat], zoom })
     return
   }
 

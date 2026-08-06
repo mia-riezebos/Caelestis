@@ -278,7 +278,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
   row.addEventListener('dragstart', (event) => {
     event.dataTransfer?.setData('text/plain', options.key)
-    row.classList.add('wts-dragging')
+    // Take the row out of the flow, so what is on screen is the drag image plus the hole it will
+    // land in — nothing else. Leaving it in place at reduced opacity reads as a duplicate, and
+    // every row below shifts as the placeholder is inserted.
+    //
+    // Deferred by a tick because the browser captures the drag image *after* dragstart returns;
+    // hiding it synchronously would drag an invisible ghost.
+    setTimeout(() => row.classList.add('wts-dragging'), 0)
   })
   row.addEventListener('dragend', () => {
     row.classList.remove('wts-dragging')

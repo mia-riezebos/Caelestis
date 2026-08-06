@@ -27,8 +27,10 @@ const CSS = `
 .wts-row[draggable='true'] {
   cursor: pointer;
 }
+/* Gone, not faded: the placeholder is where it is going, and the drag image is where it is now.
+   A third, half-visible copy in the original slot is one too many. */
 .wts-row.wts-dragging {
-  opacity: 0.35;
+  display: none;
 }
 /* The gap the row would occupy, held open while dragging, rather than a line drawn on a
    neighbour. A line says "near here"; a hole says "here", and the list stops shifting under the
