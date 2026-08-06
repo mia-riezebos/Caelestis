@@ -1,5 +1,6 @@
 import { TILE_SIZE, tileKey } from '@wts/shared'
 import { installDebugApi, log } from './debug.js'
+import { installMapCapture } from './map-handle.js'
 import { localTemplates, onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 import { installPanel } from './ui/panel.js'
@@ -63,6 +64,8 @@ const draw = (frame: TileFrame): void => {
       drawn++
     }
   }
+  ;(window as unknown as Record<string, unknown>).__wtsFrame =
+    `${quads.length} tiles, ${drawn} template tiles drawn`
   if (drawn > 0) log('draw', `painted ${drawn} template tiles`, { quads: quads.length })
 }
 
@@ -140,6 +143,8 @@ export const pixelsPerCanvasPixel = (): number => {
 }
 
 const main = (): void => {
+  // Before anything else: the trap has to be in place before MapLibre constructs its Map.
+  installMapCapture()
   installDebugApi({})
   install()
   // Templates outlive a page load, which is what makes navigating to one survivable at all.
