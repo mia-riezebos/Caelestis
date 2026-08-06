@@ -28,6 +28,18 @@ const MAPLIBRE_TILE_EXTENT = 8192
 /** How square a quad must be to be believed, as a fraction of its width. */
 const SQUARENESS_TOLERANCE = 0.02
 
+/**
+ * How much rotation in the projection matrix is tolerated before a quad is refused.
+ *
+ * A `TileQuad` is an axis-aligned rectangle, which cannot describe a rotated tile — so if wplace
+ * ever enables rotation, drawing one would put the overlay somewhere confidently wrong. wplace has
+ * rotation off today: measured across 234,574 matrix uploads, including a two-finger twist under
+ * touch emulation, the off-diagonal terms were exactly zero. That is a product decision of theirs,
+ * not a guarantee, so it is checked rather than assumed. Failing the check draws nothing, which is
+ * a visible absence rather than a silent misplacement.
+ */
+const ROTATION_TOLERANCE = 1e-6
+
 const TILE_URL = /\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png/
 
 export interface TileQuad {
@@ -90,6 +102,9 @@ const quadFromMatrix = (
   const height = toScreenY(y1) - y
   // Not every draw that binds a tile texture is a whole-tile draw. Requiring the quad to be square
   // rejects the others; bounding the width alone let one undersized rectangle through.
+  const at = (index: number): number => m[index] ?? 0
+  const scale = Math.max(Math.abs(at(0)), Math.abs(at(5))) || 1
+  if (Math.max(Math.abs(at(1)), Math.abs(at(4))) / scale > ROTATION_TOLERANCE) return null
   if (!Number.isFinite(width) || !Number.isFinite(height)) return null
   if (width < 4 || width > 1e5) return null
   if (Math.abs(Math.abs(height) - width) > width * SQUARENESS_TOLERANCE) return null
