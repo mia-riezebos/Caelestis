@@ -45,9 +45,19 @@ Material Symbols path inherits their theme tokens automatically, including any t
 mode they add later. The trade is a real coupling to their class names; if they drop DaisyUI our
 button loses its skin. Worth it, and cheap to detect.
 
-**Icon: Material Symbols `extension`** — the puzzle piece. It reads "add-on", which is honest: this
-is not a wplace feature and should not pretend to be. `layers` is taken by Overlays, and anything
-template-shaped would imply wplace ships templates.
+**We are adding alongside, not replacing.** wplace already ships templates behind its own Overlays
+button — local to the browser, not shareable, with few view modes. Ours is a second take on a thing
+they already have, and its button sits directly beneath theirs. Two consequences:
+
+- **Icon: Material Symbols `extension`**, the puzzle piece. Because theirs is right above ours, the
+  icon's job is to *distinguish*, not to describe. Anything template- or layer-shaped would read as a
+  duplicate of the button above it, and `layers` is literally already theirs. A puzzle piece says
+  "something added on", which collides with nothing.
+- **Do not call ours "Templates".** That word is taken by the button above, and two things called
+  Templates in one rail is a bad first thirty seconds. "Shared templates" is accurate, neutral, and
+  names the actual difference — theirs are yours alone, ours come from a server your alliance runs.
+  Nothing in the drawer should try to manage wplace's own overlays; they are a separate system that
+  happens to sit next door.
 
 ## The inventory
 
