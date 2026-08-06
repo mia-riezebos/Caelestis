@@ -374,38 +374,59 @@ export const install = (): void => {
       return nativeBindTexture(target, texture)
     }
 
-    const nativeTexImage2D = gl.texImage2D.bind(gl)
-    // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
-    gl.texImage2D = ((...texArgs: any[]) => {
-      const source = texArgs[texArgs.length - 1]
-      if (boundTexture !== null && source instanceof ImageBitmap) {
-        const tile = tileOfBitmap.get(source)
-        if (tile !== undefined) {
+    /**
+     * Both upload paths have to be watched, and missing one is not a gap in coverage but a source
+     * of wrong answers.
+     *
+     * MapLibre pools textures: a *new* tile goes in with `texImage2D`, but a tile it already has a
+     * texture for is refreshed in place with `texSubImage2D`. wplace serves tiles `no-store` and
+     * re-fetches them, so this happens constantly during ordinary use. Watching only `texImage2D`
+     * meant the texture kept whatever tile it was first given while the GPU held a different one —
+     * so a quad would be labelled `1051/672` while showing `1052/672`, and the tile we were asked
+     * to draw on vanished from the list entirely.
+     */
+    const attributeUpload = (source: unknown): void => {
+      if (boundTexture === null || !(source instanceof ImageBitmap)) {
+        if (boundTexture !== null && tileOfTexture.has(boundTexture)) {
           const had = tileOfTexture.get(boundTexture)
-          tileOfTexture.set(boundTexture, tile)
-          log('texture', `attributed ${tile.x}/${tile.y}`, {
-            size: `${source.width}x${source.height}`,
-            replaced: had ? `${had.x}/${had.y}` : null,
+          warn('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
+            sourceKind:
+              source === null ? 'null' : ((source as object)?.constructor?.name ?? typeof source),
           })
-        } else {
-          // MapLibre pools textures. If one we had attributed is re-uploaded with an image we
-          // cannot attribute, the old coordinate is now a lie, and keeping it would draw a template
-          // on whatever tile inherited that texture. Forget it instead.
-          const had = tileOfTexture.get(boundTexture)
-          if (had !== undefined) {
-            warn('texture', `DROPPED attribution ${had.x}/${had.y} — re-uploaded unattributed`, {
-              size: `${source.width}x${source.height}`,
-            })
-            tileOfTexture.delete(boundTexture)
-          }
+          tileOfTexture.delete(boundTexture)
         }
-      } else if (boundTexture !== null && tileOfTexture.has(boundTexture)) {
+        return
+      }
+      const tile = tileOfBitmap.get(source)
+      if (tile !== undefined) {
         const had = tileOfTexture.get(boundTexture)
-        warn('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
-          sourceKind: source === null ? 'null' : (source?.constructor?.name ?? typeof source),
+        tileOfTexture.set(boundTexture, tile)
+        log('texture', `attributed ${tile.x}/${tile.y}`, {
+          size: `${source.width}x${source.height}`,
+          replaced: had ? `${had.x}/${had.y}` : null,
+        })
+        return
+      }
+      const had = tileOfTexture.get(boundTexture)
+      if (had !== undefined) {
+        warn('texture', `DROPPED attribution ${had.x}/${had.y} — re-uploaded unattributed`, {
+          size: `${source.width}x${source.height}`,
         })
         tileOfTexture.delete(boundTexture)
       }
+    }
+
+    const nativeTexSubImage2D = gl.texSubImage2D.bind(gl)
+    // biome-ignore lint/suspicious/noExplicitAny: texSubImage2D has as many overloads as texImage2D
+    gl.texSubImage2D = ((...subArgs: any[]) => {
+      attributeUpload(subArgs[subArgs.length - 1])
+      return (nativeTexSubImage2D as (...a: unknown[]) => void)(...subArgs)
+    }) as typeof gl.texSubImage2D
+
+    const nativeTexImage2D = gl.texImage2D.bind(gl)
+    // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
+    gl.texImage2D = ((...texArgs: any[]) => {
+      attributeUpload(texArgs[texArgs.length - 1])
       return (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs)
     }) as typeof gl.texImage2D
 
