@@ -1201,6 +1201,31 @@ export const placeLocalTemplate = async (
   return await enqueueMove(id, roundedX, roundedY, true)
 }
 
+export const renameLocalTemplate = async (id: string, name: string): Promise<boolean> => {
+  const trimmed = name.trim()
+  if (trimmed === '' || trimmed.length > MAX_TEMPLATE_NAME_LENGTH) return false
+  return await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    if (trimmed === existing.name) return true
+    const next = { ...existing, name: trimmed }
+    let revision = existing.revision
+    if (!isPendingImage(existing)) {
+      const result = await savePlaced(next)
+      const committed = committedRevision(result)
+      if (committed === null) {
+        if (result.status === 'conflict') await reconcileConflict(id)
+        warn('install', `rename for ${next.name} was not saved`)
+        return false
+      }
+      revision = committed
+    }
+    templates.set(id, { ...next, revision })
+    notify()
+    return true
+  })
+}
+
 export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
   if (existing === undefined || deleting.has(id)) return false
