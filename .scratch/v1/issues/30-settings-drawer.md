@@ -128,13 +128,41 @@ Both are opt-in and both send data somewhere, so they need to be visible rather 
 - **Charts, history, pace, timelapse** — frontend only, per ticket 20.
 - **Anything about who painted a pixel** — pixel-info is dropped from the design.
 
-## Open questions
+## Decisions — 2026-08-06
 
-1. **Does the drawer hold display *defaults* at all, or nothing display-related?** Defaults are
-   global by nature, but every display control here is one someone will look for on the map first.
-2. **One drawer with sections, or tabs?** Six groups is a lot for one scroll, but tabs hide the tree
-   behind a click and the tree is why people open it.
-3. **What does first run look like?** No servers connected, so the tree is empty and five of the six
-   groups are meaningless. The empty state *is* the onboarding.
-4. **Does the rail button carry a badge** for active alarms? It is the only always-visible surface we
-   have, and an alarm nobody sees is useless — but a permanently red button nobody trusts is worse.
+**The drawer is the tree. Everything else is behind a settings button in its header.**
+
+That collapses the six groups into two surfaces:
+
+```
+drawer
+  ├ header: title, search, [gear] ──────────► settings view (same drawer, not a modal)
+  └ the template tree                            ├ servers and endpoints
+      node          [✓] name        progress     ├ default appearance
+        template    [✓] name        progress     ├ global colour filter
+                                                 ├ progress display
+                                                 ├ contributing
+                                                 └ diagnostics
+```
+
+Settled with it:
+
+- **Checkmarks, not toggles**, on nodes and templates. Nodes are tri-state via `indeterminate`.
+  Checkboxes read as "which of these are in the set", which is what this is; a switch reads as
+  turning a feature on, which it is not.
+- **Progress placement is a setting**, because it is the main thing that makes the tree dense:
+  - `inline` — always shown on every row
+  - `expanded` — only on the node or template currently expanded
+  - `hidden` — never
+- **Global colour filter with presets**: `all`, `free`, `premium`, `owned`. `owned` reads
+  `extraColorsBitmap` from `/me`. This supersedes the earlier single "hide colours I cannot place"
+  switch — the preset set is more useful and the switch is just one of its members.
+- **Alarm badge on the rail button counts unacknowledged alarms only**, and clears on opening the
+  drawer. It means "something new", not "something is wrong", so it self-clears without needing an
+  acknowledge flow and never becomes permanent furniture nobody reads.
+
+### Still open
+
+- **First run.** No servers connected means an empty tree, and the empty state is the entire
+  onboarding. It has to get someone from nothing to one connected server without a wizard.
+- Whether the settings view is a second panel that slides over the tree, or replaces it in place.
