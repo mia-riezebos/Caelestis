@@ -29,6 +29,29 @@ const MAPLIBRE_TILE_EXTENT = 8192
 const SQUARENESS_TOLERANCE = 0.02
 
 /**
+ * Bounds on a believable tile, in device pixels.
+ *
+ * The upper one is a sanity check against a nonsense matrix and nothing more, which is why it is so
+ * loose. An earlier version guessed 1e5, which is smaller than a real tile from zoom 19 up —
+ * measured, one tile spans 131,072 px at zoom 19 and 514,976 px at zoom 21 — so the overlay vanished
+ * exactly when the user zoomed in far enough to want it most. The real filtering is done by
+ * requiring the texture to be a tile we attributed and the quad to be square.
+ */
+const MIN_TILE_SCREEN_WIDTH = 4
+const MAX_TILE_SCREEN_WIDTH = 1e9
+
+/**
+ * How long the map must render with no tile in it before the overlay is cleared.
+ *
+ * A single tile-less frame is not evidence that no tiles are on screen: MapLibre renders the
+ * basemap before any tile texture exists, and measured over a load, 5 of 120 frames drew 11-14
+ * times with no tile among them while tiles were plainly visible. Clearing on those made the
+ * overlay flicker out. Sustained absence is real — zooming out past the point where wplace serves
+ * tiles at all — so absence is believed only once it persists.
+ */
+const CLEAR_AFTER_TILELESS_MILLISECONDS = 250
+
+/**
  * How much rotation in the projection matrix is tolerated before a quad is refused.
  *
  * A `TileQuad` is an axis-aligned rectangle, which cannot describe a rotated tile — so if wplace
@@ -106,17 +129,42 @@ const quadFromMatrix = (
   const scale = Math.max(Math.abs(at(0)), Math.abs(at(5))) || 1
   if (Math.max(Math.abs(at(1)), Math.abs(at(4))) / scale > ROTATION_TOLERANCE) return null
   if (!Number.isFinite(width) || !Number.isFinite(height)) return null
-  if (width < 4 || width > 1e5) return null
+  if (width < MIN_TILE_SCREEN_WIDTH || width > MAX_TILE_SCREEN_WIDTH) return null
   if (Math.abs(Math.abs(height) - width) > width * SQUARENESS_TOLERANCE) return null
   return { tile, x, y, width, height: Math.abs(height) }
+}
+
+let clearTimer: ReturnType<typeof setTimeout> | null = null
+
+const emit = (quads: readonly TileQuad[]): void => {
+  if (mapCanvas === null) return
+  const frame: TileFrame = { canvas: mapCanvas, quads }
+  for (const listener of listeners) listener(frame)
 }
 
 const flush = (): void => {
   scheduled = false
   if (mapCanvas === null) return
-  const frame: TileFrame = { canvas: mapCanvas, quads: pending }
+  const quads = pending
   pending = []
-  for (const listener of listeners) listener(frame)
+
+  if (quads.length > 0) {
+    if (clearTimer !== null) {
+      clearTimeout(clearTimer)
+      clearTimer = null
+    }
+    emit(quads)
+    return
+  }
+
+  // No tiles in this frame. Leave the overlay showing what it already has, and only believe the
+  // absence if it lasts — see CLEAR_AFTER_TILELESS_MILLISECONDS.
+  if (clearTimer === null) {
+    clearTimer = setTimeout(() => {
+      clearTimer = null
+      emit([])
+    }, CLEAR_AFTER_TILELESS_MILLISECONDS)
+  }
 }
 
 /**
