@@ -44,13 +44,20 @@ const MAX_TILE_SCREEN_WIDTH = 1e9
 /**
  * How long the map must render with no tile in it before the overlay is cleared.
  *
- * A single tile-less frame is not evidence that no tiles are on screen: MapLibre renders the
- * basemap before any tile texture exists, and measured over a load, 5 of 120 frames drew 11-14
- * times with no tile among them while tiles were plainly visible. Clearing on those made the
- * overlay flicker out. Sustained absence is real — zooming out past the point where wplace serves
- * tiles at all — so absence is believed only once it persists.
+ * This began at 250ms to absorb tile-less frames seen during a load, but most of what it was
+ * hiding turned out to be the texSubImage2D attribution bug. With that fixed, a measurement over
+ * 703 frames of heavy panning and zooming armed this timer exactly **zero** times — mid-session
+ * tile-less frames do not happen — so the whole 250ms was latency on the one case that does reach
+ * it: zooming out past the point where wplace stops serving tiles.
+ *
+ * It is not zero, because "zero in 703 frames" is not "never", and a stray frame would otherwise
+ * flicker the overlay. 50ms absorbs about three frames at 60Hz and is short enough not to read as
+ * a delay.
+ *
+ * Note the remaining lag when zooming out is not this: MapLibre keeps drawing tiles through its own
+ * zoom animation, and we deliberately mirror whatever wplace is showing rather than predicting it.
  */
-const CLEAR_AFTER_TILELESS_MILLISECONDS = 250
+const CLEAR_AFTER_TILELESS_MILLISECONDS = 50
 
 /**
  * How much rotation in the projection matrix is tolerated before a quad is refused.
