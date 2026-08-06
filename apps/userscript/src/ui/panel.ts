@@ -1,4 +1,6 @@
+import { canvasPixelToLatLng } from '@wts/shared'
 import { log, warn } from '../debug.js'
+import { viewportCentre } from '../main.js'
 import {
   type ConnectedServer,
   createNode,
@@ -12,6 +14,10 @@ import {
   setState,
   upsertServer,
 } from '../state.js'
+import { importFile } from '../templates/import.js'
+import { addLocalTemplate, localTemplates } from '../templates/local-store.js'
+import { beginMove } from '../templates/move.js'
+import { centreOf, navigateTo } from '../templates/navigate.js'
 import { coloursSection } from './colours.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
@@ -203,16 +209,7 @@ const treeView = (): HTMLElement => {
         {
           onAddServer: () => showView('settings'),
           onCreateFolder: (target) => void createFolder(target, renderTree),
-          onImportTemplate: (target) => {
-            // Not stubbed as a silent no-op: a template is an image plus a placement, and neither
-            // the picker nor the placement step exists. See 32-local-templates.
-            toast(
-              target.server === null
-                ? 'Importing needs the file picker — not built yet.'
-                : 'Importing needs a placement step — not built yet.',
-              'warning',
-            )
-          },
+          onImportTemplate: (target) => void importTemplate(target, renderTree),
           onRename: (target, name) => void applyRename(target, name, renderTree),
           onDelete: (target) => void applyDelete(target, renderTree),
           onContextMenu: (target, event) => openContextMenu(target, event, renderTree),
@@ -588,6 +585,58 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
     }
     window.addEventListener('pointerdown', dismiss)
   }, 0)
+}
+
+const importTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+  if (target.server !== null) {
+    // Uploading to a server needs the template to exist and be placed first; that is the local
+    // flow, and copy-to-server is the step after it.
+    toast('Import into Local first, then copy it to a server.', 'warning')
+    return
+  }
+  const picker = document.createElement('input')
+  picker.type = 'file'
+  picker.accept = '.wplace,.json,image/png,image/*'
+  picker.addEventListener('change', () => {
+    void (async () => {
+      const file = picker.files?.[0]
+      if (file === undefined) return
+      const centre = viewportCentre() ?? { x: 0, y: 0 }
+      try {
+        toast(`Reading ${file.name}…`)
+        const imported = await importFile(file, centre)
+        if (imported.length === 0) {
+          toast('Nothing importable in that file.', 'error')
+          return
+        }
+        for (const template of imported) await addLocalTemplate(template)
+        rerender()
+
+        const first = imported[0]
+        if (first === undefined) return
+        const moved = first.moved
+        toast(
+          `Imported ${first.name} — ${first.width}x${first.height}` +
+            (moved > 0 ? `, ${moved.toLocaleString()} pixels quantised` : ''),
+        )
+        if (first.source === 'image') {
+          // An image arrives with no placement of its own, so placing it is not an extra step —
+          // it is the rest of the import.
+          beginMove(first.id, rerender)
+        } else {
+          // It already knows where it belongs, so go and look at it — centred on the template and
+          // zoomed to fit it, in-game. Changing the URL would reload and throw the import away.
+          navigateTo(centreOf(first))
+        }
+      } catch (error) {
+        toast(`Could not import: ${String(error)}`, 'error')
+      }
+    })()
+  })
+  picker.style.display = 'none'
+  document.body.appendChild(picker)
+  picker.click()
+  setTimeout(() => picker.remove(), 60_000)
 }
 
 const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {

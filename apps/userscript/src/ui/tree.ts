@@ -428,6 +428,19 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
 
     if (isLocal) {
       wrap.appendChild(childText('No local templates yet.', 0))
+      // The hover action exists too, but an empty state is where someone is actually looking for
+      // the way in, so it gets a visible button.
+      const actions = document.createElement('div')
+      actions.style.padding = '0 0.75rem 0.5rem 2.25rem'
+      const importButton = document.createElement('button')
+      importButton.className = 'btn btn-xs'
+      importButton.textContent = 'Import a template'
+      importButton.title = 'A .wplace file, a Blue Marble export, or an image'
+      importButton.addEventListener('click', () =>
+        callbacks.onImportTemplate({ server: null, nodeId: null, key: 'local', name: 'Local' }),
+      )
+      actions.appendChild(importButton)
+      wrap.appendChild(actions)
       continue
     }
     if (server === undefined) continue
