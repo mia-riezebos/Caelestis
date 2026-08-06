@@ -18,6 +18,7 @@ import {
   stampTile,
 } from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
+import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
 
@@ -271,6 +272,8 @@ const main = (): void => {
   void restoreLocalTemplates()
   void loadAccount()
   onPaint(paintTemplates)
+  // The buttons ride with the overlay, so they are repositioned on the same frame the map moved.
+  onPaint(() => renderOverlayControls(repaint))
   onPaint(paintMark)
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
