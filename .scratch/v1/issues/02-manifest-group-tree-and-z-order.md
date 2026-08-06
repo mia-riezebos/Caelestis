@@ -77,8 +77,9 @@ Largely defused by the existing rule forbidding overlapping templates *within* a
 so rollups cannot double-count. What remains is cross-group overlap inside one server, normally
 accidental. Where it is deliberate, there is now no way to say so.
 
-**Default order**, since nothing is stored: oldest first by creation. Not manifest array order — that
-would be server-side ordering reintroduced through the order of a JSON array.
+**Default order**, since nothing is stored: see the amendment below — it is recency, not creation
+order. Not manifest array order either way, since that would be server-side ordering reintroduced
+through the order of a JSON array.
 
 Knock-on: a native `.wplace` file's `order` field has nowhere to land on import, and nothing to
 populate it from on export (`28-native-wplace-format`).
@@ -188,3 +189,20 @@ still be deliberately held back.
 An admin and a member receive different documents with different content hashes. Anything caching on
 URL alone — a CDN, or `caches.default` in the Worker — could serve one to the other. The cache key
 has to include the scope, and the response needs `Vary: Authorization`.
+
+## Amendment — 2026-08-06: custom order always, recency for anything new
+
+Closes the "default order" question left open above and in `schema-draft.md`.
+
+- **The order is always the user's own**, arranged in the userscript and stored client-side. No
+  accounts, no sync.
+- **There is therefore no sort control**, and the settings panel must not grow one. A "sort by name /
+  progress / server order" dropdown offers alternatives to a decision already made, and the first
+  draft of `30-settings-drawer` shipped exactly that dropdown before this was caught.
+- **Templates the client has not seen before sort most-recent-first.** Reverses "oldest first by
+  creation". The case that matters is connecting to a new server, or a server publishing a batch:
+  putting a hundred unfamiliar templates at the bottom in creation order buries the change. Recency
+  surfaces it; the user's arrangement takes over from there.
+
+Follows from ordering being client-side at all — the client is the only thing that knows what it has
+already seen.

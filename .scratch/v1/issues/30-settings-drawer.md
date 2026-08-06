@@ -81,8 +81,10 @@ The reason the drawer exists. Everything else could live elsewhere.
 - Per template: name, enabled, progress figure, alarm badge.
 - Per node: name, rolled-up progress, rolled-up alarm badge, expand/collapse.
 - **Search/filter by name.** A server with 200 templates makes scrolling useless.
-- **Sort order is a client setting, not server data** — explicitly decided. Needs a control: by name,
-  by the server's `sort_order`, by progress, by recent activity.
+- **Order is the user's own, always** — dragged in the tree, stored client-side, and **not** a sort
+  mode. See the 2026-08-06 amendment to `02-manifest-group-tree-and-z-order`. Templates the client
+  has never seen sort most-recent-first so a newly connected server surfaces what is new. There is
+  deliberately no sort control in settings.
 - Expand/collapse state persists across sessions.
 - Empty state for a server with no published templates, which is what a fresh install looks like.
 

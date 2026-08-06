@@ -90,9 +90,18 @@ rule exists so rollups cannot double-count). What remains is cross-group overlap
 which is normally accidental rather than designed. Where it is designed, the alliance now has no way
 to express it, and different members may see different results.
 
-**?** The default order, since nothing is stored: sort by `created_at_ms`, oldest first — "the order
-things were added", stable, and free from UUIDv7's ordering. Deliberately *not* manifest array order,
-which would be server-side ordering smuggled back in through the ordering of a JSON array.
+**Settled 2026-08-06: the order is always the user's own, and it is never anything else.** The
+userscript stores a custom order client-side, with no account behind it and nothing synced. There is
+no sort mode to choose, so the panel offers no sort control — offering "by name" or "by progress"
+would be offering alternatives to a decision already taken.
+
+**Newly-seen templates arrive most-recent-first**, not oldest-first as previously written here. The
+moment that matters is connecting to a server, or a server publishing a batch: dropping a hundred
+unfamiliar templates at the bottom of a list in creation order buries the thing that just changed.
+Recency puts what is new where it can be seen, and from then on the user's own arrangement holds.
+
+Still deliberately *not* manifest array order, which would be server-side ordering smuggled back in
+through the ordering of a JSON array.
 
 Consequence for `28-native-wplace-format`: a `.wplace` file's `order` field has nowhere to land on
 import, and export has nothing to populate it from.

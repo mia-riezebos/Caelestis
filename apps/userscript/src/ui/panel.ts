@@ -66,13 +66,27 @@ type View = 'tree' | 'settings'
 let currentView: View = 'tree'
 let open = false
 
+/**
+ * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
+ * the class list. Using the same class rather than a colour of our own means our button lights up
+ * in whatever their theme calls primary, now and after any theme change.
+ */
+const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
+
+const syncRailButtonState = (): void => {
+  const button = document.getElementById(BUTTON_ID)
+  if (button === null) return
+  button.className = open ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
+  button.setAttribute('aria-expanded', String(open))
+}
+
 const railButton = (): HTMLButtonElement => {
   const existing = document.getElementById(BUTTON_ID)
   if (existing !== null) return existing as HTMLButtonElement
   const button = document.createElement('button')
   button.id = BUTTON_ID
   // Exactly the classes wplace's own rail buttons carry.
-  button.className = 'btn btn-square shadow-md relative'
+  button.className = RAIL_BUTTON_CLASS
   button.title = BUTTON_TOOLTIP
   button.setAttribute('aria-label', BUTTON_TOOLTIP)
   button.setAttribute('aria-expanded', 'false')
@@ -104,7 +118,7 @@ export const setAlarmBadge = (count: number): void => {
 
 const sectionHeader = (title: string): HTMLElement => {
   const h = document.createElement('h3')
-  h.className = 'text-xs font-semibold opacity-60 uppercase tracking-wide px-1 pt-3 pb-1'
+  h.className = 'text-xs font-semibold opacity-60 uppercase tracking-wide px-3 pt-4 pb-1'
   h.textContent = title
   return h
 }
@@ -149,7 +163,7 @@ const treeView = (): HTMLElement => {
   search.append(searchIcon, searchInput)
 
   const body = document.createElement('div')
-  body.className = 'px-1'
+  body.className = ''
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
   body.appendChild(emptyState())
 
@@ -160,6 +174,7 @@ const treeView = (): HTMLElement => {
 const settingRow = (label: string, hint: string | null, control: HTMLElement): HTMLElement => {
   const row = document.createElement('div')
   row.className = 'flex items-center justify-between gap-4 px-3 py-2'
+  row.style.minHeight = '3rem'
   const text = document.createElement('div')
   text.className = 'flex flex-col'
   const name = document.createElement('span')
@@ -179,6 +194,10 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
 const select = (options: readonly (readonly [string, string])[]): HTMLSelectElement => {
   const el = document.createElement('select')
   el.className = 'select select-sm select-bordered'
+  // Sized once rather than by content: three selects of three widths in one column reads as
+  // ragged even though their right edges agree.
+  el.style.width = '11.5rem'
+  el.style.flex = '0 0 auto'
   for (const [value, label] of options) {
     const option = document.createElement('option')
     option.value = value
@@ -244,17 +263,6 @@ const settingsView = (): HTMLElement => {
       ]),
     ),
   )
-  view.appendChild(
-    settingRow(
-      'Sort',
-      'Order of templates in the tree',
-      select([
-        ['server', "Server's order"],
-        ['name', 'Name'],
-        ['progress', 'Progress'],
-      ]),
-    ),
-  )
 
   view.appendChild(sectionHeader('Contributing'))
   view.appendChild(
@@ -284,19 +292,26 @@ const buildPanel = (): HTMLElement => {
   panel.setAttribute('aria-label', PANEL_TITLE)
   // Fixed to the right edge, clear of the rail. Not a modal: no backdrop and nothing to dismiss, so
   // the map stays live and you can watch a setting take effect while you change it.
-  panel.className = 'bg-base-100 rounded-box shadow-xl border border-base-300'
+  panel.className = 'bg-base-100 shadow-xl border border-base-300'
   // Layout inline: these must not depend on whether wplace happens to use the same utility.
   Object.assign(panel.style, {
     position: 'fixed',
-    right: '4.5rem',
+    // The rail is `absolute top-2 right-2` with 40px buttons: 8 + 40 = 48px occupied. Clear it with
+    // the same 12px rhythm the rail itself uses between buttons.
+    right: '3.75rem',
     top: '1rem',
     bottom: '1rem',
-    zIndex: '40',
+    // wplace's own chrome sits at z-40 (the rail) and z-50 (its overlay layer), and the map canvas
+    // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
+    // their rail and menus open over our panel rather than being trapped behind it.
+    zIndex: '30',
     width: 'min(20rem, calc(100vw - 6rem))',
     display: 'flex',
     flexDirection: 'column',
     minHeight: '0',
     color: 'var(--color-base-content, inherit)',
+    borderRadius: 'var(--radius-box, 1rem)',
+    overflow: 'hidden',
   } satisfies Partial<CSSStyleDeclaration>)
 
   const header = document.createElement('div')
@@ -305,23 +320,33 @@ const buildPanel = (): HTMLElement => {
   title.className = 'font-semibold text-sm grow'
   title.textContent = PANEL_TITLE
 
+  // Only present in settings, and it is the primary way back — the gear becomes a state indicator
+  // rather than a toggle, because a gear that also means "leave settings" is a gear that lies.
+  const backButton = document.createElement('button')
+  backButton.setAttribute('data-wts-back', '')
+  backButton.className = 'btn btn-ghost btn-xs btn-circle'
+  backButton.title = 'Back to templates'
+  backButton.setAttribute('aria-label', 'Back to templates')
+  backButton.appendChild(icon('arrowBack', 'size-4'))
+  backButton.addEventListener('click', () => showView('tree'))
+
   const settingsButton = document.createElement('button')
-  settingsButton.className = 'btn btn-ghost btn-xs btn-square'
+  settingsButton.setAttribute('data-wts-settings', '')
+  settingsButton.className = 'btn btn-ghost btn-xs btn-circle'
   settingsButton.title = 'Settings'
   settingsButton.setAttribute('aria-label', 'Settings')
+  settingsButton.setAttribute('aria-pressed', 'false')
   settingsButton.appendChild(icon('settings', 'size-4'))
-  settingsButton.addEventListener('click', () =>
-    showView(currentView === 'settings' ? 'tree' : 'settings'),
-  )
+  settingsButton.addEventListener('click', () => showView('settings'))
 
   const closeButton = document.createElement('button')
-  closeButton.className = 'btn btn-ghost btn-xs btn-square'
+  closeButton.className = 'btn btn-ghost btn-xs btn-circle'
   closeButton.title = 'Close'
   closeButton.setAttribute('aria-label', 'Close')
   closeButton.appendChild(icon('close', 'size-4'))
   closeButton.addEventListener('click', () => setOpen(false))
 
-  header.append(title, settingsButton, closeButton)
+  header.append(backButton, title, settingsButton, closeButton)
 
   const body = document.createElement('div')
   body.setAttribute('data-wts-body', '')
@@ -338,15 +363,25 @@ const showView = (view: View): void => {
   const body = panel?.querySelector('[data-wts-body]')
   const title = panel?.querySelector('h2')
   if (!body || !title) return
-  body.replaceChildren(view === 'tree' ? treeView() : settingsView())
-  title.textContent = view === 'tree' ? PANEL_TITLE : 'Settings'
+  const inSettings = view === 'settings'
+  body.replaceChildren(inSettings ? settingsView() : treeView())
+  title.textContent = inSettings ? 'Settings' : PANEL_TITLE
+
+  const back = panel?.querySelector<HTMLElement>('[data-wts-back]')
+  if (back) back.style.visibility = inSettings ? 'visible' : 'hidden'
+
+  const gear = panel?.querySelector<HTMLElement>('[data-wts-settings]')
+  if (gear) {
+    // btn-active is DaisyUI's pressed state, so it reads as "you are here" in their theme.
+    gear.className = `btn btn-ghost btn-xs btn-circle${inSettings ? ' btn-active' : ''}`
+    gear.setAttribute('aria-pressed', String(inSettings))
+  }
   log('install', `panel view: ${view}`)
 }
 
 const setOpen = (next: boolean): void => {
   open = next
-  const button = document.getElementById(BUTTON_ID)
-  button?.setAttribute('aria-expanded', String(open))
+  syncRailButtonState()
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
     existing?.remove()
@@ -380,6 +415,7 @@ export const installPanel = (): void => {
     if (existing !== null && existing.previousElementSibling === found.after) return
     existing?.remove()
     found.after.insertAdjacentElement('afterend', railButton())
+    syncRailButtonState()
     log('install', 'rail button attached below Overlays')
   }
 
