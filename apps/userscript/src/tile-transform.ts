@@ -175,7 +175,7 @@ const flush = (): void => {
     draws: frameDraws,
     tileTextureDraws: frameTileDraws,
     quads: quads.length,
-    tiles: quads.map((q) => `${q.tile.x}/${q.tile.y}`),
+    tiles: quads.map((q) => `${q.tile.x}/${q.tile.y}`).join(' ') || '(none)',
   })
   frameDraws = 0
   frameTileDraws = 0
@@ -318,7 +318,7 @@ const installBitmapTap = (): void => {
         // thins out: it will overwrite a texture's identity below.
         warn('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
           bytes: source.size,
-          sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8),
+          sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
         })
       }
     }

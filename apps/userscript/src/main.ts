@@ -66,9 +66,12 @@ const draw = ({ canvas: mapCanvas, quads }: TileFrame): void => {
   }
 
   log('draw', `painted ${mine.length}`, {
-    onScreen: quads.map((quad) => tileKey(quad.tile)),
+    onScreen: quads.map((quad) => tileKey(quad.tile)).join(' ') || '(none)',
     target: DEMO_TILE,
-    rects: mine.map((q) => `${Math.round(q.x)},${Math.round(q.y)} ${Math.round(q.width)}px`),
+    rects:
+      mine
+        .map((q) => `${Math.round(q.x)},${Math.round(q.y)} ${Math.round(q.width)}px`)
+        .join(' | ') || '(none)',
   })
 
   if (mine.length !== lastReported) {

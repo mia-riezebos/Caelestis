@@ -11,6 +11,7 @@
  *   node apps/userscript/dev-inject.mjs --watch          # rebuild and reload on every source change
  *   node apps/userscript/dev-inject.mjs --url '...'      # start somewhere other than the default view
  *   node apps/userscript/dev-inject.mjs --shot out.png   # screenshot after settling, then exit
+ *   node apps/userscript/dev-inject.mjs --verbose        # include wplace's own console output
  *
  * What this is and is not: the bundle is installed with
  * `Page.addScriptToEvaluateOnNewDocument`, which runs in the page's main world before any page
@@ -34,6 +35,8 @@ const flag = (name, fallback) => {
   return index === -1 ? fallback : (argv[index + 1] ?? fallback)
 }
 const watching = argv.includes('--watch')
+/** Pass --verbose to see wplace's own console output alongside ours. */
+const verbose = argv.includes('--verbose')
 const shotPath = flag('--shot', null)
 const url = flag('--url', 'https://wplace.live/?lat=52.37&lng=4.90&zoom=11')
 const settleMs = Number(flag('--settle', shotPath ? 12_000 : 4_000))
@@ -45,6 +48,26 @@ const build = () =>
   })
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * CDP sends objects as previews rather than values, so `arg.value` is undefined for exactly the
+ * payloads worth reading. Rebuild something legible from the preview instead of printing nothing.
+ */
+const renderArg = (arg) => {
+  if (arg.value !== undefined) {
+    return typeof arg.value === 'string' ? arg.value : JSON.stringify(arg.value)
+  }
+  if (arg.unserializableValue !== undefined) return String(arg.unserializableValue)
+  const preview = arg.preview
+  if (preview) {
+    const more = preview.overflow ? ', ...' : ''
+    if (preview.subtype === 'array') {
+      return `[${(preview.properties ?? []).map((p) => p.value).join(', ')}${more}]`
+    }
+    return `{ ${(preview.properties ?? []).map((p) => `${p.name}: ${p.value}`).join(', ')}${more} }`
+  }
+  return arg.description ?? arg.type
+}
 
 class Tab {
   #ws
@@ -76,8 +99,14 @@ class Tab {
         return
       }
       if (message.method === 'Runtime.consoleAPICalled') {
-        const text = message.params.args.map((a) => a.value ?? a.description ?? a.type).join(' ')
-        if (text.includes('[wts]')) console.log(`  page> ${text}`)
+        const text = message.params.args.map(renderArg).join(' ')
+        // Match the prefix, not the exact tag. Every debug line is `[wts:fetch]`, `[wts:texture]`
+        // and so on, and filtering on `[wts]` silently dropped every one of them.
+        if (text.includes('[wts') || verbose) {
+          const kind = message.params.type
+          const mark = kind === 'warning' ? '  page!' : kind === 'error' ? '  page*' : '  page>'
+          console.log(`${mark} ${text}`)
+        }
       }
       if (message.method === 'Runtime.exceptionThrown') {
         console.error(
