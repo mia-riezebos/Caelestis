@@ -165,6 +165,8 @@ const quadFromMatrix = (
 let clearTimer: ReturnType<typeof setTimeout> | null = null
 let frameDraws = 0
 let frameTileDraws = 0
+/** Whether the overlay currently has anything painted on it, so a clear is worth doing once. */
+let overlayHasContent = false
 
 const emit = (quads: readonly TileQuad[]): void => {
   if (mapCanvas === null) return
@@ -193,7 +195,17 @@ const flush = (): void => {
       clearTimer = null
       log('clear', 'cancelled — tiles are back')
     }
+    if (!overlayHasContent) log('clear', 'overlay has content again')
+    overlayHasContent = true
     emit(quads)
+    return
+  }
+
+  // Once cleared, stay cleared until tiles return. Without this the timer re-armed on every
+  // tile-less frame and fired again 50ms later, forever — measured, 66 clears in 4.5 seconds of
+  // sitting zoomed out, each one repainting an already-empty canvas.
+  if (!overlayHasContent) {
+    count('clear:already-empty')
     return
   }
 
@@ -203,6 +215,7 @@ const flush = (): void => {
     log('clear', `no tiles this frame — arming ${CLEAR_AFTER_TILELESS_MILLISECONDS}ms grace`)
     clearTimer = setTimeout(() => {
       clearTimer = null
+      overlayHasContent = false
       warn('clear', 'grace elapsed with no tiles — clearing overlay')
       emit([])
     }, CLEAR_AFTER_TILELESS_MILLISECONDS)
