@@ -36,6 +36,7 @@ let captured: MapLike | null = null
 /** Only what we use. MapLibre's surface is far larger, and we deliberately touch little of it. */
 export interface MapLike {
   flyTo(options: Record<string, unknown>): unknown
+  easeTo(options: Record<string, unknown>): unknown
   jumpTo(options: Record<string, unknown>): unknown
   getZoom(): number
   getCenter(): { lng: number; lat: number }

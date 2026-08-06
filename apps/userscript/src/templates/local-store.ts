@@ -14,9 +14,24 @@ import { deleteTemplate, loadTemplates, saveTemplate } from './persist.js'
  * Re-slicing happens only when a template moves, which is a drag, not a frame.
  */
 
+/**
+ * One tile at successively halved resolutions, largest first.
+ *
+ * Canvas `drawImage` filters from whatever source you give it, so shrinking a 1000px tile into 250
+ * screen pixels samples one pixel in sixteen however smooth the interpolation — which on sparse
+ * pixel art is exactly the recipe for moiré. Drawing from a level already near the target size is
+ * what mipmapping does, and it is the difference between shimmering and not.
+ *
+ * wplace itself ships no mipmaps (measured: zero `generateMipmap` calls), so this is deliberately
+ * better than matching them rather than merely matching them.
+ */
+export interface TileLevels {
+  readonly levels: readonly ImageBitmap[]
+}
+
 export interface PlacedTemplate extends ImportedTemplate {
   /** Keyed `x/y`; only tiles the template actually covers appear. */
-  readonly tiles: ReadonlyMap<string, ImageBitmap>
+  readonly tiles: ReadonlyMap<string, TileLevels>
   readonly visible: boolean
   /**
    * Whether a placement has ever been applied to this template.
@@ -57,13 +72,39 @@ export const localTemplates = (): readonly PlacedTemplate[] => [...templates.val
  * Transparent tiles are dropped rather than stored empty: a template with a sparse bounding box
  * otherwise pays for every tile in that box on every frame, and most large templates are sparse.
  */
-const slice = async (template: ImportedTemplate): Promise<Map<string, ImageBitmap>> => {
+/** Halve until small, so any on-screen size has a source within 2x of it. */
+const MIP_LEVELS = 4
+
+const buildLevels = async (full: ImageData): Promise<ImageBitmap[]> => {
+  const levels: ImageBitmap[] = [await createImageBitmap(full)]
+  let width = full.width
+  let height = full.height
+  let source: CanvasImageSource = levels[0] as ImageBitmap
+  for (let level = 1; level < MIP_LEVELS; level++) {
+    width = Math.max(1, Math.floor(width / 2))
+    height = Math.max(1, Math.floor(height / 2))
+    const canvas = new OffscreenCanvas(width, height)
+    const context = canvas.getContext('2d')
+    if (context === null) break
+    // Smooth *between* levels: each is a proper average of the one above, which is where the
+    // anti-aliasing actually comes from.
+    context.imageSmoothingEnabled = true
+    context.imageSmoothingQuality = 'high'
+    context.drawImage(source, 0, 0, width, height)
+    const next = await createImageBitmap(canvas)
+    levels.push(next)
+    source = next
+  }
+  return levels
+}
+
+const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels>> => {
   const firstTileX = Math.floor(template.originX / TILE_SIZE)
   const firstTileY = Math.floor(template.originY / TILE_SIZE)
   const lastTileX = Math.floor((template.originX + template.width - 1) / TILE_SIZE)
   const lastTileY = Math.floor((template.originY + template.height - 1) / TILE_SIZE)
 
-  const out = new Map<string, ImageBitmap>()
+  const out = new Map<string, TileLevels>()
   for (let tileY = firstTileY; tileY <= lastTileY; tileY++) {
     for (let tileX = firstTileX; tileX <= lastTileX; tileX++) {
       const rgba = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
@@ -92,10 +133,9 @@ const slice = async (template: ImportedTemplate): Promise<Map<string, ImageBitma
         }
       }
       if (painted === 0) continue
-      out.set(
-        `${tileX}/${tileY}`,
-        await createImageBitmap(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
-      )
+      out.set(`${tileX}/${tileY}`, {
+        levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
+      })
     }
   }
   return out
@@ -140,7 +180,7 @@ export const moveLocalTemplate = async (
 ): Promise<void> => {
   const existing = templates.get(id)
   if (existing === undefined) return
-  for (const bitmap of existing.tiles.values()) bitmap.close()
+  for (const tile of existing.tiles.values()) for (const level of tile.levels) level.close()
   const moved = { ...existing, originX: Math.round(originX), originY: Math.round(originY) }
   const next = { ...moved, tiles: await slice(moved) }
   templates.set(id, next)
@@ -159,7 +199,7 @@ export const markPlaced = (id: string): void => {
 export const removeLocalTemplate = (id: string): void => {
   const existing = templates.get(id)
   if (existing === undefined) return
-  for (const bitmap of existing.tiles.values()) bitmap.close()
+  for (const tile of existing.tiles.values()) for (const level of tile.levels) level.close()
   templates.delete(id)
   void deleteTemplate(id)
   notify()
@@ -172,4 +212,19 @@ export const setLocalVisible = (id: string, visible: boolean): void => {
   templates.set(id, next)
   persist(next)
   notify()
+}
+
+/**
+ * The level to draw for a given on-screen width.
+ *
+ * Pick the smallest level still at least as large as the target, so `drawImage` is always
+ * *reducing* by less than 2x — the regime where bilinear filtering actually looks like
+ * anti-aliasing rather than like sampling noise.
+ */
+export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => {
+  for (let index = tile.levels.length - 1; index >= 0; index--) {
+    const level = tile.levels[index]
+    if (level !== undefined && level.width >= targetWidth) return level
+  }
+  return tile.levels[0] as ImageBitmap
 }

@@ -1,7 +1,12 @@
 import { TILE_SIZE, tileKey } from '@wts/shared'
 import { installDebugApi, log } from './debug.js'
 import { installMapCapture } from './map-handle.js'
-import { localTemplates, onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
+import {
+  levelFor,
+  localTemplates,
+  onLocalChange,
+  restoreLocalTemplates,
+} from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 import { installPanel } from './ui/panel.js'
 
@@ -45,9 +50,6 @@ const draw = (frame: TileFrame): void => {
   // Cleared unconditionally, including on frames with no tiles, so zooming out past the point where
   // wplace stops serving tiles does not strand the last frame on screen.
   context.clearRect(0, 0, canvas.width, canvas.height)
-  // Templates are pixel art; smoothing turns them to mush the moment a tile is drawn larger than
-  // its 1000px source, which is most of the time.
-  context.imageSmoothingEnabled = false
 
   const visible = localTemplates().filter((template) => template.visible)
   if (visible.length === 0) return
@@ -55,17 +57,31 @@ const draw = (frame: TileFrame): void => {
   let drawn = 0
   for (const quad of quads) {
     const key = tileKey(quad.tile)
+    // Match wplace's own texture filtering, measured off their GL calls: LINEAR when minifying,
+    // NEAREST when magnifying. Pixel art must stay crisp past 100%, and must stop shimmering below
+    // it — one setting cannot do both, which is why they switch and so do we.
+    const magnifying = quad.width >= TILE_SIZE
+    context.imageSmoothingEnabled = !magnifying
+    if (!magnifying) context.imageSmoothingQuality = 'high'
+
     for (const template of visible) {
-      const bitmap = template.tiles.get(key)
-      if (bitmap === undefined) continue
-      // The bitmap is one whole tile, so it maps exactly onto the quad MapLibre gave us — no
-      // per-pixel arithmetic, one drawImage per tile per template.
+      const tile = template.tiles.get(key)
+      if (tile === undefined) continue
+      // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
+      // than 2x. One drawImage per tile per template, whatever the template's size.
+      const bitmap = magnifying ? (tile.levels[0] as ImageBitmap) : levelFor(tile, quad.width)
       context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
       drawn++
     }
   }
-  ;(window as unknown as Record<string, unknown>).__wtsFrame =
-    `${quads.length} tiles, ${drawn} template tiles drawn`
+  const w = window as unknown as Record<string, unknown>
+  w.__wtsFrame = `${quads.length} tiles, ${drawn} drawn, quadWidth=${Math.round(quads[0]?.width ?? 0)}, smoothing=${context.imageSmoothingEnabled}`
+  w.__wtsMips =
+    visible[0]?.tiles
+      .values()
+      .next()
+      .value?.levels.map((l) => l.width)
+      .join(',') ?? 'none'
   if (drawn > 0) log('draw', `painted ${drawn} template tiles`, { quads: quads.length })
 }
 
