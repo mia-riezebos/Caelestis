@@ -22,20 +22,61 @@ const CSS = `
 .wts-row:hover {
   background-color: var(--color-base-200, rgba(0, 0, 0, 0.06));
 }
+/* A plain pointer, not grab. The rows are clickable as well as draggable, and a grab cursor
+   promises dragging is the primary action when it is the secondary one. */
 .wts-row[draggable='true'] {
-  cursor: grab;
+  cursor: pointer;
 }
 .wts-row.wts-dragging {
-  opacity: 0.4;
-  cursor: grabbing;
+  opacity: 0.35;
 }
-/* Where the row would land, drawn on the gap rather than on the row, so it never reads as
-   selection. */
-.wts-row.wts-drop-before {
-  box-shadow: inset 0 2px 0 0 var(--color-primary, currentColor);
+/* The gap the row would occupy, held open while dragging, rather than a line drawn on a
+   neighbour. A line says "near here"; a hole says "here", and the list stops shifting under the
+   cursor as the target changes. */
+.wts-placeholder {
+  border: 1px dashed var(--color-primary, currentColor);
+  border-radius: 0.375rem;
+  opacity: 0.7;
+  margin: 0.125rem 0.5rem 0.125rem 0.25rem;
+  min-height: 2rem;
 }
-.wts-row.wts-drop-after {
-  box-shadow: inset 0 -2px 0 0 var(--color-primary, currentColor);
+/* Dropping *into* a node, as opposed to between two — a different operation with a different
+   consequence, so it gets a different signal. */
+.wts-row.wts-drop-into {
+  outline: 2px solid var(--color-primary, currentColor);
+  outline-offset: -2px;
+  background-color: var(--color-base-200, rgba(0, 0, 0, 0.06));
+}
+/* Inside the panel, not overhanging it: the panel clips its overflow to keep the rounded corner,
+   so a handle at a negative offset is invisible and unclickable — which is exactly how it
+   behaved. */
+.wts-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  /* Above the header and body, which are appended after it and would otherwise paint over the
+     whole strip — the handle was present, positioned, and completely unclickable. */
+  z-index: 1;
+}
+.wts-resize:hover::after,
+.wts-resize.wts-resizing::after {
+  content: '';
+  position: absolute;
+  inset: 0 2px 0 1px;
+  background-color: var(--color-primary, currentColor);
+  border-radius: 999px;
+  opacity: 0.5;
+}
+.wts-actions {
+  opacity: 0;
+  transition: opacity 100ms ease-out;
+}
+.wts-row:hover .wts-actions,
+.wts-row:focus-within .wts-actions {
+  opacity: 1;
 }
 .wts-name {
   flex: 1;

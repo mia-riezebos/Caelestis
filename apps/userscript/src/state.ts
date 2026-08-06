@@ -40,6 +40,8 @@ export interface State {
   readonly servers: readonly ConnectedServer[]
   /** Row keys in the user's own order. Keys absent from this list sort after those present. */
   readonly customOrder: readonly string[]
+  /** Panel width in pixels, dragged by the handle on its left edge. */
+  readonly panelWidth: number
   readonly sort: SortOrder
   readonly progress: ProgressPlacement
   readonly colours: ColourFilter
@@ -50,6 +52,7 @@ export interface State {
 const DEFAULT_STATE: State = {
   servers: [],
   customOrder: [],
+  panelWidth: 320,
   sort: DEFAULT_SORT,
   progress: 'inline',
   colours: 'all',
@@ -169,5 +172,37 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     // A bad hostname, a refused connection, or a server without CORS all land here, and the
     // distinction is not visible to us — the browser withholds it deliberately.
     return { url: base, info: null, token, status: 'unreachable', error: String(error) }
+  }
+}
+
+/**
+ * Create a folder on a server.
+ *
+ * `POST /admin/nodes` needs admin scope, and nothing in `GET /server` says whether the code we hold
+ * has it — so the only honest way to find out is to try and report what comes back. A 403 means the
+ * code is a read code, which is a different problem from the server being down.
+ */
+export const createNode = async (
+  server: ConnectedServer,
+  name: string,
+  parentId: string | null,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/nodes`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
+      },
+      body: JSON.stringify({ season: 0, parentId, name }),
+    })
+    if (response.ok) return { ok: true }
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, message: 'That code cannot create folders — it needs admin access.' }
+    }
+    const body = (await response.json().catch(() => null)) as { error?: string } | null
+    return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
+  } catch (error) {
+    return { ok: false, message: String(error) }
   }
 }

@@ -1,57 +1,44 @@
-import { getState, setState } from '../state.js'
+import { type ConnectedServer, getState, setState } from '../state.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
 /**
  * The tree: one root per source, plus `Local`.
  *
- * `Local` is always first in a fresh install and always present. It is not a server, never appears
- * in a manifest, and exists so the product does something useful before anyone has typed a URL.
- *
- * Row anatomy, left to right: **caret, kind icon, name, meta, checkbox**. The caret leads because it
- * is what makes a list read as a tree; the checkbox trails because it is what you act on once you
- * have found the row, and putting it first means every row opens with a control instead of a name.
+ * Row anatomy, left to right: **caret, kind icon, name, meta, row actions, checkbox**. The caret
+ * leads because it is what makes a list read as a tree; the checkbox trails because it is what you
+ * act on once you have found the row. Row actions sit just inside it and appear on hover, so a
+ * quiet list stays quiet.
  *
  * The whole row is the expand target — a caret is a 24px hit area on a 300px row, and everything
- * between them is dead space otherwise. The checkbox stops the click from propagating, because it
- * is the one part of the row that means something else.
+ * between them is dead space otherwise.
  */
 
 export interface TreeCallbacks {
   readonly onAddServer: () => void
   readonly onImportLocal: () => void
+  readonly onCreateFolder: (parent: {
+    server: ConnectedServer | null
+    nodeId: string | null
+  }) => void
+  readonly onCreateTemplate: (parent: {
+    server: ConnectedServer | null
+    nodeId: string | null
+  }) => void
 }
 
-/** Expansion is view state, not settings — it does not survive a reload and does not need to. */
 const collapsed = new Set<string>()
-
-/**
- * Everything is on unless it has been turned off.
- *
- * A tree that arrives switched off shows a connected server as an empty canvas, which reads as
- * broken rather than as opt-in. Tracking the *off* set rather than the on set is what makes that
- * default hold for rows that appear later, without having to touch them as they arrive.
- */
 const disabled = new Set<string>()
 
 const isExpanded = (key: string): boolean => !collapsed.has(key)
 const isEnabled = (key: string): boolean => !disabled.has(key)
-
 const toggle = (set: Set<string>, key: string): void => {
   if (set.has(key)) set.delete(key)
   else set.add(key)
 }
 
-/**
- * The user's own order, by row key.
- *
- * Stored client-side and never sent anywhere — it is a presentation preference, and it is also the
- * draw order. Keys not in the list sort after those that are, most recently seen first, so a server
- * publishing a batch surfaces what arrived instead of burying it.
- */
 const orderedKeys = (keys: readonly string[]): readonly string[] => {
-  const custom = getState().customOrder
-  const rank = new Map(custom.map((key, index) => [key, index]))
+  const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
   return [...keys].sort(
     (a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
   )
@@ -65,15 +52,31 @@ const moveKey = (keys: readonly string[], from: string, to: string, after: boole
   setState({ customOrder: next })
 }
 
+/** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
+const placeholder = (): HTMLElement => {
+  const el = document.createElement('div')
+  el.className = 'wts-placeholder'
+  el.dataset.wtsPlaceholder = ''
+  return el
+}
+
+const clearDropMarks = (root: ParentNode): void => {
+  for (const el of root.querySelectorAll('[data-wts-placeholder]')) el.remove()
+  for (const el of root.querySelectorAll('.wts-drop-into')) el.classList.remove('wts-drop-into')
+}
+
 interface RowOptions {
   readonly key: string
   readonly name: string
   readonly kind: IconName
   readonly depth: number
   readonly meta?: string
-  readonly badge?: HTMLElement
+  /** Containers accept a drop *into* them; leaves only reorder between siblings. */
+  readonly container: boolean
+  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
   readonly siblings: readonly string[]
   readonly rerender: () => void
+  readonly onDropInto?: (draggedKey: string) => void
 }
 
 const treeRow = (options: RowOptions): HTMLElement => {
@@ -82,7 +85,8 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.className = 'wts-row flex items-center gap-1'
   row.dataset.wtsKey = options.key
   row.style.padding = '0.25rem 0.5rem'
-  row.style.marginLeft = `${0.25 + options.depth}rem`
+  // One indent step per level, on top of the fixed gutter.
+  row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
   row.style.marginRight = '0.5rem'
   row.style.minHeight = '2rem'
   row.draggable = draggable
@@ -103,8 +107,11 @@ const treeRow = (options: RowOptions): HTMLElement => {
   const name = document.createElement('span')
   name.className = 'wts-name text-sm'
   name.textContent = options.name
-  name.title = options.name
   row.appendChild(name)
+  // A tooltip that repeats fully visible text is noise; only label what is actually clipped.
+  requestAnimationFrame(() => {
+    if (name.scrollWidth > name.clientWidth) name.title = options.name
+  })
 
   if (options.meta !== undefined) {
     const meta = document.createElement('span')
@@ -113,7 +120,25 @@ const treeRow = (options: RowOptions): HTMLElement => {
     meta.textContent = options.meta
     row.appendChild(meta)
   }
-  if (options.badge !== undefined) row.appendChild(options.badge)
+
+  if (options.actions !== undefined && options.actions.length > 0) {
+    const group = document.createElement('span')
+    group.className = 'wts-actions flex items-center gap-0.5'
+    group.style.flex = '0 0 auto'
+    for (const action of options.actions) {
+      const button = document.createElement('button')
+      button.className = 'btn btn-ghost btn-xs btn-circle'
+      button.title = action.label
+      button.setAttribute('aria-label', action.label)
+      button.appendChild(icon(action.icon, 'size-4'))
+      button.addEventListener('click', (event) => {
+        event.stopPropagation()
+        action.run()
+      })
+      group.appendChild(button)
+    }
+    row.appendChild(group)
+  }
 
   const check = document.createElement('input')
   check.type = 'checkbox'
@@ -146,22 +171,37 @@ const treeRow = (options: RowOptions): HTMLElement => {
     event.dataTransfer?.setData('text/plain', options.key)
     row.classList.add('wts-dragging')
   })
-  row.addEventListener('dragend', () => row.classList.remove('wts-dragging'))
+  row.addEventListener('dragend', () => {
+    row.classList.remove('wts-dragging')
+    clearDropMarks(row.parentElement ?? document)
+  })
   row.addEventListener('dragover', (event) => {
     event.preventDefault()
+    const parent = row.parentElement
+    if (parent === null) return
     const box = row.getBoundingClientRect()
-    const after = event.clientY > box.top + box.height / 2
-    row.classList.toggle('wts-drop-before', !after)
-    row.classList.toggle('wts-drop-after', after)
-  })
-  row.addEventListener('dragleave', () => {
-    row.classList.remove('wts-drop-before', 'wts-drop-after')
+    const offset = (event.clientY - box.top) / box.height
+    // The middle third of a container means "into"; the outer thirds mean "between".
+    const into =
+      options.container && options.onDropInto !== undefined && offset > 0.3 && offset < 0.7
+    clearDropMarks(parent)
+    if (into) {
+      row.classList.add('wts-drop-into')
+      return
+    }
+    parent.insertBefore(placeholder(), offset < 0.5 ? row : row.nextSibling)
   })
   row.addEventListener('drop', (event) => {
     event.preventDefault()
+    const parent = row.parentElement
     const from = event.dataTransfer?.getData('text/plain')
-    row.classList.remove('wts-drop-before', 'wts-drop-after')
+    const into = row.classList.contains('wts-drop-into')
+    if (parent !== null) clearDropMarks(parent)
     if (from === undefined || from === '' || from === options.key) return
+    if (into) {
+      options.onDropInto?.(from)
+      return
+    }
     const box = row.getBoundingClientRect()
     moveKey(options.siblings, from, options.key, event.clientY > box.top + box.height / 2)
     options.rerender()
@@ -173,8 +213,8 @@ const treeRow = (options: RowOptions): HTMLElement => {
 const childText = (text: string, depth: number): HTMLElement => {
   const el = document.createElement('p')
   el.className = 'text-xs opacity-60'
-  el.style.padding = '0.125rem 0.75rem 0.5rem'
-  el.style.paddingLeft = `${2.25 + depth}rem`
+  el.style.padding = '0.125rem 0.75rem 0.375rem'
+  el.style.paddingLeft = `${2.5 + depth * 1.125}rem`
   el.textContent = text
   return el
 }
@@ -182,6 +222,10 @@ const childText = (text: string, depth: number): HTMLElement => {
 export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.setAttribute('role', 'tree')
+  wrap.className = 'flex flex-col'
+  // Breathing room between rows, and between the first row and the search field above it.
+  wrap.style.gap = '0.125rem'
+  wrap.style.paddingTop = '0.5rem'
   wrap.style.paddingBottom = '0.5rem'
 
   const servers = getState().servers
@@ -189,71 +233,52 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
   const ordered = orderedKeys(keys)
 
   for (const key of ordered) {
-    if (key === 'local') {
-      wrap.appendChild(
-        treeRow({
-          key,
-          name: 'Local',
-          kind: 'folder',
-          depth: 0,
-          siblings: ordered,
-          rerender,
-        }),
-      )
-      if (!isExpanded(key)) continue
-      wrap.appendChild(childText('No local templates yet.', 0))
-      const actions = document.createElement('div')
-      actions.style.padding = '0 0.75rem 0.75rem 2.25rem'
-      const importButton = document.createElement('button')
-      importButton.className = 'btn btn-xs'
-      importButton.textContent = 'Import a template'
-      importButton.title = 'Import a .wplace file, or a Blue Marble export'
-      importButton.addEventListener('click', callbacks.onImportLocal)
-      actions.appendChild(importButton)
-      wrap.appendChild(actions)
-      continue
-    }
-
     const server = servers.find((candidate) => `server:${candidate.url}` === key)
-    if (server === undefined) continue
-    const badge = document.createElement('span')
-    badge.className =
-      server.status === 'connected'
-        ? 'badge badge-xs badge-success'
-        : server.status === 'needs-token'
-          ? 'badge badge-xs badge-warning'
-          : 'badge badge-xs badge-error'
-    badge.textContent =
-      server.status === 'connected' ? 'ok' : server.status === 'needs-token' ? 'code' : 'off'
-    badge.title = server.error ?? server.status
-    badge.style.flex = '0 0 auto'
+    const isLocal = key === 'local'
+    if (!isLocal && server === undefined) continue
 
     wrap.appendChild(
       treeRow({
         key,
-        name: server.info?.name ?? server.url,
-        kind: 'folder',
+        name: isLocal ? 'Local' : (server?.info?.name ?? server?.url ?? ''),
+        // A rack and a folder are different things and read differently at a glance.
+        kind: isLocal ? 'folder' : 'server',
         depth: 0,
-        badge,
+        container: true,
         siblings: ordered,
         rerender,
+        actions: [
+          {
+            icon: 'createFolder',
+            label: 'New folder',
+            run: () => callbacks.onCreateFolder({ server: server ?? null, nodeId: null }),
+          },
+          {
+            icon: 'addPhoto',
+            label: 'New template',
+            run: () => callbacks.onCreateTemplate({ server: server ?? null, nodeId: null }),
+          },
+        ],
       }),
     )
     if (!isExpanded(key)) continue
-    wrap.appendChild(
-      childText(
-        server.status === 'connected'
-          ? 'No templates published yet.'
-          : server.status === 'needs-token'
-            ? 'Needs an access code — add it in settings.'
-            : `Could not reach this server. ${server.error ?? ''}`.trim(),
-        0,
-      ),
-    )
+
+    if (isLocal) {
+      wrap.appendChild(childText('No local templates yet.', 0))
+      continue
+    }
+    if (server === undefined) continue
+    // No badge for a healthy server: if it is in the list at all, it is connected. Only trouble
+    // needs saying, and it says it in words where there is room for them.
+    if (server.status === 'connected') {
+      wrap.appendChild(childText('No templates published yet.', 0))
+    } else if (server.status === 'needs-token') {
+      wrap.appendChild(childText('Needs an access code — add it in settings.', 0))
+    } else {
+      wrap.appendChild(childText(`Could not be reached. ${server.error ?? ''}`.trim(), 0))
+    }
   }
 
-  // Kept even when only Local is showing. Local is a starting point, not a destination, and hiding
-  // the way onward would quietly make it one.
   const addWrap = document.createElement('div')
   addWrap.className = 'flex justify-center'
   addWrap.style.padding = '0.5rem 0.75rem 0'

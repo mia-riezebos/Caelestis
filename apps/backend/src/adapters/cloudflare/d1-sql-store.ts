@@ -81,6 +81,24 @@ const toNode = (row: typeof nodes.$inferSelect): NodeRecord => ({
   createdAt: row.createdAtMs,
 })
 
+/**
+ * Does this error, or anything it wraps, mention `needle`?
+ *
+ * Drizzle raises a `DrizzleQueryError` whose own message is only "Failed query: insert into …" and
+ * hangs the real database error off `cause` — D1 then adds a layer of its own. Testing
+ * `error.message` alone therefore misses every constraint violation, which turned a duplicate
+ * folder name into a 500 while the in-memory store correctly reported a conflict. Exactly the sort
+ * of divergence that only shows up against real D1.
+ */
+const mentions = (error: unknown, needle: string): boolean => {
+  let current: unknown = error
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (current.message.includes(needle)) return true
+    current = current.cause
+  }
+  return false
+}
+
 export class D1SqlStore implements SqlStore {
   private readonly database: DrizzleD1Database
 
@@ -107,7 +125,7 @@ export class D1SqlStore implements SqlStore {
         createdAtMs: node.createdAt,
       })
     } catch (error) {
-      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+      if (mentions(error, 'UNIQUE constraint failed')) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
       throw error

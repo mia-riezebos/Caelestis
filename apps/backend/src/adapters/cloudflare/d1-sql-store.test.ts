@@ -1,7 +1,7 @@
 import { encodeIndexedPng, millis, seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
-import { NodeNotFoundError } from '../../ports/index.js'
+import { NodeNotFoundError, NodePathConflictError } from '../../ports/index.js'
 import { storeTemplate } from '../../templates/store.js'
 import { MemoryBlobStore } from '../memory/memory-blob-store.js'
 import { D1SqlStore } from './d1-sql-store.js'
@@ -79,6 +79,27 @@ describe('D1SqlStore', () => {
       published_at: null,
     })
     await expect(store.readTemplateVersion(stored.versionId)).resolves.toMatchObject({ nodeId })
+  })
+
+  it('reports a duplicate path as a conflict rather than letting the driver error escape', async () => {
+    // The in-memory store threw NodePathConflictError here and D1 did not, because Drizzle wraps the
+    // database error: its own message is only "Failed query: insert into …" and the constraint text
+    // lives on `cause`, with D1 adding a further layer. Checking `error.message` alone matched
+    // neither, so a duplicate folder name surfaced as a 500. Only reproducible against real D1,
+    // which is why it belongs in this file and not beside the memory adapter.
+    const node = {
+      season: 1,
+      parentId: null,
+      path: '/duplicate',
+      name: 'Duplicate',
+      description: null,
+      createdAt: millis(1_750_000_000_000),
+    }
+    await store.insertNode({ ...node, id: '01890f3a-6b7c-7def-8123-4567890abcd1' })
+
+    await expect(
+      store.insertNode({ ...node, id: '01890f3a-6b7c-7def-8123-4567890abcd2' }),
+    ).rejects.toBeInstanceOf(NodePathConflictError)
   })
 
   it('writes a template, version, tile index and current pointer in one batch', async () => {

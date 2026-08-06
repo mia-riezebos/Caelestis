@@ -1,10 +1,12 @@
 import { log, warn } from '../debug.js'
 import {
   type ConnectedServer,
+  createNode,
   getState,
   loadState,
   probeServer,
   removeServer,
+  setState,
   upsertServer,
 } from '../state.js'
 import { icon } from './icons.js'
@@ -196,6 +198,18 @@ const treeView = (): HTMLElement => {
         {
           onAddServer: () => showView('settings'),
           onImportLocal: () => warn('install', 'local import is not built yet'),
+          onCreateFolder: ({ server, nodeId }) => void createFolder(server, nodeId, renderTree),
+          onCreateTemplate: ({ server }) => {
+            // Deliberately not stubbed as a no-op: a template is an image plus a placement, and
+            // neither the picker nor the placement UI exists yet. Say so rather than opening
+            // something that cannot finish. See 32-local-templates.
+            toast(
+              server === null
+                ? 'Importing a template needs the file picker — not built yet.'
+                : 'Creating a template needs a placement step — not built yet.',
+              'warning',
+            )
+          },
         },
         renderTree,
       ),
@@ -458,6 +472,45 @@ const settingsView = (): HTMLElement => {
   return view
 }
 
+/** A transient message anchored to the panel, so an action can report without a dialog. */
+const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): void => {
+  const panel = document.getElementById(PANEL_ID)
+  if (panel === null) return
+  panel.querySelector('[data-wts-toast]')?.remove()
+  const el = document.createElement('div')
+  el.setAttribute('data-wts-toast', '')
+  el.className =
+    kind === 'error'
+      ? 'alert alert-error text-xs'
+      : kind === 'warning'
+        ? 'alert alert-warning text-xs'
+        : 'alert alert-info text-xs'
+  Object.assign(el.style, { margin: '0 0.5rem 0.5rem', padding: '0.5rem 0.75rem' })
+  el.textContent = message
+  panel.appendChild(el)
+  setTimeout(() => el.remove(), 6000)
+}
+
+const createFolder = async (
+  server: ConnectedServer | null,
+  nodeId: string | null,
+  rerender: () => void,
+): Promise<void> => {
+  if (server === null) {
+    toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
+    return
+  }
+  const name = prompt('Folder name')?.trim()
+  if (name === undefined || name === '') return
+  const result = await createNode(server, name, nodeId)
+  if (result.ok) {
+    toast(`Created "${name}".`)
+    rerender()
+    return
+  }
+  toast(result.message, 'error')
+}
+
 const buildPanel = (): HTMLElement => {
   const panel = document.createElement('aside')
   panel.id = PANEL_ID
@@ -477,7 +530,7 @@ const buildPanel = (): HTMLElement => {
     // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
     // their rail and menus open over our panel rather than being trapped behind it.
     zIndex: '30',
-    width: 'min(20rem, calc(100vw - 6rem))',
+    width: `${Math.min(getState().panelWidth, window.innerWidth - 96)}px`,
     display: 'flex',
     flexDirection: 'column',
     minHeight: '0',
@@ -485,6 +538,38 @@ const buildPanel = (): HTMLElement => {
     borderRadius: '0.5rem',
     overflow: 'hidden',
   } satisfies Partial<CSSStyleDeclaration>)
+
+  const handle = document.createElement('div')
+  handle.className = 'wts-resize'
+  handle.setAttribute('role', 'separator')
+  handle.setAttribute('aria-label', 'Resize panel')
+  handle.addEventListener('pointerdown', (event) => {
+    event.preventDefault()
+    handle.classList.add('wts-resizing')
+    // Capture is an optimisation, not a requirement — synthetic pointers can lack a capturable id,
+    // and throwing here would abort the whole drag before it started.
+    try {
+      handle.setPointerCapture(event.pointerId)
+    } catch {
+      /* proceed without capture */
+    }
+    const startX = event.clientX
+    const startWidth = panel.getBoundingClientRect().width
+    const move = (moved: PointerEvent): void => {
+      // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
+      const next = Math.min(720, Math.max(260, startWidth - (moved.clientX - startX)))
+      panel.style.width = `${next}px`
+    }
+    const done = (): void => {
+      handle.classList.remove('wts-resizing')
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', done)
+      setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', done)
+  })
+  panel.appendChild(handle)
 
   const header = document.createElement('div')
   header.className = 'flex items-center gap-2 px-3 py-2 border-b border-base-300'
