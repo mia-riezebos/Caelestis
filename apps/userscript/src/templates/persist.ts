@@ -1,4 +1,5 @@
 import { warn } from '../debug.js'
+import type { Appearance } from './appearance.js'
 import type { ImportedTemplate } from './import.js'
 
 /**
@@ -16,19 +17,23 @@ import type { ImportedTemplate } from './import.js'
 
 const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
-const VERSION = 1
+// Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
+const VERSION = 2
 
 export interface StoredTemplate extends ImportedTemplate {
   readonly visible: boolean
   readonly everPlaced: boolean
+  readonly appearance?: Appearance
 }
 
 const open = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
     request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE)) {
-        request.result.createObjectStore(STORE, { keyPath: 'id' })
+      const db = request.result
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
+      if (!db.objectStoreNames.contains('server-cache')) {
+        db.createObjectStore('server-cache', { keyPath: 'url' })
       }
     }
     request.onsuccess = () => resolve(request.result)

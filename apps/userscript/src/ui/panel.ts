@@ -1,6 +1,7 @@
 import { canvasPixelToLatLng } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { viewportCentre } from '../main.js'
+import { forgetServer } from '../server-cache.js'
 import {
   type ConnectedServer,
   createNode,
@@ -12,10 +13,16 @@ import {
   removeServer,
   renameNode as renameNodeOnServer,
   setState,
+  uploadTemplate,
   upsertServer,
 } from '../state.js'
 import { importFile } from '../templates/import.js'
-import { addLocalTemplate, localTemplates } from '../templates/local-store.js'
+import {
+  addLocalTemplate,
+  localTemplates as allLocal,
+  localTemplates,
+  templateAsPng,
+} from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { coloursSection } from './colours.js'
@@ -23,7 +30,13 @@ import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
-import { refreshNodes, startRenaming, type TreeTarget, treeContents } from './tree.js'
+import {
+  primeFromCache,
+  refreshNodes,
+  startRenaming,
+  type TreeTarget,
+  treeContents,
+} from './tree.js'
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -218,12 +231,15 @@ const treeView = (): HTMLElement => {
             if (template !== undefined) navigateTo(centreOf(template))
           },
           onPlace: (id) => beginMove(id, renderTree),
+          onCopyToServer: (id) => void copyToServer(id, renderTree),
         },
         renderTree,
       ),
     )
   }
   renderTree()
+  // Paint what the servers said last time, then let a live fetch replace it.
+  void primeFromCache(renderTree)
 
   view.append(toolbar, body)
   return view
@@ -314,6 +330,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   remove.appendChild(icon('close', 'size-3'))
   remove.addEventListener('click', () => {
     removeServer(server.url)
+    void forgetServer(server.url)
     showView('settings')
   })
 
@@ -512,11 +529,53 @@ const applyRename = async (
   await refreshNodes(target.server, rerender)
 }
 
+/**
+ * Ask before destroying something.
+ *
+ * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
+ * client. The confirm names the thing rather than saying "are you sure", so the answer does not
+ * depend on remembering what was right-clicked.
+ */
+const confirmDestructive = (message: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    const panel = document.getElementById(PANEL_ID)
+    if (panel === null) {
+      resolve(false)
+      return
+    }
+    panel.querySelector('[data-wts-confirm]')?.remove()
+    const box = document.createElement('div')
+    box.setAttribute('data-wts-confirm', '')
+    box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
+    Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+    const text = document.createElement('span')
+    text.textContent = message
+    const buttons = document.createElement('div')
+    buttons.className = 'flex gap-2 justify-end'
+    const cancel = document.createElement('button')
+    cancel.className = 'btn btn-xs btn-ghost'
+    cancel.textContent = 'Cancel'
+    const confirm = document.createElement('button')
+    confirm.className = 'btn btn-xs btn-error'
+    confirm.textContent = 'Delete'
+    const finish = (answer: boolean): void => {
+      box.remove()
+      resolve(answer)
+    }
+    cancel.addEventListener('click', () => finish(false))
+    confirm.addEventListener('click', () => finish(true))
+    buttons.append(cancel, confirm)
+    box.append(text, buttons)
+    panel.appendChild(box)
+    confirm.focus()
+  })
+
 const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   if (target.server === null || target.nodeId === null) {
     toast('Nothing to delete here yet.', 'warning')
     return
   }
+  if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
   const result = await deleteNodeOnServer(target.server, target.nodeId)
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)
@@ -642,6 +701,91 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
   document.body.appendChild(picker)
   picker.click()
   setTimeout(() => picker.remove(), 60_000)
+}
+
+/**
+ * Copy a local template onto a server.
+ *
+ * Only servers where the code is admin can receive one, and only a real node can hold it, so both
+ * are chosen here rather than assumed. The placement travels with it — the whole point of getting
+ * it right locally first is not having to do it again on the other side.
+ */
+const copyToServer = async (templateId: string, rerender: () => void): Promise<void> => {
+  const template = allLocal().find((candidate) => candidate.id === templateId)
+  if (template === undefined) return
+  const targets = getState().servers.filter((server) => server.isAdmin)
+  if (targets.length === 0) {
+    toast('No server here accepts uploads — you need an admin code on one.', 'warning')
+    return
+  }
+
+  const panel = document.getElementById(PANEL_ID)
+  if (panel === null) return
+  panel.querySelector('[data-wts-copy]')?.remove()
+  const box = document.createElement('div')
+  box.setAttribute('data-wts-copy', '')
+  box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
+  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+
+  const label = document.createElement('span')
+  label.textContent = `Copy “${template.name}” to:`
+  const chooser = document.createElement('select')
+  chooser.className = 'select select-xs select-bordered'
+  for (const server of targets) {
+    for (const node of await listNodes(server)) {
+      const option = document.createElement('option')
+      option.value = `${server.url}|${node.id}`
+      option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
+      chooser.appendChild(option)
+    }
+  }
+  if (chooser.options.length === 0) {
+    toast('Create a folder on the server first — a template has to live somewhere.', 'warning')
+    return
+  }
+
+  const buttons = document.createElement('div')
+  buttons.className = 'flex gap-2 justify-end'
+  const cancel = document.createElement('button')
+  cancel.className = 'btn btn-xs btn-ghost'
+  cancel.textContent = 'Cancel'
+  cancel.addEventListener('click', () => box.remove())
+  const go = document.createElement('button')
+  go.className = 'btn btn-xs btn-primary'
+  go.textContent = 'Copy'
+  go.addEventListener('click', () => {
+    void (async () => {
+      const [url, nodeId] = (chooser.value ?? '').split('|')
+      const server = targets.find((candidate) => candidate.url === url)
+      if (server === undefined || nodeId === undefined) return
+      go.classList.add('btn-disabled')
+      label.textContent = 'Encoding…'
+      const png = await templateAsPng(template)
+      if (png === null) {
+        toast('Could not encode that template.', 'error')
+        box.remove()
+        return
+      }
+      label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
+      const result = await uploadTemplate(server, {
+        nodeId,
+        name: template.name,
+        originX: template.originX,
+        originY: template.originY,
+        png,
+      })
+      box.remove()
+      if (result.ok) {
+        toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
+        await refreshNodes(server, rerender)
+      } else {
+        toast(result.message, 'error')
+      }
+    })()
+  })
+  buttons.append(cancel, go)
+  box.append(label, chooser, buttons)
+  panel.appendChild(box)
 }
 
 const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {

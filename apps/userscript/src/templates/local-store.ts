@@ -1,5 +1,6 @@
 import { TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { log } from '../debug.js'
+import { type Appearance, anchorOffset, DEFAULT_APPEARANCE, scaleFor } from './appearance.js'
 import type { ImportedTemplate } from './import.js'
 import { deleteTemplate, loadTemplates, saveTemplate } from './persist.js'
 
@@ -40,6 +41,9 @@ export interface PlacedTemplate extends ImportedTemplate {
    * remove it rather than leave it stranded at a position nobody chose.
    */
   readonly everPlaced: boolean
+  /** How this one is drawn. Per-overlay, because the right opacity for a dense mural and a thin
+   *  outline are not the same number. */
+  readonly appearance: Appearance
 }
 
 const templates = new Map<string, PlacedTemplate>()
@@ -148,7 +152,13 @@ const persist = (placed: PlacedTemplate): void => {
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   const tiles = await slice(template)
-  const placed: PlacedTemplate = { ...template, tiles, visible: true, everPlaced: false }
+  const placed: PlacedTemplate = {
+    ...template,
+    tiles,
+    visible: true,
+    everPlaced: false,
+    appearance: DEFAULT_APPEARANCE,
+  }
   templates.set(template.id, placed)
   persist(placed)
   log('install', `placed ${template.name}`, { tiles: tiles.size })
@@ -166,7 +176,11 @@ export const restoreLocalTemplates = async (): Promise<void> => {
       void deleteTemplate(template.id)
       continue
     }
-    templates.set(template.id, { ...template, tiles: await slice(template) })
+    templates.set(template.id, {
+      appearance: DEFAULT_APPEARANCE,
+      ...template,
+      tiles: await slice(template),
+    })
   }
   if (stored.length > 0) log('install', `restored ${stored.length} local templates`)
   notify()
@@ -227,4 +241,132 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
     if (level !== undefined && level.width >= targetWidth) return level
   }
   return tile.levels[0] as ImageBitmap
+}
+
+/** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
+export const setAppearance = (id: string, appearance: Appearance): void => {
+  const existing = templates.get(id)
+  if (existing === undefined) return
+  const next = { ...existing, appearance }
+  templates.set(id, next)
+  persist(next)
+  notify()
+}
+
+/**
+ * A tile stamped for one appearance, cached until that appearance changes.
+ *
+ * Shape, size, anchor and per-overlay colour filtering all decide *what each pixel looks like*, so
+ * they belong in the bitmap rather than in a per-frame loop — a 1000x1000 tile is a million pixels
+ * and the frame budget is 16ms. `full` needs no stamping at all and returns the mip chain
+ * untouched, which is why it costs nothing.
+ */
+const stamped = new Map<string, { key: string; tile: TileLevels }>()
+
+const appearanceKey = (a: Appearance): string =>
+  `${a.shape}|${a.size}|${a.anchor}|${a.hiddenColours.join(',')}`
+
+export const stampTile = (
+  template: PlacedTemplate,
+  tileKey: string,
+  appearance: Appearance,
+): TileLevels | undefined => {
+  const source = template.tiles.get(tileKey)
+  if (source === undefined) return undefined
+  // Opacity is applied at draw time, so it is deliberately not part of the cache key — dragging
+  // that slider must not rebuild a million pixels per frame.
+  const wanted = appearanceKey(appearance)
+  if (appearance.shape === 'full' && appearance.hiddenColours.length === 0) return source
+
+  const cacheKey = `${template.id}|${tileKey}`
+  const hit = stamped.get(cacheKey)
+  if (hit !== undefined && hit.key === wanted) return hit.tile
+
+  const built = buildStamp(template, tileKey, appearance)
+  if (built === null) return source
+  stamped.set(cacheKey, { key: wanted, tile: built })
+  return built
+}
+
+const buildStamp = (
+  template: PlacedTemplate,
+  tileKey: string,
+  appearance: Appearance,
+): TileLevels | null => {
+  const [tx, ty] = tileKey.split('/').map(Number)
+  if (tx === undefined || ty === undefined) return null
+  const scale = scaleFor(appearance)
+  const size = TILE_SIZE * scale
+  const canvas = new OffscreenCanvas(size, size)
+  const context = canvas.getContext('2d')
+  if (context === null) return null
+
+  const hidden = new Set(appearance.hiddenColours)
+  const tileLeft = tx * TILE_SIZE
+  const tileTop = ty * TILE_SIZE
+  const startX = Math.max(0, tileLeft - template.originX)
+  const startY = Math.max(0, tileTop - template.originY)
+  const endX = Math.min(template.width, tileLeft + TILE_SIZE - template.originX)
+  const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
+  const stampSize = appearance.shape === 'full' ? 1 : appearance.size
+  const offset = anchorOffset(appearance.anchor, stampSize)
+
+  for (let y = startY; y < endY; y++) {
+    for (let x = startX; x < endX; x++) {
+      const index = template.indices[y * template.width + x] ?? TRANSPARENT_INDEX
+      if (index === TRANSPARENT_INDEX || hidden.has(index)) continue
+      const colour = WPLACE_PALETTE[index]
+      if (colour === undefined) continue
+      const cellX = (template.originX + x - tileLeft) * scale
+      const cellY = (template.originY + y - tileTop) * scale
+      const px = cellX + offset.x * scale
+      const py = cellY + offset.y * scale
+      const side = stampSize * scale
+      context.fillStyle = colour.hex
+      if (appearance.shape === 'circle') {
+        context.beginPath()
+        context.arc(px + side / 2, py + side / 2, side / 2, 0, Math.PI * 2)
+        context.fill()
+      } else if (appearance.shape === 'triangle') {
+        context.beginPath()
+        context.moveTo(px, py)
+        context.lineTo(px + side, py)
+        context.lineTo(px, py + side)
+        context.closePath()
+        context.fill()
+      } else {
+        context.fillRect(px, py, side, side)
+      }
+    }
+  }
+  // One level only: a stamped tile is already an intermediate, and rebuilding a mip chain per
+  // appearance change would cost more than it saves.
+  const bitmap = canvas.transferToImageBitmap()
+  return { levels: [bitmap] }
+}
+
+/**
+ * A template as an indexed PNG, ready to upload.
+ *
+ * The server quantises on ingest anyway, but sending the already-quantised pixels means what was
+ * previewed locally is byte-identical to what is stored — no second opinion from a second
+ * quantiser on the way through.
+ */
+export const templateAsPng = async (template: PlacedTemplate): Promise<Blob | null> => {
+  const canvas = new OffscreenCanvas(template.width, template.height)
+  const context = canvas.getContext('2d')
+  if (context === null) return null
+  const rgba = new Uint8ClampedArray(template.width * template.height * 4)
+  for (let index = 0; index < template.indices.length; index++) {
+    const palette = template.indices[index] ?? TRANSPARENT_INDEX
+    if (palette === TRANSPARENT_INDEX) continue
+    const colour = WPLACE_PALETTE[palette]
+    if (colour === undefined) continue
+    rgba[index * 4] = colour.rgb[0]
+    rgba[index * 4 + 1] = colour.rgb[1]
+    rgba[index * 4 + 2] = colour.rgb[2]
+    rgba[index * 4 + 3] = 255
+  }
+  context.putImageData(new ImageData(rgba, template.width, template.height), 0, 0)
+  return await canvas.convertToBlob({ type: 'image/png' })
 }

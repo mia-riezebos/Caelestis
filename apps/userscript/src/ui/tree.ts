@@ -1,3 +1,4 @@
+import { cacheServer, loadServerCache } from '../server-cache.js'
 import { type ConnectedServer, getState, listNodes, setState, type TreeNode } from '../state.js'
 import { localTemplates, removeLocalTemplate, setLocalVisible } from '../templates/local-store.js'
 import { type IconName, icon } from './icons.js'
@@ -32,6 +33,7 @@ export interface TreeCallbacks {
   /** Frame a local template on the map. */
   readonly onGoTo: (templateId: string) => void
   readonly onPlace: (templateId: string) => void
+  readonly onCopyToServer: (templateId: string) => void
 }
 
 const collapsed = new Set<string>()
@@ -52,7 +54,22 @@ export const refreshNodes = async (
   rerender: () => void,
 ): Promise<void> => {
   if (!server.isAdmin) return
-  nodesByServer.set(server.url, await listNodes(server))
+  const nodes = await listNodes(server)
+  nodesByServer.set(server.url, nodes)
+  void cacheServer({ url: server.url, nodes, fetchedAt: Date.now() })
+  rerender()
+}
+
+/**
+ * Draw what a server said last time, immediately, before anything is fetched.
+ *
+ * Without it the tree is empty on every page load until each server answers, which is the wrong
+ * first impression and gets worse the more servers are connected.
+ */
+export const primeFromCache = async (rerender: () => void): Promise<void> => {
+  for (const entry of await loadServerCache()) {
+    if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
+  }
   rerender()
 }
 
@@ -471,6 +488,11 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           },
           actions: [
             { icon: 'search', label: 'Go to', run: () => callbacks.onGoTo(template.id) },
+            {
+              icon: 'uploadFile',
+              label: 'Copy to a server',
+              run: () => callbacks.onCopyToServer(template.id),
+            },
             { icon: 'rename', label: 'Move', run: () => callbacks.onPlace(template.id) },
             {
               icon: 'trash',

@@ -1,14 +1,18 @@
 import { TILE_SIZE, tileKey } from '@wts/shared'
 import { installDebugApi, log } from './debug.js'
 import { installMapCapture } from './map-handle.js'
+import { anchorOffset, DEFAULT_APPEARANCE } from './templates/appearance.js'
 import {
   levelFor,
   localTemplates,
   onLocalChange,
   restoreLocalTemplates,
+  stampTile,
 } from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
+import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
+import { loadAccount } from './wplace-account.js'
 
 /**
  * Entry point.
@@ -65,8 +69,12 @@ const draw = (frame: TileFrame): void => {
     if (!magnifying) context.imageSmoothingQuality = 'high'
 
     for (const template of visible) {
-      const tile = template.tiles.get(key)
+      const appearance = template.appearance ?? DEFAULT_APPEARANCE
+      // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
+      // per frame; the stamp is rebuilt only when the appearance changes.
+      const tile = stampTile(template, key, appearance)
       if (tile === undefined) continue
+      context.globalAlpha = appearance.opacity
       // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
       // than 2x. One drawImage per tile per template, whatever the template's size.
       const bitmap = magnifying ? (tile.levels[0] as ImageBitmap) : levelFor(tile, quad.width)
@@ -82,9 +90,15 @@ const draw = (frame: TileFrame): void => {
       const right = Math.round(quad.x + quad.width)
       const bottom = Math.round(quad.y + quad.height)
       context.drawImage(bitmap, left, top, right - left, bottom - top)
+      context.globalAlpha = 1
       drawn++
     }
   }
+  // The button rides with the overlay, so it is repositioned on the same frame the map moved.
+  renderOverlayControls(() => {
+    if (lastFrame !== null) draw(lastFrame)
+  })
+
   const w = window as unknown as Record<string, unknown>
   w.__wtsFrame = `${quads.length} tiles, ${drawn} drawn, quadWidth=${Math.round(quads[0]?.width ?? 0)}, smoothing=${context.imageSmoothingEnabled}`
   w.__wtsMips =
@@ -147,20 +161,21 @@ export const canvasPixelAt = (
  */
 export const screenPointFor = (x: number, y: number): { x: number; y: number } | null => {
   if (lastFrame === null) return null
+  const reference = lastFrame.quads[0]
+  if (reference === undefined) return null
   const box = lastFrame.canvas.getBoundingClientRect()
   const ratio = lastFrame.canvas.width / box.width
-  for (const quad of lastFrame.quads) {
-    const left = quad.tile.x * TILE_SIZE
-    const top = quad.tile.y * TILE_SIZE
-    if (x < left || x >= left + TILE_SIZE) continue
-    if (y < top || y >= top + TILE_SIZE) continue
-    const scale = quad.width / TILE_SIZE
-    return {
-      x: box.left + (quad.x + (x - left) * scale) / ratio,
-      y: box.top + (quad.y + (y - top) * scale) / ratio,
-    }
+  // Any one tile fixes the whole mapping: the scale is uniform and the map is never rotated, so a
+  // single quad is a complete reference frame. Requiring the point to fall *inside* a visible tile
+  // meant a template whose corner was just off-screen had no position at all — which is exactly
+  // when its controls need to stay reachable.
+  const scale = reference.width / TILE_SIZE
+  const originX = reference.tile.x * TILE_SIZE
+  const originY = reference.tile.y * TILE_SIZE
+  return {
+    x: box.left + (reference.x + (x - originX) * scale) / ratio,
+    y: box.top + (reference.y + (y - originY) * scale) / ratio,
   }
-  return null
 }
 
 /** Screen scale: how many device pixels one canvas pixel currently occupies. */
@@ -176,6 +191,7 @@ const main = (): void => {
   install()
   // Templates outlive a page load, which is what makes navigating to one survivable at all.
   void restoreLocalTemplates()
+  void loadAccount()
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
   onLocalChange(() => {

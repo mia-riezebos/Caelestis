@@ -1,5 +1,6 @@
 import { PALETTE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { getState, setState } from '../state.js'
+import { ownedColours } from '../wplace-account.js'
 
 /**
  * The colour filter: every palette entry individually, with presets above it.
@@ -33,7 +34,7 @@ const presetIndices = (preset: ColourPresetId, owned: ReadonlySet<number> | null
 }
 
 const applyPreset = (preset: ColourPresetId): void => {
-  const on = new Set(presetIndices(preset, null))
+  const on = new Set(presetIndices(preset, ownedColours()))
   const hidden: number[] = []
   for (let index = 0; index < PALETTE_SIZE; index++) {
     if (index !== TRANSPARENT_INDEX && !on.has(index)) hidden.push(index)
@@ -57,10 +58,10 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
     const button = document.createElement('button')
     button.className = 'btn btn-xs'
     button.textContent = label
-    if (id === 'owned') {
-      // `/me` is not wired, so this cannot yet mean what it says.
+    if (id === 'owned' && ownedColours() === null) {
+      // Only disabled when we genuinely could not ask — signed out, or wplace refused.
       button.classList.add('btn-disabled')
-      button.title = 'Needs your wplace colour list — not wired up yet'
+      button.title = 'Sign in to wplace so it can tell us which colours you own'
     }
     button.addEventListener('click', () => {
       applyPreset(id)

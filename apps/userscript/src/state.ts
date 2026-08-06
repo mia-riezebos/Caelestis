@@ -318,3 +318,46 @@ export const listNodes = async (server: ConnectedServer): Promise<readonly TreeN
     return []
   }
 }
+
+/**
+ * Publish a local template to a server.
+ *
+ * `POST /admin/templates` is multipart and wants an indexed PNG plus the origin in canvas pixels,
+ * which is exactly what a local template already holds — so this is a move rather than a
+ * conversion, and the placement someone got right locally is the placement the server stores.
+ */
+export const uploadTemplate = async (
+  server: ConnectedServer,
+  input: {
+    nodeId: string
+    name: string
+    originX: number
+    originY: number
+    png: Blob
+  },
+): Promise<{ ok: true; id: string } | { ok: false; message: string }> => {
+  try {
+    const form = new FormData()
+    form.set('png', input.png, `${input.name}.png`)
+    form.set('nodeId', input.nodeId)
+    form.set('name', input.name)
+    form.set('originX', String(input.originX))
+    form.set('originY', String(input.originY))
+    const response = await fetch(`${server.url}/admin/templates`, {
+      method: 'POST',
+      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+      body: form,
+    })
+    if (response.ok) {
+      const body = (await response.json()) as { id?: string }
+      return { ok: true, id: body.id ?? '' }
+    }
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
+    }
+    const body = (await response.json().catch(() => null)) as { error?: string } | null
+    return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
