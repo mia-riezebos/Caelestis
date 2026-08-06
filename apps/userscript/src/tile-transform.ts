@@ -1,35 +1,52 @@
+import type { TileCoord } from '@wts/shared'
+
 /**
- * Where is each wplace tile on screen, right now?
+ * Which wplace tile is on screen, where, right now?
  *
- * MapLibre already knows, and uploads the answer to the GPU every frame. Rather than reimplement
- * the projection — which drifts, and which the URL cannot supply because it does not update during
- * cursor interaction — this reads MapLibre's own matrix back out of the WebGL context.
+ * MapLibre already knows where, and uploads the answer to the GPU every frame. Rather than
+ * reimplement the projection — which drifts, and which the URL cannot supply because it does not
+ * update during cursor interaction — this reads MapLibre's own matrix back out of the WebGL
+ * context. Nothing is recomputed, so there is nothing to drift.
  *
- * The hook that makes it legible is `getUniformLocation`: it takes the uniform's *name* as a
- * string, so recording those turns `uniformMatrix4fv` from an anonymous sixteen floats into a
+ * The hook that makes the matrix legible is `getUniformLocation`: it takes the uniform's *name* as
+ * a string, so recording those turns `uniformMatrix4fv` from an anonymous sixteen floats into a
  * named `u_projection_matrix`.
  *
- * Everything here must be installed before MapLibre calls `getContext`, so this module has to be
- * imported at `document-start`.
+ * Recovering *which* tile is harder, because a draw call knows only a texture. The chain from URL
+ * to texture is `fetch → Blob → ImageBitmap → texImage2D`, and object identity does not survive the
+ * first step: `Response.blob()` hands back a fresh `Blob`, so a `WeakMap` keyed on the blob seen in
+ * the shim never matches — measured, zero attributions. Byte length does survive, and is what
+ * carries the tile coordinate across that gap.
+ *
+ * Everything here must be installed before MapLibre calls `getContext`, so it has to run at
+ * `document-start`.
  */
 
 /** MapLibre's tile coordinate extent. Tile-local `(0,0)`..`(EXTENT,EXTENT)` spans one whole tile. */
 const MAPLIBRE_TILE_EXTENT = 8192
 
-/** wplace's tiles are the only 1000x1000 textures the map uploads, which is how we spot them. */
-const WPLACE_TILE_TEXTURE_SIZE = 1000
+/** How square a quad must be to be believed, as a fraction of its width. */
+const SQUARENESS_TOLERANCE = 0.02
+
+const TILE_URL = /\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png/
 
 export interface TileQuad {
+  readonly tile: TileCoord
   /** Screen position of the tile's top-left corner, in canvas device pixels. */
   readonly x: number
   readonly y: number
-  /** Screen size of the whole tile, in canvas device pixels. Negative if the axis is flipped. */
+  /** Screen size of the whole tile, in canvas device pixels. */
   readonly width: number
   readonly height: number
 }
 
 export interface TileFrame {
   readonly canvas: HTMLCanvasElement
+  /**
+   * Every wplace tile drawn this frame. Empty when the map is showing none — zoomed out past the
+   * point where wplace serves them, for instance — which is the signal to clear the overlay rather
+   * than leave the last frame's squares stranded on screen.
+   */
   readonly quads: readonly TileQuad[]
 }
 
@@ -40,6 +57,14 @@ let mapCanvas: HTMLCanvasElement | null = null
 let pending: TileQuad[] = []
 let scheduled = false
 
+/**
+ * Tiles whose bytes have been seen but whose `ImageBitmap` has not been built yet, keyed by
+ * response byte length. A queue per length, because two tiles can compress to the same size — every
+ * empty tile is 73 bytes — so same-size tiles are matched first-in, first-out.
+ */
+const tilesByByteLength = new Map<number, TileCoord[]>()
+const tileOfBitmap = new WeakMap<ImageBitmap, TileCoord>()
+
 /** Column-major 4x4, the layout WebGL uses. */
 const project = (m: ArrayLike<number>, x: number, y: number): readonly [number, number] => {
   const at = (index: number): number => m[index] ?? 0
@@ -49,39 +74,94 @@ const project = (m: ArrayLike<number>, x: number, y: number): readonly [number, 
   return [clipX / clipW, clipY / clipW]
 }
 
-const quadFromMatrix = (m: ArrayLike<number>, canvas: HTMLCanvasElement): TileQuad | null => {
+const quadFromMatrix = (
+  m: ArrayLike<number>,
+  tile: TileCoord,
+  canvas: HTMLCanvasElement,
+): TileQuad | null => {
   const [x0, y0] = project(m, 0, 0)
   const [x1, y1] = project(m, MAPLIBRE_TILE_EXTENT, MAPLIBRE_TILE_EXTENT)
   // Clip space is -1..1 with y up; the canvas is 0..size with y down.
   const toScreenX = (clip: number) => (clip * 0.5 + 0.5) * canvas.width
   const toScreenY = (clip: number) => (1 - (clip * 0.5 + 0.5)) * canvas.height
-  const left = toScreenX(x0)
-  const top = toScreenY(y0)
-  const width = toScreenX(x1) - left
-  const height = toScreenY(y1) - top
-  // A degenerate or absurd quad means we caught a matrix that was not a whole tile's. Requiring
-  // the quad to be square filters those out: the first version of this only bounded the width, and
-  // a stray non-tile draw put one undersized square on screen.
+  const x = toScreenX(x0)
+  const y = toScreenY(y0)
+  const width = toScreenX(x1) - x
+  const height = toScreenY(y1) - y
+  // Not every draw that binds a tile texture is a whole-tile draw. Requiring the quad to be square
+  // rejects the others; bounding the width alone let one undersized rectangle through.
   if (!Number.isFinite(width) || !Number.isFinite(height)) return null
-  if (Math.abs(width) < 4 || Math.abs(width) > 1e5) return null
-  if (Math.abs(Math.abs(height) - Math.abs(width)) > Math.abs(width) * 0.02) return null
-  return { x: left, y: top, width, height }
+  if (width < 4 || width > 1e5) return null
+  if (Math.abs(Math.abs(height) - width) > width * SQUARENESS_TOLERANCE) return null
+  return { tile, x, y, width, height: Math.abs(height) }
 }
 
 const flush = (): void => {
   scheduled = false
-  if (!mapCanvas || pending.length === 0) return
+  if (mapCanvas === null) return
   const frame: TileFrame = { canvas: mapCanvas, quads: pending }
   pending = []
   for (const listener of listeners) listener(frame)
 }
 
-/** Notified once per MapLibre frame, with every wplace tile drawn in that frame. */
+/**
+ * Notified once per MapLibre frame with every wplace tile drawn in it — including frames that draw
+ * none, so a listener can clear rather than leaving a stale overlay behind.
+ */
 export const onTileFrame = (listener: FrameListener): void => {
   listeners.push(listener)
 }
 
+const installFetchTap = (): void => {
+  const nativeFetch = window.fetch
+  window.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
+    const input = args[0]
+    const url =
+      typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+    const match = TILE_URL.exec(url)
+    const response = await nativeFetch.apply(this as never, args)
+    if (match === null) return response
+
+    // A tap, not a rewrite: the response is handed back untouched. Compositing into wplace's own
+    // tiles would make our pixels indistinguishable from theirs, which is exactly what per-colour
+    // toggles and view modes need to be able to tell apart.
+    try {
+      const bytes = (await response.clone().arrayBuffer()).byteLength
+      const tile: TileCoord = { x: Number(match[1]), y: Number(match[2]) }
+      const queue = tilesByByteLength.get(bytes)
+      if (queue === undefined) tilesByByteLength.set(bytes, [tile])
+      else queue.push(tile)
+    } catch {
+      // A body that cannot be read is one we cannot attribute; that tile simply goes undrawn.
+    }
+    return response
+  } as typeof window.fetch
+}
+
+const installBitmapTap = (): void => {
+  const nativeCreateImageBitmap = window.createImageBitmap
+  // biome-ignore lint/suspicious/noExplicitAny: createImageBitmap has two overload shapes
+  window.createImageBitmap = (async (...args: any[]) => {
+    const bitmap = await (nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>)(
+      ...args,
+    )
+    const source = args[0]
+    if (source instanceof Blob) {
+      const queue = tilesByByteLength.get(source.size)
+      const tile = queue?.shift()
+      if (tile !== undefined) {
+        tileOfBitmap.set(bitmap, tile)
+        if (queue !== undefined && queue.length === 0) tilesByByteLength.delete(source.size)
+      }
+    }
+    return bitmap
+  }) as typeof window.createImageBitmap
+}
+
 export const install = (): void => {
+  installFetchTap()
+  installBitmapTap()
+
   const nativeGetContext = HTMLCanvasElement.prototype.getContext
   let wrapped = false
 
@@ -95,7 +175,7 @@ export const install = (): void => {
 
     const gl = context as WebGL2RenderingContext
     const uniformNames = new Map<WebGLUniformLocation, string>()
-    const tileTextures = new WeakSet<WebGLTexture>()
+    const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
     let boundTexture: WebGLTexture | null = null
     let projection: ArrayLike<number> | null = null
 
@@ -123,31 +203,30 @@ export const install = (): void => {
 
     const nativeTexImage2D = gl.texImage2D.bind(gl)
     // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
-    gl.texImage2D = ((...args: any[]) => {
-      const source = args[args.length - 1]
-      if (
-        boundTexture !== null &&
-        source instanceof ImageBitmap &&
-        source.width === WPLACE_TILE_TEXTURE_SIZE &&
-        source.height === WPLACE_TILE_TEXTURE_SIZE
-      ) {
-        tileTextures.add(boundTexture)
+    gl.texImage2D = ((...texArgs: any[]) => {
+      const source = texArgs[texArgs.length - 1]
+      if (boundTexture !== null && source instanceof ImageBitmap) {
+        const tile = tileOfBitmap.get(source)
+        if (tile !== undefined) tileOfTexture.set(boundTexture, tile)
       }
-      return (nativeTexImage2D as (...a: unknown[]) => void)(...args)
+      return (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs)
     }) as typeof gl.texImage2D
 
     const recordDraw = (): void => {
-      if (boundTexture === null || projection === null) return
-      if (!tileTextures.has(boundTexture)) return
-      const quad = quadFromMatrix(projection, this)
-      if (quad === null) return
-      pending.push(quad)
+      // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
+      // wplace tiles in it still reaches the listener. That empty frame is what clears the overlay
+      // when the user zooms out past the point where wplace serves tiles at all.
       if (!scheduled) {
         scheduled = true
-        // After MapLibre's frame, not during it: the overlay is a separate canvas, so there is no
-        // need to interleave, and drawing mid-frame would fight its GL state.
+        // After MapLibre's frame rather than during it: our canvas is separate, so there is nothing
+        // to interleave, and drawing mid-frame would fight its GL state.
         requestAnimationFrame(flush)
       }
+      if (boundTexture === null || projection === null) return
+      const tile = tileOfTexture.get(boundTexture)
+      if (tile === undefined) return
+      const quad = quadFromMatrix(projection, tile, this)
+      if (quad !== null) pending.push(quad)
     }
 
     const nativeDrawArrays = gl.drawArrays.bind(gl)
