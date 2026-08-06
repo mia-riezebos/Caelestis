@@ -18,6 +18,8 @@ import {
   stampTile,
 } from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
+import { installPanel } from './ui/panel.js'
+import { loadAccount } from './wplace-account.js'
 
 /**
  * Entry point.
@@ -267,11 +269,17 @@ const main = (): void => {
   }
   // Templates outlive a page load, which is what makes navigating to one survivable at all.
   void restoreLocalTemplates()
+  void loadAccount()
   onPaint(paintTemplates)
   onPaint(paintMark)
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
   onLocalChange(repaint)
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installPanel, { once: true })
+  } else {
+    installPanel()
+  }
   try {
     console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
   } catch {
