@@ -74,6 +74,8 @@ export interface PlacedTemplate extends ImportedTemplate {
   readonly appearance: Appearance | null
   /** IndexedDB compare-and-swap token; not part of template identity or rendering. */
   readonly revision: number
+  /** Which Local folder this sits in, or null for the top level of Local. */
+  readonly folderId: string | null
 }
 
 const templates = new Map<string, PlacedTemplate>()
@@ -163,6 +165,7 @@ const notify = (): void => {
         width: t.width,
         height: t.height,
         tiles: t.tiles.size,
+        folderId: t.folderId,
       }),
     )
   } catch (error) {
@@ -402,6 +405,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     everPlaced,
     appearance,
     revision,
+    folderId,
   } = value
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) {
     throw new RangeError('template id is invalid')
@@ -437,6 +441,9 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   ) {
     throw new RangeError('template revision is invalid')
   }
+  if (folderId !== undefined && folderId !== null && typeof folderId !== 'string') {
+    throw new RangeError('template folder is invalid')
+  }
   const normalised: StoredTemplate = {
     id,
     name,
@@ -451,6 +458,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     visible,
     everPlaced,
     revision: revision === undefined ? 0 : (revision as number),
+    folderId: typeof folderId === 'string' ? folderId : null,
     appearance: normaliseAppearance(appearance),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
@@ -710,6 +718,7 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       templates.set(id, {
         ...winner,
         appearance: winner.appearance ?? null,
+        folderId: winner.folderId ?? null,
         visible,
         tiles,
       })
@@ -778,6 +787,7 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       // Follows the global appearance until someone touches this one's own controls.
       appearance: null,
       revision: 0,
+      folderId: null,
     }
     if (!claimSourceReplacement(0, tiles.size)) {
       releaseCandidateTiles(tiles)
@@ -952,6 +962,7 @@ const restoreStoredTemplates = async (): Promise<void> => {
         templates.set(template.id, {
           ...template,
           appearance: template.appearance ?? null,
+          folderId: template.folderId ?? null,
           // Keep valid durable records manageable even when this session cannot afford/render their
           // source bitmaps. The durable visibility value remains untouched; an explicit toggle will
           // retry construction and reconcile it.
@@ -1218,6 +1229,33 @@ export const placeLocalTemplate = async (
     return await markPlaced(id)
   }
   return await enqueueMove(id, roundedX, roundedY, true)
+}
+
+/** Move a template into a Local folder, or to the top level with null. */
+export const setTemplateFolder = async (
+  id: string,
+  folderId: string | null,
+): Promise<boolean> => {
+  return await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    if (existing.folderId === folderId) return true
+    const next = { ...existing, folderId }
+    let revision = existing.revision
+    if (!isPendingImage(existing)) {
+      const result = await savePlaced(next)
+      const committed = committedRevision(result)
+      if (committed === null) {
+        if (result.status === 'conflict') await reconcileConflict(id)
+        warn('install', `folder change for ${next.name} was not saved`)
+        return false
+      }
+      revision = committed
+    }
+    templates.set(id, { ...next, revision })
+    notify()
+    return true
+  })
 }
 
 export const renameLocalTemplate = async (id: string, name: string): Promise<boolean> => {

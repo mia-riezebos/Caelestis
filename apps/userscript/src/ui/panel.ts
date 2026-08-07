@@ -4,14 +4,18 @@ import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
   type ConnectedServer,
+  createLocalFolder,
   createNode,
   deleteNode as deleteNodeOnServer,
   getState,
   listNodes,
   loadState,
+  moveLocalFolder,
   type ProgressPlacement,
   probeServer,
+  removeLocalFolder,
   removeServer,
+  renameLocalFolder,
   renameNode as renameNodeOnServer,
   setState,
   uploadTemplate,
@@ -25,6 +29,7 @@ import {
   localTemplates,
   removeLocalTemplate,
   renameLocalTemplate,
+  setTemplateFolder,
   templateAsPng,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
@@ -253,6 +258,17 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
+          onMoveIntoLocalFolder: (draggedKey, folderId) => {
+            // One drop target, two kinds of passenger. Which it is comes from the dragged row's own
+            // key, so the folder does not need to care what it is receiving.
+            if (draggedKey.startsWith('local:')) {
+              void setTemplateFolder(draggedKey.slice('local:'.length), folderId)
+              return
+            }
+            if (draggedKey.startsWith('lf:')) {
+              moveLocalFolder(draggedKey.slice('lf:'.length), folderId)
+            }
+          },
         },
         renderTree,
       ),
@@ -695,8 +711,14 @@ const applyRename = async (
     rerender()
     return
   }
+  const folderId = localFolderIdOf(target)
+  if (folderId !== null) {
+    renameLocalFolder(folderId, name)
+    rerender()
+    return
+  }
   if (target.server === null || target.nodeId === null) {
-    toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
+    toast('There is nothing to rename here.', 'warning')
     rerender()
     return
   }
@@ -724,7 +746,29 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     if (!(await askToDelete('template', target.name, 'It is stored in this browser only.'))) {
       return
     }
-    removeLocalTemplate(templateId)
+    await removeLocalTemplate(templateId)
+    rerender()
+    return
+  }
+  const folderId = localFolderIdOf(target)
+  if (folderId !== null) {
+    const confirmed = await confirmDestructive({
+      title: `Delete “${target.name}”?`,
+      body: 'The folder will be removed.',
+      // Say where things go, because "delete" on a container reads as "delete what is inside it".
+      note: 'Anything inside it moves up one level rather than being deleted.',
+      confirmLabel: 'Delete',
+    })
+    if (!confirmed) return
+    for (const template of localTemplates()) {
+      if (template.folderId === folderId) {
+        await setTemplateFolder(
+          template.id,
+          getState().localFolders.find((f) => f.id === folderId)?.parentId ?? null,
+        )
+      }
+    }
+    removeLocalFolder(folderId)
     rerender()
     return
   }
@@ -850,7 +894,13 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           toast('Nothing importable in that file.', 'error')
           return
         }
-        for (const template of imported) await addLocalTemplate(template)
+        // Straight into whichever Local folder was clicked. Importing from a folder's own button
+        // and then finding the result at the top level would make the button a lie.
+        const folderId = localFolderIdOf(target)
+        for (const template of imported) {
+          await addLocalTemplate(template)
+          if (folderId !== null) await setTemplateFolder(template.id, folderId)
+        }
         rerender()
 
         const first = imported[0]
@@ -965,10 +1015,26 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   panel.appendChild(box)
 }
 
+/** `lf:<id>` is a Local folder; `local` is the Local root. */
+const localFolderIdOf = (target: TreeTarget): string | null =>
+  target.key.startsWith('lf:') ? target.key.slice('lf:'.length) : null
+
+const isLocalTarget = (target: TreeTarget): boolean =>
+  target.server === null && (target.key === 'local' || target.key.startsWith('lf:'))
+
 const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, nodeId } = target
+  if (isLocalTarget(target)) {
+    // Nested under whichever Local folder was clicked, or at the top when it was Local itself.
+    const parentId = localFolderIdOf(target)
+    const taken = new Set(getState().localFolders.map((folder) => folder.name.toLowerCase()))
+    const folder = createLocalFolder(parentId, freeFolderName(taken))
+    startRenaming(`lf:${folder.id}`)
+    rerender()
+    return
+  }
   if (server === null) {
-    toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
+    toast('Nothing to create a folder in here.', 'warning')
     return
   }
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name

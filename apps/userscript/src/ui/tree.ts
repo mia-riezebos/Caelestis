@@ -1,6 +1,13 @@
 import { cacheServer, loadServerCache } from '../server-cache.js'
-import { type ConnectedServer, getState, listNodes, setState, type TreeNode } from '../state.js'
-import { localTemplates, setLocalVisible } from '../templates/local-store.js'
+import {
+  type ConnectedServer,
+  getState,
+  type LocalFolder,
+  listNodes,
+  setState,
+  type TreeNode,
+} from '../state.js'
+import { localTemplates, type PlacedTemplate, setLocalVisible } from '../templates/local-store.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -34,6 +41,8 @@ export interface TreeCallbacks {
   readonly onGoTo: (templateId: string) => void
   readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
+  /** File a dragged row — a template or another folder — into a Local folder. */
+  readonly onMoveIntoLocalFolder: (draggedKey: string, folderId: string) => void
 }
 
 const collapsed = new Set<string>()
@@ -470,7 +479,19 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
 
     if (isLocal) {
       const mine = localTemplates()
-      for (const template of mine) {
+      const folders = getState().localFolders
+
+      /** Templates sitting directly in one folder, or at the top of Local when null. */
+      const templatesIn = (folderId: string | null): readonly PlacedTemplate[] =>
+        mine.filter((template) => (template.folderId ?? null) === folderId)
+      const foldersIn = (parentId: string | null): readonly LocalFolder[] =>
+        folders.filter((folder) => folder.parentId === parentId)
+
+      const templateRow = (
+        template: PlacedTemplate,
+        depth: number,
+        siblings: readonly string[],
+      ): HTMLElement => {
         const key = `local:${template.id}`
         const templateTarget: TreeTarget = {
           server: null,
@@ -478,14 +499,14 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           key,
           name: template.name,
         }
-        const row = treeRow({
+        return treeRow({
           key,
           name: template.name,
           kind: 'image',
-          depth: 1,
+          depth,
           meta: `${template.width}×${template.height}`,
           container: false,
-          siblings: mine.map((t) => `local:${t.id}`),
+          siblings,
           rerender,
           checked: template.visible,
           onToggleChecked: (on) => {
@@ -506,8 +527,68 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
             },
           ],
         })
-        wrap.appendChild(row)
       }
+
+      /**
+       * Folders, then the templates beside them, at every level.
+       *
+       * Folders first rather than interleaved: a folder is a place to go and a template is a thing
+       * to look at, and mixing them means hunting for the one you want among rows that behave
+       * differently when clicked.
+       */
+      const renderLocal = (parentId: string | null, depth: number): void => {
+        const childFolders = foldersIn(parentId)
+        const folderKeys = childFolders.map((folder) => `lf:${folder.id}`)
+        for (const folder of childFolders) {
+          const key = `lf:${folder.id}`
+          const folderTarget: TreeTarget = {
+            server: null,
+            nodeId: null,
+            key,
+            name: folder.name,
+          }
+          wrap.appendChild(
+            treeRow({
+              key,
+              name: folder.name,
+              kind: 'folder',
+              depth,
+              container: true,
+              siblings: folderKeys,
+              rerender,
+              onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
+              onRename: (value) => callbacks.onRename(folderTarget, value),
+              // Dropping onto a folder files the dragged row inside it. Both a template and another
+              // folder can go in; the move is refused only when it would put a folder inside itself.
+              onDropInto: (draggedKey) => {
+                callbacks.onMoveIntoLocalFolder(draggedKey, folder.id)
+                rerender()
+              },
+              actions: [
+                {
+                  icon: 'createFolder',
+                  label: 'New folder',
+                  run: () => callbacks.onCreateFolder(folderTarget),
+                },
+                {
+                  icon: 'uploadFile',
+                  label: 'Import template',
+                  run: () => callbacks.onImportTemplate(folderTarget),
+                },
+              ],
+            }),
+          )
+          if (isExpanded(key)) renderLocal(folder.id, depth + 1)
+        }
+        const here = templatesIn(parentId)
+        const keys = here.map((template) => `local:${template.id}`)
+        for (const template of here) wrap.appendChild(templateRow(template, depth, keys))
+        if (parentId !== null && childFolders.length === 0 && here.length === 0) {
+          wrap.appendChild(childText('Empty.', depth))
+        }
+      }
+
+      renderLocal(null, 1)
       if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.

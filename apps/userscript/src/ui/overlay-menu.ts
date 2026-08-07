@@ -211,7 +211,7 @@ const buildMenu = (
     }).then((yes) => {
       if (!yes) return
       closeOverlayMenu()
-      removeLocalTemplate(id)
+      void removeLocalTemplate(id)
       rerender()
     })
   })
