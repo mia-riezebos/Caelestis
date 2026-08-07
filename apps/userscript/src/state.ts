@@ -1,4 +1,5 @@
 import { log, warn } from './debug.js'
+import { type Appearance, DEFAULT_APPEARANCE, normaliseAppearance } from './templates/appearance.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
 /**
@@ -69,6 +70,15 @@ export interface State {
    * left it.
    */
   readonly onlySelectedColour: boolean
+  /**
+   * How overlays are drawn unless they say otherwise.
+   *
+   * A default rather than an override: a template that has never had its own appearance touched
+   * follows this, and one that has keeps what was set on it. Making it an override would mean
+   * changing a global slider silently discarded per-overlay work, which is the one thing a default
+   * must never do.
+   */
+  readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
 }
@@ -81,6 +91,7 @@ const DEFAULT_STATE: State = {
   progress: 'inline',
   hiddenColours: [],
   onlySelectedColour: false,
+  appearance: DEFAULT_APPEARANCE,
   reportPaints: false,
   shareTiles: false,
 }
@@ -116,7 +127,15 @@ export const loadState = (): State => {
   try {
     // Spread over the defaults rather than trusting the stored shape: a build that adds a field
     // must not be broken by state written before it existed.
-    state = { ...DEFAULT_STATE, ...(JSON.parse(raw) as Partial<State>) }
+    const stored = JSON.parse(raw) as Partial<State>
+    // The spread only rescues *top-level* fields. `appearance` is an object, so a stored one
+    // replaces the default whole, missing fields and all — which is how `undefined` reaches the
+    // renderer and comes back out as NaN.
+    state = {
+      ...DEFAULT_STATE,
+      ...stored,
+      appearance: normaliseAppearance(stored.appearance ?? null) ?? DEFAULT_APPEARANCE,
+    }
     log('install', 'state loaded', { servers: state.servers.length })
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
