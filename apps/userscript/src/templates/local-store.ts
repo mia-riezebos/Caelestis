@@ -7,7 +7,7 @@ import {
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
-import { getState } from '../state.js'
+import { getState, localFolderChainVisible } from '../state.js'
 import { type Appearance, normaliseAppearance } from './appearance.js'
 import {
   type ImportedTemplate,
@@ -206,6 +206,16 @@ export const clearLocalPreview = (id: string): boolean => {
   notify()
   return true
 }
+
+/**
+ * Whether this template actually draws.
+ *
+ * Its own switch *and* every folder above it. A template inside a hidden folder keeps saying it is
+ * visible, because it is — within a group that is not — and that is what makes turning the group
+ * back on restore the arrangement instead of flattening it.
+ */
+export const isTemplateVisible = (template: PlacedTemplate): boolean =>
+  template.visible && localFolderChainVisible(template.folderId)
 
 /** How this template is actually drawn: its own appearance, or the global default it inherits. */
 export const appearanceOf = (template: PlacedTemplate): Appearance =>

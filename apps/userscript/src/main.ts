@@ -8,10 +8,12 @@ import {
 import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
+import { onStateChange } from './state.js'
 import { type Appearance, MIN_CELL_FOR_SHAPE, stampMask } from './templates/appearance.js'
 import { effectiveHiddenColours } from './templates/colour-filter.js'
 import {
   appearanceOf,
+  isTemplateVisible,
   levelFor,
   localTemplates,
   onLocalChange,
@@ -222,7 +224,7 @@ const drawMasked = (
 
 /** Draws every visible template over the tiles wplace is currently showing. */
 const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
-  const visible = localTemplates().filter((template) => template.visible)
+  const visible = localTemplates().filter(isTemplateVisible)
   if (visible.length === 0) return
 
   let drawn = 0
@@ -392,6 +394,10 @@ const main = (): void => {
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
   onLocalChange(repaint)
+  // So does anything in settings that changes what is drawn: the global colour filter, the global
+  // appearance, and a folder being hidden. Without this the canvas only caught up on the next frame
+  // MapLibre happened to produce, so toggling something and not touching the map looked broken.
+  onStateChange(repaint)
   step('panel', () => {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', installPanel, { once: true })

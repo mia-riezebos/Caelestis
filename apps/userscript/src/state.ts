@@ -55,6 +55,14 @@ export interface LocalFolder {
   /** Null means directly under Local. */
   readonly parentId: string | null
   readonly name: string
+  /**
+   * Whether this folder draws, like a group in an image editor.
+   *
+   * Hiding it hides everything beneath it — templates and nested folders alike — without touching
+   * what any of them say about themselves. Turning it back on restores exactly the arrangement that
+   * was there before, which is the whole point of a group toggle over switching each layer off.
+   */
+  readonly visible: boolean
 }
 
 export interface TreeNode {
@@ -152,6 +160,13 @@ export const loadState = (): State => {
       ...DEFAULT_STATE,
       ...stored,
       appearance: normaliseAppearance(stored.appearance ?? null) ?? DEFAULT_APPEARANCE,
+      // Same trap as `appearance`, one level down: a folder stored before `visible` existed has no
+      // such field, and `!undefined` is true — so every folder made before this shipped would have
+      // been treated as hidden, taking its whole subtree off the canvas.
+      localFolders: (stored.localFolders ?? []).map((folder) => ({
+        ...folder,
+        visible: folder.visible !== false,
+      })),
     }
     log('install', 'state loaded', { servers: state.servers.length })
   } catch (error) {
@@ -177,9 +192,40 @@ const localFolderId = (): string =>
   `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
 
 export const createLocalFolder = (parentId: string | null, name: string): LocalFolder => {
-  const folder: LocalFolder = { id: localFolderId(), parentId, name }
+  const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
   setState({ localFolders: [...getState().localFolders, folder] })
   return folder
+}
+
+export const setLocalFolderVisible = (id: string, visible: boolean): void => {
+  setState({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, visible } : folder,
+    ),
+  })
+}
+
+/**
+ * Whether a folder and every folder above it are showing.
+ *
+ * Recursive rather than a single flag, because hiding a group must hide what is nested inside it
+ * even though those rows still say they are visible — they are, within a group that is not.
+ */
+export const localFolderChainVisible = (folderId: string | null): boolean => {
+  const folders = getState().localFolders
+  let walk = folderId
+  const seen = new Set<string>()
+  while (walk !== null) {
+    // A cycle should be impossible, but a render loop is a bad place to find out otherwise.
+    if (seen.has(walk)) return true
+    seen.add(walk)
+    const folder = folders.find((candidate) => candidate.id === walk)
+    if (folder === undefined) return true
+    // Explicitly against false: anything stored before this field existed is showing, not hidden.
+    if (folder.visible === false) return false
+    walk = folder.parentId
+  }
+  return true
 }
 
 export const renameLocalFolder = (id: string, name: string): void => {
