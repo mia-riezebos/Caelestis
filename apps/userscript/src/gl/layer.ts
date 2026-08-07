@@ -30,7 +30,7 @@ import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
  * against them is the entire visibility test.
  */
 
-const LAYER_ID = 'wts-overlay'
+export const LAYER_ID = 'wts-overlay'
 /** Their marker layer. Ours goes immediately before it. */
 const BEFORE_LAYER = 'pixel-hover'
 
