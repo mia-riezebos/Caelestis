@@ -169,28 +169,6 @@ export const drawMarkers = (
 export const MARKER_LAYER_ID = 'wts-markers'
 
 /**
- * How much of the marker layer to switch on, from `?wts=` in the URL.
- *
- * The same markers, the same draw calls and the same data were fine drawn from the overlay's layer
- * and wedge the page from this one, so what is left is *where* the work happens, not how much of it
- * there is. Stages 0 and 1 are known good, so the render body is what remains, split into the three
- * things it does:
- *
- * - `?wts=0` — the layer exists and does nothing. Default, because a plain reload must never brick.
- * - `?wts=1` — plus the shader program, built in `onAdd`.
- * - `?wts=2` — plus the *lookups*: which templates, which tiles, and their mismatches. No GL at all.
- * - `?wts=3` — plus the GL state save and restore, still without drawing anything.
- * - `?wts=4` — plus the draw. The whole feature.
- *
- * Whichever stage first freezes is the answer, and there is nowhere left for it to hide.
- */
-const STAGE = (() => {
-  const raw = new URLSearchParams(location.search).get('wts')
-  const stage = raw === null ? 0 : Number(raw)
-  return Number.isFinite(stage) ? Math.min(Math.max(stage, 0), 4) : 0
-})()
-
-/**
  * Same shape at every zoom, in device pixels.
  *
  * Sized in cells it shrinks with the zoom, and the view where you are hunting for one wrong pixel in
@@ -252,23 +230,19 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   }
   count('marker:tiles with marks', work.length)
 
-  if (STAGE >= 3) {
-    const hadBlend = gl.isEnabled(gl.BLEND)
-    const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
-    const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
-    const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
-    gl.enable(gl.BLEND)
-    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+  const hadBlend = gl.isEnabled(gl.BLEND)
+  const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
+  const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
+  const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
+  gl.enable(gl.BLEND)
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
 
-    if (STAGE >= 4) {
-      for (const one of work) drawMarkers(gl, one.tile, one.marks, MARKER_STYLE, one.fade)
-    }
+  for (const one of work) drawMarkers(gl, one.tile, one.marks, MARKER_STYLE, one.fade)
 
-    gl.bindVertexArray(previousVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-    gl.useProgram(previousProgram)
-    if (!hadBlend) gl.disable(gl.BLEND)
-  }
+  gl.bindVertexArray(previousVao)
+  gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
+  gl.useProgram(previousProgram)
+  if (!hadBlend) gl.disable(gl.BLEND)
 
   const now = performance.now()
   if (deferred && now >= nextRetry) {
@@ -292,19 +266,15 @@ export const markerLayer = {
   renderingMode: '2d' as const,
 
   onAdd(_map: unknown, gl: WebGL2RenderingContext): void {
-    count(`marker:layer added at stage ${STAGE}`)
-    if (STAGE < 1) return
     initMarkers(gl)
-    count('marker:program built')
+    count('marker:layer added')
   },
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
-    if (STAGE < 1) return
     releaseMarkers(gl)
   },
 
   render(gl: WebGL2RenderingContext): void {
-    if (STAGE < 2) return
     // Never let this escape into MapLibre's render loop; a throw here takes the whole frame with it.
     try {
       drawAll(gl)
