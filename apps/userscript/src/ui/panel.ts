@@ -669,17 +669,19 @@ const applyRename = async (
  * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
  * client, so it always asks first.
  */
-const askToDelete = (name: string, body: string): Promise<boolean> =>
+const askToDelete = (kind: string, name: string, note?: string): Promise<boolean> =>
   confirmDestructive({
-    title: `Delete “${name}”?`,
-    body,
+    // Their shape: the heading asks, the body names the thing and says what happens to it.
+    title: `Delete ${kind}?`,
+    body: `${name} will be permanently removed.`,
+    ...(note === undefined ? {} : { note }),
     confirmLabel: 'Delete',
   })
 
 const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    if (!(await askToDelete(target.name, 'This template will be removed from this browser.'))) {
+    if (!(await askToDelete('template', target.name, 'It is stored in this browser only.'))) {
       return
     }
     removeLocalTemplate(templateId)
@@ -690,7 +692,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     toast('Nothing to delete here yet.', 'warning')
     return
   }
-  if (!(await askToDelete(target.name, 'This cannot be undone.'))) return
+  if (!(await askToDelete('folder', target.name))) return
   const result = await deleteNodeOnServer(target.server, target.nodeId)
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)
