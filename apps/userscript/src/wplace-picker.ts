@@ -1,7 +1,7 @@
 import { TRANSPARENT_INDEX } from '@wts/shared'
 import { log } from './debug.js'
 import { canvasPixelAt } from './main.js'
-import { hiddenColoursFor } from './templates/colour-filter.js'
+import { claimedHiddenFor } from './templates/colour-filter.js'
 import { isTemplateVisible, localTemplates } from './templates/local-store.js'
 import { isPaintOpen } from './wplace-paint.js'
 
@@ -25,6 +25,12 @@ import { isPaintOpen } from './wplace-paint.js'
  * statement about what is shown, and picking should agree with the screen rather than with the file
  * behind it. Same for the wildcard index, which asks for no colour at all, and for anywhere outside
  * a template. In all three the event is left alone and wplace answers it.
+ *
+ * Follow-the-selection is the exception, and it has to be. Under that mode every colour but the one
+ * in hand is out of sight, so answering only for what is drawn meant the picker could only ever hand
+ * back the colour already selected — it could not be used to *change* colour, which is the whole of
+ * what it is for. The mode is a way of looking at one colour at a time, not a claim that the rest of
+ * the template is not there, so the pick reads through it.
  */
 
 /**
@@ -48,7 +54,7 @@ const drawnIndexAt = (x: number, y: number): number | null => {
     if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) continue
     const index = template.indices[localY * template.width + localX]
     if (index === undefined || index === TRANSPARENT_INDEX) continue
-    if (hiddenColoursFor(template.appearance).includes(index)) continue
+    if (claimedHiddenFor(template.appearance).includes(index)) continue
     found = index
   }
   return found

@@ -7,6 +7,7 @@ import {
   tilePixels,
   UNPAINTED,
 } from '../tile-transform.js'
+import { claimedHiddenFor } from './colour-filter.js'
 import {
   appearanceOf,
   isTemplateVisible,
@@ -168,20 +169,9 @@ export const wantsTilePixels = (): boolean =>
     (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
   )
 
-/**
- * Which colours this template is not claiming — the switches, not what is on screen.
- *
- * Deliberately not `hiddenColoursFor`, which is what the *renderer* asks and which answers with the
- * follow-the-selection mode's set while that mode is driving. A colour switched off by hand is a
- * colour the user has said to stop caring about, and marking it would bury the ones that matter. A
- * colour hidden because it is not the one currently being placed is nothing of the sort — it is
- * hidden for this minute, to see one colour at a time.
- *
- * Reading the mode here made the markers vanish along with the pixels, which is backwards: seeing
- * every mismatch while placing one colour is how you work through them a colour at a time.
- */
+/** The switches, not what is on screen — see `claimedHiddenFor` for why the two differ. */
 const assertedHidden = (template: PlacedTemplate): readonly number[] =>
-  appearanceOf(template).hiddenColours
+  claimedHiddenFor(template.appearance)
 
 /**
  * Everything that changes what a scan finds, so a stale entry is never returned.

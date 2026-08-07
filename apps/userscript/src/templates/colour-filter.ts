@@ -57,3 +57,18 @@ export const hiddenColoursFor = (own: Appearance | null): readonly number[] => {
   if (own.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
   return own.hiddenColours
 }
+
+/**
+ * The switches alone, with the mode left out — what an overlay is *claiming*, not what it is showing.
+ *
+ * The two differ only while follow-the-selection is driving, and everything that is not drawing
+ * pixels wants this one. A colour switched off by hand is a colour the user has said to stop caring
+ * about: it asserts nothing, so it cannot be wrong and nothing should offer it. A colour hidden
+ * because it is not the one being placed has said no such thing — it is out of sight for this
+ * minute, to see one colour at a time, and it still wants its mismatches marked and its colour
+ * offered to the picker. Reading the mode there made the feature fight the workflow it exists for:
+ * markers vanished exactly when you were working through them, and middle-clicking a pixel to switch
+ * to its colour only worked for the colour you already had.
+ */
+export const claimedHiddenFor = (own: Appearance | null): readonly number[] =>
+  own === null ? getState().hiddenColours : own.hiddenColours
