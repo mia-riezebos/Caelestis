@@ -90,13 +90,15 @@ out vec4 fragColor;
 const int MINIFY_TAPS = 4;
 
 /**
- * How far along an arm to look for a marked cell, in cells.
+ * How many samples an arm takes in each direction from the fragment.
  *
- * A bound, not a target. Zoomed far enough out an arm spans hundreds of cells, and scanning all of
- * them would cost per fragment what the whole overlay costs. Past this the marker stops growing in
- * cells and quietly gets shorter on screen, which is the right failure: still visible, still cheap.
+ * Enough to cover half the marker's length at one sample per device pixel, which is the finest step
+ * that can show anything. This is a fixed cost per fragment, and it has to be: the first version
+ * stepped a cell at a time, so zoomed out — where an arm spans tens of cells — every fragment ran
+ * ~100 iterations of three texture fetches. That is not slow, it is a GPU watchdog kill, and it took
+ * the tab with it.
  */
-const int MAX_ARM_CELLS = 24;
+const int MARKER_STEPS = 7;
 
 /** Signed distance to a rounded box centred on the origin. Negative inside. */
 float roundedBox(vec2 point, vec2 half_, float radius) {
@@ -158,36 +160,42 @@ float markerCoverage(vec2 texel, vec2 footprint) {
 
   float halfLength = u_markerLength * 0.5;
   float halfThickness = u_markerThickness * 0.5;
-  ivec2 here = ivec2(floor(texel));
 
-  // Distance from this fragment to its own cell's centre lines, in device pixels.
-  vec2 centre = vec2(here) + 0.5;
-  vec2 offset = (texel - centre) / footprint;
+  /**
+   * The step, in device pixels, and the whole performance story.
+   *
+   * One sample per device pixel is the finest step that can change the answer, so an arm never
+   * costs more than its own length however far out the map is zoomed — that is what stepping in
+   * cells got wrong. Where a cell is *larger* than a device pixel the step grows to one cell, since
+   * sampling the same cell six times to draw six pixels of the same arm answers nothing: zooming in
+   * gets cheaper rather than more expensive.
+   */
+  vec2 stride = max(vec2(1.0), 1.0 / footprint);
 
-  // The vertical arm of some cell in this column: scan up and down.
-  if (abs(offset.x) <= halfThickness) {
-    int reach = int(ceil(halfLength * footprint.y));
-    reach = min(reach, MAX_ARM_CELLS);
-    for (int step = -MAX_ARM_CELLS; step <= MAX_ARM_CELLS; step++) {
-      if (step < -reach || step > reach) continue;
-      ivec2 cell = ivec2(here.x, here.y + step);
-      if (!marked(cell)) continue;
-      float away = (texel.y - (float(cell.y) + 0.5)) / footprint.y;
-      if (abs(away) <= halfLength) return 1.0;
-    }
+  // Every cell a vertical arm could reach this fragment from shares its column, so if the fragment
+  // is further than half a thickness from that column's centre line, no walk can find anything.
+  // Pure arithmetic, no fetch, and it rejects most of the screen wherever a cell is bigger than the
+  // marker is thick — which is every zoom anyone works at.
+  vec2 fromCentre = abs(texel - (floor(texel) + 0.5)) / footprint;
+
+  // The vertical arm: walk up and down the column this fragment sits in.
+  if (fromCentre.x <= halfThickness) for (int i = -MARKER_STEPS; i <= MARKER_STEPS; i++) {
+    float along = float(i) * stride.y;
+    if (abs(along) > halfLength) continue;
+    ivec2 cell = ivec2(floor(vec2(texel.x, texel.y + along * footprint.y)));
+    if (!marked(cell)) continue;
+    vec2 away = (texel - (vec2(cell) + 0.5)) / footprint;
+    if (abs(away.x) <= halfThickness && abs(away.y) <= halfLength) return 1.0;
   }
 
-  // The horizontal arm, the same way with the axes swapped.
-  if (abs(offset.y) <= halfThickness) {
-    int reach = int(ceil(halfLength * footprint.x));
-    reach = min(reach, MAX_ARM_CELLS);
-    for (int step = -MAX_ARM_CELLS; step <= MAX_ARM_CELLS; step++) {
-      if (step < -reach || step > reach) continue;
-      ivec2 cell = ivec2(here.x + step, here.y);
-      if (!marked(cell)) continue;
-      float away = (texel.x - (float(cell.x) + 0.5)) / footprint.x;
-      if (abs(away) <= halfLength) return 1.0;
-    }
+  // The horizontal arm, the same walk with the axes swapped.
+  if (fromCentre.y <= halfThickness) for (int i = -MARKER_STEPS; i <= MARKER_STEPS; i++) {
+    float along = float(i) * stride.x;
+    if (abs(along) > halfLength) continue;
+    ivec2 cell = ivec2(floor(vec2(texel.x + along * footprint.x, texel.y)));
+    if (!marked(cell)) continue;
+    vec2 away = (texel - (vec2(cell) + 0.5)) / footprint;
+    if (abs(away.y) <= halfThickness && abs(away.x) <= halfLength) return 1.0;
   }
   return 0.0;
 }
