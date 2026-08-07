@@ -171,17 +171,28 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
  * between thousands and a million.
  */
 const patchTile = (tile: TileCoord, x: number, y: number, placed: number): void => {
+  let considered = 0
   for (const [cacheKey, entry] of cache) {
     if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
+    considered++
     const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
     const template = localTemplates().find((candidate) => candidate.id === id)
-    if (template === undefined) continue
+    if (template === undefined) {
+      count('patch:no template for that answer')
+      continue
+    }
 
     const localX = x - template.originX
     const localY = y - template.originY
-    if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) continue
+    if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) {
+      count('patch:pixel is outside the template')
+      continue
+    }
     const wanted = template.indices[localY * template.width + localX]
-    if (wanted === undefined) continue
+    if (wanted === undefined) {
+      count('patch:no template pixel there')
+      continue
+    }
 
     const hidden = hiddenColoursFor(template.appearance)
     const asserted =
@@ -197,7 +208,14 @@ const patchTile = (tile: TileCoord, x: number, y: number, placed: number): void 
         break
       }
     }
-    if (wrong === at >= 0) continue
+    if (wrong === at >= 0) {
+      // The two states that need no work, and the two that mean something is wrong upstream: a
+      // pixel painted the right colour that was never marked, or a wrong one that already was.
+      count(
+        `patch:already ${wrong ? 'marked' : 'clear'} — wanted ${wanted}, placed ${placed}, listed ${at >= 0}`,
+      )
+      continue
+    }
 
     let next: Float32Array
     if (wrong) {
@@ -214,6 +232,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, placed: number): void 
     changed++
     count(wrong ? 'mismatch:pixel became wrong' : 'mismatch:pixel fixed')
   }
+  if (considered === 0) count('patch:no cached answer for that tile')
 }
 
 const changeListeners: Array<() => void> = []
