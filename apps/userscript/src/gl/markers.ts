@@ -237,6 +237,25 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     const fade = templateFade(template.id)
     if (fade <= 0) continue
     for (const tile of tiles) {
+      /**
+       * Only tiles this template actually covers.
+       *
+       * This is the whole bug the staged bisect found. Asking about a tile is not free: a tile with
+       * no pixels captured yet triggers a fetch and a 1000x1000 `getImageData`, and doing that for
+       * every tile on screen rather than the two a template sits on is twenty-odd of them, every
+       * frame, in native code — which is exactly the block that would not even yield to
+       * `Debugger.pause`.
+       *
+       * The code this replaced never had the problem, because its marker work sat inside the
+       * intersection test that decides whether to draw the template on that tile at all. Lifting it
+       * into a layer of its own left the test behind.
+       */
+      const left = tile.tile.x * TILE_SIZE
+      const top = tile.tile.y * TILE_SIZE
+      if (template.originX >= left + TILE_SIZE || template.originX + template.width <= left)
+        continue
+      if (template.originY >= top + TILE_SIZE || template.originY + template.height <= top) continue
+
       const marks = mismatchesIn(template, tile.tile)
       if (marks === null) deferred = true
       else if (marks.length > 0) drawMarkers(gl, tile, marks, MARKER_STYLE, fade)
