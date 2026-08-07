@@ -35,8 +35,15 @@ interface TemplateGpu {
   readonly palette: WebGLTexture
   readonly width: number
   readonly height: number
-  /** What the palette texture was built from, so it is only rewritten when the filter moves. */
-  paletteKey: string
+  /**
+   * What the palette texture was built from, so it is only rewritten when the filter moves.
+   *
+   * Null rather than an empty string, because "nothing hidden" *is* the empty string — starting at
+   * `''` meant a template with no filter matched on the first frame and the texture was never
+   * uploaded at all. An unwritten texture reads as zero, zero alpha means hidden, and the whole
+   * overlay silently drew nothing.
+   */
+  paletteKey: string | null
 }
 
 /** Four vertices of clip xyzw + uv, rewritten per template per frame. */
@@ -292,7 +299,7 @@ export const overlayLayer = {
           palette,
           width: template.width,
           height: template.height,
-          paletteKey: '',
+          paletteKey: null,
         }
         gpu.set(template.id, entry)
       }
