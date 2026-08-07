@@ -885,10 +885,9 @@ const previewCanvases = new Map<object, TileCoord>()
  * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
  * coordinates.
  *
- * A canvas is only named when a draw places it, so the *first* pixel painted into a tile always
- * arrives unnamed. Falling back to re-reading the whole tile for that one meant the first pixel in
- * any tile threw away every answer for it and recomputed the lot — visibly, since the markers went
- * and came back. Holding the write until the name arrives keeps it a patch.
+ * A canvas is named the first time a draw places it, which is normally well before anyone paints
+ * into it — but not always, and a write is cheap to hold and impossible to reconstruct. The pixels
+ * are in the argument, so they are kept rather than recovered later by reading the tile back.
  */
 const queuedWrites = new WeakMap<object, number[]>()
 
@@ -1011,6 +1010,38 @@ const capture = (
       count('pixels:ignored a blank preview')
       return
     }
+
+    /**
+     * A re-read of a tile we already hold becomes a diff, not a replacement.
+     *
+     * Replacing the array is what made a whole tile's answers evaporate. Anything holding a result
+     * for this tile keys it on the array's identity — that is how a re-read is meant to invalidate
+     * a stale answer — so handing over a *new* array said "everything about this tile has changed"
+     * when what had actually changed was one pixel someone painted.
+     *
+     * Reading the tile is unavoidable here; recomputing everything that depends on it is not. The
+     * same array is kept and the differing pixels are announced one at a time, so a full re-read
+     * costs a scan of the tile and leaves every answer that did not change alone.
+     */
+    const existing = pixelsOfTile.get(key)
+    if (existing !== undefined && existing.length === indices.length) {
+      let moved = 0
+      for (let p = 0; p < indices.length; p++) {
+        const index = indices[p] as number
+        if (existing[p] === index) continue
+        existing[p] = index
+        moved++
+        const x = p % TILE_SIZE
+        const y = (p - x) / TILE_SIZE
+        for (const listener of pixelListeners) {
+          listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+        }
+      }
+      count('pixels:re-read as a diff')
+      if (moved > 0) count('pixels:changed by a re-read', moved)
+      return
+    }
+
     pixelsOfTile.set(key, indices)
     count('pixels:captured')
   } catch (error) {
