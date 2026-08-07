@@ -1969,22 +1969,29 @@ export const install = (
             count('paint:quad rejected')
             return
           }
-          const named = pending.length > 0 ? pending : lastQuads
-          for (const known of named) {
-            if (Math.abs(known.x - quad.x) > 0.5) continue
-            if (Math.abs(known.y - quad.y) > 0.5) continue
-            if (Math.abs(known.width - quad.width) > 0.5) continue
-            tile = known.tile
-            tileOfPaintTexture.set(texture, tile)
-            tileOfPaintCanvas.set(source, tile)
-            previewCanvases.set(source, tile)
-            log('texture', `named the paint preview for ${tile.x}/${tile.y}`)
-            break
-          }
-          if (tile === undefined) {
-            count('paint:preview matched no known tile')
+          const anchor = (pending.length > 0 ? pending : lastQuads)[0]
+          if (anchor === undefined) {
+            count('paint:no anchor tile to measure against')
             return
           }
+          if (Math.abs(anchor.width - quad.width) > 0.5) {
+            count('paint:preview is not at tile scale')
+            return
+          }
+          const stepX = (quad.x - anchor.x) / anchor.width
+          const stepY = (quad.y - anchor.y) / anchor.height
+          if (
+            Math.abs(stepX - Math.round(stepX)) > 0.05 ||
+            Math.abs(stepY - Math.round(stepY)) > 0.05
+          ) {
+            count('paint:preview is off the tile grid')
+            return
+          }
+          tile = { x: anchor.tile.x + Math.round(stepX), y: anchor.tile.y + Math.round(stepY) }
+          tileOfPaintTexture.set(texture, tile)
+          tileOfPaintCanvas.set(source, tile)
+          previewCanvases.set(source, tile)
+          log('texture', `named the draft layer for ${tile.x}/${tile.y}`)
         }
         const held = queuedWrites.get(source)
         if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(source)
