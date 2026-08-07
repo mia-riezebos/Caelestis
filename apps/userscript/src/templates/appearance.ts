@@ -36,7 +36,7 @@ export interface Appearance {
   readonly size: number
   /** Corner rounding as a fraction of half the stamp: 0 is a square, 1 is a circle. */
   readonly radius: number
-  /** Offset within the cell, in cell widths, applied before rotation. */
+  /** Offset in cell widths, -1..1, applied before rotation. */
   readonly translateX: number
   readonly translateY: number
   /** Rotation of each stamp in degrees. 45 turns squares into diamonds. */
@@ -218,17 +218,20 @@ export const APPEARANCE_CONTROLS: ReadonlyArray<{
   },
   {
     key: 'translateX',
+    // A full cell each way, not half. Half only reaches the cell's edge, which with an oversized
+    // stamp is nowhere near the end of the useful range — sliding a 200% stamp a whole cell is what
+    // leaves a thin band or clears the cell entirely, and both are shapes worth having.
     label: 'Offset X',
-    min: -0.5,
-    max: 0.5,
+    min: -1,
+    max: 1,
     step: 0.05,
     format: (v) => `${Math.round(v * 100)}%`,
   },
   {
     key: 'translateY',
     label: 'Offset Y',
-    min: -0.5,
-    max: 0.5,
+    min: -1,
+    max: 1,
     step: 0.05,
     format: (v) => `${Math.round(v * 100)}%`,
   },
