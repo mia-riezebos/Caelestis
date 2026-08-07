@@ -1766,21 +1766,32 @@ export const install = (
       ): void => {
         if (!capturePixels) return
         const source = canvasOfTexture.get(texture)
-        if (source === undefined) return
+        if (source === undefined) {
+          count('paint:draw of a texture with no canvas')
+          return
+        }
         let tile = tileOfPaintTexture.get(texture)
         if (tile === undefined) {
           const quad = quadFromMatrix(matrix, { x: 0, y: 0 }, canvas)
-          if (quad === null) return
-          for (const known of pending) {
+          if (quad === null) {
+            count('paint:quad rejected')
+            return
+          }
+          const named = pending.length > 0 ? pending : lastQuads
+          for (const known of named) {
             if (Math.abs(known.x - quad.x) > 0.5) continue
             if (Math.abs(known.y - quad.y) > 0.5) continue
             if (Math.abs(known.width - quad.width) > 0.5) continue
             tile = known.tile
             tileOfPaintTexture.set(texture, tile)
             tileOfPaintCanvas.set(source, tile)
+            log('texture', `named the paint preview for ${tile.x}/${tile.y}`)
             break
           }
-          if (tile === undefined) return
+          if (tile === undefined) {
+            count('paint:preview matched no known tile')
+            return
+          }
         }
         const stale = capturedAt.get(texture) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
