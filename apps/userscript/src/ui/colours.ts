@@ -171,9 +171,10 @@ export const colourPresets = (
   for (const [id, label] of PRESETS) {
     const button = document.createElement('button')
     button.type = 'button'
-    // btn-active is what wplace's own toolbar uses to say "this is the one you are on", and it
-    // stays on for as long as it is true rather than flashing at the moment of the click.
-    button.className = id === active ? 'btn btn-xs btn-active' : 'btn btn-xs'
+    // btn-primary, the same blue the rail button wears while the panel is open. btn-active is only a
+    // slightly darker grey in wplace's theme, which reads as a hover state rather than as a setting
+    // that is switched on — and a row where one grey button is "on" is a row that has to be studied.
+    button.className = id === active ? 'btn btn-xs btn-primary' : 'btn btn-xs'
     button.setAttribute('aria-pressed', String(id === active))
     button.textContent = label
     if (id === 'owned' && ownedColours() === null) {
@@ -215,7 +216,9 @@ export const onlySelectedToggle = (
 ): HTMLButtonElement => {
   const button = document.createElement('button')
   button.type = 'button'
-  button.className = on ? 'btn btn-xs btn-active' : 'btn btn-xs'
+  // The same blue as the presets it sits beside: it is one more way of answering "which colours",
+  // so it has to look switched on the same way they do.
+  button.className = on ? 'btn btn-xs btn-primary' : 'btn btn-xs'
   // A palette, because that is what wplace puts on the same idea — their own control for this reads
   // "Highlight selected color" behind a palette icon. Borrowing the symbol means someone who has
   // used theirs recognises ours without reading anything.
