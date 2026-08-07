@@ -6,6 +6,7 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, log, warn } from './debug.js'
+import { installOverlayLayer } from './gl/layer.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
 import { onStateChange } from './state.js'
@@ -78,6 +79,35 @@ export const onPaint = (painter: Painter): void => {
 /** Repaint the last frame without waiting for MapLibre — for when our own state changed, not the map's. */
 export const repaint = (): void => {
   if (lastFrame !== null) draw(lastFrame)
+}
+
+/**
+ * Redraw everything after a change of ours: our own canvas, and wplace's.
+ *
+ * The templates now live in a layer inside *their* canvas, which only renders when MapLibre decides
+ * to. Hiding a folder or moving a slider is not something MapLibre knows about, so it has to be
+ * asked — otherwise the change waits for the next pan.
+ */
+export const redraw = (): void => {
+  repaint()
+  const map = getMap() as { triggerRepaint?: () => void } | null
+  map?.triggerRepaint?.()
+}
+
+/**
+ * Add the GL layer as soon as the map exists.
+ *
+ * The map is captured while MapLibre constructs it, but its style is not ready at that moment, and
+ * `addLayer` before the style loads throws. Retrying briefly is simpler than reaching for a
+ * MapLibre event whose name differs across versions.
+ */
+const attachOverlayLayer = (): void => {
+  if (installOverlayLayer()) return
+  let attempts = 0
+  const timer = setInterval(() => {
+    attempts++
+    if (installOverlayLayer() || attempts > 60) clearInterval(timer)
+  }, 250)
 }
 
 const draw = (frame: TileFrame): void => {
@@ -399,17 +429,19 @@ const main = (): void => {
     watchPaintSelection()
     onPaintSelectionChange(repaint)
   })
-  onPaint(paintTemplates)
+  // Templates are drawn by the GL layer inside wplace's own canvas. Our 2D canvas is now only the
+  // debug marker and the positioning reference the overlay controls read.
+  step('overlay layer', attachOverlayLayer)
   // The buttons ride with the overlay, so they are repositioned on the same frame the map moved.
   onPaint(() => renderOverlayControls(repaint))
   onPaint(paintMark)
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
-  onLocalChange(repaint)
+  onLocalChange(redraw)
   // So does anything in settings that changes what is drawn: the global colour filter, the global
   // appearance, and a folder being hidden. Without this the canvas only caught up on the next frame
   // MapLibre happened to produce, so toggling something and not touching the map looked broken.
-  onStateChange(repaint)
+  onStateChange(redraw)
   step('panel', () => {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', installPanel, { once: true })
