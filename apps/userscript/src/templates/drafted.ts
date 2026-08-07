@@ -5,10 +5,10 @@ import { getMap } from '../map-handle.js'
  * Which pixels have been drafted, from wplace's own crosshair layer.
  *
  * The draft canvas cannot answer this. In their model a pixel's colour and its absence are the same
- * value — `pixels[i] = 0` is Transparent *and* is what an unpainted pixel holds — and the canvas
- * renders both at alpha zero. So a pixel drafted as transparent is byte-identical to one never
- * drafted at all, measured on the live page: a whole draft canvas with nothing above alpha 0 on it,
- * after deliberately drafting a transparent pixel.
+ * value — index 0 is Transparent *and* is what an unpainted pixel holds — and the canvas renders
+ * both at alpha zero. So a pixel drafted as transparent is byte-identical to one never drafted at
+ * all, measured on the live page: a whole draft canvas with nothing above alpha 0 on it, after
+ * deliberately drafting a transparent pixel.
  *
  * What distinguishes them is the crosshair. wplace draw one on every drafted pixel, from a custom
  * layer that keeps its own data:
@@ -17,10 +17,12 @@ import { getMap } from '../map-handle.js'
  *       → Map("paint-crosshair-<patchX>,<patchY>" → { annotations: Uint8Array(40000), ... })
  *
  * 40,000 entries is a 200x200 patch, and a non-zero entry is a drafted pixel. Read against a live
- * page with two pixels drafted, the patch keyed `1626,8908` had exactly two non-zero entries, at
+ * page with two pixels drafted, the patch keyed `1626,8908` held exactly two non-zero entries, at
  * canvas (325269, 1781754) and (325204, 1781757) — the two that had been drafted.
  *
- * With this, all three states are readable: drafted to a colour, drafted to nothing, and not drafted.
+ * Enumerated rather than asked per pixel. Only drafted pixels are interesting and there are rarely
+ * many, so this costs the number of answers rather than the size of a tile — and a patch only
+ * exists where something has been drafted, so the empty case reads nothing at all.
  */
 
 /** wplace's crosshair patches are this many pixels a side. */
@@ -38,40 +40,34 @@ interface CrosshairLayer {
   }
 }
 
-/** Their patch key is the pixel coordinate divided by the patch size. */
-const patchKey = (x: number, y: number): string =>
-  `paint-crosshair-${Math.floor(x / PATCH)},${Math.floor(y / PATCH)}`
-
 /**
- * A lookup for one tile, or null when nothing in it has been drafted.
+ * Every drafted pixel in one tile, as tile-local `y * tileSize + x`.
  *
- * Gathered once per scan rather than per pixel: a tile spans twenty-five patches, and finding the
- * right one for every pixel of a million would be a string built and hashed a million times.
+ * Empty when nothing in the tile is drafted, and equally when their layer is not there to ask —
+ * they only add it while a draft exists, so its absence and an empty draft mean the same.
  */
-export const draftedIn = (
-  tile: TileCoord,
-  tileSize: number,
-): ((x: number, y: number) => boolean) | null => {
+export const draftedPixelsIn = (tile: TileCoord, tileSize: number): number[] => {
   const map = getMap() as CrosshairLayer | null
   const tiles = map?.style?._layers?.[CROSSHAIR_LAYER]?.implementation?.tiles
-  if (tiles === undefined || tiles.size === 0) return null
+  if (tiles === undefined || tiles.size === 0) return []
 
+  const found: number[] = []
   const across = tileSize / PATCH
-  const patches: (Uint8Array | undefined)[] = []
-  let any = false
+  const firstPatchX = (tile.x * tileSize) / PATCH
+  const firstPatchY = (tile.y * tileSize) / PATCH
   for (let row = 0; row < across; row++) {
     for (let column = 0; column < across; column++) {
-      const key = patchKey(tile.x * tileSize + column * PATCH, tile.y * tileSize + row * PATCH)
-      const annotations = tiles.get(key)?.annotations
-      patches.push(annotations)
-      if (annotations !== undefined) any = true
+      const annotations = tiles.get(
+        `paint-crosshair-${firstPatchX + column},${firstPatchY + row}`,
+      )?.annotations
+      if (annotations === undefined) continue
+      const offsetX = column * PATCH
+      const offsetY = row * PATCH
+      for (let i = 0; i < annotations.length; i++) {
+        if (annotations[i] === 0) continue
+        found.push((offsetY + Math.floor(i / PATCH)) * tileSize + offsetX + (i % PATCH))
+      }
     }
   }
-  if (!any) return null
-
-  return (x: number, y: number): boolean => {
-    const patch = patches[Math.floor(y / PATCH) * across + Math.floor(x / PATCH)]
-    if (patch === undefined) return false
-    return patch[(y % PATCH) * PATCH + (x % PATCH)] !== 0
-  }
+  return found
 }

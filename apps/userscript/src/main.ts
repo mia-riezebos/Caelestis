@@ -12,7 +12,13 @@ import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
 import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
-import { captureTilePixels, install, onTileFrame, type TileFrame } from './tile-transform.js'
+import {
+  captureTilePixels,
+  install,
+  onTileFrame,
+  reconcileDrafts,
+  type TileFrame,
+} from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
@@ -163,6 +169,9 @@ const main = (): void => {
   // wplace add a layer per tile being painted, above anything of ours added earlier, so a placed
   // pixel would otherwise cover the marker it just cleared.
   step('marker order', () => onFrame(keepMarkersAboveDrafts))
+  // Drafting Transparent writes nothing a canvas hook can see, so the only place it shows up is
+  // wplace's crosshairs. Throttled inside; with nothing drafted there is nothing to read.
+  step('drafted pixels', () => onFrame(reconcileDrafts))
   /**
    * Start capturing before the first frame, not on it.
    *
