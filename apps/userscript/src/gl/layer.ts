@@ -94,6 +94,23 @@ const corner = (
   into[offset + 5] = v
 }
 
+/** How long the overlay takes to arrive, once there is anything to show. */
+const FADE_MS = 1000
+
+/**
+ * When the overlay first had a template to draw, or 0 before that.
+ *
+ * The templates cannot be on screen at first paint. Their bytes come out of IndexedDB, the map has
+ * to exist before a layer can be added to it, and the layer needs a frame of wplace's tiles to place
+ * anything against — so there is always a moment of their canvas alone, and the overlay used to
+ * appear in one frame, at full strength, whenever that moment ended. Ramping instead reads as the
+ * overlay arriving rather than as the page glitching.
+ *
+ * Timed from the first frame that actually draws, not from start-up, or a slow template restore
+ * would spend its fade invisible and still pop.
+ */
+let fadeFrom = 0
+
 let program: WebGLProgram | null = null
 let quad: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
@@ -290,6 +307,19 @@ export const overlayLayer = {
     collect(gl, new Set(localTemplates().map((template) => template.id)))
     if (visible.length === 0) return
 
+    if (fadeFrom === 0) fadeFrom = performance.now()
+    const elapsed = (performance.now() - fadeFrom) / FADE_MS
+    // Smoothstep rather than linear: it leaves and arrives at rest, so the ramp has no visible
+    // start or stop the way a linear one does.
+    const progress = Math.min(Math.max(elapsed, 0), 1)
+    const fade = progress * progress * (3 - 2 * progress)
+    // MapLibre renders on demand, so a frame nobody asked for is a frame that never happens. Without
+    // this the ramp would advance only as far as the next pan.
+    if (progress < 1) {
+      const map = getMap() as { triggerRepaint?: () => void } | null
+      map?.triggerRepaint?.()
+    }
+
     // Everything we are about to disturb, so it can go back exactly as found. MapLibre assumes it
     // owns this context and does not re-set what it believes it already knows — leaving the active
     // unit on 1, or depth test off, quietly corrupts whatever it draws next.
@@ -300,6 +330,7 @@ export const overlayLayer = {
     const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
 
     gl.useProgram(program)
+    gl.uniform1f(uniform(gl, 'u_fade'), fade)
     gl.bindVertexArray(vao)
     gl.enable(gl.BLEND)
     // Premultiplied source, which is what the fragment shader writes.

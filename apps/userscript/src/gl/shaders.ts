@@ -58,8 +58,13 @@ uniform vec2 u_stampOffset;
 uniform float u_stampRotation;
 /** Set when the stamp is a plain full cell, so the whole distance field can be skipped. */
 uniform bool u_plain;
+/** Ramps 0 to 1 once the overlay has something to show, so templates arrive instead of appearing. */
+uniform float u_fade;
 
 out vec4 fragColor;
+
+/** How many samples a side to take across a fragment when the template is minified. */
+const int MINIFY_TAPS = 4;
 
 /** Signed distance to a rounded box centred on the origin. Negative inside. */
 float roundedBox(vec2 point, vec2 half_, float radius) {
@@ -67,8 +72,56 @@ float roundedBox(vec2 point, vec2 half_, float radius) {
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
 }
 
+/** One cell's colour, with w = 1 when it should be drawn at all and 0 when it is filtered or blank. */
+vec4 cellColour(vec2 texel) {
+  ivec2 cell = ivec2(floor(texel));
+  if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) {
+    return vec4(0.0);
+  }
+  uint index = texelFetch(u_indices, cell, 0).r;
+  vec4 entry = texelFetch(u_palette, ivec2(int(index), 0), 0);
+  // Alpha 0 covers both the wildcard index and any colour the filter has switched off.
+  return entry.a < 0.5 ? vec4(0.0) : vec4(entry.rgb, 1.0);
+}
+
 void main() {
   vec2 texel = v_uv * u_size;
+  // How much of the template one device pixel covers, per axis.
+  vec2 footprint = vec2(fwidth(texel.x), fwidth(texel.y));
+
+  // Below 1:1, one fragment covers several template pixels and a single sample cannot represent
+  // them. Point-sampling there is what produced the moire: which of the cells under a fragment got
+  // picked depended on where the sample landed, so the pattern beat against the pixel grid and
+  // crawled as the map moved.
+  //
+  // wplace has the same problem and answers it with LINEAR below 1:1 and NEAREST above — measured
+  // off their calls, and they never generate a mipmap. LINEAR only averages the nearest four
+  // texels, so it is an answer to aliasing rather than a cure. Averaging the fragment's whole
+  // footprint is strictly better, and it is only reachable at all because the colour comes from a
+  // lookup: indices cannot be averaged, resolved colours can.
+  //
+  // The stamp is deliberately skipped here. Below 1:1 it is smaller than a pixel, so it has nothing
+  // to say about what the fragment should look like.
+  if (max(footprint.x, footprint.y) > 1.0) {
+    vec3 sum = vec3(0.0);
+    float drawn = 0.0;
+    for (int j = 0; j < MINIFY_TAPS; j++) {
+      for (int i = 0; i < MINIFY_TAPS; i++) {
+        vec2 at = (vec2(float(i), float(j)) + 0.5) / float(MINIFY_TAPS) - 0.5;
+        vec4 sampled = cellColour(texel + at * footprint);
+        sum += sampled.rgb * sampled.w;
+        drawn += sampled.w;
+      }
+    }
+    if (drawn <= 0.0) discard;
+    float taps = float(MINIFY_TAPS * MINIFY_TAPS);
+    // Coverage is the share of the footprint that draws at all, so a template's edge and its holes
+    // fade out across the boundary instead of stepping.
+    float minifiedAlpha = (drawn / taps) * u_opacity * u_fade;
+    fragColor = vec4((sum / drawn) * minifiedAlpha, minifiedAlpha);
+    return;
+  }
+
   ivec2 cell = ivec2(floor(texel));
   if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) discard;
 
@@ -110,7 +163,7 @@ void main() {
     if (coverage <= 0.0) discard;
   }
 
-  float alpha = coverage * u_opacity;
+  float alpha = coverage * u_opacity * u_fade;
   // Premultiplied, to match the blend mode MapLibre leaves set.
   fragColor = vec4(entry.rgb * alpha, alpha);
 }
