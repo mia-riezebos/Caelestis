@@ -820,12 +820,18 @@ export const UNPAINTED = 255
  */
 let captureGeneration = 0
 
-/** Turn tile pixel capture on or off. Off drops what was captured, since it goes stale immediately. */
+/**
+ * Turn tile pixel capture on or off.
+ *
+ * Switching off keeps what was captured. Throwing it away made toggling the setting cost a full
+ * re-read every time, which is the one thing anyone does repeatedly while deciding whether they want
+ * the markers on — and the data is not wasted by being briefly unwatched, because switching back on
+ * re-reads everything visible anyway. The kept copy is what shows instantly while that happens.
+ */
 export const captureTilePixels = (on: boolean): void => {
   if (capturePixels === on) return
   capturePixels = on
   if (on) captureGeneration++
-  else pixelsOfTile.clear()
   log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
 }
 
@@ -856,6 +862,65 @@ const dirtyCanvases = new WeakSet<object>()
 /** Note that a tile-sized canvas has been written to, so the next draw re-reads it. */
 export const markCanvasDirty = (canvas: object): void => {
   dirtyCanvases.add(canvas)
+}
+
+/** Which tile a paint-preview canvas belongs to, once a draw has told us. */
+const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
+
+type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
+const pixelListeners: PixelListener[] = []
+
+/** Notified when a single placed pixel changes, in canvas coordinates. */
+export const onTilePixel = (listener: PixelListener): void => {
+  pixelListeners.push(listener)
+}
+
+/**
+ * The largest write that is worth patching a pixel at a time.
+ *
+ * A pending paint is a 1x1, so this is really "is this a pixel or a repaint". Anything bigger falls
+ * back to re-reading the tile, which is the right trade at that size and the wrong one at this.
+ */
+const PATCH_LIMIT = 32
+
+/**
+ * Apply a small canvas write straight into the captured indices.
+ *
+ * The write says exactly which pixels moved and to what. Re-reading the whole tile to discover that
+ * is a million `getImageData` bytes and a million table lookups to learn something the argument
+ * already contained — and it happens on every pixel placed, which is the one moment the map has to
+ * stay responsive.
+ */
+const patch = (tile: TileCoord, image: ImageData, dx: number, dy: number): boolean => {
+  const indices = pixelsOfTile.get(tileKey(tile))
+  if (indices === undefined) return false
+  const table = indexTable()
+  const { data, width, height } = image
+  for (let j = 0; j < height; j++) {
+    const y = dy + j
+    if (y < 0 || y >= TILE_SIZE) continue
+    for (let i = 0; i < width; i++) {
+      const x = dx + i
+      if (x < 0 || x >= TILE_SIZE) continue
+      const at = (j * width + i) * 4
+      const index =
+        data[at + 3] === 0
+          ? UNPAINTED
+          : (table[((data[at] ?? 0) << 16) | ((data[at + 1] ?? 0) << 8) | (data[at + 2] ?? 0)] ??
+            UNPAINTED)
+      if (indices[y * TILE_SIZE + x] === index) continue
+      indices[y * TILE_SIZE + x] = index
+      for (const listener of pixelListeners) {
+        try {
+          listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+        } catch {
+          count('pixels:listener-failed')
+        }
+      }
+    }
+  }
+  count('pixels:patched a write')
+  return true
 }
 
 /** Read a tile into palette indices, from whatever wplace last drew it from. */
@@ -991,7 +1056,11 @@ const installPutImageDataTaps = (
           () => Reflect.apply(nativePutImageData, this, args),
           () => {
             const canvas = this.canvas as { width?: number; height?: number }
-            if (canvas.width === TILE_SIZE && canvas.height === TILE_SIZE) {
+            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
+            const [image, dx, dy] = args
+            const tile = tileOfPaintCanvas.get(this.canvas)
+            const small = image.width <= PATCH_LIMIT && image.height <= PATCH_LIMIT
+            if (tile === undefined || !small || !patch(tile, image, dx, dy)) {
               markCanvasDirty(this.canvas)
             }
           },
@@ -1708,6 +1777,7 @@ export const install = (
             if (Math.abs(known.width - quad.width) > 0.5) continue
             tile = known.tile
             tileOfPaintTexture.set(texture, tile)
+            tileOfPaintCanvas.set(source, tile)
             break
           }
           if (tile === undefined) return

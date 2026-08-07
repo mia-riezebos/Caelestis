@@ -1,8 +1,8 @@
 import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@wts/shared'
 import { count } from '../debug.js'
-import { tilePixels, UNPAINTED } from '../tile-transform.js'
+import { onTilePixel, tilePixels, UNPAINTED } from '../tile-transform.js'
 import { hiddenColoursFor } from './colour-filter.js'
-import type { PlacedTemplate } from './local-store.js'
+import { localTemplates, type PlacedTemplate } from './local-store.js'
 
 /**
  * Which pixels of a template the canvas disagrees with, per tile.
@@ -133,6 +133,64 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   count('mismatch:pixels marked', found.length / 2)
   return result
 }
+
+/**
+ * Update one cached answer for one changed pixel, instead of asking the tile again.
+ *
+ * Painting is the moment this matters. A placed pixel changes exactly one cell, and the write that
+ * carried it already said which and to what — so rescanning a tile to find out whether the marker
+ * should go is a million comparisons to learn one, on the interaction that most needs to stay
+ * responsive.
+ *
+ * The rebuild is over the tile's own mismatches rather than its pixels, which is the difference
+ * between thousands and a million.
+ */
+const patchTile = (tile: TileCoord, x: number, y: number, placed: number): void => {
+  for (const [cacheKey, entry] of cache) {
+    if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
+    const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
+    const template = localTemplates().find((candidate) => candidate.id === id)
+    if (template === undefined) continue
+
+    const localX = x - template.originX
+    const localY = y - template.originY
+    if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) continue
+    const wanted = template.indices[localY * template.width + localX]
+    if (wanted === undefined) continue
+
+    const hidden = hiddenColoursFor(template.appearance)
+    const asserted =
+      wanted !== TRANSPARENT_INDEX && wanted !== UNPAINTED && !hidden.includes(wanted)
+    const markUnpainted = template.appearance?.markUnpainted === true
+    const wrong = asserted && placed !== wanted && !(placed === UNPAINTED && !markUnpainted)
+
+    const marks = entry.result
+    let at = -1
+    for (let i = 0; i < marks.length; i += 2) {
+      if (marks[i] === x && marks[i + 1] === y) {
+        at = i
+        break
+      }
+    }
+    if (wrong === at >= 0) continue
+
+    let next: Float32Array
+    if (wrong) {
+      next = new Float32Array(marks.length + 2)
+      next.set(marks)
+      next[marks.length] = x
+      next[marks.length + 1] = y
+    } else {
+      next = new Float32Array(marks.length - 2)
+      next.set(marks.subarray(0, at))
+      next.set(marks.subarray(at + 2), at)
+    }
+    cache.set(cacheKey, { source: entry.source, key: entry.key, result: next })
+    count(wrong ? 'mismatch:pixel became wrong' : 'mismatch:pixel fixed')
+  }
+}
+
+onTilePixel(patchTile)
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
 export const forgetMismatches = (id: string): void => {
