@@ -35,7 +35,55 @@ interface Cached {
   /** Identity, not contents: a re-captured tile is a new array, and that is the signal to redo it. */
   readonly source: Uint8Array
   readonly key: string
-  readonly result: Mismatches
+  /**
+   * The two kinds of disagreement, kept apart.
+   *
+   * Whether the second kind counts is not a property of the tile — it depends on how much of the
+   * *template* is still unpainted, which is not knowable while scanning one tile of it. Deciding at
+   * the point the answer is read means the threshold, and the switch above it, cost nothing to change
+   * their mind about: no tile is rescanned for either.
+   */
+  readonly wrong: Mismatches
+  readonly unpainted: Mismatches
+  /** Pixels this tile asserts a colour for. The denominator the threshold is measured against. */
+  readonly asserted: number
+  /** The two concatenated, built the first time they are asked for together. */
+  both: Mismatches | null
+}
+
+const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
+  if (!includeUnpainted || entry.unpainted.length === 0) return entry.wrong
+  if (entry.wrong.length === 0) return entry.unpainted
+  if (entry.both === null) {
+    const both = new Float32Array(entry.wrong.length + entry.unpainted.length)
+    both.set(entry.wrong)
+    both.set(entry.unpainted, entry.wrong.length)
+    entry.both = both
+  }
+  return entry.both
+}
+
+/**
+ * Whether this template is finished enough for its unpainted pixels to be worth marking.
+ *
+ * Summed over the tiles that have been scanned rather than over the template, because a template is
+ * only ever partly loaded — the tiles off screen have no pixels to count. The tiles in front of
+ * someone are the ones the answer is about, so the ratio is over those, and it settles as more of
+ * them arrive rather than being wrong until the last one does.
+ */
+const countsUnpainted = (template: PlacedTemplate): boolean => {
+  const appearance = appearanceOf(template)
+  if (!appearance.markUnpainted) return false
+  const key = signature(template)
+  let asserted = 0
+  let unpainted = 0
+  for (const [cacheKey, entry] of cache) {
+    if (!cacheKey.startsWith(`${template.id}|`) || entry.key !== key) continue
+    asserted += entry.asserted
+    unpainted += entry.unpainted.length / 2
+  }
+  if (asserted === 0) return false
+  return unpainted / asserted <= appearance.unpaintedLimit
 }
 
 const cache = new Map<string, Cached>()
@@ -121,12 +169,14 @@ export const wantsTilePixels = (): boolean =>
     (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
   )
 
-/** Everything that changes the answer, so a stale entry is never returned. */
-const signature = (template: PlacedTemplate): string => {
-  const appearance = template.appearance
-  const hidden = hiddenColoursFor(appearance).join(',')
-  return `${template.moved}|${appearance?.markUnpainted === true}|${hidden}`
-}
+/**
+ * Everything that changes what a scan finds, so a stale entry is never returned.
+ *
+ * "Count unpainted" is deliberately not part of it, nor is its threshold. Both decide which of two
+ * lists to hand back, not what goes in them, so neither is a reason to look at a tile again.
+ */
+const signature = (template: PlacedTemplate): string =>
+  `${template.moved}|${hiddenColoursFor(template.appearance).join(',')}`
 
 /**
  * The disagreements between one template and one tile.
@@ -146,7 +196,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   const key = signature(template)
   const existing = cache.get(cacheKey)
   if (existing !== undefined && existing.source === pixels && existing.key === key) {
-    return existing.result
+    return answerFrom(existing, countsUnpainted(template))
   }
 
   /**
@@ -165,7 +215,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     scheduleIdleScan()
     if (existing === undefined) return null
     count('mismatch:showed the previous answer while busy')
-    return existing.result
+    return answerFrom(existing, countsUnpainted(template))
   }
   stale.delete(cacheKey)
 
@@ -177,7 +227,14 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   const bottom = Math.min(template.originY + template.height, tileTop + TILE_SIZE)
   if (right <= left || bottom <= top) {
     const empty = new Float32Array(0)
-    cache.set(cacheKey, { source: pixels, key, result: empty })
+    cache.set(cacheKey, {
+      source: pixels,
+      key,
+      wrong: empty,
+      unpainted: empty,
+      asserted: 0,
+      both: empty,
+    })
     return empty
   }
 
@@ -198,7 +255,6 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   asserted[UNPAINTED] = 0
   for (const index of hiddenColoursFor(template.appearance)) asserted[index] = 0
 
-  const markUnpainted = template.appearance?.markUnpainted === true
   // Local aliases: property lookups on the template inside a million-iteration loop are not free.
   const wantedPixels = template.indices
   const templateWidth = template.width
@@ -217,35 +273,44 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
    */
   const draft = draftPixels(tile)
 
-  const found: number[] = []
+  /**
+   * The two kinds, separated as they are found.
+   *
+   * An empty pixel is only "not done yet" when nobody chose it, so a pixel drafted Transparent is
+   * never one of these — it arrives as `TRANSPARENT_INDEX` rather than `UNPAINTED`, and lands in
+   * `wrong` with the rest of the mistakes.
+   */
+  const wrong: number[] = []
+  const unpainted: number[] = []
+  let assertedHere = 0
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - originY) * templateWidth + (left - originX)
     let tileAt = (y - tileTop) * TILE_SIZE + (left - tileLeft)
     for (let x = left; x < right; x++, templateAt++, tileAt++) {
       const wanted = wantedPixels[templateAt] as number
       if (asserted[wanted] === 0) continue
+      assertedHere++
       const drafted = draft === null ? UNPAINTED : (draft[tileAt] as number)
       const placed = drafted !== UNPAINTED ? drafted : (pixels[tileAt] as number)
       if (placed === wanted) continue
-      /**
-       * An empty pixel is only "not done yet" when nobody chose it.
-       *
-       * `markUnpainted` is about the canvas as it stands: a template over bare ground is thousands
-       * of pixels nobody has got to, and marking all of them says nothing. Drafting Transparent is
-       * the opposite — a decision, made just now, to leave a pixel the template wants coloured
-       * empty. That is a mistake worth seeing whether or not the setting is on, so it arrives here
-       * as `TRANSPARENT_INDEX` rather than as `UNPAINTED` and is never suppressed.
-       */
-      if (placed === UNPAINTED && !markUnpainted) continue
-      found.push(x, y)
+      if (placed === UNPAINTED) unpainted.push(x, y)
+      else wrong.push(x, y)
     }
   }
 
-  const result = new Float32Array(found)
-  cache.set(cacheKey, { source: pixels, key, result })
+  const entry: Cached = {
+    source: pixels,
+    key,
+    wrong: new Float32Array(wrong),
+    unpainted: new Float32Array(unpainted),
+    asserted: assertedHere,
+    both: null,
+  }
+  cache.set(cacheKey, entry)
   count('mismatch:tiles scanned')
-  count('mismatch:pixels marked', found.length / 2)
-  return result
+  count('mismatch:pixels marked', wrong.length / 2)
+  count('mismatch:pixels unpainted', unpainted.length / 2)
+  return answerFrom(entry, countsUnpainted(template))
 }
 
 /**
@@ -292,42 +357,61 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
     const hidden = hiddenColoursFor(template.appearance)
     const asserted =
       wanted !== TRANSPARENT_INDEX && wanted !== UNPAINTED && !hidden.includes(wanted)
-    const markUnpainted = template.appearance?.markUnpainted === true
-    // Same rule as the full scan: a pixel drafted Transparent arrives as `TRANSPARENT_INDEX` and is
-    // marked whatever the setting says; only a pixel nobody has touched is gated by it.
-    const wrong = asserted && placed !== wanted && !(placed === UNPAINTED && !markUnpainted)
 
-    const marks = entry.result
-    let at = -1
-    for (let i = 0; i < marks.length; i += 2) {
-      if (marks[i] === x && marks[i + 1] === y) {
-        at = i
-        break
+    /**
+     * Which list this pixel belongs in now, if any.
+     *
+     * The same split the scan makes, so a patched answer and a rescanned one agree. Whether the
+     * unpainted list is *shown* is not decided here — it is decided when the answer is read, and a
+     * pixel that moves in or out of that list can change the ratio it is decided by.
+     */
+    const belongs =
+      !asserted || placed === wanted ? null : placed === UNPAINTED ? 'unpainted' : 'wrong'
+
+    const listed = (marks: Mismatches): number => {
+      for (let i = 0; i < marks.length; i += 2) {
+        if (marks[i] === x && marks[i + 1] === y) return i
       }
+      return -1
     }
-    if (wrong === at >= 0) {
-      // The two states that need no work, and the two that mean something is wrong upstream: a
-      // pixel painted the right colour that was never marked, or a wrong one that already was.
-      count(
-        `patch:already ${wrong ? 'marked' : 'clear'} — wanted ${wanted}, placed ${placed}, listed ${at >= 0}`,
-      )
+    const inWrong = listed(entry.wrong)
+    const inUnpainted = listed(entry.unpainted)
+    const already = inWrong >= 0 ? 'wrong' : inUnpainted >= 0 ? 'unpainted' : null
+    if (already === belongs) {
+      count(`patch:already ${belongs ?? 'clear'} — wanted ${wanted}, placed ${placed}`)
       continue
     }
 
-    let next: Float32Array
-    if (wrong) {
-      next = new Float32Array(marks.length + 2)
+    const minus = (marks: Mismatches, at: number): Mismatches => {
+      const next = new Float32Array(marks.length - 2)
+      next.set(marks.subarray(0, at))
+      next.set(marks.subarray(at + 2), at)
+      return next
+    }
+    const plus = (marks: Mismatches): Mismatches => {
+      const next = new Float32Array(marks.length + 2)
       next.set(marks)
       next[marks.length] = x
       next[marks.length + 1] = y
-    } else {
-      next = new Float32Array(marks.length - 2)
-      next.set(marks.subarray(0, at))
-      next.set(marks.subarray(at + 2), at)
+      return next
     }
-    cache.set(cacheKey, { source: entry.source, key: entry.key, result: next })
+
+    let { wrong, unpainted } = entry
+    if (inWrong >= 0) wrong = minus(wrong, inWrong)
+    if (inUnpainted >= 0) unpainted = minus(unpainted, inUnpainted)
+    if (belongs === 'wrong') wrong = plus(wrong)
+    if (belongs === 'unpainted') unpainted = plus(unpainted)
+
+    cache.set(cacheKey, {
+      source: entry.source,
+      key: entry.key,
+      wrong,
+      unpainted,
+      asserted: entry.asserted,
+      both: null,
+    })
     changed++
-    count(wrong ? 'mismatch:pixel became wrong' : 'mismatch:pixel fixed')
+    count(belongs === null ? 'mismatch:pixel fixed' : `mismatch:pixel became ${belongs}`)
   }
   if (considered === 0) count('patch:no cached answer for that tile')
 }

@@ -5,6 +5,7 @@ import {
   APPEARANCE_CONTROLS,
   type Appearance,
   DEFAULT_APPEARANCE,
+  UNPAINTED_LIMIT_CONTROL,
 } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
@@ -76,7 +77,13 @@ const rightEdge = (): number => {
 export const isOverlayMenuOpen = (id: string): boolean => openFor === id
 
 const slider = (
-  control: (typeof APPEARANCE_CONTROLS)[number],
+  control: {
+    label: string
+    min: number
+    max: number
+    step: number
+    format: (value: number) => string
+  },
   value: number,
   onChange: (next: number) => void,
 ): HTMLElement => {
@@ -322,6 +329,12 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     row.append(box, text)
     overrides.appendChild(row)
   }
+  // How little may be left before "count unpainted" applies. Beside the switch it qualifies.
+  overrides.appendChild(
+    slider(UNPAINTED_LIMIT_CONTROL, current().unpaintedLimit, (value) =>
+      update({ unpaintedLimit: value }),
+    ),
+  )
 
   overrides.appendChild(section('Colours'))
 
