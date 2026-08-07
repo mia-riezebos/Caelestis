@@ -810,10 +810,22 @@ let capturePixels = false
 /** Index meaning "nobody has painted here". Distinct from every palette entry. */
 export const UNPAINTED = 255
 
+/**
+ * Bumped every time capture is switched on, so everything already on screen is read again.
+ *
+ * Without this, turning the feature on only caught tiles wplace happened to decode *afterwards* —
+ * so a screenful that had finished loading stayed unanswered until something made it re-fetch, which
+ * is most of the wait anyone would notice. The preview canvases are already on screen and already
+ * hold the answer; this is what makes us go and read them.
+ */
+let captureGeneration = 0
+
+/** Turn tile pixel capture on or off. Off drops what was captured, since it goes stale immediately. */
 export const captureTilePixels = (on: boolean): void => {
   if (capturePixels === on) return
   capturePixels = on
-  if (!on) pixelsOfTile.clear()
+  if (on) captureGeneration++
+  else pixelsOfTile.clear()
   log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
 }
 
@@ -850,6 +862,7 @@ export const markCanvasDirty = (canvas: object): void => {
 const capture = (
   tile: TileCoord,
   bitmap: CanvasImageSource & { width: number; height: number },
+  from: 'tile' | 'preview' = 'tile',
 ): void => {
   if (!capturePixels) return
   if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) return
@@ -874,12 +887,13 @@ const capture = (
       indices[p] = index
       if (index !== UNPAINTED) painted++
     }
-    // An empty read never replaces a full one. wplace's preview canvas for a tile exists before its
-    // pixels are loaded into it, so a blank one is "not ready yet", not "nobody has painted here" —
-    // and taking it at face value would mark an entire finished tile as unpainted.
+    // A blank preview is never believed. That canvas exists before wplace has loaded the tile's
+    // pixels into it, so an empty one means "not ready", not "nobody has painted here" — and taking
+    // it at face value would mark an entire finished tile as unpainted. The tile PNG has no such
+    // ambiguity: empty there really is empty.
     const key = tileKey(tile)
-    if (painted === 0 && pixelsOfTile.has(key)) {
-      count('pixels:ignored an empty read')
+    if (painted === 0 && from === 'preview') {
+      count('pixels:ignored a blank preview')
       return
     }
     pixelsOfTile.set(key, indices)
@@ -1146,6 +1160,7 @@ export const install = (
         CanvasImageSource & { width: number; height: number }
       >()
       const tileOfPaintTexture = new WeakMap<WebGLTexture, TileCoord>()
+      const capturedAt = new WeakMap<WebGLTexture, number>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
       let activeProgram: WebGLProgram | null = null
@@ -1161,7 +1176,6 @@ export const install = (
         // The real context answers this. A partial test double or hostile shim leaves validation at
         // the enum's non-negative/integer baseline instead of breaking installation.
       }
-
       const nativeGetUniformLocation = gl.getUniformLocation
       hookedGl.getUniformLocation = {
         getUniformLocation(this: WebGL2RenderingContext, program: WebGLProgram, name: string) {
@@ -1698,9 +1712,11 @@ export const install = (
           }
           if (tile === undefined) return
         }
-        if (!dirtyCanvases.has(source)) return
+        const stale = capturedAt.get(texture) !== captureGeneration
+        if (!stale && !dirtyCanvases.has(source)) return
         dirtyCanvases.delete(source)
-        capture(tile, source)
+        capturedAt.set(texture, captureGeneration)
+        capture(tile, source, 'preview')
       }
 
       const recordDraw = (drawCount: number): void => {
