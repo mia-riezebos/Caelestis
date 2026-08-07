@@ -1158,7 +1158,9 @@ const buildPanel = (): HTMLElement => {
   appearanceButton.title = 'Appearance'
   appearanceButton.setAttribute('aria-label', 'Appearance')
   appearanceButton.setAttribute('aria-pressed', 'false')
-  appearanceButton.appendChild(icon('tune', 'size-4'))
+  // A palette, not sliders. Two gear-adjacent glyphs side by side read as two settings buttons and
+  // say nothing about which is which; a palette says what the page is about before it is opened.
+  appearanceButton.appendChild(icon('palette', 'size-4'))
   appearanceButton.addEventListener('click', () =>
     showView(currentView === 'appearance' ? 'tree' : 'appearance'),
   )
