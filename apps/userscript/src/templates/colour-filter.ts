@@ -48,6 +48,12 @@ export const globalHiddenColours = (): readonly number[] => {
  */
 export const hiddenColoursFor = (own: Appearance | null): readonly number[] => {
   const state = getState()
-  if (state.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
-  return own === null ? state.hiddenColours : own.hiddenColours
+  // Each scope's mode beats that scope's own switches and reaches no further. An overlay following
+  // the defaults answers to the global mode; an overlay with a filter of its own answers to its own.
+  if (own === null) {
+    if (state.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
+    return state.hiddenColours
+  }
+  if (own.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
+  return own.hiddenColours
 }
