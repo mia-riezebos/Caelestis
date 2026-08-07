@@ -10,6 +10,7 @@ import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
 import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
+import { onMismatchesChanged } from './templates/mismatch.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
@@ -155,6 +156,9 @@ const main = (): void => {
   })
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
+  // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
+  // marker going away.
+  step('mismatch repaint', () => onMismatchesChanged(redraw))
   // Templates are drawn by the GL layer inside wplace's own canvas. Nothing of ours rasterises to a
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.

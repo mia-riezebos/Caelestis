@@ -29,6 +29,9 @@ interface Cached {
 
 const cache = new Map<string, Cached>()
 
+/** Bumped whenever a cached answer is patched, so a listener can tell that anything happened. */
+let changed = 0
+
 /**
  * How long scanning may take in one frame, in milliseconds.
  *
@@ -186,11 +189,30 @@ const patchTile = (tile: TileCoord, x: number, y: number, placed: number): void 
       next.set(marks.subarray(at + 2), at)
     }
     cache.set(cacheKey, { source: entry.source, key: entry.key, result: next })
+    changed++
     count(wrong ? 'mismatch:pixel became wrong' : 'mismatch:pixel fixed')
   }
 }
 
-onTilePixel(patchTile)
+const changeListeners: Array<() => void> = []
+
+/**
+ * Notified when a cached answer changes outside a frame.
+ *
+ * Painting is not a map movement, so nothing asks MapLibre to draw when it happens — and a marker
+ * that has been cleared in memory but not on screen is indistinguishable from one that has not been
+ * cleared at all. This is what turns a patch into a repaint.
+ */
+export const onMismatchesChanged = (listener: () => void): void => {
+  changeListeners.push(listener)
+}
+
+onTilePixel((tile, x, y, placed) => {
+  const before = changed
+  patchTile(tile, x, y, placed)
+  if (changed === before) return
+  for (const listener of changeListeners) listener()
+})
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
 export const forgetMismatches = (id: string): void => {
