@@ -833,8 +833,26 @@ const indexTable = (): Uint8Array => {
   return table
 }
 
-const capture = (tile: TileCoord, bitmap: ImageBitmap): void => {
-  if (!capturePixels || bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) return
+/**
+ * Canvases whose pixels have changed since they were last read.
+ *
+ * wplace redraws a paint-preview tile only when a pixel changes, but MapLibre *draws* it every
+ * frame. Without this the capture below would run on every frame of every tile on screen.
+ */
+const dirtyCanvases = new WeakSet<object>()
+
+/** Note that a tile-sized canvas has been written to, so the next draw re-reads it. */
+export const markCanvasDirty = (canvas: object): void => {
+  dirtyCanvases.add(canvas)
+}
+
+/** Read a tile into palette indices, from whatever wplace last drew it from. */
+const capture = (
+  tile: TileCoord,
+  bitmap: CanvasImageSource & { width: number; height: number },
+): void => {
+  if (!capturePixels) return
+  if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) return
   try {
     const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
     const context = canvas.getContext('2d', { willReadFrequently: true })
@@ -843,14 +861,28 @@ const capture = (tile: TileCoord, bitmap: ImageBitmap): void => {
     const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
     const table = indexTable()
     const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
-    for (let i = 0, pixel = 0; pixel < indices.length; i += 4, pixel++) {
-      indices[pixel] =
+    let painted = 0
+    for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
+      // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
+      // that is not in the table can only be something we do not model — treated as unpainted rather
+      // than guessed at.
+      const index =
         data[i + 3] === 0
           ? UNPAINTED
           : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
             UNPAINTED)
+      indices[p] = index
+      if (index !== UNPAINTED) painted++
     }
-    pixelsOfTile.set(tileKey(tile), indices)
+    // An empty read never replaces a full one. wplace's preview canvas for a tile exists before its
+    // pixels are loaded into it, so a blank one is "not ready yet", not "nobody has painted here" —
+    // and taking it at face value would mark an entire finished tile as unpainted.
+    const key = tileKey(tile)
+    if (painted === 0 && pixelsOfTile.has(key)) {
+      count('pixels:ignored an empty read')
+      return
+    }
+    pixelsOfTile.set(key, indices)
     count('pixels:captured')
   } catch (error) {
     warn('bitmap', 'could not read tile pixels', String(error))
@@ -922,6 +954,46 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
   return installValueHook(realm, 'createImageBitmap', wrappedCreateImageBitmap)
 }
 
+const installPutImageDataTaps = (
+  realm: Window & typeof globalThis,
+): InstalledValueHook[] | null => {
+  const offscreenPrototype = (
+    realm as typeof realm & {
+      OffscreenCanvasRenderingContext2D?: { prototype: CanvasRenderingContext2D }
+    }
+  ).OffscreenCanvasRenderingContext2D?.prototype
+  const prototypes = [realm.CanvasRenderingContext2D.prototype, offscreenPrototype].filter(
+    (prototype): prototype is CanvasRenderingContext2D => prototype !== undefined,
+  )
+  const hooks: InstalledValueHook[] = []
+  try {
+    for (const prototype of prototypes) {
+      const nativePutImageData = prototype.putImageData
+      const wrappedPutImageData = function (
+        this: CanvasRenderingContext2D,
+        ...args: Parameters<CanvasRenderingContext2D['putImageData']>
+      ): void {
+        return runObservedCall(
+          () => Reflect.apply(nativePutImageData, this, args),
+          () => {
+            const canvas = this.canvas as { width?: number; height?: number }
+            if (canvas.width === TILE_SIZE && canvas.height === TILE_SIZE) {
+              markCanvasDirty(this.canvas)
+            }
+          },
+        )
+      }
+      const hook = installValueHook(prototype, 'putImageData', wrappedPutImageData)
+      if (hook === null) throw new Error('putImageData is not hookable')
+      hooks.push(hook)
+    }
+    return hooks
+  } catch {
+    for (const hook of hooks.reverse()) hook.restore()
+    return null
+  }
+}
+
 export const install = (
   realm: Window & typeof globalThis = pageWindow(),
   mapHandle: () => ReturnType<typeof getMap> = getMap,
@@ -949,6 +1021,12 @@ export const install = (
     abandonBrowserHooks()
     return
   }
+  const putImageDataHooks = installPutImageDataTaps(realm)
+  if (putImageDataHooks === null) {
+    abandonBrowserHooks()
+    return
+  }
+  browserHooks.push(...putImageDataHooks)
 
   let nativeGetContext: typeof realm.HTMLCanvasElement.prototype.getContext
   try {
@@ -1063,6 +1141,11 @@ export const install = (
       const projectionByProgram = new WeakMap<WebGLProgram, ArrayLike<number>>()
       let programs = new WeakSet<WebGLProgram>()
       const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
+      const canvasOfTexture = new WeakMap<
+        WebGLTexture,
+        CanvasImageSource & { width: number; height: number }
+      >()
+      const tileOfPaintTexture = new WeakMap<WebGLTexture, TileCoord>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
       let activeProgram: WebGLProgram | null = null
@@ -1296,6 +1379,8 @@ export const install = (
             () => {
               if (this !== gl || texture === null || !textures.delete(texture)) return
               tileOfTexture.delete(texture)
+              canvasOfTexture.delete(texture)
+              tileOfPaintTexture.delete(texture)
               for (const [unit, bound] of texture2DByUnit) {
                 if (bound === texture) texture2DByUnit.set(unit, null)
               }
@@ -1315,9 +1400,30 @@ export const install = (
        * so a quad would be labelled `1051/672` while showing `1052/672`, and the tile we were asked
        * to draw on vanished from the list entirely.
        */
+      const isPageCanvasSource = (
+        source: unknown,
+      ): source is CanvasImageSource & { width: number; height: number } => {
+        if (typeof source !== 'object' || source === null) return false
+        const constructors = realm as unknown as Record<string, unknown>
+        return (
+          isPageInstance(source, 'HTMLCanvasElement', constructors) ||
+          isPageInstance(source, 'OffscreenCanvas', constructors)
+        )
+      }
+
       const attributeUpload = (target: number, source: unknown): void => {
         if (target !== gl.TEXTURE_2D) return
         const texture = texture2DByUnit.get(activeTextureUnit) ?? null
+        if (
+          texture !== null &&
+          isPageCanvasSource(source) &&
+          source.width === TILE_SIZE &&
+          source.height === TILE_SIZE
+        ) {
+          canvasOfTexture.set(texture, source)
+          tileOfTexture.delete(texture)
+          return
+        }
         if (
           texture === null ||
           !isPageInstance(source, 'ImageBitmap', realm as unknown as Record<string, unknown>)
@@ -1570,6 +1676,33 @@ export const install = (
         },
       }.clear
 
+      const matchPaintLayer = (
+        texture: WebGLTexture,
+        matrix: ArrayLike<number>,
+        canvas: HTMLCanvasElement,
+      ): void => {
+        if (!capturePixels) return
+        const source = canvasOfTexture.get(texture)
+        if (source === undefined) return
+        let tile = tileOfPaintTexture.get(texture)
+        if (tile === undefined) {
+          const quad = quadFromMatrix(matrix, { x: 0, y: 0 }, canvas)
+          if (quad === null) return
+          for (const known of pending) {
+            if (Math.abs(known.x - quad.x) > 0.5) continue
+            if (Math.abs(known.y - quad.y) > 0.5) continue
+            if (Math.abs(known.width - quad.width) > 0.5) continue
+            tile = known.tile
+            tileOfPaintTexture.set(texture, tile)
+            break
+          }
+          if (tile === undefined) return
+        }
+        if (!dirtyCanvases.has(source)) return
+        dirtyCanvases.delete(source)
+        capture(tile, source)
+      }
+
       const recordDraw = (drawCount: number): void => {
         // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
         // wplace tiles in it still reaches the listener. A default-framebuffer colour clear above
@@ -1599,6 +1732,7 @@ export const install = (
         }
         const tile = tileOfTexture.get(drawnTexture)
         if (tile === undefined) {
+          matchPaintLayer(drawnTexture, drawnProjection, this)
           count('draw:texture-not-a-known-tile')
           return
         }
