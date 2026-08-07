@@ -6,7 +6,7 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, log, warn } from './debug.js'
-import { installOverlayLayer, setNudge } from './gl/layer.js'
+import { installOverlayLayer } from './gl/layer.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
 import { onStateChange } from './state.js'
@@ -419,12 +419,6 @@ const main = (): void => {
               cellPixels: (lastFrame.quads[0]?.width ?? 0) / TILE_SIZE,
               tiles: lastFrame.quads.map((quad) => `${quad.tile.x}/${quad.tile.y}`),
             },
-      /** Shift every template by fractional canvas pixels for alignment diagnostics. */
-      nudge(x = 0, y = 0) {
-        const applied = setNudge(x, y)
-        redraw()
-        return `[wts] overlay nudged by ${applied.x}, ${applied.y} canvas px — __wts.nudge() to clear`
-      },
       mark(x?: number, y?: number) {
         marked = x === undefined || y === undefined ? null : { x, y }
         repaint()
