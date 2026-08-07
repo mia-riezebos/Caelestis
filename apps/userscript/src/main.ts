@@ -372,6 +372,16 @@ const main = (): void => {
     installDebugApi({
       /** The captured MapLibre Map, for poking at its style and layers from the console. */
       map: () => getMap(),
+      /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
+      quads: () =>
+        lastFrame === null
+          ? null
+          : {
+              count: lastFrame.quads.length,
+              canvas: `${lastFrame.canvas.width}x${lastFrame.canvas.height}`,
+              cellPixels: (lastFrame.quads[0]?.width ?? 0) / TILE_SIZE,
+              tiles: lastFrame.quads.map((quad) => `${quad.tile.x}/${quad.tile.y}`),
+            },
       mark(x?: number, y?: number) {
         marked = x === undefined || y === undefined ? null : { x, y }
         repaint()
