@@ -941,9 +941,6 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
  */
 const overridesOfTile = new Map<string, Map<number, number>>()
 
-/** The named preview canvases themselves, so a tile's can be found and re-read when it moves on. */
-const previewCanvases = new Map<object, TileCoord>()
-
 /**
  * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
  * coordinates.
@@ -953,6 +950,16 @@ const previewCanvases = new Map<object, TileCoord>()
  * are in the argument, so they are kept rather than recovered later by reading the tile back.
  */
 const queuedWrites = new WeakMap<object, number[]>()
+
+/** Register the tile identity that wplace exposes in a draft layer's style id. */
+export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
+  const known = tileOfPaintCanvas.get(canvas)
+  if (known !== undefined && known.x === tile.x && known.y === tile.y) return
+  tileOfPaintCanvas.set(canvas, tile)
+  count('paint:named a draft canvas')
+  const held = queuedWrites.get(canvas)
+  if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
+}
 
 type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
 const pixelListeners: PixelListener[] = []
@@ -1420,7 +1427,6 @@ export const install = (
         WebGLTexture,
         CanvasImageSource & { width: number; height: number }
       >()
-      const tileOfPaintTexture = new WeakMap<WebGLTexture, TileCoord>()
       const capturedAt = new WeakMap<WebGLTexture, number>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
@@ -1655,7 +1661,6 @@ export const install = (
               if (this !== gl || texture === null || !textures.delete(texture)) return
               tileOfTexture.delete(texture)
               canvasOfTexture.delete(texture)
-              tileOfPaintTexture.delete(texture)
               for (const [unit, bound] of texture2DByUnit) {
                 if (bound === texture) texture2DByUnit.set(unit, null)
               }
@@ -1951,50 +1956,18 @@ export const install = (
         },
       }.clear
 
-      const matchPaintLayer = (
-        texture: WebGLTexture,
-        matrix: ArrayLike<number>,
-        canvas: HTMLCanvasElement,
-      ): void => {
+      const refreshDraft = (texture: WebGLTexture): void => {
         if (!capturePixels) return
         const source = canvasOfTexture.get(texture)
         if (source === undefined) {
           count('paint:draw of a texture with no canvas')
           return
         }
-        let tile = tileOfPaintTexture.get(texture)
+        const tile = tileOfPaintCanvas.get(source)
         if (tile === undefined) {
-          const quad = quadFromMatrix(matrix, { x: 0, y: 0 }, canvas)
-          if (quad === null) {
-            count('paint:quad rejected')
-            return
-          }
-          const anchor = (pending.length > 0 ? pending : lastQuads)[0]
-          if (anchor === undefined) {
-            count('paint:no anchor tile to measure against')
-            return
-          }
-          if (Math.abs(anchor.width - quad.width) > 0.5) {
-            count('paint:preview is not at tile scale')
-            return
-          }
-          const stepX = (quad.x - anchor.x) / anchor.width
-          const stepY = (quad.y - anchor.y) / anchor.height
-          if (
-            Math.abs(stepX - Math.round(stepX)) > 0.05 ||
-            Math.abs(stepY - Math.round(stepY)) > 0.05
-          ) {
-            count('paint:preview is off the tile grid')
-            return
-          }
-          tile = { x: anchor.tile.x + Math.round(stepX), y: anchor.tile.y + Math.round(stepY) }
-          tileOfPaintTexture.set(texture, tile)
-          tileOfPaintCanvas.set(source, tile)
-          previewCanvases.set(source, tile)
-          log('texture', `named the draft layer for ${tile.x}/${tile.y}`)
+          count('paint:draw of an unnamed draft canvas')
+          return
         }
-        const held = queuedWrites.get(source)
-        if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(source)
         const stale = capturedAt.get(texture) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
         dirtyCanvases.delete(source)
@@ -2032,7 +2005,7 @@ export const install = (
         }
         const tile = tileOfTexture.get(drawnTexture)
         if (tile === undefined) {
-          matchPaintLayer(drawnTexture, drawnProjection, this)
+          refreshDraft(drawnTexture)
           count('draw:texture-not-a-known-tile')
           return
         }
