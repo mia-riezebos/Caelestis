@@ -9,6 +9,7 @@ import {
   setLocalVisible,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
+import { onlySelectedToggle } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
 
@@ -143,8 +144,9 @@ const buildMenu = (
   remove.appendChild(icon('trash', 'size-4'))
   remove.addEventListener('click', () => {
     void confirmDestructive({
-      title: `Delete \u201C${template?.name ?? 'this template'}\u201D?`,
-      body: 'This template will be removed from this browser.',
+      title: 'Delete template?',
+      body: `${template?.name ?? 'This template'} will be permanently removed.`,
+      note: 'It is stored in this browser only.',
       confirmLabel: 'Delete',
     }).then((yes) => {
       if (!yes) return
@@ -218,14 +220,17 @@ const buildMenu = (
     }),
   )
 
-  menu.appendChild(section('Colours'))
+  const coloursHeading = section('Colours')
+  coloursHeading.className = `${coloursHeading.className} flex items-center justify-between gap-2`
+  // The same "only what I am placing" switch as in settings, here too — reaching it should not mean
+  // opening the panel when this menu is already the thing you are looking at.
+  coloursHeading.appendChild(onlySelectedToggle(rerender))
+  menu.appendChild(coloursHeading)
   const hidden = new Set(appearance.hiddenColours)
+  const gridWrap = document.createElement('div')
+  gridWrap.className = 'wts-swatches'
   const grid = document.createElement('div')
-  Object.assign(grid.style, {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(1.1rem, 1fr))',
-    gap: '2px',
-  })
+  grid.className = 'wts-swatch-grid'
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
     const swatch = document.createElement('button')
@@ -244,7 +249,8 @@ const buildMenu = (
     })
     grid.appendChild(swatch)
   }
-  menu.appendChild(grid)
+  gridWrap.appendChild(grid)
+  menu.appendChild(gridWrap)
   return menu
 }
 
