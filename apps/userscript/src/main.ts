@@ -15,6 +15,7 @@ import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
 import { onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
+import { installColourPicker } from './wplace-picker.js'
 
 /**
  * Entry point.
@@ -152,6 +153,11 @@ const main = (): void => {
     watchPaintSelection()
     onPaintSelectionChange(repaint)
   })
+  // Middle-click picking, answered from the template when the template is what you can see.
+  step('colour picker', installColourPicker)
+  // Templates are drawn by the GL layer inside wplace's own canvas. Nothing of ours rasterises to a
+  // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
+  // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
   onFrame(() => renderOverlayControls(repaint))
   onTileFrame(draw)
