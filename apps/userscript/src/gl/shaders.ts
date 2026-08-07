@@ -88,12 +88,24 @@ void main() {
     vec2 rotated = mat2(c, -s, s, c) * local;
     vec2 point = rotated - u_stampOffset;
 
-    float half_ = u_stampSize * 0.5;
-    float radius = u_stampRadius * half_;
-    float distance = roundedBox(point, vec2(half_), radius);
     // One screen pixel expressed in cell units, so the edge is exactly one pixel wide however far
     // in or out the map is zoomed. This is where the resolution independence comes from.
     float pixel = fwidth(texel.x);
+
+    // Push the edge out by the anti-aliasing band when the stamp is meant to fill its cell.
+    //
+    // At exactly 1.0 the box edge lands *on* the cell edge, where the smoothstep is halfway — so
+    // every cell drew its border at 50% and two neighbours never summed to a solid one. That is the
+    // pale grid between pixels, and it reads as a seam wherever a hidden colour leaves a hole beside
+    // a drawn one.
+    //
+    // Growing it is free: the fragment already belongs to exactly one cell, so a stamp reaching past
+    // its own boundary is simply not sampled there. The band moves outside the cell, the edge inside
+    // it is solid, and a stamp asked to be smaller than its cell is untouched.
+    float outset = u_stampSize >= 1.0 ? pixel : 0.0;
+    float half_ = u_stampSize * 0.5 + outset;
+    float radius = u_stampRadius * (u_stampSize * 0.5);
+    float distance = roundedBox(point, vec2(half_), radius);
     coverage = 1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance);
     if (coverage <= 0.0) discard;
   }
