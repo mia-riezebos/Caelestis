@@ -21,7 +21,7 @@ import {
   uploadTemplate,
   upsertServer,
 } from '../state.js'
-import { APPEARANCE_CONTROLS } from '../templates/appearance.js'
+import { APPEARANCE_CONTROLS, UNPAINTED_LIMIT_CONTROL } from '../templates/appearance.js'
 import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
@@ -404,6 +404,39 @@ const select = (
   return wrap
 }
 
+/**
+ * A fraction, as a slider reading out in per cent.
+ *
+ * Sized to sit where a checkbox sits in a `settingRow`, so a switch and a limit line up as the pair
+ * they are rather than as two unrelated rows.
+ */
+const percentSlider = (value: number, onChange: (next: number) => void): HTMLElement => {
+  const wrap = document.createElement('div')
+  wrap.className = 'flex items-center gap-2'
+  wrap.style.flex = '0 0 auto'
+  const { min, max, step, format } = UNPAINTED_LIMIT_CONTROL
+  const input = document.createElement('input')
+  input.type = 'range'
+  input.className = 'range range-xs'
+  input.min = String(min)
+  input.max = String(max)
+  input.step = String(step)
+  input.value = String(value)
+  input.style.width = '7rem'
+  const readout = document.createElement('span')
+  readout.className = 'text-xs opacity-60'
+  readout.style.width = '2.5rem'
+  readout.style.textAlign = 'right'
+  readout.textContent = format(value)
+  input.addEventListener('input', () => {
+    const next = Number(input.value)
+    readout.textContent = format(next)
+    onChange(next)
+  })
+  wrap.append(input, readout)
+  return wrap
+}
+
 const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
   const el = document.createElement('input')
   el.type = 'checkbox'
@@ -613,6 +646,15 @@ const appearanceView = (): HTMLElement => {
       'Count unpainted as mismatched',
       'Otherwise only pixels painted the wrong colour are marked',
       checkbox(state.appearance.markUnpainted, (next) => setAppearance({ markUnpainted: next })),
+    ),
+  )
+  view.appendChild(
+    settingRow(
+      'Only once this much is left',
+      'Above this, an unbuilt template is nothing but crosshairs and says nothing',
+      percentSlider(state.appearance.unpaintedLimit, (next) =>
+        setAppearance({ unpaintedLimit: next }),
+      ),
     ),
   )
 

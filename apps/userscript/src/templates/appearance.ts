@@ -71,6 +71,36 @@ export interface Appearance {
    * are actually *wrong*. Finding those is the reason this feature exists.
    */
   readonly markUnpainted: boolean
+  /**
+   * How much of a template may still be unpainted before the above stops applying.
+   *
+   * A fraction of the pixels the template asserts a colour for, and the reason the switch above is
+   * usable at all. Turning it on over a template nobody has started is a marker on every pixel of it,
+   * which is a solid wall of crosshairs that says nothing — the answer is already visible, in that
+   * none of it is built. The same switch on a template with eleven pixels left is exactly the map of
+   * what is left to do.
+   *
+   * So the switch means "mark the remainder once there is little enough of it to be a to-do list",
+   * and this is where little enough falls.
+   */
+  readonly unpaintedLimit: number
+}
+
+/**
+ * The most of a template that may be unpainted and still be marked.
+ *
+ * Not a setting. Past a fifth of a template the marks stop being a to-do list and become the shape
+ * of the template redrawn in crosshairs, and every value beyond this one is that with more of it.
+ */
+export const UNPAINTED_LIMIT_MAX = 0.2
+
+/** The limit as a control, so the settings page and the per-overlay menu read the same. */
+export const UNPAINTED_LIMIT_CONTROL = {
+  label: 'Left to do',
+  min: 0,
+  max: UNPAINTED_LIMIT_MAX,
+  step: 0.005,
+  format: (value: number): string => `${(value * 100).toFixed(1)}%`,
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -84,6 +114,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   onlySelectedColour: false,
   markMismatch: false,
   markUnpainted: false,
+  unpaintedLimit: 0.05,
 }
 
 /**
@@ -119,6 +150,12 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     onlySelectedColour: source.onlySelectedColour === true,
     markMismatch: source.markMismatch === true,
     markUnpainted: source.markUnpainted === true,
+    unpaintedLimit: number(
+      'unpaintedLimit',
+      DEFAULT_APPEARANCE.unpaintedLimit,
+      0,
+      UNPAINTED_LIMIT_MAX,
+    ),
   }
 }
 
