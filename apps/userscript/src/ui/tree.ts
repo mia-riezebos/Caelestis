@@ -2,9 +2,11 @@ import { cacheServer, loadServerCache } from '../server-cache.js'
 import {
   type ConnectedServer,
   getState,
+  isScopeVisible,
   type LocalFolder,
   listNodes,
   setLocalFolderVisible,
+  setScopeVisible,
   setState,
   type TreeNode,
 } from '../state.js'
@@ -576,6 +578,13 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         container: true,
         siblings: ordered,
         rerender,
+        // A category is a group like a folder is: switching it off takes everything under it off
+        // the canvas, and leaves every row inside saying exactly what it said before.
+        checked: isScopeVisible(key),
+        onToggleChecked: (on) => {
+          setScopeVisible(key, on)
+          rerender()
+        },
         onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
         onRename: canEdit ? (value) => callbacks.onRename(target, value) : undefined,
         actions: canEdit
