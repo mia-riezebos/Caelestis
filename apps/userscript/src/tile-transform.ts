@@ -1,4 +1,4 @@
-import { parseTileKey, TILE_SIZE, type TileCoord, tileKey } from '@wts/shared'
+import { parseTileKey, TILE_SIZE, type TileCoord, tileKey, WPLACE_PALETTE } from '@wts/shared'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
@@ -804,6 +804,59 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
   return installValueHook(realm, 'Blob', Wrapped)
 }
 
+const pixelsOfTile = new Map<string, Uint8Array>()
+let capturePixels = false
+
+/** Index meaning "nobody has painted here". Distinct from every palette entry. */
+export const UNPAINTED = 255
+
+export const captureTilePixels = (on: boolean): void => {
+  if (capturePixels === on) return
+  capturePixels = on
+  if (!on) pixelsOfTile.clear()
+  log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
+}
+
+export const tilePixels = (tile: TileCoord): Uint8Array | null =>
+  pixelsOfTile.get(tileKey(tile)) ?? null
+
+let rgbToIndex: Uint8Array | null = null
+
+const indexTable = (): Uint8Array => {
+  if (rgbToIndex !== null) return rgbToIndex
+  const table = new Uint8Array(1 << 24).fill(UNPAINTED)
+  for (const colour of WPLACE_PALETTE) {
+    const [r, g, b] = colour.rgb
+    table[(r << 16) | (g << 8) | b] = colour.index
+  }
+  rgbToIndex = table
+  return table
+}
+
+const capture = (tile: TileCoord, bitmap: ImageBitmap): void => {
+  if (!capturePixels || bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) return
+  try {
+    const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (context === null) return
+    context.drawImage(bitmap, 0, 0)
+    const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
+    const table = indexTable()
+    const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
+    for (let i = 0, pixel = 0; pixel < indices.length; i += 4, pixel++) {
+      indices[pixel] =
+        data[i + 3] === 0
+          ? UNPAINTED
+          : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
+            UNPAINTED)
+    }
+    pixelsOfTile.set(tileKey(tile), indices)
+    count('pixels:captured')
+  } catch (error) {
+    warn('bitmap', 'could not read tile pixels', String(error))
+  }
+}
+
 const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const nativeCreateImageBitmap = realm.createImageBitmap
   const wrappedCreateImageBitmap = {
@@ -840,6 +893,7 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
           if (sourceBlob !== undefined && sourceBytes !== undefined) {
             if (exact !== undefined) {
               tileOfBitmap.set(bitmap, exact)
+              capture(exact, bitmap)
               log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: sourceBytes })
               return bitmap
             }
@@ -847,6 +901,7 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
             const tile = takeBySizeForBitmap(sourceBytes, bitmap.width, bitmap.height)
             if (tile !== undefined) {
               tileOfBitmap.set(bitmap, tile)
+              capture(tile, bitmap)
               log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: sourceBytes })
             } else if (bitmap.width === 1000 && bitmap.height === 1000) {
               // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
