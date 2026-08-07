@@ -65,6 +65,50 @@ export const beginMismatchFrame = (): void => {
 }
 
 /**
+ * Answers a frame asked for and could not afford, to be redone when the page is idle.
+ *
+ * A tile that has just been re-fetched needs a full rescan, and waiting for a frame to pay for it
+ * means the work happens during the frame — competing with the map for the same milliseconds, at
+ * exactly the moment someone is panning. Idle time is free, and until it arrives the previous answer
+ * is still on screen.
+ */
+const stale = new Set<string>()
+let idleScheduled = false
+
+type IdleWindow = typeof globalThis & {
+  requestIdleCallback?: (callback: (deadline: { timeRemaining: () => number }) => void) => void
+}
+
+const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
+  idleScheduled = false
+  // Borrow the frame budget: the same guard, spending idle time instead of a frame's.
+  scanDeadline = performance.now() + Math.max(deadline.timeRemaining(), 1)
+  for (const cacheKey of [...stale]) {
+    if (performance.now() >= scanDeadline) break
+    const [id, coords] = cacheKey.split('|')
+    const [x, y] = (coords ?? '').split('/').map(Number)
+    const template = localTemplates().find((candidate) => candidate.id === id)
+    if (template === undefined || x === undefined || y === undefined) {
+      stale.delete(cacheKey)
+      continue
+    }
+    mismatchesIn(template, { x, y })
+    count('mismatch:rescanned while idle')
+  }
+  scanDeadline = 0
+  if (stale.size > 0) scheduleIdleScan()
+  for (const listener of changeListeners) listener()
+}
+
+const scheduleIdleScan = (): void => {
+  if (idleScheduled) return
+  const idle = (globalThis as IdleWindow).requestIdleCallback
+  if (idle === undefined) return
+  idleScheduled = true
+  idle(runIdleScan)
+}
+
+/**
  * Whether anything currently wants to know what disagrees.
  *
  * Kept here rather than worked out at draw time so it can be answered before the first frame. The
@@ -104,9 +148,26 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   if (existing !== undefined && existing.source === pixels && existing.key === key) {
     return existing.result
   }
-  // Out of budget: answer next frame rather than block this one. A stale result would be worse than
-  // none, since it would put crosshairs on pixels that have since been fixed.
-  if (performance.now() >= scanDeadline) return null
+
+  /**
+   * Out of budget: keep showing the last answer rather than none.
+   *
+   * The old answer is out of date by exactly the pixels that have changed since, and those are
+   * patched into it the moment they change — so it is not stale in the way that matters, and a
+   * recompute is a background refresh rather than a correction. Returning null instead meant every
+   * marker on a tile blinked out for as long as the rescan was queued, which reads as the feature
+   * being broken rather than busy.
+   *
+   * Null is kept for the one case it belongs to: no answer has ever been computed for this tile.
+   */
+  if (performance.now() >= scanDeadline) {
+    stale.add(cacheKey)
+    scheduleIdleScan()
+    if (existing === undefined) return null
+    count('mismatch:showed the previous answer while busy')
+    return existing.result
+  }
+  stale.delete(cacheKey)
 
   const tileLeft = tile.x * TILE_SIZE
   const tileTop = tile.y * TILE_SIZE
