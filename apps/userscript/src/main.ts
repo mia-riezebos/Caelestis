@@ -6,7 +6,7 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, log, warn } from './debug.js'
-import { installMapCapture } from './map-handle.js'
+import { getMap, installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
 import { onStateChange } from './state.js'
 import { type Appearance, MIN_CELL_FOR_SHAPE, stampMask } from './templates/appearance.js'
@@ -370,6 +370,8 @@ const main = (): void => {
   step('map capture', installMapCapture)
   step('debug API', () => {
     installDebugApi({
+      /** The captured MapLibre Map, for poking at its style and layers from the console. */
+      map: () => getMap(),
       mark(x?: number, y?: number) {
         marked = x === undefined || y === undefined ? null : { x, y }
         repaint()

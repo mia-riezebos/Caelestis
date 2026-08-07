@@ -36,13 +36,65 @@ const presetIndices = (preset: ColourPresetId, owned: ReadonlySet<number> | null
   }
 }
 
-const applyPreset = (preset: ColourPresetId): void => {
+/** The hidden set a preset amounts to: everything it does not turn on. */
+export const hiddenForPreset = (preset: ColourPresetId): number[] => {
   const on = new Set(presetIndices(preset, ownedColours()))
   const hidden: number[] = []
   for (let index = 0; index < PALETTE_SIZE; index++) {
     if (index !== TRANSPARENT_INDEX && !on.has(index)) hidden.push(index)
   }
-  setState({ hiddenColours: hidden })
+  return hidden
+}
+
+/** The settings pane indents its rows; the overlay menu does not. Only the wrapper differs. */
+const withPadding = (element: HTMLElement): HTMLElement => {
+  const wrap = document.createElement('div')
+  wrap.className = 'px-3 pb-2'
+  wrap.appendChild(element)
+  return wrap
+}
+
+const PRESETS: ReadonlyArray<readonly [ColourPresetId, string]> = [
+  ['all', 'All'],
+  ['free', 'Free'],
+  ['premium', 'Premium'],
+  ['owned', 'Owned'],
+]
+
+/**
+ * The preset buttons, plus the follow-the-selection toggle.
+ *
+ * Shared by the settings pane and each overlay's own menu. They differ only in where the answer is
+ * written — one sets the global filter, the other one overlay's — so the buttons themselves have no
+ * business knowing which is which.
+ */
+export const colourPresets = (
+  apply: (hidden: number[]) => void,
+  rerender: () => void,
+): HTMLElement => {
+  const presets = document.createElement('div')
+  // Wraps: the panel is user-resizable and a fifth control was already enough to push the last one
+  // off the edge at the default width.
+  presets.className = 'flex flex-wrap gap-1'
+  // The labels are the labels. Nothing here needs a sentence.
+  for (const [id, label] of PRESETS) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'btn btn-xs'
+    button.textContent = label
+    if (id === 'owned' && ownedColours() === null) {
+      // Only disabled when we genuinely could not ask — signed out, or wplace refused.
+      button.classList.add('btn-disabled')
+      button.title = 'Sign in to wplace so it can tell us which colours you own'
+    }
+    button.addEventListener('click', () => {
+      apply(hiddenForPreset(id))
+      rerender()
+    })
+    presets.appendChild(button)
+  }
+  presets.appendChild(onlySelectedToggle(rerender))
+  return presets
 }
 
 /**
@@ -58,14 +110,17 @@ export const onlySelectedToggle = (rerender: () => void): HTMLButtonElement => {
   const button = document.createElement('button')
   button.type = 'button'
   button.className = on ? 'btn btn-xs btn-active' : 'btn btn-xs'
-  button.appendChild(icon('brush', 'size-4'))
+  // A palette, because that is what wplace puts on the same idea — their own control for this reads
+  // "Highlight selected color" behind a palette icon. Borrowing the symbol means someone who has
+  // used theirs recognises ours without reading anything.
+  button.appendChild(icon('palette', 'size-4'))
   const selected = selectedColour()
   button.title = !on
-    ? 'Show only the colour selected in wplace'
+    ? 'Highlight the selected colour'
     : isPaintOpen() && selected !== null
-      ? `Showing only ${WPLACE_PALETTE[selected]?.name ?? 'the selected colour'}`
-      : 'Showing only the selected colour — open wplace’s paint drawer to pick one'
-  button.setAttribute('aria-label', 'Show only the selected colour')
+      ? `Highlighting ${WPLACE_PALETTE[selected]?.name ?? 'the selected colour'}`
+      : 'Highlighting the selected colour — open wplace’s paint drawer to pick one'
+  button.setAttribute('aria-label', 'Highlight the selected colour')
   button.setAttribute('aria-pressed', String(on))
   button.addEventListener('click', () => {
     setState({ onlySelectedColour: !on })
@@ -84,36 +139,15 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
   const hidden = new Set(globalHiddenColours())
   const driven = getState().onlySelectedColour && isPaintOpen()
 
-  const presets = document.createElement('div')
-  // Wraps: the panel is user-resizable and a fifth preset was already enough to push the last one
-  // off the edge at the default width.
-  presets.className = 'flex flex-wrap gap-1 px-3 pb-2'
-  // The labels are the labels. Nothing here needs a sentence.
-  for (const [id, label] of [
-    ['all', 'All'],
-    ['free', 'Free'],
-    ['premium', 'Premium'],
-    ['owned', 'Owned'],
-  ] as ReadonlyArray<readonly [ColourPresetId, string]>) {
-    const button = document.createElement('button')
-    button.className = 'btn btn-xs'
-    button.textContent = label
-    if (id === 'owned' && ownedColours() === null) {
-      // Only disabled when we genuinely could not ask — signed out, or wplace refused.
-      button.classList.add('btn-disabled')
-      button.title = 'Sign in to wplace so it can tell us which colours you own'
-    }
-    button.addEventListener('click', () => {
-      // Picking a preset is an explicit statement about which colours to show, so it takes the
-      // wheel back from the follow-the-selection mode rather than being silently overridden by it.
-      applyPreset(id)
-      setState({ onlySelectedColour: false })
-      rerender()
-    })
-    presets.appendChild(button)
-  }
-  presets.appendChild(onlySelectedToggle(rerender))
-  wrap.appendChild(presets)
+  wrap.appendChild(
+    withPadding(
+      colourPresets((next) => {
+        // Picking a preset is an explicit statement about which colours to show, so it takes the
+        // wheel back from the follow-the-selection mode rather than being silently overridden by it.
+        setState({ hiddenColours: next, onlySelectedColour: false })
+      }, rerender),
+    ),
+  )
 
   const gridWrap = document.createElement('div')
   gridWrap.className = 'wts-swatches px-3 pb-2'

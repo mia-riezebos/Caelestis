@@ -84,23 +84,34 @@ const CSS = `
    auto-fill with minmax gives whatever column count happens to fit, so the palette reflowed into
    ragged counts like 13 or 17 and the rows stopped lining up into anything readable. Powers of two
    keep every row a clean subdivision of the one above at any panel width, and the panel is
-   user-resizable, so this has to hold continuously rather than at three breakpoints. */
+   user-resizable, so this has to hold continuously. */
 .wts-swatches {
   container-type: inline-size;
 }
 .wts-swatch-grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 0.25rem;
 }
-@container (min-width: 15rem) {
+/* Each step is the width at which that many columns still leaves a swatch of at least ~1.4rem,
+   allowing for the gaps: N * 1.4 + (N - 1) * 0.25.
+   Stepping on available width alone let 32 columns pack into 30rem, which is a 0.69rem swatch —
+   a colour you cannot identify and a target you cannot reliably hit. A grid of powers of two is
+   only worth having while each cell is still a swatch. */
+@container (min-width: 12rem) {
+  .wts-swatch-grid { grid-template-columns: repeat(8, 1fr); }
+}
+@container (min-width: 26rem) {
   .wts-swatch-grid { grid-template-columns: repeat(16, 1fr); }
 }
-@container (min-width: 30rem) {
+@container (min-width: 52rem) {
   .wts-swatch-grid { grid-template-columns: repeat(32, 1fr); }
 }
 .wts-swatch {
   aspect-ratio: 1;
+  /* A floor as well as a step, so a container narrower than the smallest step overflows rather than
+     grinding the swatches down to nothing. */
+  min-width: 1.25rem;
   border-radius: 0.25rem;
   border: 1px solid rgba(0, 0, 0, 0.25);
   cursor: pointer;
