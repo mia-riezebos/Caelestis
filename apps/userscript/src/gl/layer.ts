@@ -4,6 +4,7 @@ import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
 import { effectiveHiddenColours } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
+import { isDrawingTiles } from '../tile-transform.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
 /**
@@ -40,6 +41,24 @@ interface TemplateGpu {
 
 /** Four vertices of clip xyzw + uv, rewritten per template per frame. */
 const corners = new Float32Array(4 * 6)
+
+/**
+ * A debug nudge, in canvas pixels, applied to every template's extent.
+ *
+ * Set from the console with `__wts.nudge(dx, dy)`. It exists to *measure* a suspected offset between
+ * our pixel grid and wplace's rather than argue about where one might come from: a sub-pixel
+ * disagreement is invisible wherever the overlay draws solidly, because our own pixels tile with
+ * each other perfectly, and only shows at a hole where their canvas is visible underneath. Nudging
+ * until the seam disappears reads the offset straight off the screen.
+ */
+let nudgeX = 0
+let nudgeY = 0
+
+export const setNudge = (x: number, y: number): { x: number; y: number } => {
+  nudgeX = x
+  nudgeY = y
+  return { x: nudgeX, y: nudgeY }
+}
 
 /**
  * Project a Mercator point to clip space in double precision.
@@ -243,6 +262,9 @@ export const overlayLayer = {
 
   render(gl: WebGL2RenderingContext, args: unknown): void {
     if (program === null || vao === null) return
+    // Stop where wplace stops. A layer renders every frame whatever the zoom, so without this the
+    // overlay stayed on screen past the point their canvas disappears — annotating nothing.
+    if (!isDrawingTiles()) return
     const matrix = matrixOf(args)
     if (matrix === null) return
 
@@ -291,10 +313,10 @@ export const overlayLayer = {
       gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
       // Corners projected here, in double, then handed over as clip space. See `project`.
-      const x0 = template.originX / CANVAS_PIXELS
-      const y0 = template.originY / CANVAS_PIXELS
-      const x1 = (template.originX + template.width) / CANVAS_PIXELS
-      const y1 = (template.originY + template.height) / CANVAS_PIXELS
+      const x0 = (template.originX + nudgeX) / CANVAS_PIXELS
+      const y0 = (template.originY + nudgeY) / CANVAS_PIXELS
+      const x1 = (template.originX + nudgeX + template.width) / CANVAS_PIXELS
+      const y1 = (template.originY + nudgeY + template.height) / CANVAS_PIXELS
       // Strip order: top-left, top-right, bottom-left, bottom-right.
       project(matrix, x0, y0, corners, 0)
       corners[4] = 0
