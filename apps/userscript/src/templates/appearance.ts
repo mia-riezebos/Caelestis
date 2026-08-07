@@ -53,6 +53,24 @@ export interface Appearance {
    * the union rule again, one level up — the overlay would stop being able to say what it draws.
    */
   readonly onlySelectedColour: boolean
+  /**
+   * Mark every pixel the canvas disagrees with.
+   *
+   * Not called "enhance", which is what the scripts this borrows from call it and which says nothing
+   * about what it does. It marks; the thing it draws is a marker.
+   *
+   * Only pixels this overlay is actually drawing can disagree: a filtered colour is one the user has
+   * said to stop showing, and the wildcard index asserts no colour at all, so neither can be wrong.
+   */
+  readonly markMismatch: boolean
+  /**
+   * Count "nothing placed here yet" as a disagreement.
+   *
+   * Off by default, and separate for a reason: on a template being worked through, everything unbuilt
+   * is unpainted, so folding it in marks the entire remainder and buries the handful of pixels that
+   * are actually *wrong*. Finding those is the reason this feature exists.
+   */
+  readonly markUnpainted: boolean
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -64,6 +82,8 @@ export const DEFAULT_APPEARANCE: Appearance = {
   opacity: 1,
   hiddenColours: [],
   onlySelectedColour: false,
+  markMismatch: false,
+  markUnpainted: false,
 }
 
 /**
@@ -97,6 +117,8 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     opacity: number('opacity', DEFAULT_APPEARANCE.opacity, 0.05, 1),
     hiddenColours: hidden,
     onlySelectedColour: source.onlySelectedColour === true,
+    markMismatch: source.markMismatch === true,
+    markUnpainted: source.markUnpainted === true,
   }
 }
 

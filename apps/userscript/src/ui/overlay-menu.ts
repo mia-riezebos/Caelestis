@@ -302,6 +302,26 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     )
   }
 
+  overrides.appendChild(section('Mismatches'))
+  for (const [key, label] of [
+    ['markMismatch', 'Mark mismatched'],
+    ['markUnpainted', 'Count unpainted'],
+  ] as const) {
+    const row = document.createElement('label')
+    row.className = 'flex items-center gap-2 text-xs font-normal'
+    row.style.textTransform = 'none'
+    row.style.letterSpacing = 'normal'
+    const box = document.createElement('input')
+    box.type = 'checkbox'
+    box.className = 'checkbox checkbox-xs'
+    box.checked = current()[key]
+    box.addEventListener('change', () => update({ [key]: box.checked }))
+    const text = document.createElement('span')
+    text.textContent = label
+    row.append(box, text)
+    overrides.appendChild(row)
+  }
+
   overrides.appendChild(section('Colours'))
 
   const gridWrap = document.createElement('div')

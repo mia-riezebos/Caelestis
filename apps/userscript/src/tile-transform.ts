@@ -1,4 +1,4 @@
-import { parseTileKey, TILE_SIZE, type TileCoord } from '@wts/shared'
+import { parseTileKey, TILE_SIZE, type TileCoord, tileKey } from '@wts/shared'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
@@ -541,6 +541,20 @@ const emit = (quads: readonly TileQuad[]): void => {
     }
   }
 }
+
+/**
+ * The texture wplace last drew each tile from, keyed by `tileKey`.
+ *
+ * Not a WeakMap on purpose — this is the reverse lookup, from a tile we care about to the GPU copy
+ * of its pixels. Entries go stale when MapLibre recycles a texture, which is harmless: the value is
+ * only ever read during a frame in which that tile was drawn, and drawing it rewrites the entry
+ * first.
+ */
+const textureOfTile = new Map<string, WebGLTexture>()
+
+/** The GPU copy of a tile's placed pixels, if wplace has drawn that tile. */
+export const textureForTile = (tile: TileCoord): WebGLTexture | null =>
+  textureOfTile.get(tileKey(tile)) ?? null
 
 let lastQuads: readonly TileQuad[] = []
 
@@ -1534,6 +1548,7 @@ export const install = (
           return
         }
         frameTileDraws++
+        textureOfTile.set(tileKey(tile), drawnTexture)
         const quad = quadFromMatrix(drawnProjection, tile, this)
         if (quad !== null) pending.push(quad)
       }
