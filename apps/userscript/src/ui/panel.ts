@@ -29,6 +29,7 @@ import {
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { coloursSection } from './colours.js'
+import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
@@ -665,50 +666,22 @@ const applyRename = async (
 }
 
 /**
- * Ask before destroying something.
- *
  * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
- * client. The confirm names the thing rather than saying "are you sure", so the answer does not
- * depend on remembering what was right-clicked.
+ * client, so it always asks first.
  */
-const confirmDestructive = (message: string): Promise<boolean> =>
-  new Promise((resolve) => {
-    const panel = document.getElementById(PANEL_ID)
-    if (panel === null) {
-      resolve(false)
-      return
-    }
-    panel.querySelector('[data-wts-confirm]')?.remove()
-    const box = document.createElement('div')
-    box.setAttribute('data-wts-confirm', '')
-    box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
-    Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
-    const text = document.createElement('span')
-    text.textContent = message
-    const buttons = document.createElement('div')
-    buttons.className = 'flex gap-2 justify-end'
-    const cancel = document.createElement('button')
-    cancel.className = 'btn btn-xs btn-ghost'
-    cancel.textContent = 'Cancel'
-    const confirm = document.createElement('button')
-    confirm.className = 'btn btn-xs btn-error'
-    confirm.textContent = 'Delete'
-    const finish = (answer: boolean): void => {
-      box.remove()
-      resolve(answer)
-    }
-    cancel.addEventListener('click', () => finish(false))
-    confirm.addEventListener('click', () => finish(true))
-    buttons.append(cancel, confirm)
-    box.append(text, buttons)
-    panel.appendChild(box)
-    confirm.focus()
+const askToDelete = (name: string, body: string): Promise<boolean> =>
+  confirmDestructive({
+    title: `Delete “${name}”?`,
+    body,
+    confirmLabel: 'Delete',
   })
 
 const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
+    if (!(await askToDelete(target.name, 'This template will be removed from this browser.'))) {
+      return
+    }
     removeLocalTemplate(templateId)
     rerender()
     return
@@ -717,7 +690,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     toast('Nothing to delete here yet.', 'warning')
     return
   }
-  if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
+  if (!(await askToDelete(target.name, 'This cannot be undone.'))) return
   const result = await deleteNodeOnServer(target.server, target.nodeId)
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)
