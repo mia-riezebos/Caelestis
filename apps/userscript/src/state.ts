@@ -95,6 +95,15 @@ export interface State {
   readonly onlySelectedColour: boolean
   readonly localFolders: readonly LocalFolder[]
   /**
+   * Categories switched off wholesale, by tree key: `local`, or `server:<url>`.
+   *
+   * The same rule as a folder, one level up. A category is the outermost group, so turning it off
+   * takes everything under it off the canvas without editing any of it — and turning it back on
+   * restores exactly what was there. Kept as the hidden set rather than a flag per server so a
+   * server that is added later starts visible without needing a migration.
+   */
+  readonly hiddenScopes: readonly string[]
+  /**
    * How overlays are drawn unless they say otherwise.
    *
    * A default rather than an override: a template that has never had its own appearance touched
@@ -116,6 +125,7 @@ const DEFAULT_STATE: State = {
   hiddenColours: [],
   onlySelectedColour: false,
   localFolders: [],
+  hiddenScopes: [],
   appearance: DEFAULT_APPEARANCE,
   reportPaints: false,
   shareTiles: false,
@@ -197,6 +207,17 @@ export const createLocalFolder = (parentId: string | null, name: string): LocalF
   return folder
 }
 
+/** Whether a whole category draws. Unknown keys are visible, so anything new starts on. */
+export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)
+
+export const setScopeVisible = (key: string, visible: boolean): void => {
+  const hidden = getState().hiddenScopes
+  if (visible === !hidden.includes(key)) return
+  setState({
+    hiddenScopes: visible ? hidden.filter((candidate) => candidate !== key) : [...hidden, key],
+  })
+}
+
 export const setLocalFolderVisible = (id: string, visible: boolean): void => {
   setState({
     localFolders: getState().localFolders.map((folder) =>
@@ -212,6 +233,8 @@ export const setLocalFolderVisible = (id: string, visible: boolean): void => {
  * even though those rows still say they are visible — they are, within a group that is not.
  */
 export const localFolderChainVisible = (folderId: string | null): boolean => {
+  // The Local category itself is the outermost group in the chain.
+  if (!isScopeVisible('local')) return false
   const folders = getState().localFolders
   let walk = folderId
   const seen = new Set<string>()
