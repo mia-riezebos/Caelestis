@@ -542,11 +542,29 @@ const emit = (quads: readonly TileQuad[]): void => {
   }
 }
 
+let lastQuads: readonly TileQuad[] = []
+
+/**
+ * Where wplace is drawing each tile *right now*, in canvas device pixels.
+ *
+ * This is the frame currently being built, not the last one that finished. Their raster layer draws
+ * before ours in the same frame, so by the time anything in the layer stack below `pixel-hover`
+ * renders, every tile quad for this frame has already been recorded.
+ *
+ * Anything drawing over their tiles wants these rather than a projection of its own. MapLibre snaps
+ * raster tiles to whole device pixels when the map is still — `align = !painter.options.moving` —
+ * and does not snap while it moves, so a separately projected overlay agrees during a pan and drifts
+ * a fraction of a pixel the instant it settles. Taking the placement from their own draw calls makes
+ * that unknowable and irrelevant: we land where they landed, aligned or not.
+ */
+export const currentQuads = (): readonly TileQuad[] => (pending.length > 0 ? pending : lastQuads)
+
 const flush = (): void => {
   scheduled = false
   if (mapCanvas === null) return
   const quads = pending
   pending = []
+  if (quads.length > 0) lastQuads = quads
 
   log(
     'frame',

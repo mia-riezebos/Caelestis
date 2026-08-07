@@ -4,7 +4,7 @@ import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
 import { effectiveHiddenColours } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
-import { isDrawingTiles } from '../tile-transform.js'
+import { currentQuads, isDrawingTiles } from '../tile-transform.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
 /**
@@ -16,19 +16,22 @@ import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
  *
  * It also removes an entire class of bug rather than fixing it. Every seam, drift and half-pixel
  * fringe came from rasterising into our own screen-space canvas and then trying to make that grid
- * agree with theirs. Here there is one grid: we draw with MapLibre's own matrix, so our pixels are
- * theirs by construction and cannot disagree.
+ * agree with theirs. Here there is one grid, and we do not re-derive it.
  *
- * **The whole canvas is one square of Web Mercator.** wplace's world is 2048 tiles of 1000 pixels,
- * so a template's extent in mercator is just its pixel coordinates over that. One quad per template,
- * whatever its size — no tiling in the render path at all.
+ * **Positions come from their tiles, not from a projection of our own.** One quad per wplace tile a
+ * template covers, placed on the on-screen rect that tile was actually drawn at this frame. Nothing
+ * here projects anything, which is what keeps our pixel grid on theirs: MapLibre snaps raster tiles
+ * to whole device pixels once the map stops moving and does not snap while it moves, so an overlay
+ * that projects independently agrees during a pan and disagrees by a fraction of a pixel the moment
+ * it settles. That fraction is a one-device-pixel seam wherever their canvas shows through.
+ *
+ * Tiling is also the culling: wplace only draws the tiles in view, so intersecting a template
+ * against them is the entire visibility test.
  */
 
 const LAYER_ID = 'wts-overlay'
 /** Their marker layer. Ours goes immediately before it. */
 const BEFORE_LAYER = 'pixel-hover'
-/** wplace's canvas is 2048 tiles across, and that spans the whole Mercator square. */
-const CANVAS_PIXELS = TILE_SIZE * 2048
 
 interface TemplateGpu {
   readonly indices: WebGLTexture
@@ -50,26 +53,45 @@ interface TemplateGpu {
 const corners = new Float32Array(4 * 6)
 
 /**
- * Project a Mercator point to clip space in double precision.
+ * A debug nudge, in canvas pixels, applied to every template's extent.
  *
- * Column-major, as WebGL stores matrices. The whole point of doing this here rather than in the
- * vertex shader is that the Mercator input stays a double: in float32 its neighbours are ~1.2e-8
- * apart, and the matrix scales by tens of millions at high zoom, so that gap becomes half a pixel
- * or more on screen — and lands differently every frame as the map moves, which is what made pixels
- * jump while panning. Clip space is -1..1, where float32 has precision to spare.
+ * Set from the console with `__wts.nudge(dx, dy)`. It exists to *measure* a suspected offset between
+ * our pixel grid and wplace's rather than argue about where one might come from: a sub-pixel
+ * disagreement is invisible wherever the overlay draws solidly, because our own pixels tile with
+ * each other perfectly, and only shows at a hole where their canvas is visible underneath. Nudging
+ * until the seam disappears reads the offset straight off the screen.
  */
-const project = (
-  matrix: Float32Array | number[],
-  x: number,
-  y: number,
+let nudgeX = 0
+let nudgeY = 0
+
+export const setNudge = (x: number, y: number): { x: number; y: number } => {
+  nudgeX = x
+  nudgeY = y
+  return { x: nudgeX, y: nudgeY }
+}
+
+/**
+ * A corner, from a device-pixel position on the canvas straight to clip space.
+ *
+ * There is no projection here on purpose. The positions come from wplace's own tile draws, so the
+ * only thing left is the viewport mapping, which is exact.
+ */
+const corner = (
+  deviceX: number,
+  deviceY: number,
+  bufferWidth: number,
+  bufferHeight: number,
+  u: number,
+  v: number,
   into: Float32Array,
   offset: number,
 ): void => {
-  const m = matrix
-  into[offset] = (m[0] ?? 0) * x + (m[4] ?? 0) * y + (m[12] ?? 0)
-  into[offset + 1] = (m[1] ?? 0) * x + (m[5] ?? 0) * y + (m[13] ?? 0)
-  into[offset + 2] = (m[2] ?? 0) * x + (m[6] ?? 0) * y + (m[14] ?? 0)
-  into[offset + 3] = (m[3] ?? 0) * x + (m[7] ?? 0) * y + (m[15] ?? 0)
+  into[offset] = (2 * deviceX) / bufferWidth - 1
+  into[offset + 1] = 1 - (2 * deviceY) / bufferHeight
+  into[offset + 2] = 0
+  into[offset + 3] = 1
+  into[offset + 4] = u
+  into[offset + 5] = v
 }
 
 let program: WebGLProgram | null = null
@@ -122,7 +144,7 @@ const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation
  * Filtering a colour is then a 256-byte upload instead of a rebuilt bitmap. The wildcard index is
  * always alpha 0, which is also how a template pixel that requires nothing draws nothing.
  */
-const buildPalette = (gl: WebGL2RenderingContext, hidden: readonly number[]): Uint8Array => {
+const buildPalette = (hidden: readonly number[]): Uint8Array => {
   const off = new Set(hidden)
   const data = new Uint8Array(PALETTE_SIZE * 4)
   for (let index = 0; index < PALETTE_SIZE; index++) {
@@ -151,7 +173,7 @@ const uploadPalette = (
     0,
     gl.RGBA,
     gl.UNSIGNED_BYTE,
-    buildPalette(gl, hidden),
+    buildPalette(hidden),
   )
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
@@ -201,17 +223,6 @@ const collect = (gl: WebGL2RenderingContext, live: ReadonlySet<string>): void =>
   for (const id of [...gpu.keys()]) if (!live.has(id)) release(gl, id)
 }
 
-/**
- * MapLibre hands the matrix differently across versions: older builds pass it directly, newer ones
- * wrap it in a projection-data object. Read whichever is there rather than pinning a version.
- */
-const matrixOf = (args: unknown): Float32Array | number[] | null => {
-  if (args instanceof Float32Array || Array.isArray(args)) return args
-  if (typeof args !== 'object' || args === null) return null
-  const holder = args as { defaultProjectionData?: { mainMatrix?: Float32Array } }
-  return holder.defaultProjectionData?.mainMatrix ?? null
-}
-
 export const overlayLayer = {
   id: LAYER_ID,
   type: 'custom' as const,
@@ -235,7 +246,7 @@ export const overlayLayer = {
     gl.enableVertexAttribArray(uv)
     gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 24, 16)
     gl.bindVertexArray(null)
-    log('install', 'overlay layer added to wplace’s own canvas')
+    log('install', 'overlay layer added to wplace’s own canvas', { projection: 'transform-double' })
   },
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
@@ -263,13 +274,17 @@ export const overlayLayer = {
     }
   },
 
-  draw(gl: WebGL2RenderingContext, args: unknown): void {
+  draw(gl: WebGL2RenderingContext, _args: unknown): void {
     if (program === null || vao === null) return
     // Stop where wplace stops. A layer renders every frame whatever the zoom, so without this the
     // overlay stayed on screen past the point their canvas disappears — annotating nothing.
     if (!isDrawingTiles()) return
-    const matrix = matrixOf(args)
-    if (matrix === null) return
+    // Their tiles, where they put them this frame. Also the culling: wplace only draws the tiles in
+    // view, so intersecting against these is the whole visibility test.
+    const tiles = currentQuads()
+    if (tiles.length === 0) return
+    const bufferWidth = gl.drawingBufferWidth
+    const bufferHeight = gl.drawingBufferHeight
 
     const visible = localTemplates().filter(isTemplateVisible)
     collect(gl, new Set(localTemplates().map((template) => template.id)))
@@ -324,26 +339,6 @@ export const overlayLayer = {
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
-      // Corners projected here, in double, then handed over as clip space. See `project`.
-      const x0 = template.originX / CANVAS_PIXELS
-      const y0 = template.originY / CANVAS_PIXELS
-      const x1 = (template.originX + template.width) / CANVAS_PIXELS
-      const y1 = (template.originY + template.height) / CANVAS_PIXELS
-      // Strip order: top-left, top-right, bottom-left, bottom-right.
-      project(matrix, x0, y0, corners, 0)
-      corners[4] = 0
-      corners[5] = 0
-      project(matrix, x1, y0, corners, 6)
-      corners[10] = 1
-      corners[11] = 0
-      project(matrix, x0, y1, corners, 12)
-      corners[16] = 0
-      corners[17] = 1
-      project(matrix, x1, y1, corners, 18)
-      corners[22] = 1
-      corners[23] = 1
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
-
       gl.uniform2f(uniform(gl, 'u_size'), template.width, template.height)
       gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
       gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
@@ -352,7 +347,44 @@ export const overlayLayer = {
       gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
       gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
 
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      const left = template.originX + nudgeX
+      const top = template.originY + nudgeY
+      const right = left + template.width
+      const bottom = top + template.height
+
+      for (const tile of tiles) {
+        const tileLeft = tile.tile.x * TILE_SIZE
+        const tileTop = tile.tile.y * TILE_SIZE
+        // The part of this template that falls inside this tile, in canvas pixels.
+        const cutLeft = Math.max(left, tileLeft)
+        const cutTop = Math.max(top, tileTop)
+        const cutRight = Math.min(right, tileLeft + TILE_SIZE)
+        const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
+        if (cutRight <= cutLeft || cutBottom <= cutTop) continue
+
+        // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
+        // including snapping it to whole device pixels once the map stops moving — is inherited
+        // rather than guessed at.
+        const scaleX = tile.width / TILE_SIZE
+        const scaleY = tile.height / TILE_SIZE
+        const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
+        const screenRight = tile.x + (cutRight - tileLeft) * scaleX
+        const screenTop = tile.y + (cutTop - tileTop) * scaleY
+        const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
+
+        const u0 = (cutLeft - left) / template.width
+        const u1 = (cutRight - left) / template.width
+        const v0 = (cutTop - top) / template.height
+        const v1 = (cutBottom - top) / template.height
+
+        // Strip order: top-left, top-right, bottom-left, bottom-right.
+        corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
+        corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
+        corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
+        corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      }
     }
 
     // Put it all back. The active texture unit especially: we leave it on 1 while binding the
