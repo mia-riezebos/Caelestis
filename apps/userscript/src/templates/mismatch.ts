@@ -7,7 +7,6 @@ import {
   tilePixels,
   UNPAINTED,
 } from '../tile-transform.js'
-import { hiddenColoursFor } from './colour-filter.js'
 import {
   appearanceOf,
   isTemplateVisible,
@@ -170,13 +169,28 @@ export const wantsTilePixels = (): boolean =>
   )
 
 /**
+ * Which colours this template is not claiming — the switches, not what is on screen.
+ *
+ * Deliberately not `hiddenColoursFor`, which is what the *renderer* asks and which answers with the
+ * follow-the-selection mode's set while that mode is driving. A colour switched off by hand is a
+ * colour the user has said to stop caring about, and marking it would bury the ones that matter. A
+ * colour hidden because it is not the one currently being placed is nothing of the sort — it is
+ * hidden for this minute, to see one colour at a time.
+ *
+ * Reading the mode here made the markers vanish along with the pixels, which is backwards: seeing
+ * every mismatch while placing one colour is how you work through them a colour at a time.
+ */
+const assertedHidden = (template: PlacedTemplate): readonly number[] =>
+  appearanceOf(template).hiddenColours
+
+/**
  * Everything that changes what a scan finds, so a stale entry is never returned.
  *
  * "Count unpainted" is deliberately not part of it, nor is its threshold. Both decide which of two
  * lists to hand back, not what goes in them, so neither is a reason to look at a tile again.
  */
 const signature = (template: PlacedTemplate): string =>
-  `${template.moved}|${hiddenColoursFor(template.appearance).join(',')}`
+  `${template.moved}|${assertedHidden(template).join(',')}`
 
 /**
  * The disagreements between one template and one tile.
@@ -253,7 +267,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   asserted.fill(1)
   asserted[TRANSPARENT_INDEX] = 0
   asserted[UNPAINTED] = 0
-  for (const index of hiddenColoursFor(template.appearance)) asserted[index] = 0
+  for (const index of assertedHidden(template)) asserted[index] = 0
 
   // Local aliases: property lookups on the template inside a million-iteration loop are not free.
   const wantedPixels = template.indices
@@ -354,7 +368,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
       continue
     }
 
-    const hidden = hiddenColoursFor(template.appearance)
+    const hidden = assertedHidden(template)
     const asserted =
       wanted !== TRANSPARENT_INDEX && wanted !== UNPAINTED && !hidden.includes(wanted)
 
