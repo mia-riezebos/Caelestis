@@ -155,9 +155,10 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     // Below the panel's 30. When the window is too narrow for the clamp to keep this clear of the
     // panel, something has to give, and the panel is the surface being deliberately worked in.
     zIndex: '29',
-    // Wide enough for the four presets and the palette toggle on one line. Below this the toggle
-    // wrapped onto a line of its own, which read as a separate control rather than a fifth choice.
-    width: '18rem',
+    // Wide enough for the four presets and the palette toggle on one line, and — once its padding is
+    // taken off — for the swatch grid's eight-column step. A hair narrower and the palette fell back
+    // to four columns, which is the whole thing twice as tall for no gain.
+    width: '19.5rem',
     // 12px, the same as the panel and every other popout here.
     borderRadius: '0.75rem',
     padding: '0.75rem',

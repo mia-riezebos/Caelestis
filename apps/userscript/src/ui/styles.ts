@@ -91,20 +91,24 @@ const CSS = `
 .wts-swatch-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 0.25rem;
+  /* Wider than it looks, because the "on" ring is drawn *outside* the swatch: 2px of outline at 1px
+     offset takes 3px on each side, so a 0.25rem gap was entirely filled by the rings of the two
+     swatches either side of it and the palette read as one continuous sheet of colour. 0.5rem leaves
+     2px of daylight with every swatch switched on, which is the state it is usually in. */
+  gap: 0.5rem;
 }
 /* Each step is the width at which that many columns still leaves a swatch of ~1.75rem (28px),
-   allowing for the gaps: N * 1.75 + (N - 1) * 0.25.
+   allowing for the gaps: N * 1.75 + (N - 1) * 0.5.
    Stepping on available width alone let 32 columns pack into 30rem, which is a 0.69rem swatch — a
    colour you cannot identify and a target you cannot reliably hit. A grid of powers of two is only
    worth having while each cell is still a swatch, so the count waits for the room. */
-@container (min-width: 16rem) {
+@container (min-width: 17.5rem) {
   .wts-swatch-grid { grid-template-columns: repeat(8, 1fr); }
 }
-@container (min-width: 32rem) {
+@container (min-width: 35.5rem) {
   .wts-swatch-grid { grid-template-columns: repeat(16, 1fr); }
 }
-@container (min-width: 64rem) {
+@container (min-width: 71.5rem) {
   .wts-swatch-grid { grid-template-columns: repeat(32, 1fr); }
 }
 .wts-swatch {
