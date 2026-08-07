@@ -169,6 +169,28 @@ export const drawMarkers = (
 export const MARKER_LAYER_ID = 'wts-markers'
 
 /**
+ * How much of the marker layer to switch on, from `?wts=` in the URL.
+ *
+ * Adding this layer wedges the page during mount — hard enough that even `1 + 1` will not evaluate,
+ * and `Debugger.pause` reports nothing, so the thread is stuck in native code rather than in a loop
+ * of ours. Three things happen at mount and any of them could be it: MapLibre taking a second custom
+ * layer at all, the program this compiles in `onAdd`, or the draw.
+ *
+ * Guessing costs a frozen tab per attempt, so each is switchable without a rebuild:
+ *
+ * - `?wts=0` — the layer exists and does nothing. Default, because a plain reload must never brick.
+ * - `?wts=1` — plus the shader program, compiled and linked in `onAdd`.
+ * - `?wts=2` — plus the drawing. The whole feature.
+ *
+ * Whichever stage first freezes is the answer.
+ */
+const STAGE = (() => {
+  const raw = new URLSearchParams(location.search).get('wts')
+  const stage = raw === null ? 0 : Number(raw)
+  return Number.isFinite(stage) ? Math.min(Math.max(stage, 0), 2) : 0
+})()
+
+/**
  * Same shape at every zoom, in device pixels.
  *
  * Sized in cells it shrinks with the zoom, and the view where you are hunting for one wrong pixel in
@@ -248,15 +270,19 @@ export const markerLayer = {
   renderingMode: '2d' as const,
 
   onAdd(_map: unknown, gl: WebGL2RenderingContext): void {
+    count(`marker:layer added at stage ${STAGE}`)
+    if (STAGE < 1) return
     initMarkers(gl)
-    count('marker:layer added')
+    count('marker:program built')
   },
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
+    if (STAGE < 1) return
     releaseMarkers(gl)
   },
 
   render(gl: WebGL2RenderingContext): void {
+    if (STAGE < 2) return
     // Never let this escape into MapLibre's render loop; a throw here takes the whole frame with it.
     try {
       drawAll(gl)
