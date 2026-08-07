@@ -1277,6 +1277,54 @@ const installPutImageDataTaps = (
       const hook = installValueHook(prototype, 'putImageData', wrappedPutImageData)
       if (hook === null) throw new Error('putImageData is not hookable')
       hooks.push(hook)
+
+      const nativeClearRect = prototype.clearRect
+      const wrappedClearRect = function (
+        this: CanvasRenderingContext2D,
+        ...args: Parameters<CanvasRenderingContext2D['clearRect']>
+      ): void {
+        return runObservedCall(
+          () => Reflect.apply(nativeClearRect, this, args),
+          () => {
+            const canvas = this.canvas as { width?: number; height?: number }
+            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
+            const [x, y, width, height] = args
+            if (
+              !Number.isInteger(x) ||
+              !Number.isInteger(y) ||
+              !Number.isInteger(width) ||
+              !Number.isInteger(height) ||
+              width <= 0 ||
+              height <= 0 ||
+              width > PATCH_LIMIT ||
+              height > PATCH_LIMIT
+            ) {
+              markCanvasDirty(this.canvas)
+              return
+            }
+            const triples: number[] = []
+            for (let rowOffset = 0; rowOffset < height; rowOffset++) {
+              const row = flipRow(y + rowOffset)
+              if (row < 0 || row >= TILE_SIZE) continue
+              for (let columnOffset = 0; columnOffset < width; columnOffset++) {
+                const column = x + columnOffset
+                if (column < 0 || column >= TILE_SIZE) continue
+                triples.push(column, row, UNPAINTED)
+              }
+            }
+            const tile = tileOfPaintCanvas.get(this.canvas)
+            if (triples.length > 0 && (tile === undefined || !applyWrite(tile, triples))) {
+              const queue = queuedWrites.get(this.canvas)
+              if (queue === undefined) queuedWrites.set(this.canvas, triples)
+              else queue.push(...triples)
+            }
+            if (triples.length > 0) count('pixels:draft erased')
+          },
+        )
+      }
+      const clearHook = installValueHook(prototype, 'clearRect', wrappedClearRect)
+      if (clearHook === null) throw new Error('clearRect is not hookable')
+      hooks.push(clearHook)
     }
     return hooks
   } catch {
