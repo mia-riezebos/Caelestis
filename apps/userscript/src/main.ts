@@ -10,8 +10,8 @@ import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
 import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
-import { onMismatchesChanged } from './templates/mismatch.js'
-import { install, onTileFrame, type TileFrame } from './tile-transform.js'
+import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { captureTilePixels, install, onTileFrame, type TileFrame } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
@@ -159,6 +159,20 @@ const main = (): void => {
   // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
   // marker going away.
   step('mismatch repaint', () => onMismatchesChanged(redraw))
+  /**
+   * Start capturing before the first frame, not on it.
+   *
+   * A tile can only be caught as it is decoded, and the tiles filling the viewport on a page load
+   * are decoded during the load — before any layer of ours has drawn. Deciding whether to capture at
+   * draw time meant missing every one of them, and each then waited on wplace re-fetching it, which
+   * is why a tile panned to answered in under a second while the ones already on screen took ten.
+   */
+  step('tile pixel capture', () => {
+    const sync = (): void => captureTilePixels(wantsTilePixels())
+    sync()
+    onStateChange(sync)
+    onLocalChange(sync)
+  })
   // Templates are drawn by the GL layer inside wplace's own canvas. Nothing of ours rasterises to a
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.

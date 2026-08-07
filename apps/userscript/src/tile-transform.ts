@@ -651,7 +651,10 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
         const url = urlForFetchInput(input, realm, urlGetters)
         if (url !== null) {
           tile = tileFromUrl(url)
-          if (tile !== null) shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
+          if (tile !== null) {
+            tileUrlShape = url.replace(`/${tile.x}/${tile.y}.png`, '/{x}/{y}.png')
+            shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
+          }
         }
       } catch {
         // An unusual input that cannot be observed safely is simply untapped.
@@ -838,6 +841,59 @@ export const captureTilePixels = (on: boolean): void => {
 export const tilePixels = (tile: TileCoord): Uint8Array | null =>
   pixelsOfTile.get(tileKey(tile)) ?? null
 
+/** Whatever tile URL wplace last used, with the coordinates blanked out. */
+let tileUrlShape: string | null = null
+let captureRealm: (Window & typeof globalThis) | null = null
+
+/** Tiles we have already gone and asked for, so a miss is chased once and not every frame. */
+const chased = new Set<string>()
+let chasing = 0
+
+/**
+ * Fetch a tile we never saw decoded, rather than waiting for wplace to fetch it again.
+ *
+ * Capture can only catch a tile at the moment it is decoded, so anything already on screen when the
+ * feature switches on — the entire viewport, on a page load — was missed. Those tiles then sat
+ * unanswered until wplace happened to re-fetch them, which is on their schedule and about ten
+ * seconds: markers appeared almost at once for a tile panned to, and took ten seconds for the ones
+ * that had been there all along.
+ *
+ * One request per tile, at most a few at a time, and only for tiles something is actually asking
+ * about. That is the same request their own client makes, at a fraction of the rate.
+ */
+const CHASE_LIMIT = 4
+
+export const ensureTilePixels = (tile: TileCoord): void => {
+  if (!capturePixels || tileUrlShape === null) return
+  const key = tileKey(tile)
+  if (pixelsOfTile.has(key) || chased.has(key) || chasing >= CHASE_LIMIT) return
+  chased.add(key)
+  chasing++
+  const url = tileUrlShape.replace('{x}', String(tile.x)).replace('{y}', String(tile.y))
+  void (async () => {
+    try {
+      const realm = captureRealm
+      if (realm === null) return
+      const response = await realm.fetch.call(realm, url)
+      if (!response.ok) return
+      const bitmap = await realm.createImageBitmap.call(realm, await response.blob())
+      capture(tile, bitmap)
+      count('pixels:chased a tile we missed')
+    } catch (error) {
+      warn('fetch', `could not chase tile ${tile.x}/${tile.y}`, String(error))
+    } finally {
+      chasing--
+    }
+  })()
+}
+
+/**
+ * RGB to palette index, as a flat table.
+ *
+ * Sixteen megabytes to avoid a hash lookup a million times per tile, allocated the first time a tile
+ * is converted and never again. A `Map` measured slower by enough to matter on a conversion that
+ * blocks the main thread.
+ */
 let rgbToIndex: Uint8Array | null = null
 
 const indexTable = (): Uint8Array => {
@@ -1168,6 +1224,7 @@ export const install = (
   realm: Window & typeof globalThis = pageWindow(),
   mapHandle: () => ReturnType<typeof getMap> = getMap,
 ): void => {
+  captureRealm = realm
   const browserHooks: InstalledValueHook[] = []
   const addBrowserHook = (installer: () => InstalledValueHook | null): boolean => {
     try {

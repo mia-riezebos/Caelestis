@@ -1,8 +1,13 @@
 import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@wts/shared'
 import { count } from '../debug.js'
-import { onTilePixel, tilePixels, UNPAINTED } from '../tile-transform.js'
+import { ensureTilePixels, onTilePixel, tilePixels, UNPAINTED } from '../tile-transform.js'
 import { hiddenColoursFor } from './colour-filter.js'
-import { localTemplates, type PlacedTemplate } from './local-store.js'
+import {
+  appearanceOf,
+  isTemplateVisible,
+  localTemplates,
+  type PlacedTemplate,
+} from './local-store.js'
 
 /**
  * Which pixels of a template the canvas disagrees with, per tile.
@@ -53,6 +58,19 @@ export const beginMismatchFrame = (): void => {
   scanDeadline = performance.now() + SCAN_BUDGET_MS
 }
 
+/**
+ * Whether anything currently wants to know what disagrees.
+ *
+ * Kept here rather than worked out at draw time so it can be answered before the first frame. The
+ * tiles on screen at load are decoded exactly once, and if capture is not on by then we miss all of
+ * them and have to read every one back from a preview later — paying twice for pixels that went
+ * past us while we were not looking.
+ */
+export const wantsTilePixels = (): boolean =>
+  localTemplates().some(
+    (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
+  )
+
 /** Everything that changes the answer, so a stale entry is never returned. */
 const signature = (template: PlacedTemplate): string => {
   const appearance = template.appearance
@@ -68,7 +86,11 @@ const signature = (template: PlacedTemplate): string => {
  */
 export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null => {
   const pixels = tilePixels(tile)
-  if (pixels === null) return null
+  if (pixels === null) {
+    // Never decoded while we were watching. Go and get it rather than wait for wplace to.
+    ensureTilePixels(tile)
+    return null
+  }
 
   const cacheKey = `${template.id}|${tile.x}/${tile.y}`
   const key = signature(template)

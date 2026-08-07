@@ -5,7 +5,7 @@ import { isPlain } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
 import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
-import { captureTilePixels, currentQuads, isDrawingTiles } from '../tile-transform.js'
+import { currentQuads, isDrawingTiles } from '../tile-transform.js'
 import { drawMarkers, initMarkers, type MarkerStyle, releaseMarkers } from './markers.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
@@ -369,11 +369,6 @@ export const overlayLayer = {
     }
     if (visible.length === 0) return
 
-    // Reading their tiles back costs a decode and a million-entry walk each, so it only happens
-    // while something is actually asking what disagrees.
-    captureTilePixels(
-      visible.some(({ template }) => appearanceOf(template).markMismatch && template.visible),
-    )
     beginMismatchFrame()
 
     // MapLibre renders on demand, so a frame nobody asked for is a frame that never happens. Without
