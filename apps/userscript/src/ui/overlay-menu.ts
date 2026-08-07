@@ -145,6 +145,17 @@ const buildMenu = (
   const template = localTemplates().find((candidate) => candidate.id === id)
 
   /**
+   * Throw the menu away so the next frame builds a fresh one.
+   *
+   * Only for changes that alter what the controls should *say*, not merely what they do — switching
+   * to the global defaults has to move every slider at once. Normal edits must never call this: this
+   * menu is rebuilt-on-demand precisely so a redraw cannot tear a slider out from under the pointer.
+   */
+  const rebuildMenu = (): void => {
+    document.getElementById(MENU_ID)?.remove()
+  }
+
+  /**
    * Read the appearance at the moment a control is used, never the one captured when the menu was
    * built.
    *
@@ -161,8 +172,17 @@ const buildMenu = (
     const found = localTemplates().find((candidate) => candidate.id === id)
     return found === undefined ? DEFAULT_APPEARANCE : appearanceOf(found)
   }
+  /**
+   * Set here, not in settings — so the "use defaults" tick has to come off as the slider moves.
+   *
+   * Only the tick is touched, never the menu: a rebuild mid-drag would take the slider out from
+   * under the pointer. Leaving it ticked was worse than cosmetic, because the next click on it then
+   * did the opposite of what it looked like it would do.
+   */
+  let defaultsBox: HTMLInputElement | null = null
   const update = (patch: Partial<Appearance>): void => {
-    setAppearance(id, { ...current(), ...patch })
+    void setAppearance(id, { ...current(), ...patch })
+    if (defaultsBox !== null) defaultsBox.checked = false
   }
 
   const header = document.createElement('div')
@@ -229,7 +249,40 @@ const buildMenu = (
   header.append(title, hide, move, remove, close)
   menu.appendChild(header)
 
-  menu.appendChild(section('Pixels'))
+  const pixels = section('Pixels')
+  pixels.className = `${pixels.className} flex items-center justify-between gap-2`
+  menu.appendChild(pixels)
+
+  /**
+   * Whether this overlay is following the global appearance rather than carrying its own.
+   *
+   * Every overlay starts this way, so the sliders in settings actually reach something. Touching any
+   * control here writes an explicit appearance and switches this off on its own — because `update`
+   * patches the *effective* values, the first change keeps everything else exactly as it looked and
+   * only the moved slider differs.
+   */
+  const usingDefaults = template?.appearance == null
+  const defaults = document.createElement('label')
+  defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal normal-case'
+  defaults.title = 'Follow the appearance set in settings'
+  defaultsBox = document.createElement('input')
+  defaultsBox.type = 'checkbox'
+  defaultsBox.className = 'checkbox checkbox-xs'
+  defaultsBox.checked = usingDefaults
+  defaultsBox.addEventListener('change', () => {
+    // Null puts it back on the global values; a copy of them is what it already shows, so the only
+    // thing that changes when switching *off* is that it stops following.
+    void setAppearance(id, defaultsBox?.checked === true ? null : { ...current() })
+    // Rebuild rather than reposition: the sliders have to show the values they now follow, and this
+    // menu deliberately never rebuilds itself on a redraw.
+    rebuildMenu()
+    rerender()
+  })
+  const defaultsText = document.createElement('span')
+  defaultsText.textContent = 'Use defaults'
+  defaults.append(defaultsBox, defaultsText)
+  pixels.appendChild(defaults)
+
   for (const control of APPEARANCE_CONTROLS) {
     menu.appendChild(
       slider(control, current()[control.key], (value) => update({ [control.key]: value })),

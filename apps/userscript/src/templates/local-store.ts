@@ -1373,7 +1373,9 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
     desiredVisibility.delete(id)
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)
-    clearStamped(id)
+    const oldFilterKey = appearanceKey(appearanceOf(existing))
+    const newFilterKey = appearanceKey(ownedAppearance ?? getState().appearance)
+    if (oldFilterKey !== newFilterKey) clearStamped(id)
     notify()
     return true
   })
@@ -1395,14 +1397,18 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 }
 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
-export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
-  if (!isAppearance(appearance)) return false
+/** Pass null to put the overlay back on the global defaults. */
+export const setAppearance = async (
+  id: string,
+  appearance: Appearance | null,
+): Promise<boolean> => {
+  if (appearance !== null && !isAppearance(appearance)) return false
   // The write starts in a later microtask. Own the validated data now so the caller cannot mutate
   // its array after validation and smuggle invalid or unbounded state into IndexedDB.
-  const ownedAppearance: Appearance = {
-    ...appearance,
-    hiddenColours: [...appearance.hiddenColours],
-  }
+  const ownedAppearance: Appearance | null =
+    appearance === null
+      ? null
+      : { ...appearance, hiddenColours: [...appearance.hiddenColours] }
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
@@ -1418,12 +1424,7 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
       }
       revision = committed
     }
-    if (
-      existing.appearance === null ||
-      appearanceKey(existing.appearance) !== appearanceKey(ownedAppearance)
-    ) {
-      clearStamped(id)
-    }
+    clearStamped(id)
     templates.set(id, { ...next, revision })
     notify()
     return true
