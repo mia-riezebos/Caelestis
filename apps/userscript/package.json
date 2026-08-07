@@ -11,7 +11,9 @@
     "clean": "rm -rf dist .turbo",
     "test": "vitest run",
     "inject": "node dev-inject.mjs",
-    "inject:watch": "node dev-inject.mjs --watch"
+    "inject:watch": "node dev-inject.mjs --watch",
+    "browser": "node chromium.mjs",
+    "browser:relaunch": "node chromium.mjs --relaunch"
   },
   "dependencies": {
     "@wts/shared": "workspace:*"
