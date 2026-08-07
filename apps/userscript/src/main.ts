@@ -8,9 +8,9 @@ import {
 import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
-import { DEFAULT_APPEARANCE } from './templates/appearance.js'
 import { effectiveHiddenColours } from './templates/colour-filter.js'
 import {
+  appearanceOf,
   levelFor,
   localTemplates,
   onLocalChange,
@@ -149,7 +149,7 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
   for (const quad of frame.quads) {
     const key = tileKey(quad.tile)
     for (const template of visible) {
-      const own = template.appearance ?? DEFAULT_APPEARANCE
+      const own = appearanceOf(template)
       // The global colour switches and this overlay's own switches, joined. Without this the
       // settings grid wrote a value nothing ever read.
       const hiddenColours = effectiveHiddenColours(own.hiddenColours)

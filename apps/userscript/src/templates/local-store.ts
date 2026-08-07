@@ -7,7 +7,8 @@ import {
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
-import { type Appearance, anchorOffset, DEFAULT_APPEARANCE, scaleFor } from './appearance.js'
+import { getState } from '../state.js'
+import { type Appearance, isPlain, normaliseAppearance, scaleFor } from './appearance.js'
 import {
   type ImportedTemplate,
   MAX_SOURCE_TILES_PER_TEMPLATE,
@@ -62,9 +63,15 @@ export interface PlacedTemplate extends ImportedTemplate {
    * remove it rather than leave it stranded at a position nobody chose.
    */
   readonly everPlaced: boolean
-  /** How this one is drawn. Per-overlay, because the right opacity for a dense mural and a thin
-   *  outline are not the same number. */
-  readonly appearance: Appearance
+  /**
+   * How this one is drawn, or null to follow the global default.
+   *
+   * Null is not the same as a copy of the default. A template that has never been adjusted should
+   * track the global sliders as they move; one that has been adjusted must keep what was set on it.
+   * Storing a copy at creation would freeze every new template at whatever the global happened to be
+   * that day and quietly stop it following anything.
+   */
+  readonly appearance: Appearance | null
   /** IndexedDB compare-and-swap token; not part of template identity or rendering. */
   readonly revision: number
 }
@@ -196,6 +203,10 @@ export const clearLocalPreview = (id: string): boolean => {
   notify()
   return true
 }
+
+/** How this template is actually drawn: its own appearance, or the global default it inherits. */
+export const appearanceOf = (template: PlacedTemplate): Appearance =>
+  template.appearance ?? getState().appearance
 
 /**
  * Slice a template into tile-sized bitmaps.
@@ -338,19 +349,31 @@ const isTemplateLoadFailure = (value: unknown): value is TemplateLoadFailure =>
 
 const isAppearance = (value: unknown): value is Appearance => {
   if (!isRecord(value)) return false
-  const { shape, size, anchor, opacity, hiddenColours } = value
+  const { size, radius, translateX, translateY, rotation, opacity, hiddenColours } = value
   return (
-    typeof shape === 'string' &&
-    ['full', 'square', 'circle', 'triangle'].includes(shape) &&
     typeof size === 'number' &&
     Number.isFinite(size) &&
-    size >= 0 &&
+    size >= 0.05 &&
     size <= 1 &&
-    typeof anchor === 'string' &&
-    ['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'].includes(anchor) &&
+    typeof radius === 'number' &&
+    Number.isFinite(radius) &&
+    radius >= 0 &&
+    radius <= 1 &&
+    typeof translateX === 'number' &&
+    Number.isFinite(translateX) &&
+    translateX >= -1 &&
+    translateX <= 1 &&
+    typeof translateY === 'number' &&
+    Number.isFinite(translateY) &&
+    translateY >= -1 &&
+    translateY <= 1 &&
+    typeof rotation === 'number' &&
+    Number.isFinite(rotation) &&
+    rotation >= 0 &&
+    rotation <= 360 &&
     typeof opacity === 'number' &&
     Number.isFinite(opacity) &&
-    opacity >= 0 &&
+    opacity >= 0.05 &&
     opacity <= 1 &&
     Array.isArray(hiddenColours) &&
     hiddenColours.length <= WPLACE_PALETTE.length &&
@@ -359,11 +382,6 @@ const isAppearance = (value: unknown): value is Appearance => {
     ) &&
     new Set(hiddenColours).size === hiddenColours.length
   )
-}
-
-const normaliseAppearance = (value: unknown): Appearance => {
-  if (!isAppearance(value)) return DEFAULT_APPEARANCE
-  return { ...value, hiddenColours: [...value.hiddenColours] }
 }
 
 const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
@@ -690,8 +708,8 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       clearStamped(id)
       previewOrigins.delete(id)
       templates.set(id, {
-        appearance: DEFAULT_APPEARANCE,
         ...winner,
+        appearance: winner.appearance ?? null,
         visible,
         tiles,
       })
@@ -757,7 +775,8 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       tiles,
       visible: true,
       everPlaced: false,
-      appearance: DEFAULT_APPEARANCE,
+      // Follows the global appearance until someone touches this one's own controls.
+      appearance: null,
       revision: 0,
     }
     if (!claimSourceReplacement(0, tiles.size)) {
@@ -931,8 +950,8 @@ const restoreStoredTemplates = async (): Promise<void> => {
           }
         }
         templates.set(template.id, {
-          appearance: DEFAULT_APPEARANCE,
           ...template,
+          appearance: template.appearance ?? null,
           // Keep valid durable records manageable even when this session cannot afford/render their
           // source bitmaps. The durable visibility value remains untouched; an explicit toggle will
           // retry construction and reconcile it.
@@ -1351,7 +1370,12 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
       }
       revision = committed
     }
-    if (appearanceKey(existing.appearance) !== appearanceKey(ownedAppearance)) clearStamped(id)
+    if (
+      existing.appearance === null ||
+      appearanceKey(existing.appearance) !== appearanceKey(ownedAppearance)
+    ) {
+      clearStamped(id)
+    }
     templates.set(id, { ...next, revision })
     notify()
     return true
@@ -1361,7 +1385,7 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
 /**
  * A tile stamped for one appearance, cached until that appearance changes.
  *
- * Shape, size, anchor and per-overlay colour filtering all decide *what each pixel looks like*, so
+ * Geometry and per-overlay colour filtering decide *what each pixel looks like*, so
  * they belong in the bitmap rather than in a per-frame loop — a 1000x1000 tile is a million pixels
  * and the frame budget is 16ms. `full` needs no stamping at all and returns the mip chain
  * untouched, which is why it costs nothing.
@@ -1504,7 +1528,7 @@ const clearStamped = (id: string): void => {
 }
 
 const appearanceKey = (a: Appearance): string =>
-  `${a.shape}|${a.size}|${a.anchor}|${a.hiddenColours.join(',')}`
+  [a.size, a.radius, a.translateX, a.translateY, a.rotation, a.hiddenColours.join(',')].join('|')
 
 const desiredLevelWidth = (fullWidth: number, targetWidth: number): number => {
   let width = fullWidth
@@ -1529,8 +1553,15 @@ export const stampTile = (
   // Sub-pixel geometry conveys nothing below one screen pixel per source pixel. At that scale use a
   // native-size filtered raster: colour toggles still apply, without paying 36 MB for a 3x tile.
   const renderedAppearance =
-    targetWidth < TILE_SIZE && appearance.shape !== 'full'
-      ? { ...appearance, shape: 'full' as const }
+    targetWidth < TILE_SIZE && !isPlain(appearance)
+      ? {
+          ...appearance,
+          size: 1,
+          radius: 0,
+          translateX: 0,
+          translateY: 0,
+          rotation: 0,
+        }
       : appearance
   // Opacity is applied at draw time, so it is deliberately not part of the cache key — dragging
   // that slider must not rebuild a million pixels per frame.
@@ -1538,7 +1569,7 @@ export const stampTile = (
   const identity = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}`
   const wanted = `${identity}|${wantedWidth}`
   const cacheKey = `${template.id}|${tileKey}`
-  if (renderedAppearance.shape === 'full' && renderedAppearance.hiddenColours.length === 0) {
+  if (isPlain(renderedAppearance) && renderedAppearance.hiddenColours.length === 0) {
     cancelPendingStamp(cacheKey)
     clearStampFailure(cacheKey)
     return source
@@ -1608,30 +1639,47 @@ export const stampTile = (
   return renderedAppearance.hiddenColours.length === 0 ? source : undefined
 }
 
+/**
+ * Draw one stamp, centred on the cell it belongs to and clipped to it.
+ *
+ * Translate then rotate, both about the cell centre, so the offset is measured along the stamp's own
+ * axes. Clipping to the cell is what makes a translated or rotated stamp get *cut off* at the pixel
+ * boundary instead of spilling into its neighbour — which is the whole mechanism behind partial
+ * corners and wedges.
+ */
+const drawStamp = (
+  context: OffscreenCanvasRenderingContext2D,
+  appearance: Appearance,
+  cellX: number,
+  cellY: number,
+  cell: number,
+): void => {
+  const side = appearance.size * cell
+  const radius = (appearance.radius * side) / 2
+
+  context.save()
+  context.beginPath()
+  context.rect(cellX, cellY, cell, cell)
+  context.clip()
+
+  context.translate(cellX + cell / 2, cellY + cell / 2)
+  context.rotate((appearance.rotation * Math.PI) / 180)
+  context.translate(appearance.translateX * cell, appearance.translateY * cell)
+
+  context.beginPath()
+  if (radius <= 0) context.rect(-side / 2, -side / 2, side, side)
+  else context.roundRect(-side / 2, -side / 2, side, side, radius)
+  context.fill()
+
+  context.restore()
+}
+
 const stampMask = (appearance: Appearance, scale: number): Uint8ClampedArray | null => {
-  if (appearance.shape === 'full') return new Uint8ClampedArray([0, 0, 0, 255])
   const canvas = new OffscreenCanvas(scale, scale)
   const context = canvas.getContext('2d', { willReadFrequently: true })
   if (context === null) return null
-  const side = appearance.size * scale
-  const offset = anchorOffset(appearance.anchor, appearance.size)
-  const px = offset.x * scale
-  const py = offset.y * scale
   context.fillStyle = '#ffffff'
-  if (appearance.shape === 'circle') {
-    context.beginPath()
-    context.arc(px + side / 2, py + side / 2, side / 2, 0, Math.PI * 2)
-    context.fill()
-  } else if (appearance.shape === 'triangle') {
-    context.beginPath()
-    context.moveTo(px, py)
-    context.lineTo(px + side, py)
-    context.lineTo(px, py + side)
-    context.closePath()
-    context.fill()
-  } else {
-    context.fillRect(px, py, side, side)
-  }
+  drawStamp(context, appearance, 0, 0, scale)
   return context.getImageData(0, 0, scale, scale).data
 }
 
@@ -1662,7 +1710,6 @@ const buildStamp = async (
   const startY = Math.max(0, tileTop - template.originY)
   const endX = Math.min(template.width, tileLeft + TILE_SIZE - template.originX)
   const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
-
   for (let y = startY; y < endY; y++) {
     for (let x = startX; x < endX; x++) {
       const index = template.indices[y * template.width + x] ?? TRANSPARENT_INDEX

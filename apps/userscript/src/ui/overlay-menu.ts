@@ -1,8 +1,13 @@
 import { TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { log } from '../debug.js'
 import { screenPointFor } from '../main.js'
-import { ANCHORS, type Appearance, DEFAULT_APPEARANCE, SHAPES } from '../templates/appearance.js'
 import {
+  APPEARANCE_CONTROLS,
+  type Appearance,
+  DEFAULT_APPEARANCE,
+} from '../templates/appearance.js'
+import {
+  appearanceOf,
   localTemplates,
   removeLocalTemplate,
   setAppearance,
@@ -68,36 +73,36 @@ const rightEdge = (): number => {
 export const isOverlayMenuOpen = (id: string): boolean => openFor === id
 
 const slider = (
-  label: string,
+  control: (typeof APPEARANCE_CONTROLS)[number],
   value: number,
-  min: number,
-  max: number,
-  step: number,
   onChange: (next: number) => void,
 ): HTMLElement => {
   const wrap = document.createElement('label')
   wrap.className = 'flex items-center gap-2'
-  wrap.style.padding = '0.25rem 0'
+  wrap.style.padding = '0.125rem 0'
   const name = document.createElement('span')
   name.className = 'text-xs opacity-70'
-  name.style.width = '3.5rem'
-  name.textContent = label
+  name.style.width = '4rem'
+  name.style.flex = '0 0 auto'
+  name.textContent = control.label
   const input = document.createElement('input')
   input.type = 'range'
   input.className = 'range range-xs'
-  input.min = String(min)
-  input.max = String(max)
-  input.step = String(step)
+  input.min = String(control.min)
+  input.max = String(control.max)
+  input.step = String(control.step)
   input.value = String(value)
   input.style.flex = '1'
+  input.style.minWidth = '0'
   const readout = document.createElement('span')
   readout.className = 'text-xs opacity-50'
   readout.style.width = '2.5rem'
+  readout.style.flex = '0 0 auto'
   readout.style.textAlign = 'right'
-  readout.textContent = `${Math.round(value * 100)}%`
+  readout.textContent = control.format(value)
   input.addEventListener('input', () => {
     const next = Number(input.value)
-    readout.textContent = `${Math.round(next * 100)}%`
+    readout.textContent = control.format(next)
     onChange(next)
   })
   wrap.append(name, input, readout)
@@ -136,6 +141,27 @@ const buildMenu = (
   menu.addEventListener('pointerdown', (event) => event.stopPropagation())
 
   const template = localTemplates().find((candidate) => candidate.id === id)
+
+  /**
+   * Read the appearance at the moment a control is used, never the one captured when the menu was
+   * built.
+   *
+   * This menu is deliberately not rebuilt on a redraw — doing so would tear the slider out from
+   * under the pointer every frame the map moves. The cost is that the closure's `appearance` goes
+   * stale the instant any control writes a new one, and a spread of a stale object silently reverts
+   * every field the user changed in between. That is precisely what happened: adjusting opacity
+   * after picking a shape put the old shape back, because the opacity handler was still spreading
+   * the appearance from before the shape changed.
+   *
+   * Patching against a fresh read makes each control write only its own field.
+   */
+  const current = (): Appearance => {
+    const found = localTemplates().find((candidate) => candidate.id === id)
+    return found === undefined ? DEFAULT_APPEARANCE : appearanceOf(found)
+  }
+  const update = (patch: Partial<Appearance>): void => {
+    setAppearance(id, { ...current(), ...patch })
+  }
 
   const header = document.createElement('div')
   header.className = 'flex items-center gap-1'
@@ -201,56 +227,12 @@ const buildMenu = (
   header.append(title, hide, move, remove, close)
   menu.appendChild(header)
 
-  menu.appendChild(section('Shape'))
-  const shapes = document.createElement('div')
-  shapes.className = 'join'
-  for (const shape of SHAPES) {
-    const button = document.createElement('button')
-    button.className =
-      shape.id === appearance.shape ? 'btn btn-xs join-item btn-active' : 'btn btn-xs join-item'
-    button.textContent = shape.label
-    button.title = shape.hint
-    button.addEventListener('click', () => {
-      setAppearance(id, { ...appearance, shape: shape.id })
-      rerender()
-    })
-    shapes.appendChild(button)
-  }
-  menu.appendChild(shapes)
-
-  if (appearance.shape !== 'full') {
+  menu.appendChild(section('Pixels'))
+  for (const control of APPEARANCE_CONTROLS) {
     menu.appendChild(
-      slider('Size', appearance.size, 0.1, 1, 0.05, (size) => {
-        setAppearance(id, { ...appearance, size })
-      }),
+      slider(control, current()[control.key], (value) => update({ [control.key]: value })),
     )
-    const anchors = document.createElement('div')
-    anchors.style.display = 'grid'
-    anchors.style.gridTemplateColumns = 'repeat(3, 1fr)'
-    anchors.style.gap = '2px'
-    anchors.style.marginTop = '0.25rem'
-    for (const anchor of ANCHORS) {
-      const cell = document.createElement('button')
-      cell.className =
-        anchor.id === appearance.anchor ? 'btn btn-xs btn-active' : 'btn btn-xs btn-ghost'
-      cell.style.minHeight = '1.25rem'
-      cell.style.height = '1.25rem'
-      cell.title = anchor.label
-      cell.setAttribute('aria-label', anchor.label)
-      cell.addEventListener('click', () => {
-        setAppearance(id, { ...appearance, anchor: anchor.id })
-        rerender()
-      })
-      anchors.appendChild(cell)
-    }
-    menu.appendChild(anchors)
   }
-
-  menu.appendChild(
-    slider('Opacity', appearance.opacity, 0.1, 1, 0.05, (opacity) => {
-      setAppearance(id, { ...appearance, opacity })
-    }),
-  )
 
   const coloursHeading = section('Colours')
   coloursHeading.className = `${coloursHeading.className} flex items-center justify-between gap-2`
@@ -273,10 +255,11 @@ const buildMenu = (
     swatch.title = `${colour.name} · ${colour.kind}`
     swatch.setAttribute('aria-pressed', String(on))
     swatch.addEventListener('click', () => {
-      const next = new Set(appearance.hiddenColours)
+      // Current, not captured — same reason as every other control here.
+      const next = new Set(current().hiddenColours)
       if (next.has(colour.index)) next.delete(colour.index)
       else next.add(colour.index)
-      setAppearance(id, { ...appearance, hiddenColours: [...next] })
+      update({ hiddenColours: [...next] })
       rerender()
     })
     grid.appendChild(swatch)
@@ -394,12 +377,7 @@ export const renderOverlayControls = (rerender: () => void): void => {
     if (!isOpen) continue
     let menu = document.getElementById(MENU_ID)
     if (menu === null) {
-      menu = buildMenu(
-        template.id,
-        template.appearance ?? DEFAULT_APPEARANCE,
-        template.visible,
-        rerender,
-      )
+      menu = buildMenu(template.id, appearanceOf(template), template.visible, rerender)
       document.body.appendChild(menu)
     }
     // The same anchoring as the button, measured against the menu's own size rather than reusing

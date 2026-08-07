@@ -51,7 +51,8 @@ const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
 export interface StoredTemplate extends ImportedTemplate {
   readonly visible: boolean
   readonly everPlaced: boolean
-  readonly appearance?: Appearance
+  /** Null means "follow the global appearance"; absent means the same, from before this was stored. */
+  readonly appearance?: Appearance | null
   /** Monotonic compare-and-swap token. Records written before v3 restore as revision zero. */
   readonly revision: number
 }

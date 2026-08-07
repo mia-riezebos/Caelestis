@@ -17,6 +17,7 @@ import {
   uploadTemplate,
   upsertServer,
 } from '../state.js'
+import { APPEARANCE_CONTROLS } from '../templates/appearance.js'
 import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
@@ -588,6 +589,45 @@ const settingsView = (): HTMLElement => {
       ),
     ),
   )
+
+  // The defaults every overlay follows until its own controls are touched. Same sliders as the
+  // per-overlay menu, deliberately — one vocabulary, learned once.
+  const sliders = document.createElement('div')
+  sliders.className = 'px-3 pb-2'
+  for (const control of APPEARANCE_CONTROLS) {
+    const row = document.createElement('label')
+    row.className = 'flex items-center gap-3 py-1'
+    const name = document.createElement('span')
+    name.className = 'text-sm'
+    name.style.width = '5rem'
+    name.style.flex = '0 0 auto'
+    name.textContent = control.label
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.className = 'range range-xs'
+    input.min = String(control.min)
+    input.max = String(control.max)
+    input.step = String(control.step)
+    input.value = String(state.appearance[control.key])
+    input.style.flex = '1'
+    input.style.minWidth = '0'
+    const readout = document.createElement('span')
+    readout.className = 'text-xs opacity-60'
+    readout.style.width = '2.75rem'
+    readout.style.flex = '0 0 auto'
+    readout.style.textAlign = 'right'
+    readout.textContent = control.format(state.appearance[control.key])
+    input.addEventListener('input', () => {
+      const next = Number(input.value)
+      readout.textContent = control.format(next)
+      // Read the live value rather than the one captured when this row was built, so dragging one
+      // slider cannot revert another.
+      setState({ appearance: { ...getState().appearance, [control.key]: next } })
+    })
+    row.append(name, input, readout)
+    sliders.appendChild(row)
+  }
+  view.appendChild(sliders)
 
   view.appendChild(sectionHeader('Colours', 'palette'))
   view.appendChild(coloursSection(rerender))
