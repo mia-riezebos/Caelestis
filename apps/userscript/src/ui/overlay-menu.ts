@@ -16,6 +16,7 @@ import {
   setLocalVisible,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
+import { isDrawingTiles } from '../tile-transform.js'
 import { colourPresets, paletteSwatch, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
@@ -457,7 +458,11 @@ export const renderOverlayControls = (rerender: () => void): void => {
     // Local being off — and a button pointing at an overlay that is not drawn is a control with no
     // subject. It fades on the same curve and over the same time as the overlay it belongs to, so
     // the two leave together instead of the button blinking out over a template still fading.
-    const shown = isTemplateVisible(template)
+    //
+    // Zooming out past the point where wplace stops serving tiles counts as not drawn. The overlay
+    // stops there too — there is nothing left under it to annotate — so a button left behind would
+    // be anchored to a template that is no longer on the map.
+    const shown = isTemplateVisible(template) && isDrawingTiles()
     if (!shown && openFor === template.id) {
       openFor = null
       document.getElementById(MENU_ID)?.remove()
