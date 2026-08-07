@@ -9,6 +9,7 @@ import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
 import { DEFAULT_APPEARANCE } from './templates/appearance.js'
+import { effectiveHiddenColours } from './templates/colour-filter.js'
 import {
   levelFor,
   localTemplates,
@@ -21,6 +22,7 @@ import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
+import { onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 
 /**
  * Entry point.
@@ -137,13 +139,6 @@ export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
   return cssPixelsPerCanvasPixelIn(lastFrame)
 }
 
-/**
- * Fill one tile, to check alignment by eye.
- *
- * `__wts.mark(1082, 1673)` paints that tile solid and it should sit exactly on the tile wplace
- * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
- * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
- */
 /** Draws every visible template over the tiles wplace is currently showing. */
 const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
   const visible = localTemplates().filter((template) => template.visible)
@@ -154,7 +149,11 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
   for (const quad of frame.quads) {
     const key = tileKey(quad.tile)
     for (const template of visible) {
-      const appearance = template.appearance ?? DEFAULT_APPEARANCE
+      const own = template.appearance ?? DEFAULT_APPEARANCE
+      // The global colour switches and this overlay's own switches, joined. Without this the
+      // settings grid wrote a value nothing ever read.
+      const hiddenColours = effectiveHiddenColours(own.hiddenColours)
+      const appearance = hiddenColours === own.hiddenColours ? own : { ...own, hiddenColours }
       const preview = previewOriginFor(template.id)
       if (preview !== null && (preview.x !== template.originX || preview.y !== template.originY)) {
         const offsetX = preview.x - template.originX
@@ -233,6 +232,13 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
   if (drawn > 0) log('draw', `painted ${drawn} template tiles`, { quads: frame.quads.length })
 }
 
+/**
+ * Fill one tile, to check alignment by eye.
+ *
+ * `__wts.mark(1082, 1673)` paints that tile solid and it should sit exactly on the tile wplace
+ * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
+ * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
+ */
 let marked: { x: number; y: number } | null = null
 
 const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
@@ -244,14 +250,29 @@ const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void =>
   }
 }
 
+/**
+ * Run one piece of start-up, and let the rest start even if it fails.
+ *
+ * `main` is a straight sequence of installs, so a throw in any one of them silently cancels every
+ * install after it. That is how a null-argument `MutationObserver` in the paint watcher removed the
+ * rail button: an unrelated subsystem three lines earlier, no error visible in the UI, and nothing
+ * to suggest where to look.
+ *
+ * Failing loudly and continuing is strictly better here. Every one of these is independent, and a
+ * page missing one feature beats a page missing all of them.
+ */
+const step = (what: string, run: () => void): void => {
+  try {
+    run()
+  } catch (error) {
+    warn('install', `${what} failed to start`, String(error))
+  }
+}
+
 const main = (): void => {
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
-  try {
-    installMapCapture()
-  } catch {
-    // Map capture is optional; URL-based navigation remains available without it.
-  }
-  try {
+  step('map capture', installMapCapture)
+  step('debug API', () => {
     installDebugApi({
       mark(x?: number, y?: number) {
         marked = x === undefined || y === undefined ? null : { x, y }
@@ -260,17 +281,16 @@ const main = (): void => {
         return `[wts] marking tile ${x},${y} — __wts.mark() with no arguments to clear`
       },
     })
-  } catch {
-    // Diagnostics are optional and must not prevent the render hooks from installing.
-  }
-  try {
-    install()
-  } catch {
-    // Browser hooks are best-effort around page-owned surfaces.
-  }
+  })
+  step('tile capture', install)
   // Templates outlive a page load, which is what makes navigating to one survivable at all.
-  void restoreLocalTemplates()
-  void loadAccount()
+  step('local templates', () => void restoreLocalTemplates())
+  step('wplace account', () => void loadAccount())
+  // "Only the selected colour" needs to know when wplace's drawer opens and what is picked in it.
+  step('paint watcher', () => {
+    watchPaintSelection()
+    onPaintSelectionChange(repaint)
+  })
   onPaint(paintTemplates)
   // The buttons ride with the overlay, so they are repositioned on the same frame the map moved.
   onPaint(() => renderOverlayControls(repaint))
@@ -278,11 +298,13 @@ const main = (): void => {
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
   onLocalChange(repaint)
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', installPanel, { once: true })
-  } else {
-    installPanel()
-  }
+  step('panel', () => {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', installPanel, { once: true })
+    } else {
+      installPanel()
+    }
+  })
   try {
     console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
   } catch {

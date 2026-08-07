@@ -80,6 +80,25 @@ const CSS = `
 .wts-row:focus-within .wts-actions {
   opacity: 1;
 }
+/* The swatch grid steps between powers of two rather than flowing with auto-fill.
+   auto-fill with minmax gives whatever column count happens to fit, so the palette reflowed into
+   ragged counts like 13 or 17 and the rows stopped lining up into anything readable. Powers of two
+   keep every row a clean subdivision of the one above at any panel width, and the panel is
+   user-resizable, so this has to hold continuously rather than at three breakpoints. */
+.wts-swatches {
+  container-type: inline-size;
+}
+.wts-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 0.25rem;
+}
+@container (min-width: 15rem) {
+  .wts-swatch-grid { grid-template-columns: repeat(16, 1fr); }
+}
+@container (min-width: 30rem) {
+  .wts-swatch-grid { grid-template-columns: repeat(32, 1fr); }
+}
 .wts-swatch {
   aspect-ratio: 1;
   border-radius: 0.25rem;

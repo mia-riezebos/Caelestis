@@ -1,5 +1,5 @@
 import { canvasPixelToLatLng } from '@wts/shared'
-import { log, warn } from '../debug.js'
+import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
@@ -9,6 +9,7 @@ import {
   getState,
   listNodes,
   loadState,
+  type ProgressPlacement,
   probeServer,
   removeServer,
   renameNode as renameNodeOnServer,
@@ -156,11 +157,30 @@ export const setAlarmBadge = (count: number): void => {
   if (existing === null) button.appendChild(badge)
 }
 
-const sectionHeader = (title: string): HTMLElement => {
+/**
+ * A section heading: an icon in a tinted chip, then the name at normal weight and full contrast.
+ *
+ * Not faded all-caps. A settings pane is scanned for the section you want, and the previous
+ * treatment made every heading — the one thing you are actually looking for — the least legible
+ * text on the screen.
+ */
+const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
+  const row = document.createElement('div')
+  row.className = 'flex items-center gap-2 px-3 pt-5 pb-2'
+  const chip = document.createElement('span')
+  chip.className = 'bg-base-200 flex items-center justify-center'
+  Object.assign(chip.style, {
+    borderRadius: '0.5rem',
+    width: '1.75rem',
+    height: '1.75rem',
+    flex: '0 0 auto',
+  })
+  chip.appendChild(icon(glyph, 'size-4'))
   const h = document.createElement('h3')
-  h.className = 'text-xs font-semibold opacity-60 uppercase tracking-wide px-3 pt-4 pb-1'
+  h.className = 'text-sm font-semibold'
   h.textContent = title
-  return h
+  row.append(chip, h)
+  return row
 }
 
 const emptyState = (): HTMLElement => {
@@ -264,26 +284,104 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
   return row
 }
 
-const select = (options: readonly (readonly [string, string])[]): HTMLSelectElement => {
-  const el = document.createElement('select')
-  el.className = 'select select-sm select-bordered'
-  // Sized once rather than by content: three selects of three widths in one column reads as
-  // ragged even though their right edges agree.
-  el.style.width = '11.5rem'
-  el.style.flex = '0 0 auto'
-  for (const [value, label] of options) {
-    const option = document.createElement('option')
-    option.value = value
-    option.textContent = label
-    el.appendChild(option)
+/**
+ * A dropdown built from our own elements rather than a `<select>`.
+ *
+ * A native select's popup is drawn by the browser, so its corners cannot be given the `rounded-xl`
+ * every other popout here uses — it rendered as a square-cornered list against rounded everything
+ * else. Owning the list is the only way to make it match.
+ *
+ * Width is fixed rather than fitted to content, so a column of these lines up on both edges instead
+ * of only the right; but narrower than it was, since sizing for the longest label in the app made
+ * every short one look padded.
+ */
+const select = (
+  options: readonly (readonly [string, string])[],
+  value: string,
+  onChange: (next: string) => void,
+): HTMLElement => {
+  const wrap = document.createElement('div')
+  wrap.style.position = 'relative'
+  wrap.style.flex = '0 0 auto'
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'btn btn-sm btn-outline justify-between font-normal'
+  button.style.width = '9rem'
+  const label = document.createElement('span')
+  label.className = 'wts-name'
+  label.style.textAlign = 'left'
+  label.textContent = options.find(([id]) => id === value)?.[1] ?? ''
+  const caret = icon('caret', 'size-4 opacity-60')
+  caret.style.transform = 'rotate(90deg)'
+  button.append(label, caret)
+
+  const close = (): void => {
+    wrap.querySelector('[data-wts-options]')?.remove()
   }
-  return el
+
+  button.addEventListener('click', () => {
+    if (wrap.querySelector('[data-wts-options]') !== null) {
+      close()
+      return
+    }
+    // Only one popout at a time, ours or another row's.
+    for (const el of document.querySelectorAll('[data-wts-options]')) el.remove()
+    const list = document.createElement('ul')
+    list.setAttribute('data-wts-options', '')
+    list.className = 'menu bg-base-100 shadow-2xl'
+    Object.assign(list.style, {
+      position: 'absolute',
+      right: '0',
+      top: 'calc(100% + 0.25rem)',
+      zIndex: '40',
+      // The same radius as the panel and every other popout. This is the whole reason it is not a
+      // native select.
+      borderRadius: '0.75rem',
+      padding: '0.25rem',
+      width: '11rem',
+      display: 'block',
+    })
+    for (const [id, text] of options) {
+      const item = document.createElement('li')
+      const choice = document.createElement('button')
+      choice.type = 'button'
+      choice.className = 'flex items-center gap-2'
+      const tick = icon('check', 'size-4')
+      // Reserved rather than conditional, so the labels do not shift as the selection moves.
+      tick.style.visibility = id === value ? 'visible' : 'hidden'
+      const name = document.createElement('span')
+      name.textContent = text
+      choice.append(tick, name)
+      choice.addEventListener('click', () => {
+        close()
+        onChange(id)
+      })
+      item.appendChild(choice)
+      list.appendChild(item)
+    }
+    wrap.appendChild(list)
+    // Dismiss on a pointerdown outside, on the next tick so the opening click does not close it.
+    setTimeout(() => {
+      const dismiss = (event: PointerEvent): void => {
+        if (event.target instanceof Node && wrap.contains(event.target)) return
+        close()
+        window.removeEventListener('pointerdown', dismiss)
+      }
+      window.addEventListener('pointerdown', dismiss)
+    }, 0)
+  })
+
+  wrap.appendChild(button)
+  return wrap
 }
 
-const checkbox = (): HTMLInputElement => {
+const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
   const el = document.createElement('input')
   el.type = 'checkbox'
   el.className = 'checkbox checkbox-sm'
+  el.checked = value
+  el.addEventListener('change', () => onChange(el.checked))
   return el
 }
 
@@ -401,7 +499,7 @@ const settingsView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
 
-  view.appendChild(sectionHeader('Servers'))
+  view.appendChild(sectionHeader('Servers', 'server'))
   const addRow = document.createElement('div')
   addRow.className = 'px-3 pb-2 flex gap-2'
   const url = document.createElement('input')
@@ -449,37 +547,60 @@ const settingsView = (): HTMLElement => {
 
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
-  view.appendChild(sectionHeader('Appearance'))
-  view.appendChild(
-    settingRow(
-      'Display progress bars',
-      null,
-      select([
-        ['inline', 'Inline'],
-        ['expanded', 'When expanded'],
-        ['hidden', 'Never'],
-      ]),
-    ),
-  )
+  const rerender = (): void => showView('settings')
+  const state = getState()
 
-  view.appendChild(sectionHeader('Colours'))
-  view.appendChild(coloursSection(() => showView('settings')))
-
-  view.appendChild(sectionHeader('Contributing'))
+  // Contribution before appearance: what you send to other people is a bigger decision than how
+  // your own overlays look, and it should not sit below a colour grid.
+  view.appendChild(sectionHeader('Contribution', 'share'))
   view.appendChild(
     settingRow(
       'Report my activity',
       'Sends your paint activity on templates to the respective servers.',
-      checkbox(),
+      checkbox(state.reportPaints, (next) => setState({ reportPaints: next })),
     ),
   )
   view.appendChild(
-    settingRow('Share tiles', 'Forwards tiles with templates to respective servers.', checkbox()),
+    settingRow(
+      'Share tiles',
+      'Forwards tiles with templates to respective servers.',
+      checkbox(state.shareTiles, (next) => setState({ shareTiles: next })),
+    ),
   )
 
-  view.appendChild(sectionHeader('Diagnostics'))
-  const debugRow = settingRow('Debug logging', 'Verbose console output for bug reports', checkbox())
-  view.appendChild(debugRow)
+  view.appendChild(sectionHeader('Appearance', 'tune'))
+  view.appendChild(
+    settingRow(
+      'Display progress bars',
+      null,
+      select(
+        [
+          ['inline', 'Inline'],
+          ['expanded', 'When expanded'],
+          ['hidden', 'Never'],
+        ],
+        state.progress,
+        (next) => {
+          setState({ progress: next as ProgressPlacement })
+          rerender()
+        },
+      ),
+    ),
+  )
+
+  view.appendChild(sectionHeader('Colours', 'palette'))
+  view.appendChild(coloursSection(rerender))
+
+  view.appendChild(sectionHeader('Diagnostics', 'bug'))
+  view.appendChild(
+    settingRow(
+      'Debug logging',
+      'Verbose console output for bug reports',
+      checkbox(isDebugEnabled(), (next) => {
+        setDebugEnabled(next)
+      }),
+    ),
+  )
   return view
 }
 
