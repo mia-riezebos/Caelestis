@@ -190,14 +190,8 @@ export const colourPresets = (
   }
   presets.appendChild(onlySelectedToggle(scope.onlySelected, scope.setOnlySelected, rerender))
 
-  // Nothing matched: the filter is a set of its own, and saying so is the whole point of this row —
-  // otherwise an unlit set of presets is indistinguishable from a preset that simply is not styled.
-  if (active === null && !scope.onlySelected) {
-    const custom = document.createElement('span')
-    custom.className = 'text-xs opacity-50 self-center pl-1'
-    custom.textContent = 'Custom'
-    presets.appendChild(custom)
-  }
+  // A set of its own gets no label. "Custom" said what the row already says by having nothing lit,
+  // and it said it on a line of its own that pushed the swatches down whenever it appeared.
   return presets
 }
 
