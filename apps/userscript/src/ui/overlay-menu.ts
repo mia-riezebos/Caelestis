@@ -14,7 +14,7 @@ import {
   setLocalVisible,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
-import { onlySelectedToggle } from './colours.js'
+import { colourPresets } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
@@ -263,7 +263,12 @@ const buildMenu = (
    */
   const usingDefaults = template?.appearance == null
   const defaults = document.createElement('label')
-  defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal normal-case'
+  defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal'
+  // Inline, not `normal-case`: it inherits the section heading's uppercase, and wplace's Tailwind
+  // build is purged — a utility they never use is simply absent from their CSS, so the class did
+  // nothing and the label read "USE DEFAULTS".
+  defaults.style.textTransform = 'none'
+  defaults.style.letterSpacing = 'normal'
   defaults.title = 'Follow the appearance set in settings'
   defaultsBox = document.createElement('input')
   defaultsBox.type = 'checkbox'
@@ -289,12 +294,14 @@ const buildMenu = (
     )
   }
 
-  const coloursHeading = section('Colours')
-  coloursHeading.className = `${coloursHeading.className} flex items-center justify-between gap-2`
-  // The same "only what I am placing" switch as in settings, here too — reaching it should not mean
-  // opening the panel when this menu is already the thing you are looking at.
-  coloursHeading.appendChild(onlySelectedToggle(rerender))
-  menu.appendChild(coloursHeading)
+  menu.appendChild(section('Colours'))
+  // The same presets as settings, applied to this overlay's own filter. Reaching them should not
+  // mean opening the panel when this menu is already the thing being looked at.
+  menu.appendChild(
+    colourPresets((next) => {
+      update({ hiddenColours: next })
+    }, rerender),
+  )
   const hidden = new Set(appearance.hiddenColours)
   const gridWrap = document.createElement('div')
   gridWrap.className = 'wts-swatches'
