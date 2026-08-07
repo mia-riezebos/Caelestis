@@ -14,18 +14,25 @@
  * fixed the shape's resolution to the pixel grid and made "33% size" one device pixel.
  */
 
+/**
+ * Corners arrive already in clip space, projected on the CPU.
+ *
+ * The obvious version multiplies a Mercator position by MapLibre's matrix here, and it is wrong at
+ * high zoom. A world-Mercator coordinate is around 0.16, whose float32 neighbours are about 1.2e-8
+ * apart; the matrix scale at zoom 16 is tens of millions, so that gap becomes half a pixel on
+ * screen, and worse the further in you go. MapLibre never does this in its own layers for exactly
+ * this reason — its tile shaders work in tile-local coordinates precisely to keep the numbers small.
+ *
+ * Projecting the four corners in JavaScript sidesteps it: doubles carry the Mercator value, and the
+ * *result* is clip space in -1..1, where float32 has room to spare. The GPU then only interpolates.
+ */
 export const VERTEX_SOURCE = `#version 300 es
-in vec2 a_pos;
-// Mercator extent of the template: x0, y0, x1, y1, all in 0..1 world coordinates.
-uniform vec4 u_extent;
-// MapLibre's own matrix, mercator to clip space. Using theirs is what puts our pixels exactly on
-// theirs instead of near them.
-uniform mat4 u_matrix;
+in vec4 a_clip;
+in vec2 a_uv;
 out vec2 v_uv;
 void main() {
-  v_uv = a_pos;
-  vec2 mercator = mix(u_extent.xy, u_extent.zw, a_pos);
-  gl_Position = u_matrix * vec4(mercator, 0.0, 1.0);
+  v_uv = a_uv;
+  gl_Position = a_clip;
 }
 `
 
