@@ -213,7 +213,11 @@ export const keepMarkersAboveDrafts = (): void => {
 
   const map = getMap() as Ordered | null
   const order = map?.style?._order
-  if (map === null || order === undefined) return
+  if (map === null || order === undefined) {
+    count('paint:no layer order to read')
+    return
+  }
+  count('paint:checked the layer order')
 
   const markers = order.indexOf(MARKER_LAYER_ID)
   let lastDraft = -1
@@ -230,11 +234,18 @@ export const keepMarkersAboveDrafts = (): void => {
      * layers at all, and the writes went to whichever tile the geometry matched — every patched
      * pixel came out "became wrong" and none came out "fixed".
      */
+    count('paint:saw a draft layer')
     const match = DRAFT_TILE.exec(id)
-    const canvas = match === null ? undefined : map.getSource?.(id)?.getCanvas?.()
-    if (canvas !== undefined && match !== null) {
-      registerDraftCanvas(canvas, { x: Number(match[1]), y: Number(match[2]) })
+    if (match === null) {
+      count('paint:draft layer id had no tile in it')
+      continue
     }
+    const canvas = map.getSource?.(id)?.getCanvas?.()
+    if (canvas === undefined) {
+      count('paint:draft source gave no canvas')
+      continue
+    }
+    registerDraftCanvas(canvas, { x: Number(match[1]), y: Number(match[2]) })
   }
   if (markers < 0 || lastDraft < 0 || markers > lastDraft) return
 
