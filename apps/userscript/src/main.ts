@@ -7,6 +7,7 @@ import {
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
+import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
 import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
@@ -159,6 +160,9 @@ const main = (): void => {
   // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
   // marker going away.
   step('mismatch repaint', () => onMismatchesChanged(redraw))
+  // wplace add a layer per tile being painted, above anything of ours added earlier, so a placed
+  // pixel would otherwise cover the marker it just cleared.
+  step('marker order', () => onFrame(keepMarkersAboveDrafts))
   /**
    * Start capturing before the first frame, not on it.
    *
