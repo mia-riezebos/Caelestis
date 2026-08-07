@@ -61,6 +61,14 @@ export interface State {
   readonly progress: ProgressPlacement
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
+  /**
+   * Show only the colour wplace has selected, while its paint drawer is open.
+   *
+   * A mode rather than a preset: it is held separately from `hiddenColours` so that turning it off
+   * gives back whatever was switched off by hand, instead of leaving the palette however the mode
+   * left it.
+   */
+  readonly onlySelectedColour: boolean
   readonly reportPaints: boolean
   readonly shareTiles: boolean
 }
@@ -72,6 +80,7 @@ const DEFAULT_STATE: State = {
   sort: DEFAULT_SORT,
   progress: 'inline',
   hiddenColours: [],
+  onlySelectedColour: false,
   reportPaints: false,
   shareTiles: false,
 }

@@ -180,6 +180,17 @@ export const warn = (category: Category, message: string, data?: unknown): void 
 
 export const isEnabled = (): boolean => enabled
 
+/** Turn logging on or off and remember it. Shared by `__wts.debug()` and the Diagnostics setting. */
+export const setEnabled = (on: boolean): void => {
+  enabled = on
+  try {
+    if (on) localStorage.setItem('wtsDebug', '1')
+    else localStorage.removeItem('wtsDebug')
+  } catch {
+    // Private browsing and the like. The in-memory flag still applies for this session.
+  }
+}
+
 export interface DebugApi {
   debug(on: boolean): string
   dump(): void
@@ -192,13 +203,7 @@ export const installDebugApi = (extra: Record<string, unknown> = {}): void => {
   enabled = readInitialSetting()
   const api: DebugApi & Record<string, unknown> = {
     debug(on: boolean) {
-      enabled = on
-      try {
-        if (on) localStorage.setItem('wtsDebug', '1')
-        else localStorage.removeItem('wtsDebug')
-      } catch {
-        // Private browsing and the like. The in-memory flag still applies for this session.
-      }
+      setEnabled(on)
       return `[wts] debug ${on ? 'on' : 'off'} — reload to capture startup, __wts.dump() to print`
     },
     dump() {
