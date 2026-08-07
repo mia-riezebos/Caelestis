@@ -3,7 +3,12 @@ import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
 import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
-import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
+import {
+  currentQuads,
+  isDrawingTiles,
+  registerDraftCanvas,
+  type TileQuad,
+} from '../tile-transform.js'
 import { templateFade } from './fade.js'
 
 /**
@@ -182,8 +187,12 @@ interface Ordered {
   /** MapLibre's own draw order. Custom layers are in it; `getStyle` leaves them out. */
   style?: { _order?: string[] }
   getLayer?: (id: string) => unknown
+  getSource?: (id: string) => { getCanvas?: () => HTMLCanvasElement } | undefined
   moveLayer?: (id: string, before?: string) => void
 }
+
+/** Their id ends with the tile: `paint-preview-0.9268…-325,1783`. */
+const DRAFT_TILE = /-(\d+),(\d+)$/
 
 /**
  * Keep the markers above wplace's draft layers.
@@ -207,12 +216,27 @@ export const keepMarkersAboveDrafts = (): void => {
   if (map === null || order === undefined) return
 
   const markers = order.indexOf(MARKER_LAYER_ID)
-  if (markers < 0) return
   let lastDraft = -1
   for (let i = 0; i < order.length; i++) {
-    if (DRAFT_LAYER.test(order[i] as string)) lastDraft = i
+    const id = order[i] as string
+    if (!DRAFT_LAYER.test(id)) continue
+    lastDraft = i
+    /**
+     * Tell the pixel capture which tile this canvas is, while we are already looking at the style.
+     *
+     * wplace name the layer and its image source for the tile, and the source hands back the canvas
+     * a placed-but-unsubmitted pixel is drawn into. Working it out from where the texture landed
+     * instead does not work: those quads measure 0.125x and 0.063x of a tile, so they are not draft
+     * layers at all, and the writes went to whichever tile the geometry matched — every patched
+     * pixel came out "became wrong" and none came out "fixed".
+     */
+    const match = DRAFT_TILE.exec(id)
+    const canvas = match === null ? undefined : map.getSource?.(id)?.getCanvas?.()
+    if (canvas !== undefined && match !== null) {
+      registerDraftCanvas(canvas, { x: Number(match[1]), y: Number(match[2]) })
+    }
   }
-  if (lastDraft < 0 || markers > lastDraft) return
+  if (markers < 0 || lastDraft < 0 || markers > lastDraft) return
 
   const crosshair = map.getLayer?.(CROSSHAIR_LAYER) === undefined ? undefined : CROSSHAIR_LAYER
   map.moveLayer?.(MARKER_LAYER_ID, crosshair)
