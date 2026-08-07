@@ -42,6 +42,21 @@ export interface ConnectedServer {
   readonly isAdmin: boolean
 }
 
+/**
+ * A folder inside the Local category.
+ *
+ * Kept in state rather than IndexedDB, unlike the templates themselves: a folder is a name and a
+ * parent, which is exactly the kind of small metadata the rest of state holds, and it has to be
+ * readable synchronously while the tree renders. The templates are in IndexedDB because they are
+ * megabytes of pixels; this is not.
+ */
+export interface LocalFolder {
+  readonly id: string
+  /** Null means directly under Local. */
+  readonly parentId: string | null
+  readonly name: string
+}
+
 export interface TreeNode {
   readonly id: string
   readonly parentId: string | null
@@ -70,6 +85,7 @@ export interface State {
    * left it.
    */
   readonly onlySelectedColour: boolean
+  readonly localFolders: readonly LocalFolder[]
   /**
    * How overlays are drawn unless they say otherwise.
    *
@@ -91,6 +107,7 @@ const DEFAULT_STATE: State = {
   progress: 'inline',
   hiddenColours: [],
   onlySelectedColour: false,
+  localFolders: [],
   appearance: DEFAULT_APPEARANCE,
   reportPaints: false,
   shareTiles: false,
@@ -154,6 +171,60 @@ export const setState = (patch: Partial<State>): State => {
 
 export const onStateChange = (listener: (next: State) => void): void => {
   listeners.push(listener)
+}
+
+const localFolderId = (): string =>
+  `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
+
+export const createLocalFolder = (parentId: string | null, name: string): LocalFolder => {
+  const folder: LocalFolder = { id: localFolderId(), parentId, name }
+  setState({ localFolders: [...getState().localFolders, folder] })
+  return folder
+}
+
+export const renameLocalFolder = (id: string, name: string): void => {
+  const trimmed = name.trim()
+  if (trimmed === '') return
+  setState({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, name: trimmed } : folder,
+    ),
+  })
+}
+
+/**
+ * Remove a folder, lifting whatever was inside it to where the folder was.
+ *
+ * Deleting a container must not destroy what it holds. A template is someone's imported artwork and
+ * a folder is only a label on it, so the label goes and the contents move up one level — which is
+ * also recoverable by simply making the folder again.
+ */
+export const removeLocalFolder = (id: string): void => {
+  const folders = getState().localFolders
+  const folder = folders.find((candidate) => candidate.id === id)
+  if (folder === undefined) return
+  setState({
+    localFolders: folders
+      .filter((candidate) => candidate.id !== id)
+      .map((candidate) =>
+        candidate.parentId === id ? { ...candidate, parentId: folder.parentId } : candidate,
+      ),
+  })
+}
+
+export const moveLocalFolder = (id: string, parentId: string | null): void => {
+  // A folder cannot be moved inside itself or its own descendants, which would detach the branch
+  // from the tree and make it unreachable.
+  if (id === parentId) return
+  let walk = parentId
+  const folders = getState().localFolders
+  while (walk !== null) {
+    if (walk === id) return
+    walk = folders.find((candidate) => candidate.id === walk)?.parentId ?? null
+  }
+  setState({
+    localFolders: folders.map((folder) => (folder.id === id ? { ...folder, parentId } : folder)),
+  })
 }
 
 /** Replace one server in place, keyed by url, preserving the order of the rest. */
