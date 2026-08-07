@@ -6,6 +6,7 @@ import {
   type Appearance,
   DEFAULT_APPEARANCE,
 } from '../templates/appearance.js'
+import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
   appearanceOf,
   isTemplateVisible,
@@ -118,12 +119,7 @@ const section = (title: string): HTMLElement => {
   return el
 }
 
-const buildMenu = (
-  id: string,
-  appearance: Appearance,
-  visible: boolean,
-  rerender: () => void,
-): HTMLElement => {
+const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElement => {
   const menu = document.createElement('div')
   menu.id = MENU_ID
   menu.className = 'bg-base-100 shadow-2xl'
@@ -320,8 +316,19 @@ const buildMenu = (
    * not, so a swatch clicked here changed the canvas and then sat there looking exactly as it had.
    * A preset moves dozens at once, so this walks all of them rather than the one that was clicked.
    */
+  /**
+   * What this overlay is actually drawing right now, which is not always what its switches say.
+   *
+   * While its "only selected" mode is on and wplace's drawer is open, the mode is the filter. Paint
+   * the grid from the switches underneath and it shows a palette the canvas is not obeying.
+   */
+  const effective = (): readonly number[] => {
+    const found = localTemplates().find((candidate) => candidate.id === id)
+    return hiddenColoursFor(found?.appearance ?? null)
+  }
+
   const refreshSwatches = (): void => {
-    const off = new Set(current().hiddenColours)
+    const off = new Set(effective())
     for (const element of grid.children) {
       if (!(element instanceof HTMLElement)) continue
       setSwatchState(element, !off.has(Number(element.dataset.index)))
@@ -331,22 +338,34 @@ const buildMenu = (
   // The same presets as settings, applied to this overlay's own filter. Reaching them should not
   // mean opening the panel when this menu is already the thing being looked at.
   overrides.appendChild(
-    colourPresets((next) => {
-      update({ hiddenColours: next })
-      refreshSwatches()
-    }, rerender),
+    colourPresets(
+      (next) => {
+        // Same as the global row: choosing a preset is an explicit statement, so it takes the wheel
+        // back from this overlay's follow-the-selection mode rather than being overridden by it.
+        update({ hiddenColours: next, onlySelectedColour: false })
+        refreshSwatches()
+      },
+      rerender,
+      {
+        hidden: current().hiddenColours,
+        onlySelected: current().onlySelectedColour,
+        setOnlySelected: (next) => update({ onlySelectedColour: next }),
+      },
+    ),
   )
 
-  const hidden = new Set(appearance.hiddenColours)
+  const hidden = new Set(effective())
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
     grid.appendChild(
       paletteSwatch(colour, !hidden.has(colour.index), () => {
-        // Current, not captured — same reason as every other control here.
-        const next = new Set(current().hiddenColours)
+        // Whatever is on screen is what a click is aimed at, so a colour switched off by the mode
+        // toggles from *there* — and clicking at all is an explicit choice, which takes the wheel
+        // back from the mode rather than being silently overridden by it on the next frame.
+        const next = new Set(effective())
         if (next.has(colour.index)) next.delete(colour.index)
         else next.add(colour.index)
-        update({ hiddenColours: [...next] })
+        update({ hiddenColours: [...next], onlySelectedColour: false })
         refreshSwatches()
         rerender()
       }),
@@ -501,7 +520,7 @@ export const renderOverlayControls = (rerender: () => void): void => {
     if (!isOpen) continue
     let menu = document.getElementById(MENU_ID)
     if (menu === null) {
-      menu = buildMenu(template.id, appearanceOf(template), template.visible, rerender)
+      menu = buildMenu(template.id, template.visible, rerender)
       document.body.appendChild(menu)
     }
     // The same anchoring as the button, measured against the menu's own size rather than reusing
