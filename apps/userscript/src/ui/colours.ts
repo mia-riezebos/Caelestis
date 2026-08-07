@@ -101,7 +101,7 @@ export const setSwatchState = (swatch: HTMLElement, on: boolean): void => {
 /** The settings pane indents its rows; the overlay menu does not. Only the wrapper differs. */
 const withPadding = (element: HTMLElement): HTMLElement => {
   const wrap = document.createElement('div')
-  wrap.className = 'px-3 pb-2'
+  wrap.className = 'px-3'
   wrap.appendChild(element)
   return wrap
 }
@@ -168,6 +168,10 @@ export const colourPresets = (
   // Wraps: the panel is user-resizable and a fifth control was already enough to push the last one
   // off the edge at the default width.
   presets.className = 'flex flex-wrap gap-1'
+  // The row owns the space beneath it, so it stands off the swatches wherever it is used. The
+  // settings pane had this from its own wrapper; the overlay menu has no wrapper, and the grid sat
+  // flush against the buttons.
+  presets.style.marginBottom = '0.5rem'
   // While the mode is driving, no preset is in effect — it is the thing in effect.
   const active = scope.onlySelected ? null : activePreset(scope.hidden)
   // The labels are the labels. Nothing here needs a sentence.
