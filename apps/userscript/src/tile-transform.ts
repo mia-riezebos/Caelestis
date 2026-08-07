@@ -519,8 +519,19 @@ let frameTileDraws = 0
 /** Whether the overlay currently has anything painted on it, so a clear is worth doing once. */
 let overlayHasContent = false
 
+let drawingTiles = false
+
+/**
+ * Whether wplace drew any canvas tiles on the last frame.
+ *
+ * Zoom out far enough and they stop serving them entirely. Anything drawing over their canvas has to
+ * stop at the same point, or it floats above a map that is no longer showing the thing it annotates.
+ */
+export const isDrawingTiles = (): boolean => drawingTiles
+
 const emit = (quads: readonly TileQuad[]): void => {
   if (mapCanvas === null) return
+  drawingTiles = quads.length > 0
   const frame: TileFrame = { canvas: mapCanvas, quads }
   for (const listener of listeners) {
     try {
