@@ -111,7 +111,14 @@ const attachOverlayLayer = (): void => {
 }
 
 const draw = (frame: TileFrame): void => {
-  lastFrame = frame
+  // Keep the last frame that actually had tiles in it.
+  //
+  // Every position we hand out — the overlay buttons, the import centre, the cursor's canvas pixel —
+  // is derived from a tile quad. wplace stops drawing tiles the moment the map settles, so storing
+  // an empty frame threw all of that away while sitting perfectly still, and the per-overlay button
+  // vanished a moment after the map stopped moving.
+  if (frame.quads.length > 0) lastFrame = frame
+  else if (lastFrame !== null) lastFrame = { canvas: frame.canvas, quads: lastFrame.quads }
   const { canvas: mapCanvas, quads } = frame
   const canvas = overlayCanvas()
   const mapParent = mapCanvas.parentElement

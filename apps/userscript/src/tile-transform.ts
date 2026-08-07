@@ -560,8 +560,15 @@ const flush = (): void => {
         }
       : undefined,
   )
+  const drewAnything = frameDraws > 0
   frameDraws = 0
   frameTileDraws = 0
+
+  // "No tiles" only means wplace has stopped serving them when they actually rendered a frame and
+  // no tile was in it. A frame that drew nothing at all says nothing either way — MapLibre skips
+  // work constantly — and treating that as the cutoff switched the overlay off while sitting still.
+  if (quads.length > 0) drawingTiles = true
+  else if (drewAnything) drawingTiles = false
 
   if (quads.length > 0) {
     if (!overlayHasContent) log('clear', 'overlay has content again')
