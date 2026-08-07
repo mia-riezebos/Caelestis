@@ -50,24 +50,6 @@ interface TemplateGpu {
 const corners = new Float32Array(4 * 6)
 
 /**
- * A debug nudge, in canvas pixels, applied to every template's extent.
- *
- * Set from the console with `__wts.nudge(dx, dy)`. It exists to *measure* a suspected offset between
- * our pixel grid and wplace's rather than argue about where one might come from: a sub-pixel
- * disagreement is invisible wherever the overlay draws solidly, because our own pixels tile with
- * each other perfectly, and only shows at a hole where their canvas is visible underneath. Nudging
- * until the seam disappears reads the offset straight off the screen.
- */
-let nudgeX = 0
-let nudgeY = 0
-
-export const setNudge = (x: number, y: number): { x: number; y: number } => {
-  nudgeX = x
-  nudgeY = y
-  return { x: nudgeX, y: nudgeY }
-}
-
-/**
  * Project a Mercator point to clip space in double precision.
  *
  * Column-major, as WebGL stores matrices. The whole point of doing this here rather than in the
@@ -343,10 +325,10 @@ export const overlayLayer = {
       gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
       // Corners projected here, in double, then handed over as clip space. See `project`.
-      const x0 = (template.originX + nudgeX) / CANVAS_PIXELS
-      const y0 = (template.originY + nudgeY) / CANVAS_PIXELS
-      const x1 = (template.originX + nudgeX + template.width) / CANVAS_PIXELS
-      const y1 = (template.originY + nudgeY + template.height) / CANVAS_PIXELS
+      const x0 = template.originX / CANVAS_PIXELS
+      const y0 = template.originY / CANVAS_PIXELS
+      const x1 = (template.originX + template.width) / CANVAS_PIXELS
+      const y1 = (template.originY + template.height) / CANVAS_PIXELS
       // Strip order: top-left, top-right, bottom-left, bottom-right.
       project(matrix, x0, y0, corners, 0)
       corners[4] = 0
