@@ -9,7 +9,6 @@ import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
-import { watchDraftLayers } from './templates/draft.js'
 import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
 import { captureTilePixels, install, onTileFrame, type TileFrame } from './tile-transform.js'
@@ -183,9 +182,6 @@ const main = (): void => {
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
-  // wplace name each draft layer for its tile, so the canvas holding unsubmitted pixels can be
-  // found by asking the style. This also keeps the whole stack in order as those layers come and go.
-  step('draft layers', watchDraftLayers)
   onFrame(() => renderOverlayControls(repaint))
   onTileFrame(draw)
   onLocalChange(redraw)
