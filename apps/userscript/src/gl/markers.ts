@@ -168,6 +168,57 @@ export const drawMarkers = (
 
 export const MARKER_LAYER_ID = 'wts-markers'
 
+/** Their crosshair. It stays on top; the markers go directly below it. */
+const CROSSHAIR_LAYER = 'pixel-hover'
+
+/** A tile being painted gets its own layer, named for the tile. */
+const DRAFT_LAYER = /^paint-preview-/
+
+/** Not every frame: this is only ever wrong just after a draft layer appears. */
+const REORDER_MS = 500
+let nextCheck = 0
+
+interface Ordered {
+  /** MapLibre's own draw order. Custom layers are in it; `getStyle` leaves them out. */
+  style?: { _order?: string[] }
+  getLayer?: (id: string) => unknown
+  moveLayer?: (id: string, before?: string) => void
+}
+
+/**
+ * Keep the markers above wplace's draft layers.
+ *
+ * They add one per tile being painted, inserted wherever MapLibre puts it, which lands above a layer
+ * of ours added earlier — so the pixel just placed covers the marker it was meant to clear, and the
+ * only way to see the marker go is to zoom out until the placed pixel is too small to hide it.
+ *
+ * Checked from the frame hook rather than from `styledata`. Moving a layer *fires* `styledata`, so
+ * listening to it to decide whether to move is a loop that provokes itself — and if wplace re-insert
+ * a draft above ours, the two take turns for as long as the tab lasts. A poll cannot do that, and
+ * reading `_order` is an array scan.
+ */
+export const keepMarkersAboveDrafts = (): void => {
+  const now = performance.now()
+  if (now < nextCheck) return
+  nextCheck = now + REORDER_MS
+
+  const map = getMap() as Ordered | null
+  const order = map?.style?._order
+  if (map === null || order === undefined) return
+
+  const markers = order.indexOf(MARKER_LAYER_ID)
+  if (markers < 0) return
+  let lastDraft = -1
+  for (let i = 0; i < order.length; i++) {
+    if (DRAFT_LAYER.test(order[i] as string)) lastDraft = i
+  }
+  if (lastDraft < 0 || markers > lastDraft) return
+
+  const crosshair = map.getLayer?.(CROSSHAIR_LAYER) === undefined ? undefined : CROSSHAIR_LAYER
+  map.moveLayer?.(MARKER_LAYER_ID, crosshair)
+  count('marker:moved above the draft layers')
+}
+
 /**
  * Same shape at every zoom, in device pixels.
  *
