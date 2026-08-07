@@ -991,12 +991,27 @@ const PATCH_LIMIT = 32
  * already contained — and it happens on every pixel placed, which is the one moment the map has to
  * stay responsive.
  */
+/**
+ * The draft canvas is stored upside down relative to its tile.
+ *
+ * wplace place it as an image source whose `coordinates` run the other way round — the corner
+ * MapLibre treats as top-left is the tile's *bottom* edge, which is what the source's
+ * `flippedWindingOrder` is about. Measured on the live style: the layer named for tile 325,1781 has
+ * `coordinates[0]` at tile y 1782 and `coordinates[3]` at 1781.
+ *
+ * So a pixel at canvas row 245 is tile row 754, and reading it as 245 puts a placed pixel 500-odd
+ * rows from where it belongs. Horizontally nothing is reversed, which is why only the vertical was
+ * ever wrong — and why a painted pixel kept coming out "outside the template" while its x sat
+ * comfortably inside.
+ */
+const flipRow = (y: number): number => TILE_SIZE - 1 - y
+
 const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
   const table = indexTable()
   const { data, width, height } = image
   const triples: number[] = []
   for (let j = 0; j < height; j++) {
-    const y = dy + j
+    const y = flipRow(dy + j)
     if (y < 0 || y >= TILE_SIZE) continue
     for (let i = 0; i < width; i++) {
       const x = dx + i
@@ -1109,7 +1124,13 @@ const capture = (
           ? UNPAINTED
           : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
             UNPAINTED)
-      indices[p] = index
+      // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
+      if (from === 'preview') {
+        const x = p % TILE_SIZE
+        indices[flipRow((p - x) / TILE_SIZE) * TILE_SIZE + x] = index
+      } else {
+        indices[p] = index
+      }
     }
 
     const key = tileKey(tile)
