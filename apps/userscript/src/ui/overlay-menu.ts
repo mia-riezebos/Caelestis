@@ -128,7 +128,9 @@ const buildMenu = (
   menu.className = 'bg-base-100 shadow-2xl'
   Object.assign(menu.style, {
     position: 'fixed',
-    zIndex: '32',
+    // Below the panel's 30. When the window is too narrow for the clamp to keep this clear of the
+    // panel, something has to give, and the panel is the surface being deliberately worked in.
+    zIndex: '29',
     width: '15rem',
     // 12px, the same as the panel and every other popout here.
     borderRadius: '0.75rem',
@@ -320,7 +322,8 @@ export const renderOverlayControls = (rerender: () => void): void => {
       // themselves put on each row of their Overlays list — rather than a settings surface.
       button.appendChild(icon('kebab'))
       button.style.position = 'fixed'
-      button.style.zIndex = '31'
+      // Behind the panel too, for the same reason, and below the menu it opens.
+      button.style.zIndex = '28'
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         if (openFor === template.id) closeOverlayMenu()
