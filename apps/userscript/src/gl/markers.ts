@@ -171,23 +171,23 @@ export const MARKER_LAYER_ID = 'wts-markers'
 /**
  * How much of the marker layer to switch on, from `?wts=` in the URL.
  *
- * Adding this layer wedges the page during mount — hard enough that even `1 + 1` will not evaluate,
- * and `Debugger.pause` reports nothing, so the thread is stuck in native code rather than in a loop
- * of ours. Three things happen at mount and any of them could be it: MapLibre taking a second custom
- * layer at all, the program this compiles in `onAdd`, or the draw.
- *
- * Guessing costs a frozen tab per attempt, so each is switchable without a rebuild:
+ * The same markers, the same draw calls and the same data were fine drawn from the overlay's layer
+ * and wedge the page from this one, so what is left is *where* the work happens, not how much of it
+ * there is. Stages 0 and 1 are known good, so the render body is what remains, split into the three
+ * things it does:
  *
  * - `?wts=0` — the layer exists and does nothing. Default, because a plain reload must never brick.
- * - `?wts=1` — plus the shader program, compiled and linked in `onAdd`.
- * - `?wts=2` — plus the drawing. The whole feature.
+ * - `?wts=1` — plus the shader program, built in `onAdd`.
+ * - `?wts=2` — plus the *lookups*: which templates, which tiles, and their mismatches. No GL at all.
+ * - `?wts=3` — plus the GL state save and restore, still without drawing anything.
+ * - `?wts=4` — plus the draw. The whole feature.
  *
- * Whichever stage first freezes is the answer.
+ * Whichever stage first freezes is the answer, and there is nowhere left for it to hide.
  */
 const STAGE = (() => {
   const raw = new URLSearchParams(location.search).get('wts')
   const stage = raw === null ? 0 : Number(raw)
-  return Number.isFinite(stage) ? Math.min(Math.max(stage, 0), 2) : 0
+  return Number.isFinite(stage) ? Math.min(Math.max(stage, 0), 4) : 0
 })()
 
 /**
@@ -225,47 +225,50 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
 
   count('marker:layer rendered')
   beginMismatchFrame()
-  const hadBlend = gl.isEnabled(gl.BLEND)
-  const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
-  const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
-  const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
-  gl.enable(gl.BLEND)
-  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
 
+  // Only the tiles a template covers. Asking about a tile is not free — one whose pixels have not
+  // been captured triggers a fetch and a 1000x1000 `getImageData`.
+  const covers = (template: (typeof wanted)[number], tile: TileQuad): boolean => {
+    const left = tile.tile.x * TILE_SIZE
+    const top = tile.tile.y * TILE_SIZE
+    if (template.originX >= left + TILE_SIZE || template.originX + template.width <= left)
+      return false
+    if (template.originY >= top + TILE_SIZE || template.originY + template.height <= top)
+      return false
+    return true
+  }
+
+  const work: { tile: TileQuad; marks: Float32Array; fade: number }[] = []
   let deferred = false
   for (const template of wanted) {
     const fade = templateFade(template.id)
     if (fade <= 0) continue
     for (const tile of tiles) {
-      /**
-       * Only tiles this template actually covers.
-       *
-       * This is the whole bug the staged bisect found. Asking about a tile is not free: a tile with
-       * no pixels captured yet triggers a fetch and a 1000x1000 `getImageData`, and doing that for
-       * every tile on screen rather than the two a template sits on is twenty-odd of them, every
-       * frame, in native code — which is exactly the block that would not even yield to
-       * `Debugger.pause`.
-       *
-       * The code this replaced never had the problem, because its marker work sat inside the
-       * intersection test that decides whether to draw the template on that tile at all. Lifting it
-       * into a layer of its own left the test behind.
-       */
-      const left = tile.tile.x * TILE_SIZE
-      const top = tile.tile.y * TILE_SIZE
-      if (template.originX >= left + TILE_SIZE || template.originX + template.width <= left)
-        continue
-      if (template.originY >= top + TILE_SIZE || template.originY + template.height <= top) continue
-
+      if (!covers(template, tile)) continue
       const marks = mismatchesIn(template, tile.tile)
       if (marks === null) deferred = true
-      else if (marks.length > 0) drawMarkers(gl, tile, marks, MARKER_STYLE, fade)
+      else if (marks.length > 0) work.push({ tile, marks, fade })
     }
   }
+  count('marker:tiles with marks', work.length)
 
-  gl.bindVertexArray(previousVao)
-  gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-  gl.useProgram(previousProgram)
-  if (!hadBlend) gl.disable(gl.BLEND)
+  if (STAGE >= 3) {
+    const hadBlend = gl.isEnabled(gl.BLEND)
+    const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
+    const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
+    const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+
+    if (STAGE >= 4) {
+      for (const one of work) drawMarkers(gl, one.tile, one.marks, MARKER_STYLE, one.fade)
+    }
+
+    gl.bindVertexArray(previousVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
+    gl.useProgram(previousProgram)
+    if (!hadBlend) gl.disable(gl.BLEND)
+  }
 
   const now = performance.now()
   if (deferred && now >= nextRetry) {
