@@ -881,6 +881,17 @@ const previewNamed = new Set<string>()
 /** The named preview canvases themselves, so a tile's can be found and re-read when it moves on. */
 const previewCanvases = new Map<object, TileCoord>()
 
+/**
+ * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
+ * coordinates.
+ *
+ * A canvas is only named when a draw places it, so the *first* pixel painted into a tile always
+ * arrives unnamed. Falling back to re-reading the whole tile for that one meant the first pixel in
+ * any tile threw away every answer for it and recomputed the lot — visibly, since the markers went
+ * and came back. Holding the write until the name arrives keeps it a patch.
+ */
+const queuedWrites = new WeakMap<object, number[]>()
+
 type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
 const pixelListeners: PixelListener[] = []
 
@@ -905,11 +916,10 @@ const PATCH_LIMIT = 32
  * already contained — and it happens on every pixel placed, which is the one moment the map has to
  * stay responsive.
  */
-const patch = (tile: TileCoord, image: ImageData, dx: number, dy: number): boolean => {
-  const indices = pixelsOfTile.get(tileKey(tile))
-  if (indices === undefined) return false
+const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
   const table = indexTable()
   const { data, width, height } = image
+  const triples: number[] = []
   for (let j = 0; j < height; j++) {
     const y = dy + j
     if (y < 0 || y >= TILE_SIZE) continue
@@ -917,23 +927,39 @@ const patch = (tile: TileCoord, image: ImageData, dx: number, dy: number): boole
       const x = dx + i
       if (x < 0 || x >= TILE_SIZE) continue
       const at = (j * width + i) * 4
-      const index =
+      triples.push(
+        x,
+        y,
         data[at + 3] === 0
           ? UNPAINTED
           : (table[((data[at] ?? 0) << 16) | ((data[at + 1] ?? 0) << 8) | (data[at + 2] ?? 0)] ??
-            UNPAINTED)
-      if (indices[y * TILE_SIZE + x] === index) continue
-      indices[y * TILE_SIZE + x] = index
-      for (const listener of pixelListeners) {
-        try {
-          listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
-        } catch {
-          count('pixels:listener-failed')
-        }
+              UNPAINTED),
+      )
+    }
+  }
+  return triples
+}
+
+const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
+  const indices = pixelsOfTile.get(tileKey(tile))
+  if (indices === undefined) return false
+  let changed = 0
+  for (let i = 0; i < triples.length; i += 3) {
+    const x = triples[i] as number
+    const y = triples[i + 1] as number
+    const index = triples[i + 2] as number
+    if (indices[y * TILE_SIZE + x] === index) continue
+    indices[y * TILE_SIZE + x] = index
+    changed++
+    for (const listener of pixelListeners) {
+      try {
+        listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+      } catch {
+        count('pixels:listener-failed')
       }
     }
   }
-  count('pixels:patched a write')
+  if (changed > 0) count('pixels:patched a write')
   return true
 }
 
@@ -1082,10 +1108,16 @@ const installPutImageDataTaps = (
             const canvas = this.canvas as { width?: number; height?: number }
             if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
             const [image, dx, dy] = args
-            const tile = tileOfPaintCanvas.get(this.canvas)
-            const small = image.width <= PATCH_LIMIT && image.height <= PATCH_LIMIT
-            if (tile === undefined || !small || !patch(tile, image, dx, dy)) {
+            if (image.width > PATCH_LIMIT || image.height > PATCH_LIMIT) {
               markCanvasDirty(this.canvas)
+              return
+            }
+            const triples = readWrite(image, dx, dy)
+            const tile = tileOfPaintCanvas.get(this.canvas)
+            if (tile === undefined || !applyWrite(tile, triples)) {
+              const queue = queuedWrites.get(this.canvas)
+              if (queue === undefined) queuedWrites.set(this.canvas, triples)
+              else queue.push(...triples)
             }
           },
         )
@@ -1819,11 +1851,14 @@ export const install = (
             return
           }
         }
+        const held = queuedWrites.get(source)
+        if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(source)
         const stale = capturedAt.get(texture) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
         dirtyCanvases.delete(source)
         capturedAt.set(texture, captureGeneration)
         capture(tile, source, 'preview')
+        queuedWrites.delete(source)
       }
 
       const recordDraw = (drawCount: number): void => {
