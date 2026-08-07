@@ -1161,13 +1161,28 @@ const buildPanel = (): HTMLElement => {
 }
 
 const showView = (view: View): void => {
+  const staying = currentView === view
   currentView = view
   const panel = document.getElementById(PANEL_ID)
   const body = panel?.querySelector('[data-wts-body]')
   const title = panel?.querySelector('h2')
   if (!body || !title) return
   const inSettings = view === 'settings'
-  body.replaceChildren(inSettings ? settingsView() : treeView())
+
+  /**
+   * Keep the scroll position when re-rendering the view you are already on.
+   *
+   * Every control here re-renders by rebuilding the whole view, which throws away the scroller with
+   * it — so toggling a colour near the bottom of settings jumped back to the top, and toggling the
+   * next one meant scrolling down again. Switching *between* views still starts at the top, which is
+   * right: that is a new thing to read, not the same one redrawn.
+   */
+  const previous = body.firstElementChild
+  const scrollTop = staying && previous instanceof HTMLElement ? previous.scrollTop : 0
+
+  const next = inSettings ? settingsView() : treeView()
+  body.replaceChildren(next)
+  if (scrollTop > 0) next.scrollTop = scrollTop
   title.textContent = inSettings ? 'Settings' : PANEL_TITLE
 
   const back = panel?.querySelector<HTMLElement>('[data-wts-back]')
