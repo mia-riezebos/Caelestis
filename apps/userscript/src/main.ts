@@ -8,6 +8,7 @@ import {
 import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
+import { type Appearance, MIN_CELL_FOR_SHAPE, stampMask } from './templates/appearance.js'
 import { effectiveHiddenColours } from './templates/colour-filter.js'
 import {
   appearanceOf,
@@ -139,6 +140,86 @@ export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
   return cssPixelsPerCanvasPixelIn(lastFrame)
 }
 
+/**
+ * One reusable scratch surface for the masking pass.
+ *
+ * Allocated once and grown as needed rather than per tile per frame, because a canvas allocation is
+ * a GPU surface allocation and doing six of those every frame is its own performance problem.
+ */
+let scratch: OffscreenCanvas | null = null
+
+/**
+ * The tile with the pixel shape cut out of it, or null if it should be drawn as-is.
+ *
+ * Two `drawImage`s and one `fillRect` per tile, at screen resolution — replacing a per-pixel path
+ * loop over a million pixels. The mask is a repeating pattern of a single cell, scaled to whatever a
+ * cell measures on screen, so the shape stays smooth at any zoom instead of being quantised to a 3x3
+ * block. `destination-in` keeps the tile's colour only where the stamp is opaque.
+ *
+ * The pattern's origin is the tile's top-left corner, which is also cell (0,0) of that tile, so the
+ * repeat lines up with the pixel grid without any phase correction.
+ */
+const drawMasked = (
+  destination: CanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  appearance: Appearance,
+  tile: { left: number; top: number; width: number; height: number },
+): boolean => {
+  const cellPixels = tile.width / TILE_SIZE
+  // Too small for a shape to read, so skip the whole pass — this is also the common case while
+  // zoomed out, and it is the difference between panning smoothly and not.
+  if (cellPixels < MIN_CELL_FOR_SHAPE) return false
+  const mask = stampMask(appearance)
+  if (mask === null) return false
+
+  // Only the part of the tile that is actually on screen.
+  //
+  // Sizing the scratch to the whole tile is wrong by orders of magnitude once zoomed in: at z17 a
+  // tile spans about 90,000 device pixels, so the allocation failed, `getContext` returned null and
+  // the overlay silently fell back to drawing unmasked — shapes just stopped appearing past a
+  // certain zoom. Clipping to the viewport bounds the work by what can be seen instead.
+  const left = Math.max(tile.left, 0)
+  const top = Math.max(tile.top, 0)
+  const right = Math.min(tile.left + tile.width, destination.canvas.width)
+  const bottom = Math.min(tile.top + tile.height, destination.canvas.height)
+  const width = Math.ceil(right - left)
+  const height = Math.ceil(bottom - top)
+  if (width <= 0 || height <= 0) return true
+
+  if (scratch === null || scratch.width < width || scratch.height < height) {
+    scratch = new OffscreenCanvas(
+      Math.max(width, scratch?.width ?? 0),
+      Math.max(height, scratch?.height ?? 0),
+    )
+  }
+  const context = scratch.getContext('2d')
+  if (context === null) return false
+
+  // The scratch origin is the visible corner, so everything below is offset by how much of the tile
+  // is off-screen above and to the left.
+  const offsetX = tile.left - left
+  const offsetY = tile.top - top
+
+  context.clearRect(0, 0, width, height)
+  context.globalCompositeOperation = 'source-over'
+  // Nearest: we are magnifying, and a template pixel must stay a crisp square before it is carved.
+  context.imageSmoothingEnabled = false
+  context.drawImage(bitmap, offsetX, offsetY, tile.width, tile.height)
+
+  const pattern = context.createPattern(mask, 'repeat')
+  if (pattern === null) return false
+  // Scale one mask to one cell, then shift by the same off-screen offset, so the repeat stays keyed
+  // to the tile's own pixel grid rather than to whatever corner happens to be visible.
+  pattern.setTransform(new DOMMatrix().translate(offsetX, offsetY).scale(cellPixels / mask.width))
+  context.globalCompositeOperation = 'destination-in'
+  context.fillStyle = pattern
+  context.fillRect(0, 0, width, height)
+  context.globalCompositeOperation = 'source-over'
+
+  destination.drawImage(scratch, 0, 0, width, height, left, top, width, height)
+  return true
+}
+
 /** Draws every visible template over the tiles wplace is currently showing. */
 const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
   const visible = localTemplates().filter((template) => template.visible)
@@ -179,8 +260,6 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
             const right = Math.min(destinationLeft + TILE_SIZE, targetLeft + TILE_SIZE)
             const bottom = Math.min(destinationTop + TILE_SIZE, targetTop + TILE_SIZE)
             if (right <= left || bottom <= top) continue
-            const bitmapScaleX = bitmap.width / TILE_SIZE
-            const bitmapScaleY = bitmap.height / TILE_SIZE
             const minifying = bitmap.width > quad.width || bitmap.height > quad.height
             if (smoothing !== minifying) {
               smoothing = minifying
@@ -188,26 +267,32 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
               if (minifying) context.imageSmoothingQuality = 'high'
             }
             context.globalAlpha = appearance.opacity
-            context.drawImage(
-              bitmap,
-              (left - targetLeft) * bitmapScaleX,
-              (top - targetTop) * bitmapScaleY,
-              (right - left) * bitmapScaleX,
-              (bottom - top) * bitmapScaleY,
-              quad.x + ((left - destinationLeft) / TILE_SIZE) * quad.width,
-              quad.y + ((top - destinationTop) / TILE_SIZE) * quad.height,
-              ((right - left) / TILE_SIZE) * quad.width,
-              ((bottom - top) / TILE_SIZE) * quad.height,
-            )
+            const canvasLeft =
+              quad.x + ((targetLeft - destinationLeft) / TILE_SIZE) * quad.width
+            const canvasTop = quad.y + ((targetTop - destinationTop) / TILE_SIZE) * quad.height
+            context.save()
+            context.beginPath()
+            context.rect(quad.x, quad.y, quad.width, quad.height)
+            context.clip()
+            if (
+              !drawMasked(context, bitmap, appearance, {
+                left: canvasLeft,
+                top: canvasTop,
+                width: quad.width,
+                height: quad.height,
+              })
+            ) {
+              context.drawImage(bitmap, canvasLeft, canvasTop, quad.width, quad.height)
+            }
+            context.restore()
             context.globalAlpha = 1
             drawn++
           }
         }
         continue
       }
-      // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
-      // per frame; the stamp is rebuilt only when the appearance changes.
-      const tile = stampTile(template, key, appearance, quad.width)
+      // Only the colour filter is baked. Shape is applied below, as a mask at screen resolution.
+      const tile = stampTile(template, key, appearance)
       if (tile === undefined) continue
       context.globalAlpha = appearance.opacity
       // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
@@ -224,7 +309,16 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
       }
       // Use MapLibre's exact fractional quad. Snapping each quad independently changes both origin
       // and scale relative to the underlying WebGL tile, visibly distorting the internal pixel grid.
-      context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
+      if (
+        !drawMasked(context, bitmap, appearance, {
+          left: quad.x,
+          top: quad.y,
+          width: quad.width,
+          height: quad.height,
+        })
+      ) {
+        context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
+      }
       context.globalAlpha = 1
       drawn++
     }
