@@ -1,10 +1,6 @@
 import { TILE_SIZE } from '@wts/shared'
-import { count, warn } from '../debug.js'
-import { getMap } from '../map-handle.js'
-import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
-import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
-import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
-import { templateFade } from './fade.js'
+import { warn } from '../debug.js'
+import type { TileQuad } from '../tile-transform.js'
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -164,104 +160,4 @@ export const drawMarkers = (
 
   gl.drawArrays(gl.POINTS, 0, pixels.length / 2)
   gl.bindVertexArray(null)
-}
-
-export const MARKER_LAYER_ID = 'wts-markers'
-
-/**
- * Same shape at every zoom, in device pixels.
- *
- * Sized in cells it shrinks with the zoom, and the view where you are hunting for one wrong pixel in
- * a hundred thousand is exactly the view where a cell is a speck.
- */
-const MARKER_STYLE: MarkerStyle = {
-  size: 9,
-  thickness: 2,
-  /** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
-  colour: [1, 0, 1],
-}
-
-/**
- * The soonest a deferred scan may ask for another frame.
- *
- * Asking from inside a render callback is asking for the next frame from the frame you are in, so a
- * tile that can never be answered — because its pixels were never captured, say — turns into a
- * render loop at full rate that looks exactly like a hang. This makes the retry a heartbeat instead.
- */
-const RETRY_MS = 250
-let nextRetry = 0
-
-/** Every marked pixel of every template that asks for it, over every tile on screen. */
-const drawAll = (gl: WebGL2RenderingContext): void => {
-  if (!isDrawingTiles()) return
-  const tiles = currentQuads()
-  if (tiles.length === 0) return
-  const wanted = localTemplates().filter(
-    (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
-  )
-  if (wanted.length === 0) return
-
-  count('marker:layer rendered')
-  beginMismatchFrame()
-  const hadBlend = gl.isEnabled(gl.BLEND)
-  const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
-  const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
-  const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
-  gl.enable(gl.BLEND)
-  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-
-  let deferred = false
-  for (const template of wanted) {
-    const fade = templateFade(template.id)
-    if (fade <= 0) continue
-    for (const tile of tiles) {
-      const marks = mismatchesIn(template, tile.tile)
-      if (marks === null) deferred = true
-      else if (marks.length > 0) drawMarkers(gl, tile, marks, MARKER_STYLE, fade)
-    }
-  }
-
-  gl.bindVertexArray(previousVao)
-  gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-  gl.useProgram(previousProgram)
-  if (!hadBlend) gl.disable(gl.BLEND)
-
-  const now = performance.now()
-  if (deferred && now >= nextRetry) {
-    nextRetry = now + RETRY_MS
-    const map = getMap() as { triggerRepaint?: () => void } | null
-    map?.triggerRepaint?.()
-    count('marker:asked for another frame')
-  }
-}
-
-/**
- * The markers, in a layer of their own.
- *
- * The overlay belongs *under* a pixel waiting to be placed — that is what makes placing one look
- * like it covers the template. A marker is the opposite: an annotation about a pixel, which cannot
- * sit beneath the pixel it describes. One layer could not be both.
- */
-export const markerLayer = {
-  id: MARKER_LAYER_ID,
-  type: 'custom' as const,
-  renderingMode: '2d' as const,
-
-  onAdd(_map: unknown, gl: WebGL2RenderingContext): void {
-    initMarkers(gl)
-    count('marker:layer added')
-  },
-
-  onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
-    releaseMarkers(gl)
-  },
-
-  render(gl: WebGL2RenderingContext): void {
-    // Never let this escape into MapLibre's render loop; a throw here takes the whole frame with it.
-    try {
-      drawAll(gl)
-    } catch (error) {
-      warn('install', 'marker layer render failed; skipping this frame', String(error))
-    }
-  },
 }
