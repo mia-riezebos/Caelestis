@@ -34,6 +34,34 @@ import { icon } from './icons.js'
 const MENU_ID = 'wts-overlay-menu'
 let openFor: string | null = null
 
+/** Breathing room between these controls and whatever they are being kept clear of. */
+const GAP = 12
+
+/**
+ * The leftmost edge of the chrome stacked against the right of the window.
+ *
+ * Clamping to `innerWidth` was not enough: it keeps these controls *in the window*, which is where
+ * wplace's rail and our own panel already are. The menu ended up underneath both, with its colour
+ * grid and its close button sitting behind their buttons.
+ *
+ * Measured rather than assumed, because neither width is ours to hardcode — the panel is resizable
+ * by the user, and the rail is wplace's markup and can change. Our own rail button is *in* their
+ * rail, which is the cheapest reliable handle on it.
+ */
+const rightEdge = (): number => {
+  let edge = window.innerWidth
+  const rail = document.getElementById('wts-rail-button')?.parentElement ?? null
+  const panel = document.getElementById('wts-panel')
+  for (const element of [rail, panel]) {
+    if (element === null) continue
+    const box = element.getBoundingClientRect()
+    // A closed panel is still in the document in some states; zero-sized things occupy nothing.
+    if (box.width === 0 || box.height === 0) continue
+    edge = Math.min(edge, box.left)
+  }
+  return edge - GAP
+}
+
 export const isOverlayMenuOpen = (id: string): boolean => openFor === id
 
 const slider = (
@@ -303,9 +331,10 @@ export const renderOverlayControls = (rerender: () => void): void => {
       })
       document.body.appendChild(button)
     }
-    // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
-    // rather than losing its controls exactly when you want to bring it back.
-    button.style.left = `${Math.min(Math.max(corner.x + 6, 4), window.innerWidth - 32)}px`
+    // Clamped to free space, so a template hanging off an edge keeps a reachable button rather
+    // than losing its controls exactly when you want to bring it back.
+    const limit = rightEdge()
+    button.style.left = `${Math.min(Math.max(corner.x + 6, 4), limit - 32)}px`
     button.style.top = `${Math.min(Math.max(corner.y, 4), window.innerHeight - 32)}px`
 
     if (openFor !== template.id) continue
@@ -319,9 +348,9 @@ export const renderOverlayControls = (rerender: () => void): void => {
       )
       document.body.appendChild(menu)
     }
-    // Keep it on screen when the overlay is near an edge.
+    // Keep it clear of the chrome on the right, not merely inside the window.
     const box = menu.getBoundingClientRect()
-    menu.style.left = `${Math.min(corner.x + 6, window.innerWidth - box.width - 8)}px`
+    menu.style.left = `${Math.max(8, Math.min(corner.x + 6, limit - box.width))}px`
     menu.style.top = `${Math.min(Math.max(8, corner.y + 28), window.innerHeight - box.height - 8)}px`
   }
 }
