@@ -348,32 +348,44 @@ export const renderOverlayControls = (rerender: () => void): void => {
     }
     const size = button.getBoundingClientRect().width || 40
 
-    // Anchored just outside the overlay's top-right corner, then made sticky to the viewport, then
-    // released again once the overlay has left entirely.
-    //
-    // Read the two clamps in order. `min` keeps it on screen while the template runs off to the
-    // right, which is what makes it *stay* right-aligned and reachable instead of sailing away with
-    // a template you can still see. `max` is the release: it may never sit further left than just
-    // outside the template's own left edge, so once the template is fully past the right of the
-    // viewport that floor overtakes the viewport clamp and the button leaves with it.
-    //
-    // Without the release, every distant template parks a button against the same edge and you get
-    // a stack of identical controls pointing at nothing on screen. Without the sticky clamp, a
-    // template wider than the window has no reachable control at all.
-    const left = Math.max(
-      Math.min(bottomRight.x + GAP, limit - size),
-      topLeft.x - size - GAP, // outside the left edge, never over the artwork
-    )
+    /**
+     * Anchored just outside the overlay's top-right corner, then made sticky to the viewport, then
+     * released again once the overlay has left entirely.
+     *
+     * Read the two clamps in order. `min` keeps it on screen while the template runs off to the
+     * right, which is what makes it *stay* right-aligned and reachable instead of sailing away with
+     * a template you can still see. `max` is the release: it may never sit further left than just
+     * outside the template's own left edge, so once the template is fully past the right of the
+     * viewport that floor overtakes the viewport clamp and it leaves with the template.
+     *
+     * Without the release, every distant template parks a control against the same edge and you get
+     * a stack of them pointing at nothing on screen. Without the sticky clamp, a template wider than
+     * the window has no reachable control at all.
+     */
+    const leftFor = (length: number): number =>
+      Math.max(
+        Math.min(bottomRight.x + GAP, limit - length),
+        topLeft.x - length - GAP, // outside the left edge, never over the artwork
+      )
 
-    // Same shape vertically, plus: never below the overlay's own bottom edge, since the button
-    // belongs to the template and should not hang past it.
-    const top = Math.min(
-      Math.min(Math.max(topLeft.y, TOP_MARGIN), window.innerHeight - size - TOP_MARGIN),
-      bottomRight.y - size,
-    )
+    /**
+     * Vertically the same idea, plus: never hanging below the overlay's own bottom edge.
+     *
+     * That last rule only applies when the control actually fits inside the overlay's height. The
+     * menu is far taller than the button and routinely taller than a small template, and forcing it
+     * to end above such a template's bottom would drag it up off the top of the screen.
+     */
+    const topFor = (length: number): number => {
+      const sticky = Math.min(
+        Math.max(topLeft.y, TOP_MARGIN),
+        window.innerHeight - length - TOP_MARGIN,
+      )
+      const fitsWithin = bottomRight.y - topLeft.y >= length
+      return fitsWithin ? Math.min(sticky, bottomRight.y - length) : sticky
+    }
 
-    button.style.left = `${left}px`
-    button.style.top = `${top}px`
+    button.style.left = `${leftFor(size)}px`
+    button.style.top = `${topFor(size)}px`
     // The menu takes the button's place rather than appearing beside it — one control in one spot,
     // opened and closed, instead of a button sitting redundantly next to the thing it opened.
     const isOpen = openFor === template.id
@@ -390,11 +402,13 @@ export const renderOverlayControls = (rerender: () => void): void => {
       )
       document.body.appendChild(menu)
     }
-    // Anchored where the button was, then pulled back inside the free area — it is much larger than
-    // the button, so the spot that fit a 40px square often will not fit this.
+    // The same anchoring as the button, measured against the menu's own size rather than reusing
+    // the button's position. It replaces the button, so it has to behave like it: right-aligned and
+    // sticky while the overlay is in view, and released once the overlay has gone — otherwise an
+    // open menu stays pinned to the edge long after its template has left the screen.
     const box = menu.getBoundingClientRect()
-    menu.style.left = `${Math.max(TOP_MARGIN, Math.min(left, limit - box.width))}px`
-    menu.style.top = `${Math.max(TOP_MARGIN, Math.min(top, window.innerHeight - box.height - TOP_MARGIN))}px`
+    menu.style.left = `${leftFor(box.width)}px`
+    menu.style.top = `${topFor(box.height)}px`
   }
 }
 
