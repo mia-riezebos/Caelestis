@@ -395,6 +395,7 @@ export const overlayLayer = {
     // Collected while drawing and flushed after, because markers use their own program and swapping
     // programs per tile would cost more than the markers do.
     const markerWork: { tile: (typeof tiles)[number]; marks: Float32Array; fade: number }[] = []
+    let scanPending = false
 
     gl.useProgram(program)
     gl.bindVertexArray(vao)
@@ -487,7 +488,11 @@ export const overlayLayer = {
 
         if (appearance.markMismatch) {
           const marks = mismatchesIn(template, tile.tile)
-          if (marks !== null && marks.length > 0) markerWork.push({ tile, marks, fade })
+          // Null is "ask again next frame", and on a still map there is no next frame unless one is
+          // asked for. Without this the answer waited for the user to move — measured at about ten
+          // seconds, which read as the scan being slow when it had simply not been run.
+          if (marks === null) scanPending = true
+          else if (marks.length > 0) markerWork.push({ tile, marks, fade })
         }
       }
     }
@@ -495,6 +500,10 @@ export const overlayLayer = {
     // Markers last, so a crosshair is never drawn under a template that comes after it.
     for (const work of markerWork) {
       drawMarkers(gl, work.tile, work.marks, MARKER_STYLE, work.fade)
+    }
+    if (scanPending) {
+      const map = getMap() as { triggerRepaint?: () => void } | null
+      map?.triggerRepaint?.()
     }
 
     // Put it all back. The active texture unit especially: we leave it on 1 while binding the

@@ -867,6 +867,20 @@ export const markCanvasDirty = (canvas: object): void => {
 /** Which tile a paint-preview canvas belongs to, once a draw has told us. */
 const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
 
+/**
+ * Tiles whose preview canvas we can read, and which must therefore never be read from the PNG.
+ *
+ * The two sources do not say the same thing. The preview holds what is on the canvas *including*
+ * pixels placed and not yet submitted; the PNG holds what the server has, which by definition does
+ * not. wplace serve tiles `no-store` and re-fetch them, so a marker cleared by a pending pixel came
+ * back the moment the next fetch landed — about ten seconds later, on a pixel the user had just
+ * painted. The preview is a superset, so once it is available it is the only thing worth reading.
+ */
+const previewNamed = new Set<string>()
+
+/** The named preview canvases themselves, so a tile's can be found and re-read when it moves on. */
+const previewCanvases = new Map<object, TileCoord>()
+
 type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
 const pixelListeners: PixelListener[] = []
 
@@ -931,6 +945,16 @@ const capture = (
 ): void => {
   if (!capturePixels) return
   if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) return
+  // A server tile never overwrites what the preview says. It would be a step *backwards*: the same
+  // pixels minus anything placed and not yet submitted.
+  if (from === 'tile' && previewNamed.has(tileKey(tile)) && pixelsOfTile.has(tileKey(tile))) {
+    // Still worth re-reading the preview, since a fetch landing means the tile moved on.
+    for (const [canvas, named] of previewCanvases) {
+      if (named.x === tile.x && named.y === tile.y) dirtyCanvases.add(canvas)
+    }
+    count('pixels:kept the preview over a server tile')
+    return
+  }
   try {
     const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
     const context = canvas.getContext('2d', { willReadFrequently: true })
@@ -1785,6 +1809,8 @@ export const install = (
             tile = known.tile
             tileOfPaintTexture.set(texture, tile)
             tileOfPaintCanvas.set(source, tile)
+            previewNamed.add(tileKey(tile))
+            previewCanvases.set(source, tile)
             log('texture', `named the paint preview for ${tile.x}/${tile.y}`)
             break
           }
