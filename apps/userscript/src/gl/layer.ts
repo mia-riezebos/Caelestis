@@ -268,6 +268,20 @@ export const overlayLayer = {
   },
 
   render(gl: WebGL2RenderingContext, args: unknown): void {
+    // Never let this escape into MapLibre's render loop.
+    //
+    // A throw from a custom layer takes the whole frame with it, and MapLibre stops rendering
+    // afterwards: the canvas freezes on its last framebuffer, so the page still *looks* alive while
+    // no draw call of any kind is issued. Nothing recovers without a reload, which makes it read as
+    // "the overlay is broken" rather than "the map died".
+    try {
+      this.draw(gl, args)
+    } catch (error) {
+      warn('install', 'overlay layer render failed; skipping this frame', String(error))
+    }
+  },
+
+  draw(gl: WebGL2RenderingContext, args: unknown): void {
     if (program === null || vao === null) return
     // Stop where wplace stops. A layer renders every frame whatever the zoom, so without this the
     // overlay stayed on screen past the point their canvas disappears — annotating nothing.
@@ -278,6 +292,15 @@ export const overlayLayer = {
     const visible = localTemplates().filter(isTemplateVisible)
     collect(gl, new Set(localTemplates().map((template) => template.id)))
     if (visible.length === 0) return
+
+    // Everything we are about to disturb, so it can go back exactly as found. MapLibre assumes it
+    // owns this context and does not re-set what it believes it already knows — leaving the active
+    // unit on 1, or depth test off, quietly corrupts whatever it draws next.
+    const hadBlend = gl.isEnabled(gl.BLEND)
+    const hadDepth = gl.isEnabled(gl.DEPTH_TEST)
+    const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
+    const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
+    const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
 
     gl.useProgram(program)
     gl.bindVertexArray(vao)
@@ -350,7 +373,17 @@ export const overlayLayer = {
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     }
 
-    gl.bindVertexArray(null)
+    // Put it all back. The active texture unit especially: we leave it on 1 while binding the
+    // palette, and MapLibre binds its own textures expecting to still be on 0.
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, null)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, null)
+    gl.bindVertexArray(previousVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
+    gl.useProgram(previousProgram)
+    if (!hadBlend) gl.disable(gl.BLEND)
+    if (hadDepth) gl.enable(gl.DEPTH_TEST)
   },
 }
 
