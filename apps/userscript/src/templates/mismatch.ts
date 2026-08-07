@@ -30,19 +30,24 @@ interface Cached {
 const cache = new Map<string, Cached>()
 
 /**
- * How many tiles may be scanned in one frame.
+ * How long scanning may take in one frame, in milliseconds.
  *
- * A scan is up to a million comparisons. Turning the feature on with a screen full of tiles asks for
- * all of them at once, and doing that in one frame is a stall measured in seconds — the same mistake
- * as the shader version, moved to the CPU. One per frame fills the screen in under half a second and
- * never blocks a frame for more than a scan.
+ * A budget in time rather than in tiles. A scan is up to a million comparisons but usually far
+ * fewer — a template covers only part of a tile, and most tiles are not covered at all — so "one
+ * tile per frame" made a screenful take as many frames as there were tiles regardless of whether
+ * that was 2ms of work or 20. Spending a slice of the frame instead does the cheap ones together
+ * and still never blocks on the expensive ones.
+ *
+ * Eight milliseconds leaves room in a 16ms frame for MapLibre to draw the map it is in the middle
+ * of. This is checked *between* tiles, so one scan can still overrun it; the guarantee is that the
+ * budget bounds the queue, not any single scan.
  */
-const SCANS_PER_FRAME = 1
-let scansLeft = SCANS_PER_FRAME
+const SCAN_BUDGET_MS = 8
+let scanDeadline = 0
 
 /** Called once per frame by the renderer, before it asks for anything. */
 export const beginMismatchFrame = (): void => {
-  scansLeft = SCANS_PER_FRAME
+  scanDeadline = performance.now() + SCAN_BUDGET_MS
 }
 
 /** Everything that changes the answer, so a stale entry is never returned. */
@@ -70,8 +75,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   }
   // Out of budget: answer next frame rather than block this one. A stale result would be worse than
   // none, since it would put crosshairs on pixels that have since been fixed.
-  if (scansLeft <= 0) return null
-  scansLeft--
+  if (performance.now() >= scanDeadline) return null
 
   const tileLeft = tile.x * TILE_SIZE
   const tileTop = tile.y * TILE_SIZE
@@ -85,19 +89,38 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     return empty
   }
 
-  const hidden = new Set(hiddenColoursFor(template.appearance))
+  /**
+   * "Is this colour one we are asserting", as a lookup rather than a question.
+   *
+   * A pixel we are not drawing is a pixel whose colour we are not claiming: the wildcard asks for
+   * nothing, and a filtered colour is one the user has said to stop showing. Neither can be wrong,
+   * and marking them would bury the ones that are.
+   *
+   * Folding all of that into one table before the loop is most of the speed here. A `Set.has` per
+   * pixel is a hash of a boxed number a million times over, for an answer that only has 256 possible
+   * inputs.
+   */
+  const asserted = new Uint8Array(256)
+  asserted.fill(1)
+  asserted[TRANSPARENT_INDEX] = 0
+  asserted[UNPAINTED] = 0
+  for (const index of hiddenColoursFor(template.appearance)) asserted[index] = 0
+
   const markUnpainted = template.appearance?.markUnpainted === true
+  // Local aliases: property lookups on the template inside a million-iteration loop are not free.
+  const wantedPixels = template.indices
+  const templateWidth = template.width
+  const originX = template.originX
+  const originY = template.originY
+
   const found: number[] = []
   for (let y = top; y < bottom; y++) {
-    const templateRow = (y - template.originY) * template.width - template.originX
-    const tileRow = (y - tileTop) * TILE_SIZE - tileLeft
-    for (let x = left; x < right; x++) {
-      const wanted = template.indices[templateRow + x]
-      // A pixel we are not drawing is a pixel whose colour we are not asserting: the wildcard asks
-      // for nothing, and a filtered colour is one the user has said to stop showing. Neither can be
-      // wrong, and marking them would bury the ones that are.
-      if (wanted === undefined || wanted === TRANSPARENT_INDEX || hidden.has(wanted)) continue
-      const placed = pixels[tileRow + x]
+    let templateAt = (y - originY) * templateWidth + (left - originX)
+    let tileAt = (y - tileTop) * TILE_SIZE + (left - tileLeft)
+    for (let x = left; x < right; x++, templateAt++, tileAt++) {
+      const wanted = wantedPixels[templateAt] as number
+      if (asserted[wanted] === 0) continue
+      const placed = pixels[tileAt] as number
       if (placed === wanted) continue
       if (placed === UNPAINTED && !markUnpainted) continue
       found.push(x, y)
