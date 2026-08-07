@@ -4,6 +4,7 @@ import {
   getState,
   type LocalFolder,
   listNodes,
+  setLocalFolderVisible,
   setState,
   type TreeNode,
 } from '../state.js'
@@ -41,8 +42,12 @@ export interface TreeCallbacks {
   readonly onGoTo: (templateId: string) => void
   readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
-  /** File a dragged row — a template or another folder — into a Local folder. */
-  readonly onMoveIntoLocalFolder: (draggedKey: string, folderId: string) => void
+  /** Move a dragged Local row to a place in the tree: a container, and the key it goes before. */
+  readonly onMoveLocal: (
+    draggedKey: string,
+    parentKey: string | null,
+    beforeKey: string | null,
+  ) => void
 }
 
 const collapsed = new Set<string>()
@@ -101,6 +106,20 @@ const orderedKeys = (keys: readonly string[]): readonly string[] => {
   )
 }
 
+/**
+ * Put `key` immediately before `beforeKey` in the custom order, or last when that is null.
+ *
+ * One flat list across the whole tree, because each level only ever sorts among its own children —
+ * a key's rank is meaningless outside its parent, so the lists cannot interfere.
+ */
+export const placeKey = (key: string, beforeKey: string | null): void => {
+  const next = getState().customOrder.filter((candidate) => candidate !== key)
+  const index = beforeKey === null ? -1 : next.indexOf(beforeKey)
+  if (index === -1) next.push(key)
+  else next.splice(index, 0, key)
+  setState({ customOrder: next })
+}
+
 const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
   const next = keys.filter((key) => key !== from)
   const index = next.indexOf(to)
@@ -109,12 +128,107 @@ const moveKey = (keys: readonly string[], from: string, to: string, after: boole
   setState({ customOrder: next })
 }
 
+/**
+ * Where a drop would land: a container and the key it goes before, `null` meaning last.
+ *
+ * Held at module level rather than recomputed on `drop`, because the drop may not land on the row
+ * that computed it — the placeholder itself is a drop target, and it sits *between* rows. The rule
+ * is that whatever the outline shows is what happens, so the outline's own position is the answer
+ * and the drop only has to read it.
+ */
+/** The row being dragged, and the container it came from — needed to police reparenting. */
+let dragging: { key: string; parentKey: string | null } | null = null
+
+let dropTarget: {
+  readonly parentKey: string | null
+  readonly beforeKey: string | null
+  readonly apply: (draggedKey: string, parentKey: string | null, beforeKey: string | null) => void
+  readonly rerender: () => void
+} | null = null
+
 /** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
-const placeholder = (): HTMLElement => {
+const placeholder = (depth: number): HTMLElement => {
   const el = document.createElement('div')
   el.className = 'wts-placeholder'
   el.dataset.wtsPlaceholder = ''
+  // Indented to the level it would land at, so the outline says *where* and not merely *between
+  // which two rows* — the two differ exactly when the drop would change a row's parent.
+  el.style.marginLeft = `${0.25 + depth * 1.125}rem`
+  // The outline accepts the drop itself. Aiming at a gap and having to hit a row instead is the
+  // thing that made filing into a folder feel like a trick — and a `dragover` alone was not enough,
+  // since a drop landing here bubbled past every row's handler and was simply lost.
+  el.addEventListener('dragover', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+  })
+  el.addEventListener('drop', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const target = dropTarget
+    const from = event.dataTransfer?.getData('text/plain')
+    clearDropMarks(el.parentElement ?? document)
+    dropTarget = null
+    dragging = null
+    if (target === null || from === undefined || from === '' || from === target.beforeKey) return
+    target.apply(from, target.parentKey, target.beforeKey)
+    target.rerender()
+  })
   return el
+}
+
+/** Rows in document order, ignoring the one being dragged and the placeholder. */
+const visibleRows = (root: ParentNode): HTMLElement[] =>
+  [...root.querySelectorAll<HTMLElement>('[data-wts-key]')].filter(
+    (row) => !row.classList.contains('wts-dragging'),
+  )
+
+/**
+ * Resolve a pointer position over one row into a place in the tree.
+ *
+ * Above the midpoint means "before this row", at this row's own level. Below means "after", and
+ * after is where the interesting case is: the row following an **expanded** container is its first
+ * child, so landing after it means landing *inside* it, while after a **collapsed** container means
+ * beside it. That is what the rows look like on screen, so it is what the drop does — no separate
+ * "middle third means into" gesture to discover, and no way to aim at a gap and be refused.
+ */
+const resolveDrop = (
+  row: HTMLElement,
+  clientY: number,
+): {
+  parentKey: string | null
+  beforeKey: string | null
+  depth: number
+  /** Where to insert the outline. Null appends, which is what "last in this list" means. */
+  before: Element | null
+} => {
+  const box = row.getBoundingClientRect()
+  const above = clientY < box.top + box.height / 2
+  const depth = Number(row.dataset.wtsDepth ?? 0)
+  const parentKey = row.dataset.wtsParent ?? null
+  const key = row.dataset.wtsKey ?? null
+
+  if (above) return { parentKey, beforeKey: key, depth, before: row }
+
+  const isContainer = row.dataset.wtsContainer !== undefined
+  const expanded = key !== null && isExpanded(key)
+  const next = row.nextElementSibling
+  if (isContainer && expanded) {
+    // Into it, ahead of whatever it already holds.
+    const firstChild = next instanceof HTMLElement ? (next.dataset.wtsKey ?? null) : null
+    return {
+      parentKey: key,
+      beforeKey: firstChild,
+      depth: depth + 1,
+      before: next,
+    }
+  }
+  // Beside it. Skip over anything nested under this row so "after" means after its whole subtree.
+  let cursor: Element | null = next
+  while (cursor instanceof HTMLElement && Number(cursor.dataset.wtsDepth ?? 0) > depth) {
+    cursor = cursor.nextElementSibling
+  }
+  const beforeKey = cursor instanceof HTMLElement ? (cursor.dataset.wtsKey ?? null) : null
+  return { parentKey, beforeKey, depth, before: cursor }
 }
 
 const clearDropMarks = (root: ParentNode): void => {
@@ -130,6 +244,16 @@ interface RowOptions {
   readonly meta?: string
   /** Containers accept a drop *into* them; leaves only reorder between siblings. */
   readonly container: boolean
+  /** The row this one sits under, so a drop can resolve to a place in the tree rather than a row. */
+  readonly parentKey?: string | null | undefined
+  /**
+   * Whether a drop here may change the dragged row's parent.
+   *
+   * False leaves reordering intact but refuses any move that would file something somewhere else.
+   * Order is a local preference and always the user's to set; where a template *lives* is shared
+   * structure, and only an admin may rearrange that.
+   */
+  readonly canReparent?: boolean | undefined
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
   /** Present only where the user can actually change things; absent means no rename affordance. */
   readonly onRename?: ((name: string) => void) | undefined
@@ -137,6 +261,16 @@ interface RowOptions {
   readonly siblings: readonly string[]
   readonly rerender: () => void
   readonly onDropInto?: ((draggedKey: string) => void) | undefined
+  /**
+   * Drop resolved to a position: which container it lands in, and which key it lands before.
+   *
+   * Supersedes `onDropInto` where it is provided. A tree move is a parent *and* an index — offering
+   * only "into this container" forced everything to the end of the list, and offering only
+   * "before/after this row" could never change a row's parent.
+   */
+  readonly onDropAt?:
+    | ((draggedKey: string, parentKey: string | null, beforeKey: string | null) => void)
+    | undefined
   /** When present, the row reflects this instead of the tree's own disabled set. */
   readonly checked?: boolean | undefined
   readonly onToggleChecked?: ((on: boolean) => void) | undefined
@@ -147,6 +281,11 @@ const treeRow = (options: RowOptions): HTMLElement => {
   const row = document.createElement('div')
   row.className = 'wts-row flex items-center gap-1'
   row.dataset.wtsKey = options.key
+  if (options.parentKey !== undefined && options.parentKey !== null) {
+    row.dataset.wtsParent = options.parentKey
+  }
+  row.dataset.wtsDepth = String(options.depth)
+  if (options.container) row.dataset.wtsContainer = ''
   row.style.padding = '0.25rem 0.5rem'
   // One indent step per level, on top of the fixed gutter.
   row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
@@ -304,6 +443,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
   row.addEventListener('dragstart', (event) => {
     event.dataTransfer?.setData('text/plain', options.key)
+    dragging = { key: options.key, parentKey: options.parentKey ?? null }
     // Take the row out of the flow, so what is on screen is the drag image plus the hole it will
     // land in — nothing else. Leaving it in place at reduced opacity reads as a duplicate, and
     // every row below shifts as the placeholder is inserted.
@@ -315,30 +455,68 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.addEventListener('dragend', () => {
     row.classList.remove('wts-dragging')
     clearDropMarks(row.parentElement ?? document)
+    dropTarget = null
+    dragging = null
   })
   row.addEventListener('dragover', (event) => {
     event.preventDefault()
     const parent = row.parentElement
     if (parent === null) return
-    const box = row.getBoundingClientRect()
-    const offset = (event.clientY - box.top) / box.height
-    // The middle third of a container means "into"; the outer thirds mean "between".
-    const into =
-      options.container && options.onDropInto !== undefined && offset > 0.3 && offset < 0.7
     clearDropMarks(parent)
-    if (into) {
-      row.classList.add('wts-drop-into')
+
+    const place = options.onDropAt
+    if (place === undefined) {
+      // Rows without a position handler still reorder among their own siblings, which is all a
+      // server's nodes can do until there is an endpoint for moving one.
+      const box = row.getBoundingClientRect()
+      const offset = (event.clientY - box.top) / box.height
+      const into =
+        options.container && options.onDropInto !== undefined && offset > 0.3 && offset < 0.7
+      if (into) {
+        row.classList.add('wts-drop-into')
+        return
+      }
+      parent.insertBefore(placeholder(options.depth), offset < 0.5 ? row : row.nextSibling)
       return
     }
-    parent.insertBefore(placeholder(), offset < 0.5 ? row : row.nextSibling)
+
+    const resolved = resolveDrop(row, event.clientY)
+    // Reordering is ours to do — it is a client-side preference. Changing a row's *parent* is a
+    // change to the shared structure, so without the right to make it the drop is simply not
+    // offered: no outline appears, which reads as "not there" without needing to say so.
+    if (
+      options.canReparent !== true &&
+      dragging !== null &&
+      resolved.parentKey !== dragging.parentKey
+    ) {
+      return
+    }
+    dropTarget = {
+      parentKey: resolved.parentKey,
+      beforeKey: resolved.beforeKey,
+      apply: place,
+      rerender: options.rerender,
+    }
+    parent.insertBefore(placeholder(resolved.depth), resolved.before)
   })
   row.addEventListener('drop', (event) => {
     event.preventDefault()
     const parent = row.parentElement
     const from = event.dataTransfer?.getData('text/plain')
     const into = row.classList.contains('wts-drop-into')
+    const target = dropTarget
     if (parent !== null) clearDropMarks(parent)
-    if (from === undefined || from === '' || from === options.key) return
+    dropTarget = null
+    if (from === undefined || from === '') return
+
+    if (target !== null) {
+      // Whatever the outline showed, including a drop that landed on the outline itself.
+      if (from === target.beforeKey) return
+      target.apply(from, target.parentKey, target.beforeKey)
+      target.rerender()
+      return
+    }
+    if (from === options.key) return
     if (into) {
       options.onDropInto?.(from)
       return
@@ -491,6 +669,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         template: PlacedTemplate,
         depth: number,
         siblings: readonly string[],
+        parentKey: string,
       ): HTMLElement => {
         const key = `local:${template.id}`
         const templateTarget: TreeTarget = {
@@ -506,8 +685,11 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           depth,
           meta: `${template.width}×${template.height}`,
           container: false,
+          parentKey,
+          canReparent: true,
           siblings,
           rerender,
+          onDropAt: callbacks.onMoveLocal,
           checked: template.visible,
           onToggleChecked: (on) => {
             setLocalVisible(template.id, on)
@@ -530,65 +712,71 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
       }
 
       /**
-       * Folders, then the templates beside them, at every level.
+       * One ordered list per level, folders and templates together.
        *
-       * Folders first rather than interleaved: a folder is a place to go and a template is a thing
-       * to look at, and mixing them means hunting for the one you want among rows that behave
-       * differently when clicked.
+       * Not folders-first. Sorting by kind means a template can never be put above a folder, and the
+       * order someone drags things into is the whole point of a custom order — a rule that quietly
+       * overrides it makes the drag look broken rather than constrained.
        */
-      const renderLocal = (parentId: string | null, depth: number): void => {
+      const renderLocal = (parentId: string | null, depth: number, parentKey: string): void => {
         const childFolders = foldersIn(parentId)
-        const folderKeys = childFolders.map((folder) => `lf:${folder.id}`)
-        for (const folder of childFolders) {
-          const key = `lf:${folder.id}`
-          const folderTarget: TreeTarget = {
-            server: null,
-            nodeId: null,
-            key,
-            name: folder.name,
+        const childTemplates = templatesIn(parentId)
+        const byKey = new Map<string, LocalFolder | PlacedTemplate>()
+        for (const folder of childFolders) byKey.set(`lf:${folder.id}`, folder)
+        for (const template of childTemplates) byKey.set(`local:${template.id}`, template)
+        const keys = orderedKeys([...byKey.keys()])
+
+        for (const key of keys) {
+          const item = byKey.get(key)
+          if (item === undefined) continue
+
+          if (key.startsWith('lf:')) {
+            const folder = item as LocalFolder
+            const folderTarget: TreeTarget = { server: null, nodeId: null, key, name: folder.name }
+            wrap.appendChild(
+              treeRow({
+                key,
+                name: folder.name,
+                kind: 'folder',
+                depth,
+                container: true,
+                parentKey,
+                canReparent: true,
+                siblings: keys,
+                rerender,
+                checked: folder.visible,
+                onToggleChecked: (on) => {
+                  setLocalFolderVisible(folder.id, on)
+                  rerender()
+                },
+                onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
+                onRename: (value) => callbacks.onRename(folderTarget, value),
+                onDropAt: callbacks.onMoveLocal,
+                actions: [
+                  {
+                    icon: 'createFolder',
+                    label: 'New folder',
+                    run: () => callbacks.onCreateFolder(folderTarget),
+                  },
+                  {
+                    icon: 'uploadFile',
+                    label: 'Import template',
+                    run: () => callbacks.onImportTemplate(folderTarget),
+                  },
+                ],
+              }),
+            )
+            if (isExpanded(key)) renderLocal(folder.id, depth + 1, key)
+            continue
           }
-          wrap.appendChild(
-            treeRow({
-              key,
-              name: folder.name,
-              kind: 'folder',
-              depth,
-              container: true,
-              siblings: folderKeys,
-              rerender,
-              onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
-              onRename: (value) => callbacks.onRename(folderTarget, value),
-              // Dropping onto a folder files the dragged row inside it. Both a template and another
-              // folder can go in; the move is refused only when it would put a folder inside itself.
-              onDropInto: (draggedKey) => {
-                callbacks.onMoveIntoLocalFolder(draggedKey, folder.id)
-                rerender()
-              },
-              actions: [
-                {
-                  icon: 'createFolder',
-                  label: 'New folder',
-                  run: () => callbacks.onCreateFolder(folderTarget),
-                },
-                {
-                  icon: 'uploadFile',
-                  label: 'Import template',
-                  run: () => callbacks.onImportTemplate(folderTarget),
-                },
-              ],
-            }),
-          )
-          if (isExpanded(key)) renderLocal(folder.id, depth + 1)
+
+          wrap.appendChild(templateRow(item as PlacedTemplate, depth, keys, parentKey))
         }
-        const here = templatesIn(parentId)
-        const keys = here.map((template) => `local:${template.id}`)
-        for (const template of here) wrap.appendChild(templateRow(template, depth, keys))
-        if (parentId !== null && childFolders.length === 0 && here.length === 0) {
-          wrap.appendChild(childText('Empty.', depth))
-        }
+
+        if (parentId !== null && keys.length === 0) wrap.appendChild(childText('Empty.', depth))
       }
 
-      renderLocal(null, 1)
+      renderLocal(null, 1, 'local')
       if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.

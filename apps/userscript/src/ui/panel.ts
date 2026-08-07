@@ -41,6 +41,7 @@ import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import {
+  placeKey,
   primeFromCache,
   refreshNodes,
   startRenaming,
@@ -258,16 +259,18 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
-          onMoveIntoLocalFolder: (draggedKey, folderId) => {
-            // One drop target, two kinds of passenger. Which it is comes from the dragged row's own
-            // key, so the folder does not need to care what it is receiving.
+          onMoveLocal: (draggedKey, parentKey, beforeKey) => {
+            // `local` is the root of the category; `lf:<id>` is a folder within it.
+            const parentFolderId =
+              parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null
+            // Reparent first, then place. One drop target, two kinds of passenger — which it is
+            // comes from the dragged row's own key, so nothing else has to care.
             if (draggedKey.startsWith('local:')) {
-              void setTemplateFolder(draggedKey.slice('local:'.length), folderId)
-              return
+              void setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId)
+            } else if (draggedKey.startsWith('lf:')) {
+              moveLocalFolder(draggedKey.slice('lf:'.length), parentFolderId)
             }
-            if (draggedKey.startsWith('lf:')) {
-              moveLocalFolder(draggedKey.slice('lf:'.length), folderId)
-            }
+            placeKey(draggedKey, beforeKey)
           },
         },
         renderTree,
