@@ -35,6 +35,15 @@ const flag = (name, fallback) => {
   const index = argv.indexOf(name)
   return index === -1 ? fallback : (argv[index + 1] ?? fallback)
 }
+
+/**
+ * Accept the mangled flag pnpm produces.
+ *
+ * `pnpm inject --watch` arrives here as `-atch`: pnpm claims the `-w` for its own `--workspace-root`
+ * and forwards the remainder. That injected once and then sat there looking like a watcher which had
+ * stopped noticing saves. Taking it as written means the obvious command works.
+ */
+if (argv.includes('-atch')) argv[argv.indexOf('-atch')] = '--watch'
 const watching = argv.includes('--watch')
 /** Pass --verbose to see wplace's own console output alongside ours. */
 const verbose = argv.includes('--verbose')

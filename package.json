@@ -13,7 +13,10 @@
     "test": "turbo test",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "clean": "turbo clean && rm -rf node_modules"
+    "clean": "turbo clean && rm -rf node_modules",
+    "inject": "pnpm --filter @wts/userscript inject",
+    "inject:watch": "pnpm --filter @wts/userscript inject:watch",
+    "browser": "pnpm --filter @wts/userscript browser"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",
