@@ -7,7 +7,6 @@ import {
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
-import { MARKER_LAYER_ID } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
 import { watchDraftLayers } from './templates/draft.js'
@@ -185,8 +184,8 @@ const main = (): void => {
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
   // wplace name each draft layer for its tile, so the canvas holding unsubmitted pixels can be
-  // found by asking the style. This also keeps the markers above those layers.
-  step('draft layers', () => watchDraftLayers(MARKER_LAYER_ID))
+  // found by asking the style. This also keeps the whole stack in order as those layers come and go.
+  step('draft layers', watchDraftLayers)
   onFrame(() => renderOverlayControls(repaint))
   onTileFrame(draw)
   onLocalChange(redraw)
