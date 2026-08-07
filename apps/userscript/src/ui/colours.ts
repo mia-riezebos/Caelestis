@@ -106,6 +106,9 @@ const withPadding = (element: HTMLElement): HTMLElement => {
   return wrap
 }
 
+/** The follow-the-selection toggle's slot in the preset row, so it lights up by the same rule. */
+const ONLY_SELECTED = 'only-selected'
+
 const PRESETS: ReadonlyArray<readonly [ColourPresetId, string]> = [
   ['all', 'All'],
   ['free', 'Free'],
@@ -175,6 +178,7 @@ export const colourPresets = (
     // slightly darker grey in wplace's theme, which reads as a hover state rather than as a setting
     // that is switched on — and a row where one grey button is "on" is a row that has to be studied.
     button.className = id === active ? 'btn btn-xs btn-primary' : 'btn btn-xs'
+    button.dataset.wtsPreset = id
     button.setAttribute('aria-pressed', String(id === active))
     button.textContent = label
     if (id === 'owned' && ownedColours() === null) {
@@ -196,6 +200,27 @@ export const colourPresets = (
 }
 
 /**
+ * Restate which preset is in effect, without rebuilding the row.
+ *
+ * The settings pane never needs this because it rebuilds itself wholesale. The per-overlay menu
+ * deliberately does not — a rebuild mid-drag takes a slider out from under the pointer — so its
+ * preset buttons stayed exactly as they were drawn: clicking "Free" filtered the overlay and lit
+ * nothing, and the row went on claiming the filter from whenever the menu was opened.
+ */
+export const setPresetState = (
+  root: ParentNode,
+  hidden: readonly number[],
+  onlySelected: boolean,
+): void => {
+  const active = onlySelected ? null : activePreset(hidden)
+  for (const element of root.querySelectorAll<HTMLElement>('[data-wts-preset]')) {
+    const on = element.dataset.wtsPreset === (onlySelected ? ONLY_SELECTED : active)
+    element.classList.toggle('btn-primary', on)
+    element.setAttribute('aria-pressed', String(on))
+  }
+}
+
+/**
  * "Only the colour I am placing" — a mode, not a preset.
  *
  * The four presets set the switches and then stop mattering. This one keeps mattering: it follows
@@ -213,6 +238,7 @@ export const onlySelectedToggle = (
   // The same blue as the presets it sits beside: it is one more way of answering "which colours",
   // so it has to look switched on the same way they do.
   button.className = on ? 'btn btn-xs btn-primary' : 'btn btn-xs'
+  button.dataset.wtsPreset = ONLY_SELECTED
   // A palette, because that is what wplace puts on the same idea — their own control for this reads
   // "Highlight selected color" behind a palette icon. Borrowing the symbol means someone who has
   // used theirs recognises ours without reading anything.
