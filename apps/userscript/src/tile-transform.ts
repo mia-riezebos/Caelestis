@@ -924,22 +924,28 @@ export const markCanvasDirty = (canvas: object): void => {
 const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
 
 /**
- * What the client knows that the server has not confirmed, per tile: pixel offset to palette index.
+ * The draft layer, per tile: what has been placed but not submitted.
  *
- * The preview canvas is **not** a copy of the tile, which is the thing that made every marker in a
- * tile vanish the moment a pixel was painted into it. Their tile manager allocates on demand:
+ * Kept *beside* the server's pixels rather than merged into them, and that separation is the whole
+ * design. There are three states for any pixel and a comparison needs all three:
  *
- *     O.pixels || (O.pixels = new Uint8Array(this.tileSize * this.tileSize)), O.pixels[u] = g
+ *     server  — what wplace will serve; the tile PNG
+ *     draft   — what has been placed locally, or `UNPAINTED` where nothing has
+ *     wanted  — what the template asks for
  *
- * so painting into a tile it has not loaded produces an all-zero array with one pixel set, and a
- * canvas that is transparent everywhere except there. Read as a tile, that says the whole tile is
- * unpainted — and unpainted is not a mismatch unless asked for, so every marker went.
+ * and the question is `(draft is a colour ? draft : server) === wanted`.
  *
- * So the preview contributes pixels and never absences, and those pixels are kept separately. The
- * PNG remains the base, which is what stops a re-fetch from reverting a pixel that has been placed
- * and not yet submitted: the base is replaced and the overrides go back on top.
+ * Merging draft into server instead needed an override map to survive the next fetch, made a blank
+ * draft canvas look like a wiped tile, and put the bookkeeping for all of that on the path that runs
+ * when someone paints. Two arrays and a fallback need none of it: a re-fetch replaces the server
+ * copy and cannot touch the draft, and a draft canvas that is empty is simply a tile with nothing
+ * drafted on it.
  */
-const overridesOfTile = new Map<string, Map<number, number>>()
+const draftOfTile = new Map<string, Uint8Array>()
+
+/** The draft layer for a tile, or null if nothing has been drafted on it. */
+export const draftPixels = (tile: TileCoord): Uint8Array | null =>
+  draftOfTile.get(tileKey(tile)) ?? null
 
 /**
  * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
@@ -1009,22 +1015,29 @@ const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
   return triples
 }
 
+/**
+ * A write into the draft layer. Never touches the server copy.
+ *
+ * Unlike the tile itself, a draft array can be made on demand: an empty one means nothing has been
+ * drafted here, which is exactly what a tile with no draft layer means. So this cannot fail for want
+ * of having read the tile first, which is what used to make the first pixel painted into a tile take
+ * a different and much worse path than the second.
+ */
 const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
   const key = tileKey(tile)
-  const indices = pixelsOfTile.get(key)
-  if (indices === undefined) return false
-  const overrides = overridesOfTile.get(key) ?? new Map<number, number>()
+  let draft = draftOfTile.get(key)
+  if (draft === undefined) {
+    draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
+    draftOfTile.set(key, draft)
+  }
   let changed = 0
   for (let i = 0; i < triples.length; i += 3) {
     const x = triples[i] as number
     const y = triples[i + 1] as number
     const index = triples[i + 2] as number
     const p = y * TILE_SIZE + x
-    // Remembered as well as applied. A pixel placed and not yet submitted is not in the tile the
-    // server will serve, so without this the next fetch would quietly revert it.
-    if (index !== UNPAINTED) overrides.set(p, index)
-    if (indices[p] === index) continue
-    indices[p] = index
+    if (draft[p] === index) continue
+    draft[p] = index
     changed++
     for (const listener of pixelListeners) {
       try {
@@ -1034,8 +1047,7 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
       }
     }
   }
-  if (overrides.size > 0) overridesOfTile.set(key, overrides)
-  if (changed > 0) count('pixels:patched a write')
+  if (changed > 0) count('pixels:patched a draft write')
   return true
 }
 
@@ -1088,7 +1100,6 @@ const capture = (
     const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
     const table = indexTable()
     const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
-    let painted = 0
     for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
       // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
       // that is not in the table can only be something we do not model — treated as unpainted rather
@@ -1099,43 +1110,23 @@ const capture = (
           : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
             UNPAINTED)
       indices[p] = index
-      if (index !== UNPAINTED) painted++
     }
 
     const key = tileKey(tile)
-    const overrides = overridesOfTile.get(key) ?? new Map<number, number>()
 
     if (from === 'preview') {
-      // Pixels only. A transparent pixel in a preview means "the client has nothing here", not
-      // "nobody has painted here" — see `overridesOfTile`.
-      if (painted === 0) {
-        count('pixels:preview had nothing to add')
+      // The draft layer, kept whole and kept apart. It is read as it is — an empty one means nothing
+      // is drafted here, which is true and needs no special case.
+      const existingDraft = draftOfTile.get(key)
+      if (existingDraft === undefined || existingDraft.length !== indices.length) {
+        draftOfTile.set(key, indices)
+        count('pixels:draft captured')
         return
       }
-      for (let p = 0; p < indices.length; p++) {
-        const index = indices[p] as number
-        if (index !== UNPAINTED) overrides.set(p, index)
-      }
-      overridesOfTile.set(key, overrides)
-      const base = pixelsOfTile.get(key)
-      // Nothing to lay them over yet. The base has to come from the tile itself, and asking for it
-      // is what `ensureTilePixels` is for.
-      if (base === undefined) {
-        count('pixels:preview held until the tile arrives')
-        return
-      }
-      apply(tile, base, overrides)
-      count('pixels:preview merged')
+      apply(tile, existingDraft, indices)
+      count('pixels:draft re-read')
       return
     }
-
-    // The server's answer, which is the base. Anything it now agrees with is no longer an override:
-    // that pixel has been submitted and confirmed, and keeping it would pin a stale value forever.
-    for (const [p, index] of overrides) {
-      if (indices[p] === index) overrides.delete(p)
-    }
-    if (overrides.size > 0) overridesOfTile.set(key, overrides)
-    else overridesOfTile.delete(key)
 
     /**
      * A re-read of a tile we already hold becomes a diff, not a replacement.
@@ -1147,12 +1138,10 @@ const capture = (
      */
     const existing = pixelsOfTile.get(key)
     if (existing === undefined || existing.length !== indices.length) {
-      for (const [p, index] of overrides) indices[p] = index
       pixelsOfTile.set(key, indices)
       count('pixels:captured')
       return
     }
-    for (const [p, index] of overrides) indices[p] = index
     apply(tile, existing, indices)
     count('pixels:re-read as a diff')
   } catch (error) {

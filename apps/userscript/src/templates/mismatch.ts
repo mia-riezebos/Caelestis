@@ -1,6 +1,12 @@
 import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@wts/shared'
 import { count } from '../debug.js'
-import { ensureTilePixels, onTilePixel, tilePixels, UNPAINTED } from '../tile-transform.js'
+import {
+  draftPixels,
+  ensureTilePixels,
+  onTilePixel,
+  tilePixels,
+  UNPAINTED,
+} from '../tile-transform.js'
 import { hiddenColoursFor } from './colour-filter.js'
 import {
   appearanceOf,
@@ -138,6 +144,18 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   const originX = template.originX
   const originY = template.originY
 
+  /**
+   * The draft layer, if this tile has one. Three states, and the answer needs all three.
+   *
+   * A pixel placed and not submitted is not on the server, so comparing the template against the
+   * server alone says a pixel just fixed is still wrong. Merging the draft into the server instead
+   * needed an override map to survive the next fetch and put that bookkeeping on the path that runs
+   * while someone is painting. Resolving at the comparison is the whole of it:
+   *
+   *     effective = drafted here ? draft : server
+   */
+  const draft = draftPixels(tile)
+
   const found: number[] = []
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - originY) * templateWidth + (left - originX)
@@ -145,7 +163,8 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     for (let x = left; x < right; x++, templateAt++, tileAt++) {
       const wanted = wantedPixels[templateAt] as number
       if (asserted[wanted] === 0) continue
-      const placed = pixels[tileAt] as number
+      const drafted = draft === null ? UNPAINTED : (draft[tileAt] as number)
+      const placed = drafted !== UNPAINTED ? drafted : (pixels[tileAt] as number)
       if (placed === wanted) continue
       if (placed === UNPAINTED && !markUnpainted) continue
       found.push(x, y)
@@ -170,7 +189,13 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
  * The rebuild is over the tile's own mismatches rather than its pixels, which is the difference
  * between thousands and a million.
  */
-const patchTile = (tile: TileCoord, x: number, y: number, placed: number): void => {
+const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void => {
+  // The write says what was drafted. What matters is the effective colour, which falls back to the
+  // server's pixel wherever the draft has nothing — undrafting a pixel is a change too.
+  const server = tilePixels(tile)
+  const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
+  const placed =
+    drafted !== UNPAINTED ? drafted : server === null ? UNPAINTED : (server[at] as number)
   let considered = 0
   for (const [cacheKey, entry] of cache) {
     if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
