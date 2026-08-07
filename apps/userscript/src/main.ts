@@ -172,6 +172,11 @@ const main = (): void => {
     sync()
     onStateChange(sync)
     onLocalChange(sync)
+    // And on every frame that carries tiles. The three above are the events that *should* cover it,
+    // and between them they missed the only one that mattered: at start-up nothing is restored yet,
+    // so the first call answers "nothing wants this" and the restore that follows does not
+    // necessarily announce itself. Asking again per frame costs a comparison and cannot be wrong.
+    onFrame(sync)
   })
   // Templates are drawn by the GL layer inside wplace's own canvas. Nothing of ours rasterises to a
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
