@@ -38,6 +38,32 @@ interface TemplateGpu {
   paletteKey: string
 }
 
+/** Four vertices of clip xyzw + uv, rewritten per template per frame. */
+const corners = new Float32Array(4 * 6)
+
+/**
+ * Project a Mercator point to clip space in double precision.
+ *
+ * Column-major, as WebGL stores matrices. The whole point of doing this here rather than in the
+ * vertex shader is that the Mercator input stays a double: in float32 its neighbours are ~1.2e-8
+ * apart, and the matrix scales by tens of millions at high zoom, so that gap becomes half a pixel
+ * or more on screen — and lands differently every frame as the map moves, which is what made pixels
+ * jump while panning. Clip space is -1..1, where float32 has precision to spare.
+ */
+const project = (
+  matrix: Float32Array | number[],
+  x: number,
+  y: number,
+  into: Float32Array,
+  offset: number,
+): void => {
+  const m = matrix
+  into[offset] = (m[0] ?? 0) * x + (m[4] ?? 0) * y + (m[12] ?? 0)
+  into[offset + 1] = (m[1] ?? 0) * x + (m[5] ?? 0) * y + (m[13] ?? 0)
+  into[offset + 2] = (m[2] ?? 0) * x + (m[6] ?? 0) * y + (m[14] ?? 0)
+  into[offset + 3] = (m[3] ?? 0) * x + (m[7] ?? 0) * y + (m[15] ?? 0)
+}
+
 let program: WebGLProgram | null = null
 let quad: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
@@ -191,10 +217,15 @@ export const overlayLayer = {
     vao = gl.createVertexArray()
     gl.bindVertexArray(vao)
     gl.bindBuffer(gl.ARRAY_BUFFER, quad)
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW)
-    const position = gl.getAttribLocation(program, 'a_pos')
-    gl.enableVertexAttribArray(position)
-    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0)
+    // Rewritten per template per frame, so the corners can be projected in double precision on the
+    // way in. Six floats a vertex: clip xyzw, then uv.
+    gl.bufferData(gl.ARRAY_BUFFER, corners.byteLength, gl.DYNAMIC_DRAW)
+    const clip = gl.getAttribLocation(program, 'a_clip')
+    const uv = gl.getAttribLocation(program, 'a_uv')
+    gl.enableVertexAttribArray(clip)
+    gl.vertexAttribPointer(clip, 4, gl.FLOAT, false, 24, 0)
+    gl.enableVertexAttribArray(uv)
+    gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 24, 16)
     gl.bindVertexArray(null)
     log('install', 'overlay layer added to wplace’s own canvas')
   },
@@ -225,7 +256,7 @@ export const overlayLayer = {
     // Premultiplied source, which is what the fragment shader writes.
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.disable(gl.DEPTH_TEST)
-    gl.uniformMatrix4fv(uniform(gl, 'u_matrix'), false, matrix)
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad)
 
     for (const template of visible) {
       let entry = gpu.get(template.id)
@@ -259,13 +290,26 @@ export const overlayLayer = {
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
-      gl.uniform4f(
-        uniform(gl, 'u_extent'),
-        template.originX / CANVAS_PIXELS,
-        template.originY / CANVAS_PIXELS,
-        (template.originX + template.width) / CANVAS_PIXELS,
-        (template.originY + template.height) / CANVAS_PIXELS,
-      )
+      // Corners projected here, in double, then handed over as clip space. See `project`.
+      const x0 = template.originX / CANVAS_PIXELS
+      const y0 = template.originY / CANVAS_PIXELS
+      const x1 = (template.originX + template.width) / CANVAS_PIXELS
+      const y1 = (template.originY + template.height) / CANVAS_PIXELS
+      // Strip order: top-left, top-right, bottom-left, bottom-right.
+      project(matrix, x0, y0, corners, 0)
+      corners[4] = 0
+      corners[5] = 0
+      project(matrix, x1, y0, corners, 6)
+      corners[10] = 1
+      corners[11] = 0
+      project(matrix, x0, y1, corners, 12)
+      corners[16] = 0
+      corners[17] = 1
+      project(matrix, x1, y1, corners, 18)
+      corners[22] = 1
+      corners[23] = 1
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
+
       gl.uniform2f(uniform(gl, 'u_size'), template.width, template.height)
       gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
       gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
