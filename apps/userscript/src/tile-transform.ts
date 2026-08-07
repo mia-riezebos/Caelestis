@@ -808,29 +808,6 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
 }
 
 const pixelsOfTile = new Map<string, Uint8Array>()
-
-/**
- * How many tiles' pixels to keep.
- *
- * A megabyte each, and nothing ever dropped them: panning across a canvas with the markers on grew
- * this without limit until the tab ran out of memory and died. Sixty-four is comfortably more than
- * fits on screen at any zoom — the worst case measured is 28 — so the ones being looked at are never
- * the ones evicted.
- */
-const KEEP_TILES = 64
-
-/** Drop the least recently touched tiles once there are too many of them. */
-const evict = (): void => {
-  while (pixelsOfTile.size > KEEP_TILES) {
-    // Map iterates in insertion order, and every read re-inserts, so the first key is the oldest.
-    const oldest = pixelsOfTile.keys().next().value
-    if (oldest === undefined) return
-    pixelsOfTile.delete(oldest)
-    overridesOfTile.delete(oldest)
-    chased.delete(oldest)
-    count('pixels:evicted a tile')
-  }
-}
 let capturePixels = false
 
 /** Index meaning "nobody has painted here". Distinct from every palette entry. */
@@ -861,16 +838,8 @@ export const captureTilePixels = (on: boolean): void => {
   log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
 }
 
-/** The placed pixels of a tile as palette indices, or null if it has not been captured. */
-export const tilePixels = (tile: TileCoord): Uint8Array | null => {
-  const key = tileKey(tile)
-  const pixels = pixelsOfTile.get(key)
-  if (pixels === undefined) return null
-  // Re-inserted so it counts as recently used: eviction takes from the front.
-  pixelsOfTile.delete(key)
-  pixelsOfTile.set(key, pixels)
-  return pixels
-}
+export const tilePixels = (tile: TileCoord): Uint8Array | null =>
+  pixelsOfTile.get(tileKey(tile)) ?? null
 
 /** Whatever tile URL wplace last used, with the coordinates blanked out. */
 let tileUrlShape: string | null = null
@@ -972,6 +941,9 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
  */
 const overridesOfTile = new Map<string, Map<number, number>>()
 
+/** The named preview canvases themselves, so a tile's can be found and re-read when it moves on. */
+const previewCanvases = new Map<object, TileCoord>()
+
 /**
  * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
  * coordinates.
@@ -982,16 +954,6 @@ const overridesOfTile = new Map<string, Map<number, number>>()
  */
 const queuedWrites = new WeakMap<object, number[]>()
 
-/** Register the tile identity that wplace exposes in a draft layer's style id. */
-export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
-  const known = tileOfPaintCanvas.get(canvas)
-  if (known !== undefined && known.x === tile.x && known.y === tile.y) return
-  tileOfPaintCanvas.set(canvas, tile)
-  count('paint:named a draft canvas')
-  const held = queuedWrites.get(canvas)
-  if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
-}
-
 type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
 const pixelListeners: PixelListener[] = []
 
@@ -999,25 +961,6 @@ const pixelListeners: PixelListener[] = []
 export const onTilePixel = (listener: PixelListener): void => {
   pixelListeners.push(listener)
 }
-
-type BulkListener = (tile: TileCoord) => void
-const bulkListeners: BulkListener[] = []
-
-/** Notified when so much of a tile changed that going pixel by pixel is the wrong shape. */
-export const onTileBulk = (listener: BulkListener): void => {
-  bulkListeners.push(listener)
-}
-
-/**
- * Above this many changed pixels, a tile is announced as a whole rather than one at a time.
- *
- * Per-pixel is right for a placed pixel and catastrophic for a re-read. A listener answers "does
- * this pixel change the answer" by scanning that tile's mismatches, which can be tens of thousands
- * long — so a re-read that moved a few thousand pixels was tens of millions of operations, then
- * hundreds of millions, synchronously, on the main thread. That is the freeze: not memory, and not
- * the scan the budget was built to bound, but a per-pixel path being handed bulk work.
- */
-const BULK_LIMIT = 64
 
 /**
  * The largest write that is worth patching a pixel at a time.
@@ -1101,29 +1044,11 @@ const apply = (
   into: Uint8Array,
   from: Uint8Array | Map<number, number>,
 ): number => {
-  // Collected first, announced after. Whether this is a placed pixel or a whole tile arriving is
-  // only knowable once the walk is done, and the two want opposite treatment.
-  const changed: number[] = []
   let moved = 0
   const at = (p: number, index: number): void => {
     if (into[p] === index) return
     into[p] = index
     moved++
-    if (changed.length <= BULK_LIMIT * 2) changed.push(p, index)
-  }
-  if (from instanceof Map) for (const [p, index] of from) at(p, index)
-  else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
-  if (moved === 0) return 0
-
-  count('pixels:changed', moved)
-  if (moved > BULK_LIMIT) {
-    for (const listener of bulkListeners) listener(tile)
-    count('pixels:announced a tile in bulk')
-    return moved
-  }
-  for (let i = 0; i < changed.length; i += 2) {
-    const p = changed[i] as number
-    const index = changed[i + 1] as number
     const x = p % TILE_SIZE
     const y = (p - x) / TILE_SIZE
     for (const listener of pixelListeners) {
@@ -1134,6 +1059,9 @@ const apply = (
       }
     }
   }
+  if (from instanceof Map) for (const [p, index] of from) at(p, index)
+  else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
+  if (moved > 0) count('pixels:changed', moved)
   return moved
 }
 
@@ -1214,7 +1142,6 @@ const capture = (
     if (existing === undefined || existing.length !== indices.length) {
       for (const [p, index] of overrides) indices[p] = index
       pixelsOfTile.set(key, indices)
-      evict()
       count('pixels:captured')
       return
     }
@@ -1493,6 +1420,7 @@ export const install = (
         WebGLTexture,
         CanvasImageSource & { width: number; height: number }
       >()
+      const tileOfPaintTexture = new WeakMap<WebGLTexture, TileCoord>()
       const capturedAt = new WeakMap<WebGLTexture, number>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
@@ -1727,6 +1655,7 @@ export const install = (
               if (this !== gl || texture === null || !textures.delete(texture)) return
               tileOfTexture.delete(texture)
               canvasOfTexture.delete(texture)
+              tileOfPaintTexture.delete(texture)
               for (const [unit, bound] of texture2DByUnit) {
                 if (bound === texture) texture2DByUnit.set(unit, null)
               }
@@ -2022,12 +1951,50 @@ export const install = (
         },
       }.clear
 
-      const refreshDraft = (texture: WebGLTexture): void => {
+      const matchPaintLayer = (
+        texture: WebGLTexture,
+        matrix: ArrayLike<number>,
+        canvas: HTMLCanvasElement,
+      ): void => {
         if (!capturePixels) return
         const source = canvasOfTexture.get(texture)
-        if (source === undefined) return
-        const tile = tileOfPaintCanvas.get(source)
-        if (tile === undefined) return
+        if (source === undefined) {
+          count('paint:draw of a texture with no canvas')
+          return
+        }
+        let tile = tileOfPaintTexture.get(texture)
+        if (tile === undefined) {
+          const quad = quadFromMatrix(matrix, { x: 0, y: 0 }, canvas)
+          if (quad === null) {
+            count('paint:quad rejected')
+            return
+          }
+          const anchor = (pending.length > 0 ? pending : lastQuads)[0]
+          if (anchor === undefined) {
+            count('paint:no anchor tile to measure against')
+            return
+          }
+          if (Math.abs(anchor.width - quad.width) > 0.5) {
+            count('paint:preview is not at tile scale')
+            return
+          }
+          const stepX = (quad.x - anchor.x) / anchor.width
+          const stepY = (quad.y - anchor.y) / anchor.height
+          if (
+            Math.abs(stepX - Math.round(stepX)) > 0.05 ||
+            Math.abs(stepY - Math.round(stepY)) > 0.05
+          ) {
+            count('paint:preview is off the tile grid')
+            return
+          }
+          tile = { x: anchor.tile.x + Math.round(stepX), y: anchor.tile.y + Math.round(stepY) }
+          tileOfPaintTexture.set(texture, tile)
+          tileOfPaintCanvas.set(source, tile)
+          previewCanvases.set(source, tile)
+          log('texture', `named the draft layer for ${tile.x}/${tile.y}`)
+        }
+        const held = queuedWrites.get(source)
+        if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(source)
         const stale = capturedAt.get(texture) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
         dirtyCanvases.delete(source)
@@ -2065,7 +2032,7 @@ export const install = (
         }
         const tile = tileOfTexture.get(drawnTexture)
         if (tile === undefined) {
-          refreshDraft(drawnTexture)
+          matchPaintLayer(drawnTexture, drawnProjection, this)
           count('draw:texture-not-a-known-tile')
           return
         }

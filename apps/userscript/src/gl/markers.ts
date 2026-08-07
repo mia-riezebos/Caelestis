@@ -1,18 +1,6 @@
 import { TILE_SIZE } from '@wts/shared'
 import { warn } from '../debug.js'
-import { getMap } from '../map-handle.js'
-import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
-import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
-import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
-import { templateFade } from './layer.js'
-
-/** Same shape at every zoom, in device pixels. */
-const MARKER_STYLE: MarkerStyle = {
-  size: 9,
-  thickness: 2,
-  /** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
-  colour: [1, 0, 1],
-}
+import type { TileQuad } from '../tile-transform.js'
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -140,39 +128,6 @@ export interface MarkerStyle {
   readonly colour: readonly [number, number, number]
 }
 
-export const MARKER_LAYER_ID = 'wts-markers'
-
-/**
- * The markers are their own layer, above wplace's draft layer.
- *
- * The overlay itself belongs *under* a pixel waiting to be placed — that is what makes placing one
- * look like it covers the template. A marker is the opposite: it is an annotation about a pixel, and
- * covering it with the pixel it is about means the only way to watch a marker go is to zoom out
- * until the placed pixel is too small to hide it.
- */
-export const markerLayer = {
-  id: MARKER_LAYER_ID,
-  type: 'custom' as const,
-  renderingMode: '2d' as const,
-
-  onAdd(_map: unknown, gl: WebGL2RenderingContext): void {
-    initMarkers(gl)
-  },
-
-  onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
-    releaseMarkers(gl)
-  },
-
-  render(gl: WebGL2RenderingContext): void {
-    // Never let this escape into MapLibre's render loop; a throw here takes the whole frame.
-    try {
-      drawAllMarkers(gl)
-    } catch (error) {
-      warn('install', 'marker layer render failed; skipping this frame', String(error))
-    }
-  },
-}
-
 /**
  * Draw one crosshair per marked pixel of one tile.
  *
@@ -205,47 +160,4 @@ export const drawMarkers = (
 
   gl.drawArrays(gl.POINTS, 0, pixels.length / 2)
   gl.bindVertexArray(null)
-}
-
-/** Every marked pixel of every template that asks for it, over every tile on screen. */
-const drawAllMarkers = (gl: WebGL2RenderingContext): void => {
-  if (!isDrawingTiles()) return
-  const tiles = currentQuads()
-  if (tiles.length === 0) return
-
-  const wanted = localTemplates().filter(
-    (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
-  )
-  if (wanted.length === 0) return
-
-  beginMismatchFrame()
-  const previousBlend = gl.isEnabled(gl.BLEND)
-  const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
-  const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
-  const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
-  gl.enable(gl.BLEND)
-  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-
-  let deferred = false
-  for (const template of wanted) {
-    const fade = templateFade(template.id)
-    if (fade <= 0) continue
-    for (const tile of tiles) {
-      const marks = mismatchesIn(template, tile.tile)
-      // Null is "ask again next frame", and on a still map there is no next frame unless one is
-      // asked for.
-      if (marks === null) deferred = true
-      else if (marks.length > 0) drawMarkers(gl, tile, marks, MARKER_STYLE, fade)
-    }
-  }
-
-  gl.bindVertexArray(previousVao)
-  gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-  gl.useProgram(previousProgram)
-  if (!previousBlend) gl.disable(gl.BLEND)
-
-  if (deferred) {
-    const map = getMap() as { triggerRepaint?: () => void } | null
-    map?.triggerRepaint?.()
-  }
 }
