@@ -1,7 +1,15 @@
-import { parseTileKey, TILE_SIZE, type TileCoord, tileKey, WPLACE_PALETTE } from '@wts/shared'
+import {
+  parseTileKey,
+  TILE_SIZE,
+  type TileCoord,
+  TRANSPARENT_INDEX,
+  tileKey,
+  WPLACE_PALETTE,
+} from '@wts/shared'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
+import { draftedPixelsIn } from './templates/drafted.js'
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -948,6 +956,85 @@ export const draftPixels = (tile: TileCoord): Uint8Array | null =>
   draftOfTile.get(tileKey(tile)) ?? null
 
 /**
+ * Pixels drafted as Transparent, per tile, as tile-local offsets.
+ *
+ * These are the ones the canvas cannot report. Alpha zero is what a drafted-transparent pixel and an
+ * undrafted one both look like, so the draft array holds `UNPAINTED` for the pair of them until this
+ * says otherwise — and holds `TRANSPARENT_INDEX` for the ones it does, which is a value the canvas
+ * can never produce (their palette stops at 62, and alpha zero short-circuits before the table).
+ *
+ * Kept so the reverse is cheap too. Undrafting one is only visible as a crosshair that has gone, and
+ * checking what we last set beats scanning a million pixels for the ones that used to be set.
+ */
+const transparentOfTile = new Map<string, Set<number>>()
+
+const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
+  const x = p % TILE_SIZE
+  const y = (p - x) / TILE_SIZE
+  for (const listener of pixelListeners) {
+    listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+  }
+}
+
+/**
+ * Bring a tile's drafted-transparent pixels in line with wplace's crosshairs.
+ *
+ * Drafting Transparent changes nothing we can see: the canvas write lands alpha zero on a pixel our
+ * draft already holds as `UNPAINTED`, so the write is a no-op, nothing is announced, and no marker
+ * moves. The crosshair is the only evidence it happened. Reconciling in both directions here is what
+ * turns it into a change like any other, announced through the same listener as a placed pixel.
+ */
+const reconcileDraftedTile = (tile: TileCoord): void => {
+  const key = tileKey(tile)
+  const draft = draftOfTile.get(key)
+  if (draft === undefined) return
+
+  const held = transparentOfTile.get(key)
+  const now = new Set<number>()
+  for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
+    // A drafted pixel the canvas gave us no colour for was drafted transparent.
+    if (draft[p] === UNPAINTED) {
+      draft[p] = TRANSPARENT_INDEX
+      notifyPixel(tile, p, TRANSPARENT_INDEX)
+      count('pixels:drafted transparent')
+    }
+    if (draft[p] === TRANSPARENT_INDEX) now.add(p)
+  }
+  if (held !== undefined) {
+    for (const p of held) {
+      if (now.has(p) || draft[p] !== TRANSPARENT_INDEX) continue
+      // The crosshair is gone, so the pixel is undrafted — back to whatever the server has.
+      draft[p] = UNPAINTED
+      notifyPixel(tile, p, UNPAINTED)
+      count('pixels:undrafted a transparent pixel')
+    }
+  }
+  if (now.size > 0) transparentOfTile.set(key, now)
+  else transparentOfTile.delete(key)
+}
+
+/**
+ * Re-check every tile with a draft on it.
+ *
+ * Called per frame and throttled, because the write that would otherwise prompt it is exactly the
+ * write that does not happen. Cheap in the case that runs constantly: with nothing drafted there are
+ * no crosshair patches to read and no draft arrays to walk.
+ */
+const RECONCILE_INTERVAL_MS = 150
+let lastReconcile = 0
+
+export const reconcileDrafts = (): void => {
+  const now = performance.now()
+  if (now - lastReconcile < RECONCILE_INTERVAL_MS) return
+  lastReconcile = now
+  for (const key of draftOfTile.keys()) {
+    const [x, y] = key.split('/').map(Number)
+    if (x === undefined || y === undefined) continue
+    reconcileDraftedTile({ x, y })
+  }
+}
+
+/**
  * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
  * coordinates.
  *
@@ -1063,6 +1150,9 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
     }
   }
   if (changed > 0) count('pixels:patched a draft write')
+  // The write that lands on a pixel drafted Transparent is a no-op — see `reconcileDraftedTile`.
+  // Asking now rather than waiting for the throttled pass is what makes that marker appear at once.
+  reconcileDraftedTile(tile)
   return true
 }
 
@@ -1142,10 +1232,13 @@ const capture = (
       if (existingDraft === undefined || existingDraft.length !== indices.length) {
         draftOfTile.set(key, indices)
         count('pixels:draft captured')
-        return
+      } else {
+        apply(tile, existingDraft, indices)
+        count('pixels:draft re-read')
       }
-      apply(tile, existingDraft, indices)
-      count('pixels:draft re-read')
+      // A re-read comes from the canvas, which cannot see a transparent draft, so it has just undone
+      // every one of them. Restoring them in the same tick keeps that invisible rather than a blink.
+      reconcileDraftedTile(tile)
       return
     }
 
