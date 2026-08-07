@@ -255,8 +255,19 @@ export const onlySelectedToggle = (
       : 'Highlighting the selected colour — open wplace’s paint drawer to pick one'
   button.setAttribute('aria-label', 'Highlight the selected colour')
   button.setAttribute('aria-pressed', String(on))
+  /**
+   * What it does next comes from the button, not from the closure.
+   *
+   * `on` is the state at the moment the row was built. The settings pane rebuilds itself, so there
+   * it is never stale; the per-overlay menu deliberately never rebuilds, so it was stale from the
+   * first click onwards — the mode went on and then every further click asked for it to go on again.
+   * The only way back out was to close the menu, or to pick a preset and lose the filter as well.
+   *
+   * `aria-pressed` is the live answer: `setPresetState` writes it whenever the filter moves, so it
+   * is exactly the state the button is currently drawn in.
+   */
   button.addEventListener('click', () => {
-    setOn(!on)
+    setOn(button.getAttribute('aria-pressed') !== 'true')
     rerender()
   })
   return button
