@@ -46,6 +46,58 @@ export const hiddenForPreset = (preset: ColourPresetId): number[] => {
   return hidden
 }
 
+/**
+ * One palette swatch, with its state shown two ways.
+ *
+ * At rest the grid is the palette and nothing else: an on swatch is the plain colour with a ring, an
+ * off one drops to 70% and loses the ring. Decorating the common case is what made this noisy —
+ * sixty-three badges to say "normal".
+ *
+ * On hover the swatch says what it *is* rather than what a click would do. On shows a filled box
+ * with the eye knocked out of it; off shows an empty box with a struck-through eye. Pointing at
+ * something is the moment to be explicit, and 70% versus 100% is a judgement nobody should have to
+ * make against a neighbour.
+ */
+export const paletteSwatch = (
+  colour: (typeof WPLACE_PALETTE)[number],
+  on: boolean,
+  onToggle: () => void,
+): HTMLButtonElement => {
+  const swatch = document.createElement('button')
+  swatch.type = 'button'
+  swatch.className = 'wts-swatch'
+  swatch.dataset.index = String(colour.index)
+  swatch.dataset.on = String(on)
+  swatch.style.backgroundColor = colour.hex
+  swatch.title = `${colour.name} · ${colour.kind}`
+  swatch.setAttribute('aria-label', `${colour.name}, ${colour.kind}`)
+  swatch.setAttribute('aria-pressed', String(on))
+
+  const badge = document.createElement('span')
+  badge.className = 'wts-swatch-badge'
+  const box = document.createElement('span')
+  box.appendChild(icon(on ? 'eye' : 'eyeOff', ''))
+  badge.appendChild(box)
+  swatch.appendChild(badge)
+
+  swatch.addEventListener('click', onToggle)
+  return swatch
+}
+
+/**
+ * Repoint an existing swatch at a new state, badge included.
+ *
+ * The overlay menu never rebuilds itself, so a swatch has to be able to change without being
+ * replaced — and the eye has to flip with it, or hovering reports the state it had before.
+ */
+export const setSwatchState = (swatch: HTMLElement, on: boolean): void => {
+  swatch.dataset.on = String(on)
+  swatch.setAttribute('aria-pressed', String(on))
+  const box = swatch.querySelector('.wts-swatch-badge > span')
+  if (box === null) return
+  box.replaceChildren(icon(on ? 'eye' : 'eyeOff', ''))
+}
+
 /** The settings pane indents its rows; the overlay menu does not. Only the wrapper differs. */
 const withPadding = (element: HTMLElement): HTMLElement => {
   const wrap = document.createElement('div')
@@ -161,26 +213,18 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
   // whatever is already on the canvas.
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
-    const swatch = document.createElement('button')
-    const on = !hidden.has(colour.index)
-    swatch.type = 'button'
-    swatch.className = 'wts-swatch'
-    swatch.dataset.on = String(on)
-    swatch.style.backgroundColor = colour.hex
-    swatch.title = `${colour.name} · ${colour.kind}`
-    swatch.setAttribute('aria-label', `${colour.name}, ${colour.kind}`)
-    swatch.setAttribute('aria-pressed', String(on))
-    swatch.addEventListener('click', () => {
-      // Touching a swatch while the mode is driving would fight it — the next selection change
-      // would undo the click. Take the wheel back first, keeping what is currently shown.
-      const base = driven ? globalHiddenColours() : getState().hiddenColours
-      const next = new Set(base)
-      if (next.has(colour.index)) next.delete(colour.index)
-      else next.add(colour.index)
-      setState({ hiddenColours: [...next], onlySelectedColour: false })
-      rerender()
-    })
-    grid.appendChild(swatch)
+    grid.appendChild(
+      paletteSwatch(colour, !hidden.has(colour.index), () => {
+        // Touching a swatch while the mode is driving would fight it — the next selection change
+        // would undo the click. Take the wheel back first, keeping what is currently shown.
+        const base = driven ? globalHiddenColours() : getState().hiddenColours
+        const next = new Set(base)
+        if (next.has(colour.index)) next.delete(colour.index)
+        else next.add(colour.index)
+        setState({ hiddenColours: [...next], onlySelectedColour: false })
+        rerender()
+      }),
+    )
   }
   gridWrap.appendChild(grid)
   wrap.appendChild(gridWrap)
