@@ -16,14 +16,23 @@ import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@wts/shared'
  * measured along the stamp's own axes, so rotating a translated stamp swings it around rather than
  * sliding it sideways.
  *
- * **Scale is the entire performance story.** Drawing anything other than a plain full cell means
- * rendering each source pixel as an SxS block, and cost is quadratic: S=1 is free, S=3 costs 36 MB
- * per tile, S=5 costs 100 MB. So scale is derived, not offered — an appearance that happens to be a
- * plain full square pays nothing, and anything else opts into the bill by being asked for.
+ * None of this costs per-pixel work. The stamp is rasterised once into a small mask and tiled over
+ * the template at draw time, so the shape is independent of the pixel grid it sits on — which is
+ * what an earlier version got wrong by expanding every source pixel into a 3x3 block and drawing
+ * inside it.
  */
 
 export interface Appearance {
-  /** Fraction of the cell the stamp covers, 0..1. */
+  /**
+   * Stamp size as a fraction of the cell, 0..2.
+   *
+   * Above 1 is deliberate and useful rather than a mistake to clamp away. The stamp is clipped to
+   * its cell, so an oversized one is not bigger — it is *cropped*, and the crop is the shape. A
+   * square rotated 45 degrees only reaches the cell's corners once its side passes √2, so filling a
+   * corner cleanly is impossible at 100% no matter where it is translated: the diagonal always cuts
+   * short and leaves a notch. 2 covers the cell from any angle, which makes clean half-cell
+   * triangles and corner wedges reachable.
+   */
   readonly size: number
   /** Corner rounding as a fraction of half the stamp: 0 is a square, 1 is a circle. */
   readonly radius: number
@@ -70,7 +79,7 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     ? source.hiddenColours.filter((index): index is number => typeof index === 'number')
     : []
   return {
-    size: number('size', DEFAULT_APPEARANCE.size, 0.05, 1),
+    size: number('size', DEFAULT_APPEARANCE.size, 0.05, 2),
     radius: number('radius', DEFAULT_APPEARANCE.radius, 0, 1),
     translateX: number('translateX', DEFAULT_APPEARANCE.translateX, -1, 1),
     translateY: number('translateY', DEFAULT_APPEARANCE.translateY, -1, 1),
@@ -193,7 +202,9 @@ export const APPEARANCE_CONTROLS: ReadonlyArray<{
     key: 'size',
     label: 'Size',
     min: 0.1,
-    max: 1,
+    // Past 1 the stamp is cropped by its own cell rather than drawn larger, which is what makes a
+    // filled corner or a clean half-cell triangle possible at all.
+    max: 2,
     step: 0.05,
     format: (v) => `${Math.round(v * 100)}%`,
   },
