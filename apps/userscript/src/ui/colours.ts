@@ -138,6 +138,12 @@ const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
  * Derived rather than stored. A preset is a shortcut for a set of switches, not a mode the filter
  * stays in, so remembering which button was pressed would go stale the moment a single swatch was
  * clicked — and the button would then claim a state the palette no longer had.
+ *
+ * Read from the switches alone, so follow-the-selection does not blank it. The two are separate
+ * things and both can be true at once: the preset says which colours this overlay claims, the mode
+ * says to look at one of them at a time. Blanking the preset while the mode ran made the mode look
+ * like a fifth preset, and left nothing on screen saying what you would be back to on switching it
+ * off.
  */
 const activePreset = (hidden: readonly number[]): ColourPresetId | null => {
   for (const [id] of PRESETS) {
@@ -172,8 +178,7 @@ export const colourPresets = (
   // settings pane had this from its own wrapper; the overlay menu has no wrapper, and the grid sat
   // flush against the buttons.
   presets.style.marginBottom = '0.5rem'
-  // While the mode is driving, no preset is in effect — it is the thing in effect.
-  const active = scope.onlySelected ? null : activePreset(scope.hidden)
+  const active = activePreset(scope.hidden)
   // The labels are the labels. Nothing here needs a sentence.
   for (const [id, label] of PRESETS) {
     const button = document.createElement('button')
@@ -216,9 +221,11 @@ export const setPresetState = (
   hidden: readonly number[],
   onlySelected: boolean,
 ): void => {
-  const active = onlySelected ? null : activePreset(hidden)
+  const active = activePreset(hidden)
   for (const element of root.querySelectorAll<HTMLElement>('[data-wts-preset]')) {
-    const on = element.dataset.wtsPreset === (onlySelected ? ONLY_SELECTED : active)
+    const id = element.dataset.wtsPreset
+    // Two independent answers, not one choice between five buttons.
+    const on = id === ONLY_SELECTED ? onlySelected : id === active
     element.classList.toggle('btn-primary', on)
     element.setAttribute('aria-pressed', String(on))
   }
@@ -287,9 +294,9 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
     withPadding(
       colourPresets(
         (next) => {
-          // Picking a preset is an explicit statement about which colours to show, so it takes the
-          // wheel back from the follow-the-selection mode rather than being silently overridden by it.
-          setState({ hiddenColours: next, onlySelectedColour: false })
+          // The mode is left alone. It is a way of looking at the set, not a member of it, so a
+          // preset chosen while it runs says what to come back to rather than cancelling it.
+          setState({ hiddenColours: next })
         },
         rerender,
         {

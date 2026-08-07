@@ -398,9 +398,9 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   overrides.appendChild(
     colourPresets(
       (next) => {
-        // Same as the global row: choosing a preset is an explicit statement, so it takes the wheel
-        // back from this overlay's follow-the-selection mode rather than being overridden by it.
-        update({ hiddenColours: next, onlySelectedColour: false })
+        // Same as the global row: the mode is left running. A preset says which colours this
+        // overlay claims, which is a different question from which one is being looked at.
+        update({ hiddenColours: next })
         refreshSwatches()
       },
       rerender,
