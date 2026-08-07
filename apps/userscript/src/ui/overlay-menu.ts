@@ -12,6 +12,7 @@ import { beginMove } from '../templates/move.js'
 import { onlySelectedToggle } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
+import { RAIL_BUTTON_CLASS } from './panel.js'
 
 /**
  * The per-overlay menu, anchored to the overlay it configures.
@@ -36,6 +37,8 @@ let openFor: string | null = null
 
 /** Breathing room between these controls and whatever they are being kept clear of. */
 const GAP = 12
+/** Matches the panel's own `top: 1rem`, so our two floating surfaces start on the same line. */
+const TOP_MARGIN = 16
 
 /**
  * The leftmost edge of the chrome stacked against the right of the window.
@@ -122,8 +125,9 @@ const buildMenu = (
     position: 'fixed',
     zIndex: '32',
     width: '15rem',
-    borderRadius: '0.5rem',
-    padding: '0.5rem 0.625rem 0.625rem',
+    // 12px, the same as the panel and every other popout here.
+    borderRadius: '0.75rem',
+    padding: '0.75rem',
     color: 'var(--color-base-content, inherit)',
     maxHeight: '70vh',
     overflowY: 'auto',
@@ -303,13 +307,20 @@ export const renderOverlayControls = (rerender: () => void): void => {
   const host = document.querySelector('canvas.maplibregl-canvas')?.parentElement
   if (host == null) return
 
+  const limit = rightEdge()
+
   for (const template of localTemplates()) {
     const buttonId = `wts-overlay-button-${template.id}`
-    // Top-right of the overlay, just outside it, so template pixels are never covered.
-    const corner = screenPointFor(template.originX + template.width, template.originY)
+    // The overlay's whole box on screen, not just one corner. A corner alone cannot say whether the
+    // template is still in view, nor how far down the button is allowed to travel.
+    const topLeft = screenPointFor(template.originX, template.originY)
+    const bottomRight = screenPointFor(
+      template.originX + template.width,
+      template.originY + template.height,
+    )
     let button = document.getElementById(buttonId)
 
-    if (corner === null) {
+    if (topLeft === null || bottomRight === null) {
       button?.remove()
       if (openFor === template.id) document.getElementById(MENU_ID)?.remove()
       continue
@@ -317,10 +328,14 @@ export const renderOverlayControls = (rerender: () => void): void => {
     if (button === null) {
       button = document.createElement('button')
       button.id = buttonId
-      button.className = 'btn btn-xs btn-circle shadow-md'
-      button.title = `${template.name} — display options`
-      button.setAttribute('aria-label', `${template.name} display options`)
-      button.appendChild(icon('settings', 'size-3'))
+      // The same class as wplace's rail buttons, so it is the same size as them rather than a
+      // fiddly `btn-xs` target floating over the canvas.
+      button.className = RAIL_BUTTON_CLASS
+      button.title = `${template.name} — overlay menu`
+      button.setAttribute('aria-label', `${template.name} overlay menu`)
+      // Three dots, not a gear. This opens a menu of actions on one overlay — which is what wplace
+      // themselves put on each row of their Overlays list — rather than a settings surface.
+      button.appendChild(icon('kebab'))
       button.style.position = 'fixed'
       button.style.zIndex = '31'
       button.addEventListener('click', (event) => {
@@ -331,13 +346,40 @@ export const renderOverlayControls = (rerender: () => void): void => {
       })
       document.body.appendChild(button)
     }
-    // Clamped to free space, so a template hanging off an edge keeps a reachable button rather
-    // than losing its controls exactly when you want to bring it back.
-    const limit = rightEdge()
-    button.style.left = `${Math.min(Math.max(corner.x + 6, 4), limit - 32)}px`
-    button.style.top = `${Math.min(Math.max(corner.y, 4), window.innerHeight - 32)}px`
+    const size = button.getBoundingClientRect().width || 40
 
-    if (openFor !== template.id) continue
+    // Anchored just outside the overlay's top-right corner, then made sticky to the viewport, then
+    // released again once the overlay has left entirely.
+    //
+    // Read the two clamps in order. `min` keeps it on screen while the template runs off to the
+    // right, which is what makes it *stay* right-aligned and reachable instead of sailing away with
+    // a template you can still see. `max` is the release: it may never sit further left than just
+    // outside the template's own left edge, so once the template is fully past the right of the
+    // viewport that floor overtakes the viewport clamp and the button leaves with it.
+    //
+    // Without the release, every distant template parks a button against the same edge and you get
+    // a stack of identical controls pointing at nothing on screen. Without the sticky clamp, a
+    // template wider than the window has no reachable control at all.
+    const left = Math.max(
+      Math.min(bottomRight.x + GAP, limit - size),
+      topLeft.x - size - GAP, // outside the left edge, never over the artwork
+    )
+
+    // Same shape vertically, plus: never below the overlay's own bottom edge, since the button
+    // belongs to the template and should not hang past it.
+    const top = Math.min(
+      Math.min(Math.max(topLeft.y, TOP_MARGIN), window.innerHeight - size - TOP_MARGIN),
+      bottomRight.y - size,
+    )
+
+    button.style.left = `${left}px`
+    button.style.top = `${top}px`
+    // The menu takes the button's place rather than appearing beside it — one control in one spot,
+    // opened and closed, instead of a button sitting redundantly next to the thing it opened.
+    const isOpen = openFor === template.id
+    button.style.display = isOpen ? 'none' : ''
+
+    if (!isOpen) continue
     let menu = document.getElementById(MENU_ID)
     if (menu === null) {
       menu = buildMenu(
@@ -348,10 +390,11 @@ export const renderOverlayControls = (rerender: () => void): void => {
       )
       document.body.appendChild(menu)
     }
-    // Keep it clear of the chrome on the right, not merely inside the window.
+    // Anchored where the button was, then pulled back inside the free area — it is much larger than
+    // the button, so the spot that fit a 40px square often will not fit this.
     const box = menu.getBoundingClientRect()
-    menu.style.left = `${Math.max(8, Math.min(corner.x + 6, limit - box.width))}px`
-    menu.style.top = `${Math.min(Math.max(8, corner.y + 28), window.innerHeight - box.height - 8)}px`
+    menu.style.left = `${Math.max(TOP_MARGIN, Math.min(left, limit - box.width))}px`
+    menu.style.top = `${Math.max(TOP_MARGIN, Math.min(top, window.innerHeight - box.height - TOP_MARGIN))}px`
   }
 }
 

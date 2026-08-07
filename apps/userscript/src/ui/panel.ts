@@ -113,7 +113,7 @@ let sortOrder: SortOrder = DEFAULT_SORT
  * the class list. Using the same class rather than a colour of our own means our button lights up
  * in whatever their theme calls primary, now and after any theme change.
  */
-const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
+export const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
 
 const syncRailButtonState = (): void => {
   const button = document.getElementById(BUTTON_ID)
