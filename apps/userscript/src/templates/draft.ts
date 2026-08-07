@@ -45,6 +45,8 @@ const DRAFT_LAYER = /^paint-preview-.*-(\d+),(\d+)$/
 const CROSSHAIR_LAYER = 'pixel-hover'
 
 interface StyleLike {
+  /** MapLibre's own layer order, ids in draw order. Custom layers are in it; `getStyle` omits them. */
+  style?: { _order?: string[] }
   getStyle?: () => { layers?: Array<{ id: string; source?: string }> }
   getSource?: (id: string) => { getCanvas?: () => HTMLCanvasElement } | undefined
   getLayer?: (id: string) => unknown
@@ -53,54 +55,62 @@ interface StyleLike {
 }
 
 /**
- * What the stack looked like last time it was arranged.
+ * The order as MapLibre holds it, including our custom layers.
  *
- * Moving a layer fires `styledata`, which is what triggers this — so without a way to tell "already
- * arranged" from "needs arranging" it would move layers forever. The draft layers are the only part
- * that changes, so their names are the whole signature.
+ * `getStyle` serialises the whole style and leaves custom layers out of the result entirely, so it
+ * can neither tell us where we are nor be called at this frequency. `_order` is a plain array of
+ * ids; falling back to the serialised layers keeps this working if they ever rename it, at the cost
+ * of not seeing ourselves.
  */
-let arrangedFor: string | null = null
-
-/**
- * `styledata` fires far more often than layers change — every tile that loads, among other things —
- * and the first thing this does is `getStyle`, which serialises the entire style. Doing that dozens
- * of times a second is main-thread time spent to discover that nothing has changed.
- */
-const THROTTLE_MS = 250
-let lastLook = 0
+const orderOf = (map: StyleLike): readonly string[] =>
+  map.style?._order ?? (map.getStyle?.().layers ?? []).map((layer) => layer.id)
 
 const arrange = (): void => {
-  const now = performance.now()
-  if (now - lastLook < THROTTLE_MS) return
-  lastLook = now
   const map = getMap() as StyleLike | null
-  const layers = map?.getStyle?.().layers
-  if (map === null || layers === undefined) return
+  if (map === null) return
+  const order = orderOf(map)
+  if (order.length === 0) return
 
   const drafts: string[] = []
-  for (const layer of layers) {
-    const match = DRAFT_LAYER.exec(layer.id)
+  for (const id of order) {
+    const match = DRAFT_LAYER.exec(id)
     if (match === null) continue
-    drafts.push(layer.id)
-    const source = map.getSource?.(layer.source ?? layer.id)
-    const canvas = source?.getCanvas?.()
+    drafts.push(id)
+    const canvas = map.getSource?.(id)?.getCanvas?.()
     if (canvas === undefined) continue
     registerDraftCanvas(canvas, { x: Number(match[1]), y: Number(match[2]) })
   }
 
-  const signature = drafts.join('|')
-  if (signature === arrangedFor) return
-  arrangedFor = signature
+  /**
+   * Move only when the order is actually wrong.
+   *
+   * `moveLayer` is what causes the `styledata` that calls this, so a version that moved on every
+   * pass would provoke itself forever — and if wplace re-insert a draft layer above ours, the two
+   * would take turns rearranging the same stack for as long as the tab survived. Checking first
+   * makes a settled stack cost an array scan and nothing else.
+   */
+  const at = (id: string): number => order.indexOf(id)
+  const overlay = at(OVERLAY_LAYER)
+  const markers = at(MARKER_LAYER_ID)
+  const crosshair = at(CROSSHAIR_LAYER)
+  const firstDraft = drafts.length === 0 ? -1 : at(drafts[0] as string)
+  const lastDraft = drafts.length === 0 ? -1 : at(drafts[drafts.length - 1] as string)
 
-  const has = (id: string): boolean => map.getLayer?.(id) !== undefined
-  const crosshair = has(CROSSHAIR_LAYER) ? CROSSHAIR_LAYER : undefined
-  // Our overlay goes under the drafts, so a pixel waiting to be submitted covers the template it is
-  // completing. With no drafts on the map there is nothing to be under but the crosshair.
-  if (has(OVERLAY_LAYER)) map.moveLayer?.(OVERLAY_LAYER, drafts[0] ?? crosshair)
-  // The markers go over them, and under the crosshair. Moved second so that with neither a draft nor
-  // a crosshair to anchor to, "on top" still leaves the markers above the overlay.
-  if (has(MARKER_LAYER_ID)) map.moveLayer?.(MARKER_LAYER_ID, crosshair)
-  log('install', `arranged the stack around ${drafts.length} draft layers`)
+  // The overlay belongs under the drafts, so a pixel waiting to be submitted covers the template it
+  // is completing. With no drafts, under the crosshair is the only requirement.
+  if (overlay >= 0 && firstDraft >= 0 && overlay > firstDraft) {
+    map.moveLayer?.(OVERLAY_LAYER, drafts[0])
+    log('install', 'moved the overlay back under the draft layers')
+  }
+  // The markers belong over the drafts and under the crosshair: an annotation about a pixel cannot
+  // sit beneath that pixel.
+  if (
+    markers >= 0 &&
+    ((lastDraft >= 0 && markers < lastDraft) || (crosshair >= 0 && markers > crosshair))
+  ) {
+    map.moveLayer?.(MARKER_LAYER_ID, crosshair >= 0 ? CROSSHAIR_LAYER : undefined)
+    log('install', 'moved the markers above the draft layers')
+  }
 }
 
 export const watchDraftLayers = (): void => {

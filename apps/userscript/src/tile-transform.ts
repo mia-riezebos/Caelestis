@@ -1000,6 +1000,25 @@ export const onTilePixel = (listener: PixelListener): void => {
   pixelListeners.push(listener)
 }
 
+type BulkListener = (tile: TileCoord) => void
+const bulkListeners: BulkListener[] = []
+
+/** Notified when so much of a tile changed that going pixel by pixel is the wrong shape. */
+export const onTileBulk = (listener: BulkListener): void => {
+  bulkListeners.push(listener)
+}
+
+/**
+ * Above this many changed pixels, a tile is announced as a whole rather than one at a time.
+ *
+ * Per-pixel is right for a placed pixel and catastrophic for a re-read. A listener answers "does
+ * this pixel change the answer" by scanning that tile's mismatches, which can be tens of thousands
+ * long — so a re-read that moved a few thousand pixels was tens of millions of operations, then
+ * hundreds of millions, synchronously, on the main thread. That is the freeze: not memory, and not
+ * the scan the budget was built to bound, but a per-pixel path being handed bulk work.
+ */
+const BULK_LIMIT = 64
+
 /**
  * The largest write that is worth patching a pixel at a time.
  *
@@ -1082,11 +1101,29 @@ const apply = (
   into: Uint8Array,
   from: Uint8Array | Map<number, number>,
 ): number => {
+  // Collected first, announced after. Whether this is a placed pixel or a whole tile arriving is
+  // only knowable once the walk is done, and the two want opposite treatment.
+  const changed: number[] = []
   let moved = 0
   const at = (p: number, index: number): void => {
     if (into[p] === index) return
     into[p] = index
     moved++
+    if (changed.length <= BULK_LIMIT * 2) changed.push(p, index)
+  }
+  if (from instanceof Map) for (const [p, index] of from) at(p, index)
+  else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
+  if (moved === 0) return 0
+
+  count('pixels:changed', moved)
+  if (moved > BULK_LIMIT) {
+    for (const listener of bulkListeners) listener(tile)
+    count('pixels:announced a tile in bulk')
+    return moved
+  }
+  for (let i = 0; i < changed.length; i += 2) {
+    const p = changed[i] as number
+    const index = changed[i + 1] as number
     const x = p % TILE_SIZE
     const y = (p - x) / TILE_SIZE
     for (const listener of pixelListeners) {
@@ -1097,9 +1134,6 @@ const apply = (
       }
     }
   }
-  if (from instanceof Map) for (const [p, index] of from) at(p, index)
-  else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
-  if (moved > 0) count('pixels:changed', moved)
   return moved
 }
 

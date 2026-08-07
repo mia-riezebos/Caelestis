@@ -1,6 +1,12 @@
 import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@wts/shared'
 import { count } from '../debug.js'
-import { ensureTilePixels, onTilePixel, tilePixels, UNPAINTED } from '../tile-transform.js'
+import {
+  ensureTilePixels,
+  onTileBulk,
+  onTilePixel,
+  tilePixels,
+  UNPAINTED,
+} from '../tile-transform.js'
 import { hiddenColoursFor } from './colour-filter.js'
 import {
   appearanceOf,
@@ -251,6 +257,25 @@ const changeListeners: Array<() => void> = []
 export const onMismatchesChanged = (listener: () => void): void => {
   changeListeners.push(listener)
 }
+
+/**
+ * A tile changed too much to reason about one pixel at a time, so drop what we knew about it.
+ *
+ * Dropping is cheaper than patching here, and by a lot: the next scan is one pass over the tile,
+ * where patching would have been a scan of the answer list per changed pixel.
+ */
+onTileBulk((tile) => {
+  const suffix = `|${tile.x}/${tile.y}`
+  let dropped = 0
+  for (const key of [...cache.keys()]) {
+    if (!key.endsWith(suffix)) continue
+    cache.delete(key)
+    dropped++
+  }
+  if (dropped === 0) return
+  count('mismatch:dropped answers for a bulk change', dropped)
+  for (const listener of changeListeners) listener()
+})
 
 onTilePixel((tile, x, y, placed) => {
   const before = changed
