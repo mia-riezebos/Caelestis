@@ -61,44 +61,10 @@ uniform bool u_plain;
 /** Ramps 0 to 1 once the overlay has something to show, so templates arrive instead of appearing. */
 uniform float u_fade;
 
-/**
- * wplace's own tile, as they uploaded it — the pixels actually placed on the canvas.
- *
- * Their texture, not a copy: we attribute every tile they draw to a tile coordinate, so the placed
- * pixels are already on the GPU and comparing a template against them costs a fetch. u_hasCanvas is
- * false for a tile we could not attribute, in which case nothing is marked rather than everything.
- */
-uniform sampler2D u_canvas;
-uniform bool u_hasCanvas;
-/** This template's origin relative to the tile being drawn, so a cell can be found in their texture. */
-uniform ivec2 u_originInTile;
-/** Their tile's size in pixels, to bound the fetch. */
-uniform int u_tileSize;
-
-/** Mark cells the canvas disagrees with. */
-uniform bool u_markMismatch;
-/** Treat "nothing placed yet" as a disagreement. Off by default: unpainted is not wrong, just undone. */
-uniform bool u_markUnpainted;
-/** Marker geometry, in *device pixels* — deliberately not in cells. See markerCoverage. */
-uniform float u_markerLength;
-uniform float u_markerThickness;
-uniform vec3 u_markerColour;
-
 out vec4 fragColor;
 
 /** How many samples a side to take across a fragment when the template is minified. */
 const int MINIFY_TAPS = 4;
-
-/**
- * How many samples an arm takes in each direction from the fragment.
- *
- * Enough to cover half the marker's length at one sample per device pixel, which is the finest step
- * that can show anything. This is a fixed cost per fragment, and it has to be: the first version
- * stepped a cell at a time, so zoomed out — where an arm spans tens of cells — every fragment ran
- * ~100 iterations of three texture fetches. That is not slow, it is a GPU watchdog kill, and it took
- * the tab with it.
- */
-const int MARKER_STEPS = 7;
 
 /** Signed distance to a rounded box centred on the origin. Negative inside. */
 float roundedBox(vec2 point, vec2 half_, float radius) {
@@ -118,102 +84,10 @@ vec4 cellColour(vec2 texel) {
   return entry.a < 0.5 ? vec4(0.0) : vec4(entry.rgb, 1.0);
 }
 
-/** Whether the canvas disagrees with the template at a cell — and whether that cell is drawn at all. */
-bool marked(ivec2 cell) {
-  if (!u_markMismatch || !u_hasCanvas) return false;
-  if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) return false;
-
-  uint index = texelFetch(u_indices, cell, 0).r;
-  vec4 entry = texelFetch(u_palette, ivec2(int(index), 0), 0);
-  // A cell we are not drawing is a cell whose colour we are not asserting. The wildcard asks for
-  // nothing, and a filtered colour is one the user has said to stop showing — neither can be wrong.
-  if (entry.a < 0.5) return false;
-
-  ivec2 placedAt = cell + u_originInTile;
-  if (placedAt.x < 0 || placedAt.y < 0 || placedAt.x >= u_tileSize || placedAt.y >= u_tileSize) {
-    return false;
-  }
-  vec4 placed = texelFetch(u_canvas, placedAt, 0);
-  if (placed.a < 0.5) return u_markUnpainted;
-  // Their canvas holds palette colours exactly, so this is an equality test with room for the byte.
-  return distance(placed.rgb, entry.rgb) > 0.01;
-}
-
-/**
- * The marker: a crosshair centred on a marked cell, sized in device pixels rather than in cells.
- *
- * Constant on-screen size is the whole point. A marker drawn *in* its cell shrinks with the cell,
- * and at the zoom where you are looking at a whole template — which is exactly when you are hunting
- * for the pixel that is wrong — it is a speck. Sized in device pixels it stays legible at any zoom,
- * and the further out you go the more it stands proud of the art rather than dissolving into it.
- *
- * The cost of that is which fragment draws it. A marker bigger than its cell reaches across
- * neighbours, so a fragment cannot ask "is my cell marked" — it has to ask "is there a marked cell
- * whose arms reach me". Both arms are axis-aligned through cell centres, which makes that cheap:
- * a fragment is on a vertical arm only if it is within half a thickness of a centre *column*, which
- * is arithmetic on its own coordinates and needs no fetch at all. Only fragments that pass that
- * test — a thin cross-hatch of the screen — go on to scan cells along the arm.
- */
-float markerCoverage(vec2 texel, vec2 footprint) {
-  if (!u_markMismatch || !u_hasCanvas) return 0.0;
-  if (footprint.x <= 0.0 || footprint.y <= 0.0) return 0.0;
-
-  float halfLength = u_markerLength * 0.5;
-  float halfThickness = u_markerThickness * 0.5;
-
-  /**
-   * The step, in device pixels, and the whole performance story.
-   *
-   * One sample per device pixel is the finest step that can change the answer, so an arm never
-   * costs more than its own length however far out the map is zoomed — that is what stepping in
-   * cells got wrong. Where a cell is *larger* than a device pixel the step grows to one cell, since
-   * sampling the same cell six times to draw six pixels of the same arm answers nothing: zooming in
-   * gets cheaper rather than more expensive.
-   */
-  vec2 stride = max(vec2(1.0), 1.0 / footprint);
-
-  // Every cell a vertical arm could reach this fragment from shares its column, so if the fragment
-  // is further than half a thickness from that column's centre line, no walk can find anything.
-  // Pure arithmetic, no fetch, and it rejects most of the screen wherever a cell is bigger than the
-  // marker is thick — which is every zoom anyone works at.
-  vec2 fromCentre = abs(texel - (floor(texel) + 0.5)) / footprint;
-
-  // The vertical arm: walk up and down the column this fragment sits in.
-  if (fromCentre.x <= halfThickness) for (int i = -MARKER_STEPS; i <= MARKER_STEPS; i++) {
-    float along = float(i) * stride.y;
-    if (abs(along) > halfLength) continue;
-    ivec2 cell = ivec2(floor(vec2(texel.x, texel.y + along * footprint.y)));
-    if (!marked(cell)) continue;
-    vec2 away = (texel - (vec2(cell) + 0.5)) / footprint;
-    if (abs(away.x) <= halfThickness && abs(away.y) <= halfLength) return 1.0;
-  }
-
-  // The horizontal arm, the same walk with the axes swapped.
-  if (fromCentre.y <= halfThickness) for (int i = -MARKER_STEPS; i <= MARKER_STEPS; i++) {
-    float along = float(i) * stride.x;
-    if (abs(along) > halfLength) continue;
-    ivec2 cell = ivec2(floor(vec2(texel.x + along * footprint.x, texel.y)));
-    if (!marked(cell)) continue;
-    vec2 away = (texel - (vec2(cell) + 0.5)) / footprint;
-    if (abs(away.y) <= halfThickness && abs(away.x) <= halfLength) return 1.0;
-  }
-  return 0.0;
-}
-
 void main() {
   vec2 texel = v_uv * u_size;
   // How much of the template one device pixel covers, per axis.
   vec2 footprint = vec2(fwidth(texel.x), fwidth(texel.y));
-
-  // Before anything else, and at full strength. A marker sits on top of the overlay rather than
-  // inside it: it has to be findable over a dense template, over a hole where a colour is switched
-  // off, and at the opacity someone has dialled the overlay down to. It is not part of the picture.
-  float marker = markerCoverage(texel, footprint);
-  if (marker > 0.0) {
-    float markerAlpha = marker * u_fade;
-    fragColor = vec4(u_markerColour * markerAlpha, markerAlpha);
-    return;
-  }
 
   // Below 1:1, one fragment covers several template pixels and a single sample cannot represent
   // them. Point-sampling there is what produced the moire: which of the cells under a fragment got

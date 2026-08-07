@@ -4,7 +4,9 @@ import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
-import { currentQuads, isDrawingTiles, textureForTile } from '../tile-transform.js'
+import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
+import { captureTilePixels, currentQuads, isDrawingTiles } from '../tile-transform.js'
+import { drawMarkers, initMarkers, type MarkerStyle, releaseMarkers } from './markers.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
 /**
@@ -102,10 +104,12 @@ const corner = (
  * view where a cell is a speck. This stays the same size on screen at every zoom, so it reads as an
  * annotation over the art rather than as part of it.
  */
-const MARKER_LENGTH = 9
-const MARKER_THICKNESS = 2
-/** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
-const MARKER_COLOUR: readonly [number, number, number] = [1, 0, 1]
+const MARKER_STYLE: MarkerStyle = {
+  size: 9,
+  thickness: 2,
+  /** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
+  colour: [1, 0, 1],
+}
 
 /** How long a template takes to arrive or leave. */
 const FADE_MS = 500
@@ -305,11 +309,13 @@ export const overlayLayer = {
     gl.enableVertexAttribArray(uv)
     gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 24, 16)
     gl.bindVertexArray(null)
+    initMarkers(gl)
     log('install', 'overlay layer added to wplace’s own canvas', { projection: 'transform-double' })
   },
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
     for (const id of [...gpu.keys()]) release(gl, id)
+    releaseMarkers(gl)
     if (quad !== null) gl.deleteBuffer(quad)
     if (vao !== null) gl.deleteVertexArray(vao)
     if (program !== null) gl.deleteProgram(program)
@@ -363,6 +369,13 @@ export const overlayLayer = {
     }
     if (visible.length === 0) return
 
+    // Reading their tiles back costs a decode and a million-entry walk each, so it only happens
+    // while something is actually asking what disagrees.
+    captureTilePixels(
+      visible.some(({ template }) => appearanceOf(template).markMismatch && template.visible),
+    )
+    beginMismatchFrame()
+
     // MapLibre renders on demand, so a frame nobody asked for is a frame that never happens. Without
     // this a ramp would advance only as far as the next pan.
     if (animating) {
@@ -378,6 +391,10 @@ export const overlayLayer = {
     const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
     const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
     const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
+
+    // Collected while drawing and flushed after, because markers use their own program and swapping
+    // programs per tile would cost more than the markers do.
+    const markerWork: { tile: (typeof tiles)[number]; marks: Float32Array; fade: number }[] = []
 
     gl.useProgram(program)
     gl.bindVertexArray(vao)
@@ -429,13 +446,6 @@ export const overlayLayer = {
       gl.uniform2f(uniform(gl, 'u_stampOffset'), appearance.translateX, appearance.translateY)
       gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
       gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
-      gl.uniform1i(uniform(gl, 'u_markMismatch'), appearance.markMismatch ? 1 : 0)
-      gl.uniform1i(uniform(gl, 'u_markUnpainted'), appearance.markUnpainted ? 1 : 0)
-      gl.uniform1f(uniform(gl, 'u_markerLength'), MARKER_LENGTH)
-      gl.uniform1f(uniform(gl, 'u_markerThickness'), MARKER_THICKNESS)
-      gl.uniform3f(uniform(gl, 'u_markerColour'), ...MARKER_COLOUR)
-      gl.uniform1i(uniform(gl, 'u_tileSize'), TILE_SIZE)
-      gl.uniform1i(uniform(gl, 'u_canvas'), 2)
 
       const left = template.originX + nudgeX
       const top = template.originY + nudgeY
@@ -467,16 +477,6 @@ export const overlayLayer = {
         const v0 = (cutTop - top) / template.height
         const v1 = (cutBottom - top) / template.height
 
-        // Their own texture for this tile, read rather than copied. Absent for a tile MapLibre drew
-        // from a stretched parent — those are not attributable to one tile, so nothing is marked
-        // there rather than everything being marked wrongly.
-        const placed = appearance.markMismatch ? textureForTile(tile.tile) : null
-        gl.activeTexture(gl.TEXTURE2)
-        gl.bindTexture(gl.TEXTURE_2D, placed)
-        gl.uniform1i(uniform(gl, 'u_hasCanvas'), placed === null ? 0 : 1)
-        // Where this template's own (0,0) sits inside their tile, so a cell can be looked up in it.
-        gl.uniform2i(uniform(gl, 'u_originInTile'), left - tileLeft, top - tileTop)
-
         // Strip order: top-left, top-right, bottom-left, bottom-right.
         corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
         corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
@@ -484,13 +484,21 @@ export const overlayLayer = {
         corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+
+        if (appearance.markMismatch) {
+          const marks = mismatchesIn(template, tile.tile)
+          if (marks !== null && marks.length > 0) markerWork.push({ tile, marks, fade })
+        }
       }
+    }
+
+    // Markers last, so a crosshair is never drawn under a template that comes after it.
+    for (const work of markerWork) {
+      drawMarkers(gl, work.tile, work.marks, MARKER_STYLE, work.fade)
     }
 
     // Put it all back. The active texture unit especially: we leave it on 1 while binding the
     // palette, and MapLibre binds its own textures expecting to still be on 0.
-    gl.activeTexture(gl.TEXTURE2)
-    gl.bindTexture(gl.TEXTURE_2D, null)
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, null)
     gl.activeTexture(gl.TEXTURE0)
