@@ -289,13 +289,24 @@ const buildMenu = (
   defaults.append(defaultsBox, defaultsText)
   pixels.appendChild(defaults)
 
+  /**
+   * Everything "use defaults" governs, so it can be switched off as one thing.
+   *
+   * While defaults are on, these controls describe values this overlay does not own. Leaving them
+   * live meant the only way to discover that was to move one and watch the tick come off by itself —
+   * the control worked, but not in the way it appeared to: it silently detached the overlay from the
+   * defaults as a side effect. Dimmed and inert, the tick reads as the switch it is.
+   */
+  const overrides = document.createElement('div')
+  Object.assign(overrides.style, { display: 'contents' })
+
   for (const control of APPEARANCE_CONTROLS) {
-    menu.appendChild(
+    overrides.appendChild(
       slider(control, current()[control.key], (value) => update({ [control.key]: value })),
     )
   }
 
-  menu.appendChild(section('Colours'))
+  overrides.appendChild(section('Colours'))
 
   const gridWrap = document.createElement('div')
   gridWrap.className = 'wts-swatches'
@@ -319,7 +330,7 @@ const buildMenu = (
 
   // The same presets as settings, applied to this overlay's own filter. Reaching them should not
   // mean opening the panel when this menu is already the thing being looked at.
-  menu.appendChild(
+  overrides.appendChild(
     colourPresets((next) => {
       update({ hiddenColours: next })
       refreshSwatches()
@@ -342,7 +353,23 @@ const buildMenu = (
     )
   }
   gridWrap.appendChild(grid)
-  menu.appendChild(gridWrap)
+  overrides.appendChild(gridWrap)
+
+  // `display: contents` leaves no box to fade, so the dimming goes on the children — which is also
+  // what keeps the "use defaults" row itself at full strength while everything it governs recedes.
+  for (const child of overrides.children) {
+    if (!(child instanceof HTMLElement)) continue
+    child.style.opacity = usingDefaults ? '0.7' : ''
+  }
+  if (usingDefaults) {
+    overrides.style.pointerEvents = 'none'
+    // Disabled as well as inert: pointer-events alone still leaves every slider and swatch in the
+    // tab order, reachable and operable by keyboard.
+    for (const control of overrides.querySelectorAll('input, button, select')) {
+      if (control instanceof HTMLElement) control.setAttribute('disabled', '')
+    }
+  }
+  menu.appendChild(overrides)
   return menu
 }
 
@@ -380,13 +407,21 @@ export const renderOverlayControls = (rerender: () => void): void => {
     )
     let button = document.getElementById(buttonId)
 
-    // Nothing on the canvas, so nothing to anchor to. A hidden overlay is hidden by any route —
-    // its own switch, a folder it sits in, or the whole of Local being off — and a button floating
-    // over their canvas pointing at an overlay that is not drawn is just a control with no subject.
-    if (topLeft === null || bottomRight === null || !isTemplateVisible(template)) {
+    // Off the canvas entirely: nothing to anchor to, so there is nothing to keep.
+    if (topLeft === null || bottomRight === null) {
       button?.remove()
       if (openFor === template.id) document.getElementById(MENU_ID)?.remove()
       continue
+    }
+
+    // A hidden overlay is hidden by any route — its own switch, a folder it sits in, or the whole of
+    // Local being off — and a button pointing at an overlay that is not drawn is a control with no
+    // subject. It fades on the same curve and over the same time as the overlay it belongs to, so
+    // the two leave together instead of the button blinking out over a template still fading.
+    const shown = isTemplateVisible(template)
+    if (!shown && openFor === template.id) {
+      openFor = null
+      document.getElementById(MENU_ID)?.remove()
     }
     if (button === null) {
       button = document.createElement('button')
@@ -402,6 +437,8 @@ export const renderOverlayControls = (rerender: () => void): void => {
       button.style.position = 'fixed'
       // Behind the panel too, for the same reason, and below the menu it opens.
       button.style.zIndex = '28'
+      // Matches the overlay's own ramp in `gl/layer.ts`, in both duration and curve.
+      button.style.transition = 'opacity 500ms ease-in-out'
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         if (openFor === template.id) closeOverlayMenu()
@@ -410,6 +447,12 @@ export const renderOverlayControls = (rerender: () => void): void => {
       })
       document.body.appendChild(button)
     }
+    button.style.opacity = shown ? '1' : '0'
+    // Not just invisible: an opacity-0 button is still clickable and still in the tab order.
+    button.style.pointerEvents = shown ? '' : 'none'
+    button.setAttribute('aria-hidden', String(!shown))
+    button.tabIndex = shown ? 0 : -1
+
     const size = button.getBoundingClientRect().width || 40
 
     /**

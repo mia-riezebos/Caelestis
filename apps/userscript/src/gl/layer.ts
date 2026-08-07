@@ -94,22 +94,51 @@ const corner = (
   into[offset + 5] = v
 }
 
-/** How long the overlay takes to arrive, once there is anything to show. */
-const FADE_MS = 1000
+/** How long a template takes to arrive or leave. */
+const FADE_MS = 500
+
+/** Cubic ease-in-out, the shape CSS `ease-in-out` describes. */
+const ease = (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2)
+
+interface Fade {
+  /** Where the ramp started, so a fade interrupted midway carries on from where it was. */
+  readonly from: number
+  readonly to: number
+  readonly since: number
+}
 
 /**
- * When the overlay first had a template to draw, or 0 before that.
+ * Each template's opacity ramp, keyed by id.
  *
- * The templates cannot be on screen at first paint. Their bytes come out of IndexedDB, the map has
- * to exist before a layer can be added to it, and the layer needs a frame of wplace's tiles to place
- * anything against — so there is always a moment of their canvas alone, and the overlay used to
- * appear in one frame, at full strength, whenever that moment ended. Ramping instead reads as the
- * overlay arriving rather than as the page glitching.
+ * A template arriving is the same event as a template being switched back on, so both go through
+ * here. On load there is always a moment of wplace's canvas alone — the bytes come out of
+ * IndexedDB, the map has to exist before a layer can join it, and the layer needs a frame of their
+ * tiles to place anything against — and the overlay used to appear in one frame at full strength
+ * whenever that moment ended.
  *
- * Timed from the first frame that actually draws, not from start-up, or a slow template restore
- * would spend its fade invisible and still pop.
+ * Fading *out* is why this is keyed rather than global: a hidden template still has to be drawn,
+ * at falling opacity, until its ramp reaches zero. It leaves the map only once it is invisible.
  */
-let fadeFrom = 0
+const fades = new Map<string, Fade>()
+
+/** The current value of a ramp, and whether it still has somewhere to go. */
+const fadeOf = (id: string, target: number, now: number): { value: number; done: boolean } => {
+  const existing = fades.get(id)
+  if (existing === undefined) {
+    // Never seen: ramp up from nothing, so a restored template arrives rather than appears.
+    fades.set(id, { from: 0, to: target, since: now })
+    return { value: 0, done: target === 0 }
+  }
+  const progress = Math.min(Math.max((now - existing.since) / FADE_MS, 0), 1)
+  const value = existing.from + (existing.to - existing.from) * ease(progress)
+  if (existing.to !== target) {
+    // Turned around mid-ramp. Starting the new one from the value on screen is what stops a
+    // half-faded template snapping to full before it fades back out.
+    fades.set(id, { from: value, to: target, since: now })
+    return { value, done: false }
+  }
+  return { value, done: progress >= 1 }
+}
 
 let program: WebGLProgram | null = null
 let quad: WebGLBuffer | null = null
@@ -303,20 +332,27 @@ export const overlayLayer = {
     const bufferWidth = gl.drawingBufferWidth
     const bufferHeight = gl.drawingBufferHeight
 
-    const visible = localTemplates().filter(isTemplateVisible)
-    collect(gl, new Set(localTemplates().map((template) => template.id)))
+    const all = localTemplates()
+    collect(gl, new Set(all.map((template) => template.id)))
+
+    // Switched off is a destination, not an exclusion: a template on its way out is still drawn,
+    // at falling opacity, and only leaves once its ramp has run out.
+    const now = performance.now()
+    let animating = false
+    const visible: { template: (typeof all)[number]; fade: number }[] = []
+    for (const template of all) {
+      const { value, done } = fadeOf(template.id, isTemplateVisible(template) ? 1 : 0, now)
+      if (!done) animating = true
+      if (value > 0) visible.push({ template, fade: value })
+    }
+    for (const id of [...fades.keys()]) {
+      if (!all.some((template) => template.id === id)) fades.delete(id)
+    }
     if (visible.length === 0) return
 
-    if (fadeFrom === 0) fadeFrom = performance.now()
-    const elapsed = (performance.now() - fadeFrom) / FADE_MS
-    const progress = Math.min(Math.max(elapsed, 0), 1)
-    // Cubic ease-in-out, the same shape CSS `ease-in-out` describes: slow at both ends, fastest
-    // across the middle, so the overlay has no visible moment of starting or stopping.
-    const fade =
-      progress < 0.5 ? 4 * progress * progress * progress : 1 - (-2 * progress + 2) ** 3 / 2
     // MapLibre renders on demand, so a frame nobody asked for is a frame that never happens. Without
-    // this the ramp would advance only as far as the next pan.
-    if (progress < 1) {
+    // this a ramp would advance only as far as the next pan.
+    if (animating) {
       const map = getMap() as { triggerRepaint?: () => void } | null
       map?.triggerRepaint?.()
     }
@@ -331,7 +367,6 @@ export const overlayLayer = {
     const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
 
     gl.useProgram(program)
-    gl.uniform1f(uniform(gl, 'u_fade'), fade)
     gl.bindVertexArray(vao)
     gl.enable(gl.BLEND)
     // Premultiplied source, which is what the fragment shader writes.
@@ -339,7 +374,7 @@ export const overlayLayer = {
     gl.disable(gl.DEPTH_TEST)
     gl.bindBuffer(gl.ARRAY_BUFFER, quad)
 
-    for (const template of visible) {
+    for (const { template, fade } of visible) {
       let entry = gpu.get(template.id)
       if (entry === undefined) {
         const indices = gl.createTexture()
@@ -373,6 +408,7 @@ export const overlayLayer = {
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
+      gl.uniform1f(uniform(gl, 'u_fade'), fade)
       gl.uniform2f(uniform(gl, 'u_size'), template.width, template.height)
       gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
       gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
