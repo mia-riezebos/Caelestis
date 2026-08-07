@@ -4,8 +4,9 @@ import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
+import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
 import { currentQuads, isDrawingTiles } from '../tile-transform.js'
-import { markerLayer } from './markers.js'
+import { drawMarkers, initMarkers, type MarkerStyle, releaseMarkers } from './markers.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
 /**
@@ -95,6 +96,21 @@ const corner = (
   into[offset + 5] = v
 }
 
+/**
+ * The mismatch marker, in device pixels — not in cells, and not in CSS pixels.
+ *
+ * Device pixels because the point of it is to be findable. Sized in cells it shrinks with the zoom,
+ * and the view where you are hunting for the one wrong pixel in a hundred thousand is exactly the
+ * view where a cell is a speck. This stays the same size on screen at every zoom, so it reads as an
+ * annotation over the art rather than as part of it.
+ */
+const MARKER_STYLE: MarkerStyle = {
+  size: 9,
+  thickness: 2,
+  /** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
+  colour: [1, 0, 1],
+}
+
 /** How long a template takes to arrive or leave. */
 const FADE_MS = 500
 
@@ -121,19 +137,6 @@ interface Fade {
  * at falling opacity, until its ramp reaches zero. It leaves the map only once it is invisible.
  */
 const fades = new Map<string, Fade>()
-
-/**
- * A template's current opacity, for anything drawn alongside it in another layer.
- *
- * The markers are their own layer — they have to sit above wplace's draft pixels, where the overlay
- * itself must not go — and still have to arrive and leave with the template they belong to.
- */
-export const templateFade = (id: string): number => {
-  const fade = fades.get(id)
-  if (fade === undefined) return 0
-  const progress = Math.min(Math.max((performance.now() - fade.since) / FADE_MS, 0), 1)
-  return fade.from + (fade.to - fade.from) * ease(progress)
-}
 
 /** The current value of a ramp, and whether it still has somewhere to go. */
 const fadeOf = (id: string, target: number, now: number): { value: number; done: boolean } => {
@@ -306,11 +309,13 @@ export const overlayLayer = {
     gl.enableVertexAttribArray(uv)
     gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 24, 16)
     gl.bindVertexArray(null)
+    initMarkers(gl)
     log('install', 'overlay layer added to wplace’s own canvas', { projection: 'transform-double' })
   },
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
     for (const id of [...gpu.keys()]) release(gl, id)
+    releaseMarkers(gl)
     if (quad !== null) gl.deleteBuffer(quad)
     if (vao !== null) gl.deleteVertexArray(vao)
     if (program !== null) gl.deleteProgram(program)
@@ -364,6 +369,8 @@ export const overlayLayer = {
     }
     if (visible.length === 0) return
 
+    beginMismatchFrame()
+
     // MapLibre renders on demand, so a frame nobody asked for is a frame that never happens. Without
     // this a ramp would advance only as far as the next pan.
     if (animating) {
@@ -379,6 +386,11 @@ export const overlayLayer = {
     const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
     const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
     const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
+
+    // Collected while drawing and flushed after, because markers use their own program and swapping
+    // programs per tile would cost more than the markers do.
+    const markerWork: { tile: (typeof tiles)[number]; marks: Float32Array; fade: number }[] = []
+    let scanPending = false
 
     gl.useProgram(program)
     gl.bindVertexArray(vao)
@@ -468,7 +480,25 @@ export const overlayLayer = {
         corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+
+        if (appearance.markMismatch) {
+          const marks = mismatchesIn(template, tile.tile)
+          // Null is "ask again next frame", and on a still map there is no next frame unless one is
+          // asked for. Without this the answer waited for the user to move — measured at about ten
+          // seconds, which read as the scan being slow when it had simply not been run.
+          if (marks === null) scanPending = true
+          else if (marks.length > 0) markerWork.push({ tile, marks, fade })
+        }
       }
+    }
+
+    // Markers last, so a crosshair is never drawn under a template that comes after it.
+    for (const work of markerWork) {
+      drawMarkers(gl, work.tile, work.marks, MARKER_STYLE, work.fade)
+    }
+    if (scanPending) {
+      const map = getMap() as { triggerRepaint?: () => void } | null
+      map?.triggerRepaint?.()
     }
 
     // Put it all back. The active texture unit especially: we leave it on 1 while binding the
@@ -498,30 +528,17 @@ export const installOverlayLayer = (): boolean => {
     getLayer?: (id: string) => unknown
   } | null
   if (map?.addLayer === undefined) return false
+  if (map.getLayer?.(LAYER_ID) !== undefined) return true
   const before = map.getLayer?.(BEFORE_LAYER) === undefined ? undefined : BEFORE_LAYER
-
-  /**
-   * Each layer decides for itself whether it is already there.
-   *
-   * A single "have we installed" answer for two layers is a way to end up with one of them: the
-   * caller retries on a false, so a first attempt that added the overlay and then threw on the
-   * markers would either never add the markers, or re-add the overlay and throw for the rest of the
-   * retries. They are independent, so they are asked independently.
-   */
-  const add = (layer: { id: string }, what: string): boolean => {
-    if (map.getLayer?.(layer.id) !== undefined) return true
-    try {
-      map.addLayer?.(layer, before)
-      log('install', `${what} inserted${before === undefined ? ' on top' : ` before ${before}`}`)
-      return true
-    } catch (error) {
-      warn('install', `could not add the ${what}`, String(error))
-      return false
-    }
+  try {
+    map.addLayer(overlayLayer, before)
+    log(
+      'install',
+      `overlay layer inserted${before === undefined ? ' on top' : ` before ${before}`}`,
+    )
+    return true
+  } catch (error) {
+    warn('install', 'could not add the overlay layer', String(error))
+    return false
   }
-
-  // The markers go in second so they land above the overlay: same anchor, later insertion.
-  const overlay = add(overlayLayer, 'overlay layer')
-  const markers = add(markerLayer, 'marker layer')
-  return overlay && markers
 }
