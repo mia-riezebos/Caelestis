@@ -924,15 +924,22 @@ export const markCanvasDirty = (canvas: object): void => {
 const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
 
 /**
- * Tiles whose preview canvas we can read, and which must therefore never be read from the PNG.
+ * What the client knows that the server has not confirmed, per tile: pixel offset to palette index.
  *
- * The two sources do not say the same thing. The preview holds what is on the canvas *including*
- * pixels placed and not yet submitted; the PNG holds what the server has, which by definition does
- * not. wplace serve tiles `no-store` and re-fetch them, so a marker cleared by a pending pixel came
- * back the moment the next fetch landed — about ten seconds later, on a pixel the user had just
- * painted. The preview is a superset, so once it is available it is the only thing worth reading.
+ * The preview canvas is **not** a copy of the tile, which is the thing that made every marker in a
+ * tile vanish the moment a pixel was painted into it. Their tile manager allocates on demand:
+ *
+ *     O.pixels || (O.pixels = new Uint8Array(this.tileSize * this.tileSize)), O.pixels[u] = g
+ *
+ * so painting into a tile it has not loaded produces an all-zero array with one pixel set, and a
+ * canvas that is transparent everywhere except there. Read as a tile, that says the whole tile is
+ * unpainted — and unpainted is not a mismatch unless asked for, so every marker went.
+ *
+ * So the preview contributes pixels and never absences, and those pixels are kept separately. The
+ * PNG remains the base, which is what stops a re-fetch from reverting a pixel that has been placed
+ * and not yet submitted: the base is replaced and the overrides go back on top.
  */
-const previewNamed = new Set<string>()
+const overridesOfTile = new Map<string, Map<number, number>>()
 
 /** The named preview canvases themselves, so a tile's can be found and re-read when it moves on. */
 const previewCanvases = new Map<object, TileCoord>()
@@ -996,15 +1003,21 @@ const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
 }
 
 const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
-  const indices = pixelsOfTile.get(tileKey(tile))
+  const key = tileKey(tile)
+  const indices = pixelsOfTile.get(key)
   if (indices === undefined) return false
+  const overrides = overridesOfTile.get(key) ?? new Map<number, number>()
   let changed = 0
   for (let i = 0; i < triples.length; i += 3) {
     const x = triples[i] as number
     const y = triples[i + 1] as number
     const index = triples[i + 2] as number
-    if (indices[y * TILE_SIZE + x] === index) continue
-    indices[y * TILE_SIZE + x] = index
+    const p = y * TILE_SIZE + x
+    // Remembered as well as applied. A pixel placed and not yet submitted is not in the tile the
+    // server will serve, so without this the next fetch would quietly revert it.
+    if (index !== UNPAINTED) overrides.set(p, index)
+    if (indices[p] === index) continue
+    indices[p] = index
     changed++
     for (const listener of pixelListeners) {
       try {
@@ -1014,8 +1027,42 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
       }
     }
   }
+  if (overrides.size > 0) overridesOfTile.set(key, overrides)
   if (changed > 0) count('pixels:patched a write')
   return true
+}
+
+/**
+ * Move `into` to match `from`, announcing each pixel that moves.
+ *
+ * The array itself is kept. Anything holding an answer derived from this tile keys it on the array's
+ * identity, so replacing it says "all of this is stale" — and recomputing a tile because one pixel
+ * moved is what made every marker in it disappear and come back.
+ */
+const apply = (
+  tile: TileCoord,
+  into: Uint8Array,
+  from: Uint8Array | Map<number, number>,
+): number => {
+  let moved = 0
+  const at = (p: number, index: number): void => {
+    if (into[p] === index) return
+    into[p] = index
+    moved++
+    const x = p % TILE_SIZE
+    const y = (p - x) / TILE_SIZE
+    for (const listener of pixelListeners) {
+      try {
+        listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+      } catch {
+        count('pixels:listener-failed')
+      }
+    }
+  }
+  if (from instanceof Map) for (const [p, index] of from) at(p, index)
+  else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
+  if (moved > 0) count('pixels:changed', moved)
+  return moved
 }
 
 /** Read a tile into palette indices, from whatever wplace last drew it from. */
@@ -1026,16 +1073,6 @@ const capture = (
 ): void => {
   if (!capturePixels) return
   if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) return
-  // A server tile never overwrites what the preview says. It would be a step *backwards*: the same
-  // pixels minus anything placed and not yet submitted.
-  if (from === 'tile' && previewNamed.has(tileKey(tile)) && pixelsOfTile.has(tileKey(tile))) {
-    // Still worth re-reading the preview, since a fetch landing means the tile moved on.
-    for (const [canvas, named] of previewCanvases) {
-      if (named.x === tile.x && named.y === tile.y) dirtyCanvases.add(canvas)
-    }
-    count('pixels:kept the preview over a server tile')
-    return
-  }
   try {
     const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
     const context = canvas.getContext('2d', { willReadFrequently: true })
@@ -1057,15 +1094,41 @@ const capture = (
       indices[p] = index
       if (index !== UNPAINTED) painted++
     }
-    // A blank preview is never believed. That canvas exists before wplace has loaded the tile's
-    // pixels into it, so an empty one means "not ready", not "nobody has painted here" — and taking
-    // it at face value would mark an entire finished tile as unpainted. The tile PNG has no such
-    // ambiguity: empty there really is empty.
+
     const key = tileKey(tile)
-    if (painted === 0 && from === 'preview') {
-      count('pixels:ignored a blank preview')
+    const overrides = overridesOfTile.get(key) ?? new Map<number, number>()
+
+    if (from === 'preview') {
+      // Pixels only. A transparent pixel in a preview means "the client has nothing here", not
+      // "nobody has painted here" — see `overridesOfTile`.
+      if (painted === 0) {
+        count('pixels:preview had nothing to add')
+        return
+      }
+      for (let p = 0; p < indices.length; p++) {
+        const index = indices[p] as number
+        if (index !== UNPAINTED) overrides.set(p, index)
+      }
+      overridesOfTile.set(key, overrides)
+      const base = pixelsOfTile.get(key)
+      // Nothing to lay them over yet. The base has to come from the tile itself, and asking for it
+      // is what `ensureTilePixels` is for.
+      if (base === undefined) {
+        count('pixels:preview held until the tile arrives')
+        return
+      }
+      apply(tile, base, overrides)
+      count('pixels:preview merged')
       return
     }
+
+    // The server's answer, which is the base. Anything it now agrees with is no longer an override:
+    // that pixel has been submitted and confirmed, and keeping it would pin a stale value forever.
+    for (const [p, index] of overrides) {
+      if (indices[p] === index) overrides.delete(p)
+    }
+    if (overrides.size > 0) overridesOfTile.set(key, overrides)
+    else overridesOfTile.delete(key)
 
     /**
      * A re-read of a tile we already hold becomes a diff, not a replacement.
@@ -1074,32 +1137,17 @@ const capture = (
      * for this tile keys it on the array's identity — that is how a re-read is meant to invalidate
      * a stale answer — so handing over a *new* array said "everything about this tile has changed"
      * when what had actually changed was one pixel someone painted.
-     *
-     * Reading the tile is unavoidable here; recomputing everything that depends on it is not. The
-     * same array is kept and the differing pixels are announced one at a time, so a full re-read
-     * costs a scan of the tile and leaves every answer that did not change alone.
      */
     const existing = pixelsOfTile.get(key)
-    if (existing !== undefined && existing.length === indices.length) {
-      let moved = 0
-      for (let p = 0; p < indices.length; p++) {
-        const index = indices[p] as number
-        if (existing[p] === index) continue
-        existing[p] = index
-        moved++
-        const x = p % TILE_SIZE
-        const y = (p - x) / TILE_SIZE
-        for (const listener of pixelListeners) {
-          listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
-        }
-      }
-      count('pixels:re-read as a diff')
-      if (moved > 0) count('pixels:changed by a re-read', moved)
+    if (existing === undefined || existing.length !== indices.length) {
+      for (const [p, index] of overrides) indices[p] = index
+      pixelsOfTile.set(key, indices)
+      count('pixels:captured')
       return
     }
-
-    pixelsOfTile.set(key, indices)
-    count('pixels:captured')
+    for (const [p, index] of overrides) indices[p] = index
+    apply(tile, existing, indices)
+    count('pixels:re-read as a diff')
   } catch (error) {
     warn('bitmap', 'could not read tile pixels', String(error))
   }
@@ -1929,7 +1977,6 @@ export const install = (
             tile = known.tile
             tileOfPaintTexture.set(texture, tile)
             tileOfPaintCanvas.set(source, tile)
-            previewNamed.add(tileKey(tile))
             previewCanvases.set(source, tile)
             log('texture', `named the paint preview for ${tile.x}/${tile.y}`)
             break
