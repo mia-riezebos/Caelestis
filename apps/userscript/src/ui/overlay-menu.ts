@@ -295,26 +295,51 @@ const buildMenu = (
   }
 
   menu.appendChild(section('Colours'))
+
+  const gridWrap = document.createElement('div')
+  gridWrap.className = 'wts-swatches'
+  const grid = document.createElement('div')
+  grid.className = 'wts-swatch-grid'
+
+  /**
+   * Repaint every swatch from the appearance as it now stands.
+   *
+   * The settings pane gets this for free because it rebuilds itself; this menu deliberately does
+   * not, so a swatch clicked here changed the canvas and then sat there looking exactly as it had.
+   * A preset moves dozens at once, so this walks all of them rather than the one that was clicked.
+   */
+  const refreshSwatches = (): void => {
+    const off = new Set(current().hiddenColours)
+    for (const element of grid.children) {
+      if (!(element instanceof HTMLElement)) continue
+      const index = Number(element.dataset.index)
+      const on = !off.has(index)
+      element.dataset.on = String(on)
+      element.setAttribute('aria-pressed', String(on))
+    }
+  }
+
   // The same presets as settings, applied to this overlay's own filter. Reaching them should not
   // mean opening the panel when this menu is already the thing being looked at.
   menu.appendChild(
     colourPresets((next) => {
       update({ hiddenColours: next })
+      refreshSwatches()
     }, rerender),
   )
+
   const hidden = new Set(appearance.hiddenColours)
-  const gridWrap = document.createElement('div')
-  gridWrap.className = 'wts-swatches'
-  const grid = document.createElement('div')
-  grid.className = 'wts-swatch-grid'
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
     const swatch = document.createElement('button')
     const on = !hidden.has(colour.index)
+    swatch.type = 'button'
     swatch.className = 'wts-swatch'
+    swatch.dataset.index = String(colour.index)
     swatch.dataset.on = String(on)
     swatch.style.backgroundColor = colour.hex
     swatch.title = `${colour.name} · ${colour.kind}`
+    swatch.setAttribute('aria-label', `${colour.name}, ${colour.kind}`)
     swatch.setAttribute('aria-pressed', String(on))
     swatch.addEventListener('click', () => {
       // Current, not captured — same reason as every other control here.
@@ -322,6 +347,7 @@ const buildMenu = (
       if (next.has(colour.index)) next.delete(colour.index)
       else next.add(colour.index)
       update({ hiddenColours: [...next] })
+      refreshSwatches()
       rerender()
     })
     grid.appendChild(swatch)
