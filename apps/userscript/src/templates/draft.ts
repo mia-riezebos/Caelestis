@@ -61,7 +61,18 @@ interface StyleLike {
  */
 let arrangedFor: string | null = null
 
+/**
+ * `styledata` fires far more often than layers change — every tile that loads, among other things —
+ * and the first thing this does is `getStyle`, which serialises the entire style. Doing that dozens
+ * of times a second is main-thread time spent to discover that nothing has changed.
+ */
+const THROTTLE_MS = 250
+let lastLook = 0
+
 const arrange = (): void => {
+  const now = performance.now()
+  if (now - lastLook < THROTTLE_MS) return
+  lastLook = now
   const map = getMap() as StyleLike | null
   const layers = map?.getStyle?.().layers
   if (map === null || layers === undefined) return

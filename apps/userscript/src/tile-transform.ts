@@ -808,6 +808,29 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
 }
 
 const pixelsOfTile = new Map<string, Uint8Array>()
+
+/**
+ * How many tiles' pixels to keep.
+ *
+ * A megabyte each, and nothing ever dropped them: panning across a canvas with the markers on grew
+ * this without limit until the tab ran out of memory and died. Sixty-four is comfortably more than
+ * fits on screen at any zoom — the worst case measured is 28 — so the ones being looked at are never
+ * the ones evicted.
+ */
+const KEEP_TILES = 64
+
+/** Drop the least recently touched tiles once there are too many of them. */
+const evict = (): void => {
+  while (pixelsOfTile.size > KEEP_TILES) {
+    // Map iterates in insertion order, and every read re-inserts, so the first key is the oldest.
+    const oldest = pixelsOfTile.keys().next().value
+    if (oldest === undefined) return
+    pixelsOfTile.delete(oldest)
+    overridesOfTile.delete(oldest)
+    chased.delete(oldest)
+    count('pixels:evicted a tile')
+  }
+}
 let capturePixels = false
 
 /** Index meaning "nobody has painted here". Distinct from every palette entry. */
@@ -838,8 +861,16 @@ export const captureTilePixels = (on: boolean): void => {
   log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
 }
 
-export const tilePixels = (tile: TileCoord): Uint8Array | null =>
-  pixelsOfTile.get(tileKey(tile)) ?? null
+/** The placed pixels of a tile as palette indices, or null if it has not been captured. */
+export const tilePixels = (tile: TileCoord): Uint8Array | null => {
+  const key = tileKey(tile)
+  const pixels = pixelsOfTile.get(key)
+  if (pixels === undefined) return null
+  // Re-inserted so it counts as recently used: eviction takes from the front.
+  pixelsOfTile.delete(key)
+  pixelsOfTile.set(key, pixels)
+  return pixels
+}
 
 /** Whatever tile URL wplace last used, with the coordinates blanked out. */
 let tileUrlShape: string | null = null
@@ -941,9 +972,6 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
  */
 const overridesOfTile = new Map<string, Map<number, number>>()
 
-/** The named preview canvases themselves, so a tile's can be found and re-read when it moves on. */
-const previewCanvases = new Map<object, TileCoord>()
-
 /**
  * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
  * coordinates.
@@ -959,7 +987,6 @@ export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
   const known = tileOfPaintCanvas.get(canvas)
   if (known !== undefined && known.x === tile.x && known.y === tile.y) return
   tileOfPaintCanvas.set(canvas, tile)
-  previewCanvases.set(canvas, tile)
   count('paint:named a draft canvas')
   const held = queuedWrites.get(canvas)
   if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
@@ -1153,6 +1180,7 @@ const capture = (
     if (existing === undefined || existing.length !== indices.length) {
       for (const [p, index] of overrides) indices[p] = index
       pixelsOfTile.set(key, indices)
+      evict()
       count('pixels:captured')
       return
     }

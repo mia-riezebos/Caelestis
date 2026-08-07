@@ -34,6 +34,25 @@ interface Cached {
 
 const cache = new Map<string, Cached>()
 
+/**
+ * How many answers to keep, across every template and tile.
+ *
+ * Unbounded, this grew with every tile ever visited — a marked tile's list can be tens of thousands
+ * of coordinates — and together with the tile pixels themselves it took the tab out of memory.
+ * Generous next to what fits on screen, so nothing being looked at is ever dropped.
+ */
+const KEEP_ANSWERS = 128
+
+const evict = (): void => {
+  while (cache.size > KEEP_ANSWERS) {
+    // Insertion order, and a hit re-inserts, so the front is the least recently used.
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) return
+    cache.delete(oldest)
+    count('mismatch:evicted an answer')
+  }
+}
+
 /** Bumped whenever a cached answer is patched, so a listener can tell that anything happened. */
 let changed = 0
 
@@ -96,6 +115,9 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   const key = signature(template)
   const existing = cache.get(cacheKey)
   if (existing !== undefined && existing.source === pixels && existing.key === key) {
+    // Re-inserted so a hit counts as recent: eviction takes from the front.
+    cache.delete(cacheKey)
+    cache.set(cacheKey, existing)
     return existing.result
   }
   // Out of budget: answer next frame rather than block this one. A stale result would be worse than
@@ -154,6 +176,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
 
   const result = new Float32Array(found)
   cache.set(cacheKey, { source: pixels, key, result })
+  evict()
   count('mismatch:tiles scanned')
   count('mismatch:pixels marked', found.length / 2)
   return result
