@@ -109,7 +109,14 @@ const APP_NAME = 'Caelestis'
 const PANEL_TITLE = APP_NAME
 const BUTTON_TOOLTIP = `${APP_NAME} — shared templates`
 
-type View = 'tree' | 'settings'
+type View = 'tree' | 'settings' | 'appearance'
+
+/** The header title for each view, and `null` where the panel keeps its own name. */
+const VIEW_TITLE: Record<View, string | null> = {
+  tree: null,
+  settings: 'Settings',
+  appearance: 'Appearance',
+}
 
 let currentView: View = 'tree'
 let open = false
@@ -516,6 +523,85 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   return wrap
 }
 
+/**
+ * How overlays look: the defaults every overlay follows, and the colours any of them may draw.
+ *
+ * Its own view rather than a section of settings. Settings is a page you visit rarely — a server to
+ * connect, a switch to flip once — while this is the page you come back to constantly, and burying
+ * a colour grid below server plumbing made the thing used most the thing furthest down.
+ *
+ * Everything here is a *default*. An overlay that has been given settings of its own ignores all of
+ * it; see `hiddenColoursFor`.
+ */
+const appearanceView = (): HTMLElement => {
+  const view = document.createElement('div')
+  Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
+  const rerender = (): void => showView('appearance')
+  const state = getState()
+
+  view.appendChild(sectionHeader('Appearance', 'tune'))
+  view.appendChild(
+    settingRow(
+      'Display progress bars',
+      null,
+      select(
+        [
+          ['inline', 'Inline'],
+          ['expanded', 'When expanded'],
+          ['hidden', 'Never'],
+        ],
+        state.progress,
+        (next) => {
+          setState({ progress: next as ProgressPlacement })
+          rerender()
+        },
+      ),
+    ),
+  )
+
+  // Same sliders as the per-overlay menu, deliberately — one vocabulary, learned once.
+  const sliders = document.createElement('div')
+  sliders.className = 'px-3 pb-2'
+  for (const control of APPEARANCE_CONTROLS) {
+    const row = document.createElement('label')
+    row.className = 'flex items-center gap-3 py-1'
+    const name = document.createElement('span')
+    name.className = 'text-sm'
+    name.style.width = '5rem'
+    name.style.flex = '0 0 auto'
+    name.textContent = control.label
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.className = 'range range-xs'
+    input.min = String(control.min)
+    input.max = String(control.max)
+    input.step = String(control.step)
+    input.value = String(state.appearance[control.key])
+    input.style.flex = '1'
+    input.style.minWidth = '0'
+    const readout = document.createElement('span')
+    readout.className = 'text-xs opacity-60'
+    readout.style.width = '2.75rem'
+    readout.style.flex = '0 0 auto'
+    readout.style.textAlign = 'right'
+    readout.textContent = control.format(state.appearance[control.key])
+    input.addEventListener('input', () => {
+      const next = Number(input.value)
+      readout.textContent = control.format(next)
+      // Read the live value rather than the one captured when this row was built, so dragging one
+      // slider cannot revert another.
+      setState({ appearance: { ...getState().appearance, [control.key]: next } })
+    })
+    row.append(name, input, readout)
+    sliders.appendChild(row)
+  }
+  view.appendChild(sliders)
+
+  view.appendChild(sectionHeader('Colours', 'palette'))
+  view.appendChild(coloursSection(rerender))
+  return view
+}
+
 const settingsView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
@@ -568,11 +654,8 @@ const settingsView = (): HTMLElement => {
 
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
-  const rerender = (): void => showView('settings')
   const state = getState()
 
-  // Contribution before appearance: what you send to other people is a bigger decision than how
-  // your own overlays look, and it should not sit below a colour grid.
   view.appendChild(sectionHeader('Contribution', 'share'))
   view.appendChild(
     settingRow(
@@ -588,68 +671,6 @@ const settingsView = (): HTMLElement => {
       checkbox(state.shareTiles, (next) => setState({ shareTiles: next })),
     ),
   )
-
-  view.appendChild(sectionHeader('Appearance', 'tune'))
-  view.appendChild(
-    settingRow(
-      'Display progress bars',
-      null,
-      select(
-        [
-          ['inline', 'Inline'],
-          ['expanded', 'When expanded'],
-          ['hidden', 'Never'],
-        ],
-        state.progress,
-        (next) => {
-          setState({ progress: next as ProgressPlacement })
-          rerender()
-        },
-      ),
-    ),
-  )
-
-  // The defaults every overlay follows until its own controls are touched. Same sliders as the
-  // per-overlay menu, deliberately — one vocabulary, learned once.
-  const sliders = document.createElement('div')
-  sliders.className = 'px-3 pb-2'
-  for (const control of APPEARANCE_CONTROLS) {
-    const row = document.createElement('label')
-    row.className = 'flex items-center gap-3 py-1'
-    const name = document.createElement('span')
-    name.className = 'text-sm'
-    name.style.width = '5rem'
-    name.style.flex = '0 0 auto'
-    name.textContent = control.label
-    const input = document.createElement('input')
-    input.type = 'range'
-    input.className = 'range range-xs'
-    input.min = String(control.min)
-    input.max = String(control.max)
-    input.step = String(control.step)
-    input.value = String(state.appearance[control.key])
-    input.style.flex = '1'
-    input.style.minWidth = '0'
-    const readout = document.createElement('span')
-    readout.className = 'text-xs opacity-60'
-    readout.style.width = '2.75rem'
-    readout.style.flex = '0 0 auto'
-    readout.style.textAlign = 'right'
-    readout.textContent = control.format(state.appearance[control.key])
-    input.addEventListener('input', () => {
-      const next = Number(input.value)
-      readout.textContent = control.format(next)
-      // Read the live value rather than the one captured when this row was built, so dragging one
-      // slider cannot revert another.
-      setState({ appearance: { ...getState().appearance, [control.key]: next } })
-    })
-    row.append(name, input, readout)
-    sliders.appendChild(row)
-  }
-  view.appendChild(sliders)
-
-  view.appendChild(sectionHeader('Colours', 'palette'))
-  view.appendChild(coloursSection(rerender))
 
   view.appendChild(sectionHeader('Diagnostics', 'bug'))
   view.appendChild(
@@ -1131,6 +1152,17 @@ const buildPanel = (): HTMLElement => {
   backButton.appendChild(icon('arrowBack', 'size-4'))
   backButton.addEventListener('click', () => showView('tree'))
 
+  const appearanceButton = document.createElement('button')
+  appearanceButton.setAttribute('data-wts-appearance', '')
+  appearanceButton.className = 'btn btn-ghost btn-xs btn-circle'
+  appearanceButton.title = 'Appearance'
+  appearanceButton.setAttribute('aria-label', 'Appearance')
+  appearanceButton.setAttribute('aria-pressed', 'false')
+  appearanceButton.appendChild(icon('tune', 'size-4'))
+  appearanceButton.addEventListener('click', () =>
+    showView(currentView === 'appearance' ? 'tree' : 'appearance'),
+  )
+
   const settingsButton = document.createElement('button')
   settingsButton.setAttribute('data-wts-settings', '')
   settingsButton.className = 'btn btn-ghost btn-xs btn-circle'
@@ -1149,7 +1181,7 @@ const buildPanel = (): HTMLElement => {
   closeButton.appendChild(icon('close', 'size-4'))
   closeButton.addEventListener('click', () => setOpen(false))
 
-  header.append(backButton, title, settingsButton, closeButton)
+  header.append(backButton, title, appearanceButton, settingsButton, closeButton)
 
   const body = document.createElement('div')
   body.setAttribute('data-wts-body', '')
@@ -1167,7 +1199,6 @@ const showView = (view: View): void => {
   const body = panel?.querySelector('[data-wts-body]')
   const title = panel?.querySelector('h2')
   if (!body || !title) return
-  const inSettings = view === 'settings'
 
   /**
    * Keep the scroll position when re-rendering the view you are already on.
@@ -1180,19 +1211,25 @@ const showView = (view: View): void => {
   const previous = body.firstElementChild
   const scrollTop = staying && previous instanceof HTMLElement ? previous.scrollTop : 0
 
-  const next = inSettings ? settingsView() : treeView()
+  const next =
+    view === 'settings' ? settingsView() : view === 'appearance' ? appearanceView() : treeView()
   body.replaceChildren(next)
   if (scrollTop > 0) next.scrollTop = scrollTop
-  title.textContent = inSettings ? 'Settings' : PANEL_TITLE
+  title.textContent = VIEW_TITLE[view] ?? PANEL_TITLE
 
   const back = panel?.querySelector<HTMLElement>('[data-wts-back]')
-  if (back) back.style.visibility = inSettings ? 'visible' : 'hidden'
+  if (back) back.style.visibility = view === 'tree' ? 'hidden' : 'visible'
 
-  const gear = panel?.querySelector<HTMLElement>('[data-wts-settings]')
-  if (gear) {
+  for (const [attribute, owns] of [
+    ['data-wts-settings', 'settings'],
+    ['data-wts-appearance', 'appearance'],
+  ] as const) {
+    const button = panel?.querySelector<HTMLElement>(`[${attribute}]`)
+    if (!button) continue
+    const here = view === owns
     // btn-active is DaisyUI's pressed state, so it reads as "you are here" in their theme.
-    gear.className = `btn btn-ghost btn-xs btn-circle${inSettings ? ' btn-active' : ''}`
-    gear.setAttribute('aria-pressed', String(inSettings))
+    button.className = `btn btn-ghost btn-xs btn-circle${here ? ' btn-active' : ''}`
+    button.setAttribute('aria-pressed', String(here))
   }
   log('install', `panel view: ${view}`)
 }
