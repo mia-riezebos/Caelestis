@@ -102,7 +102,7 @@ const corner = (
  * view where a cell is a speck. This stays the same size on screen at every zoom, so it reads as an
  * annotation over the art rather than as part of it.
  */
-const MARKER_LENGTH = 13
+const MARKER_LENGTH = 9
 const MARKER_THICKNESS = 2
 /** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
 const MARKER_COLOUR: readonly [number, number, number] = [1, 0, 1]
