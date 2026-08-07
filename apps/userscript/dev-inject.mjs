@@ -41,7 +41,9 @@ const verbose = argv.includes('--verbose')
 /** Quit an already-running Chromium that has no debugging port, rather than refusing to continue. */
 const relaunch = argv.includes('--relaunch')
 const shotPath = flag('--shot', null)
-const url = flag('--url', 'https://wplace.live/?lat=52.37&lng=4.90&zoom=11')
+// No coordinates by default: wplace opens wherever it left off, which is almost always where you
+// were working. Pinning a lat/lng meant every run — and every rebuild — teleported you away from it.
+const url = flag('--url', 'https://wplace.live/')
 const settleMs = Number(flag('--settle', shotPath ? 12_000 : 4_000))
 
 const build = () =>
@@ -133,7 +135,45 @@ await tab.send('Page.enable')
 await tab.send('Runtime.enable')
 
 let installed = null
-const load = async () => {
+/**
+ * Where the map is looking, so a reload can put it back.
+ *
+ * wplace does not write the camera into the URL as you pan, so a reload otherwise dumps you back
+ * wherever the address bar still says — which during `--watch` means every save throws you across
+ * the world, including in the middle of flying somewhere.
+ */
+const cameraNow = async () => {
+  try {
+    const { result } = await tab.send('Runtime.evaluate', {
+      expression: `(() => {
+        const map = window.__wts?.map?.()
+        if (!map?.getCenter) return null
+        const c = map.getCenter()
+        return JSON.stringify({ lng: c.lng, lat: c.lat, zoom: map.getZoom() })
+      })()`,
+      returnByValue: true,
+    })
+    return typeof result?.value === 'string' ? JSON.parse(result.value) : null
+  } catch {
+    return null
+  }
+}
+
+const restoreCamera = async (camera) => {
+  if (camera === null) return
+  // Jump rather than fly: this is putting the view back where it already was, not travelling to it.
+  await tab.send('Runtime.evaluate', {
+    expression: `(() => {
+      const map = window.__wts?.map?.()
+      if (!map?.jumpTo) return false
+      map.jumpTo({ center: [${camera.lng}, ${camera.lat}], zoom: ${camera.zoom} })
+      return true
+    })()`,
+  })
+}
+
+const load = async ({ keepCamera = false } = {}) => {
+  const camera = keepCamera ? await cameraNow() : null
   await build()
   const bundle = readFileSync(BUNDLE, 'utf8')
   // addScriptToEvaluateOnNewDocument fires in every frame, including third-party iframes such as
@@ -146,7 +186,19 @@ const load = async () => {
   const { identifier } = await tab.send('Page.addScriptToEvaluateOnNewDocument', { source })
   installed = identifier
   await tab.send('Page.navigate', { url })
-  console.log(`injected ${(source.length / 1024).toFixed(1)} KB → ${url}`)
+  const where = camera === null ? url : `back to ${camera.lat.toFixed(4)},${camera.lng.toFixed(4)}`
+  console.log(`injected ${(source.length / 1024).toFixed(1)} KB → ${where}`)
+  if (camera !== null) {
+    // The map has to exist before it can be aimed, and it is built after the document loads.
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await sleep(250)
+      const map = await cameraNow()
+      if (map !== null) {
+        await restoreCamera(camera)
+        break
+      }
+    }
+  }
 }
 
 let initialLoad = load
