@@ -14,7 +14,7 @@ import {
   setLocalVisible,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
-import { colourPresets } from './colours.js'
+import { colourPresets, paletteSwatch, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
@@ -312,10 +312,7 @@ const buildMenu = (
     const off = new Set(current().hiddenColours)
     for (const element of grid.children) {
       if (!(element instanceof HTMLElement)) continue
-      const index = Number(element.dataset.index)
-      const on = !off.has(index)
-      element.dataset.on = String(on)
-      element.setAttribute('aria-pressed', String(on))
+      setSwatchState(element, !off.has(Number(element.dataset.index)))
     }
   }
 
@@ -331,26 +328,17 @@ const buildMenu = (
   const hidden = new Set(appearance.hiddenColours)
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
-    const swatch = document.createElement('button')
-    const on = !hidden.has(colour.index)
-    swatch.type = 'button'
-    swatch.className = 'wts-swatch'
-    swatch.dataset.index = String(colour.index)
-    swatch.dataset.on = String(on)
-    swatch.style.backgroundColor = colour.hex
-    swatch.title = `${colour.name} · ${colour.kind}`
-    swatch.setAttribute('aria-label', `${colour.name}, ${colour.kind}`)
-    swatch.setAttribute('aria-pressed', String(on))
-    swatch.addEventListener('click', () => {
-      // Current, not captured — same reason as every other control here.
-      const next = new Set(current().hiddenColours)
-      if (next.has(colour.index)) next.delete(colour.index)
-      else next.add(colour.index)
-      update({ hiddenColours: [...next] })
-      refreshSwatches()
-      rerender()
-    })
-    grid.appendChild(swatch)
+    grid.appendChild(
+      paletteSwatch(colour, !hidden.has(colour.index), () => {
+        // Current, not captured — same reason as every other control here.
+        const next = new Set(current().hiddenColours)
+        if (next.has(colour.index)) next.delete(colour.index)
+        else next.add(colour.index)
+        update({ hiddenColours: [...next] })
+        refreshSwatches()
+        rerender()
+      }),
+    )
   }
   gridWrap.appendChild(grid)
   menu.appendChild(gridWrap)
