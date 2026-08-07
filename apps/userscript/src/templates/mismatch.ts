@@ -249,11 +249,16 @@ export const onMismatchesChanged = (listener: () => void): void => {
 }
 
 onTilePixel((tile, x, y, placed) => {
+  count('patch:notified of a pixel')
   const before = changed
   patchTile(tile, x, y, placed)
   if (changed === before) return
   for (const listener of changeListeners) listener()
 })
+// Module scope on purpose: if this never appears, the body of this file never ran, and the listener
+// above was never registered — which is a different failure from the listener deciding to do
+// nothing, and the counters cannot otherwise tell the two apart.
+count('patch:mismatch module loaded')
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
 export const forgetMismatches = (id: string): void => {
