@@ -18,9 +18,9 @@ import {
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
 import { isDrawingTiles } from '../tile-transform.js'
-import { colourPresets, paletteSwatch, setSwatchState } from './colours.js'
+import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
-import { icon } from './icons.js'
+import { type IconName, icon } from './icons.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
 
 /**
@@ -119,12 +119,31 @@ const slider = (
   return wrap
 }
 
-const section = (title: string): HTMLElement => {
-  const el = document.createElement('h4')
-  el.className = 'text-xs font-semibold opacity-60 uppercase tracking-wide'
-  el.style.padding = '0.5rem 0 0.25rem'
-  el.textContent = title
-  return el
+/**
+ * The settings pane's section header, at this menu's scale.
+ *
+ * Same chip, same icon, same weight — these are the same settings in a different place, and two
+ * treatments of one idea made them read as two features. Only the padding differs, because this menu
+ * has no indent to sit inside.
+ */
+const section = (title: string, glyph: IconName): HTMLElement => {
+  const row = document.createElement('div')
+  row.className = 'flex items-center gap-2'
+  row.style.padding = '0.625rem 0 0.25rem'
+  const chip = document.createElement('span')
+  chip.className = 'bg-base-200 flex items-center justify-center'
+  Object.assign(chip.style, {
+    borderRadius: '0.5rem',
+    width: '1.5rem',
+    height: '1.5rem',
+    flex: '0 0 auto',
+  })
+  chip.appendChild(icon(glyph, 'size-3'))
+  const heading = document.createElement('h4')
+  heading.className = 'text-sm font-semibold'
+  heading.textContent = title
+  row.append(chip, heading)
+  return row
 }
 
 const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElement => {
@@ -136,7 +155,9 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     // Below the panel's 30. When the window is too narrow for the clamp to keep this clear of the
     // panel, something has to give, and the panel is the surface being deliberately worked in.
     zIndex: '29',
-    width: '15rem',
+    // Wide enough for the four presets and the palette toggle on one line. Below this the toggle
+    // wrapped onto a line of its own, which read as a separate control rather than a fifth choice.
+    width: '18rem',
     // 12px, the same as the panel and every other popout here.
     borderRadius: '0.75rem',
     padding: '0.75rem',
@@ -254,7 +275,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   header.append(title, hide, move, remove, close)
   menu.appendChild(header)
 
-  const pixels = section('Pixels')
+  const pixels = section('Pixels', 'tune')
   pixels.className = `${pixels.className} flex items-center justify-between gap-2`
   menu.appendChild(pixels)
 
@@ -310,7 +331,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     )
   }
 
-  overrides.appendChild(section('Mismatches'))
+  overrides.appendChild(section('Mismatches', 'search'))
   for (const [key, label] of [
     ['markMismatch', 'Mark mismatched'],
     ['markUnpainted', 'Count unpainted'],
@@ -336,7 +357,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     ),
   )
 
-  overrides.appendChild(section('Colours'))
+  overrides.appendChild(section('Colours', 'palette'))
 
   const gridWrap = document.createElement('div')
   gridWrap.className = 'wts-swatches'
@@ -367,6 +388,8 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
       if (!(element instanceof HTMLElement)) continue
       setSwatchState(element, !off.has(Number(element.dataset.index)))
     }
+    // The preset row reads the same filter, so it goes stale in the same way and on the same events.
+    setPresetState(menu, current().hiddenColours, current().onlySelectedColour)
   }
 
   // The same presets as settings, applied to this overlay's own filter. Reaching them should not
@@ -383,7 +406,10 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
       {
         hidden: current().hiddenColours,
         onlySelected: current().onlySelectedColour,
-        setOnlySelected: (next) => update({ onlySelectedColour: next }),
+        setOnlySelected: (next) => {
+          update({ onlySelectedColour: next })
+          refreshSwatches()
+        },
       },
     ),
   )
