@@ -9,6 +9,7 @@ import {
   setLocalVisible,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
+import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
 
 /**
@@ -135,45 +136,22 @@ const buildMenu = (
 
   // Deleting from here rather than from a panel row, for the same reason Move is here: this menu is
   // already about one specific template, so there is no doubt which one goes.
-  //
-  // The confirm is built into this menu rather than borrowed from the panel. The panel's version
-  // mounts inside the panel and answers "no" when it is closed — and this menu is reachable with
-  // the panel shut, which is exactly when the delete would silently do nothing.
   const remove = document.createElement('button')
   remove.className = 'btn btn-ghost btn-xs btn-circle text-error'
   remove.title = 'Delete this template'
   remove.setAttribute('aria-label', 'Delete this template')
   remove.appendChild(icon('trash', 'size-4'))
   remove.addEventListener('click', () => {
-    menu.querySelector('[data-wts-confirm]')?.remove()
-    const box = document.createElement('div')
-    box.setAttribute('data-wts-confirm', '')
-    box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
-    Object.assign(box.style, { padding: '0.5rem 0.625rem' })
-    const text = document.createElement('span')
-    // Name the thing rather than asking "are you sure", so the answer does not depend on
-    // remembering which template's menu this is.
-    text.textContent = `Delete “${template?.name ?? 'this template'}”? This cannot be undone.`
-    const buttons = document.createElement('div')
-    buttons.className = 'flex gap-2 justify-end'
-    const cancel = document.createElement('button')
-    cancel.className = 'btn btn-xs btn-ghost'
-    cancel.textContent = 'Cancel'
-    cancel.addEventListener('click', () => box.remove())
-    const confirm = document.createElement('button')
-    confirm.className = 'btn btn-xs btn-error'
-    confirm.textContent = 'Delete'
-    confirm.addEventListener('click', () => {
+    void confirmDestructive({
+      title: `Delete \u201C${template?.name ?? 'this template'}\u201D?`,
+      body: 'This template will be removed from this browser.',
+      confirmLabel: 'Delete',
+    }).then((yes) => {
+      if (!yes) return
       closeOverlayMenu()
       removeLocalTemplate(id)
       rerender()
     })
-    buttons.append(cancel, confirm)
-    box.append(text, buttons)
-    // Directly under the header, next to the button that raised it. Appending to the end of a menu
-    // that scrolls past 70vh can put the question off-screen from the answer.
-    header.after(box)
-    confirm.focus()
   })
 
   const close = document.createElement('button')
