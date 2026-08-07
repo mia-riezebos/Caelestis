@@ -4,7 +4,7 @@ import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
-import { currentQuads, isDrawingTiles } from '../tile-transform.js'
+import { currentQuads, isDrawingTiles, textureForTile } from '../tile-transform.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
 /**
@@ -93,6 +93,19 @@ const corner = (
   into[offset + 4] = u
   into[offset + 5] = v
 }
+
+/**
+ * The mismatch marker, in device pixels — not in cells, and not in CSS pixels.
+ *
+ * Device pixels because the point of it is to be findable. Sized in cells it shrinks with the zoom,
+ * and the view where you are hunting for the one wrong pixel in a hundred thousand is exactly the
+ * view where a cell is a speck. This stays the same size on screen at every zoom, so it reads as an
+ * annotation over the art rather than as part of it.
+ */
+const MARKER_LENGTH = 13
+const MARKER_THICKNESS = 2
+/** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
+const MARKER_COLOUR: readonly [number, number, number] = [1, 0, 1]
 
 /** How long a template takes to arrive or leave. */
 const FADE_MS = 500
@@ -416,6 +429,13 @@ export const overlayLayer = {
       gl.uniform2f(uniform(gl, 'u_stampOffset'), appearance.translateX, appearance.translateY)
       gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
       gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
+      gl.uniform1i(uniform(gl, 'u_markMismatch'), appearance.markMismatch ? 1 : 0)
+      gl.uniform1i(uniform(gl, 'u_markUnpainted'), appearance.markUnpainted ? 1 : 0)
+      gl.uniform1f(uniform(gl, 'u_markerLength'), MARKER_LENGTH)
+      gl.uniform1f(uniform(gl, 'u_markerThickness'), MARKER_THICKNESS)
+      gl.uniform3f(uniform(gl, 'u_markerColour'), ...MARKER_COLOUR)
+      gl.uniform1i(uniform(gl, 'u_tileSize'), TILE_SIZE)
+      gl.uniform1i(uniform(gl, 'u_canvas'), 2)
 
       const left = template.originX + nudgeX
       const top = template.originY + nudgeY
@@ -447,6 +467,16 @@ export const overlayLayer = {
         const v0 = (cutTop - top) / template.height
         const v1 = (cutBottom - top) / template.height
 
+        // Their own texture for this tile, read rather than copied. Absent for a tile MapLibre drew
+        // from a stretched parent — those are not attributable to one tile, so nothing is marked
+        // there rather than everything being marked wrongly.
+        const placed = appearance.markMismatch ? textureForTile(tile.tile) : null
+        gl.activeTexture(gl.TEXTURE2)
+        gl.bindTexture(gl.TEXTURE_2D, placed)
+        gl.uniform1i(uniform(gl, 'u_hasCanvas'), placed === null ? 0 : 1)
+        // Where this template's own (0,0) sits inside their tile, so a cell can be looked up in it.
+        gl.uniform2i(uniform(gl, 'u_originInTile'), left - tileLeft, top - tileTop)
+
         // Strip order: top-left, top-right, bottom-left, bottom-right.
         corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
         corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
@@ -459,6 +489,8 @@ export const overlayLayer = {
 
     // Put it all back. The active texture unit especially: we leave it on 1 while binding the
     // palette, and MapLibre binds its own textures expecting to still be on 0.
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, null)
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, null)
     gl.activeTexture(gl.TEXTURE0)

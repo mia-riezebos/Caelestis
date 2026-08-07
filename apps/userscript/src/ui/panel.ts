@@ -597,6 +597,25 @@ const appearanceView = (): HTMLElement => {
   }
   view.appendChild(sliders)
 
+  view.appendChild(sectionHeader('Mismatches', 'search'))
+  const setAppearance = (patch: Partial<typeof state.appearance>): void => {
+    setState({ appearance: { ...getState().appearance, ...patch } })
+  }
+  view.appendChild(
+    settingRow(
+      'Mark mismatched pixels',
+      'A crosshair on every pixel the canvas disagrees with, the same size at any zoom',
+      checkbox(state.appearance.markMismatch, (next) => setAppearance({ markMismatch: next })),
+    ),
+  )
+  view.appendChild(
+    settingRow(
+      'Count unpainted as mismatched',
+      'Otherwise only pixels painted the wrong colour are marked',
+      checkbox(state.appearance.markUnpainted, (next) => setAppearance({ markUnpainted: next })),
+    ),
+  )
+
   view.appendChild(sectionHeader('Colours', 'palette'))
   view.appendChild(coloursSection(rerender))
   return view
