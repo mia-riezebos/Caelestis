@@ -8,6 +8,7 @@ import {
 } from '../templates/appearance.js'
 import {
   appearanceOf,
+  isTemplateVisible,
   localTemplates,
   removeLocalTemplate,
   setAppearance,
@@ -379,7 +380,10 @@ export const renderOverlayControls = (rerender: () => void): void => {
     )
     let button = document.getElementById(buttonId)
 
-    if (topLeft === null || bottomRight === null) {
+    // Nothing on the canvas, so nothing to anchor to. A hidden overlay is hidden by any route —
+    // its own switch, a folder it sits in, or the whole of Local being off — and a button floating
+    // over their canvas pointing at an overlay that is not drawn is just a control with no subject.
+    if (topLeft === null || bottomRight === null || !isTemplateVisible(template)) {
       button?.remove()
       if (openFor === template.id) document.getElementById(MENU_ID)?.remove()
       continue

@@ -2,7 +2,7 @@ import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
-import { effectiveHiddenColours } from '../templates/colour-filter.js'
+import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
 import { currentQuads, isDrawingTiles } from '../tile-transform.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
@@ -309,10 +309,11 @@ export const overlayLayer = {
 
     if (fadeFrom === 0) fadeFrom = performance.now()
     const elapsed = (performance.now() - fadeFrom) / FADE_MS
-    // Smoothstep rather than linear: it leaves and arrives at rest, so the ramp has no visible
-    // start or stop the way a linear one does.
     const progress = Math.min(Math.max(elapsed, 0), 1)
-    const fade = progress * progress * (3 - 2 * progress)
+    // Cubic ease-in-out, the same shape CSS `ease-in-out` describes: slow at both ends, fastest
+    // across the middle, so the overlay has no visible moment of starting or stopping.
+    const fade =
+      progress < 0.5 ? 4 * progress * progress * progress : 1 - (-2 * progress + 2) ** 3 / 2
     // MapLibre renders on demand, so a frame nobody asked for is a frame that never happens. Without
     // this the ramp would advance only as far as the next pan.
     if (progress < 1) {
@@ -356,7 +357,9 @@ export const overlayLayer = {
       }
 
       const appearance = appearanceOf(template)
-      const hidden = effectiveHiddenColours(appearance.hiddenColours)
+      // The template's own appearance, not the resolved one: whether it *has* overrides is the
+      // question, and `appearanceOf` has already answered it by falling back to the defaults.
+      const hidden = hiddenColoursFor(template.appearance)
       const paletteKey = hidden.join(',')
       if (entry.paletteKey !== paletteKey) {
         uploadPalette(gl, entry.palette, hidden)
