@@ -1,7 +1,7 @@
 import { PALETTE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { getState, setState } from '../state.js'
 import { globalHiddenColours } from '../templates/colour-filter.js'
-import { ownedColours } from '../wplace-account.js'
+import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { icon } from './icons.js'
 
@@ -76,6 +76,9 @@ export const onlySelectedToggle = (rerender: () => void): HTMLButtonElement => {
 
 export const coloursSection = (rerender: () => void): HTMLElement => {
   const wrap = document.createElement('div')
+  // Colours get bought mid-session. Showing this pane is exactly the moment a stale "Owned" is
+  // visible, so ask again — rate-limited, and it only redraws if the answer moved.
+  refreshAccount()
   // What is actually hidden right now, so the grid agrees with the canvas while a mode is driving
   // it rather than showing the switches the mode is overriding.
   const hidden = new Set(globalHiddenColours())

@@ -13,6 +13,27 @@ import { log, warn } from './debug.js'
  */
 
 let owned: ReadonlySet<number> | null = null
+let lastRead = 0
+const listeners: Array<() => void> = []
+
+/** Re-read `/me` at most this often, so opening settings repeatedly does not hammer wplace. */
+const REFRESH_AFTER_MS = 30_000
+
+export const onAccountChange = (listener: () => void): void => {
+  listeners.push(listener)
+}
+
+/**
+ * Ask again if the answer is stale.
+ *
+ * People buy colours mid-session, and the "Owned" preset is wrong the moment they do — it was read
+ * once at start-up and never again. Called when the colour settings are shown, which is exactly when
+ * being out of date is visible.
+ */
+export const refreshAccount = (): void => {
+  if (Date.now() - lastRead < REFRESH_AFTER_MS) return
+  void loadAccount()
+}
 
 const premiumIndices = (): readonly number[] =>
   WPLACE_PALETTE.filter(
@@ -23,6 +44,7 @@ const premiumIndices = (): readonly number[] =>
 export const ownedColours = (): ReadonlySet<number> | null => owned
 
 export const loadAccount = async (): Promise<void> => {
+  lastRead = Date.now()
   try {
     const response = await fetch('https://backend.wplace.live/me', { credentials: 'include' })
     if (!response.ok) {
@@ -38,8 +60,13 @@ export const loadAccount = async (): Promise<void> => {
     premiumIndices().forEach((paletteIndex, bit) => {
       if (mask === -1 || (mask & (1 << bit)) !== 0) set.add(paletteIndex)
     })
+    const changed =
+      owned === null || owned.size !== set.size || [...set].some((i) => !owned?.has(i))
     owned = set
-    log('install', 'owned colours read from /me', { premium: set.size, mask })
+    log('install', 'owned colours read from /me', { premium: set.size, mask, changed })
+    // Only when it actually moved, so a periodic re-read does not rebuild the settings pane under
+    // someone's cursor for nothing.
+    if (changed) for (const listener of listeners) listener()
   } catch (error) {
     // Signed out, offline, or blocked. The preset simply stays unavailable.
     warn('install', 'could not read /me', String(error))
