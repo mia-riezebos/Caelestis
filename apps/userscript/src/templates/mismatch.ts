@@ -8,6 +8,7 @@ import {
   UNPAINTED,
 } from '../tile-transform.js'
 import { hiddenColoursFor } from './colour-filter.js'
+import { draftedIn } from './drafted.js'
 import {
   appearanceOf,
   isTemplateVisible,
@@ -217,6 +218,18 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
    */
   const draft = draftPixels(tile)
 
+  /**
+   * Which of those pixels were drafted at all — from wplace's crosshairs, not from the canvas.
+   *
+   * The draft canvas cannot answer it. Drafting Transparent leaves alpha zero, which is what an
+   * undrafted pixel also is, so "drafted to nothing" and "not drafted" are the same bytes there and
+   * the erase read as leaving the server's colour in place. See `drafted.ts`.
+   *
+   * Null when nothing in this tile is drafted, or when their layer is not there to ask — in which
+   * case a draft colour is still trusted where there is one, which is what this did before.
+   */
+  const isDrafted = draft === null ? null : draftedIn(tile, TILE_SIZE)
+
   const found: number[] = []
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - originY) * templateWidth + (left - originX)
@@ -225,7 +238,14 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
       const wanted = wantedPixels[templateAt] as number
       if (asserted[wanted] === 0) continue
       const drafted = draft === null ? UNPAINTED : (draft[tileAt] as number)
-      const placed = drafted !== UNPAINTED ? drafted : (pixels[tileAt] as number)
+      const placed =
+        isDrafted === null
+          ? drafted !== UNPAINTED
+            ? drafted
+            : (pixels[tileAt] as number)
+          : isDrafted(x, y)
+            ? drafted
+            : (pixels[tileAt] as number)
       if (placed === wanted) continue
       if (placed === UNPAINTED && !markUnpainted) continue
       found.push(x, y)
@@ -253,10 +273,15 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
 const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void => {
   // The write says what was drafted. What matters is the effective colour, which falls back to the
   // server's pixel wherever the draft has nothing — undrafting a pixel is a change too.
+  //
+  // "Nothing" is two different things, and only their crosshairs tell them apart: a pixel drafted as
+  // Transparent is alpha zero exactly like one never drafted. Undrafted falls back to the server;
+  // drafted-as-transparent stays transparent, and is a change from whatever the server holds.
   const server = tilePixels(tile)
   const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
-  const placed =
-    drafted !== UNPAINTED ? drafted : server === null ? UNPAINTED : (server[at] as number)
+  const fromServer = server === null ? UNPAINTED : (server[at] as number)
+  const stillDrafted = drafted !== UNPAINTED || (draftedIn(tile, TILE_SIZE)?.(x, y) ?? false)
+  const placed = stillDrafted ? drafted : fromServer
   let considered = 0
   for (const [cacheKey, entry] of cache) {
     if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
