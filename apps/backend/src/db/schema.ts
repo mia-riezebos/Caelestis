@@ -252,12 +252,27 @@ export const contributions = sqliteTable(
     reportedBy: text('reported_by')
       .notNull()
       .references(() => accessTokens.tokenHash),
+    /**
+     * The wplace `/me` id of the account running the reporting client, for the same reason
+     * `tile_history` carries one: a token is not a client. One token shared across an alliance's
+     * members made them a single reporter, so the max-per-reporter rollup below silently discarded
+     * every member's view but one.
+     */
+    reportedByUserId: integer('reported_by_user_id').notNull(),
     placed: integer('placed').notNull(),
     correct: integer('correct').notNull(),
     repairs: integer('repairs').notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.wplaceUserId, table.templateId, table.dayS, table.reportedBy] }),
+    primaryKey({
+      columns: [
+        table.wplaceUserId,
+        table.templateId,
+        table.dayS,
+        table.reportedBy,
+        table.reportedByUserId,
+      ],
+    }),
     check(
       'contributions_counter_check',
       // day_s is a day bucket, so it is a UTC midnight — the floor of a report time to 86400.
@@ -269,6 +284,7 @@ export const contributions = sqliteTable(
       // minting unbounded "painters" at 1.5, 1.25, 1.125, every one of them a separate person to
       // `GROUP BY wplace_user_id`, which also defeats the reduce-then-max rollup documented above.
       sql`typeof(${table.wplaceUserId}) = 'integer' AND ${table.wplaceUserId} >= 0
+        AND typeof(${table.reportedByUserId}) = 'integer' AND ${table.reportedByUserId} >= 0
         AND typeof(${table.dayS}) = 'integer' AND ${table.dayS} >= 0
         AND ${table.dayS} % 86400 = 0
         AND typeof(${table.placed}) = 'integer' AND typeof(${table.correct}) = 'integer'
@@ -325,6 +341,12 @@ export const tileHistory = sqliteTable(
     // "distinct reporters" as it likes, and the count is forgeable again by a different spelling of
     // the same trick.
     //
+    // Paired with the reporter's own wplace identity, because a token is not a client. One token
+    // configured on five members' userscripts made those five one reporter and collapsed genuine
+    // quorum to 1; a member holding two tokens counted as two and forged it. The identity is the
+    // configured access token *and* the `id` the wplace `/me` endpoint returns for whoever is
+    // running the script — neither alone is a client.
+    //
     // It bounds the reporter dimension and only that one. `sha256` is also in the key, so a client
     // free to choose it could still mint a row per hash for one tile and bucket. Two decisions
     // outside this schema close that, and they are the reason the key keeps `sha256`: the server
@@ -333,6 +355,8 @@ export const tileHistory = sqliteTable(
     reportedBy: text('reported_by')
       .notNull()
       .references(() => accessTokens.tokenHash),
+    /** The wplace `/me` id of the account running the reporting client. */
+    reportedByUserId: integer('reported_by_user_id').notNull(),
   },
   (table) => [
     primaryKey({
@@ -343,6 +367,7 @@ export const tileHistory = sqliteTable(
         table.bucketStartS,
         table.sha256,
         table.reportedBy,
+        table.reportedByUserId,
       ],
     }),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
@@ -354,6 +379,10 @@ export const tileHistory = sqliteTable(
     // time itself, aligned to nothing. Stating that as an explicit disjunct rather than leaning on
     // `x % 0` evaluating to NULL — a CHECK that is NULL does not fail, so the exemption would hold
     // by accident and read as an oversight.
+    check(
+      'tile_history_reported_by_user_id_check',
+      sql`typeof(${table.reportedByUserId}) = 'integer' AND ${table.reportedByUserId} >= 0`,
+    ),
     check(
       'tile_history_bucket_start_s_check',
       sql`typeof(${table.bucketStartS}) = 'integer' AND ${table.bucketStartS} >= 0

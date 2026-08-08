@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e52a50ad-ad52-4f8c-95f6-1238ab5117e5",
+  "id": "80dd8da0-c901-4acc-9e31-3995b4600d1d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -131,6 +131,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "reported_by_user_id": {
+          "name": "reported_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "placed": {
           "name": "placed",
           "type": "integer",
@@ -183,21 +190,22 @@
         }
       },
       "compositePrimaryKeys": {
-        "contributions_wplace_user_id_template_id_day_s_reported_by_pk": {
+        "contributions_wplace_user_id_template_id_day_s_reported_by_reported_by_user_id_pk": {
           "columns": [
             "wplace_user_id",
             "template_id",
             "day_s",
-            "reported_by"
+            "reported_by",
+            "reported_by_user_id"
           ],
-          "name": "contributions_wplace_user_id_template_id_day_s_reported_by_pk"
+          "name": "contributions_wplace_user_id_template_id_day_s_reported_by_reported_by_user_id_pk"
         }
       },
       "uniqueConstraints": {},
       "checkConstraints": {
         "contributions_counter_check": {
           "name": "contributions_counter_check",
-          "value": "typeof(\"contributions\".\"wplace_user_id\") = 'integer' AND \"contributions\".\"wplace_user_id\" >= 0\n        AND typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND \"contributions\".\"day_s\" % 86400 = 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
+          "value": "typeof(\"contributions\".\"wplace_user_id\") = 'integer' AND \"contributions\".\"wplace_user_id\" >= 0\n        AND typeof(\"contributions\".\"reported_by_user_id\") = 'integer' AND \"contributions\".\"reported_by_user_id\" >= 0\n        AND typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND \"contributions\".\"day_s\" % 86400 = 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
         }
       }
     },
@@ -644,6 +652,13 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "reported_by_user_id": {
+          "name": "reported_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
         }
       },
       "indexes": {},
@@ -663,16 +678,17 @@
         }
       },
       "compositePrimaryKeys": {
-        "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_pk": {
+        "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_reported_by_user_id_pk": {
           "columns": [
             "tile_x",
             "tile_y",
             "resolution_s",
             "bucket_start_s",
             "sha256",
-            "reported_by"
+            "reported_by",
+            "reported_by_user_id"
           ],
-          "name": "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_pk"
+          "name": "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_reported_by_user_id_pk"
         }
       },
       "uniqueConstraints": {},
@@ -680,6 +696,10 @@
         "tile_history_resolution_s_check": {
           "name": "tile_history_resolution_s_check",
           "value": "\"tile_history\".\"resolution_s\" IN (0, 3600, 21600, 86400)"
+        },
+        "tile_history_reported_by_user_id_check": {
+          "name": "tile_history_reported_by_user_id_check",
+          "value": "typeof(\"tile_history\".\"reported_by_user_id\") = 'integer' AND \"tile_history\".\"reported_by_user_id\" >= 0"
         },
         "tile_history_bucket_start_s_check": {
           "name": "tile_history_bucket_start_s_check",

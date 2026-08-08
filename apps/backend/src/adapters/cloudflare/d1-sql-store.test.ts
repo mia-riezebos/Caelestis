@@ -233,7 +233,7 @@ describe('D1SqlStore', () => {
   it.each([
     ["INSERT INTO access_tokens VALUES ('h', 'l', 'superadmin', 'c', 1, NULL)"],
     ["INSERT INTO telemetry_buckets VALUES ('template', 42, 60, 1, 1, 0)"],
-    ["INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 'tok')"],
+    ["INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 'tok', 7)"],
     ["INSERT INTO version_tiles VALUES ('v', 2048, 0, 'hash')"],
   ])('rejects a value outside its SQL domain: %s', (statement) => {
     expect(() => d1.sqlite.prepare(statement).run()).toThrow(/CHECK constraint failed/)
@@ -263,7 +263,7 @@ describe('D1SqlStore', () => {
     (resolution) => {
       expect(() =>
         d1.sqlite
-          .prepare("INSERT INTO tile_history VALUES (0, 0, ?, ?, 'hash', 'tok')")
+          .prepare("INSERT INTO tile_history VALUES (0, 0, ?, ?, 'hash', 'tok', 7)")
           .run(resolution, resolution),
       ).not.toThrow()
     },
@@ -345,7 +345,7 @@ describe('D1SqlStore', () => {
   ])('rejects tile-history coordinates outside the canvas: %i/%i', (tileX, tileY) => {
     expect(() =>
       d1.sqlite
-        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'tok')")
+        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'tok', 7)")
         .run(tileX, tileY),
     ).toThrow(/CHECK constraint failed/)
   })
@@ -356,7 +356,7 @@ describe('D1SqlStore', () => {
   ])('rejects fractional tile-history coordinates: %s/%s', (tileX, tileY) => {
     expect(() =>
       d1.sqlite
-        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'tok')")
+        .prepare("INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'tok', 7)")
         .run(tileX, tileY),
     ).toThrow(/CHECK constraint failed/)
   })
@@ -426,24 +426,24 @@ describe('D1SqlStore', () => {
     // the 'oops' case is caught by the ordering comparison instead, and 0.5 only covers repairs.
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 1.5, 1, 0)"],
     ["INSERT INTO telemetry_buckets VALUES ('t', 60, 60, 2, 1.5, 0)"],
-    ["INSERT INTO contributions VALUES (1, 'ct', -86400, 'tok', 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES (1, 'ct', -86400, 'tok', 7, 1, 1, 0)"],
     // day_s is the leaderboard's day bucket, so it is a UTC midnight. Unaligned, 1 and 2 are two
     // primary keys for one day and a rollup splits one painter's day across both.
-    ["INSERT INTO contributions VALUES (2, 'ct', 1, 'tok', 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES (2, 'ct', 1, 'tok', 7, 1, 1, 0)"],
     // Positive, and a multiple of every smaller round number a mistyped divisor might use. Without
     // it `% 86400` can become `% 60` with the suite green, since 1 fails both and 0/86400 pass both.
-    ["INSERT INTO contributions VALUES (9, 'ct', 60, 'tok', 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES (9, 'ct', 60, 'tok', 7, 1, 1, 0)"],
     // All non-negative, so only the ordering clause can reject. telemetry_buckets has this case and
     // contributions never got the equivalent, leaving its whole ordering half uncovered.
-    ["INSERT INTO contributions VALUES (3, 'ct', 86400, 'tok', 1, 2, 0)"],
-    ["INSERT INTO contributions VALUES (4, 'ct', 86400, 'tok', 2, 1, 2)"],
-    ["INSERT INTO contributions VALUES (1, 'ct', 86400, 'tok', -5, -5, -5)"],
+    ["INSERT INTO contributions VALUES (3, 'ct', 86400, 'tok', 7, 1, 2, 0)"],
+    ["INSERT INTO contributions VALUES (4, 'ct', 86400, 'tok', 7, 2, 1, 2)"],
+    ["INSERT INTO contributions VALUES (1, 'ct', 86400, 'tok', 7, -5, -5, -5)"],
     // One typeof clause each, for the same reason as the telemetry pair above. 86400.5 casts to
     // 86400, so it clears the alignment clause and leaves only the type guard to reject it.
-    ["INSERT INTO contributions VALUES (5, 'ct', 86400.5, 'tok', 1, 1, 0)"],
-    ["INSERT INTO contributions VALUES (6, 'ct', 0, 'tok', 1.5, 1, 0)"],
-    ["INSERT INTO contributions VALUES (7, 'ct', 0, 'tok', 2, 1.5, 0)"],
-    ["INSERT INTO contributions VALUES (8, 'ct', 0, 'tok', 2, 2, 0.5)"],
+    ["INSERT INTO contributions VALUES (5, 'ct', 86400.5, 'tok', 7, 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES (6, 'ct', 0, 'tok', 7, 1.5, 1, 0)"],
+    ["INSERT INTO contributions VALUES (7, 'ct', 0, 'tok', 7, 2, 1.5, 0)"],
+    ["INSERT INTO contributions VALUES (8, 'ct', 0, 'tok', 7, 2, 2, 0.5)"],
     // A folded bucket start is the floor of an observation to its tier, exactly as on
     // telemetry_buckets. 3601 at the hourly tier keys a bucket that overlaps the real 3600 one, so
     // the decay fold sees two hours where one was observed. Raw observations (0) are exempt.
@@ -451,15 +451,15 @@ describe('D1SqlStore', () => {
     // day_s and all three counters beside it got one. INTEGER affinity converts '1' but not 1.5 or
     // 'abc', so those persisted as distinct primary keys — one report token minting unbounded
     // "painters" at 1.5, 1.25, 1.125, and a GROUP BY that reads each as a separate person.
-    ["INSERT INTO contributions VALUES (1.5, 'ct', 0, 'tok', 1, 1, 0)"],
-    ["INSERT INTO contributions VALUES ('abc', 'ct', 0, 'tok', 1, 1, 0)"],
-    ["INSERT INTO tile_history VALUES (0, 0, 3600, 3601, 'hash', 'tok')"],
+    ["INSERT INTO contributions VALUES (1.5, 'ct', 0, 'tok', 7, 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES ('abc', 'ct', 0, 'tok', 7, 1, 1, 0)"],
+    ["INSERT INTO tile_history VALUES (0, 0, 3600, 3601, 'hash', 'tok', 7)"],
     // Aligned to the hourly tier but not to this row's own. Every accepted start is a multiple of
     // 3600, so without this the divisor can be hardcoded to 3600 and still pass — the check would
     // stop reading the resolution column it is written against.
-    ["INSERT INTO tile_history VALUES (0, 0, 21600, 3600, 'hash', 'tok')"],
-    ["INSERT INTO tile_history VALUES (0, 0, 3600, 3600.5, 'hash', 'tok')"],
-    ["INSERT INTO tile_history VALUES (0, 0, 0, -1, 'hash', 'tok')"],
+    ["INSERT INTO tile_history VALUES (0, 0, 21600, 3600, 'hash', 'tok', 7)"],
+    ["INSERT INTO tile_history VALUES (0, 0, 3600, 3600.5, 'hash', 'tok', 7)"],
+    ["INSERT INTO tile_history VALUES (0, 0, 0, -1, 'hash', 'tok', 7)"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
@@ -479,9 +479,9 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO access_tokens VALUES ('tok-a', 'l', 'report', 'c', 1, NULL);
       INSERT OR IGNORE INTO access_tokens VALUES ('tok-b', 'l', 'report', 'c', 1, NULL);
-      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'tok-a');
-      INSERT OR IGNORE INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'tok-a');
-      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'honest-hash', 'tok-b');
+      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'tok-a', 7);
+      INSERT OR IGNORE INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'tok-a', 7);
+      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'honest-hash', 'tok-b', 7);
     `)
     expect(
       d1.sqlite
@@ -502,8 +502,8 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO access_tokens VALUES ('tok-a', 'l', 'report', 'c', 1, NULL);
       INSERT OR IGNORE INTO access_tokens VALUES ('tok-b', 'l', 'report', 'c', 1, NULL);
-      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'tok-a');
-      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'tok-b');
+      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'tok-a', 7);
+      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'tok-b', 7);
     `)
     expect(
       d1.sqlite
@@ -553,13 +553,27 @@ describe('D1SqlStore', () => {
     ).toThrow(/CHECK constraint failed/)
   })
 
+  it('counts two members sharing one token as two reporters', () => {
+    // A token is not a client. An alliance that configures one report token across five userscripts
+    // was five clients reporting and one row — quorum collapsed to 1 for tiles five members agreed
+    // on. The identity is the token *and* the wplace /me id of whoever is running the script, so
+    // these two rows coexist and COUNT(*) reads 2.
+    d1.sqlite.exec(`
+      INSERT INTO tile_history VALUES (2, 2, 0, 100, 'agreed', 'tok', 11);
+      INSERT INTO tile_history VALUES (2, 2, 0, 100, 'agreed', 'tok', 22);
+    `)
+    expect(
+      d1.sqlite.prepare('SELECT COUNT(*) AS reporters FROM tile_history WHERE tile_x = 2').all(),
+    ).toEqual([{ reporters: 2 }])
+  })
+
   it('rejects a tile-history report from a token that does not exist', () => {
     // reported_by is what makes the quorum count unforgeable, and the same argument the sibling
     // column on contributions spells out applies here: without the foreign key any string is a
     // fresh primary-key component, so one caller mints reporters — and rows — without limit.
     expect(() =>
       d1.sqlite
-        .prepare("INSERT INTO tile_history VALUES (0, 0, 0, 0, 'hash', 'no-such-token')")
+        .prepare("INSERT INTO tile_history VALUES (0, 0, 0, 0, 'hash', 'no-such-token', 7)")
         .run(),
     ).toThrow(/FOREIGN KEY constraint failed/)
   })
@@ -573,7 +587,7 @@ describe('D1SqlStore', () => {
     `)
     expect(() =>
       d1.sqlite
-        .prepare("INSERT INTO contributions VALUES (1, 'fk-t', 0, 'no-such-token', 1, 1, 0)")
+        .prepare("INSERT INTO contributions VALUES (1, 'fk-t', 0, 'no-such-token', 7, 1, 1, 0)")
         .run(),
     ).toThrow(/FOREIGN KEY constraint failed/)
   })
@@ -646,15 +660,15 @@ describe('D1SqlStore', () => {
     ],
     [
       'contributions keeps one row per user, template, day and reporter',
-      "INSERT INTO contributions VALUES (1, 'ct', 0, 'tok', 1, 1, 0), (1, 'ct', 86400, 'tok', 1, 1, 0)",
+      "INSERT INTO contributions VALUES (1, 'ct', 0, 'tok', 7, 1, 1, 0), (1, 'ct', 86400, 'tok', 7, 1, 1, 0)",
     ],
     [
       'contributions separate two reporters of the same user, template and day',
-      "INSERT INTO contributions VALUES (2, 'ct', 0, 'tok-a', 1, 1, 0), (2, 'ct', 0, 'tok-b', 1, 1, 0)",
+      "INSERT INTO contributions VALUES (2, 'ct', 0, 'tok-a', 7, 1, 1, 0), (2, 'ct', 0, 'tok-b', 7, 1, 1, 0)",
     ],
     [
       'tile_history keeps one row per tile, tier and bucket',
-      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'tok'), (0, 0, 0, 60, 'h', 'tok')",
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'tok', 7), (0, 0, 0, 60, 'h', 'tok', 7)",
     ],
   ])('%s', (_label, statement) => {
     // reported_by is a foreign key to access_tokens, so the tokens have to exist.

@@ -20,13 +20,15 @@ CREATE TABLE `contributions` (
 	`template_id` text NOT NULL,
 	`day_s` integer NOT NULL,
 	`reported_by` text NOT NULL,
+	`reported_by_user_id` integer NOT NULL,
 	`placed` integer NOT NULL,
 	`correct` integer NOT NULL,
 	`repairs` integer NOT NULL,
-	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by`),
+	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by`, `reported_by_user_id`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."wplace_user_id") = 'integer' AND "contributions"."wplace_user_id" >= 0
+        AND typeof("contributions"."reported_by_user_id") = 'integer' AND "contributions"."reported_by_user_id" >= 0
         AND typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
         AND "contributions"."day_s" % 86400 = 0
         AND typeof("contributions"."placed") = 'integer' AND typeof("contributions"."correct") = 'integer'
@@ -120,9 +122,11 @@ CREATE TABLE `tile_history` (
 	`bucket_start_s` integer NOT NULL,
 	`sha256` text NOT NULL,
 	`reported_by` text NOT NULL,
-	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by`),
+	`reported_by_user_id` integer NOT NULL,
+	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by`, `reported_by_user_id`),
 	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
+	CONSTRAINT "tile_history_reported_by_user_id_check" CHECK(typeof("tile_history"."reported_by_user_id") = 'integer' AND "tile_history"."reported_by_user_id" >= 0),
 	CONSTRAINT "tile_history_bucket_start_s_check" CHECK(typeof("tile_history"."bucket_start_s") = 'integer' AND "tile_history"."bucket_start_s" >= 0
         AND ("tile_history"."resolution_s" = 0 OR "tile_history"."bucket_start_s" % "tile_history"."resolution_s" = 0)),
 	CONSTRAINT "tile_history_coordinate_check" CHECK(typeof("tile_history"."tile_x") = 'integer' AND typeof("tile_history"."tile_y") = 'integer'
