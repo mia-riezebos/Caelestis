@@ -386,7 +386,7 @@ export const overlayLayer = {
       const hidden = hiddenColoursFor(template.appearance)
       const paletteKey = hidden.join(',')
       // Re-uploaded while anything in it is still moving, not only when the filter changes: the
-      // filter changes once and the fade it starts takes half a second to arrive.
+      // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
       if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
         const built = buildPalette(template.id, hidden, now)
         uploadPalette(gl, entry.palette, built.data)

@@ -7,7 +7,6 @@ import {
   type Appearance,
   type AppearanceGroup,
   DEFAULT_APPEARANCE,
-  UNPAINTED_LIMIT_CONTROL,
 } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
@@ -31,7 +30,7 @@ import { isDrawingTiles } from '../tile-transform.js'
 import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { type IconName, icon } from './icons.js'
-import { markerAppearance } from './marker-settings.js'
+import { mismatchSettings } from './marker-settings.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
 import { slider } from './slider.js'
 
@@ -372,32 +371,10 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   disableIfFollowing(pixelsGroup)
 
   const markersGroup = groupBox('markers', 'Mismatches', 'search')
-  for (const [key, label] of [
-    ['markMismatch', 'Mark mismatched'],
-    ['markUnpainted', 'Count unpainted'],
-  ] as const) {
-    const row = document.createElement('label')
-    row.className = 'flex items-center gap-2 text-xs font-normal'
-    row.style.textTransform = 'none'
-    row.style.letterSpacing = 'normal'
-    const box = document.createElement('input')
-    box.type = 'checkbox'
-    box.className = 'checkbox checkbox-xs'
-    box.checked = current()[key]
-    box.addEventListener('change', () => update('markers', { [key]: box.checked }))
-    const text = document.createElement('span')
-    text.textContent = label
-    row.append(box, text)
-    markersGroup.body.appendChild(row)
-  }
-  // How little may be left before "count unpainted" applies. Beside the switch it qualifies.
   markersGroup.body.appendChild(
-    slider(UNPAINTED_LIMIT_CONTROL, current().unpaintedLimit, (value) =>
-      update('markers', { unpaintedLimit: value }),
-    ),
-  )
-  markersGroup.body.appendChild(
-    markerAppearance(current(), (patch) => update('markers', patch), rerender),
+    mismatchSettings(current(), (patch) => update('markers', patch), rebuildMenu, {
+      compact: true,
+    }),
   )
   disableIfFollowing(markersGroup)
 
@@ -548,8 +525,8 @@ export const renderOverlayControls = (rerender: () => void): void => {
       button.style.position = 'fixed'
       // Behind the panel too, for the same reason, and below the menu it opens.
       button.style.zIndex = '28'
-      // The overlay's own ramp, shared rather than restated — CSS `ease-in-out` is not the cubic
-      // the layer eases on, and half a second is long enough for the difference to show.
+      // The overlay's own ramp, shared rather than restated: the same duration and the same control
+      // points, so the button and the template it belongs to leave together.
       button.style.transition = FADE_TRANSITION
       button.addEventListener('click', (event) => {
         event.stopPropagation()

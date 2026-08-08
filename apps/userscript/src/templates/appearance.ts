@@ -45,7 +45,6 @@ export interface Appearance {
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]
   /**
-  /**
    * Mark every pixel the canvas disagrees with.
    *
    * Not called "enhance", which is what the scripts this borrows from call it and which says nothing
@@ -81,11 +80,18 @@ export interface Appearance {
   /** Its size in CSS pixels — the same size at every zoom, so this is the whole of it. */
   readonly markerSize: number
   /**
+   * Whether markers you cannot act on right now are drawn differently from the ones you can.
+   *
+   * A switch of its own rather than a value that happens to mean "off". It was reachable before only
+   * by pushing the fade to 1 and pressing "Same" — two controls, neither of which announces that
+   * together they are one behaviour, and no way to switch it off and keep the settings you had.
+   */
+  readonly dimOthers: boolean
+  /**
    * How strongly to fade a marker whose colour is not the one in your hand, 0..1.
    *
    * Only means anything while follow-the-selection is on, which is the state where "could I fix
-   * this right now" has an answer. 1 leaves every marker at full strength, which is what someone who
-   * wants the old behaviour sets it to.
+   * this right now" has an answer.
    */
   readonly otherOpacity: number
   /**
@@ -120,6 +126,7 @@ export const GROUP_FIELDS: Record<AppearanceGroup, readonly (keyof Appearance)[]
     'unpaintedLimit',
     'markerColour',
     'markerSize',
+    'dimOthers',
     'otherOpacity',
     'otherColour',
   ],
@@ -133,9 +140,8 @@ export const GROUP_FIELDS: Record<AppearanceGroup, readonly (keyof Appearance)[]
  */
 export const UNPAINTED_LIMIT_MAX = 0.2
 
-/** The limit as a control, so the settings page and the per-overlay menu read the same. */
+/** The limit's range, so the settings pane and the per-overlay menu step it identically. */
 export const UNPAINTED_LIMIT_CONTROL = {
-  label: 'Left to do',
   min: 0,
   max: UNPAINTED_LIMIT_MAX,
   step: 0.005,
@@ -157,6 +163,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   // marker. 9 CSS pixels was arrived at by looking at it on a Retina display.
   markerColour: '#ff00ff',
   markerSize: 9,
+  dimOthers: true,
   otherOpacity: 0.35,
   otherColour: null,
 }
@@ -195,6 +202,8 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     // switch for the whole view now, so there is nothing per-overlay left for it to mean.
     markMismatch: source.markMismatch === true,
     markUnpainted: source.markUnpainted === true,
+    // Absent on anything stored before the switch existed, where the behaviour was always on.
+    dimOthers: source.dimOthers !== false,
     unpaintedLimit: number(
       'unpaintedLimit',
       DEFAULT_APPEARANCE.unpaintedLimit,

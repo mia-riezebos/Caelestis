@@ -1,4 +1,3 @@
-import { canvasPixelToLatLng } from '@wts/shared'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
@@ -48,7 +47,7 @@ import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
-import { markerAppearance } from './marker-settings.js'
+import { mismatchSettings } from './marker-settings.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { type Destination, type Source, transplant } from './transplant.js'
@@ -214,7 +213,7 @@ const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
   return row
 }
 
-const emptyState = (): HTMLElement => {
+const _emptyState = (): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'flex flex-col items-center text-center gap-3 py-10 px-4'
   const art = document.createElement('div')
@@ -467,7 +466,7 @@ const select = (
  * Sized to sit where a checkbox sits in a `settingRow`, so a switch and a limit line up as the pair
  * they are rather than as two unrelated rows.
  */
-const percentSlider = (value: number, onChange: (next: number) => void): HTMLElement => {
+const _percentSlider = (value: number, onChange: (next: number) => void): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'flex items-center gap-2'
   wrap.style.flex = '0 0 auto'
@@ -691,40 +690,16 @@ const appearanceView = (): HTMLElement => {
   const setAppearance = (patch: Partial<typeof state.appearance>): void => {
     setState({ appearance: { ...getState().appearance, ...patch } })
   }
-  view.appendChild(
-    settingRow(
-      'Mark mismatched pixels',
-      'A crosshair on every pixel the canvas disagrees with, the same size at any zoom',
-      checkbox(state.appearance.markMismatch, (next) => setAppearance({ markMismatch: next })),
-    ),
-  )
-  view.appendChild(
-    settingRow(
-      'Count unpainted as mismatched',
-      'Otherwise only pixels painted the wrong colour are marked',
-      checkbox(state.appearance.markUnpainted, (next) => setAppearance({ markUnpainted: next })),
-    ),
-  )
-  view.appendChild(
-    settingRow(
-      'Only once this much is left',
-      'Above this, an unbuilt template is nothing but crosshairs and says nothing',
-      percentSlider(state.appearance.unpaintedLimit, (next) =>
-        setAppearance({ unpaintedLimit: next }),
-      ),
-    ),
-  )
 
-  // What the crosshairs look like, from the same control the per-overlay menu uses — one place to
-  // change how a marker is drawn, wherever it is being changed.
+  // The same block the per-overlay menu shows, at this pane's density — one place that decides what
+  // these switches are called and which of them qualifies which.
   const markers = document.createElement('div')
   markers.className = 'px-3 pb-2'
   markers.appendChild(
-    markerAppearance(
+    mismatchSettings(
       { ...state.appearance, hiddenColours: state.hiddenColours },
       (patch) => {
         setAppearance(patch)
-        rerender()
       },
       rerender,
     ),
