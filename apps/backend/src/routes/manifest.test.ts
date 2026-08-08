@@ -62,7 +62,7 @@ describe('server and manifest routes', () => {
     await sql.insertTemplateVersion(
       template('01890f3a-6b7c-7def-8123-456789abcde3', '01890f3a-6b7c-7def-8123-456789abcde4', 1),
     )
-    await sql.setTemplatePublishedAt(published.templateId, createdAt)
+    await sql.setTemplatePublishedAt(published.templateId, createdAt, createdAt)
     await sql.insertAccessToken({
       tokenHash: await hashToken(MEMBER),
       label: 'Member',

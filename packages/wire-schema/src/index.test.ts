@@ -69,6 +69,7 @@ const validTemplate = {
   chunks: [{ tile: '325/1781', hash: HASH }],
   published: true,
   createdAt: MILLIS,
+  updatedAt: MILLIS,
 }
 
 const validNode = {
@@ -556,6 +557,7 @@ describe('cross-field and time-unit schemas', () => {
         })),
         published: true,
         createdAt: MILLIS,
+        updatedAt: MILLIS,
       }
     })
     const manifest = {

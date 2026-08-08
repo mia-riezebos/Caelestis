@@ -158,6 +158,8 @@ export const templates = sqliteTable(
     createdWithToken: text('created_with_token').notNull(),
     createdByUserId: integer('created_by_user_id'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
+    /** Changes on every metadata or version mutation so manifest clients can invalidate caches. */
+    updatedAtMs: integer('updated_at_ms').$type<Millis>().notNull(),
   },
   // The version this template currently serves has to be one of *its own* versions. Referencing
   // template_versions(id) alone said only "some version exists": one template could point at

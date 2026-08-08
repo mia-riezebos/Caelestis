@@ -10,6 +10,8 @@ const SHA256_HEX = /^[0-9a-f]{64}$/
 const WHOLE_NUMBER = /^(0|[1-9]\d*)$/
 const MAX_NAME_LENGTH = 256
 
+const isValidName = (name: string): boolean => name.length > 0 && name.length <= MAX_NAME_LENGTH
+
 const parseWholeNumber = (value: unknown): number | null => {
   if (typeof value !== 'string' || !WHOLE_NUMBER.test(value)) return null
   const parsed = Number(value)
@@ -34,7 +36,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (typeof nodeId !== 'string' || !UUID_V7.test(nodeId)) {
       return c.json({ error: 'nodeId must be a canonical lowercase UUIDv7' }, 400)
     }
-    if (typeof name !== 'string' || name.length === 0 || name.length > MAX_NAME_LENGTH) {
+    if (typeof name !== 'string' || !isValidName(name)) {
       return c.json({ error: 'name must be 1..256 characters' }, 400)
     }
 
@@ -73,6 +75,71 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     }
   })
 
+  /**
+   * Replace a template's pixels, keeping its identity.
+   *
+   * A separate route from `POST /` rather than a flag on it, because the two take different inputs:
+   * a new template needs somewhere to live and something to be called, and a new version needs
+   * neither — it inherits both from the template it belongs to. Folding them together would mean a
+   * `nodeId` that is required on one path and ignored on the other.
+   *
+   * Origin is per version on purpose: moving a template on the canvas is a new slicing, so it is a
+   * new version rather than an edit.
+   */
+  routes.post('/:id/versions', async (c) => {
+    const templateId = c.req.param('id')
+    if (!UUID_V7.test(templateId)) {
+      return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
+    }
+    if (!c.req.header('content-type')?.toLowerCase().startsWith('multipart/form-data')) {
+      return c.json({ error: 'content-type must be multipart/form-data' }, 400)
+    }
+
+    const body = await c.req.parseBody().catch(() => null)
+    if (body === null) return c.json({ error: 'invalid multipart body' }, 400)
+
+    const { png, originX, originY } = body
+    if (!(png instanceof File)) return c.json({ error: 'png must be a file part' }, 400)
+    const parsedOriginX = parseWholeNumber(originX)
+    const parsedOriginY = parseWholeNumber(originY)
+    if (parsedOriginX === null || parsedOriginY === null) {
+      return c.json({ error: 'originX and originY must be non-negative integers' }, 400)
+    }
+
+    const existing = await ports.sql.readTemplate(templateId)
+    if (existing === null) return c.json({ error: 'not found' }, 404)
+
+    try {
+      const caller = c.get('caller')
+      const result = await storeTemplate(ports, {
+        templateId,
+        nodeId: existing.nodeId,
+        name: existing.name,
+        createdBy: caller.token?.tokenHash ?? 'bootstrap',
+        originX: parsedOriginX,
+        originY: parsedOriginY,
+        png: new Uint8Array(await png.arrayBuffer()),
+      })
+      return c.json(result, 201)
+    } catch (error) {
+      if (
+        error instanceof PngError ||
+        error instanceof SliceError ||
+        error instanceof NodeNotFoundError
+      ) {
+        return c.json({ error: error.message }, 400)
+      }
+      throw error
+    }
+  })
+
+  /**
+   * Rename, move, publish or unpublish — anything that leaves the pixels alone.
+   *
+   * A patch of nothing is rejected rather than treated as a no-op. It is always a mistake on the
+   * caller's side (a typo'd field name, a body that failed to serialise), and answering 200 to it
+   * would report success for a request that changed nothing.
+   */
   routes.patch('/:id', async (c) => {
     const templateId = c.req.param('id')
     if (!UUID_V7.test(templateId)) {
@@ -80,15 +147,65 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     }
     const body: unknown = await c.req.json().catch(() => null)
     if (typeof body !== 'object' || body === null) return c.json({ error: 'invalid body' }, 400)
-    const { published } = body as { published?: unknown }
-    if (typeof published !== 'boolean') return c.json({ error: 'published must be a boolean' }, 400)
+    const { name, nodeId, published } = body as {
+      name?: unknown
+      nodeId?: unknown
+      published?: unknown
+    }
 
-    const updated = await ports.sql.setTemplatePublishedAt(
-      templateId,
-      published ? millis(Date.now()) : null,
-    )
-    if (!updated) return c.json({ error: 'not found' }, 404)
-    return c.json({ id: templateId, published })
+    if (name !== undefined && (typeof name !== 'string' || !isValidName(name))) {
+      return c.json({ error: 'name must be 1..256 characters' }, 400)
+    }
+    if (nodeId !== undefined && (typeof nodeId !== 'string' || !UUID_V7.test(nodeId))) {
+      return c.json({ error: 'nodeId must be a canonical lowercase UUIDv7' }, 400)
+    }
+    if (published !== undefined && typeof published !== 'boolean') {
+      return c.json({ error: 'published must be a boolean' }, 400)
+    }
+    if (name === undefined && nodeId === undefined && published === undefined) {
+      return c.json({ error: 'patch must set at least one of name, nodeId, published' }, 400)
+    }
+
+    const now = millis(Date.now())
+    if (name !== undefined || nodeId !== undefined) {
+      const patch = {
+        ...(name === undefined ? {} : { name: name as string }),
+        ...(nodeId === undefined ? {} : { nodeId: nodeId as string }),
+      }
+      try {
+        if (!(await ports.sql.updateTemplate(templateId, patch, now))) {
+          return c.json({ error: 'not found' }, 404)
+        }
+      } catch (error) {
+        if (error instanceof NodeNotFoundError) return c.json({ error: error.message }, 400)
+        throw error
+      }
+    }
+    if (published !== undefined) {
+      const updated = await ports.sql.setTemplatePublishedAt(
+        templateId,
+        published ? now : null,
+        now,
+      )
+      if (!updated) return c.json({ error: 'not found' }, 404)
+    }
+
+    return c.json({
+      id: templateId,
+      ...(name === undefined ? {} : { name }),
+      ...(nodeId === undefined ? {} : { nodeId }),
+      ...(published === undefined ? {} : { published }),
+      updatedAt: now,
+    })
+  })
+
+  routes.delete('/:id', async (c) => {
+    const templateId = c.req.param('id')
+    if (!UUID_V7.test(templateId)) {
+      return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
+    }
+    if (!(await ports.sql.deleteTemplate(templateId))) return c.json({ error: 'not found' }, 404)
+    return c.body(null, 204)
   })
 
   return routes

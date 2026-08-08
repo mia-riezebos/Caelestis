@@ -37,6 +37,8 @@ export {
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
+  type TemplatePatch,
+  type TemplateRecord,
   TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
