@@ -142,12 +142,20 @@ export const telemetryBuckets = sqliteTable(
       'telemetry_buckets_resolution_check',
       sql`${table.resolution} IN (60, 300, 900, 3600, 21600)`,
     ),
-    // A bucket start is the floor of an event time to its resolution, so it is always a multiple of
-    // it. Without this, {resolution: 60, bucketStart: 61} persists as a row no reader can align
-    // with any other tier of the ladder, and the decay fold silently produces overlapping buckets.
+    // A bucket start is the floor of an event time to its resolution, so it is always a
+    // non-negative multiple of it. Without this, {resolution: 60, bucketStart: 61} persists as a row
+    // no reader can align with any other tier of the ladder, and the decay fold silently produces
+    // overlapping buckets.
+    //
+    // The typeof guard carries the rest of the clause. `%` casts to integer before dividing, so
+    // 60.5 reads as 60 and clears the alignment test on its own — and INTEGER is an affinity, so
+    // 60.5 stays REAL. `(t, 60, 60)` and `(t, 60, 60.5)` would then be two primary keys for one
+    // minute, which every reader that sums the tier double-counts. The sign clause is separate
+    // because a negative multiple aligns perfectly and is still not a time.
     check(
       'telemetry_buckets_alignment_check',
-      sql`${table.bucketStartS} % ${table.resolution} = 0`,
+      sql`typeof(${table.bucketStartS}) = 'integer' AND ${table.bucketStartS} >= 0
+        AND ${table.bucketStartS} % ${table.resolution} = 0`,
     ),
     // The geometry columns get typeof + range; the counters got neither, so `placed = -5`,
     // `correct = 'oops'` and `repairs = 0.5` all persisted. SQLite INTEGER is an affinity, not a
@@ -200,7 +208,11 @@ export const contributions = sqliteTable(
     primaryKey({ columns: [table.wplaceUserId, table.templateId, table.dayS, table.reportedBy] }),
     check(
       'contributions_counter_check',
+      // day_s is a day bucket, so it is a UTC midnight — the floor of a report time to 86400.
+      // Unaligned, 1 and 2 are two primary keys for one day, and a leaderboard rollup grouped by
+      // day splits one painter's work across both.
       sql`typeof(${table.dayS}) = 'integer' AND ${table.dayS} >= 0
+        AND ${table.dayS} % 86400 = 0
         AND typeof(${table.placed}) = 'integer' AND typeof(${table.correct}) = 'integer'
         AND typeof(${table.repairs}) = 'integer'
         AND ${table.repairs} >= 0
@@ -249,7 +261,14 @@ export const tileHistory = sqliteTable(
     // its own hash until it looked like multi-client quorum, and an honest competing hash could not
     // be stored at all because the key admitted one hash per bucket. The count is now COUNT(*) over
     // distinct reporters, which cannot be forged by repetition.
-    reportedBy: text('reported_by').notNull(),
+    //
+    // The foreign key is what makes that true, for the reason the sibling column on `contributions`
+    // spells out: without it any string is a fresh key component, so one caller mints as many
+    // "distinct reporters" — and as many rows — as it likes, and the count is forgeable again by a
+    // different spelling of the same trick.
+    reportedBy: text('reported_by')
+      .notNull()
+      .references(() => accessTokens.tokenHash),
   },
   (table) => [
     primaryKey({
@@ -263,6 +282,19 @@ export const tileHistory = sqliteTable(
       ],
     }),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
+    // The same rule `telemetry_buckets` states, on the ladder this table folds. A folded bucket
+    // start is the floor of an observation to its tier, so {resolution: 3600, bucketStart: 3601}
+    // keys a bucket overlapping the real 3600 one and the fold counts one hour as two.
+    //
+    // Raw observations carry resolution 0 and are exempt: their bucket start is the observation
+    // time itself, aligned to nothing. Stating that as an explicit disjunct rather than leaning on
+    // `x % 0` evaluating to NULL — a CHECK that is NULL does not fail, so the exemption would hold
+    // by accident and read as an oversight.
+    check(
+      'tile_history_bucket_start_s_check',
+      sql`typeof(${table.bucketStartS}) = 'integer' AND ${table.bucketStartS} >= 0
+        AND (${table.resolutionS} = 0 OR ${table.bucketStartS} % ${table.resolutionS} = 0)`,
+    ),
     check(
       'tile_history_coordinate_check',
       sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'

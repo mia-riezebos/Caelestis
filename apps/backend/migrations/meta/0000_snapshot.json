@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4729ecc6-b8a9-4693-925d-b6dc259c5721",
+  "id": "979d6558-e419-4233-b12d-d61aff3b8852",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -197,7 +197,7 @@
       "checkConstraints": {
         "contributions_counter_check": {
           "name": "contributions_counter_check",
-          "value": "typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
+          "value": "typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND \"contributions\".\"day_s\" % 86400 = 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
         }
       }
     },
@@ -365,7 +365,7 @@
         },
         "telemetry_buckets_alignment_check": {
           "name": "telemetry_buckets_alignment_check",
-          "value": "\"telemetry_buckets\".\"bucket_start_s\" % \"telemetry_buckets\".\"resolution\" = 0"
+          "value": "typeof(\"telemetry_buckets\".\"bucket_start_s\") = 'integer' AND \"telemetry_buckets\".\"bucket_start_s\" >= 0\n        AND \"telemetry_buckets\".\"bucket_start_s\" % \"telemetry_buckets\".\"resolution\" = 0"
         },
         "telemetry_buckets_counter_check": {
           "name": "telemetry_buckets_counter_check",
@@ -627,7 +627,21 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "tile_history_reported_by_access_tokens_token_hash_fk": {
+          "name": "tile_history_reported_by_access_tokens_token_hash_fk",
+          "tableFrom": "tile_history",
+          "tableTo": "access_tokens",
+          "columnsFrom": [
+            "reported_by"
+          ],
+          "columnsTo": [
+            "token_hash"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {
         "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_pk": {
           "columns": [
@@ -646,6 +660,10 @@
         "tile_history_resolution_s_check": {
           "name": "tile_history_resolution_s_check",
           "value": "\"tile_history\".\"resolution_s\" IN (0, 3600, 21600, 86400)"
+        },
+        "tile_history_bucket_start_s_check": {
+          "name": "tile_history_bucket_start_s_check",
+          "value": "typeof(\"tile_history\".\"bucket_start_s\") = 'integer' AND \"tile_history\".\"bucket_start_s\" >= 0\n        AND (\"tile_history\".\"resolution_s\" = 0 OR \"tile_history\".\"bucket_start_s\" % \"tile_history\".\"resolution_s\" = 0)"
         },
         "tile_history_coordinate_check": {
           "name": "tile_history_coordinate_check",

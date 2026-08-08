@@ -27,6 +27,7 @@ CREATE TABLE `contributions` (
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
+        AND "contributions"."day_s" % 86400 = 0
         AND typeof("contributions"."placed") = 'integer' AND typeof("contributions"."correct") = 'integer'
         AND typeof("contributions"."repairs") = 'integer'
         AND "contributions"."repairs" >= 0
@@ -58,7 +59,8 @@ CREATE TABLE `telemetry_buckets` (
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`template_id`, `resolution`, `bucket_start_s`),
 	CONSTRAINT "telemetry_buckets_resolution_check" CHECK("telemetry_buckets"."resolution" IN (60, 300, 900, 3600, 21600)),
-	CONSTRAINT "telemetry_buckets_alignment_check" CHECK("telemetry_buckets"."bucket_start_s" % "telemetry_buckets"."resolution" = 0),
+	CONSTRAINT "telemetry_buckets_alignment_check" CHECK(typeof("telemetry_buckets"."bucket_start_s") = 'integer' AND "telemetry_buckets"."bucket_start_s" >= 0
+        AND "telemetry_buckets"."bucket_start_s" % "telemetry_buckets"."resolution" = 0),
 	CONSTRAINT "telemetry_buckets_counter_check" CHECK(typeof("telemetry_buckets"."placed") = 'integer' AND typeof("telemetry_buckets"."correct") = 'integer'
         AND typeof("telemetry_buckets"."repairs") = 'integer'
         AND "telemetry_buckets"."repairs" >= 0
@@ -113,7 +115,10 @@ CREATE TABLE `tile_history` (
 	`sha256` text NOT NULL,
 	`reported_by` text NOT NULL,
 	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by`),
+	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
+	CONSTRAINT "tile_history_bucket_start_s_check" CHECK(typeof("tile_history"."bucket_start_s") = 'integer' AND "tile_history"."bucket_start_s" >= 0
+        AND ("tile_history"."resolution_s" = 0 OR "tile_history"."bucket_start_s" % "tile_history"."resolution_s" = 0)),
 	CONSTRAINT "tile_history_coordinate_check" CHECK(typeof("tile_history"."tile_x") = 'integer' AND typeof("tile_history"."tile_y") = 'integer'
         AND "tile_history"."tile_x" BETWEEN 0 AND 2047
         AND "tile_history"."tile_y" BETWEEN 0 AND 2047)
