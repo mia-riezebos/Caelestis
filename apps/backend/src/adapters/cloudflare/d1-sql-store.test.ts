@@ -4,7 +4,7 @@ import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.j
 import { D1SqlStore } from './d1-sql-store.js'
 import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 
-// reported_by is a sha256 digest of the access token, constrained by CHECK rather than by a foreign
+// reported_with_token is a sha256 digest of the access token, constrained by CHECK rather than by a foreign
 // key: the audit record outlives the credential it names, so a fixture needs the shape, not a row.
 const bucket = (overrides: Partial<TelemetryBucket> = {}): TelemetryBucket => ({
   templateId: 'template-1',
@@ -24,7 +24,7 @@ const templateVersion = (
   name: 'Template',
   season: 1,
   versionId: 'version-1',
-  createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   createdByUserId: null,
   createdAt: millis(1_000),
   bbox: { minX: 0, minY: 0, maxX: 1001, maxY: 1 },
@@ -704,7 +704,7 @@ describe('D1SqlStore', () => {
     expect(
       d1.sqlite
         .prepare(
-          `SELECT t.created_by AS templateBy, t.created_by_user_id AS templateUser,
+          `SELECT t.created_with_token AS templateBy, t.created_by_user_id AS templateUser,
                   t.created_at_ms AS templateAt, v.created_by_user_id AS versionUser,
                   v.created_at_ms AS versionAt
            FROM templates t JOIN template_versions v ON v.template_id = t.id
@@ -722,12 +722,12 @@ describe('D1SqlStore', () => {
 
   it.each([['short'], ['g'.repeat(64)]])(
     'rejects the malformed template author digest %o',
-    (createdBy) => {
+    (createdWithToken) => {
       d1.sqlite.exec("INSERT OR IGNORE INTO nodes VALUES ('bad-node', NULL, '/bad', 'Bad', 1)")
       expect(() =>
         d1.sqlite
           .prepare("INSERT INTO templates VALUES ('bad-t', 'bad-node', 'T', 1, NULL, ?, 7, 1)")
-          .run(createdBy),
+          .run(createdWithToken),
       ).toThrow(/CHECK constraint failed/)
     },
   )
@@ -770,7 +770,7 @@ describe('D1SqlStore', () => {
   })
 
   it('keeps a tile-history report whose token is gone', () => {
-    // reported_by is an audit column, not a relation: it records which credential reported a tile
+    // reported_with_token is an audit column, not a relation: it records which credential reported a tile
     // so a leak can be traced through what it wrote. A foreign key made that record die with the
     // credential — deleting a token that ever reported failed unless its history went first — so
     // an orphan is the intended state, and only the digest shape is enforced.
@@ -787,7 +787,7 @@ describe('D1SqlStore', () => {
     ['short'],
     ['dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'.toUpperCase()],
     ['g'.repeat(64)],
-  ])('rejects the malformed reporter digest %o', (reportedBy) => {
+  ])('rejects the malformed reporter digest %o', (reportedWithToken) => {
     // The foreign key's real job was "keeps this a token, not free text". A 64-character
     // lowercase hex digest still is not free text, and it holds for a token row long deleted.
     expect(() =>
@@ -795,7 +795,7 @@ describe('D1SqlStore', () => {
         .prepare(
           "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', ?, 7)",
         )
-        .run(reportedBy),
+        .run(reportedWithToken),
     ).toThrow(/CHECK constraint failed/)
   })
 
@@ -819,7 +819,7 @@ describe('D1SqlStore', () => {
       tokenHash: 'a'.repeat(64),
       label: 'discord-regulars',
       scope: 'report' as const,
-      createdBy: 'bootstrap',
+      createdWithToken: 'bootstrap',
       createdAt: millis(1_000),
     }
     await store.insertAccessToken(token)
@@ -836,7 +836,7 @@ describe('D1SqlStore', () => {
       tokenHash: 'b'.repeat(64),
       label: 'first',
       scope: 'read' as const,
-      createdBy: 'bootstrap',
+      createdWithToken: 'bootstrap',
       createdAt: millis(1_000),
     }
     await store.insertAccessToken(token)
@@ -857,7 +857,7 @@ describe('D1SqlStore', () => {
       tokenHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
       label: 'leaked',
       scope: 'read' as const,
-      createdBy: 'bootstrap',
+      createdWithToken: 'bootstrap',
       createdAt: millis(1_000),
     }
     await store.insertAccessToken(token)
@@ -914,7 +914,7 @@ describe('D1SqlStore', () => {
       name: 'Bulk',
       season: 1,
       versionId: 'bulk-v',
-      createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       createdByUserId: null,
       createdAt: millis(1_000),
       bbox: { minX: 0, minY: 0, maxX: 48_000, maxY: 1 },
@@ -937,7 +937,7 @@ describe('D1SqlStore', () => {
         tokenHash: hash.repeat(64),
         label: hash,
         scope: 'read',
-        createdBy: 'bootstrap',
+        createdWithToken: 'bootstrap',
         createdAt: millis(1_000),
       })
     }
@@ -955,7 +955,7 @@ describe('D1SqlStore', () => {
         tokenHash: `${index}`.repeat(64),
         label: `${createdAt}`,
         scope: 'read',
-        createdBy: 'bootstrap',
+        createdWithToken: 'bootstrap',
         createdAt: millis(createdAt),
       })
     }
@@ -1045,7 +1045,7 @@ describe('D1SqlStore', () => {
       "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7), (0, 0, 0, 60, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
   ])('%s', (_label, statement) => {
-    // Nothing references access_tokens — reported_by is a shape-checked digest, not a foreign key —
+    // Nothing references access_tokens — reported_with_token is a shape-checked digest, not a foreign key —
     // so these rows exist only because the assertions read them back.
     // Each composite primary key is the identity the draft specifies. Dropping a component makes
     // these two rows collide, so the insert throws — nothing else in the suite writes two rows that

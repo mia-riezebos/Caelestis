@@ -42,7 +42,7 @@ const input = (png: Uint8Array, overrides: { originX?: number; originY?: number 
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
   name: 'Test template',
   season: 1,
-  createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   createdByUserId: null,
   originX: overrides.originX ?? 0,
   originY: overrides.originY ?? 0,

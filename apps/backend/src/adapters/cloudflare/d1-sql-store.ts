@@ -28,7 +28,7 @@ const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
   tokenHash: row.tokenHash,
   label: row.label,
   scope: row.scope,
-  createdBy: row.createdBy,
+  createdWithToken: row.createdWithToken,
   createdAt: row.createdAtMs,
 })
 
@@ -82,7 +82,7 @@ export class D1SqlStore implements SqlStore {
           name: version.name,
           season: version.season,
           currentVersionId: null,
-          createdBy: version.createdBy,
+          createdWithToken: version.createdWithToken,
           createdByUserId: version.createdByUserId,
           createdAtMs: version.createdAt,
         })
@@ -91,7 +91,7 @@ export class D1SqlStore implements SqlStore {
         id: version.versionId,
         templateId: version.templateId,
         createdAtMs: version.createdAt,
-        createdBy: version.createdBy,
+        createdWithToken: version.createdWithToken,
         createdByUserId: version.createdByUserId,
         minX: version.bbox.minX,
         minY: version.bbox.minY,
@@ -133,7 +133,7 @@ export class D1SqlStore implements SqlStore {
         name: templates.name,
         season: templates.season,
         versionId: templateVersions.id,
-        createdBy: templateVersions.createdBy,
+        createdWithToken: templateVersions.createdWithToken,
         createdByUserId: templateVersions.createdByUserId,
         createdAt: templateVersions.createdAtMs,
         minX: templateVersions.minX,
@@ -162,7 +162,7 @@ export class D1SqlStore implements SqlStore {
       season: row.season,
       versionId: row.versionId,
       createdByUserId: row.createdByUserId,
-      createdBy: row.createdBy,
+      createdWithToken: row.createdWithToken,
       createdAt: row.createdAt,
       bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
       totalPixels: row.totalPixels,
@@ -213,7 +213,7 @@ export class D1SqlStore implements SqlStore {
       tokenHash: token.tokenHash,
       label: token.label,
       scope: token.scope,
-      createdBy: token.createdBy,
+      createdWithToken: token.createdWithToken,
       createdAtMs: token.createdAt,
     })
   }

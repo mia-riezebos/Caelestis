@@ -74,7 +74,7 @@ export const templateVersions = sqliteTable(
       .references((): AnySQLiteColumn => templates.id),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
     /** Who uploaded this version — token digest and wplace account, as everywhere else. */
-    createdBy: text('created_by').notNull(),
+    createdWithToken: text('created_with_token').notNull(),
     createdByUserId: integer('created_by_user_id'),
     minX: integer('min_x').notNull(),
     minY: integer('min_y').notNull(),
@@ -91,9 +91,9 @@ export const templateVersions = sqliteTable(
     // Same shape rule the reporter columns carry, for the same reason: an author record outlives
     // the credential it names, so the digest is constrained and its existence is not.
     check(
-      'template_versions_created_by_check',
-      sql`typeof(${table.createdBy}) = 'text' AND length(${table.createdBy}) = 64
-        AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
+      'template_versions_created_with_token_check',
+      sql`typeof(${table.createdWithToken}) = 'text' AND length(${table.createdWithToken}) = 64
+        AND ${table.createdWithToken} NOT GLOB '*[^0-9a-f]*'
         AND (${table.createdByUserId} IS NULL
           OR (typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0))`,
     ),
@@ -154,7 +154,7 @@ export const templates = sqliteTable(
      * records this per upload; without it here, the template itself — the thing that gets renamed,
      * moved and deleted — had a creation time and no author.
      */
-    createdBy: text('created_by').notNull(),
+    createdWithToken: text('created_with_token').notNull(),
     createdByUserId: integer('created_by_user_id'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
@@ -170,9 +170,9 @@ export const templates = sqliteTable(
     // Same shape rule the reporter columns carry, for the same reason: an author record outlives
     // the credential it names, so the digest is constrained and its existence is not.
     check(
-      'templates_created_by_check',
-      sql`typeof(${table.createdBy}) = 'text' AND length(${table.createdBy}) = 64
-        AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
+      'templates_created_with_token_check',
+      sql`typeof(${table.createdWithToken}) = 'text' AND length(${table.createdWithToken}) = 64
+        AND ${table.createdWithToken} NOT GLOB '*[^0-9a-f]*'
         AND (${table.createdByUserId} IS NULL
           OR (typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0))`,
     ),
@@ -217,7 +217,7 @@ export const accessTokens = sqliteTable(
     tokenHash: text('token_hash').primaryKey(),
     label: text('label').notNull(),
     scope: text('scope', { enum: ['read', 'report', 'admin'] }).notNull(),
-    createdBy: text('created_by').notNull(),
+    createdWithToken: text('created_with_token').notNull(),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
   (table) => [
@@ -299,7 +299,7 @@ export const contributions = sqliteTable(
      * that did. Tracing a leaked token through what it wrote is best-effort here; an append-only
      * log is what that would need, and it belongs with the route that writes it.
      */
-    reportedBy: text('reported_by').notNull(),
+    reportedWithToken: text('reported_with_token').notNull(),
     /**
      * The wplace `/me` id of the account running the reporting client, for the same reason
      * `tile_history` carries one: a token is not a client. One token shared across an alliance's
@@ -316,9 +316,9 @@ export const contributions = sqliteTable(
       columns: [table.wplaceUserId, table.templateId, table.dayS, table.reportedByUserId],
     }),
     check(
-      'contributions_reported_by_check',
-      sql`typeof(${table.reportedBy}) = 'text' AND length(${table.reportedBy}) = 64
-        AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
+      'contributions_reported_with_token_check',
+      sql`typeof(${table.reportedWithToken}) = 'text' AND length(${table.reportedWithToken}) = 64
+        AND ${table.reportedWithToken} NOT GLOB '*[^0-9a-f]*'`,
     ),
     check(
       'contributions_counter_check',
@@ -437,7 +437,7 @@ export const tileHistory = sqliteTable(
      * route's job — the server derives this from the authenticated credential rather than reading
      * it off a request, the same way it computes `sha256` itself.
      */
-    reportedBy: text('reported_by').notNull(),
+    reportedWithToken: text('reported_with_token').notNull(),
     /**
      * The wplace `/me` id of the account running the reporting client, and the only key component
      * that separates reporters. A token is not a client in either direction: one token configured
@@ -488,9 +488,9 @@ export const tileHistory = sqliteTable(
         AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
     ),
     check(
-      'tile_history_reported_by_check',
-      sql`typeof(${table.reportedBy}) = 'text' AND length(${table.reportedBy}) = 64
-        AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
+      'tile_history_reported_with_token_check',
+      sql`typeof(${table.reportedWithToken}) = 'text' AND length(${table.reportedWithToken}) = 64
+        AND ${table.reportedWithToken} NOT GLOB '*[^0-9a-f]*'`,
     ),
     check(
       'tile_history_reported_by_user_id_check',
