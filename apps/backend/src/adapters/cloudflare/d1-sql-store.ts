@@ -6,6 +6,7 @@ import {
   type AccessToken,
   assertValidBuckets,
   type BucketQuery,
+  compareAccessTokens,
   compareBuckets,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   READ_BUCKETS_CHUNK_SIZE,
@@ -101,7 +102,9 @@ export class D1SqlStore implements SqlStore {
       .select()
       .from(accessTokens)
       .orderBy(desc(accessTokens.createdAtMs))
-    return rows.map(toAccessToken)
+    // Re-sorted rather than trusted: SQL leaves equal created_at_ms unspecified, and the port
+    // promises one order both adapters return. ORDER BY still does the work; this only settles ties.
+    return rows.map(toAccessToken).sort(compareAccessTokens)
   }
 
   async revokeAccessToken(tokenHash: string): Promise<void> {

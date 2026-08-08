@@ -827,6 +827,27 @@ describe('D1SqlStore', () => {
     ).toEqual([{ kept: 2 }])
   })
 
+  it('orders tokens minted in the same millisecond by hash, as the port promises', async () => {
+    // SQL leaves equal ORDER BY keys unspecified, so the adapters could return different arrays for
+    // one input — the memory store applies the port's tiebreak and D1 did not. Date.now() is
+    // millisecond-resolution and scripted provisioning mints a read and a report token in one tick.
+    for (const hash of ['c', 'a', 'b']) {
+      await store.insertAccessToken({
+        tokenHash: hash.repeat(64),
+        label: hash,
+        scope: 'read',
+        createdBy: 'bootstrap',
+        createdAt: millis(1_000),
+      })
+    }
+
+    await expect(store.listAccessTokens()).resolves.toMatchObject([
+      { label: 'a' },
+      { label: 'b' },
+      { label: 'c' },
+    ])
+  })
+
   it('lists tokens newest first', async () => {
     for (const [index, createdAt] of [3_000, 1_000, 2_000].entries()) {
       await store.insertAccessToken({
