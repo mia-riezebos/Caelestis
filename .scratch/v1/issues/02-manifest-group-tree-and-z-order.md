@@ -77,8 +77,9 @@ Largely defused by the existing rule forbidding overlapping templates *within* a
 so rollups cannot double-count. What remains is cross-group overlap inside one server, normally
 accidental. Where it is deliberate, there is now no way to say so.
 
-**Default order**, since nothing is stored: oldest first by creation. Not manifest array order — that
-would be server-side ordering reintroduced through the order of a JSON array.
+**Default order**, since nothing is stored: see the amendment below — it is recency, not creation
+order. Not manifest array order either way, since that would be server-side ordering reintroduced
+through the order of a JSON array.
 
 Knock-on: a native `.wplace` file's `order` field has nowhere to land on import, and nothing to
 populate it from on export (`28-native-wplace-format`).
@@ -98,3 +99,118 @@ every upload.
 
 If double-counted parent rollups turn out to matter in practice, the fix is a subtree check, not a
 change to how rollups are computed.
+
+## Amendment — 2026-08-04: `kind` is dropped, and the manifest gains creation times and season
+
+**`kind` is removed** from the node schema above. It appeared in the original sketch and was never
+defined anywhere — not in this ticket, not in the draft, and not in the D1 table. The one meaning it
+plausibly had, distinguishing roots from subnodes, is already carried by `parentId`: a root is a node
+with a null parent, and the wire enforces that a root's path has exactly one segment. Storing it
+would be a second source of truth for something the tree already says.
+
+### `createdAt` becomes required on nodes and templates
+
+The 2026-08-03 amendment above moved ordering client-side and set the default to "oldest first by
+creation", explicitly ruling out manifest array order. **The manifest exposed no timestamp, so no
+client could implement that default.** Its only options were array order, which that amendment
+forbids, or UUID order — which happens to work because ids are UUIDv7, but is a coincidence the
+contract does not promise and would break the moment an id came from anywhere else.
+
+Both columns already exist in D1. This closes the gap between the stated default and what a client
+can actually compute.
+
+### `season` becomes required on templates
+
+`templates.season` exists in D1 and the wire dropped it, so a client could not tell whether a
+template's chunks belong to the current canvas. A season rollover would silently render stale
+templates over a fresh one.
+
+### `version` is a content hash
+
+This ticket already asks for an ETag'd manifest polled with `If-None-Match`. Defining `version` as a
+hash of the manifest body makes the ETag and the version the same value: 304s are correct by
+construction, and the "what changed" diff has a stable identity to compare against rather than an
+opaque token.
+
+That requires the assembled manifest to be **deterministic** — nodes, templates, chunks and tiles all
+emitted in a fixed order — or the same content would hash differently between requests and every poll
+would be a full transfer.
+
+## Amendment — 2026-08-04: the settled manifest shape
+
+### Wire
+
+```
+ServerInfo = { id, name, description?, auth: 'none' | 'access_token' }
+Node       = { id, parentId, path, name, description?, createdAt }
+Chunk      = { tile, hash }
+Template   = { id, nodeId, name, version, bbox, totalPixels, chunks, published, createdAt }
+Manifest   = { version, season, server, nodes, templates, tiles }
+```
+
+`auth` replaces `requiresAuth: boolean`. A boolean cannot distinguish a bearer token from a future
+signed-URL or OAuth flow, and a client that has to guess will guess wrong exactly once.
+
+### Two endpoints, not one shape with two meanings
+
+- **`GET /server`** — public, always `ServerInfo`. The "who is this" request a userscript makes when
+  someone adds a server, so it can see whether a token is needed before asking for one. Identical for
+  every caller, so trivially cacheable.
+- **`GET /manifest`** — full manifest, 401 without a token. `read`/`report` see published templates;
+  `admin` additionally sees unpublished ones, flagged.
+
+Serving both shapes from one path would make a client sniff for the presence of `templates` to know
+what it received. Two types deserve two endpoints.
+
+### Season scopes the whole document, and the tree with it
+
+`nodes` gains a `season` column and its unique index becomes `(season, lower(path))`. Each season is
+a separate namespace: `/canada` in season 1 and season 2 are unrelated nodes, and an alliance rebuilds
+its tree at a rollover.
+
+**`templates.season` is dropped.** Every template hangs off a node, and nodes are now per-season, so a
+template's season is its node's season. Storing both admits a template in season 2 hanging off a
+season-1 node — incoherent state the schema would otherwise happily hold. Same reasoning that keeps
+`offset`/`w`/`h` off the chunk record.
+
+`Node` carries no `season` either: the manifest is season-scoped, so every node in it shares the
+document's season.
+
+### Publication
+
+`templates` gains a nullable `published_at`. The wire exposes only `published: boolean` — the client
+does not need the instant, but the admin drawer and draft ordering do.
+
+This is **not** the same as `current_version_id IS NULL`. A template can have content uploaded and
+still be deliberately held back.
+
+### The manifest is scope-dependent, so caching must be too
+
+An admin and a member receive different documents with different content hashes. Anything caching on
+URL alone — a CDN, or `caches.default` in the Worker — could serve one to the other. The cache key
+has to include the scope, and the response needs `Vary: Authorization`.
+
+## Amendment — 2026-08-06: custom order always, recency for anything new
+
+Closes the "default order" question left open above and in `schema-draft.md`.
+
+- **The order is always the user's own**, arranged in the userscript and stored client-side. No
+  accounts, no sync.
+- **Sort belongs above the tree, not in settings.** The tree's toolbar carries a sort control beside
+  the search input — `custom`, `created`, `activity`, `progress`, `name`, each with a direction.
+  Sort and search are the same job, finding one template among many, and both belong where the list
+  is rather than two clicks away behind a gear.
+
+  **Sorting is a view; draw order stays custom.** `custom` is the resting state and the only mode
+  that *is* the order, and **dragging to reorder is disabled in every other mode** — a drag under a
+  name or progress sort would edit an order the user cannot see and then show them a list that does
+  not reflect it. Sorting by progress to see what needs work must not silently reshuffle which
+  template draws on top of which. A viewer's presentation preference and the compositing order were
+  separated once already, higher up this ticket; this keeps them separated on the client too.
+- **Templates the client has not seen before sort most-recent-first.** Reverses "oldest first by
+  creation". The case that matters is connecting to a new server, or a server publishing a batch:
+  putting a hundred unfamiliar templates at the bottom in creation order buries the change. Recency
+  surfaces it; the user's arrangement takes over from there.
+
+Follows from ordering being client-side at all — the client is the only thing that knows what it has
+already seen.

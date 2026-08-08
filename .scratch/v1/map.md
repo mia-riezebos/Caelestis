@@ -89,6 +89,37 @@ register in [Deferred until a running prototype](issues/26-deferred-until-protot
 from the fog below: these are not unspecifiable, just unanswerable yet. Add to it whenever a decision
 rests on reasoning that only real behaviour can confirm.
 
+
+### Claimed incidentally while building the userscript — 2026-08-07
+
+These were open decision tickets. They were not worked as tickets; they were **answered by building
+against the live page**, and the answers are recorded on the tickets rather than here. Listing them
+so the map stops showing them as open questions.
+
+- [Render path: raster intercept vs vector overlay](https://github.com/mia-riezebos/wplace-template-server/issues/14)
+  — **overlay, not intercept.** Our own canvas over MapLibre's, aligned from MapLibre's own
+  projection matrix. Blue Marble and Skirk were read: both rewrite the tile, and `drawMult = 3`
+  means a 3000x3000 canvas and a 36 MB `getImageData` per tile per pan. Compositing also makes our
+  pixels indistinguishable from wplace's, which per-colour filters need to tell apart.
+- [Recon: map stack & how wplace draws its triangle mode](https://github.com/mia-riezebos/wplace-template-server/issues/11)
+  — **MapLibre GL on WebGL2 under SvelteKit.** Their tile filtering is `MIN_FILTER=LINEAR`,
+  `MAG_FILTER=NEAREST`, no mipmaps. The `Map` instance is reachable after all, by trapping a private
+  field assignment during construction.
+- [Recon: wplace tile serving](https://github.com/mia-riezebos/wplace-template-server/issues/7)
+  — confirmed and **corrected**: the origin 404s for any tile it has no data for, and a service
+  worker rewrites that into a 200 with a 73-byte blank PNG. What a client sees depends on whether it
+  is SW-controlled.
+- [v1 viewing modes & render scale](https://github.com/mia-riezebos/wplace-template-server/issues/15)
+  — **built rather than decided**: shape, size, anchor and opacity per overlay, with `scale` derived
+  from the shape so full-pixel modes stay free.
+- [Native `.wplace` template format](https://github.com/mia-riezebos/wplace-template-server/issues/31)
+  — **import works**, for `.wplace`, Blue Marble/Skirk, and plain images. Export does not exist.
+
+**What this cost.** Wayfinder says the pull to just do the work is the signal you have reached the
+edge of the map. That signal was there and was not taken: decisions got made inside commits instead
+of on tickets, and one of them — sort order — was re-decided in the UI against a decision already
+recorded, which is what prompted `31-ui-inventory`.
+
 ## Not yet specified
 
 - **Telemetry wire schema and the functional CRUD surface** it maps onto. No longer blocked — the
@@ -120,6 +151,16 @@ rests on reasoning that only real behaviour can confirm.
 - **Non-Cloudflare implementation** — the Node/Postgres/S3 side of the three portability seams.
   Deferred to v2 or later; the interfaces exist in v1 but nothing exercises them, so they will need
   a real audit before anyone trusts them.
+
+## Deferred beyond v1
+
+- **Authoring templates on wplace itself** — shipping ditherette's Rust/WASM resize, dither and
+  quantisation core in the userscript, so an alliance leader crops, dithers and places a template
+  against the live canvas rather than exporting from a separate tool. **v3 or later**; captured in
+  [Ditherette's WASM core in the userscript](issues/30-ditherette-wasm-in-the-userscript.md). Two v1
+  choices keep it possible at no cost: the palette stays a parameter rather than being embedded, and
+  the server quantises on ingest regardless of what a client did — which is what makes client-side
+  dithering an enhancement rather than a dependency.
 
 ## Out of scope
 

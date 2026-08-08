@@ -45,3 +45,89 @@ Still open:
 - How the top-left-triangle view mode is actually drawn (shader vs stamp vs mask).
 - Zoom thresholds at which wplace switches rendering strategy.
 - Whether a userscript can practically obtain the MapLibre map instance.
+
+## Findings — 2026-08-06, live page
+
+**wplace is MapLibre GL JS on WebGL2, inside SvelteKit.** One canvas, `canvas.maplibregl-canvas`,
+under `.maplibregl-canvas-container.maplibregl-interactive`, with the full
+`maplibregl-ctrl-*` control scaffolding. Basemap style is OpenFreeMap `liberty`
+(`maps.wplace.live/styles/liberty`, sprites `ofm_f384`).
+
+This is the branch `13-render-path` called the good one: MapLibre means a custom layer would let us
+draw per screen pixel rather than per tile pixel, stay sharp at high zoom, and put shape/size/anchor
+into fragment-shader math.
+
+**But the `Map` instance is not reachable from a userscript.** Probed for it directly:
+
+- nothing map-shaped on `window` — the only matches are DOM built-ins and `__paraglide`
+- no `_`/`__` back-references on `canvas.maplibregl-canvas` or on `.maplibregl-map`
+- no `$$`/svelte keys on the container — Svelte 5 keeps component state in module scope, not on the
+  element
+
+So `map.addLayer(...)` is not available by simply finding the map. What *is* available, proved by
+probe: a `document-start` patch of `HTMLCanvasElement.prototype.getContext` captures the map's canvas
+and its WebGL2 context before MapLibre gets it.
+
+That leaves three routes, and choosing between them is the open decision:
+
+1. **Wrap the captured WebGL2 context** and inject our own draw calls into MapLibre's frame. Most
+   powerful, deepest coupling to MapLibre's internals, most likely to break on their upgrade.
+2. **Own canvas positioned over theirs**, reproducing the transform. Needs lat/lng/zoom and the exact
+   projection; `13-render-path` warns one-pixel drift is constantly visible when the transform is
+   reimplemented. Zoom is in the URL, which helps, but rotation/pitch would not be.
+3. **Get the instance anyway** by patching something MapLibre touches during construction — e.g. its
+   own container element methods — so we capture `this` at map-construction time. Worth one attempt
+   before falling back to 1 or 2; it would give the supported public API rather than internals.
+
+Route 3 first, then 1. Route 2 is the fallback that always works and always drifts.
+
+## Is the Map instance reachable? No — six routes tried, all negative
+
+The served bundle was downloaded (148 chunks, 4.0 MB; MapLibre lives in
+`_app/immutable/nodes/5.*.js`) and read, then each candidate route was tested on the live page.
+
+| route | result |
+|---|---|
+| global assignment | none. The only globals the bundle sets are `window.__svelte` (a uid counter, not a devtools root), `window.fetch`, `globalThis.__paraglide`, and `bits-ui` layer registries |
+| back-reference on a DOM node | none on `canvas.maplibregl-canvas` or `.maplibregl-map` — no `_`/`__` own properties at all |
+| Svelte component state | none. Svelte 5 keeps it in module scope; no `$$`/svelte keys on the container |
+| listener objects on the canvas container | 52 listeners captured, **0** were objects. All anonymous closures, so nothing to read `_map` off |
+| `ResizeObserver` callback | captured; the callback is a closure with no own properties |
+| `Function.prototype.bind` thisArg | **534 binds captured, none with a map-like `thisArg`.** This build uses arrow functions and class fields, not `.bind(map)` |
+
+Minified property names *do* survive — `_map` appears 307 times, `getCanvas` 27, `triggerRepaint` 18 —
+so the back-pointers exist inside MapLibre's own handler and control objects. None of those objects
+are reachable from outside module scope.
+
+**Conclusion: `map.addLayer(...)` is not available to a userscript on this build.** Route 3 in the
+list above is closed. Do not plan around getting the instance.
+
+### What *is* reachable
+
+Patching `HTMLCanvasElement.prototype.getContext` at document-start captures the map's canvas **and
+its WebGL2 context before MapLibre receives it** — confirmed, and the wrapped context sees the real
+traffic (2,470 `useProgram` calls and a steady stream of `uniformMatrix4fv` uploads during load).
+
+That makes route 1 — wrap the GL context and draw in MapLibre's own frame — the live option, and it
+does not need the Map at all: the MVP matrix MapLibre uploads *is* the transform, exactly, every
+frame.
+
+**Not yet established, and needed before committing to it:** which uniform is the view matrix.
+Around 20 distinct 4×4 matrices are uploaded per frame and the first one is a constant, so the view
+matrix has to be identified rather than assumed. Two page loads at different zooms produced the same
+*first* matrix, which is why this is recorded as open rather than proven. Identify it by correlating
+a matrix that changes across loads at different zoom/centre with one that stays fixed.
+
+### Where that leaves the decision
+
+1. **Wrap GL, identify the view matrix, draw our own pass.** No Map needed, exact transform, cost
+   proportional to what is on screen. Deepest coupling to MapLibre's frame, so most exposed to their
+   upgrades — but it is the only route that gives a real overlay.
+2. **Rewrite tiles, as BlueMarble does, but cheaply** — no `drawMult` blow-up, no `getImageData`,
+   indexed PNG in and out, and a chunk cache. Accepts that a filter change does not repaint until the
+   user pans. Lowest risk, known to work, worst interaction with per-colour toggles.
+3. **Own canvas, transform reproduced from the URL.** wplace's canvas coordinate system is Web
+   Mercator at zoom 11 and `@wts/shared` already implements it, so the projection maths is not
+   guesswork. The gap is that the URL updates on move-end, so the overlay would lag during a gesture.
+
+Recommend attempting 1, with 2 as the fallback that always works.
