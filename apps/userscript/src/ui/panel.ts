@@ -280,8 +280,8 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
-          onDropOnNode: (target, draggedKey) =>
-            void dropOnServerNode(target, draggedKey, renderTree),
+          onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
+            void dropOnServerNode(server, nodeId, draggedKey, beforeKey, renderTree),
           onMoveLocal: (draggedKey, parentKey, beforeKey) => {
             // `local` is the root of the category; `lf:<id>` is a folder within it.
             const parentFolderId =
@@ -1185,12 +1185,15 @@ const copyServerTemplateToLocal = async (
 }
 
 const dropOnServerNode = async (
-  target: TreeTarget,
+  server: ConnectedServer,
+  nodeId: string | null,
   draggedKey: string,
+  beforeKey: string | null,
   rerender: () => void,
 ): Promise<void> => {
-  const { server, nodeId } = target
-  if (server === null) return
+  // Order is this browser's preference and is recorded whatever else happens — including for a drop
+  // that only reorders, where nothing below this does anything at all.
+  placeKey(draggedKey, beforeKey)
 
   // A folder is a branch, not a row: its structure and everything hanging off it must exist at the
   // destination before anything is taken off the source. `transplant` owns that ordering; this only

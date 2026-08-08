@@ -66,13 +66,19 @@ export interface TreeCallbacks {
     beforeKey: string | null,
   ) => void
   /**
-   * Something was dropped onto a server's folder.
+   * Something was dropped at a place in a server's tree: which folder, and what it lands before.
    *
-   * One callback for three journeys, because they are one gesture: a Local template lands as an
-   * upload, a template already on this server is refiled, and one from another server moves across.
-   * Which of those it is comes from the dragged key, not from the caller.
+   * One callback for every journey, because they are one gesture. What happens comes from the
+   * dragged key rather than from the caller: a Local template lands as an upload, a template
+   * already here is refiled, one from elsewhere crosses over, a folder is re-parented. `null` for
+   * the folder means the server's top level, which only a folder may occupy.
    */
-  readonly onDropOnNode: (target: TreeTarget, draggedKey: string) => void
+  readonly onDropInServer: (
+    server: ConnectedServer,
+    nodeId: string | null,
+    draggedKey: string,
+    beforeKey: string | null,
+  ) => void
 }
 
 const collapsed = new Set<string>()
@@ -385,7 +391,6 @@ const resolveDrop = (
 
 const clearDropMarks = (root: ParentNode): void => {
   for (const el of root.querySelectorAll('[data-wts-placeholder]')) el.remove()
-  for (const el of root.querySelectorAll('.wts-drop-into')) el.classList.remove('wts-drop-into')
 }
 
 interface RowOptions {
@@ -414,13 +419,14 @@ interface RowOptions {
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly siblings: readonly string[]
   readonly rerender: () => void
-  readonly onDropInto?: ((draggedKey: string) => void) | undefined
   /**
    * Drop resolved to a position: which container it lands in, and which key it lands before.
    *
-   * Supersedes `onDropInto` where it is provided. A tree move is a parent *and* an index — offering
-   * only "into this container" forced everything to the end of the list, and offering only
-   * "before/after this row" could never change a row's parent.
+   * The only drop there is. There used to be a second one — hovering the middle of a folder
+   * highlighted it and dropped *into* it — and it was worse in both directions: it was a gesture
+   * you had to already know about, and it ate the middle of every folder row, leaving thin edges as
+   * the only way to reorder anything. A position already says which folder something lands in, so
+   * the highlight was answering a question the placeholder had answered better.
    */
   readonly onDropAt?:
     | ((draggedKey: string, parentKey: string | null, beforeKey: string | null) => void)
@@ -629,28 +635,14 @@ const treeRow = (options: RowOptions): HTMLElement => {
     if (parent === null) return
     clearDropMarks(parent)
 
-    const box = row.getBoundingClientRect()
-    const offset = (event.clientY - box.top) / box.height
-
-    /**
-     * The middle of a container means *into* it, whatever else the row can do.
-     *
-     * This used to be reachable only on rows with no position handler, so a row that could both
-     * accept something and be reordered silently lost the first — which is exactly a server's own
-     * row, and dropping a folder onto it is the only way to reach a server's top level.
-     */
-    if (options.onDropInto !== undefined && options.container && offset > 0.3 && offset < 0.7) {
-      row.classList.add('wts-drop-into')
-      // The drop reads this to tell "into" from "between"; a target left over from the row the
-      // cursor was on a moment ago would win over the outline now on screen.
-      dropTarget = null
-      return
-    }
-
     const place = options.onDropAt
     if (place === undefined) {
       // Rows without a position handler still reorder among their own siblings.
-      parent.insertBefore(placeholder(options.depth), offset < 0.5 ? row : row.nextSibling)
+      const box = row.getBoundingClientRect()
+      parent.insertBefore(
+        placeholder(options.depth),
+        event.clientY < box.top + box.height / 2 ? row : row.nextSibling,
+      )
       return
     }
 
@@ -677,7 +669,6 @@ const treeRow = (options: RowOptions): HTMLElement => {
     event.preventDefault()
     const parent = row.parentElement
     const from = event.dataTransfer?.getData('text/plain')
-    const into = row.classList.contains('wts-drop-into')
     const target = dropTarget
     if (parent !== null) clearDropMarks(parent)
     dropTarget = null
@@ -691,10 +682,6 @@ const treeRow = (options: RowOptions): HTMLElement => {
       return
     }
     if (from === options.key) return
-    if (into) {
-      options.onDropInto?.(from)
-      return
-    }
     const box = row.getBoundingClientRect()
     moveKey(options.siblings, from, options.key, event.clientY > box.top + box.height / 2)
     options.rerender()
@@ -762,15 +749,18 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
          * `canReparent` stays off, so nothing can be filed *inside* a category by dragging.
          */
         onDropAt: (draggedKey, parentKey, beforeKey) => {
-          if (parentKey !== null || !keys.includes(draggedKey)) return
-          placeKey(draggedKey, beforeKey)
+          // Another category, reordering among its own kind.
+          if (parentKey === null && keys.includes(draggedKey)) {
+            placeKey(draggedKey, beforeKey)
+            return
+          }
+          // Landing just under a server's own row means its top level, which is otherwise
+          // unreachable: every other destination is a folder, and "no folder" has no other row.
+          if (parentKey === key && server !== undefined && canEdit) {
+            callbacks.onDropInServer(server, null, draggedKey, beforeKey)
+          }
         },
-        // Dropping a folder onto the server itself means its top level, which is otherwise
-        // unreachable: every other destination is a folder, and "no folder" has no row but this one.
-        onDropInto:
-          canEdit && !isLocal
-            ? (draggedKey) => callbacks.onDropOnNode(target, draggedKey)
-            : undefined,
+        canReparent: canEdit && !isLocal,
         // A category is a group like a folder is: switching it off takes everything under it off
         // the canvas, and leaves every row inside saying exactly what it said before.
         checked: isScopeVisible(key),
@@ -831,16 +821,32 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                 depth,
                 container: true,
                 siblings: (byParent.get(parentId) ?? []).map((n) => `node:${n.id}`),
+                parentKey: parentId === null ? key : `node:${parentId}`,
+                canReparent: canEdit,
                 rerender,
                 onContextMenu: canEdit
                   ? (event) => callbacks.onContextMenu(nodeTarget, event)
                   : undefined,
                 onRename: canEdit ? (value) => callbacks.onRename(nodeTarget, value) : undefined,
-                // Dropping onto a folder files a template into it: a local one is uploaded here, a
-                // template already on this server is moved, and one from another server crosses
-                // over. The dedicated buttons still exist — this is the shortcut, not the only way.
-                onDropInto: canEdit
-                  ? (draggedKey) => callbacks.onDropOnNode(nodeTarget, draggedKey)
+                /**
+                 * Where a drop lands says everything: which folder, and where in it.
+                 *
+                 * Both halves matter and they are different kinds of thing. Order is this browser's
+                 * preference and stays here; the parent is shared structure and goes to the server.
+                 * The one gesture settles both, which is why they are answered together rather than
+                 * by two different interactions.
+                 */
+                onDropAt: canEdit
+                  ? (draggedKey, dropParent, beforeKey) => {
+                      const into =
+                        dropParent === null || dropParent === key
+                          ? null
+                          : dropParent.startsWith('node:')
+                            ? dropParent.slice('node:'.length)
+                            : undefined
+                      if (into === undefined) return
+                      callbacks.onDropInServer(server, into, draggedKey, beforeKey)
+                    }
                   : undefined,
                 actions: canEdit
                   ? [
@@ -885,7 +891,20 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   depth: depth + 1,
                   container: false,
                   siblings: templatesIn(node.id).map((candidate) => `st:${candidate.id}`),
+                  parentKey: nodeKey,
+                  canReparent: canEdit,
                   rerender,
+                  onDropAt: canEdit
+                    ? (draggedKey, dropParent, beforeKey) => {
+                        if (dropParent === null || !dropParent.startsWith('node:')) return
+                        callbacks.onDropInServer(
+                          server,
+                          dropParent.slice('node:'.length),
+                          draggedKey,
+                          beforeKey,
+                        )
+                      }
+                    : undefined,
                   // Unpublished ones are visible to an admin and nobody else, so they have to look
                   // different — otherwise the tree shows a template that members cannot see and
                   // gives no hint why.

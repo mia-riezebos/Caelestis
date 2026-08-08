@@ -47,13 +47,6 @@ const CSS = `
   box-sizing: border-box;
   min-height: 2rem;
 }
-/* Dropping *into* a node, as opposed to between two — a different operation with a different
-   consequence, so it gets a different signal. */
-.wts-row.wts-drop-into {
-  outline: 2px solid var(--color-primary, currentColor);
-  outline-offset: -2px;
-  background-color: var(--color-base-200, rgba(0, 0, 0, 0.06));
-}
 /* Inside the panel, not overhanging it: the panel clips its overflow to keep the rounded corner,
    so a handle at a negative offset is invisible and unclickable — which is exactly how it
    behaved. */
