@@ -288,6 +288,24 @@ it('reports a corrupt deflate stream as a PNG error', async () => {
   await expect(decodePng(png)).rejects.toThrow(PngError)
 })
 
+it('refuses an IDAT that inflates far past its declared size', async () => {
+  // The bomb: a 1x1 header needs four inflated bytes and this IDAT carries a megabyte of them. The
+  // exact-length check cannot save a Worker here — it runs after the buffer exists — so this asserts
+  // the message from the cap that stops mid-stream, not the one from the check after it.
+  const ihdr = new Uint8Array(13)
+  new DataView(ihdr.buffer).setUint32(0, 1)
+  new DataView(ihdr.buffer).setUint32(4, 1)
+  ihdr[8] = 8
+  ihdr[9] = 2
+  const png = concat([
+    new Uint8Array(SIGNATURE),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', new Uint8Array(deflateSync(new Uint8Array(1_000_000)))),
+    chunk('IEND', new Uint8Array(0)),
+  ])
+  await expect(decodePng(png)).rejects.toThrow(/inflates to more than its dimensions allow/)
+})
+
 it('refuses an out-of-range indexed palette entry', async () => {
   // One three-byte entry and pixel index 1: the bound was off by an entry, so the decoder
   // substituted black and stored it rather than rejecting the image.

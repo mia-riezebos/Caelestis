@@ -896,6 +896,38 @@ describe('D1SqlStore', () => {
     ).toEqual([{ kept: 2 }])
   })
 
+  it('keeps a many-tile template inside D1 per-invocation query budget', async () => {
+    // One statement per tile put a 48-chunk template at 51 — template, version, 48 tiles, pointer —
+    // against the 50 D1 allows per Worker invocation on the free plan. A 48,000x1 one-colour upload
+    // reaches that without stressing memory or R2, so the whole batch failed on a legal template.
+    const chunks = Array.from({ length: 48 }, (_, index) => ({
+      tileX: index,
+      tileY: 0,
+      hash: index.toString(16).padStart(64, '0'),
+    }))
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('bulk-node', NULL, '/bulk', 'Bulk', 1)")
+    const before = d1.batchStatements
+
+    await store.insertTemplateVersion({
+      templateId: 'bulk-t',
+      nodeId: 'bulk-node',
+      name: 'Bulk',
+      season: 1,
+      versionId: 'bulk-v',
+      createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      createdByUserId: null,
+      createdAt: millis(1_000),
+      bbox: { minX: 0, minY: 0, maxX: 48_000, maxY: 1 },
+      totalPixels: 48,
+      chunks,
+    })
+
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS tiles FROM version_tiles').all()).toEqual([
+      { tiles: 48 },
+    ])
+    expect(d1.batchStatements - before).toBeLessThanOrEqual(50)
+  })
+
   it('orders tokens minted in the same millisecond by hash, as the port promises', async () => {
     // SQL leaves equal ORDER BY keys unspecified, so the adapters could return different arrays for
     // one input — the memory store applies the port's tiebreak and D1 did not. Date.now() is
