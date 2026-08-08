@@ -240,6 +240,55 @@ const CSS = `
   border: 1px solid rgba(0, 0, 0, 0.55);
   cursor: pointer;
 }
+/* The tree's visibility control: an eye when the row is on the map, an empty slot when it is not.
+   The slot keeps its size either way, so a column of rows does not shift as things are switched. */
+.wts-eye {
+  display: inline-flex;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+/* Off-screen rather than display:none, which would take it out of the tab order along with the
+   keyboard toggle and the label association — the whole reason this is still a checkbox. */
+.wts-eye > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.wts-eye > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.375rem;
+  /* Nothing at rest. The eye alone carries the state, and a box drawn round every row of a tree is
+     a grid of empty boxes to read past. */
+  opacity: 0;
+  transition: opacity 100ms ease-out, background-color 100ms ease-out;
+}
+.wts-eye > input:checked + span {
+  opacity: 1;
+}
+/* Hidden, and pointed at: show what the control would do rather than leaving a blank space that
+   gives no clue there is anything here at all. */
+.wts-row:hover .wts-eye > span,
+.wts-row:focus-within .wts-eye > span {
+  opacity: 0.45;
+}
+.wts-row:hover .wts-eye > input:checked + span {
+  opacity: 1;
+}
+.wts-eye:hover > span {
+  background-color: var(--color-base-200, rgba(0, 0, 0, 0.08));
+  opacity: 1;
+}
+.wts-eye > input:focus-visible + span {
+  opacity: 1;
+  outline: 2px solid var(--color-primary, currentColor);
+  outline-offset: 1px;
+}
 .wts-name {
   flex: 1;
   min-width: 0;

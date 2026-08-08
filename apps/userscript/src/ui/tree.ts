@@ -570,10 +570,20 @@ const treeRow = (options: RowOptions): HTMLElement => {
     row.appendChild(group)
   }
 
+  /**
+   * An eye, not a tick.
+   *
+   * A tick answers "is this selected", and nothing here is being selected — every one of these rows
+   * is either on the map or not, which is a thing you can *see*. The eye says which, and its absence
+   * says the other, so a column of these reads as what is drawn rather than as a form to fill in.
+   *
+   * Still a checkbox underneath. It is the one element that already means "two states, toggled",
+   * and hand-rolling a button in its place would owe the whole contract — the label association, the
+   * space key, `aria-checked`, the focus ring — for a change that is entirely about what it looks
+   * like.
+   */
   const check = document.createElement('input')
   check.type = 'checkbox'
-  check.className = 'checkbox checkbox-sm'
-  check.style.flex = '0 0 auto'
   check.checked = options.checked ?? isEnabled(options.key)
   check.setAttribute('aria-label', `Show ${options.name}`)
   check.addEventListener('click', (event) => event.stopPropagation())
@@ -585,7 +595,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     toggle(disabled, options.key)
     options.rerender()
   })
-  row.appendChild(check)
+  const eye = document.createElement('label')
+  eye.className = 'wts-eye'
+  eye.addEventListener('click', (event) => event.stopPropagation())
+  const box = document.createElement('span')
+  box.appendChild(icon('eye', 'size-4'))
+  eye.append(check, box)
+  row.appendChild(eye)
 
   const expand = (): void => {
     toggle(collapsed, options.key)
