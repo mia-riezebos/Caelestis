@@ -240,8 +240,13 @@ const CSS = `
   border: 1px solid rgba(0, 0, 0, 0.55);
   cursor: pointer;
 }
-/* The tree's visibility control: an eye when the row is on the map, an empty slot when it is not.
-   The slot keeps its size either way, so a column of rows does not shift as things are switched. */
+/* The tree's visibility control: an eye when the row is on the map, and the ring it sits in when it
+   is not.
+
+   The ring never leaves. It is the whole of what says "hidden" rather than "nothing here" — an
+   absent eye in an absent container is not a state, it is a gap, and it also leaves nothing to aim
+   at for the click that would bring the row back. Same footprint either way, so a column of rows
+   does not shift as things are switched. */
 .wts-eye {
   display: inline-flex;
   flex: 0 0 auto;
@@ -262,30 +267,35 @@ const CSS = `
   justify-content: center;
   width: 1.5rem;
   height: 1.5rem;
-  border-radius: 0.375rem;
-  /* Nothing at rest. The eye alone carries the state, and a box drawn round every row of a tree is
-     a grid of empty boxes to read past. */
-  opacity: 0;
-  transition: opacity 100ms ease-out, background-color 100ms ease-out;
+  border-radius: 999px;
+  box-sizing: border-box;
+  /* Quiet enough to sit beside sixty of itself, findable enough to aim at. */
+  border: 1px solid var(--color-base-300, rgba(0, 0, 0, 0.18));
+  transition: background-color 100ms ease-out, border-color 100ms ease-out;
 }
+/* Filled when on: the eye is the answer, and the ring becoming solid is what makes a switched-on row
+   readable from the shape alone at a glance down the column. */
 .wts-eye > input:checked + span {
+  background-color: var(--color-base-200, rgba(0, 0, 0, 0.08));
+  border-color: transparent;
+}
+.wts-eye > span > svg {
+  opacity: 0;
+  transition: opacity 100ms ease-out;
+}
+.wts-eye > input:checked + span > svg {
   opacity: 1;
 }
-/* Hidden, and pointed at: show what the control would do rather than leaving a blank space that
-   gives no clue there is anything here at all. */
-.wts-row:hover .wts-eye > span,
-.wts-row:focus-within .wts-eye > span {
-  opacity: 0.45;
-}
-.wts-row:hover .wts-eye > input:checked + span {
-  opacity: 1;
+/* Hidden, and pointed at: show faintly what the control would put back, so the ring is not a
+   mystery. Never at full strength, or a hover would read as "this is on". */
+.wts-row:hover .wts-eye > span > svg,
+.wts-row:focus-within .wts-eye > span > svg {
+  opacity: 0.4;
 }
 .wts-eye:hover > span {
   background-color: var(--color-base-200, rgba(0, 0, 0, 0.08));
-  opacity: 1;
 }
 .wts-eye > input:focus-visible + span {
-  opacity: 1;
   outline: 2px solid var(--color-primary, currentColor);
   outline-offset: 1px;
 }
