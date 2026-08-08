@@ -11,10 +11,14 @@ import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
 import {
+  appearanceOf,
   isTemplateVisible,
   localTemplates,
   onLocalChange,
+  ownsGroup,
+  type PlacedTemplate,
   restoreLocalTemplates,
+  setAppearance,
 } from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
 import { installServerSync } from './templates/server-sync.js'
@@ -156,13 +160,65 @@ const isTyping = (target: EventTarget | null): boolean => {
  * `0`, `r`/`R` — plus Escape, Enter and Space. `S` is free, and stays free of a modifier so it costs
  * nothing to reach mid-brushstroke.
  */
+/**
+ * Whichever template is nearest the middle of the screen, or null when none is.
+ *
+ * The one being worked on, in the only sense a keystroke can mean it: what is under the middle of
+ * the view. Measured to the centre of each template's own box rather than to its corner, so a large
+ * template you are standing inside beats a small one at the edge of the screen.
+ */
+const templateAtCentre = (): PlacedTemplate | null => {
+  const centre = viewportCentre()
+  if (centre === null) return null
+  let best: { template: PlacedTemplate; distance: number } | null = null
+  for (const template of localTemplates()) {
+    if (!isTemplateVisible(template)) continue
+    const dx = template.originX + template.width / 2 - centre.x
+    const dy = template.originY + template.height / 2 - centre.y
+    const distance = dx * dx + dy * dy
+    if (best === null || distance < best.distance) best = { template, distance }
+  }
+  return best?.template ?? null
+}
+
 const installKeys = (): void => {
   window.addEventListener('keydown', (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return
     if (isTyping(event.target)) return
-    if (event.key !== 's' && event.key !== 'S') return
-    event.preventDefault()
-    setState({ onlySelectedColour: !getState().onlySelectedColour })
+
+    if (event.key === 's' || event.key === 'S') {
+      event.preventDefault()
+      setState({ onlySelectedColour: !getState().onlySelectedColour })
+      return
+    }
+
+    /**
+     * `W` for wrong: the markers on or off.
+     *
+     * Which switch it reaches depends on what the template nearest the centre has already said. One
+     * that answers for its own markers is toggled on its own; one following the defaults means the
+     * question was never about that template, so the global switch moves and every follower moves
+     * with it.
+     *
+     * The ambiguity is real and worth naming: with two templates on screen, which one is "nearest"
+     * is a judgement the interface makes and the keystroke does not show. It is tolerable here in a
+     * way it was not for the colour mode, because markers genuinely are per template — each asserts
+     * its own pixels — where the colour mode is a lens over the whole view.
+     */
+    if (event.key === 'w' || event.key === 'W') {
+      event.preventDefault()
+      const nearest = templateAtCentre()
+      if (nearest !== null && ownsGroup(nearest, 'markers')) {
+        setAppearance(nearest.id, {
+          ...appearanceOf(nearest),
+          markMismatch: !appearanceOf(nearest).markMismatch,
+        })
+        return
+      }
+      setState({
+        appearance: { ...getState().appearance, markMismatch: !getState().appearance.markMismatch },
+      })
+    }
   })
 }
 
