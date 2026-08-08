@@ -117,6 +117,22 @@ export const findServerTemplate = (
 export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null =>
   templatesByServer.get(serverUrl)?.find((template) => template.id === id) ?? null
 
+/** Which server holds a folder, given only its id — the same problem `findServerTemplate` solves. */
+export const findServerNode = (id: string): { serverUrl: string; node: TreeNode } | null => {
+  for (const [serverUrl, nodes] of nodesByServer) {
+    const node = nodes.find((candidate) => candidate.id === id)
+    if (node !== undefined) return { serverUrl, node }
+  }
+  return null
+}
+
+/** What a server publishes directly inside one folder. */
+export const templatesOfNode = (
+  serverUrl: string,
+  nodeId: string,
+): ReadonlyArray<{ id: string; name: string }> =>
+  (templatesByServer.get(serverUrl) ?? []).filter((template) => template.nodeId === nodeId)
+
 /**
  * Re-read what a server publishes: its folders and the templates under them.
  *

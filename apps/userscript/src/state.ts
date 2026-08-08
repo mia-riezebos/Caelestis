@@ -461,16 +461,41 @@ export const renameNode = async (
 export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,
+  cascade = false,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
-      method: 'DELETE',
-      headers: adminHeaders(server),
-    })
+    const response = await fetch(
+      `${server.url}/admin/nodes/${nodeId}${cascade ? '?cascade=true' : ''}`,
+      { method: 'DELETE', headers: adminHeaders(server) },
+    )
     if (response.ok) return { ok: true }
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
     return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * How much a folder is holding, so a delete can say what it is about to take with it.
+ *
+ * Asked of the server rather than counted from the tree, because the tree only knows what it has
+ * fetched: a collapsed folder's contents may never have been listed, and "delete 1 folder" for
+ * something holding forty templates is the kind of wrong that only shows up afterwards.
+ */
+export const countNodeSubtree = async (
+  server: ConnectedServer,
+  nodeId: string,
+): Promise<{ nodes: number; templates: number } | null> => {
+  try {
+    const response = await fetch(`${server.url}/admin/nodes/${nodeId}/subtree`, {
+      headers: adminHeaders(server),
+    })
+    if (!response.ok) return null
+    const body = (await response.json()) as { nodes?: unknown; templates?: unknown }
+    if (typeof body.nodes !== 'number' || typeof body.templates !== 'number') return null
+    return { nodes: body.nodes, templates: body.templates }
+  } catch {
+    return null
   }
 }
 
