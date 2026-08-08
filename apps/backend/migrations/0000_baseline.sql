@@ -26,7 +26,8 @@ CREATE TABLE `contributions` (
 	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
+	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."wplace_user_id") = 'integer' AND "contributions"."wplace_user_id" >= 0
+        AND typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
         AND "contributions"."day_s" % 86400 = 0
         AND typeof("contributions"."placed") = 'integer' AND typeof("contributions"."correct") = 'integer'
         AND typeof("contributions"."repairs") = 'integer'
@@ -40,7 +41,11 @@ CREATE TABLE `nodes` (
 	`path` text NOT NULL,
 	`name` text NOT NULL,
 	`created_at_ms` integer NOT NULL,
-	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "nodes_path_check" CHECK("nodes"."path" GLOB '/*' AND "nodes"."path" NOT GLOB '*[%_]*'
+        AND "nodes"."path" NOT GLOB '*/' AND "nodes"."path" NOT GLOB '*//*'
+        AND length("nodes"."path") BETWEEN 2 AND 256),
+	CONSTRAINT "nodes_parent_not_self_check" CHECK("nodes"."parent_id" IS NULL OR "nodes"."parent_id" <> "nodes"."id")
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `nodes_path_idx` ON `nodes` (lower("path"));--> statement-breakpoint

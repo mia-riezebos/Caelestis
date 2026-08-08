@@ -1,5 +1,7 @@
 import {
+  assertValidBuckets,
   type BucketQuery,
+  compareBuckets,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type SqlStore,
   type TelemetryBucket,
@@ -13,6 +15,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly buckets = new Map<string, TelemetryBucket>()
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
+    assertValidBuckets(buckets)
     for (const bucket of buckets) {
       this.buckets.set(bucketKey(bucket), { ...bucket })
     }
@@ -30,10 +33,7 @@ export class MemorySqlStore implements SqlStore {
           bucket.bucketStart >= query.fromSeconds &&
           bucket.bucketStart < query.toSeconds,
       )
-      .sort(
-        (left, right) =>
-          left.templateId.localeCompare(right.templateId) || left.bucketStart - right.bucketStart,
-      )
+      .sort(compareBuckets)
       .map((bucket) => ({ ...bucket }))
   }
 }

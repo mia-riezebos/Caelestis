@@ -1110,6 +1110,20 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('rejects two paths differing in a later ASCII letter only', () => {
+    // The case pair above differs in its first letter, so a fold that stops after one replacement
+    // still collapses them. SQLite's lower() folds the whole string, so /cANada and /canada collide
+    // on nodes_path_idx and each would rewrite the other's subtree on a move.
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [
+        { id: uuid(116), parentId: null, path: '/cANada', name: 'Mixed' },
+        { id: uuid(117), parentId: null, path: '/canada', name: 'Lower' },
+      ],
+      templates: [{ ...validTemplate, nodeId: uuid(116) }],
+    })
+  })
+
   it('accepts two paths differing only in a non-ASCII case pair', () => {
     // The case rule exists because SQLite's LIKE is ASCII-case-insensitive, and so is the unique
     // index on lower(path). É and é are distinct to both, so D1 stores these two rows and a subtree

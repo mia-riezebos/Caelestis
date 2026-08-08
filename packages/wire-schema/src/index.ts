@@ -195,8 +195,9 @@ export const ServerInfo = Schema.Struct({
  *
  * Marks are the same argument one category further out: Devanagari writes its vowels as separate
  * mark codepoints, so `/हिंदी` had no representation at all, and any name can arrive decomposed —
- * `café` as `cafe` plus U+0301 is what a macOS client sends. They are admitted only after a letter
- * or digit, so a segment cannot open with one, and neither LIKE metacharacter is a mark.
+ * `café` as `cafe` plus U+0301 is what a macOS client sends. A segment cannot *open* with a mark,
+ * which is the rule the pattern actually states: the class admits one anywhere after the first
+ * character, including after a dot, space or hyphen. Neither LIKE metacharacter is a mark.
  */
 /**
  * Fold a node path the way the database does, so the wire agrees with what D1 can actually store.
@@ -483,7 +484,11 @@ export const Manifest = ManifestStruct.pipe(
             return total + width * height
           }, 0)
           return template.totalPixels <= capacity
-        }) &&
+        }),
+      'a template total pixel count must fit where its chunks meet its bounding box',
+    ),
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
         manifest.templates.every((template) => {
           // A chunk is a full tile of painted pixels, so a chunk outside the box that declares the
           // template's extent is a contradiction: culling watches the bbox tiles and would never

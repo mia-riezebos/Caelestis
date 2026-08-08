@@ -189,6 +189,26 @@ describe('D1SqlStore', () => {
     ).rejects.toThrow(/at most 3600 template ids/)
   })
 
+  it('counts distinct ids against the budget, not repeats', async () => {
+    // The cap is applied after deduplication, which is what makes the port's "duplicate ids are
+    // read once" contract consistent with it. Checking the raw array instead passes every other
+    // test here — the duplicate test sends 91 ids and the over-budget test has no duplicates — and
+    // would refuse a legal call.
+    const templateIds = [
+      ...Array.from({ length: 3_600 }, (_, index) => `template-${index}`),
+      'template-0',
+    ]
+
+    await expect(
+      store.readBuckets({
+        templateIds,
+        resolution: 60,
+        fromSeconds: seconds(0),
+        toSeconds: seconds(100),
+      }),
+    ).resolves.toEqual([])
+  })
+
   it('returns one ordering across chunk boundaries', async () => {
     // Each chunk is ordered on its own, but ids are spread across chunks in input order, so a bare
     // concatenation is unsorted. Reading these two in reverse order puts them in different chunks.
@@ -410,6 +430,9 @@ describe('D1SqlStore', () => {
     // day_s is the leaderboard's day bucket, so it is a UTC midnight. Unaligned, 1 and 2 are two
     // primary keys for one day and a rollup splits one painter's day across both.
     ["INSERT INTO contributions VALUES (2, 'ct', 1, 'tok', 1, 1, 0)"],
+    // Positive, and a multiple of every smaller round number a mistyped divisor might use. Without
+    // it `% 86400` can become `% 60` with the suite green, since 1 fails both and 0/86400 pass both.
+    ["INSERT INTO contributions VALUES (9, 'ct', 60, 'tok', 1, 1, 0)"],
     // All non-negative, so only the ordering clause can reject. telemetry_buckets has this case and
     // contributions never got the equivalent, leaving its whole ordering half uncovered.
     ["INSERT INTO contributions VALUES (3, 'ct', 86400, 'tok', 1, 2, 0)"],
@@ -424,7 +447,17 @@ describe('D1SqlStore', () => {
     // A folded bucket start is the floor of an observation to its tier, exactly as on
     // telemetry_buckets. 3601 at the hourly tier keys a bucket that overlaps the real 3600 one, so
     // the decay fold sees two hours where one was observed. Raw observations (0) are exempt.
+    // wplace_user_id is attacker-supplied and was the one key column with no type guard, while
+    // day_s and all three counters beside it got one. INTEGER affinity converts '1' but not 1.5 or
+    // 'abc', so those persisted as distinct primary keys — one report token minting unbounded
+    // "painters" at 1.5, 1.25, 1.125, and a GROUP BY that reads each as a separate person.
+    ["INSERT INTO contributions VALUES (1.5, 'ct', 0, 'tok', 1, 1, 0)"],
+    ["INSERT INTO contributions VALUES ('abc', 'ct', 0, 'tok', 1, 1, 0)"],
     ["INSERT INTO tile_history VALUES (0, 0, 3600, 3601, 'hash', 'tok')"],
+    // Aligned to the hourly tier but not to this row's own. Every accepted start is a multiple of
+    // 3600, so without this the divisor can be hardcoded to 3600 and still pass — the check would
+    // stop reading the resolution column it is written against.
+    ["INSERT INTO tile_history VALUES (0, 0, 21600, 3600, 'hash', 'tok')"],
     ["INSERT INTO tile_history VALUES (0, 0, 3600, 3600.5, 'hash', 'tok')"],
     ["INSERT INTO tile_history VALUES (0, 0, 0, -1, 'hash', 'tok')"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
@@ -477,6 +510,29 @@ describe('D1SqlStore', () => {
         .prepare('SELECT COUNT(*) AS reporters FROM tile_history WHERE tile_x = 1 AND sha256 = ?')
         .all('agreed-hash'),
     ).toEqual([{ reporters: 2 }])
+  })
+
+  it.each(['/canada%', '/canada_x', 'canada', '/canada/', '/canada//x', '/'])(
+    'rejects the unusable node path %o',
+    (path) => {
+      // NodePath excludes these on the wire, but that schema validates the manifest *response* —
+      // nothing stood between a create-group route and this column, and nodes was the one table
+      // here with no CHECK at all. `%` and `_` are LIKE metacharacters and path is the
+      // subtree-rewrite key, so `/canada%` captures sibling subtrees on the documented
+      // `LIKE '<old>/%'` move and `/%` captures the entire tree.
+      expect(() =>
+        d1.sqlite.prepare('INSERT INTO nodes VALUES (?, NULL, ?, ?, 1)').run('bad', path, 'Bad'),
+      ).toThrow(/CHECK constraint failed/)
+    },
+  )
+
+  it('rejects a node that is its own parent', () => {
+    // The wire derives acyclicity from the path rule, which is also response-only. A self-parent
+    // satisfies the foreign key, hangs any recursive ancestor walk, and makes the manifest
+    // undecodable for every client.
+    expect(() =>
+      d1.sqlite.prepare("INSERT INTO nodes VALUES ('self', 'self', '/self', 'Self', 1)").run(),
+    ).toThrow(/CHECK constraint failed/)
   })
 
   it('rejects a tile-history report from a token that does not exist', () => {

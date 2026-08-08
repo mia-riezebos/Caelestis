@@ -15,8 +15,12 @@ export {
   RETENTION_SECONDS,
 } from './counter-store.js'
 export {
+  assertValidBuckets,
   type BucketQuery,
+  compareBuckets,
+  invalidBucket,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
+  READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
   tooManyTemplateIds,

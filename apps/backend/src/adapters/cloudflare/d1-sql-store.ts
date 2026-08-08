@@ -3,26 +3,15 @@ import { and, asc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import { telemetryBuckets } from '../../db/schema.js'
 import {
+  assertValidBuckets,
   type BucketQuery,
+  compareBuckets,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
+  READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
   tooManyTemplateIds,
 } from '../../ports/index.js'
-
-/**
- * D1 accepts at most 100 bound parameters per query, which is ten times tighter than the SQLite
- * default `TelemetryShard.readPending` chunks against. Reading history for a group of 98 templates
- * — well inside a single node, let alone MAX_MANIFEST_TEMPLATES — otherwise builds one statement
- * D1 rejects outright.
- *
- * 90 leaves room for the three non-id bindings in the WHERE clause and a little slack, so the
- * bound is not sitting exactly on the platform limit.
- *
- * The test fake is `node:sqlite`, whose limit is 32_766, so no test can observe the real ceiling —
- * `readBuckets issues one statement per parameter chunk` counts statements instead.
- */
-const READ_BUCKETS_CHUNK_SIZE = 90
 
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
@@ -42,6 +31,9 @@ export class D1SqlStore implements SqlStore {
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
     if (buckets.length === 0) return
+    // Ahead of the batch, so a poison row is a synchronous error naming the column rather than a
+    // CHECK failure the shard's alarm retries forever.
+    assertValidBuckets(buckets)
 
     const statements = buckets.map((bucket) =>
       this.database
@@ -82,11 +74,15 @@ export class D1SqlStore implements SqlStore {
     const templateIds = [...new Set(query.templateIds)]
     if (templateIds.length > MAX_READ_BUCKETS_TEMPLATE_IDS)
       throw tooManyTemplateIds(templateIds.length)
-    const rows = []
+    // Concatenated rather than spread into `push`. A spread passes every row as a separate argument,
+    // so a chunk returning more rows than V8's argument limit — around 125,000, which 90 templates
+    // at minute resolution reach in under a day — throws RangeError instead of answering. The id
+    // count is bounded; the row count is bounded only by the window the caller asks for.
+    let rows: (typeof telemetryBuckets.$inferSelect)[] = []
     for (let offset = 0; offset < templateIds.length; offset += READ_BUCKETS_CHUNK_SIZE) {
       const chunk = templateIds.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)
-      rows.push(
-        ...(await this.database
+      rows = rows.concat(
+        await this.database
           .select()
           .from(telemetryBuckets)
           .where(
@@ -97,7 +93,7 @@ export class D1SqlStore implements SqlStore {
               inArray(telemetryBuckets.templateId, chunk),
             ),
           )
-          .orderBy(asc(telemetryBuckets.templateId), asc(telemetryBuckets.bucketStartS))),
+          .orderBy(asc(telemetryBuckets.templateId), asc(telemetryBuckets.bucketStartS)),
       )
     }
 
@@ -109,11 +105,6 @@ export class D1SqlStore implements SqlStore {
     // id, so one template's buckets always land in a single chunk already ordered by SQL, and
     // Array.prototype.sort is stable. Dropping it changes no outcome, so no test can pin it — said
     // here rather than left looking load-bearing.
-    return rows
-      .map(fromRow)
-      .sort(
-        (left, right) =>
-          left.templateId.localeCompare(right.templateId) || left.bucketStart - right.bucketStart,
-      )
+    return rows.map(fromRow).sort(compareBuckets)
   }
 }

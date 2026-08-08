@@ -6,8 +6,10 @@ import { Manifest } from './index.js'
 /**
  * The group-overlap sweep against a brute-force oracle.
  *
- * The sweep is O(n log n) where the obvious algorithm is O(n²), and it earns that by maintaining an
- * invariant rather than comparing everything: actives are ordered by `minY` and pairwise y-disjoint,
+ * The sweep beats the obvious all-pairs algorithm by maintaining an invariant rather than comparing
+ * everything — 1.6s against 150s at the manifest cap, though not the O(n log n) an earlier version
+ * of this comment claimed: the ordered insert is a `splice`, so adversarial input makes it
+ * quadratic too, just with a far smaller constant. Actives are ordered by `minY` and y-disjoint,
  * so a new span can only meet its two neighbours. Every line that maintains the ordering is
  * load-bearing, and unit tests pin shapes rather than the invariant — replacing the ordered insert
  * with a plain `push` passed the entire suite while silently accepting overlapping templates in

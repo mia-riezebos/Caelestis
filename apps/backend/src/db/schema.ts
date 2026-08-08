@@ -27,7 +27,40 @@ export const nodes = sqliteTable(
   // `UPDATE ... WHERE path LIKE '<old>/%'` move rewrite both subtrees when either is renamed.
   // NOCASE, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
   // the documented `LIKE '<old>/%'` subtree move rewrites the other one's descendants too.
-  (table) => [uniqueIndex('nodes_path_idx').on(sql`lower(${table.path})`)],
+  //
+  // That asymmetry constrains how the move is written. LIKE selects case-insensitively, so it picks
+  // up a `/CANADA/x` descendant of `/canada` — and SQLite's `replace()` is byte-exact, so rewriting
+  // with it leaves that row pointing at a prefix that no longer exists. The move has to rebuild the
+  // path from its length: `<new> || substr(path, length(<old>) + 1)`.
+  (table) => [
+    uniqueIndex('nodes_path_idx').on(sql`lower(${table.path})`),
+    // The wire's NodePath states this shape, and that schema validates the manifest *response* —
+    // nothing stood between a create-or-rename-group route and this column, and `nodes` was the one
+    // table in this file carrying no CHECK at all.
+    //
+    // `%` and `_` are LIKE metacharacters and this is the subtree-rewrite key, so `/canada%`
+    // expands the documented move to `LIKE '/canada%/%'` and captures every sibling subtree
+    // starting with "canada"; `/%` captures the whole tree. The structural rules come with them: a
+    // path is absolute, has no empty segment, and does not end in a slash, or the prefix rollup and
+    // the move disagree about where a subtree begins.
+    //
+    // GLOB rather than LIKE because GLOB is case-sensitive and takes character classes; the
+    // charset itself stays on the wire, where a pattern can express it.
+    check(
+      'nodes_path_check',
+      sql`${table.path} GLOB '/*' AND ${table.path} NOT GLOB '*[%_]*'
+        AND ${table.path} NOT GLOB '*/' AND ${table.path} NOT GLOB '*//*'
+        AND length(${table.path}) BETWEEN 2 AND 256`,
+    ),
+    // The wire derives acyclicity from the path rule, which is likewise response-only. A self-parent
+    // satisfies the foreign key, hangs any recursive ancestor walk, and makes the manifest
+    // undecodable for every client. Only the one-step case is expressible here; a longer cycle needs
+    // the path rule above, which the wire enforces on the way out.
+    check(
+      'nodes_parent_not_self_check',
+      sql`${table.parentId} IS NULL OR ${table.parentId} <> ${table.id}`,
+    ),
+  ],
 )
 
 export const templates = sqliteTable('templates', {
@@ -211,7 +244,13 @@ export const contributions = sqliteTable(
       // day_s is a day bucket, so it is a UTC midnight — the floor of a report time to 86400.
       // Unaligned, 1 and 2 are two primary keys for one day, and a leaderboard rollup grouped by
       // day splits one painter's work across both.
-      sql`typeof(${table.dayS}) = 'integer' AND ${table.dayS} >= 0
+      // wplace_user_id is attacker-supplied and was the one key column here with no type guard,
+      // while day_s and all three counters beside it had one. INTEGER affinity converts '1' but
+      // leaves 1.5 and 'abc' alone, so each persisted as its own primary key — one report token
+      // minting unbounded "painters" at 1.5, 1.25, 1.125, every one of them a separate person to
+      // `GROUP BY wplace_user_id`, which also defeats the reduce-then-max rollup documented above.
+      sql`typeof(${table.wplaceUserId}) = 'integer' AND ${table.wplaceUserId} >= 0
+        AND typeof(${table.dayS}) = 'integer' AND ${table.dayS} >= 0
         AND ${table.dayS} % 86400 = 0
         AND typeof(${table.placed}) = 'integer' AND typeof(${table.correct}) = 'integer'
         AND typeof(${table.repairs}) = 'integer'
@@ -264,8 +303,14 @@ export const tileHistory = sqliteTable(
     //
     // The foreign key is what makes that true, for the reason the sibling column on `contributions`
     // spells out: without it any string is a fresh key component, so one caller mints as many
-    // "distinct reporters" — and as many rows — as it likes, and the count is forgeable again by a
-    // different spelling of the same trick.
+    // "distinct reporters" as it likes, and the count is forgeable again by a different spelling of
+    // the same trick.
+    //
+    // It bounds the reporter dimension and only that one. `sha256` is also in the key, so a client
+    // free to choose it could still mint a row per hash for one tile and bucket. Two decisions
+    // outside this schema close that, and they are the reason the key keeps `sha256`: the server
+    // computes the hash from the tile it fetched rather than accepting a client's, and the report
+    // route rate-limits ingest. A writer that ever takes this value from a request body reopens it.
     reportedBy: text('reported_by')
       .notNull()
       .references(() => accessTokens.tokenHash),

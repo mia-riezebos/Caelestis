@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "979d6558-e419-4233-b12d-d61aff3b8852",
+  "id": "db8b4e72-5ac1-4cb2-b4d5-4957817bef0a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -197,7 +197,7 @@
       "checkConstraints": {
         "contributions_counter_check": {
           "name": "contributions_counter_check",
-          "value": "typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND \"contributions\".\"day_s\" % 86400 = 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
+          "value": "typeof(\"contributions\".\"wplace_user_id\") = 'integer' AND \"contributions\".\"wplace_user_id\" >= 0\n        AND typeof(\"contributions\".\"day_s\") = 'integer' AND \"contributions\".\"day_s\" >= 0\n        AND \"contributions\".\"day_s\" % 86400 = 0\n        AND typeof(\"contributions\".\"placed\") = 'integer' AND typeof(\"contributions\".\"correct\") = 'integer'\n        AND typeof(\"contributions\".\"repairs\") = 'integer'\n        AND \"contributions\".\"repairs\" >= 0\n        AND \"contributions\".\"repairs\" <= \"contributions\".\"correct\" AND \"contributions\".\"correct\" <= \"contributions\".\"placed\""
         }
       }
     },
@@ -266,7 +266,16 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "nodes_path_check": {
+          "name": "nodes_path_check",
+          "value": "\"nodes\".\"path\" GLOB '/*' AND \"nodes\".\"path\" NOT GLOB '*[%_]*'\n        AND \"nodes\".\"path\" NOT GLOB '*/' AND \"nodes\".\"path\" NOT GLOB '*//*'\n        AND length(\"nodes\".\"path\") BETWEEN 2 AND 256"
+        },
+        "nodes_parent_not_self_check": {
+          "name": "nodes_parent_not_self_check",
+          "value": "\"nodes\".\"parent_id\" IS NULL OR \"nodes\".\"parent_id\" <> \"nodes\".\"id\""
+        }
+      }
     },
     "painters": {
       "name": "painters",
