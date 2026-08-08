@@ -12,6 +12,7 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
@@ -185,6 +186,66 @@ export class MemorySqlStore implements SqlStore {
       throw new NodeNotEmptyError('node has children or templates')
     }
     this.nodes.delete(nodeId)
+  }
+
+  async countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    const prefix = `${node.path}/`
+    const nodeIds = new Set(
+      [...this.nodes.values()]
+        .filter(
+          (candidate) =>
+            candidate.season === node.season &&
+            (candidate.id === nodeId || candidate.path.startsWith(prefix)),
+        )
+        .map((candidate) => candidate.id),
+    )
+    const templates = [...this.templates.values()].filter((template) =>
+      nodeIds.has(template.nodeId),
+    ).length
+    return { nodes: nodeIds.size, templates }
+  }
+
+  async deleteNodeCascade(nodeId: string): Promise<NodeDeletion> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    const prefix = `${node.path}/`
+    const nodeIds = new Set(
+      [...this.nodes.values()]
+        .filter(
+          (candidate) =>
+            candidate.season === node.season &&
+            (candidate.id === nodeId || candidate.path.startsWith(prefix)),
+        )
+        .map((candidate) => candidate.id),
+    )
+    const templateIds = new Set(
+      [...this.templates.entries()]
+        .filter(([, template]) => nodeIds.has(template.nodeId))
+        .map(([templateId]) => templateId),
+    )
+    const hashes = new Set<string>()
+
+    // The collections do not enforce foreign keys, but this deliberately follows D1's safe order:
+    // collect the tile hashes, remove versions, then their templates, and only then their nodes.
+    for (const [versionId, version] of this.templateVersions) {
+      if (!templateIds.has(version.templateId)) continue
+      for (const chunk of version.chunks) hashes.add(chunk.hash)
+      this.templateVersions.delete(versionId)
+    }
+    for (const templateId of templateIds) this.templates.delete(templateId)
+    for (const descendantId of nodeIds) this.nodes.delete(descendantId)
+
+    return { nodes: nodeIds.size, templates: templateIds.size, hashes: [...hashes] }
+  }
+
+  async unreferencedHashes(hashes: readonly string[]): Promise<readonly string[]> {
+    const candidates = new Set(hashes)
+    for (const version of this.templateVersions.values()) {
+      for (const chunk of version.chunks) candidates.delete(chunk.hash)
+    }
+    return [...candidates]
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {

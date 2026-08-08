@@ -253,6 +253,14 @@ export interface NodeRecord {
   readonly createdAt: Millis
 }
 
+/** Everything a cascading delete removed, so a caller can say what it did. */
+export interface NodeDeletion {
+  readonly nodes: number
+  readonly templates: number
+  /** Chunk hashes the deleted versions referenced, which may or may not still be in use. */
+  readonly hashes: readonly string[]
+}
+
 export interface ManifestTemplateRecord {
   readonly id: string
   readonly nodeId: string
@@ -398,6 +406,14 @@ export interface SqlStore {
   renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null>
 
   deleteNode(nodeId: string): Promise<void>
+
+  deleteNodeCascade(nodeId: string): Promise<NodeDeletion>
+
+  /** Of these hashes, the ones no surviving template version references. Safe to delete from blobs. */
+  unreferencedHashes(hashes: readonly string[]): Promise<readonly string[]>
+
+  /** How much a cascading delete would remove, without removing it. */
+  countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }>
 
   /** Atomically add a version, its tile index, and make it the template's current version. */
   insertTemplateVersion(version: TemplateVersionRecord): Promise<void>

@@ -29,6 +29,7 @@ export {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,

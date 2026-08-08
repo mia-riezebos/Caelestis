@@ -1,10 +1,11 @@
 import { millis, uuidV7 } from '@wts/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
-import type { NodeRecord, SqlStore } from '../ports/index.js'
+import type { NodeRecord, Ports } from '../ports/index.js'
 import {
   InvalidNodeParentError,
   NodeNotEmptyError,
+  NodeNotFoundError,
   NodePathConflictError,
   NodePathTooLongError,
 } from '../ports/index.js'
@@ -49,8 +50,9 @@ const slug = (name: string): string =>
 const publicNode = ({ season: _season, description, ...node }: NodeRecord) =>
   description === null ? node : { ...node, description }
 
-export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
+export const createNodeRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) => {
   const routes = new Hono()
+  const { sql } = ports
 
   routes.use('/*', requireScope(auth, 'admin'))
 
@@ -158,11 +160,36 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
     }
   })
 
+  routes.get('/:id/subtree', async (c) => {
+    const nodeId = c.req.param('id')
+    if (!UUID_V7.test(nodeId)) {
+      return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
+    }
+    try {
+      return c.json(await sql.countNodeSubtree(nodeId))
+    } catch (error) {
+      if (error instanceof NodeNotFoundError) return c.json({ error: 'not found' }, 404)
+      throw error
+    }
+  })
+
   routes.delete('/:id', async (c) => {
     const nodeId = c.req.param('id')
     if (!UUID_V7.test(nodeId)) {
       return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
     }
+    if (c.req.query('cascade') === 'true') {
+      try {
+        const deleted = await sql.deleteNodeCascade(nodeId)
+        const hashes = await sql.unreferencedHashes(deleted.hashes)
+        await ports.blobs.delete('chunks', hashes)
+        return c.json({ nodes: deleted.nodes, templates: deleted.templates, chunks: hashes.length })
+      } catch (error) {
+        if (error instanceof NodeNotFoundError) return c.json({ error: 'not found' }, 404)
+        throw error
+      }
+    }
+
     if ((await sql.readNode(nodeId)) === null) return c.json({ error: 'not found' }, 404)
     try {
       await sql.deleteNode(nodeId)
