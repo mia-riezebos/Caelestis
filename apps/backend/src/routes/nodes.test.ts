@@ -79,6 +79,59 @@ describe('node routes', () => {
     },
   )
 
+  it('renames and re-parents in one patch and exposes the new structure in the manifest', async () => {
+    const { app } = harness()
+    const destination = await createNode(app, {
+      season: 1,
+      parentId: null,
+      name: 'Destination',
+    })
+    const source = await createNode(app, { season: 1, parentId: null, name: 'Source' })
+
+    const response = await app.request(`/admin/nodes/${source.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Renamed', parentId: destination.body.id }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      id: source.body.id,
+      name: 'Renamed',
+      parentId: destination.body.id,
+      path: '/destination/renamed',
+    })
+    const manifest = (await (await app.request('/manifest', { headers: bearer })).json()) as {
+      nodes: NodeResponse[]
+    }
+    expect(manifest.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: source.body.id,
+          name: 'Renamed',
+          parentId: destination.body.id,
+          path: '/destination/renamed',
+        }),
+      ]),
+    )
+  })
+
+  it('rejects a patch that changes neither the name nor the parent', async () => {
+    const { app } = harness()
+    const source = await createNode(app, { season: 1, parentId: null, name: 'Source' })
+
+    const response = await app.request(`/admin/nodes/${source.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({}),
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({
+      error: 'patch must set at least one of name, parentId',
+    })
+  })
+
   it('renames a node and carries its descendants along', async () => {
     // `path` is a materialized prefix, so a rename is not a one-row update: every descendant holds
     // the old path as a prefix. Leaving them behind breaks every rollup silently rather than loudly.

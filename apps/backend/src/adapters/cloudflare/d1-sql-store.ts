@@ -306,6 +306,72 @@ export class D1SqlStore implements SqlStore {
     return this.readNode(nodeId)
   }
 
+  async moveNode(nodeId: string, parentId: string | null, proposedPath: string): Promise<boolean> {
+    const node = await this.readNode(nodeId)
+    if (node === null) return false
+
+    let parent: NodeRecord | null = null
+    if (parentId !== null) {
+      parent = await this.readNode(parentId)
+      if (parent === null) throw new InvalidNodeParentError('parent node does not exist')
+      if (parent.season !== node.season) {
+        throw new InvalidNodeParentError('parent node belongs to a different season')
+      }
+      if (parent.id === node.id || parent.path.startsWith(`${node.path}/`)) {
+        throw new InvalidNodeParentError(
+          'parent node cannot be the node itself or one of its descendants',
+        )
+      }
+    }
+
+    const segment = proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
+    const path = `${parent?.path ?? ''}/${segment}`
+    const oldPrefix = `${node.path}/`
+    const startsWithOldPrefix = (prefix: SQL | string): SQL =>
+      sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
+    const descendants = and(eq(nodes.season, node.season), startsWithOldPrefix(oldPrefix))
+    const shift = path.length - node.path.length
+    const [deepest] = await this.database
+      .select({ length: sql<number>`coalesce(max(length(${nodes.path})), 0)` })
+      .from(nodes)
+      .where(descendants)
+    if (Math.max(path.length, (deepest?.length ?? 0) + shift) > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(
+        `move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+      )
+    }
+
+    const destination =
+      parentId === null
+        ? sql`'/' || ${segment}`
+        : sql`(select path from nodes where id = ${parentId}) || '/' || ${segment}`
+    const oldPath = sql`(select path from nodes where id = ${nodeId})`
+    const statements = [
+      this.database
+        .update(nodes)
+        .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
+        .where(and(eq(nodes.season, node.season), startsWithOldPrefix(sql`${oldPath} || '/'`))),
+      this.database
+        .update(nodes)
+        .set({ parentId, path: destination })
+        .where(eq(nodes.id, nodeId)),
+    ] as const
+    try {
+      await this.database.batch([statements[0], statements[1]])
+    } catch (error) {
+      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
+        throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+      }
+      if (mentions(error, 'CHECK constraint failed: nodes_path_check')) {
+        throw new NodePathTooLongError(
+          `move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+        )
+      }
+      throw error
+    }
+    return true
+  }
+
   async deleteNode(nodeId: string): Promise<void> {
     const [children, attachedTemplates] = await Promise.all([
       this.database.select({ id: nodes.id }).from(nodes).where(eq(nodes.parentId, nodeId)).limit(1),
