@@ -16,6 +16,7 @@ import {
   type PlacedTemplate,
   setLocalVisible,
 } from '../templates/local-store.js'
+import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
 import { serverTemplateKey, syncServerTemplates } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
@@ -175,6 +176,7 @@ const refreshOnce = async (server: ConnectedServer, rerender: () => void): Promi
   if (contents === null) return
   const { nodes, templates } = contents
   nodesByServer.set(server.url, nodes)
+  rememberNodes(server.url, nodes)
   templatesByServer.set(server.url, templates)
   void cacheServer({ url: server.url, nodes, templates, fetchedAt: Date.now() })
   rerender()
@@ -196,6 +198,10 @@ const refreshOnce = async (server: ConnectedServer, rerender: () => void): Promi
 export const primeFromCache = async (rerender: () => void): Promise<void> => {
   for (const entry of await loadServerCache()) {
     if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
+    // The renderer needs the folder tree too, and it needs it now rather than after the first
+    // fetch: a template restored from cache into a folder switched off last session would
+    // otherwise draw until the manifest came back and said which folder it was in.
+    rememberNodes(entry.url, entry.nodes)
     if (!templatesByServer.has(entry.url) && entry.templates !== undefined) {
       templatesByServer.set(entry.url, entry.templates)
     }
@@ -824,6 +830,24 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                 parentKey: parentId === null ? key : `node:${parentId}`,
                 canReparent: canEdit,
                 rerender,
+                /**
+                 * A folder on a server is a group like a Local folder is.
+                 *
+                 * Without these the switch fell through to a set kept for the session and read by
+                 * nothing: the box moved, everything under it stayed exactly where it was, and the
+                 * choice was gone on reload. Switching one off now takes its templates *and* its
+                 * subfolders off the canvas, and leaves every row inside saying what it said before
+                 * — so switching the folder back on restores the arrangement rather than flattening
+                 * it.
+                 *
+                 * Whether someone else's folder is on your canvas is your decision, so this is
+                 * stored here and never sent anywhere.
+                 */
+                checked: isScopeVisible(nodeScopeKey(node.id)),
+                onToggleChecked: (on) => {
+                  setScopeVisible(nodeScopeKey(node.id), on)
+                  rerender()
+                },
                 onContextMenu: canEdit
                   ? (event) => callbacks.onContextMenu(nodeTarget, event)
                   : undefined,

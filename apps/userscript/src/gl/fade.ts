@@ -18,14 +18,14 @@
 export const FADE_MS = 300
 
 /**
- * Ease-out: everything moves at once, then settles.
+ * Cubic ease-in-out: slow to leave, quick through the middle, slow to land.
  *
- * The control points, rather than a keyword, because the same curve has to be evaluated in JavaScript
- * for the ramps below and handed to CSS for anything fading in the DOM — and CSS's own `ease-out` is
- * a much weaker curve than this. Sharing the numbers is what keeps a button fading beside its
- * template in step with it.
+ * The control points, rather than a keyword, because the same curve has to be evaluated in
+ * JavaScript for the ramps below and handed to CSS for anything fading in the DOM — and CSS's own
+ * `ease-in-out` is a gentler curve than this one. Sharing the numbers is what keeps a button fading
+ * beside its template in step with it.
  */
-const CONTROL = [0.23, 1, 0.32, 1] as const
+const CONTROL = [0.65, 0, 0.35, 1] as const
 
 export const FADE_EASING = `cubic-bezier(${CONTROL.join(', ')})`
 
