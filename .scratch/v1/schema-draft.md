@@ -110,7 +110,7 @@ would be worse than either.
 
 - **Domain time** — `occurred_at_s`, `bucket_start_s`, `day_s` — is **seconds**. It gets floored to 60s on
   arrival, so millisecond precision is discarded immediately.
-- **Bookkeeping time** — `created_at_ms`, `observed_at_ms`, `revoked_at_ms` — is **milliseconds**,
+- **Bookkeeping time** — `created_at_ms`, `observed_at_ms` — is **milliseconds**,
   because ordering, last-write-wins and tie-breaking all need it. Two versions created in the same
   second would otherwise tie.
 
@@ -212,10 +212,14 @@ label         text not null         -- 'discord-regulars'
 scope         text not null         -- 'read' | 'report' | 'admin'
 created_by    text not null
 created_at_ms integer not null
-revoked_at_ms integer null
 ```
 
 Tokens are server-generated high entropy, so SHA-256 is sufficient; no slow KDF.
+
+There is no `revoked_at_ms`. Revocation deletes the row: a soft flag obliged every reader to filter
+on it and nothing made them, so one forgotten `WHERE revoked_at_ms IS NULL` kept a leaked credential
+working. Absence needs no cooperation. What the credential already reported survives it — nothing
+references this table, and reported state is canonical because it records what was on the canvas.
 
 Named `access_tokens` rather than `invites` because that is what they are: long-lived, named, scoped
 and individually revocable. "Invite" implies one-time onboarding, which these never were — the whole

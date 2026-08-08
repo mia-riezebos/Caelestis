@@ -1,5 +1,5 @@
 import type { Millis, Seconds } from '@wts/shared'
-import type { Scope } from '../auth/tokens.js'
+import { SCOPES, type Scope } from '../auth/tokens.js'
 
 /**
  * Relational storage. D1 today, Postgres later.
@@ -118,6 +118,33 @@ export interface BucketQuery {
  */
 export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets'>
 
+/**
+ * The scope domain `access_tokens_scope_check` enforces, stated where both adapters can honour it.
+ *
+ * D1 rejects anything outside this list and the memory store accepted it, so the oracle the
+ * differential tests measure against was wider than production — the same defect `invalidBucket`
+ * exists to close, on the sibling column. Fails closed either way, since `satisfiesScope` denies an
+ * unrecognised scope, but a writer that passes green in tests and throws in D1 is worth catching
+ * here rather than there.
+ */
+export const assertValidAccessToken = (token: AccessToken): void => {
+  if (!(SCOPES as readonly string[]).includes(token.scope)) {
+    throw new Error(`insertAccessToken rejected ${token.tokenHash}: unknown scope ${token.scope}`)
+  }
+}
+
+/**
+ * The single order every `listAccessTokens` implementation returns.
+ *
+ * Newest first, and `createdAt` alone is not a total order — `Date.now()` has millisecond
+ * resolution and scripted provisioning mints a read and a report token in the same tick. Memory
+ * then falls back to `Map` insertion order and SQLite leaves equal keys unspecified, so the two
+ * adapters can disagree on input the boundary permits. Same reasoning as `compareBuckets`.
+ */
+export const compareAccessTokens = (left: AccessToken, right: AccessToken): number =>
+  right.createdAt - left.createdAt ||
+  (left.tokenHash < right.tokenHash ? -1 : left.tokenHash > right.tokenHash ? 1 : 0)
+
 /** A stored credential. The plaintext token exists only in the response that mints it. */
 export interface AccessToken {
   /** Lowercase hex SHA-256 of the token. The primary key. */
@@ -138,10 +165,13 @@ export interface SqlStore {
    */
   insertAccessToken(token: AccessToken): Promise<void>
 
-  /** The token with this hash, live or revoked, or null if there is none. */
+  /** The token with this hash, or null if there is none — which is what revoked looks like. */
   readAccessToken(tokenHash: string): Promise<AccessToken | null>
 
-  /** Every token, revoked included, newest first. Never returns plaintext, which is not stored. */
+  /**
+   * Every stored token, newest first, tie-broken by hash. Never returns plaintext, which is not
+   * stored. Revoked tokens are absent, not listed: revocation deletes the row.
+   */
   listAccessTokens(): Promise<readonly AccessToken[]>
 
   /**

@@ -1,7 +1,9 @@
 import {
   type AccessToken,
+  assertValidAccessToken,
   assertValidBuckets,
   type BucketQuery,
+  compareAccessTokens,
   compareBuckets,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type SqlStore,
@@ -24,6 +26,7 @@ export class MemorySqlStore implements SqlStore {
   }
 
   async insertAccessToken(token: AccessToken): Promise<void> {
+    assertValidAccessToken(token)
     if (this.tokens.has(token.tokenHash)) {
       throw new Error(`access token already exists: ${token.tokenHash}`)
     }
@@ -36,9 +39,7 @@ export class MemorySqlStore implements SqlStore {
   }
 
   async listAccessTokens(): Promise<readonly AccessToken[]> {
-    return [...this.tokens.values()]
-      .sort((left, right) => right.createdAt - left.createdAt)
-      .map((token) => ({ ...token }))
+    return [...this.tokens.values()].sort(compareAccessTokens).map((token) => ({ ...token }))
   }
 
   async revokeAccessToken(tokenHash: string): Promise<void> {

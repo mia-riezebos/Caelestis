@@ -804,17 +804,27 @@ describe('D1SqlStore', () => {
       createdAt: millis(1_000),
     }
     await store.insertAccessToken(token)
-    d1.sqlite.exec(
-      "INSERT INTO tile_history VALUES (9, 9, 0, 0, '7777777777777777777777777777777777777777777777777777777777777777', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7)",
-    )
+    // Both tables carry reported state, so both have to survive. Seeding only tile_history left a
+    // cascade on contributions passing green.
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('rev-node', NULL, '/rev', 'Rev', 1);
+      INSERT INTO templates VALUES ('rev-t', 'rev-node', 'T', 1, NULL, '${'a'.repeat(64)}', 7, 1);
+      INSERT INTO tile_history VALUES (9, 9, 0, 0, '7777777777777777777777777777777777777777777777777777777777777777', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
+      INSERT INTO contributions VALUES (5, 'rev-t', 0, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7, 1, 1, 0);
+    `)
 
     await store.revokeAccessToken(token.tokenHash)
     await store.revokeAccessToken(token.tokenHash)
 
     await expect(store.readAccessToken(token.tokenHash)).resolves.toBeNull()
     expect(
-      d1.sqlite.prepare('SELECT COUNT(*) AS kept FROM tile_history WHERE tile_x = 9').all(),
-    ).toEqual([{ kept: 1 }])
+      d1.sqlite
+        .prepare(
+          `SELECT (SELECT COUNT(*) FROM tile_history WHERE tile_x = 9)
+                + (SELECT COUNT(*) FROM contributions WHERE wplace_user_id = 5) AS kept`,
+        )
+        .all(),
+    ).toEqual([{ kept: 2 }])
   })
 
   it('lists tokens newest first', async () => {

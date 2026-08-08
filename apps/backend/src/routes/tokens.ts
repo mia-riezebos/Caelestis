@@ -63,14 +63,15 @@ export const createTokenRoutes = (auth: AuthOptions) => {
   )
 
   routes.delete('/:tokenHash', async (c) => {
-    const tokenHash = c.req.param('tokenHash')
-    const existing = await auth.sql.readAccessToken(tokenHash)
-    if (existing === null) return c.json({ error: 'not found' }, 404)
-
-    // The response is the token as it last existed. Revoking deletes the row, so reading it back
-    // afterwards would report "not found" for a call that just succeeded.
-    await auth.sql.revokeAccessToken(tokenHash)
-    return c.json(publicView(existing))
+    // 204 whether or not the row was there. Absence *is* revocation, so a caller that finds the
+    // token already gone has the outcome it asked for — 404 on a retry after a lost response
+    // reported failure for a request that had succeeded, which made the HTTP contract
+    // non-idempotent even though both adapters' `revokeAccessToken` is.
+    //
+    // It also removes an existence oracle: 404-versus-200 told an admin whether a hash it does not
+    // hold exists. Admin-gated, so minor, but free to close.
+    await auth.sql.revokeAccessToken(c.req.param('tokenHash'))
+    return c.body(null, 204)
   })
 
   return routes

@@ -16,9 +16,11 @@ export {
 } from './counter-store.js'
 export {
   type AccessToken,
+  assertValidAccessToken,
   assertValidBuckets,
   type BucketQuery,
   type BucketStore,
+  compareAccessTokens,
   compareBuckets,
   invalidBucket,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
