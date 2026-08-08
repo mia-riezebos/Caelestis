@@ -15,6 +15,14 @@ import type { Ports, TemplateVersionRecord } from '../ports/index.js'
 import { NodeNotFoundError } from '../ports/index.js'
 
 export interface StoreTemplateInput {
+  /**
+   * The template these pixels belong to, or absent to mint a new one.
+   *
+   * Supplying it is what makes this a *new version* of something that already exists: the chunks are
+   * re-sliced and re-uploaded, a fresh version id becomes current, and the template's own row keeps
+   * its name, parent, published state and creation date.
+   */
+  readonly templateId?: string
   readonly nodeId: string
   readonly name: string
   readonly createdWithToken: string
@@ -88,7 +96,7 @@ export const storeTemplate = async (
     }),
   )
 
-  const templateId = uuidV7()
+  const templateId = input.templateId ?? uuidV7()
   const versionId = uuidV7()
   const createdAt = millis(Date.now())
   const versionChunks = encodedChunks.map(({ chunk, hash }) => ({

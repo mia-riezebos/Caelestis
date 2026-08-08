@@ -71,6 +71,7 @@ export const assembleManifest = async (
       ),
       published: template.published,
       createdAt: template.createdAt,
+      updatedAt: template.updatedAt,
     }))
     .sort((left, right) => left.id.localeCompare(right.id))
 

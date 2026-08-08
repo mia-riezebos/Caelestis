@@ -214,7 +214,7 @@ describe('assembleManifest', () => {
         // biome-ignore lint/style/noNonNullAssertion: index comes from the fixture arrays above
         await store.insertTemplateVersion(version(ids[index]!, versions[index]!, index))
         // biome-ignore lint/style/noNonNullAssertion: same
-        await store.setTemplatePublishedAt(ids[index]!, createdAt)
+        await store.setTemplatePublishedAt(ids[index]!, createdAt, createdAt)
       }
       const manifest = await assembleManifest(
         { sql: store },
@@ -245,7 +245,7 @@ describe('assembleManifest', () => {
       await sql.insertTemplateVersion(
         version(id, `01890f3a-6b7c-7def-8123-456789abcdd${index}`, index),
       )
-      await sql.setTemplatePublishedAt(id, createdAt)
+      await sql.setTemplatePublishedAt(id, createdAt, createdAt)
     }
 
     const manifest = await assembleManifest(
@@ -271,7 +271,7 @@ describe('assembleManifest', () => {
       ],
     }
     await sql.insertTemplateVersion(record)
-    await sql.setTemplatePublishedAt(templateId, createdAt)
+    await sql.setTemplatePublishedAt(templateId, createdAt, createdAt)
 
     const manifest = await assembleManifest(
       { sql },
@@ -289,9 +289,9 @@ describe('assembleManifest', () => {
     const first = '01890f3a-6b7c-7def-8123-456789abcda7'
     const second = '01890f3a-6b7c-7def-8123-456789abcda8'
     await sql.insertTemplateVersion(version(first, '01890f3a-6b7c-7def-8123-456789abcdb7', 9))
-    await sql.setTemplatePublishedAt(first, createdAt)
+    await sql.setTemplatePublishedAt(first, createdAt, createdAt)
     await sql.insertTemplateVersion(version(second, '01890f3a-6b7c-7def-8123-456789abcdb8', 1))
-    await sql.setTemplatePublishedAt(second, createdAt)
+    await sql.setTemplatePublishedAt(second, createdAt, createdAt)
 
     const manifest = await assembleManifest(
       { sql },
@@ -307,7 +307,7 @@ describe('assembleManifest', () => {
     await sql.insertTemplateVersion(
       version('01890f3a-6b7c-7def-8123-456789abcde1', '01890f3a-6b7c-7def-8123-456789abcde2', 0),
     )
-    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-456789abcde1', createdAt)
+    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-456789abcde1', createdAt, createdAt)
 
     const first = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false })
     const second = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false })
@@ -354,7 +354,7 @@ describe('assembleManifest', () => {
     )
     await sql.insertTemplateVersion(published)
     await sql.insertTemplateVersion(draft)
-    await sql.setTemplatePublishedAt(published.templateId, createdAt)
+    await sql.setTemplatePublishedAt(published.templateId, createdAt, createdAt)
 
     const member = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false })
     const admin = await assembleManifest({ sql }, { server, season: 1, includeUnpublished: true })

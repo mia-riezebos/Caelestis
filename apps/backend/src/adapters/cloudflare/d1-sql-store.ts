@@ -29,6 +29,8 @@ import {
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
+  type TemplatePatch,
+  type TemplateRecord,
   TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
@@ -363,6 +365,7 @@ export class D1SqlStore implements SqlStore {
           createdWithToken: version.createdWithToken,
           createdByUserId: version.createdByUserId,
           createdAtMs: version.createdAt,
+          updatedAtMs: version.createdAt,
         })
         .onConflictDoNothing({ target: templates.id }),
       this.database.insert(templateVersions).values({
@@ -392,9 +395,11 @@ export class D1SqlStore implements SqlStore {
       ).map((rows) => this.database.insert(versionTiles).values(rows)),
       // The referenced version exists before this statement runs. D1 executes batch statements in
       // order, so the circular template/version relationship never needs deferred foreign keys.
+      // New pixels are a change like any other, so the template's own timestamp moves with them —
+      // for a template that already existed, this is the only column besides the version that does.
       this.database
         .update(templates)
-        .set({ currentVersionId: version.versionId })
+        .set({ currentVersionId: version.versionId, updatedAtMs: version.createdAt })
         .where(eq(templates.id, version.templateId)),
     ]
 
@@ -457,14 +462,115 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
-  async setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean> {
+  async readTemplate(templateId: string): Promise<TemplateRecord | null> {
+    const rows = await this.database
+      .select({
+        id: templates.id,
+        nodeId: templates.nodeId,
+        name: templates.name,
+        currentVersionId: templates.currentVersionId,
+        publishedAt: templates.publishedAt,
+        createdAt: templates.createdAtMs,
+        updatedAt: templates.updatedAtMs,
+      })
+      .from(templates)
+      .where(eq(templates.id, templateId))
+      .limit(1)
+    const row = rows[0]
+    if (row === undefined) return null
+    return {
+      id: row.id,
+      nodeId: row.nodeId,
+      name: row.name,
+      currentVersionId: row.currentVersionId,
+      published: row.publishedAt !== null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }
+  }
+
+  async setTemplatePublishedAt(
+    templateId: string,
+    publishedAt: Millis | null,
+    updatedAt: Millis,
+  ): Promise<boolean> {
     const existing = await this.database
       .select({ id: templates.id })
       .from(templates)
       .where(eq(templates.id, templateId))
       .limit(1)
     if (existing.length === 0) return false
-    await this.database.update(templates).set({ publishedAt }).where(eq(templates.id, templateId))
+    await this.database
+      .update(templates)
+      .set({ publishedAt, updatedAtMs: updatedAt })
+      .where(eq(templates.id, templateId))
+    return true
+  }
+
+  async updateTemplate(
+    templateId: string,
+    patch: TemplatePatch,
+    updatedAt: Millis,
+  ): Promise<boolean> {
+    const existing = await this.database
+      .select({ id: templates.id })
+      .from(templates)
+      .where(eq(templates.id, templateId))
+      .limit(1)
+    if (existing.length === 0) return false
+
+    if (patch.nodeId !== undefined) {
+      // Checked rather than left to the foreign key, because D1 surfaces a constraint failure as an
+      // opaque error string. "That node does not exist" is worth saying plainly to whoever typed it.
+      const node = await this.database
+        .select({ id: nodes.id })
+        .from(nodes)
+        .where(eq(nodes.id, patch.nodeId))
+        .limit(1)
+      if (node.length === 0) throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+    }
+
+    await this.database
+      .update(templates)
+      .set({
+        ...(patch.name === undefined ? {} : { name: patch.name }),
+        ...(patch.nodeId === undefined ? {} : { nodeId: patch.nodeId }),
+        updatedAtMs: updatedAt,
+      })
+      .where(eq(templates.id, templateId))
+    return true
+  }
+
+  async deleteTemplate(templateId: string): Promise<boolean> {
+    const versions = await this.database
+      .select({ id: templateVersions.id })
+      .from(templateVersions)
+      .where(eq(templateVersions.templateId, templateId))
+    const existing = await this.database
+      .select({ id: templates.id })
+      .from(templates)
+      .where(eq(templates.id, templateId))
+      .limit(1)
+    if (existing.length === 0) return false
+
+    // Order matters and the batch is what makes it safe. `templates.current_version_id` points at a
+    // version and every version points back at the template, so the pointer has to be dropped before
+    // the rows it refers to. Tiles go first because they reference a version.
+    const statements = [
+      ...versions.map(({ id }) =>
+        this.database.delete(versionTiles).where(eq(versionTiles.versionId, id)),
+      ),
+      this.database
+        .update(templates)
+        .set({ currentVersionId: null })
+        .where(eq(templates.id, templateId)),
+      this.database.delete(templateVersions).where(eq(templateVersions.templateId, templateId)),
+      this.database.delete(templates).where(eq(templates.id, templateId)),
+    ]
+    await this.database.batch(
+      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+    )
+    // Chunk blobs stay: they are content-addressed and shared. See `deleteTemplate` on the port.
     return true
   }
 
@@ -485,6 +591,7 @@ export class D1SqlStore implements SqlStore {
         totalPixels: templateVersions.totalPixels,
         publishedAt: templates.publishedAt,
         createdAt: templates.createdAtMs,
+        updatedAt: templates.updatedAtMs,
       })
       .from(templates)
       .innerJoin(nodes, eq(nodes.id, templates.nodeId))
@@ -504,6 +611,7 @@ export class D1SqlStore implements SqlStore {
       totalPixels: row.totalPixels,
       published: row.publishedAt !== null,
       createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     }))
   }
 

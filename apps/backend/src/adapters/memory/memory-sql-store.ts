@@ -19,6 +19,8 @@ import {
   type NodeRecord,
   type SqlStore,
   type TelemetryBucket,
+  type TemplatePatch,
+  type TemplateRecord,
   TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
@@ -46,6 +48,7 @@ export class MemorySqlStore implements SqlStore {
     Pick<TemplateVersionRecord, 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
       publishedAt: Millis | null
+      updatedAt: Millis
     }
   >()
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
@@ -212,13 +215,20 @@ export class MemorySqlStore implements SqlStore {
       createdAt: version.createdAt,
       currentVersionId: version.versionId,
       publishedAt: null,
+      updatedAt: version.createdAt,
     }
     this.templateVersions.set(version.versionId, {
       ...version,
       bbox: { ...version.bbox },
       chunks: version.chunks.map((chunk) => ({ ...chunk })),
     })
-    this.templates.set(version.templateId, { ...template, currentVersionId: version.versionId })
+    // New pixels are a change like any other. An existing template keeps its name, parent, published
+    // state and creation date — only what it points at, and when it last moved, are its own.
+    this.templates.set(version.templateId, {
+      ...template,
+      currentVersionId: version.versionId,
+      updatedAt: version.createdAt,
+    })
   }
 
   async readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null> {
@@ -236,10 +246,56 @@ export class MemorySqlStore implements SqlStore {
     }
   }
 
-  async setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean> {
+  async readTemplate(templateId: string): Promise<TemplateRecord | null> {
+    const template = this.templates.get(templateId)
+    if (template === undefined) return null
+    return {
+      id: templateId,
+      nodeId: template.nodeId,
+      name: template.name,
+      currentVersionId: template.currentVersionId,
+      published: template.publishedAt !== null,
+      createdAt: template.createdAt,
+      updatedAt: template.updatedAt,
+    }
+  }
+
+  async setTemplatePublishedAt(
+    templateId: string,
+    publishedAt: Millis | null,
+    updatedAt: Millis,
+  ): Promise<boolean> {
     const template = this.templates.get(templateId)
     if (template === undefined) return false
-    this.templates.set(templateId, { ...template, publishedAt })
+    this.templates.set(templateId, { ...template, publishedAt, updatedAt })
+    return true
+  }
+
+  async updateTemplate(
+    templateId: string,
+    patch: TemplatePatch,
+    updatedAt: Millis,
+  ): Promise<boolean> {
+    const template = this.templates.get(templateId)
+    if (template === undefined) return false
+    if (patch.nodeId !== undefined && !this.nodes.has(patch.nodeId)) {
+      throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+    }
+    this.templates.set(templateId, {
+      ...template,
+      name: patch.name ?? template.name,
+      nodeId: patch.nodeId ?? template.nodeId,
+      updatedAt,
+    })
+    return true
+  }
+
+  async deleteTemplate(templateId: string): Promise<boolean> {
+    if (!this.templates.delete(templateId)) return false
+    for (const [versionId, version] of this.templateVersions) {
+      if (version.templateId === templateId) this.templateVersions.delete(versionId)
+    }
+    // Chunks are not touched: they are content-addressed and shared. See `deleteTemplate` on the port.
     return true
   }
 
@@ -268,6 +324,7 @@ export class MemorySqlStore implements SqlStore {
         totalPixels: version.totalPixels,
         published: template.publishedAt !== null,
         createdAt: template.createdAt,
+        updatedAt: template.updatedAt,
       })
     }
     return records.sort((left, right) => left.id.localeCompare(right.id))
