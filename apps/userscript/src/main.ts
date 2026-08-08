@@ -9,7 +9,7 @@ import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
-import { loadState, onStateChange } from './state.js'
+import { getState, loadState, onStateChange, setState } from './state.js'
 import {
   isTemplateVisible,
   localTemplates,
@@ -135,6 +135,37 @@ const step = (what: string, run: () => void): void => {
   }
 }
 
+/**
+ * Whether a keystroke belongs to something else on the page.
+ *
+ * A bare letter is only ours when nobody is typing and no modifier is held: `⌘S` is the browser's
+ * and always will be, and a chat box or a template name must never lose a character to a shortcut.
+ */
+const isTyping = (target: EventTarget | null): boolean => {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+/**
+ * The keyboard shortcuts, such as they are.
+ *
+ * Deliberately few and deliberately not on letters wplace already use. Scanned across all 150 of
+ * their bundles, the only keys they compare against are MapLibre's own — arrows, `+`, `-`, `=`, `_`,
+ * `0`, `r`/`R` — plus Escape, Enter and Space. `S` is free, and stays free of a modifier so it costs
+ * nothing to reach mid-brushstroke.
+ */
+const installKeys = (): void => {
+  window.addEventListener('keydown', (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return
+    if (isTyping(event.target)) return
+    if (event.key !== 's' && event.key !== 'S') return
+    event.preventDefault()
+    setState({ onlySelectedColour: !getState().onlySelectedColour })
+  })
+}
+
 const main = (): void => {
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
   step('map capture', installMapCapture)
@@ -192,6 +223,7 @@ const main = (): void => {
   })
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
+  step('keyboard shortcuts', installKeys)
   // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
   // marker going away.
   step('mismatch repaint', () => onMismatchesChanged(redraw))

@@ -253,11 +253,7 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
 export const appearanceOf = (template: PlacedTemplate): Appearance => {
   if (template.appearance !== null) return template.appearance
   const state = getState()
-  return {
-    ...state.appearance,
-    hiddenColours: state.hiddenColours,
-    onlySelectedColour: state.onlySelectedColour,
-  }
+  return { ...state.appearance, hiddenColours: state.hiddenColours }
 }
 
 /**

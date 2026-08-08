@@ -419,7 +419,8 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
       setSwatchState(element, !off.has(Number(element.dataset.index)))
     }
     // The preset row reads the same filter, so it goes stale in the same way and on the same events.
-    setPresetState(menu, current().hiddenColours, current().onlySelectedColour)
+    // The mode is not this overlay's to show, so it is always false here.
+    setPresetState(menu, current().hiddenColours, false)
   }
 
   // The same presets as settings, applied to this overlay's own filter. Reaching them should not
@@ -433,14 +434,9 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
         refreshSwatches()
       },
       rerender,
-      {
-        hidden: current().hiddenColours,
-        onlySelected: current().onlySelectedColour,
-        setOnlySelected: (next) => {
-          update({ onlySelectedColour: next })
-          refreshSwatches()
-        },
-      },
+      // No follow-the-selection switch here: it governs the whole view rather than this overlay,
+      // and offering it beside this overlay's filter would say otherwise.
+      { hidden: current().hiddenColours },
     ),
   )
 
@@ -455,7 +451,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
         const next = new Set(effective())
         if (next.has(colour.index)) next.delete(colour.index)
         else next.add(colour.index)
-        update({ hiddenColours: [...next], onlySelectedColour: false })
+        update({ hiddenColours: [...next] })
         refreshSwatches()
         rerender()
       }),
