@@ -1,8 +1,22 @@
 import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, type SQL, sql } from 'drizzle-orm'
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  like,
+  lt,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
+  contributions,
   nodes,
   serverSettings,
   telemetryBuckets,
@@ -22,6 +36,7 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
@@ -38,6 +53,8 @@ import {
   tooManyTemplateIds,
 } from '../../ports/index.js'
 
+/** Leave room below D1's 100-bound-parameter ceiling when checking candidate chunk hashes. */
+const UNREFERENCED_HASH_CHUNK_SIZE = 90
 const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
   tokenHash: row.tokenHash,
   label: row.label,
@@ -312,6 +329,98 @@ export class D1SqlStore implements SqlStore {
       }
       throw error
     }
+  }
+
+  async countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }> {
+    const node = await this.readNode(nodeId)
+    if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    const subtree = or(
+      eq(nodes.id, nodeId),
+      and(eq(nodes.season, node.season), like(nodes.path, `${node.path}/%`)),
+    )
+    const [nodeRows, templateRows] = await Promise.all([
+      this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
+      this.database
+        .select({ count: sql<number>`count(*)` })
+        .from(templates)
+        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
+        .where(subtree),
+    ])
+    return { nodes: nodeRows[0]?.count ?? 0, templates: templateRows[0]?.count ?? 0 }
+  }
+
+  async deleteNodeCascade(nodeId: string): Promise<NodeDeletion> {
+    const node = await this.readNode(nodeId)
+    if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    const subtree = or(
+      eq(nodes.id, nodeId),
+      and(eq(nodes.season, node.season), like(nodes.path, `${node.path}/%`)),
+    )
+    const [nodeRows, templateRows, hashRows] = await Promise.all([
+      this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
+      this.database
+        .select({ count: sql<number>`count(*)` })
+        .from(templates)
+        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
+        .where(subtree),
+      this.database
+        .selectDistinct({ hash: versionTiles.hash })
+        .from(versionTiles)
+        .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
+        .innerJoin(templates, eq(templates.id, templateVersions.templateId))
+        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
+        .where(subtree),
+    ])
+
+    const subtreeNodeIds = this.database.select({ id: nodes.id }).from(nodes).where(subtree)
+    const subtreeTemplateIds = this.database
+      .select({ id: templates.id })
+      .from(templates)
+      .where(inArray(templates.nodeId, subtreeNodeIds))
+    const subtreeVersionIds = this.database
+      .select({ id: templateVersions.id })
+      .from(templateVersions)
+      .where(inArray(templateVersions.templateId, subtreeTemplateIds))
+
+    // Order matters and the batch is what makes it safe. `templates.current_version_id` points at a
+    // version and every version points back at the template, so the pointer has to be dropped before
+    // the rows it refers to. Tiles go before the versions they belong to, and nodes remain until the
+    // templates no longer refer to them. One batch means no caller can observe a half-deleted tree.
+    const statements = [
+      this.database
+        .update(templates)
+        .set({ currentVersionId: null })
+        .where(inArray(templates.id, subtreeTemplateIds)),
+      this.database.delete(versionTiles).where(inArray(versionTiles.versionId, subtreeVersionIds)),
+      this.database.delete(templateVersions).where(inArray(templateVersions.id, subtreeVersionIds)),
+      // Contributions enforce their template reference too, so they must leave before templates.
+      this.database
+        .delete(contributions)
+        .where(inArray(contributions.templateId, subtreeTemplateIds)),
+      this.database.delete(templates).where(inArray(templates.id, subtreeTemplateIds)),
+      this.database.delete(nodes).where(subtree),
+    ] as const
+    await this.database.batch(statements)
+
+    return {
+      nodes: nodeRows[0]?.count ?? 0,
+      templates: templateRows[0]?.count ?? 0,
+      hashes: hashRows.map(({ hash }) => hash),
+    }
+  }
+
+  async unreferencedHashes(hashes: readonly string[]): Promise<readonly string[]> {
+    const candidates = [...new Set(hashes)]
+    const referenced = new Set<string>()
+    for (let start = 0; start < candidates.length; start += UNREFERENCED_HASH_CHUNK_SIZE) {
+      const chunk = candidates.slice(start, start + UNREFERENCED_HASH_CHUNK_SIZE)
+      const rows = await this.database
+        .selectDistinct({ hash: versionTiles.hash })
+        .from(versionTiles)
+        .where(inArray(versionTiles.hash, chunk))
+      for (const { hash } of rows) referenced.add(hash)
+    }
+    return candidates.filter((hash) => !referenced.has(hash))
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {

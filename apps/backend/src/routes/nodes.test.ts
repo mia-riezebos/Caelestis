@@ -11,12 +11,13 @@ const bearer = { authorization: `Bearer ${BOOTSTRAP}` }
 
 const harness = () => {
   const sql = new MemorySqlStore()
+  const blobs = new MemoryBlobStore()
   const ports: Ports = {
-    blobs: new MemoryBlobStore(),
+    blobs,
     sql,
     counters: new MemoryCounterStore(sql, () => millis(Date.now())),
   }
-  return { sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
+  return { blobs, sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
 type NodeResponse = {
@@ -316,5 +317,76 @@ describe('node routes', () => {
         .status,
     ).toBe(204)
     await expect(sql.readNode(leaf.body.id)).resolves.toBeNull()
+  })
+
+  it('counts and cascades a subtree while retaining a shared chunk blob', async () => {
+    const { app, blobs, sql } = harness()
+    const root = await createNode(app, { season: 1, parentId: null, name: 'Root' })
+    const child = await createNode(app, { season: 1, parentId: root.body.id, name: 'Child' })
+    const grandchild = await createNode(app, {
+      season: 1,
+      parentId: child.body.id,
+      name: 'Grandchild',
+    })
+    const outside = await createNode(app, { season: 1, parentId: null, name: 'Outside' })
+    const shared = 'a'.repeat(64)
+    const orphaned = 'b'.repeat(64)
+    const makeVersion = (
+      templateId: string,
+      nodeId: string,
+      versionId: string,
+      hashes: readonly string[],
+    ): TemplateVersionRecord => ({
+      templateId,
+      nodeId,
+      name: templateId,
+      versionId,
+      createdBy: 'bootstrap',
+      createdAt: millis(1_750_000_000_000),
+      bbox: { minX: 0, minY: 0, maxX: hashes.length, maxY: 1 },
+      totalPixels: hashes.length,
+      chunks: hashes.map((hash, tileX) => ({ tileX, tileY: 0, hash })),
+    })
+    await sql.insertTemplateVersion(
+      makeVersion('01890f3a-6b7c-7def-8123-456789abcda0', root.body.id, 'root-version', [shared]),
+    )
+    await sql.insertTemplateVersion(
+      makeVersion('01890f3a-6b7c-7def-8123-456789abcda1', grandchild.body.id, 'deep-version', [
+        orphaned,
+      ]),
+    )
+    await sql.insertTemplateVersion(
+      makeVersion('01890f3a-6b7c-7def-8123-456789abcda2', outside.body.id, 'outside-version', [
+        shared,
+      ]),
+    )
+    await blobs.put('chunks', shared, new Uint8Array([1, 2, 3]))
+    await blobs.put('chunks', orphaned, new Uint8Array([4, 5, 6]))
+
+    const count = await app.request(`/admin/nodes/${root.body.id}/subtree`, { headers: bearer })
+    expect(count.status).toBe(200)
+    await expect(count.json()).resolves.toEqual({ nodes: 3, templates: 2 })
+
+    const deleted = await app.request(`/admin/nodes/${root.body.id}?cascade=true`, {
+      method: 'DELETE',
+      headers: bearer,
+    })
+    expect(deleted.status).toBe(200)
+    await expect(deleted.json()).resolves.toEqual({ nodes: 3, templates: 2, chunks: 1 })
+
+    const sharedChunk = await app.request(`/chunks/${shared}`, { headers: bearer })
+    expect(sharedChunk.status).toBe(200)
+    await expect(sharedChunk.arrayBuffer()).resolves.toEqual(new Uint8Array([1, 2, 3]).buffer)
+    expect((await app.request(`/chunks/${orphaned}`, { headers: bearer })).status).toBe(404)
+    await expect(sql.readTemplate('01890f3a-6b7c-7def-8123-456789abcda2')).resolves.not.toBeNull()
+  })
+
+  it('returns 404 when counting a missing subtree', async () => {
+    const { app } = harness()
+    const response = await app.request(
+      '/admin/nodes/01890f3a-6b7c-7def-8123-456789abcde9/subtree',
+      { headers: bearer },
+    )
+    expect(response.status).toBe(404)
   })
 })

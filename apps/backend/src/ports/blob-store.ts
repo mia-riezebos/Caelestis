@@ -14,6 +14,9 @@ export interface BlobStore {
 
   get(namespace: BlobNamespace, hash: string): Promise<Uint8Array | null>
 
+  /** Delete these content-addressed objects after the SQL store has proved they are unreferenced. */
+  delete(namespace: BlobNamespace, hashes: readonly string[]): Promise<void>
+
   /**
    * Which of these hashes the store already holds.
    *

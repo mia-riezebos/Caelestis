@@ -87,7 +87,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   )
 
   app.route('/admin/tokens', createTokenRoutes(auth))
-  app.route('/admin/nodes', createNodeRoutes(ports.sql, auth))
+  app.route('/admin/nodes', createNodeRoutes(ports, auth))
   app.route('/admin/templates', createTemplateRoutes(ports, auth))
   app.route('/chunks', createChunkRoutes(ports, auth))
 

@@ -21,6 +21,10 @@ class CountingBlobStore implements BlobStore {
     return this.inner.get(namespace, hash)
   }
 
+  async delete(namespace: BlobNamespace, hashes: readonly string[]): Promise<void> {
+    return this.inner.delete(namespace, hashes)
+  }
+
   async hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>> {
     this.hasAllCalls.push({ namespace, hashes: [...hashes] })
     return this.inner.hasAll(namespace, hashes)

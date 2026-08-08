@@ -380,6 +380,25 @@ describe('D1SqlStore', () => {
     await expect(store.readTemplateVersion(version.versionId)).resolves.toEqual(version)
   })
 
+  it('deletes a node subtree in one foreign-key-safe batch', async () => {
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('root', 1, NULL, '/root', 'Root', NULL, 1);
+      INSERT INTO nodes VALUES ('child', 1, 'root', '/root/child', 'Child', NULL, 1);
+    `)
+    await store.insertTemplateVersion(templateVersion({ nodeId: 'child' }))
+    const batchesBeforeDelete = d1.batchCalls
+
+    // The circular template/version references make ordering observable: if the current pointer is
+    // not cleared first, or tiles do not precede versions, SQLite rejects the batch.
+    await expect(store.deleteNodeCascade('root')).resolves.toMatchObject({ nodes: 2, templates: 1 })
+
+    expect(d1.batchCalls).toBe(batchesBeforeDelete + 1)
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM nodes').get()).toEqual({ n: 0 })
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM templates').get()).toEqual({ n: 0 })
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM template_versions').get()).toEqual({ n: 0 })
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM version_tiles').get()).toEqual({ n: 0 })
+  })
+
   it('rolls the whole template write back when one tile row fails', async () => {
     d1.sqlite
       .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
