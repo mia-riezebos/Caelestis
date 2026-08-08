@@ -14,6 +14,8 @@ import {
   localTemplates,
   type PlacedTemplate,
 } from './local-store.js'
+import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
+import { forgetInWorker, hasWorker, scanInWorker } from './mismatch-worker.js'
 
 /**
  * Which pixels of a template the canvas disagrees with, per tile.
@@ -90,6 +92,8 @@ const cache = new Map<string, Cached>()
 
 /** Bumped whenever a cached answer is patched, so a listener can tell that anything happened. */
 let changed = 0
+
+const changeListeners: Array<() => void> = []
 
 /**
  * How long scanning may take in one frame, in milliseconds.
@@ -183,10 +187,103 @@ const signature = (template: PlacedTemplate): string =>
   `${template.moved}|${assertedHidden(template).join(',')}`
 
 /**
+ * Everything the comparison needs, gathered for whichever thread is going to run it.
+ *
+ * The two differ in one thing: what to send. A worker gets the rows the template actually covers,
+ * sliced out so the copy is of the band rather than of a million pixels, and those slices are ours
+ * to give away. Run here, nothing is copied at all — the arrays go in as they are, indexed from row
+ * zero, which is what `bandTop` says.
+ */
+const buildJob = (
+  template: PlacedTemplate,
+  tile: TileCoord,
+  pixels: Uint8Array,
+  forWorker: boolean,
+): ScanJob => {
+  const tileTop = tile.y * TILE_SIZE
+  const top = Math.max(template.originY, tileTop)
+  const bottom = Math.min(template.originY + template.height, tileTop + TILE_SIZE)
+  const bandTop = forWorker ? Math.max(0, Math.min(TILE_SIZE, top - tileTop)) : 0
+  const bandBottom = forWorker
+    ? Math.max(bandTop, Math.min(TILE_SIZE, bottom - tileTop))
+    : TILE_SIZE
+  const band = (source: Uint8Array | null): Uint8Array | null => {
+    if (source === null) return null
+    return forWorker ? source.slice(bandTop * TILE_SIZE, bandBottom * TILE_SIZE) : source
+  }
+  return {
+    templateKey: template.id,
+    indices: null,
+    width: template.width,
+    height: template.height,
+    originX: template.originX,
+    originY: template.originY,
+    tileX: tile.x,
+    tileY: tile.y,
+    tileSize: TILE_SIZE,
+    bandTop,
+    server: band(pixels),
+    // The draft layer, kept beside the server's pixels rather than merged into them. A pixel placed
+    // and not submitted is not on the server, so comparing against the server alone says a pixel
+    // just fixed is still wrong; the comparison resolves the two rather than either owning the other.
+    draft: band(draftPixels(tile)),
+    // A pixel we are not claiming cannot be wrong: the wildcard asserts no colour, a filtered colour
+    // is one the user has said to stop caring about, and the sentinel is a state rather than a hue.
+    ignored: [TRANSPARENT_INDEX, UNPAINTED, ...assertedHidden(template)],
+    unpainted: UNPAINTED,
+  }
+}
+
+const store = (cacheKey: string, source: Uint8Array, key: string, outcome: ScanOutcome): Cached => {
+  const entry: Cached = { source, key, ...outcome, both: null }
+  cache.set(cacheKey, entry)
+  count('mismatch:tiles scanned')
+  count('mismatch:pixels marked', outcome.wrong.length / 2)
+  count('mismatch:pixels unpainted', outcome.unpainted.length / 2)
+  return entry
+}
+
+/**
+ * Tiles a worker is already looking at, against the tile array they were asked about.
+ *
+ * Without this, every frame between asking and answering asks again — sixty scans in flight for one
+ * tile, each with its own band copied out of it.
+ */
+const inFlight = new Map<string, Uint8Array>()
+
+const requestScan = (
+  template: PlacedTemplate,
+  tile: TileCoord,
+  pixels: Uint8Array,
+  cacheKey: string,
+  key: string,
+): void => {
+  if (inFlight.get(cacheKey) === pixels) return
+  inFlight.set(cacheKey, pixels)
+  void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
+    if (inFlight.get(cacheKey) === pixels) inFlight.delete(cacheKey)
+    if (outcome === null) {
+      // No worker to be had. The inline path picks this up on the next frame, within its budget.
+      stale.add(cacheKey)
+      scheduleIdleScan()
+      return
+    }
+    store(cacheKey, pixels, key, outcome)
+    changed++
+    for (const listener of changeListeners) listener()
+  })
+}
+
+/**
  * The disagreements between one template and one tile.
  *
  * Null means "not answerable yet" — the tile's pixels have not been captured — which is different
  * from an empty result, and the caller should draw nothing rather than assume agreement.
+ *
+ * A tile whose answer is out of date keeps showing the one it has. It is wrong by exactly the pixels
+ * that have changed since, and those are patched into it as they change, so a recompute is a
+ * background refresh rather than a correction — where returning null would blink every marker on the
+ * tile out for as long as the rescan took.
  */
 export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null => {
   const pixels = tilePixels(tile)
@@ -203,16 +300,19 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     return answerFrom(existing, countsUnpainted(template))
   }
 
+  if (hasWorker()) {
+    requestScan(template, tile, pixels, cacheKey, key)
+    return existing === undefined ? null : answerFrom(existing, countsUnpainted(template))
+  }
+
   /**
-   * Out of budget: keep showing the last answer rather than none.
+   * No worker: scan here, but only so much of it per frame.
    *
-   * The old answer is out of date by exactly the pixels that have changed since, and those are
-   * patched into it the moment they change — so it is not stale in the way that matters, and a
-   * recompute is a background refresh rather than a correction. Returning null instead meant every
-   * marker on a tile blinked out for as long as the rescan was queued, which reads as the feature
-   * being broken rather than busy.
-   *
-   * Null is kept for the one case it belongs to: no answer has ever been computed for this tile.
+   * A budget in time rather than in tiles. A scan is up to a million comparisons but usually far
+   * fewer — a template covers only part of a tile, and most tiles are not covered at all — so "one
+   * tile per frame" made a screenful take as many frames as there were tiles regardless of whether
+   * that was 2ms of work or 20. This is checked *between* tiles, so one scan can still overrun it;
+   * the guarantee is that the budget bounds the queue, not any single scan.
    */
   if (performance.now() >= scanDeadline) {
     stale.add(cacheKey)
@@ -223,97 +323,12 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   }
   stale.delete(cacheKey)
 
-  const tileLeft = tile.x * TILE_SIZE
-  const tileTop = tile.y * TILE_SIZE
-  const left = Math.max(template.originX, tileLeft)
-  const top = Math.max(template.originY, tileTop)
-  const right = Math.min(template.originX + template.width, tileLeft + TILE_SIZE)
-  const bottom = Math.min(template.originY + template.height, tileTop + TILE_SIZE)
-  if (right <= left || bottom <= top) {
-    const empty = new Float32Array(0)
-    cache.set(cacheKey, {
-      source: pixels,
-      key,
-      wrong: empty,
-      unpainted: empty,
-      asserted: 0,
-      both: empty,
-    })
-    return empty
-  }
-
-  /**
-   * "Is this colour one we are asserting", as a lookup rather than a question.
-   *
-   * A pixel we are not drawing is a pixel whose colour we are not claiming: the wildcard asks for
-   * nothing, and a filtered colour is one the user has said to stop showing. Neither can be wrong,
-   * and marking them would bury the ones that are.
-   *
-   * Folding all of that into one table before the loop is most of the speed here. A `Set.has` per
-   * pixel is a hash of a boxed number a million times over, for an answer that only has 256 possible
-   * inputs.
-   */
-  const asserted = new Uint8Array(256)
-  asserted.fill(1)
-  asserted[TRANSPARENT_INDEX] = 0
-  asserted[UNPAINTED] = 0
-  for (const index of assertedHidden(template)) asserted[index] = 0
-
-  // Local aliases: property lookups on the template inside a million-iteration loop are not free.
-  const wantedPixels = template.indices
-  const templateWidth = template.width
-  const originX = template.originX
-  const originY = template.originY
-
-  /**
-   * The draft layer, if this tile has one. Three states, and the answer needs all three.
-   *
-   * A pixel placed and not submitted is not on the server, so comparing the template against the
-   * server alone says a pixel just fixed is still wrong. Merging the draft into the server instead
-   * needed an override map to survive the next fetch and put that bookkeeping on the path that runs
-   * while someone is painting. Resolving at the comparison is the whole of it:
-   *
-   *     effective = drafted here ? draft : server
-   */
-  const draft = draftPixels(tile)
-
-  /**
-   * The two kinds, separated as they are found.
-   *
-   * An empty pixel is only "not done yet" when nobody chose it, so a pixel drafted Transparent is
-   * never one of these — it arrives as `TRANSPARENT_INDEX` rather than `UNPAINTED`, and lands in
-   * `wrong` with the rest of the mistakes.
-   */
-  const wrong: number[] = []
-  const unpainted: number[] = []
-  let assertedHere = 0
-  for (let y = top; y < bottom; y++) {
-    let templateAt = (y - originY) * templateWidth + (left - originX)
-    let tileAt = (y - tileTop) * TILE_SIZE + (left - tileLeft)
-    for (let x = left; x < right; x++, templateAt++, tileAt++) {
-      const wanted = wantedPixels[templateAt] as number
-      if (asserted[wanted] === 0) continue
-      assertedHere++
-      const drafted = draft === null ? UNPAINTED : (draft[tileAt] as number)
-      const placed = drafted !== UNPAINTED ? drafted : (pixels[tileAt] as number)
-      if (placed === wanted) continue
-      if (placed === UNPAINTED) unpainted.push(x, y)
-      else wrong.push(x, y)
-    }
-  }
-
-  const entry: Cached = {
-    source: pixels,
+  const entry = store(
+    cacheKey,
+    pixels,
     key,
-    wrong: new Float32Array(wrong),
-    unpainted: new Float32Array(unpainted),
-    asserted: assertedHere,
-    both: null,
-  }
-  cache.set(cacheKey, entry)
-  count('mismatch:tiles scanned')
-  count('mismatch:pixels marked', wrong.length / 2)
-  count('mismatch:pixels unpainted', unpainted.length / 2)
+    scanTile(buildJob(template, tile, pixels, false), template.indices),
+  )
   return answerFrom(entry, countsUnpainted(template))
 }
 
@@ -335,28 +350,17 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
   const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
   const placed =
     drafted !== UNPAINTED ? drafted : server === null ? UNPAINTED : (server[at] as number)
-  let considered = 0
   for (const [cacheKey, entry] of cache) {
     if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
-    considered++
     const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
     const template = localTemplates().find((candidate) => candidate.id === id)
-    if (template === undefined) {
-      count('patch:no template for that answer')
-      continue
-    }
+    if (template === undefined) continue
 
     const localX = x - template.originX
     const localY = y - template.originY
-    if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) {
-      count('patch:pixel is outside the template')
-      continue
-    }
+    if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) continue
     const wanted = template.indices[localY * template.width + localX]
-    if (wanted === undefined) {
-      count('patch:no template pixel there')
-      continue
-    }
+    if (wanted === undefined) continue
 
     const hidden = assertedHidden(template)
     const asserted =
@@ -381,10 +385,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
     const inWrong = listed(entry.wrong)
     const inUnpainted = listed(entry.unpainted)
     const already = inWrong >= 0 ? 'wrong' : inUnpainted >= 0 ? 'unpainted' : null
-    if (already === belongs) {
-      count(`patch:already ${belongs ?? 'clear'} — wanted ${wanted}, placed ${placed}`)
-      continue
-    }
+    if (already === belongs) continue
 
     const minus = (marks: Mismatches, at: number): Mismatches => {
       const next = new Float32Array(marks.length - 2)
@@ -417,37 +418,30 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
     changed++
     count(belongs === null ? 'mismatch:pixel fixed' : `mismatch:pixel became ${belongs}`)
   }
-  if (considered === 0) count('patch:no cached answer for that tile')
 }
-
-const changeListeners: Array<() => void> = []
 
 /**
  * Notified when a cached answer changes outside a frame.
  *
  * Painting is not a map movement, so nothing asks MapLibre to draw when it happens — and a marker
  * that has been cleared in memory but not on screen is indistinguishable from one that has not been
- * cleared at all. This is what turns a patch into a repaint.
+ * cleared at all. This is what turns a patch, or a worker's answer, into a repaint.
  */
 export const onMismatchesChanged = (listener: () => void): void => {
   changeListeners.push(listener)
 }
 
 onTilePixel((tile, x, y, placed) => {
-  count('patch:notified of a pixel')
   const before = changed
   patchTile(tile, x, y, placed)
   if (changed === before) return
   for (const listener of changeListeners) listener()
 })
-// Module scope on purpose: if this never appears, the body of this file never ran, and the listener
-// above was never registered — which is a different failure from the listener deciding to do
-// nothing, and the counters cannot otherwise tell the two apart.
-count('patch:mismatch module loaded')
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
 export const forgetMismatches = (id: string): void => {
   for (const key of [...cache.keys()]) {
     if (key.startsWith(`${id}|`)) cache.delete(key)
   }
+  forgetInWorker(id)
 }
