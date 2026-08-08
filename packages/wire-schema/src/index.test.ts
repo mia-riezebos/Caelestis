@@ -1014,6 +1014,35 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('rejects a stray path the length of its parent plus one segment', () => {
+    // The test above is satisfied by the length alone: '/usa/x' is shorter than '/canada', so the
+    // slice is empty and the leading-slash test rejects it without any prefix ever being compared.
+    // Give the stray path the shape the slice expects and it decodes — '/norway/x'.slice(7) is
+    // '/x', one clean segment — so parent_id says /canada and the prefix rollup says /norway.
+    const parent = { id: uuid(52), parentId: null, path: '/canada', name: 'Canada' }
+    const child = { id: uuid(53), parentId: parent.id, path: '/norway/x', name: 'Stray' }
+    expectRejected(Manifest, {
+      ...validManifest,
+      nodes: [parent, child],
+      templates: [{ ...validTemplate, nodeId: child.id }],
+    })
+  })
+
+  it('rejects a child whose prefix matches its parent only in case', () => {
+    // Paths are unique case-insensitively, so /Canada and /canada never coexist — but a child may
+    // still spell its parent's prefix in the other case. SQLite's LIKE is ASCII-case-insensitive,
+    // so /Canada/x does roll up under /canada; the case-sensitive comparison is the one that would
+    // disagree with the database, so the prefix test folds case the way the uniqueness rule does.
+    const parent = { id: uuid(54), parentId: null, path: '/canada', name: 'Canada' }
+    const child = { id: uuid(55), parentId: parent.id, path: '/Canada/x', name: 'Child' }
+    const manifest = {
+      ...validManifest,
+      nodes: [parent, child],
+      templates: [{ ...validTemplate, nodeId: child.id }],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
   it('rejects two paths differing only in case', () => {
     // SQLite's LIKE is ASCII-case-insensitive, so with both stored the documented
     // `LIKE '<old>/%'` subtree move rewrites the other one's descendants too.
@@ -1025,6 +1054,22 @@ describe('cross-field and time-unit schemas', () => {
       ],
       templates: [{ ...validTemplate, nodeId: uuid(110) }],
     })
+  })
+
+  it('accepts two paths differing only in a non-ASCII case pair', () => {
+    // The case rule exists because SQLite's LIKE is ASCII-case-insensitive, and so is the unique
+    // index on lower(path). É and é are distinct to both, so D1 stores these two rows and a subtree
+    // move over one cannot capture the other. Folding with JavaScript's Unicode-aware toLowerCase
+    // collapsed them here instead, leaving the manifest endpoint unable to emit a decodable
+    // manifest for state the database had accepted.
+    const upper = { id: uuid(113), parentId: null, path: '/QUÉBEC', name: 'Upper' }
+    const lower = { id: uuid(114), parentId: null, path: '/québec', name: 'Lower' }
+    const manifest = {
+      ...validManifest,
+      nodes: [upper, lower],
+      templates: [{ ...validTemplate, nodeId: upper.id }],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
   it('accepts a path with non-ASCII letters', () => {

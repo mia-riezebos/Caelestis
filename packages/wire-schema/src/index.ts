@@ -193,6 +193,20 @@ export const ServerInfo = Schema.Struct({
  * which D1 stores happily — alliances are not all anglophone, and the restriction bought nothing
  * that excluding the two metacharacters does not already buy.
  */
+/**
+ * Fold a node path the way the database does, so the wire agrees with what D1 can actually store.
+ *
+ * SQLite's `lower()` and `LIKE` fold ASCII only, and `nodes_path_idx` is a unique index on
+ * `lower(path)`. JavaScript's `toLowerCase` folds all of Unicode, which is stricter in exactly the
+ * wrong direction: `/QUÉBEC` and `/québec` collide here while D1 stores both, and the manifest
+ * endpoint could not emit a decodable manifest for its own stored state — a permanent failure on
+ * legitimate rows, fixable only by editing the database.
+ *
+ * Nothing is lost by matching: É and é are distinct to `LIKE`, so a subtree move over one cannot
+ * capture the other, which is the collision the case rule exists to prevent.
+ */
+const foldPath = (path: string): string => path.replace(/[A-Z]/g, (c) => c.toLowerCase())
+
 const NodePath = Schema.String.pipe(
   Schema.check(
     Schema.isLengthBetween(1, MAX_PATH_LENGTH),
@@ -395,17 +409,23 @@ export const Manifest = ManifestStruct.pipe(
       // Case-insensitively, because SQLite's LIKE is ASCII-case-insensitive by default: with both
       // /Canada and /canada stored, moving either one rewrites the other's subtree as well. Two
       // paths differing only in case cannot coexist.
-      const paths = manifest.nodes.map((node) => node.path.toLowerCase())
+      const paths = manifest.nodes.map((node) => foldPath(node.path))
       if (new Set(paths).size !== paths.length) return false
-      const pathById = new Map(manifest.nodes.map((node) => [node.id, node.path]))
+      const pathById = new Map(manifest.nodes.map((node) => [node.id, foldPath(node.path)]))
       return manifest.nodes.every((node) => {
         if (node.parentId === null) return node.path.indexOf('/', 1) === -1
         const parentPath = pathById.get(node.parentId)
         if (parentPath === undefined) return false
+        // Under the parent at all: slicing at the parent's length without comparing the prefix
+        // reads /norway/x as a child of /canada, because the suffix it produces — '/x' — has
+        // exactly the shape the segment test below expects.
+        //
         // Immediate child, not merely a descendant: `startsWith` alone accepts /a/b/c under /a,
         // which claims a level of hierarchy the manifest never declares a node for, so a rollup
         // over /a/b finds nothing while /a/b/c's templates sit below it.
-        const suffix = node.path.slice(parentPath.length)
+        const path = foldPath(node.path)
+        if (!path.startsWith(parentPath)) return false
+        const suffix = path.slice(parentPath.length)
         return suffix.startsWith('/') && suffix.indexOf('/', 1) === -1
       })
       // This also makes the hierarchy acyclic, so no separate cycle check is needed: a non-root
