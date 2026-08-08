@@ -1,7 +1,7 @@
 import { PALETTE_RGB, quantiseToPalette, TILE_SIZE, TRANSPARENT_INDEX } from '@wts/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
-import { type ConnectedServer, getState, listServerTemplates } from '../state.js'
+import { type ConnectedServer, getState, listServerTemplates, onStateChange } from '../state.js'
 import {
   forgetServerTemplate,
   localTemplates,
@@ -143,6 +143,9 @@ const inFlight = new Set<string>()
 export const syncServerTemplates = async (server: ConnectedServer): Promise<void> => {
   if (server.status !== 'connected') return
   const available = await listServerTemplates(server)
+  // Could not ask, so nothing is known and nothing changes. Treating this as an empty server took
+  // every template off the canvas on a single blip and put them back looking newly arrived.
+  if (available === null) return
   const wanted = new Map(
     available.map((template) => [serverTemplateKey(server.url, template.id), template]),
   )
@@ -213,4 +216,27 @@ export const installServerSync = (): void => {
   syncAll()
   if (timer !== null) clearInterval(timer)
   timer = setInterval(syncAll, POLL_MS)
+  /**
+   * And whenever the set of servers changes.
+   *
+   * Polling alone was not enough, and in the ordinary case it was not enough by a whole minute:
+   * nothing is connected when this installs — the stored servers are loaded later, by the panel —
+   * so the first sweep finds nothing and the first real one is a poll away. Connecting a server and
+   * watching an empty map for up to sixty seconds reads as broken.
+   *
+   * Cheap to over-call. A server whose templates are all at versions we hold does no work beyond one
+   * manifest fetch, which is the same request the tree makes anyway.
+   */
+  onStateChange(() => {
+    const connected = getState()
+      .servers.filter((server) => server.status === 'connected')
+      .map((server) => server.url)
+      .join(' ')
+    if (connected === lastConnected) return
+    lastConnected = connected
+    syncAll()
+  })
 }
+
+/** Which servers were connected last time state changed, so an unrelated setting does not resync. */
+let lastConnected = ''

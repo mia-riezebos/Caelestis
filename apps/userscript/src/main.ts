@@ -10,7 +10,12 @@ import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
-import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
+import {
+  isTemplateVisible,
+  localTemplates,
+  onLocalChange,
+  restoreLocalTemplates,
+} from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
 import { installServerSync } from './templates/server-sync.js'
 import {
@@ -137,6 +142,16 @@ const main = (): void => {
     installDebugApi({
       /** The captured MapLibre Map, for poking at its style and layers from the console. */
       map: () => getMap(),
+      /** Each template's own switch beside the renderer's effective visibility decision. */
+      templates: () =>
+        localTemplates().map((template) => ({
+          id: template.id,
+          name: template.name,
+          visible: template.visible,
+          drawing: isTemplateVisible(template),
+          folderId: template.folderId,
+          server: template.serverUrl ?? null,
+        })),
       /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
       quads: () =>
         lastFrame === null

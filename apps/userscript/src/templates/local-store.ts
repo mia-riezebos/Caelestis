@@ -7,7 +7,7 @@ import {
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
-import { getState, localFolderChainVisible } from '../state.js'
+import { getState, isScopeVisible, localFolderChainVisible, setScopeVisible } from '../state.js'
 import { type Appearance, normaliseAppearance } from './appearance.js'
 import {
   type ImportedTemplate,
@@ -232,8 +232,14 @@ export const clearLocalPreview = (id: string): boolean => {
  * visible, because it is — within a group that is not — and that is what makes turning the group
  * back on restore the arrangement instead of flattening it.
  */
-export const isTemplateVisible = (template: PlacedTemplate): boolean =>
-  template.visible && localFolderChainVisible(template.folderId)
+export const isTemplateVisible = (template: PlacedTemplate): boolean => {
+  if (!template.visible) return false
+  // A server's template answers to that server's switch, not to Local's. Sharing this store meant
+  // it inherited the local chain by default, so switching Local off hid every server's templates
+  // too, and a server's own switch did nothing to them.
+  if (template.serverUrl !== undefined) return isScopeVisible(`server:${template.serverUrl}`)
+  return localFolderChainVisible(template.folderId)
+}
 
 /**
  * How this template is actually drawn: its own appearance, or the global default it inherits.
@@ -829,7 +835,11 @@ export const putServerTemplate = async (
   templates.set(template.id, {
     ...template,
     tiles,
-    visible: existing?.visible ?? true,
+    // Whether someone else's template is on *your* canvas is your decision and nobody else's, so it
+    // is read back from this browser's own record rather than defaulted. Without that, re-syncing —
+    // which happens on every poll, and on every hot reload of a dev server — quietly switched a
+    // hidden template back on, and a page load forgot the choice entirely.
+    visible: existing?.visible ?? isScopeVisible(template.id),
     everPlaced: true,
     appearance: existing?.appearance ?? null,
     revision: existing?.revision ?? 0,
@@ -1463,6 +1473,7 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       revision = committed
     }
     templates.set(id, { ...next, revision })
+    if (isServerTemplate(existing)) setScopeVisible(id, visible)
     desiredVisibility.delete(id)
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)

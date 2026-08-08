@@ -12,6 +12,7 @@ import {
   listNodes,
   loadState,
   moveLocalFolder,
+  onStateChange,
   type ProgressPlacement,
   patchTemplate,
   probeServer,
@@ -31,6 +32,7 @@ import {
   addLocalTemplate,
   localTemplates as allLocal,
   localTemplates,
+  onLocalChange,
   removeLocalTemplate,
   renameLocalTemplate,
   setTemplateFolder,
@@ -296,6 +298,31 @@ const treeView = (): HTMLElement => {
   renderTree()
   // Paint what the servers said last time, then let a live fetch replace it.
   void primeFromCache(renderTree)
+
+  /**
+   * Redraw the tree when the store changes underneath it.
+   *
+   * The panel used to subscribe to nothing, so every row showed whatever was true when it was last
+   * drawn by an interaction. That was survivable while templates only ever appeared because someone
+   * in this panel imported one — and stopped being survivable the moment a background sync could
+   * add one: the canvas updated, the tree did not, and a template drew over the map with its own
+   * switch reading "off" because the row had been drawn before it existed. Clicking it then sent
+   * "on" and only the second click turned it off, which is exactly as baffling as it sounds.
+   *
+   * Skipped mid-gesture. A rename is an open text field and a drag is a row in flight; replacing
+   * the whole subtree under either takes it away from the pointer.
+   */
+  const refreshTree = (): void => {
+    if (!open || currentView !== 'tree') return
+    const root = document.getElementById(PANEL_ID)
+    if (root === null) return
+    if (root.querySelector('.wts-dragging') !== null) return
+    if (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
+      return
+    renderTree()
+  }
+  onLocalChange(refreshTree)
+  onStateChange(refreshTree)
 
   view.append(toolbar, body)
   return view

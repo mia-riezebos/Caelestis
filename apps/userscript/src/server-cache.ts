@@ -103,5 +103,23 @@ export const forgetServer = async (url: string): Promise<void> => {
   await run('readwrite', (store) => store.delete(url))
 }
 
-export const loadServerCache = async (): Promise<readonly CachedServer[]> =>
-  (await run<CachedServer[]>('readonly', (store) => store.getAll())) ?? []
+/**
+ * How long a server's last answer is worth keeping after it stops answering.
+ *
+ * Long, deliberately. Nothing here is discarded because a server is unreachable — a restart, a
+ * dropped tunnel, a laptop lid, a dev server hot-reloading between keystrokes all look identical to
+ * "gone", and treating any of them as gone is how a tree empties itself and every switch you set
+ * springs back to its default. Only genuine age retires an entry, and a month is long enough that
+ * anything reaching it really has stopped existing.
+ */
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+export const loadServerCache = async (): Promise<readonly CachedServer[]> => {
+  const entries = (await run<CachedServer[]>('readonly', (store) => store.getAll())) ?? []
+  const cutoff = Date.now() - CACHE_TTL_MS
+  const live = entries.filter((entry) => entry.fetchedAt >= cutoff)
+  for (const stale of entries) {
+    if (stale.fetchedAt < cutoff) void forgetServer(stale.url)
+  }
+  return live
+}

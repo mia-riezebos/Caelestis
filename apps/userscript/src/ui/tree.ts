@@ -132,7 +132,11 @@ export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<void> => {
-  const { nodes, templates } = await listServerContents(server)
+  const contents = await listServerContents(server)
+  // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
+  // emptying itself — a server that blinks should not take its folders off your screen.
+  if (contents === null) return
+  const { nodes, templates } = contents
   nodesByServer.set(server.url, nodes)
   templatesByServer.set(server.url, templates)
   void cacheServer({ url: server.url, nodes, templates, fetchedAt: Date.now() })
