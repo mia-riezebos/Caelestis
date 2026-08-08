@@ -89,6 +89,23 @@ describe('scope ordering', () => {
 })
 
 describe('the admin token surface', () => {
+  it.each([
+    ['malformed JSON', '{"label": "x", '],
+    ['a JSON string', '"not-an-object"'],
+    ['JSON null', 'null'],
+  ])('rejects a body that is %s with 400, not 500', async (_label, body) => {
+    // The invalid-body table sends only well-formed objects, so the `catch(() => null)` around the
+    // parse was deletable: an authenticated client sending a truncated body would get a 500 — an
+    // unhandled throw at the trust boundary — instead of the 400 the route means.
+    const { app } = harness()
+    const response = await app.request('/admin/tokens', {
+      method: 'POST',
+      body,
+      ...bearer(BOOTSTRAP),
+    })
+    expect(response.status).toBe(400)
+  })
+
   it('mints a token, returns the plaintext once, and never returns it again', async () => {
     const { app } = harness()
 
@@ -190,6 +207,22 @@ describe('the admin token surface', () => {
       () => mintToken(),
     )
     expect([token, calls]).toEqual(['A'.repeat(TOKEN_LENGTH), 1])
+  })
+
+  it('lets every one of the 128 source bits change the token', () => {
+    // Length, alphabet, uniqueness, the CSPRNG source and the tail are all pinned, and a hard-coded
+    // interior character survives every one of them — the token would carry 123 bits and look
+    // identical. Flip each source bit on its own: each must reach the output, or some bit is not in
+    // the token at all.
+    const baseline = withRandomBytes(() => {}, mintToken)
+    const flipped = Array.from({ length: 128 }, (_, bit) =>
+      withRandomBytes((bytes) => {
+        bytes[bit >> 3] = 1 << (bit & 7)
+      }, mintToken),
+    )
+
+    expect(flipped.filter((token) => token === baseline)).toEqual([])
+    expect(new Set(flipped).size).toBe(128)
   })
 
   it('carries the last three bits in the final character', () => {
@@ -331,9 +364,13 @@ describe('the bootstrap credential', () => {
       sql,
       counters: new MemoryCounterStore(sql, () => millis(Date.now())),
     }
+    // A nonempty credential, because `bearer('')` is rejected by the parser before the bootstrap
+    // comparison runs at all — so an empty presentation cannot tell whether an unset secret is
+    // matching everything. This is the regression that mattered: with no ADMIN_TOKEN configured,
+    // any bearer value must be refused, not treated as the operator.
     for (const bootstrapAdminToken of [undefined, '']) {
       const app = createApp(ports, { bootstrapAdminToken })
-      const response = await app.request('/admin/tokens', bearer(''))
+      const response = await app.request('/admin/tokens', bearer('ABCDEFGHJKMNPQRSTVWXYZ2345'))
       expect(response.status).toBe(401)
     }
   })
