@@ -26,7 +26,7 @@ CREATE TABLE `contributions` (
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by`, `reported_by_user_id`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
-	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "contributions_reported_by_check" CHECK(length("contributions"."reported_by") = 64 AND "contributions"."reported_by" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."wplace_user_id") = 'integer' AND "contributions"."wplace_user_id" >= 0
         AND typeof("contributions"."reported_by_user_id") = 'integer' AND "contributions"."reported_by_user_id" >= 0
         AND typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
@@ -124,8 +124,8 @@ CREATE TABLE `tile_history` (
 	`reported_by` text NOT NULL,
 	`reported_by_user_id` integer NOT NULL,
 	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by`, `reported_by_user_id`),
-	FOREIGN KEY (`reported_by`) REFERENCES `access_tokens`(`token_hash`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
+	CONSTRAINT "tile_history_reported_by_check" CHECK(length("tile_history"."reported_by") = 64 AND "tile_history"."reported_by" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "tile_history_reported_by_user_id_check" CHECK(typeof("tile_history"."reported_by_user_id") = 'integer' AND "tile_history"."reported_by_user_id" >= 0),
 	CONSTRAINT "tile_history_bucket_start_s_check" CHECK(typeof("tile_history"."bucket_start_s") = 'integer' AND "tile_history"."bucket_start_s" >= 0
         AND ("tile_history"."resolution_s" = 0 OR "tile_history"."bucket_start_s" % "tile_history"."resolution_s" = 0)),

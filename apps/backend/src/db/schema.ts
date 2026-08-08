@@ -249,9 +249,7 @@ export const contributions = sqliteTable(
      * The foreign key keeps this a token, not free text: without it any string is a fresh key and
      * one caller can multiply its own rows without limit.
      */
-    reportedBy: text('reported_by')
-      .notNull()
-      .references(() => accessTokens.tokenHash),
+    reportedBy: text('reported_by').notNull(),
     /**
      * The wplace `/me` id of the account running the reporting client, for the same reason
      * `tile_history` carries one: a token is not a client. One token shared across an alliance's
@@ -273,6 +271,10 @@ export const contributions = sqliteTable(
         table.reportedByUserId,
       ],
     }),
+    check(
+      'contributions_reported_by_check',
+      sql`length(${table.reportedBy}) = 64 AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
+    ),
     check(
       'contributions_counter_check',
       // day_s is a day bucket, so it is a UTC midnight — the floor of a report time to 86400.
@@ -352,9 +354,23 @@ export const tileHistory = sqliteTable(
     // outside this schema close that, and they are the reason the key keeps `sha256`: the server
     // computes the hash from the tile it fetched rather than accepting a client's, and the report
     // route rate-limits ingest. A writer that ever takes this value from a request body reopens it.
-    reportedBy: text('reported_by')
-      .notNull()
-      .references(() => accessTokens.tokenHash),
+    /**
+     * Deliberately not a foreign key to `access_tokens`.
+     *
+     * This column exists to answer "which credential reported this", so a leaked or misbehaving
+     * token can be traced through what it wrote. Referential integrity to a credential table
+     * inverts that: `ON DELETE NO ACTION` makes deleting a token that ever reported fail, so the
+     * only way to remove one is to delete its history first — destroying the very record the column
+     * was added to keep. An audit trail has to outlive the credential it names, which means orphans
+     * are the point, not a defect.
+     *
+     * The shape stays constrained, which is what the foreign key was really buying: the earlier
+     * justification was "keeps this a token, not free text". A 64-character lowercase hex digest is
+     * still not free text, and it holds for a hash whose token row is long gone. Existence is the
+     * route's job — the server derives this from the authenticated credential rather than reading
+     * it off a request, the same way it computes `sha256` itself.
+     */
+    reportedBy: text('reported_by').notNull(),
     /** The wplace `/me` id of the account running the reporting client. */
     reportedByUserId: integer('reported_by_user_id').notNull(),
   },
@@ -379,6 +395,10 @@ export const tileHistory = sqliteTable(
     // time itself, aligned to nothing. Stating that as an explicit disjunct rather than leaning on
     // `x % 0` evaluating to NULL — a CHECK that is NULL does not fail, so the exemption would hold
     // by accident and read as an oversight.
+    check(
+      'tile_history_reported_by_check',
+      sql`length(${table.reportedBy}) = 64 AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
+    ),
     check(
       'tile_history_reported_by_user_id_check',
       sql`typeof(${table.reportedByUserId}) = 'integer' AND ${table.reportedByUserId} >= 0`,
