@@ -475,30 +475,44 @@ export const deleteNode = async (
 }
 
 /**
- * Every template a server is publishing, from the manifest.
+ * Everything a server is publishing: the folder tree and the templates hanging off it.
  *
- * The manifest is the only list there is — there is no `GET /admin/templates` — and that is right:
- * the tree wants what the server *publishes*, which is exactly the question the manifest answers.
- * An admin code sees unpublished ones too, which is why they can be drawn greyed rather than
- * vanishing until someone publishes them.
+ * One fetch, from `/manifest`, and that endpoint is the right one for **both** — the structure is
+ * not privileged information. Anyone with a read code is meant to see the tree; the admin boundary
+ * is *changing* it, which lives on the `/admin` routes. Reading the tree from `GET /admin/nodes`
+ * put the boundary in the wrong place and left every read-scope member staring at a server with no
+ * folders, and therefore no templates, since a template row is drawn under its folder.
  *
- * Answers an empty list on any failure rather than throwing. A tree that has drawn a stale row is
- * better than a tree that has thrown, and the cached copy is what it falls back to.
+ * Answers empty on any failure rather than throwing. A tree that has drawn a stale row is better
+ * than a tree that has thrown, and the cached copy is what it falls back to.
  */
-export const listServerTemplates = async (
+export const listServerContents = async (
   server: ConnectedServer,
-): Promise<readonly ServerTemplate[]> => {
+): Promise<{ nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] }> => {
   try {
     const response = await fetch(`${server.url}/manifest?season=0`, {
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
     })
-    if (!response.ok) return []
+    if (!response.ok) return { nodes: [], templates: [] }
     const body = (await response.json()) as {
+      nodes?: ReadonlyArray<Partial<TreeNode>>
       templates?: ReadonlyArray<
         Partial<ServerTemplate> & { chunks?: ReadonlyArray<{ tile?: unknown; hash?: unknown }> }
       >
     }
-    return (body.templates ?? []).flatMap((template) => {
+    const nodes = (body.nodes ?? []).flatMap((node) =>
+      typeof node.id === 'string'
+        ? [
+            {
+              id: node.id,
+              parentId: typeof node.parentId === 'string' ? node.parentId : null,
+              path: node.path ?? '',
+              name: node.name ?? 'Untitled',
+            },
+          ]
+        : [],
+    )
+    const templates = (body.templates ?? []).flatMap((template) => {
       const bbox = template.bbox
       if (typeof template.id !== 'string' || typeof template.nodeId !== 'string') return []
       if (bbox === undefined) return []
@@ -520,24 +534,20 @@ export const listServerTemplates = async (
         },
       ]
     })
+    return { nodes, templates }
   } catch {
-    return []
+    return { nodes: [], templates: [] }
   }
 }
 
-/** Existing sibling names, so a new folder can pick one that is free without asking. */
-export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> => {
-  try {
-    const response = await fetch(`${server.url}/admin/nodes?season=0`, {
-      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
-    })
-    if (!response.ok) return []
-    const body = (await response.json()) as { nodes?: TreeNode[] } | TreeNode[]
-    return Array.isArray(body) ? body : (body.nodes ?? [])
-  } catch {
-    return []
-  }
-}
+/** The folder tree alone, for the admin flows that need somewhere to put something. */
+export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> =>
+  (await listServerContents(server)).nodes
+
+/** The templates alone, for the sync that puts them on the canvas. */
+export const listServerTemplates = async (
+  server: ConnectedServer,
+): Promise<readonly ServerTemplate[]> => (await listServerContents(server)).templates
 
 /**
  * Publish a local template to a server.

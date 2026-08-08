@@ -4,8 +4,7 @@ import {
   getState,
   isScopeVisible,
   type LocalFolder,
-  listNodes,
-  listServerTemplates,
+  listServerContents,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
@@ -93,15 +92,22 @@ const templatesByServer = new Map<string, readonly ServerTemplate[]>()
 export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null =>
   templatesByServer.get(serverUrl)?.find((template) => template.id === id) ?? null
 
+/**
+ * Re-read what a server publishes: its folders and the templates under them.
+ *
+ * **Not gated on admin.** The tree is what a read code is for — seeing what the alliance is
+ * building. Only *changing* it is privileged, and that boundary is drawn per row by `canEdit`.
+ * Refusing to fetch here left every member looking at a connected server with nothing under it.
+ *
+ * Both in one call, from the manifest, which is also the only way they can agree: a template row is
+ * drawn under its folder, so fetching one without the other puts templates under folders that are
+ * not there, or leaves a folder claiming to be empty a moment after something landed in it.
+ */
 export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<void> => {
-  if (!server.isAdmin) return
-  // Both, together: a template row is drawn under the folder it belongs to, so a refresh that
-  // updated one and not the other would put a template under a folder that no longer exists, or
-  // leave a folder claiming to be empty a moment after something was uploaded into it.
-  const [nodes, templates] = await Promise.all([listNodes(server), listServerTemplates(server)])
+  const { nodes, templates } = await listServerContents(server)
   nodesByServer.set(server.url, nodes)
   templatesByServer.set(server.url, templates)
   void cacheServer({ url: server.url, nodes, templates, fetchedAt: Date.now() })
