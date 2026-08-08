@@ -4,8 +4,8 @@
  * Nothing in the overlay appears or disappears: it arrives and it leaves. That is not decoration —
  * a template, a marker layer and a colour all occupy the same pixels, so a switch that acts
  * instantly gives no clue which of the three moved, and toggling one to find out is exactly what
- * the transition saves you from. Half a second is long enough to see *what* changed and short
- * enough that it never becomes a wait.
+ * the transition saves you from. Three hundred milliseconds is long enough to see *what* changed
+ * and short enough that it never becomes a wait.
  *
  * Its own module because several layers ramp and none should import another. The overlay drives
  * the template ramps; the markers only read them — and having the markers reach into the overlay
@@ -15,22 +15,47 @@
  */
 
 /** How long anything takes to arrive or leave. */
-export const FADE_MS = 500
+export const FADE_MS = 300
 
 /**
- * The same curve, for the DOM.
+ * Ease-out: everything moves at once, then settles.
  *
- * CSS `ease-in-out` is not the cubic below — it is a gentler bezier — so a button fading beside a
- * template it belongs to would drift out of step with it over half a second, which is long enough
- * to see. This is the cubic written as a bezier.
+ * The control points, rather than a keyword, because the same curve has to be evaluated in JavaScript
+ * for the ramps below and handed to CSS for anything fading in the DOM — and CSS's own `ease-out` is
+ * a much weaker curve than this. Sharing the numbers is what keeps a button fading beside its
+ * template in step with it.
  */
-export const FADE_EASING = 'cubic-bezier(0.65, 0, 0.35, 1)'
+const CONTROL = [0.23, 1, 0.32, 1] as const
+
+export const FADE_EASING = `cubic-bezier(${CONTROL.join(', ')})`
 
 /** The transition to give a DOM element whose visibility is toggled. */
 export const FADE_TRANSITION = `opacity ${FADE_MS}ms ${FADE_EASING}`
 
-/** Cubic ease-in-out: slow to leave, slow to land, quick through the middle. */
-const ease = (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2)
+/**
+ * That bezier, evaluated.
+ *
+ * A CSS cubic bezier is a curve in two dimensions with its ends pinned to (0,0) and (1,1), so
+ * getting `y` for a given time means first solving `x(t) = time` for the parameter. Bisection rather
+ * than Newton's method: the curve is monotonic in x by construction, twenty halvings put the answer
+ * within a millionth, and this runs a few dozen times a frame at most.
+ */
+const bezier = (a: number, b: number, at: number): number => {
+  const curve = (t: number, p1: number, p2: number): number => {
+    const u = 1 - t
+    return 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t
+  }
+  let low = 0
+  let high = 1
+  for (let i = 0; i < 20; i++) {
+    const mid = (low + high) / 2
+    if (curve(mid, a, b) < at) low = mid
+    else high = mid
+  }
+  return curve((low + high) / 2, CONTROL[1], CONTROL[3])
+}
+
+const ease = (t: number): number => (t <= 0 ? 0 : t >= 1 ? 1 : bezier(CONTROL[0], CONTROL[2], t))
 
 interface Fade {
   /** Where the ramp started, so a fade interrupted midway carries on from where it was. */

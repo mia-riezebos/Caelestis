@@ -392,8 +392,13 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
       size: appearance.markerSize,
       thickness: 2,
       colour: toRgbUnit(appearance.markerColour),
-      otherColour: appearance.otherColour === null ? null : toRgbUnit(appearance.otherColour),
-      otherOpacity: appearance.otherOpacity,
+      // One switch above both: off means every marker is drawn the same, and the fade and the second
+      // colour keep their values for whenever it goes back on.
+      otherColour:
+        !appearance.dimOthers || appearance.otherColour === null
+          ? null
+          : toRgbUnit(appearance.otherColour),
+      otherOpacity: appearance.dimOthers ? appearance.otherOpacity : 1,
       selected,
     }
     for (const tile of tiles) {
