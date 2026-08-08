@@ -1,7 +1,7 @@
 # Recon: map stack & how wplace draws its triangle mode
 
 Type: research
-Status: open
+Status: resolved
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/11
 
@@ -131,3 +131,29 @@ a matrix that changes across loads at different zoom/centre with one that stays 
    guesswork. The gap is that the URL updates on move-end, so the overlay would lag during a gesture.
 
 Recommend attempting 1, with 2 as the fallback that always works.
+## Resolution — 2026-08-08: confirmed live, and the map instance is ours
+
+Every "worth confirming in the browser" above has been confirmed by building against it.
+
+- **The map instance is obtainable.** It is captured while MapLibre constructs it, via
+  `_canvasContainer` — so we hold the real `Map`, its `style`, and its layer order. `style._order`
+  includes custom layers, which `getStyle()` omits; that difference matters for keeping our layers in
+  the right place.
+- **Custom layers work from a userscript**, and are what v1 ships — see `13-render-path`.
+- **The projection matrix is readable without reimplementing it.** Hooking `getUniformLocation`
+  turns an anonymous sixteen floats into a named `u_projection_matrix`, and MapLibre's *aligned*
+  variant (used only while the map is still) is what makes our pixels land on the same device pixels
+  as theirs.
+- **Their filtering, measured**: `MIN_FILTER` always `LINEAR`, `MAG_FILTER` `NEAREST` for pixel art,
+  and `generateMipmap: 0` — they never mipmap. So sub-1:1 moiré is ours to solve, which the shader
+  does with 4×4 taps.
+- **Their layers, named**: `pixel-art-layer` (one raster source for all tiles, `tileSize` 550),
+  `hotspots-halo`, `hotspots-layer`, `paint-preview-<n>-<x>,<y>` (one image source per tile being
+  drafted, **stored vertically flipped**), `pixel-hover`, and `paint-crosshair-annotations` — a
+  custom layer holding 200×200 `Uint8Array` patches, one non-zero entry per drafted pixel. That last
+  one is the only place a pixel drafted Transparent is distinguishable from an undrafted one.
+- The **triangle view mode** was never chased, because it stopped mattering: shapes are a continuous
+  parameterisation of our own rather than a replication of theirs (`14-v1-viewing-modes`).
+
+The **native alliance endpoints** noted above remain unexamined. That is now its own fog entry on the
+map rather than a loose end here.
