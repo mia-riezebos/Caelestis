@@ -316,12 +316,24 @@ export const contributions = sqliteTable(
 )
 
 /**
- * Paint events already applied, so a retry cannot double-count.
+ * Paint event ids already applied, so the ingest path has somewhere to detect a retry.
  *
  * `PaintEvent.eventId` is documented as "client-generated, so a retry can never double-count", and
  * nothing stored it — the pending path is purely additive (`placed = placed + excluded.placed`), so
  * replaying one captured event N times multiplied the counters by N. The guarantee was stated as a
  * property of the design with nowhere in the schema to hold it.
+ *
+ * This table is that place, and it is not the guarantee. The counters it protects live in a Durable
+ * Object and `CounterStore.record` takes no event id, so the check and the increment are two writes
+ * to two systems and no constraint here can make them one. What the schema provides is a durable,
+ * uniquely-keyed record of what has been applied; what the ingest route must provide is the order.
+ *
+ * Insert here *first*, then record the counters. That way a crash between the two loses one event's
+ * counts, which is the recoverable direction — the row exists, so the retry is refused and the
+ * counters stay truthful about every other event. Recording first and inserting second fails the
+ * other way: the retry is admitted and the counts inflate permanently, which is the bug this table
+ * was added to prevent. Making the two atomic needs the event id to reach the counter store, which
+ * is a port change and belongs with the route that will need it.
  *
  * `seen_at_ms` is what a sweeper prunes on. The row only has to outlive the window in which a retry
  * is plausible, not the event itself.
