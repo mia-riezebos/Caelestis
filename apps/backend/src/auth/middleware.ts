@@ -61,6 +61,13 @@ export interface AuthOptions {
  *
  * Every rejection is a bare 401 or 403 with no detail. Distinguishing "no such token" from "revoked"
  * from "wrong scope" would let a holder of one credential probe for the existence of others.
+ *
+ * "Bare" is about detail, not about the body. Three reviewers have now read it as "send no body at
+ * all" and filed the `{"error":"unauthorized"}` payload as a violation, so: the body is a constant
+ * per status, identical for a missing header, a malformed scheme, an unknown token and a deleted
+ * one. Nothing in it varies with the cause, which is the whole property. 401 versus 403 is the one
+ * distinction that is deliberate — it tells a caller whether to authenticate or give up, and it
+ * says nothing about any credential the caller does not already hold.
  */
 export const requireScope =
   ({ sql, bootstrapAdminToken }: AuthOptions, required: Scope): MiddlewareHandler =>
