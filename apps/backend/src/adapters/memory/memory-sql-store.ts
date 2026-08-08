@@ -17,6 +17,7 @@ import {
   NodePathConflictError,
   NodePathTooLongError,
   type NodeRecord,
+  type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
   type TemplatePatch,
@@ -53,6 +54,19 @@ export class MemorySqlStore implements SqlStore {
   >()
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
+
+  private settings: ServerSettings = { name: null, description: null }
+
+  async readServerSettings(): Promise<ServerSettings> {
+    return { ...this.settings }
+  }
+
+  async writeServerSettings(patch: { name?: string; description?: string | null }): Promise<void> {
+    this.settings = {
+      name: patch.name ?? this.settings.name,
+      description: patch.description === undefined ? this.settings.description : patch.description,
+    }
+  }
 
   async insertNode(node: NodeRecord): Promise<NodeRecord> {
     if (this.nodes.has(node.id)) throw new Error(`node already exists: ${node.id}`)

@@ -4,6 +4,7 @@ import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
   nodes,
+  serverSettings,
   telemetryBuckets,
   templates,
   templateVersions,
@@ -27,6 +28,7 @@ import {
   NodePathTooLongError,
   type NodeRecord,
   READ_BUCKETS_CHUNK_SIZE,
+  type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
   type TemplatePatch,
@@ -460,6 +462,31 @@ export class D1SqlStore implements SqlStore {
       totalPixels: row.totalPixels,
       chunks,
     }
+  }
+
+  async readServerSettings(): Promise<ServerSettings> {
+    const rows = await this.database
+      .select({ name: serverSettings.name, description: serverSettings.description })
+      .from(serverSettings)
+      .where(eq(serverSettings.id, 1))
+      .limit(1)
+    const row = rows[0]
+    return { name: row?.name ?? null, description: row?.description ?? null }
+  }
+
+  async writeServerSettings(patch: { name?: string; description?: string | null }): Promise<void> {
+    // Read-then-write rather than an upsert of the patch alone: an upsert would insert nulls for
+    // whichever field this call is not setting, so renaming a server would silently clear its
+    // description.
+    const current = await this.readServerSettings()
+    const next = {
+      name: patch.name ?? current.name,
+      description: patch.description === undefined ? current.description : patch.description,
+    }
+    await this.database
+      .insert(serverSettings)
+      .values({ id: 1, ...next })
+      .onConflictDoUpdate({ target: serverSettings.id, set: next })
   }
 
   async readTemplate(templateId: string): Promise<TemplateRecord | null> {

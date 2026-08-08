@@ -35,6 +35,7 @@ export {
   NodePathTooLongError,
   type NodeRecord,
   READ_BUCKETS_CHUNK_SIZE,
+  type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
   type TemplatePatch,

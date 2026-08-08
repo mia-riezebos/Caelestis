@@ -339,7 +339,27 @@ export interface TemplatePatch {
   readonly nodeId?: string
 }
 
+/**
+ * What an admin has renamed this server to, or nulls where they have not.
+ *
+ * Null is "not decided" and falls back to the deployment's own configuration — which is different
+ * from an empty string, and is why these are nullable rather than defaulted.
+ */
+export interface ServerSettings {
+  readonly name: string | null
+  readonly description: string | null
+}
+
 export interface SqlStore {
+  /** The operator's overrides. Nulls throughout when nobody has set anything. */
+  readServerSettings(): Promise<ServerSettings>
+
+  /** Update only the supplied fields; explicit null clears the configured override. */
+  writeServerSettings(patch: {
+    readonly name?: string
+    readonly description?: string | null
+  }): Promise<void>
+
   /**
    * Insert a node, and answer with the row as stored.
    *
