@@ -218,6 +218,10 @@ userscript has nowhere to report to. Everything else it needs from a server — 
 - **Promoting a locally-imported template to a shared one** — in place, or re-upload.
 - **Does the palette grow?** A new colour would not break stored templates, but it would silently
   change what `Owned` and `Free` mean, and what a validated upload was validated against.
+
+Newly ticketed rather than fog: whether a server can verify alliance membership itself, rather than
+trusting the client's `/me` claim — [Can a server verify alliance membership
+itself?](https://github.com/mia-riezebos/Caelestis/issues/51).
 - **Multi-server merge UX** — how conflicting/overlapping templates from different servers are
   surfaced, and where the "what did this server just add" trust diff lives in the userscript UI.
 - **Admin surface without a web frontend** — how an alliance leader uploads templates and edits the
