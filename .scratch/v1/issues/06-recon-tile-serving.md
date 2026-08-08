@@ -1,7 +1,7 @@
 # Recon: wplace tile serving
 
 Type: research
-Status: open
+Status: resolved
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/7
 
@@ -96,3 +96,28 @@ clamps at ±85.05112877980659°, so `minY > maxY` is simply invalid.
 
 Found while fixing a clamp that placed `lng: 180` at exactly `WORLD_PIXELS`, which floors to tile
 2048 — one past the last tile, and rejected by `parseTileKey`.
+
+## Resolution — 2026-08-08: the transport question, answered by hooking it
+
+The remaining open item was *which transport* a tile request uses and therefore what a shim has to
+wrap. Answered by building it: the route is
+
+    fetch → Response.arrayBuffer() → new Blob(bytes) → createImageBitmap → texImage2D
+
+and every hop had to be hooked, because **object identity does not survive it**. wplace read tiles
+with `arrayBuffer()` — measured, sixteen calls and not one `blob()` — and construct their own `Blob`
+from the bytes, so a `WeakMap` keyed on the blob seen in the fetch shim never matched: zero
+attributions. What does survive is the *buffer*, so the tag is carried on the `ArrayBuffer` and the
+`Blob` constructor is wrapped to pass it on. Byte length survives too, and stays as a fallback for
+anything reaching `createImageBitmap` another way.
+
+Two consequences the design did not anticipate:
+
+- **Tiles are decoded exactly once**, on the page load that shows them. Capture that is switched on
+  after the first frame misses every tile already on screen, and each then waits on wplace
+  re-fetching it. Capture has to be armed before the first frame, not decided at draw time.
+- **`GET`ting a tile ourselves is legitimate and cheap** when we missed one, rather than waiting for
+  them to ask again — the CDN serves it and the page is unaffected.
+
+The intercept no longer composites anything (see `13-render-path`); this is now purely how the
+userscript *reads* the canvas.
