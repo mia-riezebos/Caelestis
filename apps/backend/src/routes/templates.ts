@@ -86,9 +86,14 @@ export const createChunkRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: Aut
     const bytes = await ports.blobs.get('chunks', hash)
     if (bytes === null) return c.json({ error: 'not found' }, 404)
 
+    // `private`, because this route is behind a read scope. `public` invites any standards-compliant
+    // shared cache to store the response and hand it to a later request that carries no
+    // Authorization at all — so one authorised fetch would make a chunk readable by anyone who knows
+    // its hash. Chunks are immutable and content-addressed, so a client may still cache one
+    // forever; what it may not do is cache it on someone else's behalf.
     return c.body(new Uint8Array(bytes), 200, {
       'content-type': 'image/png',
-      'cache-control': 'public, max-age=31536000, immutable',
+      'cache-control': 'private, max-age=31536000, immutable',
     })
   })
 

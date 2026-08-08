@@ -18,6 +18,7 @@ export {
   type AccessToken,
   assertValidAccessToken,
   assertValidBuckets,
+  assertValidTemplateVersion,
   type BucketQuery,
   type BucketStore,
   compareAccessTokens,

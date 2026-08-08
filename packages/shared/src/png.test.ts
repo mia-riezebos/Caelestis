@@ -232,6 +232,76 @@ describe('decoding', () => {
   })
 })
 
+it.each([
+  ['greyscale', 0, 1, [7], [0, 7], [7, 7, 7, 0]],
+  ['RGB', 2, 3, [10, 20, 30], [0, 10, 0, 20, 0, 30], [10, 20, 30, 0]],
+])(
+  'honours a tRNS transparent sample on %s',
+  async (_label, colourType, channels, data, alphas, want) => {
+    // tRNS names one sample as fully transparent. Ignoring it forced every pixel opaque, so a
+    // template with a transparent background was quantised and stored as painted pixels — from a
+    // file that was never malformed. The chunk is 16-bit big-endian per sample even at depth 8.
+    const png = buildPng({ width: 1, height: 1, colourType, channels, data: [data], alphas })
+    const decoded = await decodePng(png)
+    expect([...decoded.pixels]).toEqual(want)
+  },
+)
+
+it.each([
+  ['greyscale', 0, 1, [9], [0, 7]],
+  ['RGB', 2, 3, [10, 20, 31], [0, 10, 0, 20, 0, 30]],
+])(
+  'leaves a %s sample that does not match tRNS opaque',
+  async (_label, colourType, channels, data, alphas) => {
+    const png = buildPng({ width: 1, height: 1, colourType, channels, data: [data], alphas })
+    const decoded = await decodePng(png)
+    expect(decoded.pixels[3]).toBe(255)
+  },
+)
+
+it('refuses an image with more pixels than it may allocate', async () => {
+  // The buffers are sized from the header, so a few hundred bytes on the wire can ask for over a
+  // gigabyte. Rejected before anything is allocated from those numbers.
+  const png = buildPng({ width: 20_000, height: 20_000, colourType: 2, channels: 3, data: [] })
+  await expect(decodePng(png)).rejects.toThrow(/more than \d+ pixels/)
+})
+
+it('reports a corrupt deflate stream as a PNG error', async () => {
+  // Not a PngError, and the upload route answers 500 instead of its documented 400 for a
+  // malformed image.
+  const png = concat([
+    new Uint8Array(SIGNATURE),
+    chunk(
+      'IHDR',
+      (() => {
+        const ihdr = new Uint8Array(13)
+        new DataView(ihdr.buffer).setUint32(0, 1)
+        new DataView(ihdr.buffer).setUint32(4, 1)
+        ihdr[8] = 8
+        ihdr[9] = 2
+        return ihdr
+      })(),
+    ),
+    chunk('IDAT', new Uint8Array([0x78, 0x9c, 0xff, 0xff, 0xff, 0xff])),
+    chunk('IEND', new Uint8Array(0)),
+  ])
+  await expect(decodePng(png)).rejects.toThrow(PngError)
+})
+
+it('refuses an out-of-range indexed palette entry', async () => {
+  // One three-byte entry and pixel index 1: the bound was off by an entry, so the decoder
+  // substituted black and stored it rather than rejecting the image.
+  const png = buildPng({
+    width: 1,
+    height: 1,
+    colourType: 3,
+    channels: 1,
+    data: [[1]],
+    palette: [255, 0, 0],
+  })
+  await expect(decodePng(png)).rejects.toThrow(/palette index out of range/)
+})
+
 describe('encoding', () => {
   it('round-trips wplace indices through its own decoder', async () => {
     // Index 0 is Black and index 4 is White in wplace's order, so this also pins that the encoder

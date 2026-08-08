@@ -11,6 +11,7 @@ import {
 import {
   type AccessToken,
   assertValidBuckets,
+  assertValidTemplateVersion,
   type BucketQuery,
   compareAccessTokens,
   compareBuckets,
@@ -30,6 +31,20 @@ const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
   createdAt: row.createdAtMs,
 })
 
+/**
+ * `version_tiles` rows per INSERT. Four bound parameters each, so 24 rows is 96 — just under D1's
+ * 100-parameter ceiling, and it turns the per-tile statement count into a per-24-tile one.
+ */
+const VERSION_TILE_ROWS_PER_INSERT = 24
+
+const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
+  const out: T[][] = []
+  for (let offset = 0; offset < rows.length; offset += size) {
+    out.push(rows.slice(offset, offset + size))
+  }
+  return out
+}
+
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
   resolution: row.resolution,
@@ -47,6 +62,7 @@ export class D1SqlStore implements SqlStore {
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
+    assertValidTemplateVersion(version)
     const statements = [
       this.database
         .insert(templates)
@@ -73,14 +89,19 @@ export class D1SqlStore implements SqlStore {
         maxY: version.bbox.maxY,
         totalPixels: version.totalPixels,
       }),
-      ...version.chunks.map((chunk) =>
-        this.database.insert(versionTiles).values({
+      // Tiles go in as multi-row inserts, not one statement each. D1 allows 50 queries per Worker
+      // invocation on the free plan, so a 48-chunk template — a 48,000x1 upload reaches that without
+      // stressing anything — produced 51 statements and failed the whole batch. Chunked by bound
+      // parameters rather than by rows: four columns each, kept under the 100-parameter ceiling.
+      ...chunkRows(
+        version.chunks.map((chunk) => ({
           versionId: version.versionId,
           tileX: chunk.tileX,
           tileY: chunk.tileY,
           hash: chunk.hash,
-        }),
-      ),
+        })),
+        VERSION_TILE_ROWS_PER_INSERT,
+      ).map((rows) => this.database.insert(versionTiles).values(rows)),
       // The referenced version exists before this statement runs. D1 executes batch statements in
       // order, so the circular template/version relationship never needs deferred foreign keys.
       this.database

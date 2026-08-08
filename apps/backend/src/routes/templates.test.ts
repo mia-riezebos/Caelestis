@@ -71,7 +71,10 @@ describe('template routes', () => {
     const fetched = await app.request(`/chunks/${hash}`, bearer(BOOTSTRAP))
     expect(fetched.status).toBe(200)
     expect(fetched.headers.get('content-type')).toBe('image/png')
-    expect(fetched.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+    // `private`, not `public`: the route is read-scoped, and `public` lets a shared cache serve a
+    // stored chunk to a request carrying no Authorization. Immutability is still advertised — a
+    // client may cache a content-addressed chunk forever, just not on anyone else's behalf.
+    expect(fetched.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
     expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(stored)
   })
 

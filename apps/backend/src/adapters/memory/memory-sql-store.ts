@@ -2,6 +2,7 @@ import {
   type AccessToken,
   assertValidAccessToken,
   assertValidBuckets,
+  assertValidTemplateVersion,
   type BucketQuery,
   compareAccessTokens,
   compareBuckets,
@@ -27,6 +28,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly tokens = new Map<string, AccessToken>()
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
+    assertValidTemplateVersion(version)
     if (this.templateVersions.has(version.versionId)) {
       throw new Error(`template version already exists: ${version.versionId}`)
     }

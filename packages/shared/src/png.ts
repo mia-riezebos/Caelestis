@@ -23,6 +23,16 @@ import { PALETTE_RGB, PALETTE_SIZE, TRANSPARENT_INDEX } from './palette.js'
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
+/**
+ * Pixels one upload may declare.
+ *
+ * Peak memory is roughly `pixels * (4 + channels)` — the RGBA buffer plus the unfiltered scanlines —
+ * so four million keeps a worst-case RGBA decode near 32 MB inside a Worker's 128 MB. That is a
+ * 2000x2000 template, far past anything an alliance places by hand. The bound is on the allocation,
+ * not the request body: the point is that a small upload cannot ask for a large buffer.
+ */
+const MAX_PIXELS = 4_000_000
+
 /** Bytes per pixel for each supported colour type, indexed by the type's own code. */
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }
 
@@ -47,12 +57,45 @@ const crc32 = (bytes: Uint8Array): number => {
   return (crc ^ 0xffffffff) >>> 0
 }
 
-const inflate = async (bytes: Uint8Array): Promise<Uint8Array> => {
+/**
+ * Inflate IDAT, refusing to buffer more than the header says the image needs.
+ *
+ * Reading the whole stream and checking afterwards is what makes a decompression bomb work: a 1x1
+ * header can carry an IDAT that inflates to gigabytes, and the Worker is gone long before the size
+ * check runs. Counting as it arrives costs nothing and bounds the allocation by dimensions the
+ * caller has already validated.
+ *
+ * A platform decompression failure becomes a `PngError` here too — it is a malformed upload, and
+ * the route's 400 depends on telling that apart from an internal fault.
+ */
+const inflate = async (bytes: Uint8Array, limit: number): Promise<Uint8Array> => {
   // 'deflate' is the zlib-wrapped form, which is what PNG's IDAT carries.
   const stream = new Blob([bytes as BlobPart])
     .stream()
     .pipeThrough(new DecompressionStream('deflate'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
+  const reader = stream.getReader()
+  const parts: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.length
+      if (total > limit) throw new PngError('IDAT inflates to more than its dimensions allow')
+      parts.push(value)
+    }
+  } catch (cause) {
+    await reader.cancel().catch(() => {})
+    if (cause instanceof PngError) throw cause
+    throw new PngError('IDAT is not a valid zlib stream')
+  }
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const part of parts) {
+    out.set(part, at)
+    at += part.length
+  }
+  return out
 }
 
 const deflate = async (bytes: Uint8Array): Promise<Uint8Array> => {
@@ -177,6 +220,11 @@ export const decodePng = async (bytes: Uint8Array): Promise<RgbaImage> => {
 
   const { width, height, colourType } = header
   if (width === 0 || height === 0) throw new PngError('image has no pixels')
+  // Bounded before anything is allocated from these numbers: a declared 20000x20000 asks for over a
+  // gigabyte from a Worker that has 128 MB, out of an upload a few hundred bytes long.
+  if (width * height > MAX_PIXELS) {
+    throw new PngError(`image has more than ${MAX_PIXELS} pixels`)
+  }
 
   const compressed = new Uint8Array(idat.reduce((total, part) => total + part.length, 0))
   let cursor = 0
@@ -187,7 +235,26 @@ export const decodePng = async (bytes: Uint8Array): Promise<RgbaImage> => {
 
   // biome-ignore lint/style/noNonNullAssertion: colourType was checked against CHANNELS above
   const channels = CHANNELS[colourType]!
-  const raw = unfilter(await inflate(compressed), width, height, channels)
+  // A filter byte per row, then the row. PNG says IDAT inflates to exactly this, so a shorter buffer
+  // is truncated and a longer one is lying — and short used to be zero-filled silently, turning a
+  // one-pixel image into that pixel plus a black one.
+  const expected = (width * channels + 1) * height
+  const inflated = await inflate(compressed, expected)
+  if (inflated.length !== expected) {
+    throw new PngError(`IDAT inflates to ${inflated.length} bytes, expected ${expected}`)
+  }
+  const raw = unfilter(inflated, width, height, channels)
+
+  // tRNS on a greyscale or RGB image names one sample as fully transparent, and ignoring it forced
+  // every pixel opaque — so a template with a transparent background was quantised and stored as
+  // painted pixels, permanently, from a file that was never malformed. The chunk is 16-bit
+  // big-endian per sample even at bit depth 8, where only the low byte can matter.
+  const greyTransparent =
+    colourType === 0 && alphas != null && alphas.length >= 2 ? (alphas[1] ?? null) : null
+  const rgbTransparent =
+    colourType === 2 && alphas != null && alphas.length >= 6
+      ? ([alphas[1] ?? 0, alphas[3] ?? 0, alphas[5] ?? 0] as const)
+      : null
 
   const pixels = new Uint8Array(width * height * 4)
   for (let index = 0; index < width * height; index += 1) {
@@ -200,20 +267,33 @@ export const decodePng = async (bytes: Uint8Array): Promise<RgbaImage> => {
         pixels[target] = grey
         pixels[target + 1] = grey
         pixels[target + 2] = grey
-        pixels[target + 3] = colourType === 4 ? (raw[source + 1] ?? 255) : 255
+        pixels[target + 3] =
+          colourType === 4 ? (raw[source + 1] ?? 255) : grey === greyTransparent ? 0 : 255
         break
       }
       case 2:
-      case 6:
-        pixels[target] = raw[source] ?? 0
-        pixels[target + 1] = raw[source + 1] ?? 0
-        pixels[target + 2] = raw[source + 2] ?? 0
-        pixels[target + 3] = colourType === 6 ? (raw[source + 3] ?? 255) : 255
+      case 6: {
+        const red = raw[source] ?? 0
+        const green = raw[source + 1] ?? 0
+        const blue = raw[source + 2] ?? 0
+        pixels[target] = red
+        pixels[target + 1] = green
+        pixels[target + 2] = blue
+        pixels[target + 3] =
+          colourType === 6
+            ? (raw[source + 3] ?? 255)
+            : rgbTransparent !== null &&
+                red === rgbTransparent[0] &&
+                green === rgbTransparent[1] &&
+                blue === rgbTransparent[2]
+              ? 0
+              : 255
         break
+      }
       case 3: {
         if (palette === null) throw new PngError('indexed PNG without a PLTE chunk')
         const entry = (raw[source] ?? 0) * 3
-        if (entry + 2 >= palette.length + 3) throw new PngError('palette index out of range')
+        if (entry + 3 > palette.length) throw new PngError('palette index out of range')
         pixels[target] = palette[entry] ?? 0
         pixels[target + 1] = palette[entry + 1] ?? 0
         pixels[target + 2] = palette[entry + 2] ?? 0

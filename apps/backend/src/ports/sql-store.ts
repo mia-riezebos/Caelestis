@@ -1,4 +1,4 @@
-import type { Millis, PixelBounds, Seconds } from '@wts/shared'
+import { type Millis, type PixelBounds, type Seconds, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { SCOPES, type Scope } from '../auth/tokens.js'
 
 /**
@@ -127,6 +127,57 @@ export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets'>
  * unrecognised scope, but a writer that passes green in tests and throws in D1 is worth catching
  * here rather than there.
  */
+/**
+ * The domain the `templates`, `template_versions` and `version_tiles` CHECKs enforce, stated where
+ * both adapters can honour it.
+ *
+ * The memory store validated duplicate versions and tiles and nothing else, so it accepted rows D1
+ * refuses — `createdWithToken: 'bootstrap'`, a negative author account, a tile off the canvas, a
+ * short hash, an inverted bounding box. That is the third time an adapter has been wider than the
+ * database it stands in for, and the route tests run against this one: the malformed-attribution
+ * bug the last commits fixed would have stayed green here.
+ */
+export const assertValidTemplateVersion = (version: TemplateVersionRecord): void => {
+  const fail = (reason: string): never => {
+    throw new Error(`insertTemplateVersion rejected ${version.versionId}: ${reason}`)
+  }
+  const isDigest = (value: string) => /^[0-9a-f]{64}$/.test(value)
+  if (!isDigest(version.createdBy)) fail(`createdBy ${version.createdBy} is not a sha256 digest`)
+  if (
+    version.createdByUserId !== null &&
+    (!Number.isSafeInteger(version.createdByUserId) || version.createdByUserId < 0)
+  ) {
+    fail(`createdByUserId ${version.createdByUserId} is not a non-negative integer`)
+  }
+  const { minX, minY, maxX, maxY } = version.bbox
+  if (![minX, minY, maxX, maxY, version.totalPixels].every(Number.isSafeInteger)) {
+    fail('bounding box and total pixels must be integers')
+  }
+  // x wraps through zero so minX may exceed maxX; y does not. Zero width or height is not a
+  // placement. These are the same bounds `template_versions_pixel_bounds_check` states.
+  if (minX < 0 || minX >= WORLD_PIXELS || minY < 0 || minY >= WORLD_PIXELS) {
+    fail('bounding box minimum is outside the canvas')
+  }
+  if (maxX < 1 || maxX > WORLD_PIXELS || maxY < 1 || maxY > WORLD_PIXELS) {
+    fail('bounding box maximum is outside the canvas')
+  }
+  if (minX === maxX || minY >= maxY) fail('bounding box covers no pixels')
+  if (version.totalPixels < 0) fail('total pixels is negative')
+  for (const chunk of version.chunks) {
+    if (
+      !Number.isSafeInteger(chunk.tileX) ||
+      !Number.isSafeInteger(chunk.tileY) ||
+      chunk.tileX < 0 ||
+      chunk.tileX >= WORLD_TILES ||
+      chunk.tileY < 0 ||
+      chunk.tileY >= WORLD_TILES
+    ) {
+      fail(`chunk tile ${chunk.tileX}/${chunk.tileY} is outside the canvas`)
+    }
+    if (!isDigest(chunk.hash)) fail(`chunk hash ${chunk.hash} is not a sha256 digest`)
+  }
+}
+
 export const assertValidAccessToken = (token: AccessToken): void => {
   if (!(SCOPES as readonly string[]).includes(token.scope)) {
     throw new Error(`insertAccessToken rejected ${token.tokenHash}: unknown scope ${token.scope}`)
