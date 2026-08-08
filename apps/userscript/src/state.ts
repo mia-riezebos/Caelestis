@@ -488,12 +488,12 @@ export const deleteNode = async (
  */
 export const listServerContents = async (
   server: ConnectedServer,
-): Promise<{ nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] }> => {
+): Promise<{ nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] } | null> => {
   try {
     const response = await fetch(`${server.url}/manifest?season=0`, {
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
     })
-    if (!response.ok) return { nodes: [], templates: [] }
+    if (!response.ok) return null
     const body = (await response.json()) as {
       nodes?: ReadonlyArray<Partial<TreeNode>>
       templates?: ReadonlyArray<
@@ -536,18 +536,25 @@ export const listServerContents = async (
     })
     return { nodes, templates }
   } catch {
-    return { nodes: [], templates: [] }
+    return null
   }
 }
 
 /** The folder tree alone, for the admin flows that need somewhere to put something. */
 export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> =>
-  (await listServerContents(server)).nodes
+  (await listServerContents(server))?.nodes ?? []
 
-/** The templates alone, for the sync that puts them on the canvas. */
+/**
+ * The templates alone, or null when the server could not be asked.
+ *
+ * Null and empty are kept apart on purpose. A failed fetch used to answer with an empty list, and
+ * the sync read that as "this server publishes nothing" — so one blip, or a server restarting, took
+ * every template off the canvas and the next success put them back as if they were new.
+ */
 export const listServerTemplates = async (
   server: ConnectedServer,
-): Promise<readonly ServerTemplate[]> => (await listServerContents(server)).templates
+): Promise<readonly ServerTemplate[] | null> =>
+  (await listServerContents(server))?.templates ?? null
 
 /**
  * Publish a local template to a server.
