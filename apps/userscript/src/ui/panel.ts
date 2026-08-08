@@ -43,6 +43,7 @@ import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen } from '../wplace-paint.js'
+import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
@@ -319,33 +320,38 @@ const treeView = (): HTMLElement => {
   // Paint what the servers said last time, then let a live fetch replace it.
   void primeFromCache(renderTree)
 
-  /**
-   * Redraw the tree when the store changes underneath it.
-   *
-   * The panel used to subscribe to nothing, so every row showed whatever was true when it was last
-   * drawn by an interaction. That was survivable while templates only ever appeared because someone
-   * in this panel imported one — and stopped being survivable the moment a background sync could
-   * add one: the canvas updated, the tree did not, and a template drew over the map with its own
-   * switch reading "off" because the row had been drawn before it existed. Clicking it then sent
-   * "on" and only the second click turned it off, which is exactly as baffling as it sounds.
-   *
-   * Skipped mid-gesture. A rename is an open text field and a drag is a row in flight; replacing
-   * the whole subtree under either takes it away from the pointer.
-   */
-  const refreshTree = (): void => {
-    if (!open || currentView !== 'tree') return
-    const root = document.getElementById(PANEL_ID)
-    if (root === null) return
-    if (root.querySelector('.wts-dragging') !== null) return
-    if (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
-      return
-    renderTree()
-  }
-  onLocalChange(refreshTree)
-  onStateChange(refreshTree)
-
   view.append(toolbar, body)
   return view
+}
+
+/**
+ * Redraw whatever the panel is showing when the state changes underneath it.
+ *
+ * The panel used to subscribe to nothing, so every row showed whatever was true when it was last
+ * drawn by an interaction. That was survivable while templates only ever appeared because someone
+ * in this panel imported one — and stopped being survivable the moment a background sync could add
+ * one: the canvas updated, the tree did not, and a template drew over the map with its own switch
+ * reading "off" because the row had been drawn before it existed.
+ *
+ * **Every view, not only the tree.** A keybind is a change from outside the panel by definition, so
+ * pressing `W` moved the markers and left the switch that claims to control them reading the
+ * opposite — and clicking it then did nothing visible, because it was already in the state it was
+ * being asked for.
+ *
+ * Skipped mid-gesture. A rename is an open text field, a drag is a row in flight, and a slider is
+ * held under the pointer; replacing any of those takes the thing away from the hand using it. The
+ * colour picker counts even though it is not in the panel — it is anchored to a swatch that is, and
+ * it writes a colour on every pointer move, so rebuilding would detach it from its own anchor.
+ */
+const refreshView = (): void => {
+  if (!open) return
+  if (isColourPickerOpen()) return
+  const root = document.getElementById(PANEL_ID)
+  if (root === null) return
+  if (root.querySelector('.wts-dragging') !== null) return
+  const active = document.activeElement
+  if (root.contains(active) && active instanceof HTMLInputElement) return
+  showView(currentView)
 }
 
 const settingRow = (label: string, hint: string | null, control: HTMLElement): HTMLElement => {
@@ -1949,4 +1955,9 @@ export const installPanel = (): void => {
   new MutationObserver(sync).observe(document.body, { childList: true, subtree: true })
   window.addEventListener('resize', positionRail)
   onStateChange(syncColourModeState)
+  // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a
+  // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per
+  // change.
+  onStateChange(refreshView)
+  onLocalChange(refreshView)
 }

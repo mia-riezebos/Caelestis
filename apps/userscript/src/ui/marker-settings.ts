@@ -1,4 +1,5 @@
 import { type Appearance, UNPAINTED_LIMIT_CONTROL } from '../templates/appearance.js'
+import { colourSwatch } from './colour-picker.js'
 
 /**
  * Everything under "Mismatches", as one block, in both places that show it.
@@ -107,17 +108,8 @@ const track = (
   return wrap
 }
 
-const swatch = (value: string, onChange: (next: string) => void): HTMLInputElement => {
-  const input = document.createElement('input')
-  input.type = 'color'
-  input.className = 'input input-xs'
-  input.style.padding = '0'
-  input.style.width = '2.5rem'
-  input.style.flex = '0 0 auto'
-  input.value = value
-  input.addEventListener('input', () => onChange(input.value))
-  return input
-}
+const swatch = (label: string, value: string, onChange: (next: string) => void): HTMLElement =>
+  colourSwatch(value, onChange, { label })
 
 const tick = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
   const input = document.createElement('input')
@@ -184,7 +176,7 @@ export const mismatchSettings = (
     ),
     row(
       'Colour',
-      swatch(values.markerColour, (next) => write({ markerColour: next })),
+      swatch('Marker colour', values.markerColour, (next) => write({ markerColour: next })),
       at(1),
     ),
     row(
@@ -272,7 +264,9 @@ const markedInRow = (
   const cell = document.createElement('span')
   cell.className = 'flex items-center gap-2'
   cell.appendChild(
-    swatch(values.otherColour ?? values.markerColour, (next) => write({ otherColour: next })),
+    swatch('Colour for other colours', values.otherColour ?? values.markerColour, (next) =>
+      write({ otherColour: next }),
+    ),
   )
   const same = document.createElement('button')
   same.type = 'button'
