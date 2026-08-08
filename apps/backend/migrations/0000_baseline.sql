@@ -4,7 +4,6 @@ CREATE TABLE `access_tokens` (
 	`scope` text NOT NULL,
 	`created_by` text NOT NULL,
 	`created_at_ms` integer NOT NULL,
-	`revoked_at_ms` integer,
 	CONSTRAINT "access_tokens_scope_check" CHECK("access_tokens"."scope" IN ('read', 'report', 'admin'))
 );
 --> statement-breakpoint
@@ -79,6 +78,7 @@ CREATE TABLE `template_versions` (
 	`template_id` text NOT NULL,
 	`created_at_ms` integer NOT NULL,
 	`created_by` text NOT NULL,
+	`created_by_user_id` integer NOT NULL,
 	`min_x` integer NOT NULL,
 	`min_y` integer NOT NULL,
 	`max_x` integer NOT NULL,
@@ -89,6 +89,8 @@ CREATE TABLE `template_versions` (
 	`bounds_west` real,
 	`bounds_east` real,
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "template_versions_created_by_check" CHECK(length("template_versions"."created_by") = 64 AND "template_versions"."created_by" NOT GLOB '*[^0-9a-f]*'
+        AND typeof("template_versions"."created_by_user_id") = 'integer' AND "template_versions"."created_by_user_id" >= 0),
 	CONSTRAINT "template_versions_bounds_all_or_none_check" CHECK(("template_versions"."bounds_north" IS NULL AND "template_versions"."bounds_south" IS NULL AND "template_versions"."bounds_west" IS NULL AND "template_versions"."bounds_east" IS NULL) OR ("template_versions"."bounds_north" IS NOT NULL AND "template_versions"."bounds_south" IS NOT NULL AND "template_versions"."bounds_west" IS NOT NULL AND "template_versions"."bounds_east" IS NOT NULL)),
 	CONSTRAINT "template_versions_pixel_bounds_check" CHECK(typeof("template_versions"."min_x") = 'integer' AND typeof("template_versions"."min_y") = 'integer'
         AND typeof("template_versions"."max_x") = 'integer' AND typeof("template_versions"."max_y") = 'integer'
@@ -110,9 +112,13 @@ CREATE TABLE `templates` (
 	`name` text NOT NULL,
 	`season` integer NOT NULL,
 	`current_version_id` text,
+	`created_by` text NOT NULL,
+	`created_by_user_id` integer NOT NULL,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`node_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
-	FOREIGN KEY (`current_version_id`,`id`) REFERENCES `template_versions`(`id`,`template_id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`current_version_id`,`id`) REFERENCES `template_versions`(`id`,`template_id`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "templates_created_by_check" CHECK(length("templates"."created_by") = 64 AND "templates"."created_by" NOT GLOB '*[^0-9a-f]*'
+        AND typeof("templates"."created_by_user_id") = 'integer' AND "templates"."created_by_user_id" >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE `tile_history` (

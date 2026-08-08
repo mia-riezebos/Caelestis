@@ -73,7 +73,9 @@ export const templateVersions = sqliteTable(
       .notNull()
       .references((): AnySQLiteColumn => templates.id),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
+    /** Who uploaded this version — token digest and wplace account, as everywhere else. */
     createdBy: text('created_by').notNull(),
+    createdByUserId: integer('created_by_user_id').notNull(),
     minX: integer('min_x').notNull(),
     minY: integer('min_y').notNull(),
     maxX: integer('max_x').notNull(),
@@ -86,6 +88,14 @@ export const templateVersions = sqliteTable(
   },
   (table) => [
     unique('template_versions_id_template_idx').on(table.id, table.templateId),
+    // Same shape rule the reporter columns carry, for the same reason: an author record outlives
+    // the credential it names, so the digest is constrained and its existence is not.
+    check(
+      'template_versions_created_by_check',
+      sql`length(${table.createdBy}) = 64 AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
+        AND typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0`,
+    ),
+
     check(
       'template_versions_bounds_all_or_none_check',
       sql`(${table.boundsNorth} IS NULL AND ${table.boundsSouth} IS NULL AND ${table.boundsWest} IS NULL AND ${table.boundsEast} IS NULL) OR (${table.boundsNorth} IS NOT NULL AND ${table.boundsSouth} IS NOT NULL AND ${table.boundsWest} IS NOT NULL AND ${table.boundsEast} IS NOT NULL)`,
@@ -122,6 +132,14 @@ export const templates = sqliteTable(
     name: text('name').notNull(),
     season: integer('season').notNull(),
     currentVersionId: text('current_version_id'),
+    /**
+     * Who created this template, as the same pair a report is attributed to: the digest of the
+     * access token used, and the wplace `/me` id of the account that used it. `template_versions`
+     * records this per upload; without it here, the template itself — the thing that gets renamed,
+     * moved and deleted — had a creation time and no author.
+     */
+    createdBy: text('created_by').notNull(),
+    createdByUserId: integer('created_by_user_id').notNull(),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
   // The version this template currently serves has to be one of *its own* versions. Referencing
@@ -133,6 +151,13 @@ export const templates = sqliteTable(
   // Expressed as a composite key against (id, template_id), which is why template_versions carries
   // a unique index on that pair: SQLite requires a foreign key's parent columns to be unique.
   (table) => [
+    // Same shape rule the reporter columns carry, for the same reason: an author record outlives
+    // the credential it names, so the digest is constrained and its existence is not.
+    check(
+      'templates_created_by_check',
+      sql`length(${table.createdBy}) = 64 AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
+        AND typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0`,
+    ),
     foreignKey({
       columns: [table.currentVersionId, table.id],
       foreignColumns: [templateVersions.id, templateVersions.templateId],
@@ -171,7 +196,6 @@ export const accessTokens = sqliteTable(
     scope: text('scope', { enum: ['read', 'report', 'admin'] }).notNull(),
     createdBy: text('created_by').notNull(),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
-    revokedAtMs: integer('revoked_at_ms').$type<Millis>(),
   },
   (table) => [
     check('access_tokens_scope_check', sql`${table.scope} IN ('read', 'report', 'admin')`),

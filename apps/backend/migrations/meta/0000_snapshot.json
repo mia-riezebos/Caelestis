@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1b7e2f51-3934-4c20-9f97-aaf70b80f50d",
+  "id": "d3f7d01d-629b-4f6f-bb80-51bdac2549d8",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -40,13 +40,6 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "revoked_at_ms": {
-          "name": "revoked_at_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         }
       },
@@ -412,6 +405,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "min_x": {
           "name": "min_x",
           "type": "integer",
@@ -504,6 +504,10 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
+        "template_versions_created_by_check": {
+          "name": "template_versions_created_by_check",
+          "value": "length(\"template_versions\".\"created_by\") = 64 AND \"template_versions\".\"created_by\" NOT GLOB '*[^0-9a-f]*'\n        AND typeof(\"template_versions\".\"created_by_user_id\") = 'integer' AND \"template_versions\".\"created_by_user_id\" >= 0"
+        },
         "template_versions_bounds_all_or_none_check": {
           "name": "template_versions_bounds_all_or_none_check",
           "value": "(\"template_versions\".\"bounds_north\" IS NULL AND \"template_versions\".\"bounds_south\" IS NULL AND \"template_versions\".\"bounds_west\" IS NULL AND \"template_versions\".\"bounds_east\" IS NULL) OR (\"template_versions\".\"bounds_north\" IS NOT NULL AND \"template_versions\".\"bounds_south\" IS NOT NULL AND \"template_versions\".\"bounds_west\" IS NOT NULL AND \"template_versions\".\"bounds_east\" IS NOT NULL)"
@@ -556,6 +560,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "created_at_ms": {
           "name": "created_at_ms",
           "type": "integer",
@@ -597,7 +615,12 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "templates_created_by_check": {
+          "name": "templates_created_by_check",
+          "value": "length(\"templates\".\"created_by\") = 64 AND \"templates\".\"created_by\" NOT GLOB '*[^0-9a-f]*'\n        AND typeof(\"templates\".\"created_by_user_id\") = 'integer' AND \"templates\".\"created_by_user_id\" >= 0"
+        }
+      }
     },
     "tile_history": {
       "name": "tile_history",
