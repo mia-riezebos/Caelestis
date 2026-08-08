@@ -12,6 +12,7 @@ import { getMap, installMapCapture } from './map-handle.js'
 import { onStateChange } from './state.js'
 import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { installServerSync } from './templates/server-sync.js'
 import {
   captureTilePixels,
   install,
@@ -156,6 +157,9 @@ const main = (): void => {
   })
   step('tile capture', install)
   step('local templates', () => void restoreLocalTemplates())
+  // Server templates do not: they are re-fetched, because the server is where they live and a copy
+  // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
+  step('server templates', installServerSync)
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {
     watchPaintSelection()

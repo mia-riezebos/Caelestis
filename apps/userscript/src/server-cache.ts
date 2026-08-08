@@ -47,6 +47,20 @@ export interface ServerTemplate {
   readonly version: string
   readonly published: boolean
   readonly updatedAt: number
+  /** Where it sits on the canvas, inclusive of min and exclusive of max. */
+  readonly bbox: {
+    readonly minX: number
+    readonly minY: number
+    readonly maxX: number
+    readonly maxY: number
+  }
+  /**
+   * The template sliced on tile boundaries, `tile` being `x/y`.
+   *
+   * Content-addressed, which is what makes a re-fetch cheap: a new version that changed one corner
+   * shares every other hash with the old one, so only the tiles that actually moved are downloaded.
+   */
+  readonly chunks: readonly { readonly tile: string; readonly hash: string }[]
 }
 
 const open = (): Promise<IDBDatabase> =>
