@@ -48,6 +48,7 @@ import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
+import { markerAppearance } from './marker-settings.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { type Destination, type Source, transplant } from './transplant.js'
@@ -713,6 +714,22 @@ const appearanceView = (): HTMLElement => {
       ),
     ),
   )
+
+  // What the crosshairs look like, from the same control the per-overlay menu uses — one place to
+  // change how a marker is drawn, wherever it is being changed.
+  const markers = document.createElement('div')
+  markers.className = 'px-3 pb-2'
+  markers.appendChild(
+    markerAppearance(
+      { ...state.appearance, hiddenColours: state.hiddenColours },
+      (patch) => {
+        setAppearance(patch)
+        rerender()
+      },
+      rerender,
+    ),
+  )
+  view.appendChild(markers)
 
   view.appendChild(sectionHeader('Colours', 'palette'))
   view.appendChild(coloursSection(rerender))

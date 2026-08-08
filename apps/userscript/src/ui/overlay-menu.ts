@@ -4,6 +4,7 @@ import { screenPointFor } from '../main.js'
 import {
   APPEARANCE_CONTROLS,
   type Appearance,
+  type AppearanceGroup,
   DEFAULT_APPEARANCE,
   UNPAINTED_LIMIT_CONTROL,
 } from '../templates/appearance.js'
@@ -12,9 +13,11 @@ import {
   appearanceOf,
   isTemplateVisible,
   localTemplates,
+  ownsGroup,
   removeLocalTemplate,
   setAppearance,
   setLocalVisible,
+  setOwnsGroup,
 } from '../templates/local-store.js'
 import {
   abort as abortMove,
@@ -27,7 +30,9 @@ import { isDrawingTiles } from '../tile-transform.js'
 import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { type IconName, icon } from './icons.js'
+import { markerAppearance } from './marker-settings.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
+import { slider } from './slider.js'
 
 /**
  * The per-overlay menu, anchored to the overlay it configures.
@@ -81,49 +86,6 @@ const rightEdge = (): number => {
 }
 
 export const isOverlayMenuOpen = (id: string): boolean => openFor === id
-
-const slider = (
-  control: {
-    label: string
-    min: number
-    max: number
-    step: number
-    format: (value: number) => string
-  },
-  value: number,
-  onChange: (next: number) => void,
-): HTMLElement => {
-  const wrap = document.createElement('label')
-  wrap.className = 'flex items-center gap-2'
-  wrap.style.padding = '0.125rem 0'
-  const name = document.createElement('span')
-  name.className = 'text-xs opacity-70'
-  name.style.width = '4rem'
-  name.style.flex = '0 0 auto'
-  name.textContent = control.label
-  const input = document.createElement('input')
-  input.type = 'range'
-  input.className = 'range range-xs'
-  input.min = String(control.min)
-  input.max = String(control.max)
-  input.step = String(control.step)
-  input.value = String(value)
-  input.style.flex = '1'
-  input.style.minWidth = '0'
-  const readout = document.createElement('span')
-  readout.className = 'text-xs opacity-50'
-  readout.style.width = '2.5rem'
-  readout.style.flex = '0 0 auto'
-  readout.style.textAlign = 'right'
-  readout.textContent = control.format(value)
-  input.addEventListener('input', () => {
-    const next = Number(input.value)
-    readout.textContent = control.format(next)
-    onChange(next)
-  })
-  wrap.append(name, input, readout)
-  return wrap
-}
 
 /**
  * The settings pane's section header, at this menu's scale.
@@ -212,10 +174,21 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
    * under the pointer. Leaving it ticked was worse than cosmetic, because the next click on it then
    * did the opposite of what it looked like it would do.
    */
-  let defaultsBox: HTMLInputElement | null = null
-  const update = (patch: Partial<Appearance>): void => {
+  const defaultsBoxes = new Map<AppearanceGroup, HTMLInputElement>()
+
+  /**
+   * Write a value, taking that group over on the way.
+   *
+   * Touching a control is the clearest statement there is that this overlay wants its own answer,
+   * so the switch above it comes off by itself rather than being a thing to remember first. Taking
+   * over copies what the group is *currently showing*, so nothing moves at that moment — the
+   * overlay looks identical and merely stops following.
+   */
+  const update = (group: AppearanceGroup, patch: Partial<Appearance>): void => {
+    void setOwnsGroup(id, group, true)
     void setAppearance(id, { ...current(), ...patch })
-    if (defaultsBox !== null) defaultsBox.checked = false
+    const box = defaultsBoxes.get(group)
+    if (box !== undefined) box.checked = false
   }
 
   const header = document.createElement('div')
@@ -302,66 +275,102 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   // own layout — chip beside title — and only the pair of them is spread apart.
   const pixels = document.createElement('div')
   pixels.className = 'flex items-center justify-between gap-2'
-  const pixelsHeading = section('Pixels', 'tune')
-  pixels.appendChild(pixelsHeading)
-  menu.appendChild(pixels)
-
   /**
-   * Whether this overlay is following the global appearance rather than carrying its own.
+   * One collapsible group, with the switch that decides whether it is this overlay's to set.
    *
-   * Every overlay starts this way, so the sliders in settings actually reach something. Touching any
-   * control here writes an explicit appearance and switches this off on its own — because `update`
-   * patches the *effective* values, the first change keeps everything else exactly as it looked and
-   * only the moved slider differs.
+   * Three of these rather than one for the whole menu, because they are three unrelated opinions:
+   * wanting a template's own marker colour used to mean taking over its shape and its colour filter
+   * as well, and then the global sliders stopped reaching it forever. Collapsed by default for the
+   * groups an overlay does not own — a wall of controls that belong to somewhere else is a wall to
+   * scroll past.
    */
-  const usingDefaults = template?.appearance == null
-  const defaults = document.createElement('label')
-  defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal'
-  // Inline, not `normal-case`: it inherits the section heading's uppercase, and wplace's Tailwind
-  // build is purged — a utility they never use is simply absent from their CSS, so the class did
-  // nothing and the label read "USE DEFAULTS".
-  defaults.style.textTransform = 'none'
-  defaults.style.letterSpacing = 'normal'
-  defaults.title = 'Follow the appearance set in settings'
-  defaultsBox = document.createElement('input')
-  defaultsBox.type = 'checkbox'
-  // A switch, not a tick. Everything under it is a live setting rather than an item in a list, and
-  // this turns that whole group between two states — which is what a switch means and a tick does
-  // not.
-  defaultsBox.className = 'toggle toggle-xs'
-  defaultsBox.checked = usingDefaults
-  defaultsBox.addEventListener('change', () => {
-    // Null puts it back on the global values; a copy of them is what it already shows, so the only
-    // thing that changes when switching *off* is that it stops following.
-    void setAppearance(id, defaultsBox?.checked === true ? null : { ...current() })
-    // Rebuild rather than reposition: the sliders have to show the values they now follow, and this
-    // menu deliberately never rebuilds itself on a redraw.
-    rebuildMenu()
-    rerender()
-  })
-  const defaultsText = document.createElement('span')
-  defaultsText.textContent = 'Use defaults'
-  defaults.append(defaultsBox, defaultsText)
-  pixels.appendChild(defaults)
+  const groupBox = (
+    group: AppearanceGroup,
+    label: string,
+    glyph: IconName,
+  ): { body: HTMLElement; owned: boolean } => {
+    const owned = template !== undefined && ownsGroup(template, group)
+    const head = document.createElement('div')
+    head.className = 'flex items-center justify-between gap-2'
 
-  /**
-   * Everything "use defaults" governs, so it can be switched off as one thing.
-   *
-   * While defaults are on, these controls describe values this overlay does not own. Leaving them
-   * live meant the only way to discover that was to move one and watch the tick come off by itself —
-   * the control worked, but not in the way it appeared to: it silently detached the overlay from the
-   * defaults as a side effect. Dimmed and inert, the tick reads as the switch it is.
-   */
-  const overrides = document.createElement('div')
-  Object.assign(overrides.style, { display: 'contents' })
+    const left = document.createElement('button')
+    left.type = 'button'
+    left.className = 'flex items-center gap-2'
+    left.style.flex = '1'
+    left.style.minWidth = '0'
+    const caret = icon('caret', 'size-3 opacity-60')
+    caret.style.transition = 'transform 120ms ease-out'
+    left.append(caret, section(label, glyph))
 
-  for (const control of APPEARANCE_CONTROLS) {
-    overrides.appendChild(
-      slider(control, current()[control.key], (value) => update({ [control.key]: value })),
-    )
+    const defaults = document.createElement('label')
+    defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal'
+    defaults.style.textTransform = 'none'
+    defaults.style.letterSpacing = 'normal'
+    defaults.title = `Follow the ${label.toLowerCase()} set in settings`
+    const box = document.createElement('input')
+    box.type = 'checkbox'
+    // A switch, not a tick: it turns a whole group between two states rather than picking it out of
+    // a list, and that is what a switch means.
+    box.className = 'toggle toggle-xs'
+    box.checked = !owned
+    box.addEventListener('change', () => {
+      setOwnsGroup(id, group, !box.checked)
+      // Rebuild rather than reposition: every control under it has to show the values it now
+      // follows, and this menu deliberately never rebuilds itself on a redraw.
+      rebuildMenu()
+      rerender()
+    })
+    defaultsBoxes.set(group, box)
+    const defaultsText = document.createElement('span')
+    defaultsText.textContent = 'Use defaults'
+    defaults.append(box, defaultsText)
+    head.append(left, defaults)
+    menu.appendChild(head)
+
+    const body = document.createElement('div')
+    body.className = 'flex flex-col'
+    // Open where the overlay has something of its own to show, shut where it is only mirroring.
+    let open = owned
+    const apply = (): void => {
+      body.style.display = open ? '' : 'none'
+      caret.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)'
+      left.setAttribute('aria-expanded', String(open))
+    }
+    left.addEventListener('click', () => {
+      open = !open
+      apply()
+    })
+    apply()
+
+    if (!owned) {
+      // Dimmed *and* disabled. Pointer-events alone leaves every control in the tab order, reachable
+      // and operable by keyboard — and a control that works while claiming to be inert is worse than
+      // one that plainly is.
+      body.style.opacity = '0.7'
+      body.style.pointerEvents = 'none'
+    }
+    menu.appendChild(body)
+    return { body, owned }
   }
 
-  overrides.appendChild(section('Mismatches', 'search'))
+  const disableIfFollowing = (box: { body: HTMLElement; owned: boolean }): void => {
+    if (box.owned) return
+    for (const control of box.body.querySelectorAll('input, button, select')) {
+      if (control instanceof HTMLElement) control.setAttribute('disabled', '')
+    }
+  }
+
+  const pixelsGroup = groupBox('pixels', 'Pixels', 'tune')
+  for (const control of APPEARANCE_CONTROLS) {
+    pixelsGroup.body.appendChild(
+      slider(control, current()[control.key], (value) =>
+        update('pixels', { [control.key]: value }),
+      ),
+    )
+  }
+  disableIfFollowing(pixelsGroup)
+
+  const markersGroup = groupBox('markers', 'Mismatches', 'search')
   for (const [key, label] of [
     ['markMismatch', 'Mark mismatched'],
     ['markUnpainted', 'Count unpainted'],
@@ -374,20 +383,25 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     box.type = 'checkbox'
     box.className = 'checkbox checkbox-xs'
     box.checked = current()[key]
-    box.addEventListener('change', () => update({ [key]: box.checked }))
+    box.addEventListener('change', () => update('markers', { [key]: box.checked }))
     const text = document.createElement('span')
     text.textContent = label
     row.append(box, text)
-    overrides.appendChild(row)
+    markersGroup.body.appendChild(row)
   }
   // How little may be left before "count unpainted" applies. Beside the switch it qualifies.
-  overrides.appendChild(
+  markersGroup.body.appendChild(
     slider(UNPAINTED_LIMIT_CONTROL, current().unpaintedLimit, (value) =>
-      update({ unpaintedLimit: value }),
+      update('markers', { unpaintedLimit: value }),
     ),
   )
+  markersGroup.body.appendChild(
+    markerAppearance(current(), (patch) => update('markers', patch), rerender),
+  )
+  disableIfFollowing(markersGroup)
 
-  overrides.appendChild(section('Colours', 'palette'))
+  const coloursGroup = groupBox('colours', 'Colours', 'palette')
+  const overrides = coloursGroup.body
 
   const gridWrap = document.createElement('div')
   gridWrap.className = 'wts-swatches'
@@ -430,7 +444,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
       (next) => {
         // Same as the global row: the mode is left running. A preset says which colours this
         // overlay claims, which is a different question from which one is being looked at.
-        update({ hiddenColours: next })
+        update('colours', { hiddenColours: next })
         refreshSwatches()
       },
       rerender,
@@ -451,7 +465,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
         const next = new Set(effective())
         if (next.has(colour.index)) next.delete(colour.index)
         else next.add(colour.index)
-        update({ hiddenColours: [...next] })
+        update('colours', { hiddenColours: [...next] })
         refreshSwatches()
         rerender()
       }),
@@ -460,21 +474,8 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   gridWrap.appendChild(grid)
   overrides.appendChild(gridWrap)
 
-  // `display: contents` leaves no box to fade, so the dimming goes on the children — which is also
-  // what keeps the "use defaults" row itself at full strength while everything it governs recedes.
-  for (const child of overrides.children) {
-    if (!(child instanceof HTMLElement)) continue
-    child.style.opacity = usingDefaults ? '0.7' : ''
-  }
-  if (usingDefaults) {
-    overrides.style.pointerEvents = 'none'
-    // Disabled as well as inert: pointer-events alone still leaves every slider and swatch in the
-    // tab order, reachable and operable by keyboard.
-    for (const control of overrides.querySelectorAll('input, button, select')) {
-      if (control instanceof HTMLElement) control.setAttribute('disabled', '')
-    }
-  }
-  menu.appendChild(overrides)
+  // Last, because the swatches are built above and `disabled` has to reach all of them.
+  disableIfFollowing(coloursGroup)
   return menu
 }
 

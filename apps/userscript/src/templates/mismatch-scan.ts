@@ -87,8 +87,8 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
       if (placed === wanted) continue
       // An empty pixel is only "not done yet" when nobody chose it. One drafted Transparent arrives
       // as a real palette index rather than the sentinel, so it lands with the mistakes.
-      if (placed === unpaintedIndex) unpainted.push(x, y)
-      else wrong.push(x, y)
+      if (placed === unpaintedIndex) unpainted.push(x, y, wanted)
+      else wrong.push(x, y, wanted)
     }
   }
 

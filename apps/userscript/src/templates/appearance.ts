@@ -76,6 +76,53 @@ export interface Appearance {
    * and this is where little enough falls.
    */
   readonly unpaintedLimit: number
+  /** The crosshair's colour, as hex. Not a palette colour: a marker must never read as a pixel. */
+  readonly markerColour: string
+  /** Its size in CSS pixels — the same size at every zoom, so this is the whole of it. */
+  readonly markerSize: number
+  /**
+   * How strongly to fade a marker whose colour is not the one in your hand, 0..1.
+   *
+   * Only means anything while follow-the-selection is on, which is the state where "could I fix
+   * this right now" has an answer. 1 leaves every marker at full strength, which is what someone who
+   * wants the old behaviour sets it to.
+   */
+  readonly otherOpacity: number
+  /**
+   * A second colour for those same markers, or null to keep one colour throughout.
+   *
+   * Fading and recolouring are separate switches because they answer differently under load: a fade
+   * says "later", a second colour says "not this pass" while staying findable on dense artwork where
+   * a faded marker disappears entirely.
+   */
+  readonly otherColour: string | null
+}
+
+/**
+ * The three things a template can have opinions about, separately.
+ *
+ * One switch used to govern all of them, so wanting a template's own marker colour meant taking
+ * ownership of its shape and its colour filter as well — and then the global sliders stopped
+ * reaching it forever. Splitting them is what lets an overlay follow the defaults for everything it
+ * has no opinion about.
+ */
+export type AppearanceGroup = 'pixels' | 'colours' | 'markers'
+
+export const APPEARANCE_GROUPS: readonly AppearanceGroup[] = ['pixels', 'colours', 'markers']
+
+/** Which fields each group owns, so composing one from two sources is not a list of field names. */
+export const GROUP_FIELDS: Record<AppearanceGroup, readonly (keyof Appearance)[]> = {
+  pixels: ['size', 'radius', 'translateX', 'translateY', 'rotation', 'opacity'],
+  colours: ['hiddenColours'],
+  markers: [
+    'markMismatch',
+    'markUnpainted',
+    'unpaintedLimit',
+    'markerColour',
+    'markerSize',
+    'otherOpacity',
+    'otherColour',
+  ],
 }
 
 /**
@@ -106,6 +153,12 @@ export const DEFAULT_APPEARANCE: Appearance = {
   markMismatch: false,
   markUnpainted: false,
   unpaintedLimit: 0.05,
+  // Magenta, deliberately not a palette colour: nothing wplace can paint should be mistaken for a
+  // marker. 9 CSS pixels was arrived at by looking at it on a Retina display.
+  markerColour: '#ff00ff',
+  markerSize: 9,
+  otherOpacity: 0.35,
+  otherColour: null,
 }
 
 /**
@@ -148,8 +201,23 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
       0,
       UNPAINTED_LIMIT_MAX,
     ),
+    markerColour: colour(source.markerColour) ?? DEFAULT_APPEARANCE.markerColour,
+    markerSize: number('markerSize', DEFAULT_APPEARANCE.markerSize, 3, 33),
+    otherOpacity: number('otherOpacity', DEFAULT_APPEARANCE.otherOpacity, 0, 1),
+    otherColour: colour(source.otherColour),
   }
 }
+
+/** A stored colour, or null. Anything that is not `#rrggbb` is not a colour we wrote. */
+const colour = (raw: unknown): string | null =>
+  typeof raw === 'string' && /^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : null
+
+/** `#rrggbb` as the 0..1 triple the shaders want. */
+export const toRgbUnit = (hex: string): [number, number, number] => [
+  Number.parseInt(hex.slice(1, 3), 16) / 255,
+  Number.parseInt(hex.slice(3, 5), 16) / 255,
+  Number.parseInt(hex.slice(5, 7), 16) / 255,
+]
 
 /**
  * Whether this appearance is just the source pixels, untouched.

@@ -8,7 +8,13 @@ import {
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
 import { getState, isScopeVisible, localFolderChainVisible, setScopeVisible } from '../state.js'
-import { type Appearance, normaliseAppearance } from './appearance.js'
+import {
+  APPEARANCE_GROUPS,
+  type Appearance,
+  type AppearanceGroup,
+  GROUP_FIELDS,
+  normaliseAppearance,
+} from './appearance.js'
 import {
   type ImportedTemplate,
   MAX_SOURCE_TILES_PER_TEMPLATE,
@@ -64,7 +70,7 @@ export interface PlacedTemplate extends ImportedTemplate {
    */
   readonly everPlaced: boolean
   /**
-   * How this one is drawn, or null to follow the global default.
+   * Values this template has set for itself, for whichever groups it owns.
    *
    * Null is not the same as a copy of the default. A template that has never been adjusted should
    * track the global sliders as they move; one that has been adjusted must keep what was set on it.
@@ -74,6 +80,14 @@ export interface PlacedTemplate extends ImportedTemplate {
   readonly appearance: Appearance | null
   /** IndexedDB compare-and-swap token; not part of template identity or rendering. */
   readonly revision: number
+  /**
+   * Which groups the values above actually govern.
+   *
+   * Ownership is per group rather than all-or-nothing, so a template can carry its own marker
+   * colour while still following the global shape and colour filter. Empty means it follows the
+   * defaults in every respect, which is where every template starts.
+   */
+  readonly owns: readonly AppearanceGroup[]
   /** Which Local folder this sits in, or null for the top level of Local. */
   readonly folderId: string | null
   /**
@@ -251,10 +265,24 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
  * turning every hidden colour back on at the moment of detaching.
  */
 export const appearanceOf = (template: PlacedTemplate): Appearance => {
-  if (template.appearance !== null) return template.appearance
   const state = getState()
-  return { ...state.appearance, hiddenColours: state.hiddenColours }
+  const global: Appearance = { ...state.appearance, hiddenColours: state.hiddenColours }
+  const own = template.appearance
+  if (own === null || template.owns.length === 0) return global
+
+  // Field by field, from whichever side owns that field's group. A template that has taken over its
+  // markers still follows the global sliders for its shape, which is the whole point of splitting
+  // the switch: wanting one's own marker colour used to mean freezing everything else as well.
+  const composed: Record<string, unknown> = { ...global }
+  for (const group of template.owns) {
+    for (const field of GROUP_FIELDS[group]) composed[field] = own[field]
+  }
+  return composed as unknown as Appearance
 }
+
+/** Whether this template answers for itself on one group, or follows the defaults. */
+export const ownsGroup = (template: PlacedTemplate, group: AppearanceGroup): boolean =>
+  template.owns.includes(group)
 
 /**
  * Slice a template into tile-sized bitmaps.
@@ -449,6 +477,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     visible,
     everPlaced,
     appearance,
+    owns,
     revision,
     folderId,
   } = value
@@ -489,6 +518,14 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   if (folderId !== undefined && folderId !== null && typeof folderId !== 'string') {
     throw new RangeError('template folder is invalid')
   }
+  if (
+    owns !== undefined &&
+    (!Array.isArray(owns) ||
+      owns.some((group) => !APPEARANCE_GROUPS.includes(group as AppearanceGroup)) ||
+      new Set(owns).size !== owns.length)
+  ) {
+    throw new RangeError('template appearance ownership is invalid')
+  }
   const normalised: StoredTemplate = {
     id,
     name,
@@ -505,6 +542,12 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     revision: revision === undefined ? 0 : (revision as number),
     folderId: typeof folderId === 'string' ? folderId : null,
     appearance: normaliseAppearance(appearance),
+    owns:
+      owns === undefined
+        ? appearance == null
+          ? []
+          : APPEARANCE_GROUPS
+        : (owns as AppearanceGroup[]),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
   validatePlacement(normalised)
@@ -765,6 +808,7 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       templates.set(id, {
         ...winner,
         appearance: winner.appearance ?? null,
+        owns: winner.owns ?? (winner.appearance != null ? APPEARANCE_GROUPS : []),
         folderId: winner.folderId ?? null,
         visible,
         tiles,
@@ -839,6 +883,7 @@ export const putServerTemplate = async (
     everPlaced: true,
     appearance: existing?.appearance ?? null,
     revision: existing?.revision ?? 0,
+    owns: existing?.owns ?? [],
     folderId: null,
   })
   retainedIndexPixels += pixelIncrease
@@ -895,6 +940,7 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       everPlaced: false,
       // Follows the global appearance until someone touches this one's own controls.
       appearance: null,
+      owns: [],
       revision: 0,
       folderId: null,
     }
@@ -1071,6 +1117,7 @@ const restoreStoredTemplates = async (): Promise<void> => {
         templates.set(template.id, {
           ...template,
           appearance: template.appearance ?? null,
+          owns: template.owns ?? (template.appearance != null ? APPEARANCE_GROUPS : []),
           folderId: template.folderId ?? null,
           // Keep valid durable records manageable even when this session cannot afford/render their
           // source bitmaps. The durable visibility value remains untouched; an explicit toggle will
@@ -1530,6 +1577,44 @@ export const setAppearance = async (
     return true
   })
 }
+
+/**
+ * Take one group over, or hand it back to the defaults.
+ *
+ * Taking a group over copies the values it is *currently showing* into this template, so nothing
+ * moves at the moment of the switch — the overlay looks identical and only stops following. Anything
+ * else makes the switch itself an edit, which is a surprise nobody asked for.
+ */
+export const setOwnsGroup = async (
+  id: string,
+  group: AppearanceGroup,
+  owns: boolean,
+): Promise<boolean> =>
+  await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    if (existing.owns.includes(group) === owns) return true
+    const next: PlacedTemplate = {
+      ...existing,
+      appearance: owns ? appearanceOf(existing) : existing.appearance,
+      owns: owns ? [...existing.owns, group] : existing.owns.filter((one) => one !== group),
+    }
+    let revision = existing.revision
+    if (!isPendingImage(existing)) {
+      const result = await savePlaced(next)
+      const committed = committedRevision(result)
+      if (committed === null) {
+        if (result.status === 'conflict') await reconcileConflict(id)
+        warn('install', `appearance ownership for ${next.name} was not saved`)
+        return false
+      }
+      revision = committed
+    }
+    if (appearanceKey(appearanceOf(existing)) !== appearanceKey(appearanceOf(next))) clearStamped(id)
+    templates.set(id, { ...next, revision })
+    notify()
+    return true
+  })
 
 /**
  * A tile stamped for one appearance, cached until that appearance changes.

@@ -1,7 +1,7 @@
 import { WORLD_PIXELS } from '@wts/shared'
 import { warn } from '../debug.js'
 import { isUint8Array } from '../page-world.js'
-import type { Appearance } from './appearance.js'
+import type { Appearance, AppearanceGroup } from './appearance.js'
 import {
   type ImportedTemplate,
   MAX_TEMPLATE_ID_LENGTH,
@@ -55,6 +55,13 @@ export interface StoredTemplate extends ImportedTemplate {
   readonly appearance?: Appearance | null
   /** Monotonic compare-and-swap token. Records written before v3 restore as revision zero. */
   readonly revision: number
+  /**
+   * Which appearance groups this template answers for itself.
+   *
+   * Absent on anything stored before ownership was per group, where holding an appearance at all
+   * meant owning everything — which is how it is read back.
+   */
+  readonly owns?: readonly AppearanceGroup[]
   /** Which Local folder this is in. Absent means the top level, as it did before folders existed. */
   readonly folderId?: string | null
 }
