@@ -38,6 +38,7 @@ import {
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
+import { serverTemplateKey } from '../templates/server-sync.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
@@ -45,6 +46,7 @@ import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import {
+  findServerTemplate,
   placeKey,
   primeFromCache,
   refreshNodes,
@@ -271,6 +273,8 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
+          onDropOnNode: (target, draggedKey) =>
+            void dropOnServerNode(target, draggedKey, renderTree),
           onMoveLocal: (draggedKey, parentKey, beforeKey) => {
             // `local` is the root of the category; `lf:<id>` is a folder within it.
             const parentFolderId =
@@ -959,6 +963,111 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   buttons.append(cancel, go)
   box.append(label, chooser, buttons)
   panel.appendChild(box)
+}
+
+/**
+ * A template dropped onto a folder on a server.
+ *
+ * Three journeys behind one gesture, and which one it is comes from what was dragged:
+ *
+ * - **From Local** — an upload. The same thing "Copy to a server" does, with the destination
+ *   already answered by where it was dropped.
+ * - **Within one server** — a refile, which is a single column and touches no pixels.
+ * - **Across servers** — a move: the artwork is uploaded to the destination and then removed from
+ *   the source. Confirmed first, because the second half is destructive to something other people
+ *   can see, and a drag is easy to make by accident.
+ *
+ * A drop that would change nothing is silently ignored rather than round-tripping to say so.
+ */
+const dropOnServerNode = async (
+  target: TreeTarget,
+  draggedKey: string,
+  rerender: () => void,
+): Promise<void> => {
+  const { server, nodeId } = target
+  if (server === null || nodeId === null) return
+
+  if (draggedKey.startsWith('local:')) {
+    const local = allLocal().find((candidate) => candidate.id === draggedKey.slice('local:'.length))
+    if (local === undefined) return
+    const png = await templateAsPng(local)
+    if (png === null) {
+      toast('Could not encode that template.', 'error')
+      return
+    }
+    const result = await uploadTemplate(server, {
+      nodeId,
+      name: local.name,
+      originX: local.originX,
+      originY: local.originY,
+      png,
+    })
+    if (result.ok) toast(`Uploaded “${local.name}” to ${server.info?.name ?? server.url}.`)
+    else toast(result.message, 'error')
+    await refreshNodes(server, rerender)
+    return
+  }
+
+  if (!draggedKey.startsWith('st:')) return
+  const templateId = draggedKey.slice('st:'.length)
+  const found = findServerTemplate(templateId)
+  if (found === null) return
+
+  if (found.serverUrl === server.url) {
+    if (found.template.nodeId === nodeId) return
+    const result = await patchTemplate(server, templateId, { nodeId })
+    if (!result.ok) toast(result.message, 'error')
+    await refreshNodes(server, rerender)
+    return
+  }
+
+  const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
+  if (source === undefined) return
+  const sourceName = source.info?.name ?? source.url
+  const destinationName = server.info?.name ?? server.url
+  const confirmed = await confirmDestructive({
+    title: `Move “${found.template.name}” to ${destinationName}?`,
+    body: `It will be uploaded to ${destinationName} and removed from ${sourceName}.`,
+    note: `Everyone connected to ${sourceName} will stop seeing it.`,
+    confirmLabel: 'Move',
+  })
+  if (!confirmed) return
+
+  // The pixels come from the copy already on the canvas, which is the assembled result of that
+  // server's own chunks — so a cross-server move needs no second download.
+  const drawn = allLocal().find(
+    (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
+  )
+  if (drawn === undefined) {
+    toast('That template has not finished loading yet — try again in a moment.', 'warning')
+    return
+  }
+  const png = await templateAsPng(drawn)
+  if (png === null) {
+    toast('Could not encode that template.', 'error')
+    return
+  }
+
+  const uploaded = await uploadTemplate(server, {
+    nodeId,
+    name: found.template.name,
+    originX: drawn.originX,
+    originY: drawn.originY,
+    png,
+  })
+  if (!uploaded.ok) {
+    // Nothing has been removed yet, so a failure here leaves both sides exactly as they were.
+    toast(uploaded.message, 'error')
+    return
+  }
+  const removed = await deleteTemplateOnServer(source, templateId)
+  if (!removed.ok) {
+    toast(`Copied to ${destinationName}, but could not remove it from ${sourceName}.`, 'error')
+  } else {
+    toast(`Moved “${found.template.name}” to ${destinationName}.`)
+  }
+  await refreshNodes(source, rerender)
+  await refreshNodes(server, rerender)
 }
 
 /** Whether the row's template is published, read from the copy the row itself was drawn from. */
