@@ -101,6 +101,7 @@ CREATE TABLE `template_versions` (
 	CONSTRAINT "template_versions_bounds_range_check" CHECK("template_versions"."bounds_north" IS NULL OR ("template_versions"."bounds_north" BETWEEN -90 AND 90 AND "template_versions"."bounds_south" BETWEEN -90 AND 90 AND "template_versions"."bounds_west" BETWEEN -180 AND 180 AND "template_versions"."bounds_east" BETWEEN -180 AND 180 AND "template_versions"."bounds_north" > "template_versions"."bounds_south"))
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX `template_versions_id_template_idx` ON `template_versions` (`id`,`template_id`);--> statement-breakpoint
 CREATE TABLE `templates` (
 	`id` text PRIMARY KEY NOT NULL,
 	`node_id` text NOT NULL,
@@ -109,7 +110,7 @@ CREATE TABLE `templates` (
 	`current_version_id` text,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`node_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
-	FOREIGN KEY (`current_version_id`) REFERENCES `template_versions`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`current_version_id`,`id`) REFERENCES `template_versions`(`id`,`template_id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
 CREATE TABLE `tile_history` (

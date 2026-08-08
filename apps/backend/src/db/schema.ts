@@ -4,12 +4,14 @@ import { sql } from 'drizzle-orm'
 import {
   type AnySQLiteColumn,
   check,
+  foreignKey,
   index,
   integer,
   primaryKey,
   real,
   sqliteTable,
   text,
+  unique,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core'
 
@@ -63,26 +65,13 @@ export const nodes = sqliteTable(
   ],
 )
 
-export const templates = sqliteTable('templates', {
-  id: text('id').primaryKey(),
-  nodeId: text('node_id')
-    .notNull()
-    .references(() => nodes.id),
-  name: text('name').notNull(),
-  season: integer('season').notNull(),
-  currentVersionId: text('current_version_id').references(
-    (): AnySQLiteColumn => templateVersions.id,
-  ),
-  createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
-})
-
 export const templateVersions = sqliteTable(
   'template_versions',
   {
     id: text('id').primaryKey(),
     templateId: text('template_id')
       .notNull()
-      .references(() => templates.id),
+      .references((): AnySQLiteColumn => templates.id),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
     createdBy: text('created_by').notNull(),
     minX: integer('min_x').notNull(),
@@ -96,6 +85,7 @@ export const templateVersions = sqliteTable(
     boundsEast: real('bounds_east'),
   },
   (table) => [
+    unique('template_versions_id_template_idx').on(table.id, table.templateId),
     check(
       'template_versions_bounds_all_or_none_check',
       sql`(${table.boundsNorth} IS NULL AND ${table.boundsSouth} IS NULL AND ${table.boundsWest} IS NULL AND ${table.boundsEast} IS NULL) OR (${table.boundsNorth} IS NOT NULL AND ${table.boundsSouth} IS NOT NULL AND ${table.boundsWest} IS NOT NULL AND ${table.boundsEast} IS NOT NULL)`,
@@ -119,6 +109,35 @@ export const templateVersions = sqliteTable(
       'template_versions_bounds_range_check',
       sql`${table.boundsNorth} IS NULL OR (${table.boundsNorth} BETWEEN -90 AND 90 AND ${table.boundsSouth} BETWEEN -90 AND 90 AND ${table.boundsWest} BETWEEN -180 AND 180 AND ${table.boundsEast} BETWEEN -180 AND 180 AND ${table.boundsNorth} > ${table.boundsSouth})`,
     ),
+  ],
+)
+
+export const templates = sqliteTable(
+  'templates',
+  {
+    id: text('id').primaryKey(),
+    nodeId: text('node_id')
+      .notNull()
+      .references(() => nodes.id),
+    name: text('name').notNull(),
+    season: integer('season').notNull(),
+    currentVersionId: text('current_version_id'),
+    createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
+  },
+  // The version this template currently serves has to be one of *its own* versions. Referencing
+  // template_versions(id) alone said only "some version exists": one template could point at
+  // another's, and current_version_id is what the manifest reads bounds and chunks from, so it
+  // would serve that template's geometry under its own identity — wrong pixels on the canvas and a
+  // progress denominator belonging to a different template.
+  //
+  // Expressed as a composite key against (id, template_id), which is why template_versions carries
+  // a unique index on that pair: SQLite requires a foreign key's parent columns to be unique.
+  (table) => [
+    foreignKey({
+      columns: [table.currentVersionId, table.id],
+      foreignColumns: [templateVersions.id, templateVersions.templateId],
+      name: 'templates_current_version_fk',
+    }),
   ],
 )
 

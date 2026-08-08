@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "db8b4e72-5ac1-4cb2-b4d5-4957817bef0a",
+  "id": "e52a50ad-ad52-4f8c-95f6-1238ab5117e5",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -477,7 +477,16 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "template_versions_id_template_idx": {
+          "name": "template_versions_id_template_idx",
+          "columns": [
+            "id",
+            "template_id"
+          ],
+          "isUnique": true
+        }
+      },
       "foreignKeys": {
         "template_versions_template_id_templates_id_fk": {
           "name": "template_versions_template_id_templates_id_fk",
@@ -571,15 +580,17 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "templates_current_version_id_template_versions_id_fk": {
-          "name": "templates_current_version_id_template_versions_id_fk",
+        "templates_current_version_fk": {
+          "name": "templates_current_version_fk",
           "tableFrom": "templates",
           "tableTo": "template_versions",
           "columnsFrom": [
-            "current_version_id"
+            "current_version_id",
+            "id"
           ],
           "columnsTo": [
-            "id"
+            "id",
+            "template_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"

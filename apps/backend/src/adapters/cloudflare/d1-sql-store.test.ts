@@ -526,6 +526,24 @@ describe('D1SqlStore', () => {
     },
   )
 
+  it('rejects a current version belonging to another template', () => {
+    // current_version_id is what the manifest reads bounds and chunks from. Referencing
+    // template_versions(id) alone lets one template point at another's version, so it would serve
+    // that template's geometry under its own identity — wrong pixels, wrong progress denominator.
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('own-node', NULL, '/own', 'Own', 1);
+      INSERT INTO templates VALUES ('t-a', 'own-node', 'A', 1, NULL, 1);
+      INSERT INTO templates VALUES ('t-b', 'own-node', 'B', 1, NULL, 1);
+      INSERT INTO template_versions VALUES ('v-a', 't-a', 1, 'c', 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
+    `)
+    expect(() =>
+      d1.sqlite.prepare("UPDATE templates SET current_version_id = 'v-a' WHERE id = 't-b'").run(),
+    ).toThrow(/FOREIGN KEY constraint failed/)
+    expect(() =>
+      d1.sqlite.prepare("UPDATE templates SET current_version_id = 'v-a' WHERE id = 't-a'").run(),
+    ).not.toThrow()
+  })
+
   it('rejects a node that is its own parent', () => {
     // The wire derives acyclicity from the path rule, which is also response-only. A self-parent
     // satisfies the foreign key, hangs any recursive ancestor walk, and makes the manifest
