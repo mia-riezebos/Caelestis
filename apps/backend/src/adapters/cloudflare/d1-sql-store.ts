@@ -1,71 +1,110 @@
-import type { BucketQuery, SqlStore, TelemetryBucket } from '../../ports/index.js'
+import { seconds } from '@wts/shared'
+import { and, asc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
+import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
+import { telemetryBuckets } from '../../db/schema.js'
+import {
+  assertValidBuckets,
+  type BucketQuery,
+  compareBuckets,
+  MAX_READ_BUCKETS_TEMPLATE_IDS,
+  READ_BUCKETS_CHUNK_SIZE,
+  type SqlStore,
+  type TelemetryBucket,
+  tooManyTemplateIds,
+} from '../../ports/index.js'
 
-interface TelemetryBucketRow {
-  readonly template_id: string
-  readonly resolution: number
-  readonly bucket_start: number
-  readonly placed: number
-  readonly correct: number
-  readonly repairs: number
-}
-
-const APPEND_BUCKET = `
-  INSERT INTO telemetry_buckets (
-    template_id, resolution, bucket_start, placed, correct, repairs
-  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-  ON CONFLICT (template_id, resolution, bucket_start) DO UPDATE SET
-    placed = excluded.placed,
-    correct = excluded.correct,
-    repairs = excluded.repairs
-`
-
-const fromRow = (row: TelemetryBucketRow): TelemetryBucket => ({
-  templateId: row.template_id,
+const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
+  templateId: row.templateId,
   resolution: row.resolution,
-  bucketStart: row.bucket_start,
+  bucketStart: seconds(row.bucketStartS),
   placed: row.placed,
   correct: row.correct,
   repairs: row.repairs,
 })
 
 export class D1SqlStore implements SqlStore {
-  constructor(private readonly database: D1Database) {}
+  private readonly database: DrizzleD1Database
+
+  constructor(database: D1Database) {
+    this.database = drizzle(database)
+  }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
     if (buckets.length === 0) return
+    // Ahead of the batch, so a poison row is a synchronous error naming the column rather than a
+    // CHECK failure the shard's alarm retries forever.
+    assertValidBuckets(buckets)
 
-    const statement = this.database.prepare(APPEND_BUCKET)
+    const statements = buckets.map((bucket) =>
+      this.database
+        .insert(telemetryBuckets)
+        .values({
+          templateId: bucket.templateId,
+          resolution: bucket.resolution,
+          bucketStartS: bucket.bucketStart,
+          placed: bucket.placed,
+          correct: bucket.correct,
+          repairs: bucket.repairs,
+        })
+        .onConflictDoUpdate({
+          target: [
+            telemetryBuckets.templateId,
+            telemetryBuckets.resolution,
+            telemetryBuckets.bucketStartS,
+          ],
+          set: {
+            placed: sql`excluded.placed`,
+            correct: sql`excluded.correct`,
+            repairs: sql`excluded.repairs`,
+          },
+        }),
+    )
+
     await this.database.batch(
-      buckets.map((bucket) =>
-        statement.bind(
-          bucket.templateId,
-          bucket.resolution,
-          bucket.bucketStart,
-          bucket.placed,
-          bucket.correct,
-          bucket.repairs,
-        ),
-      ),
+      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
     )
   }
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
     if (query.templateIds.length === 0) return []
 
-    const placeholders = query.templateIds.map(() => '?').join(', ')
-    const statement = this.database.prepare(`
-      SELECT template_id, resolution, bucket_start, placed, correct, repairs
-      FROM telemetry_buckets
-      WHERE resolution = ?
-        AND bucket_start >= ?
-        AND bucket_start < ?
-        AND template_id IN (${placeholders})
-      ORDER BY template_id, bucket_start
-    `)
-    const result = await statement
-      .bind(query.resolution, query.fromSeconds, query.toSeconds, ...query.templateIds)
-      .all<TelemetryBucketRow>()
+    // Deduplicate before chunking. Each chunk returns its own rows and the merge does not join
+    // them, so an id repeated across two chunks came back twice and any consumer summing the result
+    // double-counted that template's history. It also keeps the query count honest.
+    const templateIds = [...new Set(query.templateIds)]
+    if (templateIds.length > MAX_READ_BUCKETS_TEMPLATE_IDS)
+      throw tooManyTemplateIds(templateIds.length)
+    // Concatenated rather than spread into `push`. A spread passes every row as a separate argument,
+    // so a chunk returning more rows than V8's argument limit — around 125,000, which 90 templates
+    // at minute resolution reach in under a day — throws RangeError instead of answering. The id
+    // count is bounded; the row count is bounded only by the window the caller asks for.
+    let rows: (typeof telemetryBuckets.$inferSelect)[] = []
+    for (let offset = 0; offset < templateIds.length; offset += READ_BUCKETS_CHUNK_SIZE) {
+      const chunk = templateIds.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)
+      rows = rows.concat(
+        await this.database
+          .select()
+          .from(telemetryBuckets)
+          .where(
+            and(
+              eq(telemetryBuckets.resolution, query.resolution),
+              gte(telemetryBuckets.bucketStartS, query.fromSeconds),
+              lt(telemetryBuckets.bucketStartS, query.toSeconds),
+              inArray(telemetryBuckets.templateId, chunk),
+            ),
+          )
+          .orderBy(asc(telemetryBuckets.templateId), asc(telemetryBuckets.bucketStartS)),
+      )
+    }
 
-    return result.results.map(fromRow)
+    // Each chunk is ordered, but the concatenation of ordered chunks is not: template ids are
+    // distributed across chunks in input order, not sort order. The contract is a single ordered
+    // result, so the merge has to re-sort.
+    //
+    // The bucketStart tiebreak is redundant today and kept for explicitness: chunking is by template
+    // id, so one template's buckets always land in a single chunk already ordered by SQL, and
+    // Array.prototype.sort is stable. Dropping it changes no outcome, so no test can pin it — said
+    // here rather than left looking load-bearing.
+    return rows.map(fromRow).sort(compareBuckets)
   }
 }

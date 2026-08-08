@@ -1,3 +1,4 @@
+import { type Millis, millis, type Seconds, seconds } from '@wts/shared'
 import {
   type CounterDelta,
   type CounterStore,
@@ -14,22 +15,22 @@ import {
 
 interface BucketCounters {
   readonly templateId: string
-  readonly bucketStart: number
+  readonly bucketStart: Seconds
   readonly placed: number
   readonly correct: number
   readonly repairs: number
 }
 
-const bucketKey = (templateId: string, bucketStart: number): string =>
+const bucketKey = (templateId: string, bucketStart: Seconds): string =>
   `${templateId}\u0000${bucketStart}`
 
-const eventBucketStart = (occurredAt: number): number =>
-  Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS
+const eventBucketStart = (occurredAt: Seconds): Seconds =>
+  seconds(Math.floor(occurredAt / RESOLUTION_SECONDS) * RESOLUTION_SECONDS)
 
-const flushableAt = (bucketStart: number): number =>
-  bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS
+const flushableAt = (bucketStart: Seconds): Seconds =>
+  seconds(bucketStart + RESOLUTION_SECONDS + GRACE_SECONDS)
 
-const expiresAt = (bucketStart: number): number => bucketStart + EXPIRES_AFTER_SECONDS
+const expiresAt = (bucketStart: Seconds): Seconds => seconds(bucketStart + EXPIRES_AFTER_SECONDS)
 
 const hasActivity = ({ placed, correct, repairs }: CounterDelta): boolean =>
   placed > 0 || correct > 0 || repairs > 0
@@ -53,23 +54,22 @@ export class MemoryCounterStore implements CounterStore {
   private readonly pending = new Map<string, BucketCounters>()
   private readonly flushBatch = new Map<string, BucketCounters>()
   private readonly retained = new Map<string, BucketCounters>()
-  private readonly flushedAt = new Map<string, number>()
+  private readonly flushedAt = new Map<string, Millis>()
   private droppedLateCount = 0
-  private alarmAt: number | null = null
+  private alarmAt: Millis | null = null
   private consecutiveFlushFailures = 0
 
   constructor(
     private readonly sql: SqlStore,
-    private readonly clock: () => number = Date.now,
-  ) {
-    this.pruneRetained(Math.floor(this.clock() / 1_000))
-  }
+    private readonly clock: () => Millis = () => millis(Date.now()),
+  ) {}
 
   async record(deltas: readonly CounterDelta[]): Promise<void> {
     const nowMilliseconds = this.clock()
-    const nowSeconds = Math.floor(nowMilliseconds / 1_000)
+    const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
 
-    // Validation consults local traces, so sweep stale retained rows before asking that question.
+    // A successful flush leaves retained reconciliation state but no alarm. The next write is a
+    // lifecycle opportunity to reclaim expired rows that no pending or flush-batch state needs.
     this.pruneRetained(nowSeconds)
 
     const boundedDeltas = deltas.slice(0, MAX_COUNTER_DELTAS_PER_RECORD)
@@ -78,11 +78,7 @@ export class MemoryCounterStore implements CounterStore {
     for (const delta of boundedDeltas) {
       // Match TelemetryShard: invalid and out-of-window input share the existing rejection counter
       // because both have the same operational outcome and remediation.
-      if (
-        !isValidCounterDelta(delta, nowSeconds, (templateId, bucketStart) =>
-          this.hasLocalTrace(templateId, bucketStart, nowSeconds),
-        )
-      ) {
+      if (!isValidCounterDelta(delta, nowSeconds)) {
         this.droppedLateCount += 1
         continue
       }
@@ -115,7 +111,7 @@ export class MemoryCounterStore implements CounterStore {
       const current = totals.get(counters.templateId)
       totals.set(counters.templateId, {
         templateId: counters.templateId,
-        bucketStart: 0,
+        bucketStart: seconds(0),
         placed: (current?.placed ?? 0) + counters.placed,
         correct: (current?.correct ?? 0) + counters.correct,
         repairs: (current?.repairs ?? 0) + counters.repairs,
@@ -131,7 +127,7 @@ export class MemoryCounterStore implements CounterStore {
       const current = totals.get(counters.templateId)
       totals.set(counters.templateId, {
         templateId: counters.templateId,
-        bucketStart: 0,
+        bucketStart: seconds(0),
         placed: (current?.placed ?? 0) + counters.placed - (retained?.placed ?? 0),
         correct: (current?.correct ?? 0) + counters.correct - (retained?.correct ?? 0),
         repairs: (current?.repairs ?? 0) + counters.repairs - (retained?.repairs ?? 0),
@@ -150,19 +146,23 @@ export class MemoryCounterStore implements CounterStore {
     })
   }
 
+  async readFlushFailureCount(): Promise<number> {
+    return this.consecutiveFlushFailures
+  }
+
   async readDroppedLateCount(): Promise<number> {
     return this.droppedLateCount
   }
 
   /** Scheduled Unix-millisecond alarm, exposed so adapter tests can verify scheduling. */
-  nextAlarmAt(): number | null {
+  nextAlarmAt(): Millis | null {
     return this.alarmAt
   }
 
   /** Emulates one Durable Object alarm delivery at the injected clock time. */
   async alarm(): Promise<void> {
     const nowMilliseconds = this.clock()
-    const nowSeconds = Math.floor(nowMilliseconds / 1_000)
+    const nowSeconds = seconds(Math.floor(nowMilliseconds / 1_000))
 
     this.pruneRetained(nowSeconds)
     this.pruneZeroPending()
@@ -203,16 +203,31 @@ export class MemoryCounterStore implements CounterStore {
 
     if (buckets.length > 0) {
       // SqlStore must commit before retained advances. Advancing retained first makes readPending
-      // subtract the batch from itself and report zero for an unbounded SqlStore outage. Writing
-      // SqlStore first instead risks a transient over-count if the process dies after the commit but
-      // before local bookkeeping; the next successful alarm rewrites the same cumulative value and
-      // self-heals. Prefer that one-alarm crash window over incorrect totals for a whole outage.
+      // subtract the batch from itself and report zero for an unbounded SqlStore outage.
+      //
+      // The cost, stated accurately: if SqlStore commits but the response is lost, retained does not
+      // advance, so readPending keeps counting a batch the store already holds and live totals read
+      // high by that batch. This is NOT a one-alarm window — it persists until the next flush
+      // succeeds, which during an outage means the whole outage. It always heals.
+      //
+      // Reporting high while recovering beats reporting zero for the duration, which is what the
+      // opposite ordering does. Both are wrong; only one is wrong in a direction that exaggerates
+      // work rather than hiding it. Kept identical to TelemetryShard's note, because this adapter is
+      // the oracle that one is measured against.
       try {
         await this.sql.appendBuckets(buckets)
       } catch (error) {
+        // Mirrors TelemetryShard: schedule the retry and return rather than rethrowing. Cloudflare
+        // caps platform retries of a throwing alarm() at six, so owning the retry is what makes
+        // recovery from a long D1 outage indefinite. See the note in telemetry-shard.ts.
         this.consecutiveFlushFailures += 1
-        this.alarmAt = this.clock() + flushRetryDelay(this.consecutiveFlushFailures)
-        throw error
+        const retryDelay = flushRetryDelay(this.consecutiveFlushFailures)
+        console.error(
+          `telemetry flush failed (attempt ${this.consecutiveFlushFailures}), retrying in ${retryDelay}ms`,
+          error,
+        )
+        this.alarmAt = millis(this.clock() + retryDelay)
+        return
       }
 
       this.consecutiveFlushFailures = 0
@@ -227,15 +242,7 @@ export class MemoryCounterStore implements CounterStore {
     this.recomputeAlarm(nowMilliseconds)
   }
 
-  private hasLocalTrace(templateId: string, bucketStart: number, nowSeconds: number): boolean {
-    // The expiry instant is exclusive, so no local trace may rescue an expired bucket.
-    if (expiresAt(bucketStart) <= nowSeconds) return false
-
-    const key = bucketKey(templateId, bucketStart)
-    return this.pending.has(key) || this.flushBatch.has(key) || this.retained.has(key)
-  }
-
-  private pruneRetained(nowSeconds: number): void {
+  private pruneRetained(nowSeconds: Seconds): void {
     for (const [key, counters] of this.retained) {
       if (
         expiresAt(counters.bucketStart) <= nowSeconds &&
@@ -257,7 +264,7 @@ export class MemoryCounterStore implements CounterStore {
     }
   }
 
-  private recomputeAlarm(nowMilliseconds: number): void {
+  private recomputeAlarm(nowMilliseconds: Millis): void {
     if (this.flushBatch.size > 0) {
       // readPending must preserve a future retry chosen by exponential backoff.
       if (this.alarmAt === null || this.alarmAt <= nowMilliseconds) {
@@ -266,9 +273,9 @@ export class MemoryCounterStore implements CounterStore {
       return
     }
 
-    let next: number | null = null
+    let next: Millis | null = null
     for (const counters of this.pending.values()) {
-      const candidate = Math.max(nowMilliseconds, flushableAt(counters.bucketStart) * 1_000)
+      const candidate = millis(Math.max(nowMilliseconds, flushableAt(counters.bucketStart) * 1_000))
       if (next === null || candidate < next) next = candidate
     }
     this.alarmAt = next

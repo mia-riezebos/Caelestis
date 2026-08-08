@@ -1,0 +1,709 @@
+import type * as Shared from '@wts/shared'
+import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { Schema } from 'effect'
+
+const MAX_IDENTIFIER_LENGTH = 64
+const MAX_NAME_LENGTH = 256
+const MAX_DESCRIPTION_LENGTH = 4_096
+/**
+ * A materialized path is a handful of group names joined by slashes, not prose. Reusing the
+ * description bound made MAX_MANIFEST_NODES paths worth ~442 MB — 22x the ceiling MAX_MANIFEST_CHUNKS
+ * is sized to, on an array the decoder refines only after building it. That is the same "one shared
+ * round number" mistake the array caps above already had to unlearn.
+ */
+const MAX_PATH_LENGTH = 256
+/**
+ * Array caps sized from what each field actually bounds. A single shared round number was wrong
+ * three separate ways: it made a >1,000-tile manifest impossible to encode, capped a paint payload
+ * at a tenth of a real charge drain, and rejected an ordinary 40x30-tile template.
+ */
+const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
+const MAX_TEMPLATE_CHUNKS = MAX_MANIFEST_TILES
+const MAX_MANIFEST_NODES = 100_000
+/**
+ * Chunks summed across every template, checked before anything flattens them.
+ *
+ * The per-template cap bounds no total: templates in different groups may cover the same tiles, so
+ * the declared tile union stays small while the chunk arrays do not, and the manifest filters below
+ * build a flatMap and several Sets over all of them.
+ *
+ * Sized to a payload that can actually be processed rather than to the canvas. Each chunk record is
+ * a tile key and a 64-character hash, so 200,000 of them is already ~20 MB of JSON — past what a
+ * manifest response should be, and far short of the 4,194,304 the per-template cap allowed.
+ */
+const MAX_MANIFEST_CHUNKS = 200_000
+const MAX_MANIFEST_TEMPLATES = 100_000
+/**
+ * Deliberately redundant, and it buys less than it looks like it does.
+ *
+ * The PaintEvent filters below already force every tile to carry a pixel and the event as a whole
+ * to stay within MAX_PAINTED_PIXELS, so the tile count cannot exceed that on semantics alone.
+ * Keeping the explicit cap documents the intended streaming-decoder limit; a multi-tile acceptance
+ * test prevents it from accidentally collapsing the protocol to one tile per event.
+ *
+ * It is not a cost bound either, which an earlier version of this comment claimed: `isMaxLength` is
+ * a refinement over the already-decoded array, so every element is validated before the length is
+ * checked. Measured, an over-cap payload reports its error at index 100_000, and decode time stays
+ * linear in what was *sent* — 800,000 tiles takes 1.6s whether the cap is 100,000 or four million.
+ * Bounding the work would need a limit the decoder applies while reading, which Effect's array
+ * combinator does not offer. What the cap does buy is an error naming the limit rather than a
+ * per-item complaint, and a stated intent for whoever adds streaming decode later.
+ */
+const MAX_PAINT_TILES = MAX_PAINT_COUNT
+// Both derive from the shared guardrail that `MAX_COUNTER_DELTA_VALUE` also derives from, so a
+// payload cannot pass this boundary and then be rejected by the CounterStore behind it. They were
+// restated here with a comment claiming a test pinned them to the backend's copy; no such test
+// existed and none could, since the two packages do not depend on each other.
+const MAX_PAINT_PIXELS_PER_TILE = MAX_PAINT_COUNT
+const MAX_PAINTED_PIXELS = MAX_PAINT_COUNT
+// 09-recon-palette has not recovered Wplace's complete index order yet. Keep this permissive until
+// that ticket establishes the real upper bound instead of deriving it from the incomplete palette.
+const MAX_PALETTE_INDEX = 65_535
+
+// Wide enough for every v1 timestamp while still making seconds and milliseconds disjoint.
+const MIN_EPOCH_SECONDS = 1_577_836_800 // 2020-01-01
+const MAX_EPOCH_SECONDS = 4_102_444_800 // 2100-01-01
+const MIN_EPOCH_MILLISECONDS = MIN_EPOCH_SECONDS * 1_000
+const MAX_EPOCH_MILLISECONDS = MAX_EPOCH_SECONDS * 1_000
+
+const booleanFilter = <T>(predicate: (value: T) => boolean, message: string) =>
+  Schema.makeFilter<T>(predicate, { message })
+
+const boundedString = (maximum: number) =>
+  Schema.String.pipe(Schema.check(Schema.isLengthBetween(1, maximum)))
+
+const boundedArray = <S extends Schema.Constraint>(item: S, maximum: number) =>
+  Schema.Array(item).pipe(Schema.check(Schema.isMaxLength(maximum)))
+
+const integerBetween = (minimum: number, maximum: number) =>
+  Schema.Number.pipe(
+    Schema.check(
+      Schema.isInt(),
+      Schema.isBetween(
+        { minimum, maximum },
+        {
+          message: `must be a safe integer between ${minimum} and ${maximum}`,
+        },
+      ),
+    ),
+  )
+
+const NonNegativeInteger = Schema.Number.pipe(
+  Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+)
+
+const Identifier = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, {
+      message: 'must be a canonical lowercase UUIDv7',
+    }),
+  ),
+)
+const VersionToken = boundedString(MAX_IDENTIFIER_LENGTH)
+const Name = boundedString(MAX_NAME_LENGTH)
+const Description = boundedString(MAX_DESCRIPTION_LENGTH)
+const Hash = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^[0-9a-f]{64}$/, {
+      message: 'must be a lowercase SHA-256 hex digest',
+    }),
+  ),
+)
+
+const Seconds = Schema.declare<Shared.Seconds>(
+  (value): value is Shared.Seconds =>
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= MIN_EPOCH_SECONDS &&
+    value < MAX_EPOCH_SECONDS,
+  { description: 'a plausible Unix timestamp in seconds' },
+)
+
+const Millis = Schema.declare<Shared.Millis>(
+  (value): value is Shared.Millis =>
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= MIN_EPOCH_MILLISECONDS &&
+    value < MAX_EPOCH_MILLISECONDS,
+  { description: 'a plausible Unix timestamp in milliseconds' },
+)
+
+const TileKey = Schema.declare<Shared.TileKey>(
+  (value): value is Shared.TileKey => {
+    if (typeof value !== 'string') return false
+    const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
+    if (match === null) return false
+    const x = Number(match[1])
+    const y = Number(match[2])
+    return x < WORLD_TILES && y < WORLD_TILES
+  },
+  { description: `a canonical tile key with coordinates from 0 to ${WORLD_TILES - 1}` },
+)
+
+const BoundingBoxStruct = Schema.Struct({
+  minX: integerBetween(0, WORLD_PIXELS - 1),
+  // Redundant, like maxY below: `minY < maxY <= WORLD_PIXELS` already implies it. Stated for
+  // symmetry with min_y's SQL CHECK.
+  minY: integerBetween(0, WORLD_PIXELS - 1),
+  // The exclusive end runs 1..WORLD_PIXELS, not 0..WORLD_PIXELS. A span ending exactly on the seam
+  // is WORLD_PIXELS; allowing 0 as well would give that one span two encodings that compare
+  // unequal, and the SQL CHECK on template_versions.max_x only accepts one of them — so a bbox the
+  // wire admitted would fail to persist. One representation, agreed on both sides.
+  maxX: integerBetween(1, WORLD_PIXELS),
+  // Stated for symmetry with the SQL CHECK; the `minY < maxY` filter below already implies it,
+  // since minY cannot be negative.
+  maxY: integerBetween(1, WORLD_PIXELS),
+})
+
+/**
+ * The canvas wraps in x and does not in y. `minX > maxX` therefore means "spans the antimeridian",
+ * which is legal and which consumers must read as two ranges. `minY > maxY` has no such meaning:
+ * Mercator clamps at the poles, so there is nothing to wrap through.
+ *
+ * Zero-width and zero-height are rejected either way — a template covering no pixels is not a
+ * placement, and `maxX == minX` cannot be distinguished from a full-canvas wrap.
+ */
+const BoundingBox = BoundingBoxStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (bbox: Schema.Schema.Type<typeof BoundingBoxStruct>) =>
+        bbox.minX !== bbox.maxX && bbox.minY < bbox.maxY,
+      'y must run low to high; x may wrap through zero but must span at least one pixel',
+    ),
+  ),
+)
+
+export const ServerInfo = Schema.Struct({
+  id: Identifier,
+  name: Name,
+  description: Schema.optionalKey(Description),
+  requiresAuth: Schema.Boolean,
+})
+
+/**
+ * A materialized group path: a leading slash and at least one segment.
+ *
+ * `%` and `_` are excluded because this value is the subtree-rewrite key. The documented move is
+ * `UPDATE ... WHERE path LIKE '<old>/%'`, and in a LIKE pattern `%` matches any run and `_` matches
+ * any single character — so a node created as `/canada%` rewrites every sibling subtree when it
+ * moves, and `/%` captures the whole tree. Callers should still pass ESCAPE; excluding the two
+ * metacharacters means a missing ESCAPE cannot be exploited from the wire.
+ *
+ * Segments accept Unicode letters, digits and combining marks. An earlier ASCII-only pattern
+ * rejected `/québec`, which D1 stores happily — alliances are not all anglophone, and the
+ * restriction bought nothing that excluding the two metacharacters does not already buy.
+ *
+ * Marks are the same argument one category further out: Devanagari writes its vowels as separate
+ * mark codepoints, so `/हिंदी` had no representation at all, and any name can arrive decomposed —
+ * `café` as `cafe` plus U+0301 is what a macOS client sends. A segment cannot *open* with a mark,
+ * which is the rule the pattern actually states: the class admits one anywhere after the first
+ * character, including after a dot, space or hyphen. Neither LIKE metacharacter is a mark.
+ */
+/**
+ * Fold a node path the way the database does, so the wire agrees with what D1 can actually store.
+ *
+ * SQLite's `lower()` and `LIKE` fold ASCII only, and `nodes_path_idx` is a unique index on
+ * `lower(path)`. JavaScript's `toLowerCase` folds all of Unicode, which is stricter in exactly the
+ * wrong direction: `/QUÉBEC` and `/québec` collide here while D1 stores both, and the manifest
+ * endpoint could not emit a decodable manifest for its own stored state — a permanent failure on
+ * legitimate rows, fixable only by editing the database.
+ *
+ * Nothing is lost by matching: É and é are distinct to `LIKE`, so a subtree move over one cannot
+ * capture the other, which is the collision the case rule exists to prevent.
+ */
+const foldPath = (path: string): string => path.replace(/[A-Z]/g, (c) => c.toLowerCase())
+
+const NodePath = Schema.String.pipe(
+  Schema.check(
+    Schema.isLengthBetween(1, MAX_PATH_LENGTH),
+    Schema.isPattern(/^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u, {
+      description: 'a slash-separated group path without LIKE metacharacters',
+    }),
+  ),
+)
+
+export const Node = Schema.Struct({
+  id: Identifier,
+  parentId: Schema.NullOr(Identifier),
+  path: NodePath,
+  name: Name,
+})
+
+export const Chunk = Schema.Struct({
+  tile: TileKey,
+  hash: Hash,
+})
+
+export const Template = Schema.Struct({
+  id: Identifier,
+  nodeId: Identifier,
+  name: Name,
+  version: Identifier,
+  bbox: BoundingBox,
+  totalPixels: NonNegativeInteger,
+  chunks: boundedArray(Chunk, MAX_TEMPLATE_CHUNKS),
+})
+
+const ManifestStruct = Schema.Struct({
+  version: VersionToken,
+  server: ServerInfo,
+  nodes: boundedArray(Node, MAX_MANIFEST_NODES),
+  templates: boundedArray(Template, MAX_MANIFEST_TEMPLATES),
+  tiles: boundedArray(TileKey, MAX_MANIFEST_TILES),
+})
+
+/** Split a validated tile key back into its coordinates. */
+const parseTile = (tile: string): { x: number; y: number } => {
+  const separator = tile.indexOf('/')
+  return { x: Number(tile.slice(0, separator)), y: Number(tile.slice(separator + 1)) }
+}
+
+/** One non-wrapping x span of a template's bounding box, carrying that box's y range. */
+type XSpan = {
+  readonly start: number
+  readonly end: number
+  readonly minY: number
+  readonly maxY: number
+}
+
+/**
+ * x wraps, so a bounding box with minX > maxX spans the antimeridian and covers TWO x ranges.
+ * Splitting into non-wrapping spans first makes every later comparison ordinary.
+ */
+const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
+  const { minX, maxX, minY, maxY } = template.bbox
+  const base = { minY, maxY }
+  return minX < maxX
+    ? [{ ...base, start: minX, end: maxX }]
+    : [
+        { ...base, start: minX, end: WORLD_PIXELS },
+        { ...base, start: 0, end: maxX },
+      ]
+}
+
+/**
+ * Reject a group whose templates overlap, by a sort and sweep.
+ *
+ * This was an all-pairs scan. It was correct — an earlier sort-and-sweep over `minX` missed wrapped
+ * boxes, because two fully-overlapping wrapped templates both start high and end low, so the early
+ * break skipped the comparison — but its cost was never re-bounded afterwards. With
+ * MAX_MANIFEST_TEMPLATES templates in one group it is ~5e9 comparisons: measured at 31.7s for
+ * 32,000 templates and 150s for 100,000, against a 30s Worker CPU limit. A schema-valid 23.6MB
+ * manifest was a remote CPU kill, reachable by any client that can read a manifest.
+ *
+ * The sweep is not O(n log n), which an earlier version of this comment claimed. `active.splice` is
+ * linear in the active set, so templates that are y-disjoint, x-overlapping and supplied in
+ * descending `minY` insert at the front every time and the sweep degrades to quadratic. Measured on
+ * that input: 6ms at 10,000, 105ms at 50,000, 1.6s at the 100,000 cap. That is a 90x improvement on
+ * the scan it replaced and comfortably inside the CPU limit, so it is the shape of the bound that is
+ * wrong rather than the decision — recorded here so the next person to raise the cap does not read
+ * a guarantee that was never measured.
+ *
+ * The sweep keeps wrap correctness by sorting *spans* rather than boxes. The y test rests on an
+ * invariant this function maintains itself: it returns on the first overlap found, so every span
+ * still active is pairwise y-disjoint from every other. Actives are therefore an ordered set of
+ * disjoint y intervals, and a new span can only overlap its immediate neighbours by `minY` —
+ * everything beyond them is separated by whichever neighbour lies between.
+ *
+ * Expired spans are dropped when a neighbour walk reaches them rather than in a sweep of their own.
+ * Each is removed once, and a span nobody walks past cannot affect an answer.
+ *
+ * A template is never compared against itself, and needs no guard to say so: a wrapped box's two
+ * spans are `[minX, WORLD_PIXELS)` and `[0, maxX)` with `maxX < minX`, so the low half has always
+ * expired by the time the high half is swept. A guard here would be unreachable, and a test for it
+ * would only appear to pin something.
+ */
+const hasNoGroupOverlap = (
+  templates: ReadonlyArray<Schema.Schema.Type<typeof Template>>,
+): boolean => {
+  const groups = new Map<string, XSpan[]>()
+  for (const template of templates) {
+    const spans = groups.get(template.nodeId)
+    if (spans === undefined) groups.set(template.nodeId, xSpans(template))
+    else spans.push(...xSpans(template))
+  }
+
+  for (const spans of groups.values()) {
+    spans.sort((left, right) => left.start - right.start)
+    // Active spans, ordered by minY and pairwise y-disjoint.
+    const active: XSpan[] = []
+
+    for (const span of spans) {
+      // First index whose minY is greater than this span's, so the two candidates are the entries
+      // on either side of it.
+      let low = 0
+      let high = active.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        // biome-ignore lint/style/noNonNullAssertion: middle is inside the array
+        if (active[middle]!.minY <= span.minY) low = middle + 1
+        else high = middle
+      }
+
+      let before = low - 1
+      while (before >= 0) {
+        // biome-ignore lint/style/noNonNullAssertion: before is inside the array
+        const candidate = active[before]!
+        if (candidate.end <= span.start) {
+          active.splice(before, 1)
+          before -= 1
+          low -= 1
+          continue
+        }
+        if (candidate.maxY > span.minY) return false
+        break
+      }
+
+      while (low < active.length) {
+        // biome-ignore lint/style/noNonNullAssertion: low is inside the array
+        const candidate = active[low]!
+        if (candidate.end <= span.start) {
+          active.splice(low, 1)
+          continue
+        }
+        if (span.maxY > candidate.minY) return false
+        break
+      }
+
+      active.splice(low, 0, span)
+    }
+  }
+  return true
+}
+
+export const Manifest = ManifestStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        // Ahead of every filter that flattens chunks, so an oversized manifest is refused before
+        // anything materialises an array or a Set over them.
+        manifest.templates.reduce((total, template) => total + template.chunks.length, 0) <=
+        MAX_MANIFEST_CHUNKS,
+      `a manifest may carry at most ${MAX_MANIFEST_CHUNKS} chunks in total`,
+    ),
+    booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      // Declared tiles are the union of chunk tiles, so there can never be more of them than there
+      // are chunks. Checking that first bounds this filter by MAX_MANIFEST_CHUNKS rather than by
+      // MAX_MANIFEST_TILES, which is the whole canvas — 4,194,304 keys built into two Sets before
+      // the equality below could reject them. Cheap, and it makes the same short-circuit the chunk
+      // cap above documents true of tiles as well.
+      const totalChunks = manifest.templates.reduce(
+        (total, template) => total + template.chunks.length,
+        0,
+      )
+      if (manifest.tiles.length > totalChunks) return false
+      const declaredTiles = new Set(manifest.tiles)
+      const referencedTiles = new Set(
+        manifest.templates.flatMap((template) => template.chunks.map((chunk) => chunk.tile)),
+      )
+      return (
+        declaredTiles.size === manifest.tiles.length &&
+        declaredTiles.size === referencedTiles.size &&
+        [...referencedTiles].every((tile) => declaredTiles.has(tile))
+      )
+    }, 'tiles must be the unique union of all template chunk tiles'),
+    booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      const nodeIds = new Set(manifest.nodes.map((node) => node.id))
+      const templateIds = new Set(manifest.templates.map((template) => template.id))
+      return (
+        nodeIds.size === manifest.nodes.length &&
+        templateIds.size === manifest.templates.length &&
+        manifest.templates.every((template) => nodeIds.has(template.nodeId))
+      )
+      // Parent references are not checked here. The path rule below resolves each parent to look up
+      // its path, so a dangling parentId already fails there — a conjunct here would be unreachable
+      // and no test could pin it.
+    }, 'node and template ids must be unique and every template must name a node that exists'),
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        manifest.templates.every(
+          (template) =>
+            new Set(template.chunks.map((chunk) => chunk.tile)).size === template.chunks.length,
+        ),
+      'a template may contain at most one chunk for each tile',
+    ),
+    booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      // Paths are the prefix-rollup key, so two nodes sharing one path make a rollup attribute one
+      // group's templates to another. parent_id and path must also describe the same hierarchy: a
+      // child of /canada carrying /usa/x rolls up under a group it does not belong to.
+      // Compare paths to paths. Deriving the set from an id-keyed Map instead would collapse
+      // duplicate ids and reject them here, which silently subsumes the id rule above and leaves it
+      // deletable — each filter should fail for its own reason.
+      //
+      // Case-insensitively, because SQLite's LIKE is ASCII-case-insensitive by default: with both
+      // /Canada and /canada stored, moving either one rewrites the other's subtree as well. Two
+      // paths differing only in case cannot coexist.
+      const paths = manifest.nodes.map((node) => foldPath(node.path))
+      if (new Set(paths).size !== paths.length) return false
+      const pathById = new Map(manifest.nodes.map((node) => [node.id, foldPath(node.path)]))
+      return manifest.nodes.every((node) => {
+        if (node.parentId === null) return node.path.indexOf('/', 1) === -1
+        const parentPath = pathById.get(node.parentId)
+        if (parentPath === undefined) return false
+        // Under the parent at all: slicing at the parent's length without comparing the prefix
+        // reads /norway/x as a child of /canada, because the suffix it produces — '/x' — has
+        // exactly the shape the segment test below expects.
+        //
+        // Immediate child, not merely a descendant: `startsWith` alone accepts /a/b/c under /a,
+        // which claims a level of hierarchy the manifest never declares a node for, so a rollup
+        // over /a/b finds nothing while /a/b/c's templates sit below it.
+        const path = foldPath(node.path)
+        if (!path.startsWith(parentPath)) return false
+        const suffix = path.slice(parentPath.length)
+        return suffix.startsWith('/') && suffix.indexOf('/', 1) === -1
+      })
+      // This also makes the hierarchy acyclic, so no separate cycle check is needed: a non-root
+      // path strictly extends its parent's, so walking up strictly shortens the path and must
+      // terminate at a root. A cycle check here would be unreachable and could not be tested.
+    }, 'every node path must be unique and sit directly under its parent'),
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        manifest.templates.every((template) => {
+          // totalPixels is the denominator of every progress figure for this template, so zero
+          // makes them NaN or a division by zero. A template that covers a box and declares chunks
+          // has painted something; one that has not is not a published template.
+          if (template.totalPixels === 0 || template.chunks.length === 0) return false
+          // A painted pixel is inside the bounding box and inside a declared chunk, so the ceiling
+          // is where the two meet — the chunk tiles clipped to the box, summed. Bounding by the box
+          // alone let one chunk of a 1001x1001 box carry a million pixels where it can hold one;
+          // bounding by `chunks.length * TILE_SIZE^2` let the same manifest through from the other
+          // side. Either way a denominator far above the largest possible numerator pins progress
+          // near zero forever. This is tighter than both and replaces them: distinct tiles clipped
+          // to the box can never sum past the box's own area.
+          //
+          // Summed over x spans because a wrapped box is two disjoint ranges and a row of chunks
+          // can meet both, at opposite ends of the canvas.
+          const spans = xSpans(template)
+          const capacity = template.chunks.reduce((total, chunk) => {
+            const { x, y } = parseTile(chunk.tile)
+            const tileMinX = x * TILE_SIZE
+            const tileMinY = y * TILE_SIZE
+            const height =
+              Math.min(tileMinY + TILE_SIZE, template.bbox.maxY) -
+              Math.max(tileMinY, template.bbox.minY)
+            if (height <= 0) return total
+            const width = spans.reduce(
+              (spanned, span) =>
+                spanned +
+                Math.max(
+                  0,
+                  Math.min(tileMinX + TILE_SIZE, span.end) - Math.max(tileMinX, span.start),
+                ),
+              0,
+            )
+            return total + width * height
+          }, 0)
+          return template.totalPixels <= capacity
+        }),
+      'a template total pixel count must fit where its chunks meet its bounding box',
+    ),
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        manifest.templates.every((template) => {
+          // A chunk is a full tile of painted pixels, so a chunk outside the box that declares the
+          // template's extent is a contradiction: culling watches the bbox tiles and would never
+          // fetch it, or would render it in the wrong place.
+          const spans = xSpans(template)
+          return template.chunks.every((chunk) => {
+            const { x, y } = parseTile(chunk.tile)
+            const tileMinX = x * TILE_SIZE
+            const tileMinY = y * TILE_SIZE
+            if (tileMinY + TILE_SIZE <= template.bbox.minY || tileMinY >= template.bbox.maxY) {
+              return false
+            }
+            return spans.some((span) => tileMinX < span.end && span.start < tileMinX + TILE_SIZE)
+          })
+        }),
+      'every chunk tile must intersect its template bounding box',
+    ),
+    booleanFilter(
+      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
+        hasNoGroupOverlap(manifest.templates),
+      'templates within one group must not overlap',
+    ),
+  ),
+)
+
+const TileLocalCoordinate = integerBetween(0, TILE_SIZE - 1)
+const PaletteIndex = integerBetween(0, MAX_PALETTE_INDEX)
+
+const PaintPixelsStruct = Schema.Struct({
+  x: boundedArray(TileLocalCoordinate, MAX_PAINT_PIXELS_PER_TILE),
+  y: boundedArray(TileLocalCoordinate, MAX_PAINT_PIXELS_PER_TILE),
+  colors: boundedArray(PaletteIndex, MAX_PAINT_PIXELS_PER_TILE),
+})
+
+export const PaintPixels = PaintPixelsStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (pixels: Schema.Schema.Type<typeof PaintPixelsStruct>) =>
+        pixels.x.length === pixels.y.length && pixels.y.length === pixels.colors.length,
+      'x, y and colors must have equal lengths',
+    ),
+    /**
+     * A coordinate may appear once. `submitted` is derived by counting these entries, and equal
+     * `painted`/`submitted` means "classify and credit them all" — so without this a reporter
+     * claims one on-template pixel MAX_PAINT_PIXELS_PER_TILE times and is credited for every
+     * repeat. The same anti-double-count rule is already enforced on the server-authored side, for
+     * chunks within a template and for overlapping templates within a group; this is the
+     * client-authored side of it.
+     *
+     * Colour is deliberately not part of the key: two different colours claimed for one coordinate
+     * are contradictory, not additive, and must not both be credited.
+     */
+    booleanFilter((pixels: Schema.Schema.Type<typeof PaintPixelsStruct>) => {
+      const seen = new Set<number>()
+      for (let index = 0; index < pixels.x.length; index += 1) {
+        // Pack into one number rather than a string key: the arrays run to 100_000 entries and
+        // both coordinates are bounded by TILE_SIZE, so this stays exact and allocation-free.
+        seen.add((pixels.x[index] ?? 0) * TILE_SIZE + (pixels.y[index] ?? 0))
+      }
+      return seen.size === pixels.x.length
+    }, 'each pixel coordinate may be submitted once'),
+  ),
+)
+
+export const PaintTile = Schema.Struct({
+  x: integerBetween(0, WORLD_TILES - 1),
+  y: integerBetween(0, WORLD_TILES - 1),
+  pixels: PaintPixels,
+})
+
+const PaintEventStruct = Schema.Struct({
+  eventId: Identifier,
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+  season: NonNegativeInteger,
+  ts: Seconds,
+  tiles: boundedArray(PaintTile, MAX_PAINT_TILES),
+  painted: integerBetween(0, MAX_PAINTED_PIXELS),
+})
+
+export const PaintEvent = PaintEventStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (event: Schema.Schema.Type<typeof PaintEventStruct>) =>
+        event.tiles.every((tile) => tile.pixels.x.length > 0),
+      'every submitted tile must carry at least one pixel',
+    ),
+    // Per-tile uniqueness is not enough on its own: repeating the whole tile entry reaches the same
+    // canvas coordinates again, and `submitted` counts each entry.
+    booleanFilter(
+      (event: Schema.Schema.Type<typeof PaintEventStruct>) =>
+        new Set(event.tiles.map((tile) => tile.x * WORLD_TILES + tile.y)).size ===
+        event.tiles.length,
+      'each tile may appear once per event',
+    ),
+    // Without a total, the per-tile cap bounds nothing: MAX_PAINT_TILES tiles each holding
+    // MAX_PAINT_PIXELS_PER_TILE pixels is a ten-billion-pixel payload the schema would accept.
+    booleanFilter((event: Schema.Schema.Type<typeof PaintEventStruct>) => {
+      const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
+      return submitted <= MAX_PAINTED_PIXELS && event.painted <= submitted
+    }, `painted must not exceed the submitted pixels, of which there may be at most ${MAX_PAINTED_PIXELS}`),
+  ),
+)
+
+export const TileOffer = Schema.Struct({
+  tile: TileKey,
+  sha256: Hash,
+  ts: Seconds,
+})
+
+export const TileOfferResponse = Schema.Struct({
+  wanted: boundedArray(TileKey, MAX_MANIFEST_TILES),
+})
+
+const TemplateStatusStruct = Schema.Struct({
+  templateId: Identifier,
+  correct: NonNegativeInteger,
+  wrong: NonNegativeInteger,
+  blank: NonNegativeInteger,
+  total: NonNegativeInteger,
+  observedAt: Millis,
+})
+
+export const TemplateStatus = TemplateStatusStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (status: Schema.Schema.Type<typeof TemplateStatusStruct>) =>
+        status.correct + status.wrong + status.blank <= status.total,
+      'correct, wrong and blank must not sum above total',
+    ),
+  ),
+)
+
+const NodeStatusStruct = Schema.Struct({
+  nodeId: Identifier,
+  correct: NonNegativeInteger,
+  total: NonNegativeInteger,
+  templatesComplete: NonNegativeInteger,
+  templatesTotal: NonNegativeInteger,
+  observedAt: Millis,
+})
+
+export const NodeStatus = NodeStatusStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (status: Schema.Schema.Type<typeof NodeStatusStruct>) =>
+        status.correct <= status.total && status.templatesComplete <= status.templatesTotal,
+      'correct and complete counts must not exceed their totals',
+    ),
+  ),
+)
+
+const AlarmStruct = Schema.Struct({
+  id: Identifier,
+  templateId: Identifier,
+  kind: Schema.Literals(['regression', 'sustained-griefing']),
+  pixelsLost: NonNegativeInteger,
+  firstSeen: Millis,
+  lastSeen: Millis,
+})
+
+export const Alarm = AlarmStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (alarm: Schema.Schema.Type<typeof AlarmStruct>) => alarm.firstSeen <= alarm.lastSeen,
+      'an alarm may not end before it began',
+    ),
+  ),
+)
+
+type Exact<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? (<T>() => T extends B ? 1 : 2) extends <T>() => T extends A ? 1 : 2
+      ? true
+      : false
+    : false
+
+const assertExact = <_T extends true>(): void => {}
+
+assertExact<Exact<Schema.Schema.Type<typeof BoundingBox>, Shared.BoundingBox>>()
+assertExact<Exact<Schema.Schema.Type<typeof ServerInfo>, Shared.ServerInfo>>()
+assertExact<Exact<Schema.Schema.Type<typeof Node>, Shared.Node>>()
+assertExact<Exact<Schema.Schema.Type<typeof Chunk>, Shared.Chunk>>()
+assertExact<Exact<Schema.Schema.Type<typeof Template>, Shared.Template>>()
+assertExact<Exact<Schema.Schema.Type<typeof Manifest>, Shared.Manifest>>()
+assertExact<Exact<Schema.Schema.Type<typeof PaintPixels>, Shared.PaintPixels>>()
+assertExact<Exact<Schema.Schema.Type<typeof PaintTile>, Shared.PaintTile>>()
+assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
+assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
+assertExact<Exact<Schema.Schema.Type<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof TemplateStatus>, Shared.TemplateStatus>>()
+assertExact<Exact<Schema.Schema.Type<typeof NodeStatus>, Shared.NodeStatus>>()
+assertExact<Exact<Schema.Schema.Type<typeof Alarm>, Shared.Alarm>>()
+
+assertExact<Exact<Schema.Codec.Encoded<typeof ServerInfo>, Shared.ServerInfo>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof BoundingBox>, Shared.BoundingBox>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof Node>, Shared.Node>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof Chunk>, Shared.Chunk>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof Template>, Shared.Template>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof Manifest>, Shared.Manifest>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PaintPixels>, Shared.PaintPixels>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PaintTile>, Shared.PaintTile>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof PaintEvent>, Shared.PaintEvent>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TileOffer>, Shared.TileOffer>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TemplateStatus>, Shared.TemplateStatus>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof NodeStatus>, Shared.NodeStatus>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof Alarm>, Shared.Alarm>>()

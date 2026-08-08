@@ -11,7 +11,7 @@ bucket_name = "wts-blobs"
 binding = "DB"
 database_name = "wts"
 database_id = "00000000-0000-0000-0000-000000000000"
-migrations_dir = "migrations"
+migrations_dir = "./migrations"
 
 [[durable_objects.bindings]]
 name = "TELEMETRY"
@@ -23,3 +23,6 @@ new_sqlite_classes = ["TelemetryShard"]
 
 [vars]
 SHARD_STRATEGY = "single"
+
+[observability]
+enabled = true

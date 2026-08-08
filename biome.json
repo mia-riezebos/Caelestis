@@ -13,7 +13,10 @@
       "!**/.wrangler",
       "!**/worker-configuration.d.ts",
       "!**/pnpm-lock.yaml",
-      "!.scratch"
+      "!.scratch",
+      "!.claude",
+      "!**/migrations/meta",
+      "!**/migrations/**/*.sql"
     ]
   },
   "formatter": {
