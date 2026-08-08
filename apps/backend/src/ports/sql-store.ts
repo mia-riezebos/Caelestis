@@ -405,6 +405,15 @@ export interface SqlStore {
    */
   renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null>
 
+  /**
+   * Re-parent a node and rewrite the paths of everything beneath it.
+   *
+   * Returns false when the node does not exist. Throws `InvalidNodeParentError` when the destination
+   * does not exist, belongs to another season, or is the node itself or one of its own descendants;
+   * `NodePathConflictError` when the new path collides with a sibling.
+   */
+  moveNode(nodeId: string, parentId: string | null, path: string): Promise<boolean>
+
   deleteNode(nodeId: string): Promise<void>
 
   deleteNodeCascade(nodeId: string): Promise<NodeDeletion>

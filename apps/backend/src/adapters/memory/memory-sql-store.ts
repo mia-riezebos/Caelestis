@@ -178,6 +178,64 @@ export class MemorySqlStore implements SqlStore {
     return renamed
   }
 
+  async moveNode(nodeId: string, parentId: string | null, proposedPath: string): Promise<boolean> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) return false
+
+    let parent: NodeRecord | undefined
+    if (parentId !== null) {
+      parent = this.nodes.get(parentId)
+      if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
+      if (parent.season !== node.season) {
+        throw new InvalidNodeParentError('parent node belongs to a different season')
+      }
+      // A parent inside this subtree would make the moved branch unreachable: its new path would
+      // depend on a descendant whose own path is being rewritten from the branch's old prefix.
+      if (parent.id === node.id || parent.path.startsWith(`${node.path}/`)) {
+        throw new InvalidNodeParentError(
+          'parent node cannot be the node itself or one of its descendants',
+        )
+      }
+    }
+
+    const segment = proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
+    const path = `${parent?.path ?? ''}/${segment}`
+    const oldPrefix = `${node.path}/`
+    const foldedPrefix = foldPath(oldPrefix)
+    const descendants = [...this.nodes.values()].filter(
+      (candidate) =>
+        candidate.season === node.season && foldPath(candidate.path).startsWith(foldedPrefix),
+    )
+    const movedIds = new Set([node.id, ...descendants.map(({ id }) => id)])
+    const rewritten = descendants.map((descendant) => ({
+      ...descendant,
+      path: `${path}${descendant.path.slice(node.path.length)}`,
+    }))
+    const longest = rewritten.reduce(
+      (worst, entry) => Math.max(worst, entry.path.length),
+      path.length,
+    )
+    if (longest > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(
+        `move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+      )
+    }
+    const rewrittenPaths = new Set([path, ...rewritten.map(({ path: next }) => next)].map(foldPath))
+    const taken = [...this.nodes.values()].some(
+      (candidate) =>
+        candidate.season === node.season &&
+        !movedIds.has(candidate.id) &&
+        rewrittenPaths.has(foldPath(candidate.path)),
+    )
+    if (taken) {
+      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+    }
+
+    this.nodes.set(node.id, { ...node, parentId, path })
+    for (const descendant of rewritten) this.nodes.set(descendant.id, descendant)
+    return true
+  }
+
   async deleteNode(nodeId: string): Promise<void> {
     if (!this.nodes.has(nodeId)) return
     const hasChildren = [...this.nodes.values()].some((node) => node.parentId === nodeId)
