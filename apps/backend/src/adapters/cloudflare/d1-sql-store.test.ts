@@ -540,14 +540,15 @@ describe('D1SqlStore', () => {
   })
 
   it('counts two reporters of the same hash as two', () => {
-    // The test above changes hash and reporter together, so dropping reported_by from the primary
+    // The test above changes hash and reporter together, so dropping the reporter from the primary
     // key still passes it — and agreement is the case quorum is actually read from. Two honest
-    // clients seeing the same tile must not collapse into one row.
+    // clients seeing the same tile must not collapse into one row. Two *accounts*: the account is
+    // the client, so distinct tokens alone no longer make distinct reporters.
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
       INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
-      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
-      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
+      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11);
+      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 22);
     `)
     expect(
       d1.sqlite
@@ -649,6 +650,20 @@ describe('D1SqlStore', () => {
     expect(
       d1.sqlite.prepare('SELECT COUNT(*) AS reporters FROM tile_history WHERE tile_x = 2').all(),
     ).toEqual([{ reporters: 2 }])
+  })
+
+  it('counts one account holding two tokens as one reporter', () => {
+    // The inverse of the shared-token case, and the one the pair alone does not close: keying on
+    // (token, account) made a member with two valid report tokens two reporters, so one client
+    // could manufacture the two-distinct-client quorum the ladder prefers. The account is the
+    // client; the token is only what it authenticated with.
+    d1.sqlite.exec(`
+      INSERT INTO tile_history VALUES (3, 3, 0, 100, 'agreed', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7);
+      INSERT OR REPLACE INTO tile_history VALUES (3, 3, 0, 100, 'agreed', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
+    `)
+    expect(
+      d1.sqlite.prepare('SELECT COUNT(*) AS reporters FROM tile_history WHERE tile_x = 3').all(),
+    ).toEqual([{ reporters: 1 }])
   })
 
   it('keeps a tile-history report whose token is gone', () => {
@@ -760,7 +775,7 @@ describe('D1SqlStore', () => {
     ],
     [
       'contributions separate two reporters of the same user, template and day',
-      "INSERT INTO contributions VALUES (2, 'ct', 0, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7, 1, 1, 0), (2, 'ct', 0, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7, 1, 1, 0)",
+      "INSERT INTO contributions VALUES (2, 'ct', 0, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11, 1, 1, 0), (2, 'ct', 0, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 22, 1, 1, 0)",
     ],
     [
       'tile_history keeps one row per tile, tier and bucket',

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d3f7d01d-629b-4f6f-bb80-51bdac2549d8",
+  "id": "7c65efe7-4154-4e69-92ee-3557d30ebc76",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -170,15 +170,14 @@
         }
       },
       "compositePrimaryKeys": {
-        "contributions_wplace_user_id_template_id_day_s_reported_by_reported_by_user_id_pk": {
+        "contributions_wplace_user_id_template_id_day_s_reported_by_user_id_pk": {
           "columns": [
             "wplace_user_id",
             "template_id",
             "day_s",
-            "reported_by",
             "reported_by_user_id"
           ],
-          "name": "contributions_wplace_user_id_template_id_day_s_reported_by_reported_by_user_id_pk"
+          "name": "contributions_wplace_user_id_template_id_day_s_reported_by_user_id_pk"
         }
       },
       "uniqueConstraints": {},
@@ -678,17 +677,16 @@
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
-        "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_reported_by_user_id_pk": {
+        "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_user_id_pk": {
           "columns": [
             "tile_x",
             "tile_y",
             "resolution_s",
             "bucket_start_s",
             "sha256",
-            "reported_by",
             "reported_by_user_id"
           ],
-          "name": "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_reported_by_user_id_pk"
+          "name": "tile_history_tile_x_tile_y_resolution_s_bucket_start_s_sha256_reported_by_user_id_pk"
         }
       },
       "uniqueConstraints": {},

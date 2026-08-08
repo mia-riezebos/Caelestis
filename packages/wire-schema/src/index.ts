@@ -382,6 +382,16 @@ export const Manifest = ManifestStruct.pipe(
       `a manifest may carry at most ${MAX_MANIFEST_CHUNKS} chunks in total`,
     ),
     booleanFilter((manifest: Schema.Schema.Type<typeof ManifestStruct>) => {
+      // Declared tiles are the union of chunk tiles, so there can never be more of them than there
+      // are chunks. Checking that first bounds this filter by MAX_MANIFEST_CHUNKS rather than by
+      // MAX_MANIFEST_TILES, which is the whole canvas — 4,194,304 keys built into two Sets before
+      // the equality below could reject them. Cheap, and it makes the same short-circuit the chunk
+      // cap above documents true of tiles as well.
+      const totalChunks = manifest.templates.reduce(
+        (total, template) => total + template.chunks.length,
+        0,
+      )
+      if (manifest.tiles.length > totalChunks) return false
       const declaredTiles = new Set(manifest.tiles)
       const referencedTiles = new Set(
         manifest.templates.flatMap((template) => template.chunks.map((chunk) => chunk.tile)),

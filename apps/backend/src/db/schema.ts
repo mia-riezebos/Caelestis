@@ -287,13 +287,7 @@ export const contributions = sqliteTable(
   },
   (table) => [
     primaryKey({
-      columns: [
-        table.wplaceUserId,
-        table.templateId,
-        table.dayS,
-        table.reportedBy,
-        table.reportedByUserId,
-      ],
+      columns: [table.wplaceUserId, table.templateId, table.dayS, table.reportedByUserId],
     }),
     check(
       'contributions_reported_by_check',
@@ -406,7 +400,6 @@ export const tileHistory = sqliteTable(
         table.resolutionS,
         table.bucketStartS,
         table.sha256,
-        table.reportedBy,
         table.reportedByUserId,
       ],
     }),

@@ -1110,6 +1110,16 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('rejects more declared tiles than the templates carry chunks', () => {
+    // tiles is the union of every chunk tile, so it cannot be longer than the chunk total. Checked
+    // before the Sets are built, so an untrusted manifest cannot make the decoder materialise a
+    // canvas-sized tile list on its way to being rejected for the same reason.
+    expectRejected(Manifest, {
+      ...validManifest,
+      tiles: [...validManifest.tiles, tileKey({ x: 9, y: 9 })],
+    })
+  })
+
   it('rejects two paths differing in a later ASCII letter only', () => {
     // The case pair above differs in its first letter, so a fold that stops after one replacement
     // still collapses them. SQLite's lower() folds the whole string, so /cANada and /canada collide
