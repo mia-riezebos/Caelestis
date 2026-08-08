@@ -458,6 +458,33 @@ export const renameNode = async (
   }
 }
 
+/**
+ * Move a folder to a different parent on the same server.
+ *
+ * Server-backed, unlike the order rows sit in: where a folder *lives* is structure everyone shares,
+ * so it has to be the server's answer, while what order you like to see things in is yours alone and
+ * never leaves this browser.
+ *
+ * Null puts it at the top level of the server.
+ */
+export const moveNode = async (
+  server: ConnectedServer,
+  nodeId: string,
+  parentId: string | null,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ parentId }),
+    })
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
 export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,

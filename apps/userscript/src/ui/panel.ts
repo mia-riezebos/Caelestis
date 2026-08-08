@@ -13,6 +13,7 @@ import {
   listNodes,
   loadState,
   moveLocalFolder,
+  moveNode as moveNodeOnServer,
   onStateChange,
   type ProgressPlacement,
   patchTemplate,
@@ -1088,13 +1089,22 @@ const moveBranch = async (
       : (getState().servers.find((candidate) => candidate.url === found.serverUrl) ?? null)
   if (fromServer && sourceServer === null) return
 
-  // Dropping a folder back into the place it already lives is a no-op, not a round trip.
+  /**
+   * Within one server, a move is one field: the node's parent.
+   *
+   * Nothing is copied and no pixels move — the templates hang off node ids that do not change — so
+   * this is a different operation from crossing a boundary, and asking to confirm it would be
+   * asking about a folder drag inside a single tree, which nobody expects.
+   */
   if (
     destination.kind === 'server' &&
     sourceServer !== null &&
     destination.server.url === sourceServer.url
   ) {
-    toast('Moving folders within one server is not supported yet.', 'warning')
+    if (found !== null && destination.nodeId === found.node.parentId) return
+    const moved = await moveNodeOnServer(destination.server, sourceId, destination.nodeId)
+    if (!moved.ok) toast(moved.message, 'error')
+    await refreshNodes(destination.server, rerender)
     return
   }
 
@@ -1180,15 +1190,20 @@ const dropOnServerNode = async (
   rerender: () => void,
 ): Promise<void> => {
   const { server, nodeId } = target
-  if (server === null || nodeId === null) return
+  if (server === null) return
 
   // A folder is a branch, not a row: its structure and everything hanging off it must exist at the
   // destination before anything is taken off the source. `transplant` owns that ordering; this only
   // decides which end is which.
+  //
+  // This is also the one destination that may be the server itself rather than a folder on it —
+  // dropping onto the server's own row means the top level. A template cannot go there, because a
+  // template has to live in a folder, which is why the null check below is after this.
   if (draggedKey.startsWith('node:') || draggedKey.startsWith('lf:')) {
     await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender)
     return
   }
+  if (nodeId === null) return
 
   if (draggedKey.startsWith('local:')) {
     const local = allLocal().find((candidate) => candidate.id === draggedKey.slice('local:'.length))
