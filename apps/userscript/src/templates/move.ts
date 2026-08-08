@@ -165,9 +165,13 @@ const previewMove = (id: string, x: number, y: number): void => {
 }
 
 const onPointerUp = (event: PointerEvent): void => {
-  if (session?.dragging?.pointerId === event.pointerId) {
+  const wasHandled = session?.dragging?.pointerId === event.pointerId
+  if (wasHandled && session !== null) {
     session.dragging = null
     setCursor(isOverTemplate(event.clientX, event.clientY) ? 'grab' : '')
+    event.preventDefault()
+    event.stopPropagation()
+    swallowNextClick()
   }
   if (suppressMiddleAuxClickFor === event.pointerId) {
     const pointerId = event.pointerId
@@ -201,6 +205,17 @@ const isPageControl = (target: EventTarget | null): boolean => {
       'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"]',
     ) ?? null) !== null
   )
+}
+
+const swallowNextClick = (): void => {
+  const swallow = (event: Event): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.removeEventListener('click', swallow, true)
+    clearTimeout(timer)
+  }
+  const timer = setTimeout(() => window.removeEventListener('click', swallow, true), 400)
+  window.addEventListener('click', swallow, true)
 }
 
 const onKeyDown = (event: KeyboardEvent): void => {
