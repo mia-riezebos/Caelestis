@@ -4,6 +4,7 @@ import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
   type ConnectedServer,
+  countNodeSubtree,
   createLocalFolder,
   createNode,
   deleteNode as deleteNodeOnServer,
@@ -47,7 +48,9 @@ import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
+import { type Destination, type Source, transplant } from './transplant.js'
 import {
+  findServerNode,
   findServerTemplate,
   placeKey,
   primeFromCache,
@@ -55,6 +58,7 @@ import {
   serverTemplateAt,
   startRenaming,
   type TreeTarget,
+  templatesOfNode,
   treeContents,
 } from './tree.js'
 
@@ -281,6 +285,20 @@ const treeView = (): HTMLElement => {
             // `local` is the root of the category; `lf:<id>` is a folder within it.
             const parentFolderId =
               parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null
+            // Something from a server, dropped into Local. It is a move rather than a reorder, and
+            // it lands here because Local's rows are the ones that own dropping *between* rows.
+            if (draggedKey.startsWith('node:')) {
+              void moveBranch(draggedKey, { kind: 'local', folderId: parentFolderId }, renderTree)
+              return
+            }
+            if (draggedKey.startsWith('st:')) {
+              void copyServerTemplateToLocal(
+                draggedKey.slice('st:'.length),
+                parentFolderId,
+                renderTree,
+              )
+              return
+            }
             // Reparent first, then place. One drop target, two kinds of passenger — which it is
             // comes from the dragged row's own key, so nothing else has to care.
             if (draggedKey.startsWith('local:')) {
@@ -927,8 +945,49 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     toast('Nothing to delete here yet.', 'warning')
     return
   }
-  if (!(await askToDelete('folder', target.name))) return
-  const result = await deleteNodeOnServer(target.server, target.nodeId)
+  /**
+   * A folder on a server, which is never only a folder.
+   *
+   * The count comes from the server rather than the tree, because the tree only knows what it has
+   * fetched — a folder nobody has expanded has never been listed — and "delete 1 folder" for
+   * something holding forty templates is the kind of wrong that only shows up afterwards.
+   */
+  const holding = await countNodeSubtree(target.server, target.nodeId)
+  const inside =
+    holding === null
+      ? null
+      : {
+          folders: Math.max(0, holding.nodes - 1),
+          templates: holding.templates,
+        }
+  const contents =
+    inside === null || (inside.folders === 0 && inside.templates === 0)
+      ? null
+      : [
+          inside.folders > 0 ? `${inside.folders} subfolder${inside.folders === 1 ? '' : 's'}` : '',
+          inside.templates > 0
+            ? `${inside.templates} template${inside.templates === 1 ? '' : 's'}`
+            : '',
+        ]
+          .filter((part) => part !== '')
+          .join(' and ')
+
+  const confirmed = await confirmDestructive({
+    title: `Delete “${target.name}”?`,
+    body:
+      contents === null
+        ? `${target.name} will be permanently removed.`
+        : `${target.name} and everything in it — ${contents} — will be permanently removed.`,
+    ...(contents === null
+      ? {}
+      : { note: 'Everyone connected to this server loses all of it, and it cannot be undone.' }),
+    confirmLabel: 'Delete',
+  })
+  if (!confirmed) return
+
+  // Cascade only where there is something to cascade. An empty folder deletes as it always did, so
+  // a server that does not know the flag still answers.
+  const result = await deleteNodeOnServer(target.server, target.nodeId, contents !== null)
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)
 }
@@ -1006,6 +1065,115 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
  *
  * A drop that would change nothing is silently ignored rather than round-tripping to say so.
  */
+/**
+ * Move a whole folder — a server's node or a Local one — to wherever it was dropped.
+ *
+ * Confirmed first when it crosses a boundary, because the source end of it is a delete that other
+ * people can see, and a drag is easy to make by accident. Nothing is removed until the destination
+ * holds the entire branch; see `transplant`.
+ */
+const moveBranch = async (
+  draggedKey: string,
+  destination: Destination,
+  rerender: () => void,
+): Promise<void> => {
+  const fromServer = draggedKey.startsWith('node:')
+  const sourceId = draggedKey.slice(draggedKey.indexOf(':') + 1)
+  const found = fromServer ? findServerNode(sourceId) : null
+  if (fromServer && found === null) return
+
+  const sourceServer =
+    found === null
+      ? null
+      : (getState().servers.find((candidate) => candidate.url === found.serverUrl) ?? null)
+  if (fromServer && sourceServer === null) return
+
+  // Dropping a folder back into the place it already lives is a no-op, not a round trip.
+  if (
+    destination.kind === 'server' &&
+    sourceServer !== null &&
+    destination.server.url === sourceServer.url
+  ) {
+    toast('Moving folders within one server is not supported yet.', 'warning')
+    return
+  }
+
+  const sourceName = sourceServer?.info?.name ?? sourceServer?.url ?? 'Local'
+  const destinationName =
+    destination.kind === 'local'
+      ? 'Local'
+      : (destination.server.info?.name ?? destination.server.url)
+  const confirmed = await confirmDestructive({
+    title: `Move this folder to ${destinationName}?`,
+    body: `Everything inside it is copied to ${destinationName} first, and only then removed from ${sourceName}.`,
+    ...(sourceServer === null
+      ? {}
+      : { note: `Everyone connected to ${sourceName} will stop seeing it.` }),
+    confirmLabel: 'Move',
+  })
+  if (!confirmed) return
+
+  const source: Source =
+    sourceServer === null
+      ? { kind: 'local', folderId: sourceId }
+      : { kind: 'server', server: sourceServer, nodeId: sourceId }
+
+  toast('Moving…')
+  const result = await transplant(source, destination, (server, nodeId) =>
+    templatesOfNode(server.url, nodeId),
+  )
+  if (result.ok) toast(result.message)
+  else toast(result.message, 'error')
+  if (sourceServer !== null) await refreshNodes(sourceServer, rerender)
+  if (destination.kind === 'server') await refreshNodes(destination.server, rerender)
+  rerender()
+}
+
+/**
+ * Take a single published template into Local, and off the server.
+ *
+ * The pixels come from the copy already drawn, so nothing is downloaded twice — and if it has not
+ * finished arriving there is nothing to move yet, which is worth saying rather than half-doing.
+ */
+const copyServerTemplateToLocal = async (
+  templateId: string,
+  folderId: string | null,
+  rerender: () => void,
+): Promise<void> => {
+  const found = findServerTemplate(templateId)
+  if (found === null) return
+  const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
+  if (source === undefined) return
+  const drawn = allLocal().find(
+    (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
+  )
+  if (drawn === undefined) {
+    toast('That template has not finished loading yet — try again in a moment.', 'warning')
+    return
+  }
+
+  const sourceName = source.info?.name ?? source.url
+  const confirmed = await confirmDestructive({
+    title: `Move “${found.template.name}” into Local?`,
+    body: `It is copied into this browser first, and only then removed from ${sourceName}.`,
+    note: `Everyone connected to ${sourceName} will stop seeing it.`,
+    confirmLabel: 'Move',
+  })
+  if (!confirmed) return
+
+  const copied = await addLocalTemplate({
+    ...drawn,
+    id: `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+    source: 'image',
+  })
+  setTemplateFolder(copied.id, folderId)
+  const removed = await deleteTemplateOnServer(source, templateId)
+  if (!removed.ok) toast(`Copied into Local, but ${removed.message}`, 'error')
+  else toast(`Moved “${found.template.name}” into Local.`)
+  await refreshNodes(source, rerender)
+  rerender()
+}
+
 const dropOnServerNode = async (
   target: TreeTarget,
   draggedKey: string,
@@ -1013,6 +1181,14 @@ const dropOnServerNode = async (
 ): Promise<void> => {
   const { server, nodeId } = target
   if (server === null || nodeId === null) return
+
+  // A folder is a branch, not a row: its structure and everything hanging off it must exist at the
+  // destination before anything is taken off the source. `transplant` owns that ordering; this only
+  // decides which end is which.
+  if (draggedKey.startsWith('node:') || draggedKey.startsWith('lf:')) {
+    await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender)
+    return
+  }
 
   if (draggedKey.startsWith('local:')) {
     const local = allLocal().find((candidate) => candidate.id === draggedKey.slice('local:'.length))
