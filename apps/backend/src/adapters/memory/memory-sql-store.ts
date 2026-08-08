@@ -1,4 +1,3 @@
-import type { Millis } from '@wts/shared'
 import {
   type AccessToken,
   assertValidAccessToken,

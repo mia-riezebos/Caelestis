@@ -10,7 +10,6 @@ import {
 } from '../../db/schema.js'
 import {
   type AccessToken,
-  assertValidAccessToken,
   assertValidBuckets,
   type BucketQuery,
   compareAccessTokens,
