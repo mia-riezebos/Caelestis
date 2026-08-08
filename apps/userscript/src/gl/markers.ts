@@ -3,7 +3,7 @@ import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { getState } from '../state.js'
 import { toRgbUnit } from '../templates/appearance.js'
-import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
+import { appearanceOf, localTemplates, type PlacedTemplate } from '../templates/local-store.js'
 import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
 import {
   currentQuads,
@@ -12,7 +12,7 @@ import {
   type TileQuad,
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
-import { templateFade } from './fade.js'
+import { markerFades, templateFades } from './fade.js'
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -334,9 +334,38 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   if (!isDrawingTiles()) return
   const tiles = currentQuads()
   if (tiles.length === 0) return
-  const wanted = localTemplates().filter(
-    (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
-  )
+  /**
+   * Everything whose markers are still worth anything, which is not the same as everything that
+   * asked for them.
+   *
+   * Switching markers off used to remove the template from this list, and every crosshair on it
+   * vanished between two frames. On dense artwork that is indistinguishable from the overlay
+   * breaking: a few thousand marks disappear at once and nothing says whether they were fixed,
+   * filtered, or lost. So the switch is a destination — the marks keep being drawn at falling
+   * opacity until the ramp runs out, and only then does the template drop off this list.
+   */
+  const now = performance.now()
+  let animating = false
+  const wanted: { template: PlacedTemplate; fade: number }[] = []
+  for (const template of localTemplates()) {
+    const { value, done } = markerFades.advance(
+      template.id,
+      appearanceOf(template).markMismatch ? 1 : 0,
+      now,
+    )
+    if (!done) animating = true
+    // Multiplied by the template's own ramp: markers belong to it, so one arriving with its markers
+    // on brings them with it rather than laying them over a template that is not there yet.
+    // Hiding the template is already in there: its own ramp is on its way to zero, and the markers
+    // leave with it rather than a step ahead of it.
+    const fade = value * templateFades.value(template.id)
+    if (fade > 0) wanted.push({ template, fade })
+  }
+  markerFades.prune(new Set(localTemplates().map((template) => template.id)))
+  if (animating) {
+    const map = getMap() as { triggerRepaint?: () => void } | null
+    map?.triggerRepaint?.()
+  }
   if (wanted.length === 0) return
 
   count('marker:layer rendered')
@@ -344,7 +373,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
 
   // Only the tiles a template covers. Asking about a tile is not free — one whose pixels have not
   // been captured triggers a fetch and a 1000x1000 `getImageData`.
-  const covers = (template: (typeof wanted)[number], tile: TileQuad): boolean => {
+  const covers = (template: PlacedTemplate, tile: TileQuad): boolean => {
     const left = tile.tile.x * TILE_SIZE
     const top = tile.tile.y * TILE_SIZE
     if (template.originX >= left + TILE_SIZE || template.originX + template.width <= left)
@@ -357,7 +386,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   const work: { tile: TileQuad; marks: Float32Array; style: MarkerStyle; fade: number }[] = []
   let deferred = false
   const selected = getState().onlySelectedColour && isPaintOpen() ? (selectedColour() ?? -1) : -1
-  for (const template of wanted) {
+  for (const { template, fade } of wanted) {
     const appearance = appearanceOf(template)
     const style: MarkerStyle = {
       size: appearance.markerSize,
@@ -367,8 +396,6 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
       otherOpacity: appearance.otherOpacity,
       selected,
     }
-    const fade = templateFade(template.id)
-    if (fade <= 0) continue
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
       const marks = mismatchesIn(template, tile.tile)
@@ -392,7 +419,6 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   gl.useProgram(previousProgram)
   if (!hadBlend) gl.disable(gl.BLEND)
 
-  const now = performance.now()
   if (deferred && now >= nextRetry) {
     nextRetry = now + RETRY_MS
     const map = getMap() as { triggerRepaint?: () => void } | null

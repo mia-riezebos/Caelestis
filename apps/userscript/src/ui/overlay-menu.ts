@@ -1,5 +1,6 @@
 import { TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { log } from '../debug.js'
+import { FADE_TRANSITION } from '../gl/fade.js'
 import { screenPointFor } from '../main.js'
 import {
   APPEARANCE_CONTROLS,
@@ -547,8 +548,9 @@ export const renderOverlayControls = (rerender: () => void): void => {
       button.style.position = 'fixed'
       // Behind the panel too, for the same reason, and below the menu it opens.
       button.style.zIndex = '28'
-      // Matches the overlay's own ramp in `gl/layer.ts`, in both duration and curve.
-      button.style.transition = 'opacity 500ms ease-in-out'
+      // The overlay's own ramp, shared rather than restated — CSS `ease-in-out` is not the cubic
+      // the layer eases on, and half a second is long enough for the difference to show.
+      button.style.transition = FADE_TRANSITION
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         if (openFor === template.id) closeOverlayMenu()

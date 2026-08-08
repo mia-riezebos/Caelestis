@@ -80,8 +80,9 @@ vec4 cellColour(vec2 texel) {
   }
   uint index = texelFetch(u_indices, cell, 0).r;
   vec4 entry = texelFetch(u_palette, ivec2(int(index), 0), 0);
-  // Alpha 0 covers both the wildcard index and any colour the filter has switched off.
-  return entry.a < 0.5 ? vec4(0.0) : vec4(entry.rgb, 1.0);
+  // Alpha covers both the wildcard index — always 0 — and how far through the filter's fade the
+  // colour is, which is why it is carried through rather than rounded to a yes or a no.
+  return vec4(entry.rgb, entry.a);
 }
 
 void main() {
@@ -127,8 +128,8 @@ void main() {
 
   uint index = texelFetch(u_indices, cell, 0).r;
   vec4 entry = texelFetch(u_palette, ivec2(int(index), 0), 0);
-  // Alpha 0 covers both the wildcard index and any colour the filter has switched off.
-  if (entry.a < 0.5) discard;
+  // Nothing at all to draw: the wildcard index, or a colour whose fade has finished leaving.
+  if (entry.a <= 0.0) discard;
 
   float coverage = 1.0;
   if (!u_plain) {
@@ -163,7 +164,7 @@ void main() {
     if (coverage <= 0.0) discard;
   }
 
-  float alpha = coverage * u_opacity * u_fade;
+  float alpha = coverage * u_opacity * u_fade * entry.a;
   // Premultiplied, to match the blend mode MapLibre leaves set.
   fragColor = vec4(entry.rgb * alpha, alpha);
 }

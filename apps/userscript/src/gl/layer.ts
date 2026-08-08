@@ -5,7 +5,7 @@ import { isPlain } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
 import { currentQuads, isDrawingTiles } from '../tile-transform.js'
-import { fadeOf, pruneFades } from './fade.js'
+import { colourFades, templateFades } from './fade.js'
 import { markerLayer } from './markers.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
@@ -49,7 +49,15 @@ interface TemplateGpu {
    * overlay silently drew nothing.
    */
   paletteKey: string | null
+  /** Whether any colour in it is still fading, and so whether it needs re-uploading next frame. */
+  paletteMoving: boolean
 }
+
+/** Every palette index, for pruning ramps — one per template per colour. */
+const paletteKeys = Array.from({ length: PALETTE_SIZE }, (_, index) => index)
+
+/** Which templates existed last frame, so the colour ramps are only swept when that changes. */
+let lastTemplateSet = ''
 
 /** Four vertices of clip xyzw + uv, rewritten per template per frame. */
 const corners = new Float32Array(4 * 6)
@@ -143,40 +151,43 @@ const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation
 /**
  * The palette as a 64x1 RGBA texture, with alpha standing in for "shown".
  *
- * Filtering a colour is then a 256-byte upload instead of a rebuilt bitmap. The wildcard index is
- * always alpha 0, which is also how a template pixel that requires nothing draws nothing.
+ * Filtering a colour is then a 256-byte upload instead of a rebuilt bitmap — which is also what
+ * makes fading one affordable: alpha is a number rather than a switch, so a colour leaving the
+ * drawing is the same upload as a colour that has left. The wildcard index is always alpha 0, which
+ * is also how a template pixel that requires nothing draws nothing.
+ *
+ * Filled from ramps rather than from the hidden set directly, and the ramps are advanced here
+ * because this is the only place that knows every index needs one — a colour switched off has to
+ * keep being asked about until it has finished leaving.
  */
-const buildPalette = (hidden: readonly number[]): Uint8Array => {
+const buildPalette = (
+  templateId: string,
+  hidden: readonly number[],
+  now: number,
+): { data: Uint8Array; animating: boolean } => {
   const off = new Set(hidden)
   const data = new Uint8Array(PALETTE_SIZE * 4)
+  let animating = false
   for (let index = 0; index < PALETTE_SIZE; index++) {
     const colour = WPLACE_PALETTE[index]
     const shown = colour !== undefined && index !== TRANSPARENT_INDEX && !off.has(index)
+    const { value, done } = colourFades.advance(`${templateId}:${index}`, shown ? 1 : 0, now)
+    if (!done) animating = true
     data[index * 4] = colour?.rgb[0] ?? 0
     data[index * 4 + 1] = colour?.rgb[1] ?? 0
     data[index * 4 + 2] = colour?.rgb[2] ?? 0
-    data[index * 4 + 3] = shown ? 255 : 0
+    data[index * 4 + 3] = Math.round(value * 255)
   }
-  return data
+  return { data, animating }
 }
 
 const uploadPalette = (
   gl: WebGL2RenderingContext,
   texture: WebGLTexture,
-  hidden: readonly number[],
+  data: Uint8Array,
 ): void => {
   gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    PALETTE_SIZE,
-    1,
-    0,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    buildPalette(hidden),
-  )
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, PALETTE_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -297,16 +308,39 @@ export const overlayLayer = {
     let animating = false
     const visible: { template: (typeof all)[number]; fade: number }[] = []
     for (const template of all) {
-      const { value, done } = fadeOf(template.id, isTemplateVisible(template) ? 1 : 0, now)
+      const { value, done } = templateFades.advance(
+        template.id,
+        isTemplateVisible(template) ? 1 : 0,
+        now,
+      )
       if (!done) animating = true
       if (value > 0) visible.push({ template, fade: value })
     }
-    pruneFades(new Set(all.map((template) => template.id)))
+    const ids = new Set(all.map((template) => template.id))
+    templateFades.prune(ids)
+    /**
+     * The colour ramps are keyed per template *per palette entry*, so their keep-set is sixty-four
+     * strings per template — built only when the set of templates has actually changed, rather than
+     * on every frame. This runs inside a render callback at whatever rate MapLibre draws at, and a
+     * few hundred strings a frame is garbage collected for nothing: templates come and go on human
+     * timescales.
+     */
+    const fingerprint = [...ids].join(' ')
+    if (fingerprint !== lastTemplateSet) {
+      lastTemplateSet = fingerprint
+      colourFades.prune(new Set(all.flatMap((t) => paletteKeys.map((i) => `${t.id}:${i}`))))
+    }
     if (visible.length === 0) return
 
-    // MapLibre renders on demand, so a frame nobody asked for is a frame that never happens. Without
-    // this a ramp would advance only as far as the next pan.
-    if (animating) {
+    /**
+     * MapLibre renders on demand, so a frame nobody asked for is a frame that never happens.
+     * Without this a ramp would advance only as far as the next pan.
+     *
+     * Asked for at the end rather than here, because the colour ramps are advanced inside the draw
+     * loop below and a filter fading with nothing else moving would otherwise stop after one frame.
+     */
+    const askForAnotherFrame = (): void => {
+      if (!animating) return
       const map = getMap() as { triggerRepaint?: () => void } | null
       map?.triggerRepaint?.()
     }
@@ -341,6 +375,7 @@ export const overlayLayer = {
           width: template.width,
           height: template.height,
           paletteKey: null,
+          paletteMoving: false,
         }
         gpu.set(template.id, entry)
       }
@@ -350,9 +385,14 @@ export const overlayLayer = {
       // question, and `appearanceOf` has already answered it by falling back to the defaults.
       const hidden = hiddenColoursFor(template.appearance)
       const paletteKey = hidden.join(',')
-      if (entry.paletteKey !== paletteKey) {
-        uploadPalette(gl, entry.palette, hidden)
+      // Re-uploaded while anything in it is still moving, not only when the filter changes: the
+      // filter changes once and the fade it starts takes half a second to arrive.
+      if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
+        const built = buildPalette(template.id, hidden, now)
+        uploadPalette(gl, entry.palette, built.data)
         entry.paletteKey = paletteKey
+        entry.paletteMoving = built.animating
+        if (built.animating) animating = true
       }
 
       gl.activeTexture(gl.TEXTURE0)
@@ -422,6 +462,7 @@ export const overlayLayer = {
     gl.useProgram(previousProgram)
     if (!hadBlend) gl.disable(gl.BLEND)
     if (hadDepth) gl.enable(gl.DEPTH_TEST)
+    askForAnotherFrame()
   },
 }
 
