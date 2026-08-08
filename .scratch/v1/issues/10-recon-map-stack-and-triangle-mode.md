@@ -155,5 +155,10 @@ Every "worth confirming in the browser" above has been confirmed by building aga
 - The **triangle view mode** was never chased, because it stopped mattering: shapes are a continuous
   parameterisation of our own rather than a replication of theirs (`14-v1-viewing-modes`).
 
-The **native alliance endpoints** noted above remain unexamined. That is now its own fog entry on the
-map rather than a loose end here.
+The **native alliance endpoints** noted above are not a loose end: they already have a home in
+`18-headquarters-canvas`, which lists the same surface and is in scope for v1 but sequenced last.
+
+Nor do they reopen anything about membership. `03-auth-model` settled that: our own access tokens are
+the mechanism, and an alliance check is an optional second-order config (`requireAllianceId`) that
+raises the bar for operators who want it. It is never a gate, and nothing here depends on wplace's
+notion of who is in an alliance.

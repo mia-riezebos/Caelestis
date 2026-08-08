@@ -216,10 +216,6 @@ userscript has nowhere to report to. Everything else it needs from a server — 
   re-fetch on change, and for what happens when a cached template's server says it is gone. See the
   2026-08-08 amendment on `01-template-storage-and-chunk-model`.
 - **Promoting a locally-imported template to a shared one** — in place, or re-upload.
-- **wplace's own alliance endpoints** — `/alliances/{id}/headquarters/manifest`, `.../snapshot`,
-  `/alliance/assets/...`, `/alliance/leaderboard/{id}`, found during map-stack recon and never
-  examined. They overlap this project's territory; worth knowing whether they are usable, whether
-  they constrain the design, or whether they are limited enough that this still earns its place.
 - **Does the palette grow?** A new colour would not break stored templates, but it would silently
   change what `Owned` and `Free` mean, and what a validated upload was validated against.
 - **Multi-server merge UX** — how conflicting/overlapping templates from different servers are
