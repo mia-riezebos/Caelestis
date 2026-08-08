@@ -45,14 +45,6 @@ export interface Appearance {
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]
   /**
-   * Show only the colour wplace has selected, while its paint drawer is open.
-   *
-   * Scoped the same way the rest of this object is: it beats `hiddenColours` *beside* it and nothing
-   * else. The global mode governs overlays following the global defaults; this one governs the
-   * overlay that owns it. A global mode reaching into an overlay with a filter of its own would be
-   * the union rule again, one level up — the overlay would stop being able to say what it draws.
-   */
-  readonly onlySelectedColour: boolean
   /**
    * Mark every pixel the canvas disagrees with.
    *
@@ -111,7 +103,6 @@ export const DEFAULT_APPEARANCE: Appearance = {
   rotation: 0,
   opacity: 1,
   hiddenColours: [],
-  onlySelectedColour: false,
   markMismatch: false,
   markUnpainted: false,
   unpaintedLimit: 0.05,
@@ -147,7 +138,8 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     rotation: number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),
     opacity: number('opacity', DEFAULT_APPEARANCE.opacity, 0.05, 1),
     hiddenColours: hidden,
-    onlySelectedColour: source.onlySelectedColour === true,
+    // `onlySelectedColour` used to live here too. A stored one is simply dropped: the mode is one
+    // switch for the whole view now, so there is nothing per-overlay left for it to mean.
     markMismatch: source.markMismatch === true,
     markUnpainted: source.markUnpainted === true,
     unpaintedLimit: number(

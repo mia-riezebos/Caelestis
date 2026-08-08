@@ -1,5 +1,5 @@
 import { canvasPixelToLatLng } from '@wts/shared'
-import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
+import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
@@ -43,6 +43,7 @@ import {
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { isPaintOpen } from '../wplace-paint.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
@@ -1848,35 +1849,112 @@ const setOpen = (next: boolean): void => {
   showView(currentView)
 }
 
+const RAIL_ID = 'wts-rail'
+/** Their rail sits `top-2 right-2`; ours lines up with it when theirs is not on screen. */
+const RAIL_INSET = 8
+
 /**
- * Keep the button on the rail.
+ * Our own rail, beneath wplace's when they have one and in its place when they do not.
  *
- * The rail is rendered by wplace's own Svelte app, which is free to re-render and drop anything we
- * appended. An observer costs nothing and turns "the button disappeared after I opened a menu" into
- * a non-event.
+ * Our button used to be appended *into* their rail, which looked native and disappeared with it —
+ * and it disappears exactly when the paint drawer opens, which is when these controls are most
+ * wanted. Owning the container decouples the two: it is positioned against theirs while theirs is on
+ * screen, so it still reads as part of the same stack, and simply stays put when theirs goes.
+ *
+ * Positioned rather than laid out, because their rail is Svelte-rendered and free to re-render at
+ * any moment. Anything we put inside it is on loan; anything we position against it is not.
+ */
+const railContainer = (): HTMLElement => {
+  const existing = document.getElementById(RAIL_ID)
+  if (existing !== null) return existing
+  const el = document.createElement('div')
+  el.id = RAIL_ID
+  el.className = 'flex flex-col items-center gap-3'
+  Object.assign(el.style, { position: 'fixed', zIndex: '30' })
+  document.body.appendChild(el)
+  return el
+}
+
+/**
+ * Keep our rail where wplace's is, and following it when it moves.
+ *
+ * Read from their rail's own box rather than from a copy of their Tailwind offsets: they own that
+ * layout and are free to change it, and a hardcoded corner would drift the moment they do. The
+ * fallback matters more than it looks — it is the paint-drawer case, where their rail is gone and
+ * there is nothing left to measure.
+ */
+const positionRail = (): void => {
+  const rail = railContainer()
+  const theirs = findRail()?.rail.getBoundingClientRect()
+  if (theirs !== undefined && theirs.width > 0) {
+    rail.style.left = `${theirs.left}px`
+    rail.style.top = `${theirs.bottom + 12}px`
+    rail.style.right = ''
+    return
+  }
+  rail.style.left = ''
+  rail.style.right = `${RAIL_INSET}px`
+  rail.style.top = `${RAIL_INSET}px`
+}
+
+/**
+ * Follow the colour wplace has selected, for every overlay at once.
+ *
+ * On the rail rather than only in the panel because it is toggled constantly while painting, and
+ * opening a panel to reach it costs more than the mode saves. It says nothing while their drawer is
+ * shut — there is no selected colour then — which the tooltip carries.
+ */
+const colourModeButton = (): HTMLButtonElement => {
+  const existing = document.getElementById(COLOUR_MODE_ID)
+  if (existing !== null) return existing as HTMLButtonElement
+  const button = document.createElement('button')
+  button.id = COLOUR_MODE_ID
+  button.className = RAIL_BUTTON_CLASS
+  button.appendChild(icon('palette'))
+  button.addEventListener('click', () => {
+    setState({ onlySelectedColour: !getState().onlySelectedColour })
+    syncColourModeState()
+  })
+  return button
+}
+
+const COLOUR_MODE_ID = 'wts-colour-mode'
+
+export const syncColourModeState = (): void => {
+  const button = document.getElementById(COLOUR_MODE_ID)
+  if (button === null) return
+  const on = getState().onlySelectedColour
+  button.className = on ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
+  button.setAttribute('aria-pressed', String(on))
+  const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
+  // Says why nothing happened, at the moment it does not: the mode needs a colour to follow.
+  button.title = isPaintOpen() ? label : `${label} — open wplace's paint drawer to pick one`
+  button.setAttribute('aria-label', label)
+}
+
+/**
+ * Keep our rail on screen and our buttons in it.
+ *
+ * The rail is rendered by wplace's own Svelte app, which is free to re-render at any moment. Ours is
+ * separate, so the observer is only here to notice *their* rail moving or vanishing — not to rescue
+ * a button they threw away.
  */
 export const installPanel = (): void => {
   loadState()
   installStyles()
-  let warned = false
-  const attach = (): void => {
-    const existing = document.getElementById(BUTTON_ID)
-    const found = findRail()
-    if (found === null) {
-      if (!warned) {
-        warned = true
-        warn('install', `no "${ANCHOR_LABEL}" button on the page yet — watching for it`)
-      }
-      return
-    }
-    // Already in the right place, directly after the anchor.
-    if (existing !== null && existing.previousElementSibling === found.after) return
-    existing?.remove()
-    found.after.insertAdjacentElement('afterend', railButton())
-    syncRailButtonState()
-    log('install', 'rail button attached below Overlays')
-  }
+  const rail = railContainer()
+  rail.append(railButton(), colourModeButton())
+  syncRailButtonState()
+  syncColourModeState()
+  positionRail()
+  log('install', 'rail installed beside wplace’s')
 
-  attach()
-  new MutationObserver(attach).observe(document.body, { childList: true, subtree: true })
+  const sync = (): void => {
+    // Their re-render may have taken our buttons if anything ever moves them; put them back cheaply.
+    if (!rail.contains(railButton())) rail.append(railButton(), colourModeButton())
+    positionRail()
+  }
+  new MutationObserver(sync).observe(document.body, { childList: true, subtree: true })
+  window.addEventListener('resize', positionRail)
+  onStateChange(syncColourModeState)
 }

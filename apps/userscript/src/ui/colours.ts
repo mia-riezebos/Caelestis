@@ -166,8 +166,15 @@ export const colourPresets = (
   scope: {
     /** The filter as it stands, so the matching button can show itself as the one in effect. */
     readonly hidden: readonly number[]
-    readonly onlySelected: boolean
-    readonly setOnlySelected: (next: boolean) => void
+    /**
+     * The follow-the-selection switch, where there is one to offer.
+     *
+     * Absent in an overlay's own menu: the mode is one switch for the whole view, so putting it
+     * beside an overlay's filter would say it belongs to that overlay. It appears once, in settings,
+     * and on the rail.
+     */
+    readonly onlySelected?: boolean
+    readonly setOnlySelected?: (next: boolean) => void
   },
 ): HTMLElement => {
   const presets = document.createElement('div')
@@ -201,7 +208,10 @@ export const colourPresets = (
     })
     presets.appendChild(button)
   }
-  presets.appendChild(onlySelectedToggle(scope.onlySelected, scope.setOnlySelected, rerender))
+  const setOnlySelected = scope.setOnlySelected
+  if (setOnlySelected !== undefined) {
+    presets.appendChild(onlySelectedToggle(scope.onlySelected === true, setOnlySelected, rerender))
+  }
 
   // A set of its own gets no label. "Custom" said what the row already says by having nothing lit,
   // and it said it on a line of its own that pushed the swatches down whenever it appeared.

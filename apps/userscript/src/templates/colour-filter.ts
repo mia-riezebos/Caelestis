@@ -42,20 +42,17 @@ export const globalHiddenColours = (): readonly number[] => {
 /**
  * The set to draw one overlay with, given the appearance it owns — or null when it uses the defaults.
  *
- * "Only selected" still wins over both. It is a mode rather than a filter: it exists to line up the
- * one colour being placed, lasts only while the paint drawer is open, and switches nothing off
- * permanently, so an overlay having opinions of its own is not a reason to ignore it.
+ * **Follow-the-selection is one switch for the whole view**, and it beats every overlay's own
+ * filter while it runs. It used to exist per overlay as well, each scope's mode governing that
+ * scope, which was coherent and unusable: a keybind then had to answer "which overlay did you
+ * mean", and the only rules available — the one nearest the centre, unless it follows the defaults —
+ * are rules nobody can predict by looking at the screen. It is a way of looking at the canvas
+ * rather than a property of a template, so it belongs to the view.
  */
 export const hiddenColoursFor = (own: Appearance | null): readonly number[] => {
   const state = getState()
-  // Each scope's mode beats that scope's own switches and reaches no further. An overlay following
-  // the defaults answers to the global mode; an overlay with a filter of its own answers to its own.
-  if (own === null) {
-    if (state.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
-    return state.hiddenColours
-  }
-  if (own.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
-  return own.hiddenColours
+  if (state.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
+  return own === null ? state.hiddenColours : own.hiddenColours
 }
 
 /**
