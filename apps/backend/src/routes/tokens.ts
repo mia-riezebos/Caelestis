@@ -13,7 +13,6 @@ const publicView = (token: AccessToken) => ({
   scope: token.scope,
   createdBy: token.createdBy,
   createdAt: token.createdAt,
-  revokedAt: token.revokedAt,
 })
 
 const isScope = (value: unknown): value is Scope =>
@@ -51,7 +50,6 @@ export const createTokenRoutes = (auth: AuthOptions) => {
       // The bootstrap operator has no row of its own, so it is named rather than referenced.
       createdBy: caller.token?.tokenHash ?? 'bootstrap',
       createdAt: millis(Date.now()),
-      revokedAt: null,
     }
     await auth.sql.insertAccessToken(record)
 
@@ -69,9 +67,10 @@ export const createTokenRoutes = (auth: AuthOptions) => {
     const existing = await auth.sql.readAccessToken(tokenHash)
     if (existing === null) return c.json({ error: 'not found' }, 404)
 
-    await auth.sql.revokeAccessToken(tokenHash, millis(Date.now()))
-    const revoked = await auth.sql.readAccessToken(tokenHash)
-    return c.json(revoked === null ? { error: 'not found' } : publicView(revoked))
+    // The response is the token as it last existed. Revoking deletes the row, so reading it back
+    // afterwards would report "not found" for a call that just succeeded.
+    await auth.sql.revokeAccessToken(tokenHash)
+    return c.json(publicView(existing))
   })
 
   return routes

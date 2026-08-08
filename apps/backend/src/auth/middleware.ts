@@ -82,8 +82,10 @@ export const requireScope =
       return next()
     }
 
+    // Absence is revocation. Revoking deletes the row, so there is no second "is it still live"
+    // condition to forget — a reader that finds a token is holding a usable one.
     const token = await sql.readAccessToken(await hashToken(presented))
-    if (token === null || token.revokedAt !== null) return c.json({ error: 'unauthorized' }, 401)
+    if (token === null) return c.json({ error: 'unauthorized' }, 401)
     if (!satisfiesScope(token.scope, required)) return c.json({ error: 'forbidden' }, 403)
 
     c.set('caller', { scope: token.scope, token })

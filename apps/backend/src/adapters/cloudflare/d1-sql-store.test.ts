@@ -23,11 +23,6 @@ describe('D1SqlStore', () => {
   beforeEach(() => {
     d1 = new SqliteD1Database()
     store = new D1SqlStore(d1 as unknown as D1Database)
-    // A token row for the tests that read one back. Nothing references access_tokens any more —
-    // the reporter and author digests are shape-checked, not foreign keys.
-    d1.sqlite.exec(
-      "INSERT INTO access_tokens VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'l', 'report', 'c', 1)",
-    )
   })
 
   afterEach(() => d1.close())
@@ -564,7 +559,6 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
       INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'l', 'report', 'c', 1);
     `)
     // The geometry columns get typeof + range; the counters got neither, so a negative, fractional
     // or textual count persisted. isValidCounterDelta already refuses these — this is the second
@@ -577,8 +571,6 @@ describe('D1SqlStore', () => {
     // hostile client could increment it by replaying its own hash until it looked like quorum, and
     // an honest competing hash could not be stored at all. One row per reporter per hash fixes both.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
       INSERT INTO tile_history VALUES (0, 0, 0, 100, '2222222222222222222222222222222222222222222222222222222222222222', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
       INSERT OR IGNORE INTO tile_history VALUES (0, 0, 0, 100, '2222222222222222222222222222222222222222222222222222222222222222', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
       INSERT INTO tile_history VALUES (0, 0, 0, 100, '3333333333333333333333333333333333333333333333333333333333333333', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
@@ -601,8 +593,6 @@ describe('D1SqlStore', () => {
     // clients seeing the same tile must not collapse into one row. Two *accounts*: the account is
     // the client, so distinct tokens alone no longer make distinct reporters.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
       INSERT INTO tile_history VALUES (1, 1, 0, 100, '1111111111111111111111111111111111111111111111111111111111111111', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11);
       INSERT INTO tile_history VALUES (1, 1, 0, 100, '1111111111111111111111111111111111111111111111111111111111111111', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 22);
     `)
@@ -774,17 +764,14 @@ describe('D1SqlStore', () => {
       scope: 'report' as const,
       createdBy: 'bootstrap',
       createdAt: millis(1_000),
-      revokedAt: null,
     }
     await store.insertAccessToken(token)
 
     await expect(store.readAccessToken(token.tokenHash)).resolves.toEqual(token)
     await expect(store.readAccessToken('missing')).resolves.toBeNull()
 
-    await store.revokeAccessToken(token.tokenHash, millis(5_000))
-    await expect(store.readAccessToken(token.tokenHash)).resolves.toMatchObject({
-      revokedAt: 5_000,
-    })
+    await store.revokeAccessToken(token.tokenHash)
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toBeNull()
   })
 
   it('refuses to overwrite an existing token hash', async () => {
@@ -794,7 +781,6 @@ describe('D1SqlStore', () => {
       scope: 'read' as const,
       createdBy: 'bootstrap',
       createdAt: millis(1_000),
-      revokedAt: null,
     }
     await store.insertAccessToken(token)
 
@@ -802,23 +788,33 @@ describe('D1SqlStore', () => {
     await expect(store.readAccessToken(token.tokenHash)).resolves.toMatchObject({ label: 'first' })
   })
 
-  it('keeps the first revocation instant when revoked twice', async () => {
+  it('revokes by deleting, idempotently, and leaves what the token reported', async () => {
+    // Revocation is a hard delete: a soft flag obliged every reader to remember to filter on it and
+    // nothing made them. Deleting needs no cooperation, and a credential is never re-provisioned.
+    //
+    // What it must not do is rewrite history. Reported state records what was actually on wplace,
+    // so it is canonical regardless of what later happens to the credential that carried it —
+    // revoking ends a holder's future access, it does not retract observations. Nothing references
+    // access_tokens, so this row survives on purpose.
     const token = {
-      tokenHash: 'c'.repeat(64),
+      tokenHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
       label: 'leaked',
       scope: 'read' as const,
       createdBy: 'bootstrap',
       createdAt: millis(1_000),
-      revokedAt: null,
     }
     await store.insertAccessToken(token)
+    d1.sqlite.exec(
+      "INSERT INTO tile_history VALUES (9, 9, 0, 0, '7777777777777777777777777777777777777777777777777777777777777777', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7)",
+    )
 
-    await store.revokeAccessToken(token.tokenHash, millis(5_000))
-    await store.revokeAccessToken(token.tokenHash, millis(9_000))
+    await store.revokeAccessToken(token.tokenHash)
+    await store.revokeAccessToken(token.tokenHash)
 
-    await expect(store.readAccessToken(token.tokenHash)).resolves.toMatchObject({
-      revokedAt: 5_000,
-    })
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toBeNull()
+    expect(
+      d1.sqlite.prepare('SELECT COUNT(*) AS kept FROM tile_history WHERE tile_x = 9').all(),
+    ).toEqual([{ kept: 1 }])
   })
 
   it('lists tokens newest first', async () => {
@@ -829,7 +825,6 @@ describe('D1SqlStore', () => {
         scope: 'read',
         createdBy: 'bootstrap',
         createdAt: millis(createdAt),
-        revokedAt: null,
       })
     }
     await expect(store.listAccessTokens()).resolves.toMatchObject([
@@ -926,9 +921,6 @@ describe('D1SqlStore', () => {
       INSERT OR IGNORE INTO nodes VALUES ('pk-node', NULL, '/pk', 'PK', 1);
       INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
       INSERT OR IGNORE INTO template_versions VALUES ('v1', 'ct', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
-      INSERT OR IGNORE INTO access_tokens VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
     `)
     expect(() => d1.sqlite.prepare(statement).run()).not.toThrow()
   })

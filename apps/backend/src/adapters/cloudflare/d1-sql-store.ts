@@ -1,4 +1,4 @@
-import { type Millis, millis, seconds } from '@wts/shared'
+import { seconds } from '@wts/shared'
 import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import { accessTokens, telemetryBuckets } from '../../db/schema.js'

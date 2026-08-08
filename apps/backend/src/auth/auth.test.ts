@@ -205,19 +205,17 @@ describe('revocation', () => {
     expect((await app.request('/admin/tokens', bearer(kept.body.token as string))).status).toBe(200)
   })
 
-  it('keeps the first revocation instant when revoked twice', async () => {
-    // The audit question is when the credential stopped being usable; a second call must not move it.
+  it('is idempotent, and a revoked token is simply gone', async () => {
+    // Revocation deletes the row, so the second call has nothing to find. The first DELETE answers
+    // with the token as it last existed; the second 404s, because by then it does not exist — and
+    // that is the same answer any unknown hash gets, which is the point of not keeping a tombstone.
     const { app, sql } = harness()
     const holder = await mint(app, 'leaked', 'read')
     const url = `/admin/tokens/${holder.body.tokenHash}`
 
-    await app.request(url, { method: 'DELETE', ...bearer(BOOTSTRAP) })
-    const first = await sql.readAccessToken(holder.body.tokenHash as string)
-    await new Promise((resolve) => setTimeout(resolve, 2))
-    await app.request(url, { method: 'DELETE', ...bearer(BOOTSTRAP) })
-
-    const second = await sql.readAccessToken(holder.body.tokenHash as string)
-    expect(second?.revokedAt).toBe(first?.revokedAt)
+    expect((await app.request(url, { method: 'DELETE', ...bearer(BOOTSTRAP) })).status).toBe(200)
+    expect((await app.request(url, { method: 'DELETE', ...bearer(BOOTSTRAP) })).status).toBe(404)
+    await expect(sql.readAccessToken(holder.body.tokenHash as string)).resolves.toBeNull()
   })
 
   it('404s an unknown token hash', async () => {
@@ -267,7 +265,6 @@ describe('the store contract', () => {
       scope: 'read',
       createdBy: 'bootstrap',
       createdAt: millis(1_000),
-      revokedAt: null,
     }
     await sql.insertAccessToken(token)
 
@@ -288,7 +285,6 @@ describe('the store contract', () => {
         scope: 'read',
         createdBy: 'bootstrap',
         createdAt: millis(createdAt),
-        revokedAt: null,
       })
     }
     await expect(sql.listAccessTokens()).resolves.toMatchObject([
