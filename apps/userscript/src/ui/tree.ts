@@ -143,11 +143,26 @@ export const templatesOfNode = (
  * Both in one call, from the manifest, which is also the only way they can agree: a template row is
  * drawn under its folder, so fetching one without the other puts templates under folders that are
  * not there, or leaves a folder claiming to be empty a moment after something landed in it.
+ *
+ * One at a time per server. The render pass calls this for any connected server it has nothing for,
+ * and a render pass is cheap to provoke — so a server that is slow, unreachable, or refusing the
+ * token got a fresh manifest request on *every* re-render, because a failure leaves the map empty
+ * and the next pass sees the same gap. Sharing the in-flight promise makes that one request.
  */
+const refreshing = new Map<string, Promise<void>>()
+
 export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<void> => {
+  const pending = refreshing.get(server.url)
+  if (pending !== undefined) return pending
+  const run = refreshOnce(server, rerender).finally(() => refreshing.delete(server.url))
+  refreshing.set(server.url, run)
+  return run
+}
+
+const refreshOnce = async (server: ConnectedServer, rerender: () => void): Promise<void> => {
   const contents = await listServerContents(server)
   // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
   // emptying itself — a server that blinks should not take its folders off your screen.
@@ -159,7 +174,11 @@ export const refreshNodes = async (
   rerender()
   // Every caller of this is a mutation that just landed — a publish, an upload, a delete. Waiting
   // out the poll to see it on the canvas would make each of those feel like it had not worked.
-  void syncServerTemplates(server)
+  //
+  // Handing over the manifest we just read, rather than letting the sync fetch its own: they are the
+  // same document, requested a millisecond apart, and the second one can only disagree with the
+  // first by being newer than the tree that is already on screen.
+  void syncServerTemplates(server, templates)
 }
 
 /**

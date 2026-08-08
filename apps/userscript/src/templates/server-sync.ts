@@ -140,9 +140,13 @@ const inFlight = new Set<string>()
  * them for an admin code, so a member never sees one and an admin sees exactly what they are about
  * to publish. Being able to look at a draft on the map before releasing it is the point of a draft.
  */
-export const syncServerTemplates = async (server: ConnectedServer): Promise<void> => {
+export const syncServerTemplates = async (
+  server: ConnectedServer,
+  /** The manifest's templates, when the caller has just read them and would only re-read them. */
+  known?: readonly ServerTemplate[],
+): Promise<void> => {
   if (server.status !== 'connected') return
-  const available = await listServerTemplates(server)
+  const available = known ?? (await listServerTemplates(server))
   // Could not ask, so nothing is known and nothing changes. Treating this as an empty server took
   // every template off the canvas on a single blip and put them back looking newly arrived.
   if (available === null) return
