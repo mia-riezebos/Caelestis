@@ -17,7 +17,7 @@ export interface StoreTemplateInput {
   readonly nodeId: string
   readonly name: string
   readonly season: number
-  readonly createdBy: string
+  readonly createdWithToken: string
   /** The uploader's wplace account when the client presented one; null for a server-side upload. */
   readonly createdByUserId: number | null
   readonly originX: number
@@ -107,7 +107,7 @@ export const storeTemplate = async (
     name: input.name,
     season: input.season,
     versionId,
-    createdBy: input.createdBy,
+    createdWithToken: input.createdWithToken,
     createdByUserId: input.createdByUserId,
     createdAt,
     bbox: sliced.bbox,

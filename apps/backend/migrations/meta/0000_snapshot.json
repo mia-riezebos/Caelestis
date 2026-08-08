@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3cc00f8c-6724-4b14-89a7-b8c9f4b8c24e",
+  "id": "7686d750-5f8b-4ff8-96ce-99321c3f5cd6",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -28,8 +28,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "created_by": {
-          "name": "created_by",
+        "created_with_token": {
+          "name": "created_with_token",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -122,8 +122,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "reported_by": {
-          "name": "reported_by",
+        "reported_with_token": {
+          "name": "reported_with_token",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -187,9 +187,9 @@
       },
       "uniqueConstraints": {},
       "checkConstraints": {
-        "contributions_reported_by_check": {
-          "name": "contributions_reported_by_check",
-          "value": "typeof(\"contributions\".\"reported_by\") = 'text' AND length(\"contributions\".\"reported_by\") = 64\n        AND \"contributions\".\"reported_by\" NOT GLOB '*[^0-9a-f]*'"
+        "contributions_reported_with_token_check": {
+          "name": "contributions_reported_with_token_check",
+          "value": "typeof(\"contributions\".\"reported_with_token\") = 'text' AND length(\"contributions\".\"reported_with_token\") = 64\n        AND \"contributions\".\"reported_with_token\" NOT GLOB '*[^0-9a-f]*'"
         },
         "contributions_counter_check": {
           "name": "contributions_counter_check",
@@ -402,8 +402,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "created_by": {
-          "name": "created_by",
+        "created_with_token": {
+          "name": "created_with_token",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -508,9 +508,9 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
-        "template_versions_created_by_check": {
-          "name": "template_versions_created_by_check",
-          "value": "typeof(\"template_versions\".\"created_by\") = 'text' AND length(\"template_versions\".\"created_by\") = 64\n        AND \"template_versions\".\"created_by\" NOT GLOB '*[^0-9a-f]*'\n        AND (\"template_versions\".\"created_by_user_id\" IS NULL\n          OR (typeof(\"template_versions\".\"created_by_user_id\") = 'integer' AND \"template_versions\".\"created_by_user_id\" >= 0))"
+        "template_versions_created_with_token_check": {
+          "name": "template_versions_created_with_token_check",
+          "value": "typeof(\"template_versions\".\"created_with_token\") = 'text' AND length(\"template_versions\".\"created_with_token\") = 64\n        AND \"template_versions\".\"created_with_token\" NOT GLOB '*[^0-9a-f]*'\n        AND (\"template_versions\".\"created_by_user_id\" IS NULL\n          OR (typeof(\"template_versions\".\"created_by_user_id\") = 'integer' AND \"template_versions\".\"created_by_user_id\" >= 0))"
         },
         "template_versions_bounds_all_or_none_check": {
           "name": "template_versions_bounds_all_or_none_check",
@@ -564,8 +564,8 @@
           "notNull": false,
           "autoincrement": false
         },
-        "created_by": {
-          "name": "created_by",
+        "created_with_token": {
+          "name": "created_with_token",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -620,9 +620,9 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
-        "templates_created_by_check": {
-          "name": "templates_created_by_check",
-          "value": "typeof(\"templates\".\"created_by\") = 'text' AND length(\"templates\".\"created_by\") = 64\n        AND \"templates\".\"created_by\" NOT GLOB '*[^0-9a-f]*'\n        AND (\"templates\".\"created_by_user_id\" IS NULL\n          OR (typeof(\"templates\".\"created_by_user_id\") = 'integer' AND \"templates\".\"created_by_user_id\" >= 0))"
+        "templates_created_with_token_check": {
+          "name": "templates_created_with_token_check",
+          "value": "typeof(\"templates\".\"created_with_token\") = 'text' AND length(\"templates\".\"created_with_token\") = 64\n        AND \"templates\".\"created_with_token\" NOT GLOB '*[^0-9a-f]*'\n        AND (\"templates\".\"created_by_user_id\" IS NULL\n          OR (typeof(\"templates\".\"created_by_user_id\") = 'integer' AND \"templates\".\"created_by_user_id\" >= 0))"
         }
       }
     },
@@ -664,8 +664,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "reported_by": {
-          "name": "reported_by",
+        "reported_with_token": {
+          "name": "reported_with_token",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -704,9 +704,9 @@
           "name": "tile_history_sha256_check",
           "value": "typeof(\"tile_history\".\"sha256\") = 'text' AND length(\"tile_history\".\"sha256\") = 64\n        AND \"tile_history\".\"sha256\" NOT GLOB '*[^0-9a-f]*'"
         },
-        "tile_history_reported_by_check": {
-          "name": "tile_history_reported_by_check",
-          "value": "typeof(\"tile_history\".\"reported_by\") = 'text' AND length(\"tile_history\".\"reported_by\") = 64\n        AND \"tile_history\".\"reported_by\" NOT GLOB '*[^0-9a-f]*'"
+        "tile_history_reported_with_token_check": {
+          "name": "tile_history_reported_with_token_check",
+          "value": "typeof(\"tile_history\".\"reported_with_token\") = 'text' AND length(\"tile_history\".\"reported_with_token\") = 64\n        AND \"tile_history\".\"reported_with_token\" NOT GLOB '*[^0-9a-f]*'"
         },
         "tile_history_reported_by_user_id_check": {
           "name": "tile_history_reported_by_user_id_check",

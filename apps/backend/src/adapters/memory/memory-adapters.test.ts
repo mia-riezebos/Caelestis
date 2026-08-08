@@ -89,7 +89,7 @@ describe('memory adapters', () => {
   })
 
   it.each([
-    ['an author digest that is not one', { createdBy: 'bootstrap' }],
+    ['an author digest that is not one', { createdWithToken: 'bootstrap' }],
     ['a negative author account', { createdByUserId: -1 }],
     [
       'a tile off the canvas',
@@ -117,7 +117,7 @@ describe('memory adapters', () => {
         name: 'T',
         season: 1,
         versionId: 'valid-v',
-        createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         createdByUserId: 7,
         createdAt: millis(1_000),
         bbox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },

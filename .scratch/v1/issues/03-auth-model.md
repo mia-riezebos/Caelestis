@@ -23,7 +23,7 @@ named codes mean revoking exactly one and knowing which channel leaked it, inste
 member.
 
 ```
-invites: code_hash, label ('discord-regulars'), scope, created_by, revoked_at
+invites: code_hash, label ('discord-regulars'), scope, created_with_token, revoked_at
 ```
 
 **One env-configured admin token** for the server operator / alliance leader. It is a bootstrap

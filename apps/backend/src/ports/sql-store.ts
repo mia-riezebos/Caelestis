@@ -142,7 +142,8 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
     throw new Error(`insertTemplateVersion rejected ${version.versionId}: ${reason}`)
   }
   const isDigest = (value: string) => /^[0-9a-f]{64}$/.test(value)
-  if (!isDigest(version.createdBy)) fail(`createdBy ${version.createdBy} is not a sha256 digest`)
+  if (!isDigest(version.createdWithToken))
+    fail(`createdWithToken ${version.createdWithToken} is not a sha256 digest`)
   if (
     version.createdByUserId !== null &&
     (!Number.isSafeInteger(version.createdByUserId) || version.createdByUserId < 0)
@@ -203,7 +204,7 @@ export interface AccessToken {
   /** Human-facing name, so one leaked credential can be revoked without rotating everyone. */
   readonly label: string
   readonly scope: Scope
-  readonly createdBy: string
+  readonly createdWithToken: string
   readonly createdAt: Millis
 }
 
@@ -219,7 +220,7 @@ export interface TemplateVersionRecord {
    * reporter columns, because quorum counts distinct accounts while authorship only has to name the
    * credential that acted: a server-side admin upload has a token and no wplace session.
    */
-  readonly createdBy: string
+  readonly createdWithToken: string
   readonly createdByUserId: number | null
   /** Used for both rows when the template is new; existing templates retain their original date. */
   readonly createdAt: Millis

@@ -52,9 +52,9 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
         nodeId,
         name,
         season: parsedSeason,
-        // Always a digest, bootstrap included — `templates_created_by_check` requires 64 hex
+        // Always a digest, bootstrap included — `templates_created_with_token_check` requires 64 hex
         // characters, so the old `'bootstrap'` literal could not have been stored.
-        createdBy: caller.tokenHash,
+        createdWithToken: caller.tokenHash,
         // No wplace session on this route: an admin uploads with a token and nothing else. The
         // column is nullable precisely so authorship does not have to invent an account.
         createdByUserId: null,

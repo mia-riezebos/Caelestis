@@ -165,7 +165,7 @@ value in both the tile URL and the paint body.
 id            text pk
 template_id   text not null → templates.id
 created_at_ms integer not null
-created_by    text not null
+created_with_token    text not null
 min_x, min_y                 integer not null   -- inclusive, 0..2_047_999
 max_x, max_y                 integer not null   -- exclusive, 1..2_048_000
 total_pixels  integer not null                  -- non-transparent; progress denominator
@@ -222,7 +222,7 @@ are immutable.
 token_hash    text pk               -- sha256 of a 128-bit base32 token
 label         text not null         -- 'discord-regulars'
 scope         text not null         -- 'read' | 'report' | 'admin'
-created_by    text not null
+created_with_token    text not null
 created_at_ms integer not null
 ```
 

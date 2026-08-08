@@ -11,7 +11,7 @@ const publicView = (token: AccessToken) => ({
   tokenHash: token.tokenHash,
   label: token.label,
   scope: token.scope,
-  createdBy: token.createdBy,
+  createdWithToken: token.createdWithToken,
   createdAt: token.createdAt,
 })
 
@@ -48,7 +48,7 @@ export const createTokenRoutes = (auth: AuthOptions) => {
       label,
       scope,
       // The bootstrap operator has no row of its own, so it is named rather than referenced.
-      createdBy: caller.token?.tokenHash ?? 'bootstrap',
+      createdWithToken: caller.token?.tokenHash ?? 'bootstrap',
       createdAt: millis(Date.now()),
     }
     await auth.sql.insertAccessToken(record)

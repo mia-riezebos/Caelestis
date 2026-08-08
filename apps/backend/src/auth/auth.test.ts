@@ -130,13 +130,13 @@ describe('the admin token surface', () => {
     const second = await mint(app, 'second', 'read', admin.body.token as string)
 
     expect(second.status).toBe(201)
-    expect(second.body.createdBy).toBe(admin.body.tokenHash)
+    expect(second.body.createdWithToken).toBe(admin.body.tokenHash)
   })
 
   it('records the bootstrap operator as the creator when it has no row of its own', async () => {
     const { app } = harness()
     const created = await mint(app, 'first', 'admin')
-    expect(created.body.createdBy).toBe('bootstrap')
+    expect(created.body.createdWithToken).toBe('bootstrap')
   })
 
   // Raw header values, not `bearer(...)`: the scheme cases are about what the parser accepts, and
@@ -446,7 +446,7 @@ describe('the store contract', () => {
       tokenHash: 'a'.repeat(64),
       label: 'first',
       scope: 'read',
-      createdBy: 'bootstrap',
+      createdWithToken: 'bootstrap',
       createdAt: millis(1_000),
     }
     await sql.insertAccessToken(token)
@@ -464,7 +464,7 @@ describe('the store contract', () => {
         tokenHash: 'e'.repeat(64),
         label: 'x',
         scope: 'superadmin' as Scope,
-        createdBy: 'bootstrap',
+        createdWithToken: 'bootstrap',
         createdAt: millis(1_000),
       }),
     ).rejects.toThrow(/unknown scope/)
@@ -480,7 +480,7 @@ describe('the store contract', () => {
         tokenHash: hash.repeat(64),
         label: hash,
         scope: 'read',
-        createdBy: 'bootstrap',
+        createdWithToken: 'bootstrap',
         createdAt: millis(1_000),
       })
     }
@@ -502,7 +502,7 @@ describe('the store contract', () => {
         tokenHash: `${index}`.repeat(8),
         label: `${createdAt}`,
         scope: 'read',
-        createdBy: 'bootstrap',
+        createdWithToken: 'bootstrap',
         createdAt: millis(createdAt),
       })
     }

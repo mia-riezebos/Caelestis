@@ -2,7 +2,7 @@ CREATE TABLE `access_tokens` (
 	`token_hash` text PRIMARY KEY NOT NULL,
 	`label` text NOT NULL,
 	`scope` text NOT NULL,
-	`created_by` text NOT NULL,
+	`created_with_token` text NOT NULL,
 	`created_at_ms` integer NOT NULL,
 	CONSTRAINT "access_tokens_scope_check" CHECK("access_tokens"."scope" IN ('read', 'report', 'admin'))
 );
@@ -19,15 +19,15 @@ CREATE TABLE `contributions` (
 	`wplace_user_id` integer NOT NULL,
 	`template_id` text NOT NULL,
 	`day_s` integer NOT NULL,
-	`reported_by` text NOT NULL,
+	`reported_with_token` text NOT NULL,
 	`reported_by_user_id` integer NOT NULL,
 	`placed` integer NOT NULL,
 	`correct` integer NOT NULL,
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by_user_id`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "contributions_reported_by_check" CHECK(typeof("contributions"."reported_by") = 'text' AND length("contributions"."reported_by") = 64
-        AND "contributions"."reported_by" NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT "contributions_reported_with_token_check" CHECK(typeof("contributions"."reported_with_token") = 'text' AND length("contributions"."reported_with_token") = 64
+        AND "contributions"."reported_with_token" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."wplace_user_id") = 'integer' AND "contributions"."wplace_user_id" >= 0
         AND typeof("contributions"."reported_by_user_id") = 'integer' AND "contributions"."reported_by_user_id" >= 0
         AND typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
@@ -79,7 +79,7 @@ CREATE TABLE `template_versions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`template_id` text NOT NULL,
 	`created_at_ms` integer NOT NULL,
-	`created_by` text NOT NULL,
+	`created_with_token` text NOT NULL,
 	`created_by_user_id` integer,
 	`min_x` integer NOT NULL,
 	`min_y` integer NOT NULL,
@@ -91,8 +91,8 @@ CREATE TABLE `template_versions` (
 	`bounds_west` real,
 	`bounds_east` real,
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "template_versions_created_by_check" CHECK(typeof("template_versions"."created_by") = 'text' AND length("template_versions"."created_by") = 64
-        AND "template_versions"."created_by" NOT GLOB '*[^0-9a-f]*'
+	CONSTRAINT "template_versions_created_with_token_check" CHECK(typeof("template_versions"."created_with_token") = 'text' AND length("template_versions"."created_with_token") = 64
+        AND "template_versions"."created_with_token" NOT GLOB '*[^0-9a-f]*'
         AND ("template_versions"."created_by_user_id" IS NULL
           OR (typeof("template_versions"."created_by_user_id") = 'integer' AND "template_versions"."created_by_user_id" >= 0))),
 	CONSTRAINT "template_versions_bounds_all_or_none_check" CHECK(("template_versions"."bounds_north" IS NULL AND "template_versions"."bounds_south" IS NULL AND "template_versions"."bounds_west" IS NULL AND "template_versions"."bounds_east" IS NULL) OR ("template_versions"."bounds_north" IS NOT NULL AND "template_versions"."bounds_south" IS NOT NULL AND "template_versions"."bounds_west" IS NOT NULL AND "template_versions"."bounds_east" IS NOT NULL)),
@@ -116,13 +116,13 @@ CREATE TABLE `templates` (
 	`name` text NOT NULL,
 	`season` integer NOT NULL,
 	`current_version_id` text,
-	`created_by` text NOT NULL,
+	`created_with_token` text NOT NULL,
 	`created_by_user_id` integer,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`node_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`current_version_id`,`id`) REFERENCES `template_versions`(`id`,`template_id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "templates_created_by_check" CHECK(typeof("templates"."created_by") = 'text' AND length("templates"."created_by") = 64
-        AND "templates"."created_by" NOT GLOB '*[^0-9a-f]*'
+	CONSTRAINT "templates_created_with_token_check" CHECK(typeof("templates"."created_with_token") = 'text' AND length("templates"."created_with_token") = 64
+        AND "templates"."created_with_token" NOT GLOB '*[^0-9a-f]*'
         AND ("templates"."created_by_user_id" IS NULL
           OR (typeof("templates"."created_by_user_id") = 'integer' AND "templates"."created_by_user_id" >= 0)))
 );
@@ -133,14 +133,14 @@ CREATE TABLE `tile_history` (
 	`resolution_s` integer NOT NULL,
 	`bucket_start_s` integer NOT NULL,
 	`sha256` text NOT NULL,
-	`reported_by` text NOT NULL,
+	`reported_with_token` text NOT NULL,
 	`reported_by_user_id` integer NOT NULL,
 	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by_user_id`),
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
 	CONSTRAINT "tile_history_sha256_check" CHECK(typeof("tile_history"."sha256") = 'text' AND length("tile_history"."sha256") = 64
         AND "tile_history"."sha256" NOT GLOB '*[^0-9a-f]*'),
-	CONSTRAINT "tile_history_reported_by_check" CHECK(typeof("tile_history"."reported_by") = 'text' AND length("tile_history"."reported_by") = 64
-        AND "tile_history"."reported_by" NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT "tile_history_reported_with_token_check" CHECK(typeof("tile_history"."reported_with_token") = 'text' AND length("tile_history"."reported_with_token") = 64
+        AND "tile_history"."reported_with_token" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "tile_history_reported_by_user_id_check" CHECK(typeof("tile_history"."reported_by_user_id") = 'integer' AND "tile_history"."reported_by_user_id" >= 0),
 	CONSTRAINT "tile_history_bucket_start_s_check" CHECK(typeof("tile_history"."bucket_start_s") = 'integer' AND "tile_history"."bucket_start_s" >= 0
         AND ("tile_history"."resolution_s" = 0 OR "tile_history"."bucket_start_s" % "tile_history"."resolution_s" = 0)),
