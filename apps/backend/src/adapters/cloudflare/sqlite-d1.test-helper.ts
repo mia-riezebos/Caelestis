@@ -52,6 +52,12 @@ export class SqliteD1Database {
   readonly sqlite = new DatabaseSync(':memory:')
   prepareCalls = 0
   batchCalls = 0
+  /**
+   * Statements across every batch, because D1's real limit is queries per Worker invocation and
+   * `node:sqlite` has no such limit to trip over. Same reason `prepareCalls` exists: the count is
+   * the only observable that distinguishes a batch D1 would run from one it would refuse.
+   */
+  batchStatements = 0
   private nextFailure: D1BatchFailurePoint | null = null
   private beforeNextBatch: (() => void) | null = null
 
@@ -71,6 +77,7 @@ export class SqliteD1Database {
 
   async batch<T = unknown>(statements: readonly SqliteD1Statement[]): Promise<D1Result<T>[]> {
     this.batchCalls += 1
+    this.batchStatements += statements.length
     const failure = this.nextFailure
     const beforeBatch = this.beforeNextBatch
     this.nextFailure = null

@@ -1,10 +1,18 @@
 import { seconds } from '@wts/shared'
 import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
-import { accessTokens, telemetryBuckets } from '../../db/schema.js'
+import {
+  accessTokens,
+  nodes,
+  telemetryBuckets,
+  templates,
+  templateVersions,
+  versionTiles,
+} from '../../db/schema.js'
 import {
   type AccessToken,
   assertValidBuckets,
+  assertValidTemplateVersion,
   type BucketQuery,
   compareAccessTokens,
   compareBuckets,
@@ -12,6 +20,7 @@ import {
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
+  type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
 
@@ -22,6 +31,20 @@ const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
   createdBy: row.createdBy,
   createdAt: row.createdAtMs,
 })
+
+/**
+ * `version_tiles` rows per INSERT. Four bound parameters each, so 24 rows is 96 — just under D1's
+ * 100-parameter ceiling, and it turns the per-tile statement count into a per-24-tile one.
+ */
+const VERSION_TILE_ROWS_PER_INSERT = 24
+
+const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
+  const out: T[][] = []
+  for (let offset = 0; offset < rows.length; offset += size) {
+    out.push(rows.slice(offset, offset + size))
+  }
+  return out
+}
 
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
@@ -37,6 +60,114 @@ export class D1SqlStore implements SqlStore {
 
   constructor(database: D1Database) {
     this.database = drizzle(database)
+  }
+
+  async nodeExists(nodeId: string): Promise<boolean> {
+    const rows = await this.database
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId))
+      .limit(1)
+    return rows.length > 0
+  }
+
+  async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
+    assertValidTemplateVersion(version)
+    const statements = [
+      this.database
+        .insert(templates)
+        .values({
+          id: version.templateId,
+          nodeId: version.nodeId,
+          name: version.name,
+          season: version.season,
+          currentVersionId: null,
+          createdBy: version.createdBy,
+          createdByUserId: version.createdByUserId,
+          createdAtMs: version.createdAt,
+        })
+        .onConflictDoNothing({ target: templates.id }),
+      this.database.insert(templateVersions).values({
+        id: version.versionId,
+        templateId: version.templateId,
+        createdAtMs: version.createdAt,
+        createdBy: version.createdBy,
+        createdByUserId: version.createdByUserId,
+        minX: version.bbox.minX,
+        minY: version.bbox.minY,
+        maxX: version.bbox.maxX,
+        maxY: version.bbox.maxY,
+        totalPixels: version.totalPixels,
+      }),
+      // Tiles go in as multi-row inserts, not one statement each. D1 allows 50 queries per Worker
+      // invocation on the free plan, so a 48-chunk template — a 48,000x1 upload reaches that without
+      // stressing anything — produced 51 statements and failed the whole batch. Chunked by bound
+      // parameters rather than by rows: four columns each, kept under the 100-parameter ceiling.
+      ...chunkRows(
+        version.chunks.map((chunk) => ({
+          versionId: version.versionId,
+          tileX: chunk.tileX,
+          tileY: chunk.tileY,
+          hash: chunk.hash,
+        })),
+        VERSION_TILE_ROWS_PER_INSERT,
+      ).map((rows) => this.database.insert(versionTiles).values(rows)),
+      // The referenced version exists before this statement runs. D1 executes batch statements in
+      // order, so the circular template/version relationship never needs deferred foreign keys.
+      this.database
+        .update(templates)
+        .set({ currentVersionId: version.versionId })
+        .where(eq(templates.id, version.templateId)),
+    ]
+
+    await this.database.batch(
+      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+    )
+  }
+
+  async readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null> {
+    const rows = await this.database
+      .select({
+        templateId: templates.id,
+        nodeId: templates.nodeId,
+        name: templates.name,
+        season: templates.season,
+        versionId: templateVersions.id,
+        createdBy: templateVersions.createdBy,
+        createdByUserId: templateVersions.createdByUserId,
+        createdAt: templateVersions.createdAtMs,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+        totalPixels: templateVersions.totalPixels,
+      })
+      .from(templateVersions)
+      .innerJoin(templates, eq(templates.id, templateVersions.templateId))
+      .where(eq(templateVersions.id, versionId))
+      .limit(1)
+    const row = rows[0]
+    if (row === undefined) return null
+
+    const chunks = await this.database
+      .select({ tileX: versionTiles.tileX, tileY: versionTiles.tileY, hash: versionTiles.hash })
+      .from(versionTiles)
+      .where(eq(versionTiles.versionId, versionId))
+      .orderBy(asc(versionTiles.tileY), asc(versionTiles.tileX))
+
+    return {
+      templateId: row.templateId,
+      nodeId: row.nodeId,
+      name: row.name,
+      season: row.season,
+      versionId: row.versionId,
+      createdByUserId: row.createdByUserId,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt,
+      bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
+      totalPixels: row.totalPixels,
+      chunks,
+    }
   }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {

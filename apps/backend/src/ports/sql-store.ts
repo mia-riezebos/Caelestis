@@ -1,4 +1,4 @@
-import type { Millis, Seconds } from '@wts/shared'
+import { type Millis, type PixelBounds, type Seconds, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { SCOPES, type Scope } from '../auth/tokens.js'
 
 /**
@@ -127,6 +127,57 @@ export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets'>
  * unrecognised scope, but a writer that passes green in tests and throws in D1 is worth catching
  * here rather than there.
  */
+/**
+ * The domain the `templates`, `template_versions` and `version_tiles` CHECKs enforce, stated where
+ * both adapters can honour it.
+ *
+ * The memory store validated duplicate versions and tiles and nothing else, so it accepted rows D1
+ * refuses — `createdWithToken: 'bootstrap'`, a negative author account, a tile off the canvas, a
+ * short hash, an inverted bounding box. That is the third time an adapter has been wider than the
+ * database it stands in for, and the route tests run against this one: the malformed-attribution
+ * bug the last commits fixed would have stayed green here.
+ */
+export const assertValidTemplateVersion = (version: TemplateVersionRecord): void => {
+  const fail = (reason: string): never => {
+    throw new Error(`insertTemplateVersion rejected ${version.versionId}: ${reason}`)
+  }
+  const isDigest = (value: string) => /^[0-9a-f]{64}$/.test(value)
+  if (!isDigest(version.createdBy)) fail(`createdBy ${version.createdBy} is not a sha256 digest`)
+  if (
+    version.createdByUserId !== null &&
+    (!Number.isSafeInteger(version.createdByUserId) || version.createdByUserId < 0)
+  ) {
+    fail(`createdByUserId ${version.createdByUserId} is not a non-negative integer`)
+  }
+  const { minX, minY, maxX, maxY } = version.bbox
+  if (![minX, minY, maxX, maxY, version.totalPixels].every(Number.isSafeInteger)) {
+    fail('bounding box and total pixels must be integers')
+  }
+  // x wraps through zero so minX may exceed maxX; y does not. Zero width or height is not a
+  // placement. These are the same bounds `template_versions_pixel_bounds_check` states.
+  if (minX < 0 || minX >= WORLD_PIXELS || minY < 0 || minY >= WORLD_PIXELS) {
+    fail('bounding box minimum is outside the canvas')
+  }
+  if (maxX < 1 || maxX > WORLD_PIXELS || maxY < 1 || maxY > WORLD_PIXELS) {
+    fail('bounding box maximum is outside the canvas')
+  }
+  if (minX === maxX || minY >= maxY) fail('bounding box covers no pixels')
+  if (version.totalPixels < 0) fail('total pixels is negative')
+  for (const chunk of version.chunks) {
+    if (
+      !Number.isSafeInteger(chunk.tileX) ||
+      !Number.isSafeInteger(chunk.tileY) ||
+      chunk.tileX < 0 ||
+      chunk.tileX >= WORLD_TILES ||
+      chunk.tileY < 0 ||
+      chunk.tileY >= WORLD_TILES
+    ) {
+      fail(`chunk tile ${chunk.tileX}/${chunk.tileY} is outside the canvas`)
+    }
+    if (!isDigest(chunk.hash)) fail(`chunk hash ${chunk.hash} is not a sha256 digest`)
+  }
+}
+
 export const assertValidAccessToken = (token: AccessToken): void => {
   if (!(SCOPES as readonly string[]).includes(token.scope)) {
     throw new Error(`insertAccessToken rejected ${token.tokenHash}: unknown scope ${token.scope}`)
@@ -156,7 +207,51 @@ export interface AccessToken {
   readonly createdAt: Millis
 }
 
+export interface TemplateVersionRecord {
+  readonly templateId: string
+  readonly nodeId: string
+  readonly name: string
+  readonly season: number
+  readonly versionId: string
+  /**
+   * Who uploaded this — the digest of the access token used, and the wplace `/me` id of the account
+   * that used it when the client presented one. The account is optional here and mandatory on the
+   * reporter columns, because quorum counts distinct accounts while authorship only has to name the
+   * credential that acted: a server-side admin upload has a token and no wplace session.
+   */
+  readonly createdBy: string
+  readonly createdByUserId: number | null
+  /** Used for both rows when the template is new; existing templates retain their original date. */
+  readonly createdAt: Millis
+  readonly bbox: PixelBounds
+  readonly totalPixels: number
+  readonly chunks: readonly {
+    readonly tileX: number
+    readonly tileY: number
+    readonly hash: string
+  }[]
+}
+
 export interface SqlStore {
+  /** Atomically add a version, its tile index, and make it the template's current version. */
+  /**
+   * Whether a node with this id exists.
+   *
+   * `templates.node_id` is a foreign key, so storing a version under an unknown node is a database
+   * error rather than a validation one — and an error the caller cannot tell from an outage. The
+   * upload route asks first so it can answer 400 instead of 500.
+   *
+   * Shape validation cannot cover this: `assertValidTemplateVersion` checks what a row looks like,
+   * and referential existence is not a property of the row. That is why the two adapters could
+   * agree on every field and still disagree about whether the insert succeeds.
+   */
+  nodeExists(nodeId: string): Promise<boolean>
+
+  insertTemplateVersion(version: TemplateVersionRecord): Promise<void>
+
+  /** A version with its template metadata and complete tile index, or null if absent. */
+  readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null>
+
   /**
    * Store a freshly minted token.
    *

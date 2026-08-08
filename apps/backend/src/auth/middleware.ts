@@ -7,6 +7,14 @@ export interface Caller {
   readonly scope: Scope
   /** The stored credential, or null for the bootstrap operator token, which has no row. */
   readonly token: AccessToken | null
+  /**
+   * The digest of whatever credential authenticated this request, bootstrap included.
+   *
+   * `token` is null for the operator secret because it has no `access_tokens` row, and callers that
+   * record authorship still need something to record. Every author column is a 64-character hex
+   * digest by CHECK, so a literal like `'bootstrap'` is not storable — this is.
+   */
+  readonly tokenHash: string
 }
 
 declare module 'hono' {
@@ -85,7 +93,7 @@ export const requireScope =
       bootstrapAdminToken.length > 0 &&
       equalsConstantTime(presented, bootstrapAdminToken)
     ) {
-      c.set('caller', { scope: 'admin', token: null })
+      c.set('caller', { scope: 'admin', token: null, tokenHash: await hashToken(presented) })
       return next()
     }
 
@@ -95,6 +103,6 @@ export const requireScope =
     if (token === null) return c.json({ error: 'unauthorized' }, 401)
     if (!satisfiesScope(token.scope, required)) return c.json({ error: 'forbidden' }, 403)
 
-    c.set('caller', { scope: token.scope, token })
+    c.set('caller', { scope: token.scope, token, tokenHash: token.tokenHash })
     return next()
   }

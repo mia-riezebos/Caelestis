@@ -18,6 +18,7 @@ export {
   type AccessToken,
   assertValidAccessToken,
   assertValidBuckets,
+  assertValidTemplateVersion,
   type BucketQuery,
   type BucketStore,
   compareAccessTokens,
@@ -27,6 +28,7 @@ export {
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
+  type TemplateVersionRecord,
   tooManyTemplateIds,
 } from './sql-store.js'
 

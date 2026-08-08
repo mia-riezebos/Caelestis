@@ -88,6 +88,52 @@ describe('memory adapters', () => {
     ).resolves.toEqual([])
   })
 
+  it.each([
+    ['an author digest that is not one', { createdBy: 'bootstrap' }],
+    ['a negative author account', { createdByUserId: -1 }],
+    [
+      'a tile off the canvas',
+      {
+        chunks: [
+          {
+            tileX: 2_048,
+            tileY: 0,
+            hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        ],
+      },
+    ],
+    ['a chunk hash that is not a digest', { chunks: [{ tileX: 0, tileY: 0, hash: 'short' }] }],
+    ['a bounding box with no height', { bbox: { minX: 0, minY: 5, maxX: 10, maxY: 5 } }],
+  ])('refuses a template version with %s, as D1 would', async (_label, overrides) => {
+    // The oracle validated duplicate versions and tiles and nothing else, so it accepted rows the
+    // CHECKs refuse — and the route tests run against it, which is how a malformed-attribution bug
+    // stayed green through a whole review. Third adapter to be wider than the database it stands in
+    // for; the rule lives on the port now so there is one copy of it.
+    await expect(
+      new MemorySqlStore().insertTemplateVersion({
+        templateId: 'valid-t',
+        nodeId: 'valid-n',
+        name: 'T',
+        season: 1,
+        versionId: 'valid-v',
+        createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        createdByUserId: 7,
+        createdAt: millis(1_000),
+        bbox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
+        totalPixels: 4,
+        chunks: [
+          {
+            tileX: 0,
+            tileY: 0,
+            hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        ],
+        ...overrides,
+      }),
+    ).rejects.toThrow(/insertTemplateVersion rejected/)
+  })
+
   it('counters read back all recorded deltas exactly', async () => {
     const store = new MemoryCounterStore(new MemorySqlStore(), () => millis(100_000))
     await store.record([

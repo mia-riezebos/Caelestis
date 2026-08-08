@@ -1,0 +1,111 @@
+import { decodePng, encodeIndexedPng, PALETTE_RGB, type PixelBounds } from '@wts/shared'
+import { describe, expect, it } from 'vitest'
+import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
+import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
+import type { BlobNamespace, BlobStore } from '../ports/index.js'
+import { storeTemplate } from './store.js'
+
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+class CountingBlobStore implements BlobStore {
+  readonly inner = new MemoryBlobStore()
+  readonly puts: { namespace: BlobNamespace; hash: string }[] = []
+  readonly hasAllCalls: { namespace: BlobNamespace; hashes: readonly string[] }[] = []
+
+  async put(namespace: BlobNamespace, hash: string, bytes: Uint8Array): Promise<void> {
+    this.puts.push({ namespace, hash })
+    await this.inner.put(namespace, hash, bytes)
+  }
+
+  async get(namespace: BlobNamespace, hash: string): Promise<Uint8Array | null> {
+    return this.inner.get(namespace, hash)
+  }
+
+  async hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>> {
+    this.hasAllCalls.push({ namespace, hashes: [...hashes] })
+    return this.inner.hasAll(namespace, hashes)
+  }
+}
+
+const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
+
+// The node has to exist: templates.node_id is a foreign key, and the oracle now models that because
+// D1 always did. Without this the store answers "no node with id ...", which is the 400 the route
+// gives a caller who names a group that is not there.
+const harness = () => {
+  const sql = new MemorySqlStore()
+  sql.insertNode(NODE_ID)
+  return { blobs: new CountingBlobStore(), sql }
+}
+
+const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
+  nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
+  name: 'Test template',
+  season: 1,
+  createdBy: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  createdByUserId: null,
+  originX: overrides.originX ?? 0,
+  originY: overrides.originY ?? 0,
+  png,
+})
+
+const rgba = (indices: readonly number[]): Uint8Array =>
+  new Uint8Array(
+    indices.flatMap((index) => {
+      const colour = PALETTE_RGB[index]
+      if (colour === undefined) throw new Error(`missing test palette colour ${index}`)
+      return [...colour, 255]
+    }),
+  )
+
+describe('storeTemplate', () => {
+  it('round-trips exact palette colours through the stored chunk', async () => {
+    const ports = harness()
+    const png = await encodeIndexedPng(2, 2, new Uint8Array([0, 1, 2, 3]))
+
+    const stored = await storeTemplate(ports, input(png))
+
+    expect(stored.templateId).toMatch(UUID_V7)
+    expect(stored.versionId).toMatch(UUID_V7)
+    expect(stored.chunks).toHaveLength(1)
+    const chunk = stored.chunks[0]
+    if (chunk === undefined) throw new Error('expected one stored chunk')
+    const bytes = await ports.blobs.get('chunks', chunk.hash)
+    if (bytes === null) throw new Error('stored chunk is missing')
+    await expect(decodePng(bytes)).resolves.toEqual({
+      width: 2,
+      height: 2,
+      pixels: rgba([0, 1, 2, 3]),
+    })
+    await expect(ports.sql.readTemplateVersion(stored.versionId)).resolves.toMatchObject({
+      templateId: stored.templateId,
+      bbox: stored.bbox,
+      totalPixels: 4,
+      chunks: [{ tileX: 0, tileY: 0, hash: chunk.hash }],
+    })
+  })
+
+  it('stores separate hashes when painted pixels straddle a tile boundary', async () => {
+    const ports = harness()
+    const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
+
+    const stored = await storeTemplate(ports, input(png, { originX: 999 }))
+
+    expect(stored.bbox).toEqual<PixelBounds>({ minX: 999, minY: 0, maxX: 1001, maxY: 1 })
+    expect(stored.chunks.map(({ tile }) => tile)).toEqual(['0/0', '1/0'])
+    expect(new Set(stored.chunks.map(({ hash }) => hash)).size).toBe(2)
+  })
+
+  it('reuses identical chunk content without putting it again', async () => {
+    const ports = harness()
+    const png = await encodeIndexedPng(2, 2, new Uint8Array([4, 4, 4, 4]))
+
+    const first = await storeTemplate(ports, input(png))
+    const second = await storeTemplate(ports, input(png))
+
+    expect(second.chunks[0]?.hash).toBe(first.chunks[0]?.hash)
+    expect(ports.blobs.puts).toHaveLength(1)
+    expect(ports.blobs.hasAllCalls).toHaveLength(2)
+    expect(ports.blobs.hasAllCalls.every(({ hashes }) => hashes.length === 1)).toBe(true)
+  })
+})
