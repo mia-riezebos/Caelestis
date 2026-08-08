@@ -29,7 +29,7 @@ import {
   reconcileDrafts,
   type TileFrame,
 } from './tile-transform.js'
-import { renderOverlayControls } from './ui/overlay-menu.js'
+import { refreshOverlayMenu, renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
 import { onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
@@ -195,6 +195,8 @@ const installKeys = (): void => {
           ...appearanceOf(nearest),
           markMismatch: !appearanceOf(nearest).markMismatch,
         })
+        // Its menu may be open on the switch this just moved, and it does not rebuild on a redraw.
+        refreshOverlayMenu()
         return
       }
       setState({

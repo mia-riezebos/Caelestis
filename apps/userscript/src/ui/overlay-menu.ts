@@ -469,6 +469,18 @@ export const closeOverlayMenu = (): void => {
 }
 
 /**
+ * Throw an open menu away so the next frame draws it from current values.
+ *
+ * For changes made from *outside* it — a keybind, most of all. This menu deliberately never rebuilds
+ * itself on a redraw, because doing so would take a slider out from under the pointer on every frame
+ * the map moves; the price is that anything changed elsewhere leaves its controls showing what was
+ * true when the menu was built.
+ */
+export const refreshOverlayMenu = (): void => {
+  document.getElementById(MENU_ID)?.remove()
+}
+
+/**
  * Draw the button, and the menu when it is open, positioned from the overlay's own bounds.
  *
  * Called every frame, because the overlay moves with the map — but only the position is touched on

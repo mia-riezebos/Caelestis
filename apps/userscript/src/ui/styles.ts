@@ -170,6 +170,76 @@ const CSS = `
   background-color: var(--color-base-100, #fff);
   color: var(--color-base-content, #111);
 }
+/* A swatch used as a button — the chosen colour — needs the focus ring the grid's swatches get from
+   their own "on" outline. Same shape, same size, same border: a colour you picked and a colour you
+   switched on should not read as two kinds of thing. */
+.wts-swatch:focus-visible {
+  outline-color: var(--color-primary, currentColor);
+}
+/* The picker. Sized to the square rather than the other way round: 12rem across is enough to place
+   a hue to within a couple of degrees, which is the resolution the choice actually needs. */
+.wts-cp {
+  width: 13.25rem;
+}
+.wts-cp-sv {
+  position: relative;
+  height: 7.5rem;
+  border-radius: 0.5rem;
+  cursor: crosshair;
+  /* Or dragging across it pans wplace's map underneath. */
+  touch-action: none;
+}
+.wts-cp-sv:focus-visible {
+  outline: 2px solid var(--color-primary, currentColor);
+  outline-offset: 2px;
+}
+.wts-cp-handle {
+  position: absolute;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  /* A white ring inside a dark one, so the handle is visible on both corners of the square — white
+     alone disappears at full brightness, black alone at none. */
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.wts-cp-hue {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  height: 0.75rem;
+  margin-top: 0.5rem;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    #f00 0%, #ff0 16.67%, #0f0 33.33%, #0ff 50%, #00f 66.67%, #f0f 83.33%, #f00 100%
+  );
+}
+.wts-cp-hue:focus-visible {
+  outline: 2px solid var(--color-primary, currentColor);
+  outline-offset: 2px;
+}
+.wts-cp-hue::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+.wts-cp-hue::-moz-range-thumb {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
 .wts-name {
   flex: 1;
   min-width: 0;
