@@ -1126,6 +1126,26 @@ describe('cross-field and time-unit schemas', () => {
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
+  it.each(['/हिंदी', `/café`])('accepts the path %o, which needs combining marks', (path) => {
+    // Letters and digits alone are not enough to write a name in. Devanagari carries its vowels as
+    // separate mark codepoints, and any name at all can arrive decomposed — 'café' as 'cafe' plus
+    // U+0301 is the same string a macOS client sends. Both were rejected outright, which is the
+    // ASCII-only restriction the pattern was widened to remove, just one category further out.
+    // Marks are allowed only after a letter or digit, so a segment still cannot open with one, and
+    // neither LIKE metacharacter is a mark.
+    const node = { id: uuid(115), parentId: null, path, name: 'Group' }
+    const manifest = {
+      ...validManifest,
+      nodes: [node],
+      templates: [{ ...validTemplate, nodeId: node.id }],
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it.each([`/́cafe`, '/x/́y'])('rejects the path %o, which opens a segment with a mark', (path) => {
+    expectRejected(Manifest, { ...validManifest, nodes: [{ ...validNode, path }] })
+  })
+
   it('accepts a path with non-ASCII letters', () => {
     // Alliances are not all anglophone, and D1 stores these happily — an ASCII-only pattern made a
     // legitimate stored path impossible to emit in a manifest.

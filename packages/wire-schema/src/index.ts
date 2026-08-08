@@ -189,9 +189,14 @@ export const ServerInfo = Schema.Struct({
  * moves, and `/%` captures the whole tree. Callers should still pass ESCAPE; excluding the two
  * metacharacters means a missing ESCAPE cannot be exploited from the wire.
  *
- * Segments accept Unicode letters and digits. An earlier ASCII-only pattern rejected `/québec`,
- * which D1 stores happily — alliances are not all anglophone, and the restriction bought nothing
- * that excluding the two metacharacters does not already buy.
+ * Segments accept Unicode letters, digits and combining marks. An earlier ASCII-only pattern
+ * rejected `/québec`, which D1 stores happily — alliances are not all anglophone, and the
+ * restriction bought nothing that excluding the two metacharacters does not already buy.
+ *
+ * Marks are the same argument one category further out: Devanagari writes its vowels as separate
+ * mark codepoints, so `/हिंदी` had no representation at all, and any name can arrive decomposed —
+ * `café` as `cafe` plus U+0301 is what a macOS client sends. They are admitted only after a letter
+ * or digit, so a segment cannot open with one, and neither LIKE metacharacter is a mark.
  */
 /**
  * Fold a node path the way the database does, so the wire agrees with what D1 can actually store.
@@ -210,7 +215,7 @@ const foldPath = (path: string): string => path.replace(/[A-Z]/g, (c) => c.toLow
 const NodePath = Schema.String.pipe(
   Schema.check(
     Schema.isLengthBetween(1, MAX_PATH_LENGTH),
-    Schema.isPattern(/^(\/[\p{L}\p{N}][\p{L}\p{N}. -]*)+$/u, {
+    Schema.isPattern(/^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u, {
       description: 'a slash-separated group path without LIKE metacharacters',
     }),
   ),
