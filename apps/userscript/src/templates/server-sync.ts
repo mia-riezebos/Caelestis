@@ -134,17 +134,17 @@ export const serverTemplateKey = (serverUrl: string, id: string): string => `srv
 const inFlight = new Set<string>()
 
 /**
- * Bring one server's published templates onto the canvas, and take away what it no longer publishes.
+ * Bring one server's templates onto the canvas, and take away what it no longer has.
  *
- * Unpublished templates are deliberately skipped even when an admin can see them in the manifest:
- * the tree is where you manage what exists, and the canvas is where you see what everyone else sees.
- * Drawing a draft over the map would make an admin's view disagree with every member's.
+ * Unpublished ones are drawn too, and the scope sorts that out by itself: the manifest only lists
+ * them for an admin code, so a member never sees one and an admin sees exactly what they are about
+ * to publish. Being able to look at a draft on the map before releasing it is the point of a draft.
  */
 export const syncServerTemplates = async (server: ConnectedServer): Promise<void> => {
   if (server.status !== 'connected') return
-  const published = (await listServerTemplates(server)).filter((template) => template.published)
+  const available = await listServerTemplates(server)
   const wanted = new Map(
-    published.map((template) => [serverTemplateKey(server.url, template.id), template]),
+    available.map((template) => [serverTemplateKey(server.url, template.id), template]),
   )
 
   for (const held of localTemplates()) {

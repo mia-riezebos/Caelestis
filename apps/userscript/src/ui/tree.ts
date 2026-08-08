@@ -65,6 +65,14 @@ export interface TreeCallbacks {
     parentKey: string | null,
     beforeKey: string | null,
   ) => void
+  /**
+   * Something was dropped onto a server's folder.
+   *
+   * One callback for three journeys, because they are one gesture: a Local template lands as an
+   * upload, a template already on this server is refiled, and one from another server moves across.
+   * Which of those it is comes from the dragged key, not from the caller.
+   */
+  readonly onDropOnNode: (target: TreeTarget, draggedKey: string) => void
 }
 
 const collapsed = new Set<string>()
@@ -82,6 +90,23 @@ const nodesByServer = new Map<string, readonly TreeNode[]>()
 
 /** Templates per server, from the manifest, on the same terms as the nodes above. */
 const templatesByServer = new Map<string, readonly ServerTemplate[]>()
+
+/**
+ * Which server holds a template, given only its id.
+ *
+ * A drag carries one string, and a template row's key is `st:<id>` — so a drop has the template but
+ * not where it came from, and a cross-server move needs both ends. Ids are UUIDv7 and unique across
+ * servers in practice, so the first match is the right one.
+ */
+export const findServerTemplate = (
+  id: string,
+): { serverUrl: string; template: ServerTemplate } | null => {
+  for (const [serverUrl, templates] of templatesByServer) {
+    const template = templates.find((candidate) => candidate.id === id)
+    if (template !== undefined) return { serverUrl, template }
+  }
+  return null
+}
 
 /**
  * What a server last said about one template, for whoever is acting on a row.
@@ -690,6 +715,12 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   ? (event) => callbacks.onContextMenu(nodeTarget, event)
                   : undefined,
                 onRename: canEdit ? (value) => callbacks.onRename(nodeTarget, value) : undefined,
+                // Dropping onto a folder files a template into it: a local one is uploaded here, a
+                // template already on this server is moved, and one from another server crosses
+                // over. The dedicated buttons still exist — this is the shortcut, not the only way.
+                onDropInto: canEdit
+                  ? (draggedKey) => callbacks.onDropOnNode(nodeTarget, draggedKey)
+                  : undefined,
                 actions: canEdit
                   ? [
                       {
@@ -739,16 +770,13 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   // gives no hint why.
                   muted: !template.published,
                   ...(template.published ? {} : { meta: 'unpublished' }),
-                  // Only a published one is on the canvas, so only a published one has a switch.
-                  ...(template.published
-                    ? {
-                        checked: drawn?.visible ?? false,
-                        onToggleChecked: (on: boolean) => {
-                          if (drawn !== undefined) setLocalVisible(drawn.id, on)
-                          rerender()
-                        },
-                      }
-                    : {}),
+                  // Drafts draw too — for the admin who can see them, which is the only person the
+                  // manifest lists them for — so they get the same switch as anything else.
+                  checked: drawn?.visible ?? false,
+                  onToggleChecked: (on: boolean) => {
+                    if (drawn !== undefined) setLocalVisible(drawn.id, on)
+                    rerender()
+                  },
                   onContextMenu: canEdit
                     ? (event) => callbacks.onContextMenu(templateTarget, event)
                     : undefined,
