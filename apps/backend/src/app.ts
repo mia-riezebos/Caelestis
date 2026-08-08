@@ -51,7 +51,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
       'serverId',
     ),
     name: configured(
-      options.serverName ?? 'Wplace Template Server',
+      options.serverName ?? 'Template Server',
       (name) => name.length > 0 && name.length <= 256,
       'serverName',
     ),
