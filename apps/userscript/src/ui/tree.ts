@@ -11,7 +11,13 @@ import {
   setState,
   type TreeNode,
 } from '../state.js'
-import { localTemplates, type PlacedTemplate, setLocalVisible } from '../templates/local-store.js'
+import {
+  isServerTemplate,
+  localTemplates,
+  type PlacedTemplate,
+  setLocalVisible,
+} from '../templates/local-store.js'
+import { serverTemplateKey, syncServerTemplates } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -100,6 +106,9 @@ export const refreshNodes = async (
   templatesByServer.set(server.url, templates)
   void cacheServer({ url: server.url, nodes, templates, fetchedAt: Date.now() })
   rerender()
+  // Every caller of this is a mutation that just landed — a publish, an upload, a delete. Waiting
+  // out the poll to see it on the canvas would make each of those feel like it had not worked.
+  void syncServerTemplates(server)
 }
 
 /**
@@ -695,6 +704,12 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
             renderChildren(node.id, depth + 1)
             for (const template of templatesIn(node.id)) {
               const templateKey = `st:${template.id}`
+              // The copy on the canvas, if the sync has fetched it yet. Absent means the row is
+              // drawn from the manifest alone — which is the right first frame, since the manifest
+              // arrives long before the chunks do.
+              const drawn = localTemplates().find(
+                (candidate) => candidate.id === serverTemplateKey(server.url, template.id),
+              )
               const templateTarget: TreeTarget = {
                 server,
                 nodeId: node.id,
@@ -718,6 +733,16 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   // gives no hint why.
                   muted: !template.published,
                   ...(template.published ? {} : { meta: 'unpublished' }),
+                  // Only a published one is on the canvas, so only a published one has a switch.
+                  ...(template.published
+                    ? {
+                        checked: drawn?.visible ?? false,
+                        onToggleChecked: (on: boolean) => {
+                          if (drawn !== undefined) setLocalVisible(drawn.id, on)
+                          rerender()
+                        },
+                      }
+                    : {}),
                   onContextMenu: canEdit
                     ? (event) => callbacks.onContextMenu(templateTarget, event)
                     : undefined,
@@ -736,7 +761,10 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
     }
 
     if (isLocal) {
-      const mine = localTemplates()
+      // Local means "only in this browser". Server templates share the store — everything that
+      // draws them takes a `PlacedTemplate` and does not care where it came from — but they are
+      // listed under the server publishing them, not here.
+      const mine = localTemplates().filter((template) => !isServerTemplate(template))
       const folders = getState().localFolders
 
       /** Templates sitting directly in one folder, or at the top of Local when null. */

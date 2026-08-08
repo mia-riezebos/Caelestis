@@ -494,24 +494,32 @@ export const listServerTemplates = async (
     })
     if (!response.ok) return []
     const body = (await response.json()) as {
-      templates?: ReadonlyArray<Partial<ServerTemplate>>
+      templates?: ReadonlyArray<
+        Partial<ServerTemplate> & { chunks?: ReadonlyArray<{ tile?: unknown; hash?: unknown }> }
+      >
     }
-    return (body.templates ?? []).flatMap((template) =>
-      typeof template.id === 'string' && typeof template.nodeId === 'string'
-        ? [
-            {
-              id: template.id,
-              nodeId: template.nodeId,
-              name: template.name ?? 'Untitled',
-              version: template.version ?? '',
-              published: template.published === true,
-              // Absent on a server older than the field. Zero reads as "never edited", which is a
-              // better lie than `Date.now()` — it cannot make a stale row look freshly changed.
-              updatedAt: typeof template.updatedAt === 'number' ? template.updatedAt : 0,
-            },
-          ]
-        : [],
-    )
+    return (body.templates ?? []).flatMap((template) => {
+      const bbox = template.bbox
+      if (typeof template.id !== 'string' || typeof template.nodeId !== 'string') return []
+      if (bbox === undefined) return []
+      return [
+        {
+          id: template.id,
+          nodeId: template.nodeId,
+          name: template.name ?? 'Untitled',
+          version: template.version ?? '',
+          published: template.published === true,
+          // Absent on a server older than the field. Zero reads as "never edited", which is a
+          // better lie than `Date.now()` — it cannot make a stale row look freshly changed.
+          updatedAt: typeof template.updatedAt === 'number' ? template.updatedAt : 0,
+          bbox,
+          chunks: (template.chunks ?? []).filter(
+            (chunk): chunk is { tile: string; hash: string } =>
+              typeof chunk?.tile === 'string' && typeof chunk?.hash === 'string',
+          ),
+        },
+      ]
+    })
   } catch {
     return []
   }

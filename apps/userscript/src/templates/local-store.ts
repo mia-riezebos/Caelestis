@@ -76,7 +76,25 @@ export interface PlacedTemplate extends ImportedTemplate {
   readonly revision: number
   /** Which Local folder this sits in, or null for the top level of Local. */
   readonly folderId: string | null
+  /**
+   * The server publishing this template, or absent for one that only exists in this browser.
+   *
+   * Server templates live in this same store deliberately. Everything downstream — the renderer, the
+   * mismatch scan, the colour picker, the per-overlay menu — takes a `PlacedTemplate` and does not
+   * care where it came from, and keeping a second parallel store would have meant teaching all of
+   * them the difference for no gain. What *is* different is ownership: these are not persisted here,
+   * because the server is where they live and a stale copy in IndexedDB would outlive a delete.
+   */
+  readonly serverUrl?: string
+  /** Its id on that server, which is what the admin routes address. */
+  readonly serverTemplateId?: string
+  /** The version these pixels came from, so a sync knows whether to re-download them. */
+  readonly serverVersion?: string
 }
+
+/** Whether this template is a copy of something a server publishes. */
+export const isServerTemplate = (template: PlacedTemplate): boolean =>
+  template.serverUrl !== undefined
 
 const templates = new Map<string, PlacedTemplate>()
 // Effective visibility can temporarily differ from durable user intent when source bitmap
@@ -611,6 +629,7 @@ const writeInOrder = <T>(id: string, write: () => Promise<T>): Promise<T> => {
 }
 
 const persist = async (placed: PlacedTemplate): Promise<SaveResult> => {
+  if (isServerTemplate(placed)) return { status: 'saved', revision: placed.revision }
   const { tiles: _tiles, ...rest } = placed
   return await writeInOrder(placed.id, async () => await saveTemplate(rest, null))
 }
@@ -620,6 +639,7 @@ const savePlaced = async (
   expectedRevision: number | null = placed.revision,
   visible: boolean = desiredVisibility.get(placed.id) ?? placed.visible,
 ): Promise<SaveResult> => {
+  if (isServerTemplate(placed)) return { status: 'saved', revision: placed.revision }
   const { tiles: _tiles, ...rest } = placed
   return await saveTemplate({ ...rest, visible }, expectedRevision)
 }
@@ -776,6 +796,64 @@ const reconcileConflict = async (id: string): Promise<void> => {
 
 const committedRevision = (result: SaveResult): number | null =>
   result.status === 'saved' ? result.revision : null
+
+/**
+ * Put a template published by a server into the store, replacing any earlier copy of it.
+ *
+ * Its local switches survive the replacement: whether it is showing and how it is drawn are this
+ * browser's opinions about someone else's template, and re-syncing pixels is no reason to discard
+ * them. Everything else — the name, where it sits, the pixels — comes from the server.
+ */
+export const putServerTemplate = async (
+  template: ImportedTemplate & {
+    serverUrl: string
+    serverTemplateId: string
+    serverVersion: string
+  },
+): Promise<void> => {
+  const existing = templates.get(template.id)
+  if (existing !== undefined && !isServerTemplate(existing)) {
+    throw new RangeError('server template id collides with a local template')
+  }
+  const tiles = await slice(template)
+  const priorTileCount = existing?.tiles.size ?? 0
+  const priorPixels = existing?.indices.length ?? 0
+  const pixelIncrease = template.indices.length - priorPixels
+  if (
+    retainedIndexPixels + pendingIndexPixels + pixelIncrease > MAX_LOCAL_INDEX_PIXELS ||
+    !claimSourceReplacement(priorTileCount, tiles.size)
+  ) {
+    releaseCandidateTiles(tiles)
+    throw new RangeError('server templates exceed the local rendering budget')
+  }
+  templates.set(template.id, {
+    ...template,
+    tiles,
+    visible: existing?.visible ?? true,
+    everPlaced: true,
+    appearance: existing?.appearance ?? null,
+    revision: existing?.revision ?? 0,
+    folderId: null,
+  })
+  retainedIndexPixels += pixelIncrease
+  installSourceReplacement(priorTileCount, tiles.size)
+  if (existing !== undefined) closeTiles(existing.tiles)
+  clearStamped(template.id)
+  notify()
+}
+
+/** Drop a server template we hold, because the server has stopped publishing it. */
+export const forgetServerTemplate = (id: string): void => {
+  const existing = templates.get(id)
+  if (existing === undefined || !isServerTemplate(existing)) return
+  releaseRetainedTiles(existing.tiles)
+  retainedIndexPixels -= existing.indices.length
+  desiredVisibility.delete(id)
+  clearStamped(id)
+  previewOrigins.delete(id)
+  templates.delete(id)
+  notify()
+}
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   const restoring = restoreInFlight
