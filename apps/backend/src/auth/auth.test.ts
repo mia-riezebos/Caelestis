@@ -248,6 +248,21 @@ describe('the admin token surface', () => {
     expect([token, calls]).toEqual(['A'.repeat(TOKEN_LENGTH), 1])
   })
 
+  it('draws on 32 distinct symbols, so the encoding stays injective', () => {
+    // Every other entropy test survives a duplicated alphabet entry: length, the character-class
+    // regex, the excluded I/L/O/U, the CSPRNG source, the per-bit sweep and 500-token uniqueness all
+    // pass while two of the 32 indices encode to the same character. The encoder is then not
+    // injective and the advertised 128 bits are not there. Mint one token per index by planting the
+    // index in the top 5 bits of the first byte, which is the first character emitted.
+    const first = Array.from({ length: 32 }, (_, index) =>
+      withRandomBytes((bytes) => {
+        bytes[0] = index << 3
+      }, mintToken).charAt(0),
+    )
+
+    expect(new Set(first).size).toBe(32)
+  })
+
   it('lets every one of the 128 source bits change the token', () => {
     // Length, alphabet, uniqueness, the CSPRNG source and the tail are all pinned, and a hard-coded
     // interior character survives every one of them — the token would carry 123 bits and look
