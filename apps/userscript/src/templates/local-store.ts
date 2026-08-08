@@ -31,6 +31,7 @@ import {
   type TemplateLoadBatch,
   type TemplateLoadFailure,
 } from './persist.js'
+import { nodeChainVisible } from './server-nodes.js'
 
 /**
  * Local templates, and the per-tile bitmaps the overlay actually draws.
@@ -102,6 +103,8 @@ export interface PlacedTemplate extends ImportedTemplate {
   readonly serverUrl?: string
   /** Its id on that server, which is what the admin routes address. */
   readonly serverTemplateId?: string
+  /** The folder it hangs off on that server — the top of the chain its visibility answers to. */
+  readonly serverNodeId?: string
   /** The version these pixels came from, so a sync knows whether to re-download them. */
   readonly serverVersion?: string
 }
@@ -251,7 +254,14 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
   // A server's template answers to that server's switch, not to Local's. Sharing this store meant
   // it inherited the local chain by default, so switching Local off hid every server's templates
   // too, and a server's own switch did nothing to them.
-  if (template.serverUrl !== undefined) return isScopeVisible(`server:${template.serverUrl}`)
+  //
+  // And to the folders it sits in, the same way a Local template answers to its own. A server's
+  // folders had no chain here at all, so their switches fell through to a set the renderer never
+  // read: the box moved, and nothing else did.
+  if (template.serverUrl !== undefined) {
+    if (!isScopeVisible(`server:${template.serverUrl}`)) return false
+    return nodeChainVisible(template.serverUrl, template.serverNodeId ?? null)
+  }
   return localFolderChainVisible(template.folderId)
 }
 
@@ -854,6 +864,7 @@ export const putServerTemplate = async (
   template: ImportedTemplate & {
     serverUrl: string
     serverTemplateId: string
+    serverNodeId: string
     serverVersion: string
   },
 ): Promise<void> => {

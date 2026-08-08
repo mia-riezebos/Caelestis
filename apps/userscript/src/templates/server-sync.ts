@@ -1,13 +1,14 @@
 import { PALETTE_RGB, quantiseToPalette, TILE_SIZE, TRANSPARENT_INDEX } from '@wts/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
-import { type ConnectedServer, getState, listServerTemplates, onStateChange } from '../state.js'
+import { type ConnectedServer, getState, listServerContents, onStateChange } from '../state.js'
 import {
   forgetServerTemplate,
   localTemplates,
   putServerTemplate,
   renameLocalTemplate,
 } from './local-store.js'
+import { rememberNodes } from './server-nodes.js'
 
 /**
  * Bringing a server's published templates onto the canvas.
@@ -146,7 +147,14 @@ export const syncServerTemplates = async (
   known?: readonly ServerTemplate[],
 ): Promise<void> => {
   if (server.status !== 'connected') return
-  const available = known ?? (await listServerTemplates(server))
+  let available = known ?? null
+  if (known === undefined) {
+    const contents = await listServerContents(server)
+    // The folders as well as the templates, because a template's visibility answers to the folders
+    // above it and this is the only place that learns of them changing between polls.
+    if (contents !== null) rememberNodes(server.url, contents.nodes)
+    available = contents?.templates ?? null
+  }
   // Could not ask, so nothing is known and nothing changes. Treating this as an empty server took
   // every template off the canvas on a single blip and put them back looking newly arrived.
   if (available === null) return
@@ -192,6 +200,7 @@ export const syncServerTemplates = async (
         ),
         serverUrl: server.url,
         serverTemplateId: template.id,
+        serverNodeId: template.nodeId,
         serverVersion: template.version,
       })
       count('server:template drawn from chunks')
