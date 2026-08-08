@@ -319,6 +319,42 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "server_settings": {
+      "name": "server_settings",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "server_settings_single_row_check": {
+          "name": "server_settings_single_row_check",
+          "value": "\"server_settings\".\"id\" = 1"
+        }
+      }
+    },
     "telemetry_buckets": {
       "name": "telemetry_buckets",
       "columns": {

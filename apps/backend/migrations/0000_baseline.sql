@@ -60,6 +60,13 @@ CREATE TABLE `painters` (
 	`seen_at_ms` integer NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE `server_settings` (
+	`id` integer PRIMARY KEY NOT NULL,
+	`name` text,
+	`description` text,
+	CONSTRAINT "server_settings_single_row_check" CHECK("server_settings"."id" = 1)
+);
+--> statement-breakpoint
 CREATE TABLE `telemetry_buckets` (
 	`template_id` text NOT NULL,
 	`resolution` integer NOT NULL,

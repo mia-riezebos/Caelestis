@@ -618,6 +618,40 @@ export const patchTemplate = async (
   }
 }
 
+/**
+ * Rename a server — the name every member sees, not a label local to this browser.
+ *
+ * Worth being explicit about, because the row it is edited from looks exactly like the Local one
+ * above it, and that one *is* local. This writes to the server, and the next member to open their
+ * panel sees the new name.
+ *
+ * The local copy is updated from the answer rather than re-probed: the tree is labelled from
+ * `info.name`, and leaving it stale until the next probe would make a rename look like it failed.
+ */
+export const renameServer = async (
+  server: ConnectedServer,
+  name: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  const trimmed = name.trim()
+  if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
+  try {
+    const response = await fetch(`${server.url}/admin/server`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ name: trimmed }),
+    })
+    if (!response.ok) {
+      return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    }
+    if (server.info !== null) {
+      upsertServer({ ...server, info: { ...server.info, name: trimmed } })
+    }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
 export const deleteTemplate = async (
   server: ConnectedServer,
   templateId: string,

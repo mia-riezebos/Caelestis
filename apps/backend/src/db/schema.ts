@@ -15,6 +15,26 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core'
 
+/**
+ * Operator-set overrides for what this server calls itself.
+ *
+ * One row, pinned by a check constraint, because there is exactly one server per deployment and a
+ * table that permits two would eventually hold two with nothing to say which is current.
+ *
+ * Separate from `wrangler.toml`'s `[vars]` rather than replacing them: the vars stay the value a
+ * fresh deployment starts with, and this is what an admin has since decided. A null column means
+ * "not decided", which is different from an empty string and falls back to the var.
+ */
+export const serverSettings = sqliteTable(
+  'server_settings',
+  {
+    id: integer('id').primaryKey(),
+    name: text('name'),
+    description: text('description'),
+  },
+  (table) => [check('server_settings_single_row_check', sql`${table.id} = 1`)],
+)
+
 export const nodes = sqliteTable(
   'nodes',
   {

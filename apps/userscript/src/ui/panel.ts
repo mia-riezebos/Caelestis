@@ -19,6 +19,7 @@ import {
   removeServer,
   renameLocalFolder,
   renameNode as renameNodeOnServer,
+  renameServer as renameServerOnServer,
   setState,
   uploadTemplate,
   uploadTemplateVersion,
@@ -812,6 +813,14 @@ const applyRename = async (
     const result = await patchTemplate(target.server, target.templateId, { name })
     if (!result.ok) toast(result.message, 'error')
     await refreshNodes(target.server, rerender)
+    return
+  }
+  if (target.server !== null && target.nodeId === null) {
+    // The server's own row. Renaming it is a write everyone sees, unlike the Local row directly
+    // above it in the tree, which is this browser's alone.
+    const result = await renameServerOnServer(target.server, name)
+    if (!result.ok) toast(result.message, 'error')
+    rerender()
     return
   }
   if (target.server === null || target.nodeId === null) {

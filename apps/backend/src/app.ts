@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import type { Ports } from './ports/index.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
-import { createServerRoutes } from './routes/server.js'
+import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createChunkRoutes, createTemplateRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
 
@@ -79,7 +79,8 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.use('/*', cors({ exposeHeaders: ['ETag'] }))
 
   app.get('/health', (c) => c.json({ ok: true }))
-  app.route('/server', createServerRoutes(server))
+  app.route('/server', createServerRoutes(ports, server))
+  app.route('/admin/server', createServerAdminRoutes(ports, auth))
   app.route(
     '/manifest',
     createManifestRoutes(ports, auth, { server, currentSeason: options.currentSeason ?? 1 }),
