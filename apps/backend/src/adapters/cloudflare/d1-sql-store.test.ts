@@ -1,4 +1,4 @@
-import { seconds } from '@wts/shared'
+import { millis, seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket } from '../../ports/index.js'
 import { D1SqlStore } from './d1-sql-store.js'
@@ -23,11 +23,6 @@ describe('D1SqlStore', () => {
   beforeEach(() => {
     d1 = new SqliteD1Database()
     store = new D1SqlStore(d1 as unknown as D1Database)
-    // A token row for the tests that read one back. Nothing references access_tokens any more —
-    // the reporter and author digests are shape-checked, not foreign keys.
-    d1.sqlite.exec(
-      "INSERT INTO access_tokens VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'l', 'report', 'c', 1)",
-    )
   })
 
   afterEach(() => d1.close())
@@ -564,7 +559,6 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
       INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'l', 'report', 'c', 1);
     `)
     // The geometry columns get typeof + range; the counters got neither, so a negative, fractional
     // or textual count persisted. isValidCounterDelta already refuses these — this is the second
@@ -577,8 +571,6 @@ describe('D1SqlStore', () => {
     // hostile client could increment it by replaying its own hash until it looked like quorum, and
     // an honest competing hash could not be stored at all. One row per reporter per hash fixes both.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
       INSERT INTO tile_history VALUES (0, 0, 0, 100, '2222222222222222222222222222222222222222222222222222222222222222', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
       INSERT OR IGNORE INTO tile_history VALUES (0, 0, 0, 100, '2222222222222222222222222222222222222222222222222222222222222222', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
       INSERT INTO tile_history VALUES (0, 0, 0, 100, '3333333333333333333333333333333333333333333333333333333333333333', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
@@ -601,8 +593,6 @@ describe('D1SqlStore', () => {
     // clients seeing the same tile must not collapse into one row. Two *accounts*: the account is
     // the client, so distinct tokens alone no longer make distinct reporters.
     d1.sqlite.exec(`
-      INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
       INSERT INTO tile_history VALUES (1, 1, 0, 100, '1111111111111111111111111111111111111111111111111111111111111111', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11);
       INSERT INTO tile_history VALUES (1, 1, 0, 100, '1111111111111111111111111111111111111111111111111111111111111111', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 22);
     `)
@@ -765,6 +755,128 @@ describe('D1SqlStore', () => {
     ).not.toThrow()
   })
 
+  it('stores, reads back and revokes an access token', async () => {
+    // The memory adapter is tested directly; this is the one that talks to real D1, and the two must
+    // agree or the parity the ports exist for is fiction.
+    const token = {
+      tokenHash: 'a'.repeat(64),
+      label: 'discord-regulars',
+      scope: 'report' as const,
+      createdBy: 'bootstrap',
+      createdAt: millis(1_000),
+    }
+    await store.insertAccessToken(token)
+
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toEqual(token)
+    await expect(store.readAccessToken('missing')).resolves.toBeNull()
+
+    await store.revokeAccessToken(token.tokenHash)
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toBeNull()
+  })
+
+  it('refuses to overwrite an existing token hash', async () => {
+    const token = {
+      tokenHash: 'b'.repeat(64),
+      label: 'first',
+      scope: 'read' as const,
+      createdBy: 'bootstrap',
+      createdAt: millis(1_000),
+    }
+    await store.insertAccessToken(token)
+
+    await expect(store.insertAccessToken({ ...token, label: 'second' })).rejects.toThrow()
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toMatchObject({ label: 'first' })
+  })
+
+  it('revokes by deleting, idempotently, and leaves what the token reported', async () => {
+    // Revocation is a hard delete: a soft flag obliged every reader to remember to filter on it and
+    // nothing made them. Deleting needs no cooperation, and a credential is never re-provisioned.
+    //
+    // What it must not do is rewrite history. Reported state records what was actually on wplace,
+    // so it is canonical regardless of what later happens to the credential that carried it —
+    // revoking ends a holder's future access, it does not retract observations. Nothing references
+    // access_tokens, so this row survives on purpose.
+    const token = {
+      tokenHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      label: 'leaked',
+      scope: 'read' as const,
+      createdBy: 'bootstrap',
+      createdAt: millis(1_000),
+    }
+    await store.insertAccessToken(token)
+    // A second credential, because one row cannot tell a targeted delete from a WHERE-less one, and
+    // a revoke that took the whole table with it would lock the deployment out of its own admin
+    // surface the moment the operator dropped ADMIN_TOKEN. The memory store pins this; D1 did not.
+    const bystander = {
+      ...token,
+      tokenHash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      label: 'bystander',
+    }
+    await store.insertAccessToken(bystander)
+    // Both tables carry reported state, so both have to survive. Seeding only tile_history left a
+    // cascade on contributions passing green.
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('rev-node', NULL, '/rev', 'Rev', 1);
+      INSERT INTO templates VALUES ('rev-t', 'rev-node', 'T', 1, NULL, '${'a'.repeat(64)}', 7, 1);
+      INSERT INTO tile_history VALUES (9, 9, 0, 0, '7777777777777777777777777777777777777777777777777777777777777777', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
+      INSERT INTO contributions VALUES (5, 'rev-t', 0, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7, 1, 1, 0);
+    `)
+
+    await store.revokeAccessToken(token.tokenHash)
+    await store.revokeAccessToken(token.tokenHash)
+
+    await expect(store.readAccessToken(token.tokenHash)).resolves.toBeNull()
+    await expect(store.readAccessToken(bystander.tokenHash)).resolves.toMatchObject({
+      label: 'bystander',
+    })
+    expect(
+      d1.sqlite
+        .prepare(
+          `SELECT (SELECT COUNT(*) FROM tile_history WHERE tile_x = 9)
+                + (SELECT COUNT(*) FROM contributions WHERE wplace_user_id = 5) AS kept`,
+        )
+        .all(),
+    ).toEqual([{ kept: 2 }])
+  })
+
+  it('orders tokens minted in the same millisecond by hash, as the port promises', async () => {
+    // SQL leaves equal ORDER BY keys unspecified, so the adapters could return different arrays for
+    // one input — the memory store applies the port's tiebreak and D1 did not. Date.now() is
+    // millisecond-resolution and scripted provisioning mints a read and a report token in one tick.
+    for (const hash of ['c', 'a', 'b']) {
+      await store.insertAccessToken({
+        tokenHash: hash.repeat(64),
+        label: hash,
+        scope: 'read',
+        createdBy: 'bootstrap',
+        createdAt: millis(1_000),
+      })
+    }
+
+    await expect(store.listAccessTokens()).resolves.toMatchObject([
+      { label: 'a' },
+      { label: 'b' },
+      { label: 'c' },
+    ])
+  })
+
+  it('lists tokens newest first', async () => {
+    for (const [index, createdAt] of [3_000, 1_000, 2_000].entries()) {
+      await store.insertAccessToken({
+        tokenHash: `${index}`.repeat(64),
+        label: `${createdAt}`,
+        scope: 'read',
+        createdBy: 'bootstrap',
+        createdAt: millis(createdAt),
+      })
+    }
+    await expect(store.listAccessTokens()).resolves.toMatchObject([
+      { label: '3000' },
+      { label: '2000' },
+      { label: '1000' },
+    ])
+  })
+
   it('rejects a replayed event id regardless of the claimed user', () => {
     // The replay guard has to key on the event id alone. Keying it with the attacker-supplied user
     // would let one captured event be replayed once per fabricated identity.
@@ -844,7 +956,8 @@ describe('D1SqlStore', () => {
       "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7), (0, 0, 0, 60, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
   ])('%s', (_label, statement) => {
-    // reported_by is a foreign key to access_tokens, so the tokens have to exist.
+    // Nothing references access_tokens — reported_by is a shape-checked digest, not a foreign key —
+    // so these rows exist only because the assertions read them back.
     // Each composite primary key is the identity the draft specifies. Dropping a component makes
     // these two rows collide, so the insert throws — nothing else in the suite writes two rows that
     // differ only in the trailing key column.
@@ -852,9 +965,6 @@ describe('D1SqlStore', () => {
       INSERT OR IGNORE INTO nodes VALUES ('pk-node', NULL, '/pk', 'PK', 1);
       INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', 1, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
       INSERT OR IGNORE INTO template_versions VALUES ('v1', 'ct', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
-      INSERT OR IGNORE INTO access_tokens VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
-      INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
     `)
     expect(() => d1.sqlite.prepare(statement).run()).not.toThrow()
   })

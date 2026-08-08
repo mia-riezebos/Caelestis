@@ -407,11 +407,13 @@ export const tileHistory = sqliteTable(
      * was added to keep. An audit trail has to outlive the credential it names, which means orphans
      * are the point, not a defect.
      *
-     * Deleting a credential does not retract what it already reported: the rows survive by design,
-     * and a quorum read counting raw rows keeps counting them. Revoking a token therefore means
-     * deleting its reports too, which this column is what makes possible —
-     * `DELETE FROM tile_history WHERE reported_by = ?`. A route obligation, and the reason the
-     * digest earns storage even though no key uses it.
+     * Deleting a credential does not retract what it already reported, and must not: reported state
+     * records what was actually on the canvas, so it is canonical regardless of what later happens
+     * to the credential that carried it. Revoking ends a holder's future access; it does not edit
+     * the past, and a quorum read counting those rows is still counting real observations.
+     *
+     * An earlier version of this note said revocation should delete the reports too. That was
+     * wrong — it would trade an accurate record of wplace for a tidy one.
      *
      * The shape stays constrained, which is what the foreign key was really buying: the earlier
      * justification was "keeps this a token, not free text". A 64-character lowercase hex digest is

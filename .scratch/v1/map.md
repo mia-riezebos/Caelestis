@@ -17,7 +17,9 @@ updated until v1 actually runs.
   default is OFF for this effort: tickets may produce running code, and the spec is a living
   document updated as tickets resolve.
 - **Stack.** Server = Hono on Cloudflare Workers + R2 + D1 + DO. Userscript = TypeScript, deep
-  modules, esbuild, Violentmonkey. Turborepo + pnpm: `apps/{backend,userscript,frontend}`,
+  modules, esbuild, Violentmonkey. **wplace itself is SvelteKit + Tailwind + DaisyUI, and the
+  userscript should look at home in it** — by adopting DaisyUI's theme variables through the shadow
+  boundary, never their purged utility classes. See `19-shared-ui-components`. Turborepo + pnpm: `apps/{backend,userscript,frontend}`,
   `packages/{shared,ui}`.
 - **All UI is userscript-side in v1**, and the userscript shows **current state and alarms only** —
   no charts, no history, no pace. Everything time-series is frontend-only for now, and may come back
@@ -58,6 +60,28 @@ updated until v1 actually runs.
   `shardStrategy: 'single'` in v1, `per-template` and `dynamic` stubbed. `wrangler dev` locally.
   Free-tier viable for small alliances.
 
+## Pre-v1: the first deployable, shareable cut
+
+Ahead of v1 there is a smaller target — something that runs and can be handed to one alliance. It has
+**no frontend on the server at all**, which settles a question the admin surface was waiting on:
+
+- **One private admin token, from the environment.** Provisioned by the operator as a secret, not
+  minted through any UI. It is the root credential and the only one that exists before the server has
+  been talked to.
+- **Admin tokens provision other tokens.** Everything else — read tokens for members, report tokens
+  for the userscript — is minted by an admin token through the API. Shipped in PR #35.
+- **The admin UI is in the userscript.** Until a frontend exists, provisioning, listing and revoking
+  tokens happens in the userscript's primary drawer, behind admin scope. That is the same surface
+  `29-per-overlay-map-controls` gives the tree, with an admin section that simply is not rendered for
+  a read or report holder.
+
+This is deliberately a narrower target than v1 and it changes what "done" means for the next few
+slices: a thing one alliance can actually use beats a complete feature matrix nobody has run.
+
+Consequence worth stating: **the userscript becomes an admin client, not only a viewer.** Its read
+surface was narrowed on the assumption it only displays state; token administration is a write
+surface, and the scope ladder is what keeps it invisible to everyone who should not have it.
+
 ## Deferred until a running prototype
 
 Sharp questions with known methods, waiting only on something that runs — kept as a standing
@@ -73,10 +97,19 @@ rests on reasoning that only real behaviour can confirm.
 - ~~Empty-tile synthesis behaviour~~ — **dissolved.** In-range unpainted tiles return 200 with a
   near-empty PNG; only out-of-range coordinates 404. The canvas is Web Mercator zoom 11, 2048×2048
   tiles. There is no synthesis path and nothing to fabricate. See `06-recon-tile-serving`.
+- **The two userscript surfaces** — a primary menu button in wplace's own right-hand rail opening a
+  drawer with the whole node tree, and a three-dot button to the right of each overlay, top-aligned,
+  expanding into that overlay's display mode, opacity, mismatch highlighting, colour filters and
+  focus. Captured in
+  [Per-overlay controls on the map](issues/29-per-overlay-map-controls.md). Carries two things the
+  viewing-modes ticket does not: mismatch highlighting is a new axis outside
+  `{shape, size, anchor, opacity}`, and a progress chart there would contradict the userscript's
+  current-state-only read surface.
 - **Multi-server merge UX** — how conflicting/overlapping templates from different servers are
   surfaced, and where the "what did this server just add" trust diff lives in the userscript UI.
-- **Admin surface without a web frontend** — how an alliance leader provisions invite codes, uploads
-  templates, and edits the tree when the only UI is the userscript.
+- **Admin surface without a web frontend** — how an alliance leader uploads templates and edits the
+  tree when the only UI is the userscript. **The credential half is settled** (see the pre-v1
+  decision below); what remains is template upload and tree editing from inside the userscript.
 - **Decay-ladder compaction** — the actual cascade job, its trigger, and the differing fold
   functions for state columns vs delta columns.
 - **Abuse and rate limiting** at 1000+ user alliance scale, including report throttling and the
