@@ -1,4 +1,4 @@
-import { tileKey } from '@wts/shared'
+import { tileKey, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -929,6 +929,60 @@ describe('cross-field and time-unit schemas', () => {
       ],
       tiles: [tileKey({ x: 0, y: 0 })],
     })
+  })
+
+  it('rejects a total pixel count larger than where its chunks meet its box', () => {
+    // Both ceilings are loose where they disagree. This box is 1001x1001, so the area bound allows
+    // just over a million; one chunk allows a million; and tile 1/1 covers pixels 1000..2000, so it
+    // meets the box in exactly one pixel. 1_000_000 clears both while the template can hold 1 —
+    // a denominator a million times the largest possible numerator, and progress pinned at 0.0001%
+    // forever.
+    expectRejected(Manifest, {
+      ...validManifest,
+      templates: [
+        {
+          ...validTemplate,
+          bbox: { minX: 0, minY: 0, maxX: 1_001, maxY: 1_001 },
+          totalPixels: 1_000_000,
+          chunks: [{ tile: tileKey({ x: 1, y: 1 }), hash: HASH }],
+        },
+      ],
+      tiles: [tileKey({ x: 1, y: 1 })],
+    })
+  })
+
+  it('accepts a total pixel count filling the corner where a chunk meets its box', () => {
+    const template = {
+      ...validTemplate,
+      bbox: { minX: 0, minY: 0, maxX: 1_001, maxY: 1_001 },
+      totalPixels: 1,
+      chunks: [{ tile: tileKey({ x: 1, y: 1 }), hash: HASH }],
+    }
+    const manifest = { ...validManifest, templates: [template], tiles: [tileKey({ x: 1, y: 1 })] }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+  })
+
+  it('counts both sides of the seam for a box that wraps', () => {
+    // A wrapped box is two disjoint x ranges, one against each end of the canvas, and the chunks
+    // that meet them are the first and last tiles of the row. One column each, one row tall, so 2
+    // is the honest ceiling — sum only the span the box was written with and this decodes as 1.
+    const chunks = [
+      { tile: tileKey({ x: 0, y: 0 }), hash: HASH },
+      { tile: tileKey({ x: WORLD_TILES - 1, y: 0 }), hash: HASH },
+    ]
+    const template = {
+      ...validTemplate,
+      bbox: { minX: WORLD_PIXELS - 1, minY: 0, maxX: 1, maxY: 1 },
+      totalPixels: 2,
+      chunks,
+    }
+    const manifest = {
+      ...validManifest,
+      templates: [template],
+      tiles: chunks.map((chunk) => chunk.tile),
+    }
+    expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
+    expectRejected(Manifest, { ...manifest, templates: [{ ...template, totalPixels: 3 }] })
   })
 
   it('accepts a template painting every pixel of its bounding box', () => {

@@ -439,17 +439,37 @@ export const Manifest = ManifestStruct.pipe(
           // makes them NaN or a division by zero. A template that covers a box and declares chunks
           // has painted something; one that has not is not a published template.
           if (template.totalPixels === 0 || template.chunks.length === 0) return false
-          // It also cannot exceed the box it is counted within — the non-transparent pixels of a
-          // template live inside its own bounding box. Without this, an arbitrarily large
-          // totalPixels pins progress near zero forever.
-          const width = xSpans(template).reduce((total, span) => total + (span.end - span.start), 0)
-          const height = template.bbox.maxY - template.bbox.minY
-          if (template.totalPixels > width * height) return false
-          // The box is the outer ceiling; the chunks are the real one. A box spanning many tiles
-          // while declaring a single chunk cannot hold more painted pixels than that one tile does,
-          // and a totalPixels above it pins progress below 100% forever.
-          if (template.totalPixels > template.chunks.length * TILE_SIZE * TILE_SIZE) return false
-          return true
+          // A painted pixel is inside the bounding box and inside a declared chunk, so the ceiling
+          // is where the two meet — the chunk tiles clipped to the box, summed. Bounding by the box
+          // alone let one chunk of a 1001x1001 box carry a million pixels where it can hold one;
+          // bounding by `chunks.length * TILE_SIZE^2` let the same manifest through from the other
+          // side. Either way a denominator far above the largest possible numerator pins progress
+          // near zero forever. This is tighter than both and replaces them: distinct tiles clipped
+          // to the box can never sum past the box's own area.
+          //
+          // Summed over x spans because a wrapped box is two disjoint ranges and a row of chunks
+          // can meet both, at opposite ends of the canvas.
+          const spans = xSpans(template)
+          const capacity = template.chunks.reduce((total, chunk) => {
+            const { x, y } = parseTile(chunk.tile)
+            const tileMinX = x * TILE_SIZE
+            const tileMinY = y * TILE_SIZE
+            const height =
+              Math.min(tileMinY + TILE_SIZE, template.bbox.maxY) -
+              Math.max(tileMinY, template.bbox.minY)
+            if (height <= 0) return total
+            const width = spans.reduce(
+              (spanned, span) =>
+                spanned +
+                Math.max(
+                  0,
+                  Math.min(tileMinX + TILE_SIZE, span.end) - Math.max(tileMinX, span.start),
+                ),
+              0,
+            )
+            return total + width * height
+          }, 0)
+          return template.totalPixels <= capacity
         }) &&
         manifest.templates.every((template) => {
           // A chunk is a full tile of painted pixels, so a chunk outside the box that declares the
