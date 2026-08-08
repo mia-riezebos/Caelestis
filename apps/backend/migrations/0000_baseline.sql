@@ -10,7 +10,8 @@ CREATE TABLE `access_tokens` (
 CREATE TABLE `applied_events` (
 	`event_id` text PRIMARY KEY NOT NULL,
 	`wplace_user_id` integer NOT NULL,
-	`seen_at_ms` integer NOT NULL
+	`seen_at_ms` integer NOT NULL,
+	CONSTRAINT "applied_events_user_check" CHECK(typeof("applied_events"."wplace_user_id") = 'integer' AND "applied_events"."wplace_user_id" >= 0)
 );
 --> statement-breakpoint
 CREATE INDEX `applied_events_seen_at_idx` ON `applied_events` (`seen_at_ms`);--> statement-breakpoint
@@ -25,7 +26,8 @@ CREATE TABLE `contributions` (
 	`repairs` integer NOT NULL,
 	PRIMARY KEY(`wplace_user_id`, `template_id`, `day_s`, `reported_by_user_id`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "contributions_reported_by_check" CHECK(length("contributions"."reported_by") = 64 AND "contributions"."reported_by" NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT "contributions_reported_by_check" CHECK(typeof("contributions"."reported_by") = 'text' AND length("contributions"."reported_by") = 64
+        AND "contributions"."reported_by" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "contributions_counter_check" CHECK(typeof("contributions"."wplace_user_id") = 'integer' AND "contributions"."wplace_user_id" >= 0
         AND typeof("contributions"."reported_by_user_id") = 'integer' AND "contributions"."reported_by_user_id" >= 0
         AND typeof("contributions"."day_s") = 'integer' AND "contributions"."day_s" >= 0
@@ -89,7 +91,8 @@ CREATE TABLE `template_versions` (
 	`bounds_west` real,
 	`bounds_east` real,
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "template_versions_created_by_check" CHECK(length("template_versions"."created_by") = 64 AND "template_versions"."created_by" NOT GLOB '*[^0-9a-f]*'
+	CONSTRAINT "template_versions_created_by_check" CHECK(typeof("template_versions"."created_by") = 'text' AND length("template_versions"."created_by") = 64
+        AND "template_versions"."created_by" NOT GLOB '*[^0-9a-f]*'
         AND typeof("template_versions"."created_by_user_id") = 'integer' AND "template_versions"."created_by_user_id" >= 0),
 	CONSTRAINT "template_versions_bounds_all_or_none_check" CHECK(("template_versions"."bounds_north" IS NULL AND "template_versions"."bounds_south" IS NULL AND "template_versions"."bounds_west" IS NULL AND "template_versions"."bounds_east" IS NULL) OR ("template_versions"."bounds_north" IS NOT NULL AND "template_versions"."bounds_south" IS NOT NULL AND "template_versions"."bounds_west" IS NOT NULL AND "template_versions"."bounds_east" IS NOT NULL)),
 	CONSTRAINT "template_versions_pixel_bounds_check" CHECK(typeof("template_versions"."min_x") = 'integer' AND typeof("template_versions"."min_y") = 'integer'
@@ -117,7 +120,8 @@ CREATE TABLE `templates` (
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`node_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`current_version_id`,`id`) REFERENCES `template_versions`(`id`,`template_id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "templates_created_by_check" CHECK(length("templates"."created_by") = 64 AND "templates"."created_by" NOT GLOB '*[^0-9a-f]*'
+	CONSTRAINT "templates_created_by_check" CHECK(typeof("templates"."created_by") = 'text' AND length("templates"."created_by") = 64
+        AND "templates"."created_by" NOT GLOB '*[^0-9a-f]*'
         AND typeof("templates"."created_by_user_id") = 'integer' AND "templates"."created_by_user_id" >= 0)
 );
 --> statement-breakpoint
@@ -131,7 +135,8 @@ CREATE TABLE `tile_history` (
 	`reported_by_user_id` integer NOT NULL,
 	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by_user_id`),
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
-	CONSTRAINT "tile_history_reported_by_check" CHECK(length("tile_history"."reported_by") = 64 AND "tile_history"."reported_by" NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT "tile_history_reported_by_check" CHECK(typeof("tile_history"."reported_by") = 'text' AND length("tile_history"."reported_by") = 64
+        AND "tile_history"."reported_by" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "tile_history_reported_by_user_id_check" CHECK(typeof("tile_history"."reported_by_user_id") = 'integer' AND "tile_history"."reported_by_user_id" >= 0),
 	CONSTRAINT "tile_history_bucket_start_s_check" CHECK(typeof("tile_history"."bucket_start_s") = 'integer' AND "tile_history"."bucket_start_s" >= 0
         AND ("tile_history"."resolution_s" = 0 OR "tile_history"."bucket_start_s" % "tile_history"."resolution_s" = 0)),

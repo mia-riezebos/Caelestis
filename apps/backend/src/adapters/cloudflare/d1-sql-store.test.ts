@@ -23,8 +23,8 @@ describe('D1SqlStore', () => {
   beforeEach(() => {
     d1 = new SqliteD1Database()
     store = new D1SqlStore(d1 as unknown as D1Database)
-    // tile_history.reported_by is a foreign key, so every fixture that writes a report needs its
-    // token to exist. Only the test that names the missing token uses one that does not.
+    // A token row for the tests that read one back. Nothing references access_tokens any more —
+    // the reporter and author digests are shape-checked, not foreign keys.
     d1.sqlite.exec(
       "INSERT INTO access_tokens VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'l', 'report', 'c', 1)",
     )
@@ -504,6 +504,38 @@ describe('D1SqlStore', () => {
     [
       "INSERT INTO tile_history VALUES (0, 0, 0, -1, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
+    // The four *_user_id domains, none of which had a reject case: every fixture here used a small
+    // positive literal, so the type and sign guards on the columns that now carry quorum identity
+    // were each individually deletable.
+    [
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', -1)",
+    ],
+    [
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1.5)",
+    ],
+    [
+      "INSERT INTO contributions VALUES (1, 'ct', 0, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', -1, 1, 1, 0)",
+    ],
+    [
+      "INSERT INTO contributions VALUES (1, 'ct', 0, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1.5, 1, 1, 0)",
+    ],
+    // The same digest rule was written on four columns and pinned on two.
+    ["INSERT INTO contributions VALUES (1, 'ct', 0, 'short', 7, 1, 1, 0)"],
+    [
+      "INSERT INTO contributions VALUES (1, 'ct', 0, 'gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg', 7, 1, 1, 0)",
+    ],
+    // TEXT is an affinity too and never converts a BLOB: length() counts bytes and GLOB coerces, so
+    // both conjuncts passed and the row was invisible to every digest query — reachable by binding
+    // crypto.subtle.digest's ArrayBuffer instead of its hex string.
+    [
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', X'61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161', 7)",
+    ],
+    [
+      "INSERT INTO contributions VALUES (1, 'ct', 0, X'61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161', 7, 1, 1, 0)",
+    ],
+    // applied_events was the one table with an attacker-supplied integer and no guard at all.
+    ["INSERT INTO applied_events VALUES ('e', 1.5, 1)"],
+    ["INSERT INTO applied_events VALUES ('e', -1, 1)"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
@@ -774,8 +806,8 @@ describe('D1SqlStore', () => {
       "INSERT INTO contributions VALUES (1, 'ct', 0, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1, 0), (1, 'ct', 86400, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1, 0)",
     ],
     [
-      'contributions separate two reporters of the same user, template and day',
-      "INSERT INTO contributions VALUES (2, 'ct', 0, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11, 1, 1, 0), (2, 'ct', 0, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 22, 1, 1, 0)",
+      'contributions separate two accounts sharing one reporter token',
+      "INSERT INTO contributions VALUES (2, 'ct', 0, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11, 1, 1, 0), (2, 'ct', 0, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 22, 1, 1, 0)",
     ],
     [
       'tile_history keeps one row per tile, tier and bucket',

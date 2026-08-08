@@ -92,7 +92,8 @@ export const templateVersions = sqliteTable(
     // the credential it names, so the digest is constrained and its existence is not.
     check(
       'template_versions_created_by_check',
-      sql`length(${table.createdBy}) = 64 AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
+      sql`typeof(${table.createdBy}) = 'text' AND length(${table.createdBy}) = 64
+        AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
         AND typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0`,
     ),
 
@@ -155,7 +156,8 @@ export const templates = sqliteTable(
     // the credential it names, so the digest is constrained and its existence is not.
     check(
       'templates_created_by_check',
-      sql`length(${table.createdBy}) = 64 AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
+      sql`typeof(${table.createdBy}) = 'text' AND length(${table.createdBy}) = 64
+        AND ${table.createdBy} NOT GLOB '*[^0-9a-f]*'
         AND typeof(${table.createdByUserId}) = 'integer' AND ${table.createdByUserId} >= 0`,
     ),
     foreignKey({
@@ -263,15 +265,18 @@ export const contributions = sqliteTable(
      * authenticated caller, so a report-scope holder could attribute fabricated work to any other
      * painter — and with no reporter column that was neither attributable nor reversible.
      *
-     * **It is part of the primary key, so `(wplace_user_id, template_id, day_s)` is not unique.**
-     * On a self-hosted alliance server every member holds a report token, so two members reporting
-     * the same painter's day is the normal case, not an attack. A rollup written as
-     * `SUM(placed) ... GROUP BY wplace_user_id` therefore multiplies that painter's credit by the
-     * number of reporters. Rollups must reduce to one row per (user, template, day) first — take
-     * the maximum, since a reporter that saw less of the day cannot disprove one that saw more.
+     * **`reported_by_user_id` is the key component, not this column, so
+     * `(wplace_user_id, template_id, day_s)` is not unique.** On a self-hosted alliance server every
+     * member reports, so two members reporting the same painter's day is the normal case, not an
+     * attack. A rollup written as `SUM(placed) ... GROUP BY wplace_user_id` therefore multiplies
+     * that painter's credit by the number of reporters. Rollups must reduce to one row per
+     * (user, template, day) first — take the maximum, since a reporter that saw less of the day
+     * cannot disprove one that saw more. Reduce on the account, which is what the key separates.
      *
-     * The foreign key keeps this a token, not free text: without it any string is a fresh key and
-     * one caller can multiply its own rows without limit.
+     * Being out of the key costs this column something worth stating: an upsert from the same
+     * account rewrites it, so it names the last credential to report a day rather than every one
+     * that did. Tracing a leaked token through what it wrote is best-effort here; an append-only
+     * log is what that would need, and it belongs with the route that writes it.
      */
     reportedBy: text('reported_by').notNull(),
     /**
@@ -291,7 +296,8 @@ export const contributions = sqliteTable(
     }),
     check(
       'contributions_reported_by_check',
-      sql`length(${table.reportedBy}) = 64 AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
+      sql`typeof(${table.reportedBy}) = 'text' AND length(${table.reportedBy}) = 64
+        AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
     ),
     check(
       'contributions_counter_check',
@@ -345,7 +351,16 @@ export const appliedEvents = sqliteTable(
     wplaceUserId: integer('wplace_user_id').notNull(),
     seenAtMs: integer('seen_at_ms').$type<Millis>().notNull(),
   },
-  (table) => [index('applied_events_seen_at_idx').on(table.seenAtMs)],
+  (table) => [
+    index('applied_events_seen_at_idx').on(table.seenAtMs),
+    // The guard `contributions` carries, on the sibling that was missed. INTEGER affinity converts
+    // '1' and leaves 1.5 and 'abc' alone, so a replay check reading `wplace_user_id = 1` never
+    // matches a row stored as 1.5 — and this is the first write of every ingest request.
+    check(
+      'applied_events_user_check',
+      sql`typeof(${table.wplaceUserId}) = 'integer' AND ${table.wplaceUserId} >= 0`,
+    ),
+  ],
 )
 
 export const painters = sqliteTable('painters', {
@@ -368,16 +383,9 @@ export const tileHistory = sqliteTable(
     // be stored at all because the key admitted one hash per bucket. The count is now COUNT(*) over
     // distinct reporters, which cannot be forged by repetition.
     //
-    // The foreign key is what makes that true, for the reason the sibling column on `contributions`
-    // spells out: without it any string is a fresh key component, so one caller mints as many
-    // "distinct reporters" as it likes, and the count is forgeable again by a different spelling of
-    // the same trick.
-    //
-    // Paired with the reporter's own wplace identity, because a token is not a client. One token
-    // configured on five members' userscripts made those five one reporter and collapsed genuine
-    // quorum to 1; a member holding two tokens counted as two and forged it. The identity is the
-    // configured access token *and* the `id` the wplace `/me` endpoint returns for whoever is
-    // running the script — neither alone is a client.
+    // Repetition is all it is safe from. The key component that separates reporters is
+    // `reported_by_user_id`, and what keeps two rows from being one hostile client is the route
+    // verifying that account — see the note on that column. Nothing in this table can check it.
     //
     // It bounds the reporter dimension and only that one. `sha256` is also in the key, so a client
     // free to choose it could still mint a row per hash for one tile and bucket. Two decisions
@@ -394,6 +402,12 @@ export const tileHistory = sqliteTable(
      * was added to keep. An audit trail has to outlive the credential it names, which means orphans
      * are the point, not a defect.
      *
+     * Deleting a credential does not retract what it already reported: the rows survive by design,
+     * and a quorum read counting raw rows keeps counting them. Revoking a token therefore means
+     * deleting its reports too, which this column is what makes possible —
+     * `DELETE FROM tile_history WHERE reported_by = ?`. A route obligation, and the reason the
+     * digest earns storage even though no key uses it.
+     *
      * The shape stays constrained, which is what the foreign key was really buying: the earlier
      * justification was "keeps this a token, not free text". A 64-character lowercase hex digest is
      * still not free text, and it holds for a hash whose token row is long gone. Existence is the
@@ -401,7 +415,25 @@ export const tileHistory = sqliteTable(
      * it off a request, the same way it computes `sha256` itself.
      */
     reportedBy: text('reported_by').notNull(),
-    /** The wplace `/me` id of the account running the reporting client. */
+    /**
+     * The wplace `/me` id of the account running the reporting client, and the only key component
+     * that separates reporters. A token is not a client in either direction: one token configured
+     * on five members' userscripts made those five a single reporter and collapsed genuine quorum
+     * to 1, and keying on (token, account) made a member holding two tokens count as two, forging
+     * the two-distinct-client agreement the ladder prefers.
+     *
+     * **That makes the route the only thing between this table and forged quorum, and it is a real
+     * obligation.** An earlier version keyed on a token digest with a foreign key to
+     * `access_tokens`, so manufacturing N agreeing reporters cost N admin-issued credentials. It no
+     * longer does: this is an integer whose only constraint is that it is a non-negative one, so a
+     * route that reads it from a request body lets one caller invent as many reporters as it likes
+     * for a hash of its choosing.
+     *
+     * The server cannot derive it the way it derives `sha256` — the value comes from wplace `/me`,
+     * which answers for whoever's session asked. The route must verify the account against wplace
+     * rather than trust a client's copy, and the honest ceiling is then "as many reporters as the
+     * attacker holds real wplace accounts", not one.
+     */
     reportedByUserId: integer('reported_by_user_id').notNull(),
   },
   (table) => [
@@ -426,7 +458,8 @@ export const tileHistory = sqliteTable(
     // by accident and read as an oversight.
     check(
       'tile_history_reported_by_check',
-      sql`length(${table.reportedBy}) = 64 AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
+      sql`typeof(${table.reportedBy}) = 'text' AND length(${table.reportedBy}) = 64
+        AND ${table.reportedBy} NOT GLOB '*[^0-9a-f]*'`,
     ),
     check(
       'tile_history_reported_by_user_id_check',
