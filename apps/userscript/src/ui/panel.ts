@@ -49,6 +49,7 @@ import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
+import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { type Destination, type Source, transplant } from './transplant.js'
@@ -427,7 +428,7 @@ const select = (
       zIndex: '40',
       // The same radius as the panel and every other popout. This is the whole reason it is not a
       // native select.
-      borderRadius: '0.75rem',
+      borderRadius: SURFACE_RADIUS,
       padding: '0.25rem',
       width: '11rem',
       display: 'block',
@@ -1407,7 +1408,7 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
     left: `${event.clientX}px`,
     top: `${event.clientY}px`,
     zIndex: '60',
-    borderRadius: '0.5rem',
+    borderRadius: SURFACE_RADIUS,
     padding: '0.25rem',
     width: '11rem',
   })
@@ -1684,11 +1685,11 @@ const buildPanel = (): HTMLElement => {
   // Layout inline: these must not depend on whether wplace happens to use the same utility.
   Object.assign(panel.style, {
     position: 'fixed',
-    // The rail is `absolute top-2 right-2` with 40px buttons: 8 + 40 = 48px occupied. Clear it with
-    // the same 12px rhythm the rail itself uses between buttons.
-    right: '3.75rem',
-    top: '1rem',
-    bottom: '1rem',
+    // Clear of the rail on the right, and starting on the same line as it — our surfaces are read
+    // together, so they begin together.
+    right: `${CLEAR_OF_RAIL}px`,
+    top: `${EDGE}px`,
+    bottom: `${EDGE}px`,
     // wplace's own chrome sits at z-40 (the rail) and z-50 (its overlay layer), and the map canvas
     // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
     // their rail and menus open over our panel rather than being trapped behind it.
@@ -1698,7 +1699,7 @@ const buildPanel = (): HTMLElement => {
     flexDirection: 'column',
     minHeight: '0',
     color: 'var(--color-base-content, inherit)',
-    borderRadius: '0.5rem',
+    borderRadius: SURFACE_RADIUS,
     overflow: 'hidden',
   } satisfies Partial<CSSStyleDeclaration>)
 
@@ -1848,8 +1849,6 @@ const setOpen = (next: boolean): void => {
 }
 
 const RAIL_ID = 'wts-rail'
-/** Their rail sits `top-2 right-2`; ours lines up with it when theirs is not on screen. */
-const RAIL_INSET = 8
 
 /**
  * Our own rail, beneath wplace's when they have one and in its place when they do not.
@@ -1886,13 +1885,14 @@ const positionRail = (): void => {
   const theirs = findRail()?.rail.getBoundingClientRect()
   if (theirs !== undefined && theirs.width > 0) {
     rail.style.left = `${theirs.left}px`
-    rail.style.top = `${theirs.bottom + 12}px`
+    rail.style.top = `${theirs.bottom + GAP}px`
     rail.style.right = ''
     return
   }
   rail.style.left = ''
-  rail.style.right = `${RAIL_INSET}px`
-  rail.style.top = `${RAIL_INSET}px`
+  // Theirs is gone — the paint-drawer case — so ours takes its place at the same inset.
+  rail.style.right = `${EDGE}px`
+  rail.style.top = `${EDGE}px`
 }
 
 /**
