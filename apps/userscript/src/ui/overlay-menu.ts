@@ -31,6 +31,7 @@ import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './
 import { confirmDestructive } from './confirm.js'
 import { type IconName, icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
+import { EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
 import { slider } from './slider.js'
 
@@ -54,11 +55,6 @@ import { slider } from './slider.js'
 
 const MENU_ID = 'wts-overlay-menu'
 let openFor: string | null = null
-
-/** Breathing room between these controls and whatever they are being kept clear of. */
-const GAP = 12
-/** Matches the panel's own `top: 1rem`, so our two floating surfaces start on the same line. */
-const TOP_MARGIN = 16
 
 /**
  * The leftmost edge of the chrome stacked against the right of the window.
@@ -127,8 +123,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     // taken off — for the swatch grid's eight-column step. A hair narrower and the palette fell back
     // to four columns, which is the whole thing twice as tall for no gain.
     width: '19.5rem',
-    // 12px, the same as the panel and every other popout here.
-    borderRadius: '0.75rem',
+    borderRadius: SURFACE_RADIUS,
     padding: '0.75rem',
     color: 'var(--color-base-content, inherit)',
     maxHeight: '70vh',
@@ -584,10 +579,7 @@ export const renderOverlayControls = (rerender: () => void): void => {
      * to end above such a template's bottom would drag it up off the top of the screen.
      */
     const topFor = (length: number): number => {
-      const sticky = Math.min(
-        Math.max(topLeft.y, TOP_MARGIN),
-        window.innerHeight - length - TOP_MARGIN,
-      )
+      const sticky = Math.min(Math.max(topLeft.y, EDGE), window.innerHeight - length - EDGE)
       const fitsWithin = bottomRight.y - topLeft.y >= length
       return fitsWithin ? Math.min(sticky, bottomRight.y - length) : sticky
     }

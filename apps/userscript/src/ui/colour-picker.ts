@@ -15,6 +15,8 @@
  * thing.
  */
 
+import { EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
+
 /** HSV, which is what a saturation/brightness square and a hue strip are the two axes of. */
 interface Hsv {
   /** Degrees, 0..360. */
@@ -157,7 +159,7 @@ const openPicker = (
     position: 'fixed',
     // Above the panel (30) and the per-overlay menu (29), both of which can be under it.
     zIndex: '50',
-    borderRadius: '0.75rem',
+    borderRadius: SURFACE_RADIUS,
     padding: '0.625rem',
     color: 'var(--color-base-content, inherit)',
   })
@@ -325,10 +327,12 @@ const openPicker = (
 const place = (pop: HTMLElement, anchor: HTMLElement): void => {
   const at = anchor.getBoundingClientRect()
   const size = pop.getBoundingClientRect()
-  const gap = 6
+  // Half the gap our surfaces keep from each other. This one belongs to the swatch that opened it,
+  // and a full gap reads as two separate things rather than as one opening out of the other.
+  const gap = GAP / 2
   const below = at.bottom + gap
-  const top = below + size.height > window.innerHeight - 8 ? at.top - size.height - gap : below
-  const left = clamp(at.right - size.width, 8, window.innerWidth - size.width - 8)
-  pop.style.top = `${clamp(top, 8, Math.max(8, window.innerHeight - size.height - 8))}px`
+  const top = below + size.height > window.innerHeight - EDGE ? at.top - size.height - gap : below
+  const left = clamp(at.right - size.width, EDGE, window.innerWidth - size.width - EDGE)
+  pop.style.top = `${clamp(top, EDGE, Math.max(EDGE, window.innerHeight - size.height - EDGE))}px`
   pop.style.left = `${left}px`
 }
