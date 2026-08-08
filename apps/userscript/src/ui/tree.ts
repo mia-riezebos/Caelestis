@@ -1,10 +1,11 @@
-import { cacheServer, loadServerCache } from '../server-cache.js'
+import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cache.js'
 import {
   type ConnectedServer,
   getState,
   isScopeVisible,
   type LocalFolder,
   listNodes,
+  listServerTemplates,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
@@ -31,6 +32,15 @@ export interface TreeTarget {
   readonly nodeId: string | null
   readonly key: string
   readonly name: string
+  /**
+   * Set when the row is a template published on a server, rather than a folder.
+   *
+   * The two need telling apart because every action means something different on each: renaming a
+   * folder rewrites the paths of everything beneath it, renaming a template is one column. Before
+   * this, `server !== null` was enough to mean "a folder on a server", and adding template rows is
+   * what stopped that being true.
+   */
+  readonly templateId?: string
 }
 
 export interface TreeCallbacks {
@@ -65,14 +75,30 @@ let renaming: string | null = null
  */
 const nodesByServer = new Map<string, readonly TreeNode[]>()
 
+/** Templates per server, from the manifest, on the same terms as the nodes above. */
+const templatesByServer = new Map<string, readonly ServerTemplate[]>()
+
+/**
+ * What a server last said about one template, for whoever is acting on a row.
+ *
+ * Read from the same cache the row was drawn from, so a menu can never offer "Unpublish" on a row
+ * drawn as unpublished — the two would otherwise be answering from different copies.
+ */
+export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null =>
+  templatesByServer.get(serverUrl)?.find((template) => template.id === id) ?? null
+
 export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<void> => {
   if (!server.isAdmin) return
-  const nodes = await listNodes(server)
+  // Both, together: a template row is drawn under the folder it belongs to, so a refresh that
+  // updated one and not the other would put a template under a folder that no longer exists, or
+  // leave a folder claiming to be empty a moment after something was uploaded into it.
+  const [nodes, templates] = await Promise.all([listNodes(server), listServerTemplates(server)])
   nodesByServer.set(server.url, nodes)
-  void cacheServer({ url: server.url, nodes, fetchedAt: Date.now() })
+  templatesByServer.set(server.url, templates)
+  void cacheServer({ url: server.url, nodes, templates, fetchedAt: Date.now() })
   rerender()
 }
 
@@ -85,6 +111,9 @@ export const refreshNodes = async (
 export const primeFromCache = async (rerender: () => void): Promise<void> => {
   for (const entry of await loadServerCache()) {
     if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
+    if (!templatesByServer.has(entry.url) && entry.templates !== undefined) {
+      templatesByServer.set(entry.url, entry.templates)
+    }
   }
   rerender()
 }
@@ -256,6 +285,8 @@ interface RowOptions {
    * structure, and only an admin may rearrange that.
    */
   readonly canReparent?: boolean | undefined
+  /** Dimmed, for a row that exists but is not doing anything yet — an unpublished template. */
+  readonly muted?: boolean | undefined
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
   /** Present only where the user can actually change things; absent means no rename affordance. */
   readonly onRename?: ((name: string) => void) | undefined
@@ -293,6 +324,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
   row.style.marginRight = '0.5rem'
   row.style.minHeight = '2rem'
+  if (options.muted === true) row.style.opacity = '0.55'
   row.draggable = draggable
   row.tabIndex = 0
   row.setAttribute('role', 'treeitem')
@@ -617,6 +649,10 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           siblings.push(node)
           byParent.set(node.parentId, siblings)
         }
+        const published = templatesByServer.get(server.url) ?? []
+        const templatesIn = (nodeId: string): readonly ServerTemplate[] =>
+          published.filter((template) => template.nodeId === nodeId)
+
         const renderChildren = (parentId: string | null, depth: number): void => {
           for (const node of byParent.get(parentId) ?? []) {
             const nodeKey = `node:${node.id}`
@@ -655,7 +691,42 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   : undefined,
               }),
             )
-            if (isExpanded(nodeKey)) renderChildren(node.id, depth + 1)
+            if (!isExpanded(nodeKey)) continue
+            renderChildren(node.id, depth + 1)
+            for (const template of templatesIn(node.id)) {
+              const templateKey = `st:${template.id}`
+              const templateTarget: TreeTarget = {
+                server,
+                nodeId: node.id,
+                key: templateKey,
+                name: template.name,
+                templateId: template.id,
+              }
+              wrap.appendChild(
+                treeRow({
+                  key: templateKey,
+                  name: template.name,
+                  // The same glyph a Local template row wears: it is the same kind of thing, and
+                  // where it lives is said by the tree rather than by the icon.
+                  kind: 'image',
+                  depth: depth + 1,
+                  container: false,
+                  siblings: templatesIn(node.id).map((candidate) => `st:${candidate.id}`),
+                  rerender,
+                  // Unpublished ones are visible to an admin and nobody else, so they have to look
+                  // different — otherwise the tree shows a template that members cannot see and
+                  // gives no hint why.
+                  muted: !template.published,
+                  ...(template.published ? {} : { meta: 'unpublished' }),
+                  onContextMenu: canEdit
+                    ? (event) => callbacks.onContextMenu(templateTarget, event)
+                    : undefined,
+                  onRename: canEdit
+                    ? (value) => callbacks.onRename(templateTarget, value)
+                    : undefined,
+                }),
+              )
+            }
           }
         }
         renderChildren(null, 1)

@@ -1,4 +1,5 @@
 import { log, warn } from './debug.js'
+import type { ServerTemplate } from './server-cache.js'
 import { type Appearance, DEFAULT_APPEARANCE, normaliseAppearance } from './templates/appearance.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
@@ -473,6 +474,49 @@ export const deleteNode = async (
   }
 }
 
+/**
+ * Every template a server is publishing, from the manifest.
+ *
+ * The manifest is the only list there is — there is no `GET /admin/templates` — and that is right:
+ * the tree wants what the server *publishes*, which is exactly the question the manifest answers.
+ * An admin code sees unpublished ones too, which is why they can be drawn greyed rather than
+ * vanishing until someone publishes them.
+ *
+ * Answers an empty list on any failure rather than throwing. A tree that has drawn a stale row is
+ * better than a tree that has thrown, and the cached copy is what it falls back to.
+ */
+export const listServerTemplates = async (
+  server: ConnectedServer,
+): Promise<readonly ServerTemplate[]> => {
+  try {
+    const response = await fetch(`${server.url}/manifest?season=0`, {
+      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+    })
+    if (!response.ok) return []
+    const body = (await response.json()) as {
+      templates?: ReadonlyArray<Partial<ServerTemplate>>
+    }
+    return (body.templates ?? []).flatMap((template) =>
+      typeof template.id === 'string' && typeof template.nodeId === 'string'
+        ? [
+            {
+              id: template.id,
+              nodeId: template.nodeId,
+              name: template.name ?? 'Untitled',
+              version: template.version ?? '',
+              published: template.published === true,
+              // Absent on a server older than the field. Zero reads as "never edited", which is a
+              // better lie than `Date.now()` — it cannot make a stale row look freshly changed.
+              updatedAt: typeof template.updatedAt === 'number' ? template.updatedAt : 0,
+            },
+          ]
+        : [],
+    )
+  } catch {
+    return []
+  }
+}
+
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
 export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> => {
   try {
@@ -517,14 +561,87 @@ export const uploadTemplate = async (
       body: form,
     })
     if (response.ok) {
-      const body = (await response.json()) as { id?: string }
-      return { ok: true, id: body.id ?? '' }
+      // `templateId`, not `id` — the upload answers with the whole stored template, and reading the
+      // wrong field here handed back an empty string that every caller then treated as a real id.
+      const body = (await response.json()) as { templateId?: string }
+      return { ok: true, id: body.templateId ?? '' }
     }
     if (response.status === 401 || response.status === 403) {
       return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
     }
     const body = (await response.json().catch(() => null)) as { error?: string } | null
     return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Edit a published template: its name, which folder it sits in, or whether it is published.
+ *
+ * One call for all three because the server takes one patch, and because they are the same kind of
+ * change — everything here leaves the pixels alone. Replacing those is `uploadTemplateVersion`.
+ */
+export const patchTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+  patch: { name?: string; nodeId?: string; published?: boolean },
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/templates/${templateId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify(patch),
+    })
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+export const deleteTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/templates/${templateId}`, {
+      method: 'DELETE',
+      headers: adminHeaders(server),
+    })
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Replace a published template's pixels, keeping everything else about it.
+ *
+ * The origin travels with the image because a new version is a new slicing — moving artwork on the
+ * canvas is a different picture as far as the chunk index is concerned, not an edit to the old one.
+ */
+export const uploadTemplateVersion = async (
+  server: ConnectedServer,
+  templateId: string,
+  input: { originX: number; originY: number; png: Blob; name: string },
+): Promise<{ ok: true; versionId: string } | { ok: false; message: string }> => {
+  try {
+    const form = new FormData()
+    form.set('png', input.png, `${input.name}.png`)
+    form.set('originX', String(input.originX))
+    form.set('originY', String(input.originY))
+    const response = await fetch(`${server.url}/admin/templates/${templateId}/versions`, {
+      method: 'POST',
+      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+      body: form,
+    })
+    if (response.ok) {
+      const body = (await response.json()) as { versionId?: string }
+      return { ok: true, versionId: body.versionId ?? '' }
+    }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }

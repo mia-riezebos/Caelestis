@@ -7,11 +7,13 @@ import {
   createLocalFolder,
   createNode,
   deleteNode as deleteNodeOnServer,
+  deleteTemplate as deleteTemplateOnServer,
   getState,
   listNodes,
   loadState,
   moveLocalFolder,
   type ProgressPlacement,
+  patchTemplate,
   probeServer,
   removeLocalFolder,
   removeServer,
@@ -19,6 +21,7 @@ import {
   renameNode as renameNodeOnServer,
   setState,
   uploadTemplate,
+  uploadTemplateVersion,
   upsertServer,
 } from '../state.js'
 import { APPEARANCE_CONTROLS, UNPAINTED_LIMIT_CONTROL } from '../templates/appearance.js'
@@ -44,6 +47,7 @@ import {
   placeKey,
   primeFromCache,
   refreshNodes,
+  serverTemplateAt,
   startRenaming,
   type TreeTarget,
   treeContents,
@@ -802,6 +806,14 @@ const applyRename = async (
     rerender()
     return
   }
+  if (target.server !== null && target.templateId !== undefined) {
+    // One column on the server, and deliberately not a new version: the pixels have not moved, so
+    // nothing that caches chunks should be told to re-download them.
+    const result = await patchTemplate(target.server, target.templateId, { name })
+    if (!result.ok) toast(result.message, 'error')
+    await refreshNodes(target.server, rerender)
+    return
+  }
   if (target.server === null || target.nodeId === null) {
     toast('There is nothing to rename here.', 'warning')
     rerender()
@@ -857,6 +869,20 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     rerender()
     return
   }
+  if (target.server !== null && target.templateId !== undefined) {
+    const confirmed = await askToDelete(
+      'published template',
+      target.name,
+      // Said plainly because it is the one delete here that reaches other people: everyone
+      // connected to this server loses it, not just this browser.
+      'Everyone connected to this server will stop seeing it.',
+    )
+    if (!confirmed) return
+    const result = await deleteTemplateOnServer(target.server, target.templateId)
+    if (!result.ok) toast(result.message, 'error')
+    await refreshNodes(target.server, rerender)
+    return
+  }
   if (target.server === null || target.nodeId === null) {
     toast('Nothing to delete here yet.', 'warning')
     return
@@ -865,6 +891,162 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   const result = await deleteNodeOnServer(target.server, target.nodeId)
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)
+}
+
+/**
+ * Move a published template into another folder on the same server.
+ *
+ * A picker rather than a drag, because the tree's drag path is Local-only and a server move is a
+ * write someone else sees — worth one deliberate confirmation rather than a gesture that can happen
+ * by accident during a scroll.
+ */
+const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+  const { server, templateId } = target
+  if (server === null || templateId === undefined) return
+  const nodes = await listNodes(server)
+  const destinations = nodes.filter((node) => node.id !== target.nodeId)
+  if (destinations.length === 0) {
+    toast('There is nowhere else to put it — this server has one folder.', 'warning')
+    return
+  }
+
+  const panel = document.getElementById(PANEL_ID)
+  if (panel === null) return
+  panel.querySelector('[data-wts-move]')?.remove()
+  const box = document.createElement('div')
+  box.setAttribute('data-wts-move', '')
+  box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
+  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+
+  const label = document.createElement('span')
+  label.textContent = `Move “${target.name}” to:`
+  const chooser = document.createElement('select')
+  chooser.className = 'select select-xs select-bordered'
+  for (const node of destinations) {
+    const option = document.createElement('option')
+    option.value = node.id
+    option.textContent = node.path
+    chooser.appendChild(option)
+  }
+
+  const buttons = document.createElement('div')
+  buttons.className = 'flex gap-2 justify-end'
+  const cancel = document.createElement('button')
+  cancel.className = 'btn btn-xs btn-ghost'
+  cancel.textContent = 'Cancel'
+  cancel.addEventListener('click', () => box.remove())
+  const go = document.createElement('button')
+  go.className = 'btn btn-xs btn-primary'
+  go.textContent = 'Move'
+  go.addEventListener('click', () => {
+    void (async () => {
+      go.classList.add('btn-disabled')
+      const result = await patchTemplate(server, templateId, { nodeId: chooser.value })
+      box.remove()
+      if (!result.ok) toast(result.message, 'error')
+      await refreshNodes(server, rerender)
+    })()
+  })
+  buttons.append(cancel, go)
+  box.append(label, chooser, buttons)
+  panel.appendChild(box)
+}
+
+/** Whether the row's template is published, read from the copy the row itself was drawn from. */
+const publishedStateOf = (target: TreeTarget): boolean =>
+  target.server !== null && target.templateId !== undefined
+    ? (serverTemplateAt(target.server.url, target.templateId)?.published ?? false)
+    : false
+
+/**
+ * Replace a published template's artwork with a local template's.
+ *
+ * Deliberately sourced from Local rather than from a file picker: a raw image has no placement, and
+ * the origin is half of what a version *is*. Getting a template positioned locally and then pushing
+ * it up is the same path `copyToServer` already establishes — this is that path for artwork that
+ * already exists on the server.
+ */
+const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+  const { server, templateId } = target
+  if (server === null || templateId === undefined) return
+  const sources = allLocal()
+  if (sources.length === 0) {
+    toast('Import the new artwork into Local first, and place it where it belongs.', 'warning')
+    return
+  }
+
+  const panel = document.getElementById(PANEL_ID)
+  if (panel === null) return
+  panel.querySelector('[data-wts-replace]')?.remove()
+  const box = document.createElement('div')
+  box.setAttribute('data-wts-replace', '')
+  box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
+  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+
+  const label = document.createElement('span')
+  label.textContent = `Replace “${target.name}” with:`
+  const chooser = document.createElement('select')
+  chooser.className = 'select select-xs select-bordered'
+  for (const candidate of sources) {
+    const option = document.createElement('option')
+    option.value = candidate.id
+    option.textContent = candidate.name
+    chooser.appendChild(option)
+  }
+  const note = document.createElement('span')
+  note.className = 'opacity-60'
+  note.textContent = 'Its position travels with it — the server re-slices from where it sits now.'
+
+  const buttons = document.createElement('div')
+  buttons.className = 'flex gap-2 justify-end'
+  const cancel = document.createElement('button')
+  cancel.className = 'btn btn-xs btn-ghost'
+  cancel.textContent = 'Cancel'
+  cancel.addEventListener('click', () => box.remove())
+  const go = document.createElement('button')
+  go.className = 'btn btn-xs btn-primary'
+  go.textContent = 'Replace'
+  go.addEventListener('click', () => {
+    void (async () => {
+      const source = sources.find((candidate) => candidate.id === chooser.value)
+      if (source === undefined) return
+      go.classList.add('btn-disabled')
+      label.textContent = 'Encoding…'
+      const png = await templateAsPng(source)
+      if (png === null) {
+        toast('Could not encode that template.', 'error')
+        box.remove()
+        return
+      }
+      label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
+      const result = await uploadTemplateVersion(server, templateId, {
+        originX: source.originX,
+        originY: source.originY,
+        name: source.name,
+        png,
+      })
+      box.remove()
+      if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
+      else toast(result.message, 'error')
+      await refreshNodes(server, rerender)
+    })()
+  })
+  buttons.append(cancel, go)
+  box.append(label, chooser, note, buttons)
+  panel.appendChild(box)
+}
+
+/** Publish or unpublish, which is the difference between everyone seeing it and only admins. */
+const setServerTemplatePublished = async (
+  target: TreeTarget,
+  published: boolean,
+  rerender: () => void,
+): Promise<void> => {
+  const { server, templateId } = target
+  if (server === null || templateId === undefined) return
+  const result = await patchTemplate(server, templateId, { published })
+  if (!result.ok) toast(result.message, 'error')
+  await refreshNodes(server, rerender)
 }
 
 /**
@@ -906,21 +1088,38 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
     'Delete',
     () => void applyDelete(target, rerender),
   ]
+  const published = publishedStateOf(target)
   const entries: ReadonlyArray<readonly [IconName, string, () => void]> =
-    templateId === null
+    // A template on a server, which is a different set of verbs from either a folder or a local
+    // template: it can be moved between folders, published, and replaced with new artwork.
+    target.templateId !== undefined
       ? [
-          ['createFolder', 'New folder', () => void createFolder(target, rerender)],
-          ['uploadFile', 'Import template', () => void importTemplate(target, rerender)],
+          ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
+          published
+            ? [
+                'eyeOff',
+                'Unpublish',
+                () => void setServerTemplatePublished(target, false, rerender),
+              ]
+            : ['eye', 'Publish', () => void setServerTemplatePublished(target, true, rerender)],
+          ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
           rename,
           remove,
         ]
-      : [
-          ['search', 'Go to', () => void goTo(templateId)],
-          ['move', 'Move', () => beginMove(templateId, rerender)],
-          ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
-          rename,
-          remove,
-        ]
+      : templateId === null
+        ? [
+            ['createFolder', 'New folder', () => void createFolder(target, rerender)],
+            ['uploadFile', 'Import template', () => void importTemplate(target, rerender)],
+            rename,
+            remove,
+          ]
+        : [
+            ['search', 'Go to', () => void goTo(templateId)],
+            ['move', 'Move', () => beginMove(templateId, rerender)],
+            ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
+            rename,
+            remove,
+          ]
   for (const [glyph, label, run] of entries) {
     const item = document.createElement('li')
     const button = document.createElement('button')
