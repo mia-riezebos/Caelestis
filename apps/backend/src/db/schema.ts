@@ -135,11 +135,21 @@ export const templates = sqliteTable(
     season: integer('season').notNull(),
     currentVersionId: text('current_version_id'),
     /**
-     * Who created this template. The account is nullable where the reporter columns' is not, and
+     * Who created this template.
+     *
+     * The digest is always recorded: the bootstrap operator has no `access_tokens` row, but it is
+     * still a real credential set from the environment, so it is hashed like any other and stored
+     * like any other. There is no creation without a credential behind it.
+     *
+     * The account is nullable where the reporter columns' is not, and
      * the asymmetry is the point: quorum counts distinct accounts, so a report without one is
      * meaningless, while authorship only has to name the credential that acted. An admin uploading
-     * through a server-side route presents a token and no wplace session; a userscript upload can
-     * supply both. Recorded as the same pair a report is attributed to: the digest of the
+     * through a server-side route presents a token and no wplace session, and a dashboard will be in
+     * the same position until it can require the userscript to have read `/me` at least once.
+     *
+     * **An upload that does come from the userscript must carry the account.** The schema cannot
+     * enforce that — it cannot tell which client called — so it is an obligation on the userscript
+     * upload route, which does not exist yet. Recorded as the same pair a report is attributed to: the digest of the
      * access token used, and the wplace `/me` id of the account that used it. `template_versions`
      * records this per upload; without it here, the template itself — the thing that gets renamed,
      * moved and deleted — had a creation time and no author.
