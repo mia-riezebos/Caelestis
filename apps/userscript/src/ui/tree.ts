@@ -610,18 +610,27 @@ const treeRow = (options: RowOptions): HTMLElement => {
     if (parent === null) return
     clearDropMarks(parent)
 
+    const box = row.getBoundingClientRect()
+    const offset = (event.clientY - box.top) / box.height
+
+    /**
+     * The middle of a container means *into* it, whatever else the row can do.
+     *
+     * This used to be reachable only on rows with no position handler, so a row that could both
+     * accept something and be reordered silently lost the first — which is exactly a server's own
+     * row, and dropping a folder onto it is the only way to reach a server's top level.
+     */
+    if (options.onDropInto !== undefined && options.container && offset > 0.3 && offset < 0.7) {
+      row.classList.add('wts-drop-into')
+      // The drop reads this to tell "into" from "between"; a target left over from the row the
+      // cursor was on a moment ago would win over the outline now on screen.
+      dropTarget = null
+      return
+    }
+
     const place = options.onDropAt
     if (place === undefined) {
-      // Rows without a position handler still reorder among their own siblings, which is all a
-      // server's nodes can do until there is an endpoint for moving one.
-      const box = row.getBoundingClientRect()
-      const offset = (event.clientY - box.top) / box.height
-      const into =
-        options.container && options.onDropInto !== undefined && offset > 0.3 && offset < 0.7
-      if (into) {
-        row.classList.add('wts-drop-into')
-        return
-      }
+      // Rows without a position handler still reorder among their own siblings.
       parent.insertBefore(placeholder(options.depth), offset < 0.5 ? row : row.nextSibling)
       return
     }
@@ -737,6 +746,12 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           if (parentKey !== null || !keys.includes(draggedKey)) return
           placeKey(draggedKey, beforeKey)
         },
+        // Dropping a folder onto the server itself means its top level, which is otherwise
+        // unreachable: every other destination is a folder, and "no folder" has no row but this one.
+        onDropInto:
+          canEdit && !isLocal
+            ? (draggedKey) => callbacks.onDropOnNode(target, draggedKey)
+            : undefined,
         // A category is a group like a folder is: switching it off takes everything under it off
         // the canvas, and leaves every row inside saying exactly what it said before.
         checked: isScopeVisible(key),
