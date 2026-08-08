@@ -23,6 +23,30 @@ export interface CachedServer {
   readonly fetchedAt: number
   /** ETag from the manifest, so a refetch can be a 304. */
   readonly etag?: string
+  /**
+   * The templates the manifest listed, as the tree draws them.
+   *
+   * Kept beside the nodes because they answer the same question — what is on this server — and are
+   * thrown away by the same page load. Optional so a cache written before templates were rendered
+   * still loads: an absent list is "we have not asked yet", which is what it was.
+   */
+  readonly templates?: readonly ServerTemplate[]
+}
+
+/**
+ * One template as the server describes it.
+ *
+ * A subset of the manifest's own shape rather than the whole thing: this is what a row needs to be
+ * drawn and edited. `version` says whether the pixels have moved on and `updatedAt` says whether
+ * anything at all has — the two answer different questions, and a rename only moves the second.
+ */
+export interface ServerTemplate {
+  readonly id: string
+  readonly nodeId: string
+  readonly name: string
+  readonly version: string
+  readonly published: boolean
+  readonly updatedAt: number
 }
 
 const open = (): Promise<IDBDatabase> =>
