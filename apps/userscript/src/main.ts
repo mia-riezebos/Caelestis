@@ -16,11 +16,11 @@ import {
   localTemplates,
   onLocalChange,
   ownsGroup,
-  type PlacedTemplate,
   restoreLocalTemplates,
   setAppearance,
 } from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { templateAtCentre } from './templates/nearest.js'
 import { installServerSync } from './templates/server-sync.js'
 import {
   captureTilePixels,
@@ -159,28 +159,10 @@ const isTyping = (target: EventTarget | null): boolean => {
  * their bundles, the only keys they compare against are MapLibre's own — arrows, `+`, `-`, `=`, `_`,
  * `0`, `r`/`R` — plus Escape, Enter and Space. `S` is free, and stays free of a modifier so it costs
  * nothing to reach mid-brushstroke.
- */
-/**
- * Whichever template is nearest the middle of the screen, or null when none is.
  *
- * The one being worked on, in the only sense a keystroke can mean it: what is under the middle of
- * the view. Measured to the centre of each template's own box rather than to its corner, so a large
- * template you are standing inside beats a small one at the edge of the screen.
+ * Anything acting on one template asks `templateAtCentre` which one that is, rather than deciding
+ * for itself — see the module for why the answer has to be shared.
  */
-const templateAtCentre = (): PlacedTemplate | null => {
-  const centre = viewportCentre()
-  if (centre === null) return null
-  let best: { template: PlacedTemplate; distance: number } | null = null
-  for (const template of localTemplates()) {
-    if (!isTemplateVisible(template)) continue
-    const dx = template.originX + template.width / 2 - centre.x
-    const dy = template.originY + template.height / 2 - centre.y
-    const distance = dx * dx + dy * dy
-    if (best === null || distance < best.distance) best = { template, distance }
-  }
-  return best?.template ?? null
-}
-
 const installKeys = (): void => {
   window.addEventListener('keydown', (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return
