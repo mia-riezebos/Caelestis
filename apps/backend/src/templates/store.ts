@@ -34,13 +34,47 @@ export interface StoredTemplate {
   readonly report: QuantiseReport
 }
 
+/**
+ * Tiles one upload may cover.
+ *
+ * Every chunk costs an R2 HEAD, an R2 PUT, a compression and a share of a D1 batch statement, so the
+ * bound is on the pipeline rather than on the image: 512 tiles is a 512,000-pixel span in one
+ * dimension, far beyond a placed template, and keeps the batch, the subrequest count and the
+ * concurrent compressions comfortably inside a Worker invocation.
+ */
+const MAX_TEMPLATE_CHUNKS = 512
+
+/** An upload the pipeline refuses for a reason the client can act on — answered as 400, not 500. */
+export class StoreTemplateError extends Error {
+  override readonly name = 'StoreTemplateError'
+}
+
 export const storeTemplate = async (
   ports: Pick<Ports, 'blobs' | 'sql'>,
   input: StoreTemplateInput,
 ): Promise<StoredTemplate> => {
+  // Asked before any decoding: `templates.node_id` is a foreign key, so an unknown node is a
+  // database error the caller cannot tell from an outage, and the whole pipeline would run first
+  // only to fail on the last statement. Referential existence is the one thing the shape validation
+  // on the port cannot cover, which is why both adapters agreed on every field and still disagreed
+  // about whether the insert succeeds.
+  if (!(await ports.sql.nodeExists(input.nodeId))) {
+    throw new StoreTemplateError(`no node with id ${input.nodeId}`)
+  }
+
   const { width, height, pixels } = await decodePng(input.png)
   const { indices, report } = quantiseToPalette(pixels)
   const sliced = sliceTemplate(indices, width, height, input.originX, input.originY)
+  // A cap on tiles, not just on pixels. MAX_PIXELS permits a 1,999,000x2 image, which slices to
+  // ~4,000 chunks: ~170 batch statements against D1's 50 per invocation, ~8,000 R2 subrequests
+  // against a limit of 1,000, and 4,000 concurrent compressions — from an upload a few kilobytes
+  // long, because two rows of one colour deflate to nothing. Raising the row batching moved that
+  // cliff; it did not remove it.
+  if (sliced.chunks.length > MAX_TEMPLATE_CHUNKS) {
+    throw new StoreTemplateError(
+      `template covers ${sliced.chunks.length} tiles, more than the ${MAX_TEMPLATE_CHUNKS} one upload may carry`,
+    )
+  }
 
   const encodedChunks = await Promise.all(
     sliced.chunks.map(async (chunk) => {

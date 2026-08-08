@@ -12,6 +12,9 @@ const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 const harness = () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
+  // templates.node_id is a foreign key; the oracle models it now, so the group has to exist before
+  // a template can be placed in it.
+  sql.insertNode(NODE_ID)
   const ports: Ports = {
     blobs,
     sql,
@@ -102,6 +105,28 @@ describe('template routes', () => {
     const { app } = harness()
     const response = await app.request(`/chunks/${'a'.repeat(64)}`)
     expect(response.status).toBe(401)
+  })
+
+  it('returns 400, not 500, for a node that does not exist', async () => {
+    // templates.node_id is a foreign key and nothing in this slice creates nodes, so every upload
+    // reached D1 and came back "FOREIGN KEY constraint failed" — rethrown as a 500 for what is
+    // squarely a client error. The oracle could not see it: shape validation cannot check whether a
+    // row something points at exists, which is how both adapters agreed on every field and still
+    // disagreed about whether the insert works.
+    const { app } = harness()
+    const form = templateForm(new Uint8Array([1, 2, 3, 4]))
+    form.set('nodeId', '01890f3e-7b2c-7abc-8def-999999999999')
+
+    const response = await app.request('/admin/templates', {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/no node/),
+    })
   })
 
   it('returns 400 for a non-PNG upload', async () => {

@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
+  nodes,
   telemetryBuckets,
   templates,
   templateVersions,
@@ -59,6 +60,15 @@ export class D1SqlStore implements SqlStore {
 
   constructor(database: D1Database) {
     this.database = drizzle(database)
+  }
+
+  async nodeExists(nodeId: string): Promise<boolean> {
+    const rows = await this.database
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId))
+      .limit(1)
+    return rows.length > 0
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {

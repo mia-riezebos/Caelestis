@@ -27,6 +27,23 @@ export class MemorySqlStore implements SqlStore {
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
 
+  /**
+   * Nodes this store knows about.
+   *
+   * The oracle has to be able to represent the one thing D1 checks and it could not: a template's
+   * node either exists or the insert fails. Node CRUD proper belongs to the slice that adds it —
+   * this is the seam that lets a test put the database in a state the route can succeed from.
+   */
+  private readonly nodes = new Set<string>()
+
+  insertNode(nodeId: string): void {
+    this.nodes.add(nodeId)
+  }
+
+  async nodeExists(nodeId: string): Promise<boolean> {
+    return this.nodes.has(nodeId)
+  }
+
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
     assertValidTemplateVersion(version)
     if (this.templateVersions.has(version.versionId)) {

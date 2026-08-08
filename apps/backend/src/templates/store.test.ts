@@ -27,7 +27,16 @@ class CountingBlobStore implements BlobStore {
   }
 }
 
-const harness = () => ({ blobs: new CountingBlobStore(), sql: new MemorySqlStore() })
+const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
+
+// The node has to exist: templates.node_id is a foreign key, and the oracle now models that because
+// D1 always did. Without this the store answers "no node with id ...", which is the 400 the route
+// gives a caller who names a group that is not there.
+const harness = () => {
+  const sql = new MemorySqlStore()
+  sql.insertNode(NODE_ID)
+  return { blobs: new CountingBlobStore(), sql }
+}
 
 const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',

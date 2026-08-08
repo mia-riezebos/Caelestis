@@ -2,7 +2,7 @@ import { PngError, SliceError } from '@wts/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
-import { storeTemplate } from '../templates/store.js'
+import { StoreTemplateError, storeTemplate } from '../templates/store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SHA256_HEX = /^[0-9a-f]{64}$/
@@ -64,7 +64,11 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       })
       return c.json(result, 201)
     } catch (error) {
-      if (error instanceof PngError || error instanceof SliceError) {
+      if (
+        error instanceof PngError ||
+        error instanceof SliceError ||
+        error instanceof StoreTemplateError
+      ) {
         return c.json({ error: error.message }, 400)
       }
       throw error

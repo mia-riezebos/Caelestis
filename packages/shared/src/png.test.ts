@@ -288,6 +288,25 @@ it('reports a corrupt deflate stream as a PNG error', async () => {
   await expect(decodePng(png)).rejects.toThrow(PngError)
 })
 
+it('refuses an IDAT that inflates short of its declared size', async () => {
+  // The half that was broken: a short buffer used to be zero-filled, so a two-pixel image carrying
+  // one pixel stored that pixel plus an opaque black one. The over-length side is caught by the
+  // mid-stream cap; only an exact-equality check catches this one.
+  const ihdr = new Uint8Array(13)
+  new DataView(ihdr.buffer).setUint32(0, 2)
+  new DataView(ihdr.buffer).setUint32(4, 1)
+  ihdr[8] = 8
+  ihdr[9] = 2
+  // (2*3 + 1) = 7 bytes expected; supply 6.
+  const png = concat([
+    new Uint8Array(SIGNATURE),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', new Uint8Array(deflateSync(new Uint8Array([0, 1, 2, 3, 4, 5])))),
+    chunk('IEND', new Uint8Array(0)),
+  ])
+  await expect(decodePng(png)).rejects.toThrow(/inflates to 6 bytes, expected 7/)
+})
+
 it('refuses an IDAT that inflates far past its declared size', async () => {
   // The bomb: a 1x1 header needs four inflated bytes and this IDAT carries a megabyte of them. The
   // exact-length check cannot save a Worker here — it runs after the buffer exists — so this asserts
