@@ -240,13 +240,11 @@ const CSS = `
   border: 1px solid rgba(0, 0, 0, 0.55);
   cursor: pointer;
 }
-/* The tree's visibility control: an eye when the row is on the map, and the ring it sits in when it
-   is not.
+/* The tree's visibility control: a circle, with an eye in it when the row is on the map.
 
-   The ring never leaves. It is the whole of what says "hidden" rather than "nothing here" — an
-   absent eye in an absent container is not a state, it is a gap, and it also leaves nothing to aim
-   at for the click that would bring the row back. Same footprint either way, so a column of rows
-   does not shift as things are switched. */
+   The circle never changes. It is what says "hidden" rather than "nothing here" — an absent eye in
+   an absent container is a gap, not a state, and it leaves nothing to aim at for the click that
+   would bring the row back. */
 .wts-eye {
   display: inline-flex;
   flex: 0 0 auto;
@@ -269,15 +267,9 @@ const CSS = `
   height: 1.5rem;
   border-radius: 999px;
   box-sizing: border-box;
-  /* Quiet enough to sit beside sixty of itself, findable enough to aim at. */
+  /* Quiet enough to sit beside sixty of itself, findable enough to aim at. The same in both states:
+     the circle is the control, and the eye inside it is the answer. */
   border: 1px solid var(--color-base-300, rgba(0, 0, 0, 0.18));
-  transition: background-color 100ms ease-out, border-color 100ms ease-out;
-}
-/* Filled when on: the eye is the answer, and the ring becoming solid is what makes a switched-on row
-   readable from the shape alone at a glance down the column. */
-.wts-eye > input:checked + span {
-  background-color: var(--color-base-200, rgba(0, 0, 0, 0.08));
-  border-color: transparent;
 }
 .wts-eye > span > svg {
   opacity: 0;
@@ -285,15 +277,6 @@ const CSS = `
 }
 .wts-eye > input:checked + span > svg {
   opacity: 1;
-}
-/* Hidden, and pointed at: show faintly what the control would put back, so the ring is not a
-   mystery. Never at full strength, or a hover would read as "this is on". */
-.wts-row:hover .wts-eye > span > svg,
-.wts-row:focus-within .wts-eye > span > svg {
-  opacity: 0.4;
-}
-.wts-eye:hover > span {
-  background-color: var(--color-base-200, rgba(0, 0, 0, 0.08));
 }
 .wts-eye > input:focus-visible + span {
   outline: 2px solid var(--color-primary, currentColor);
