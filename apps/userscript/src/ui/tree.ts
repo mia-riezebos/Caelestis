@@ -195,12 +195,20 @@ export const placeKey = (key: string, beforeKey: string | null): void => {
   setState({ customOrder: next })
 }
 
+/**
+ * Reorder one row among its siblings, expressed as "before this one" so it goes through `placeKey`.
+ *
+ * It used to build the new order from the sibling list alone and store *that* as the whole custom
+ * order — so reordering two categories replaced the flat list with two keys and threw away the
+ * arrangement of every folder and template in the tree. `customOrder` spans all levels; only ever
+ * edit it, never rewrite it.
+ */
 const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
-  const next = keys.filter((key) => key !== from)
-  const index = next.indexOf(to)
+  const siblings = keys.filter((key) => key !== from)
+  const index = siblings.indexOf(to)
   if (index === -1) return
-  next.splice(after ? index + 1 : index, 0, from)
-  setState({ customOrder: next })
+  // Land before whichever sibling now follows the target; null means last among these siblings.
+  placeKey(from, after ? (siblings[index + 1] ?? null) : to)
 }
 
 /**
@@ -653,7 +661,22 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         depth: 0,
         container: true,
         siblings: ordered,
+        parentKey: null,
         rerender,
+        /**
+         * Categories reorder among themselves, and only among themselves.
+         *
+         * Without a position handler a category could only be dropped *onto* another row, so the
+         * one place you cannot aim — the gap above the first row — was the only way to reach first
+         * place, and it silently did nothing. Reordering was therefore one-way: a category could be
+         * moved down past its neighbour and never brought back up.
+         *
+         * `canReparent` stays off, so nothing can be filed *inside* a category by dragging.
+         */
+        onDropAt: (draggedKey, parentKey, beforeKey) => {
+          if (parentKey !== null || !keys.includes(draggedKey)) return
+          placeKey(draggedKey, beforeKey)
+        },
         // A category is a group like a folder is: switching it off takes everything under it off
         // the canvas, and leaves every row inside saying exactly what it said before.
         checked: isScopeVisible(key),
