@@ -34,12 +34,17 @@ const CSS = `
 }
 /* The gap the row would occupy, held open while dragging, rather than a line drawn on a
    neighbour. A line says "near here"; a hole says "here", and the list stops shifting under the
-   cursor as the target changes. */
+   cursor as the target changes.
+
+   Its height is set per drag, to the height of everything in flight — a folder carrying nine
+   templates leaves a nine-row hole. The min-height below is only the floor for a single row, and
+   border-box keeps that measured height honest once the dashed border is added to it. */
 .wts-placeholder {
   border: 1px dashed var(--color-primary, currentColor);
   border-radius: 0.375rem;
   opacity: 0.7;
   margin: 0.125rem 0.5rem 0.125rem 0.25rem;
+  box-sizing: border-box;
   min-height: 2rem;
 }
 /* Dropping *into* a node, as opposed to between two — a different operation with a different

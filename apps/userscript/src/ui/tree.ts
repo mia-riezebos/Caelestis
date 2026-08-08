@@ -230,6 +230,37 @@ let dropTarget: {
 } | null = null
 
 /** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
+/**
+ * The rows a drag is carrying: the one grabbed, and everything nested under it.
+ *
+ * Read off the rendered list rather than the model, because the model would have to be asked three
+ * different ways — a Local folder holds folders and templates, a server node holds nodes and
+ * templates — while the DOM already states it once, as depth. The subtree is the run of rows after
+ * this one that are deeper than it, which is exactly what a depth-first render produces.
+ */
+const draggedRows = (row: HTMLElement): HTMLElement[] => {
+  const depth = Number(row.dataset.wtsDepth ?? 0)
+  const rows = [row]
+  let next = row.nextElementSibling
+  while (next instanceof HTMLElement && next.dataset.wtsKey !== undefined) {
+    if (Number(next.dataset.wtsDepth ?? 0) <= depth) break
+    rows.push(next)
+    next = next.nextElementSibling
+  }
+  return rows
+}
+
+/** How tall the hole should be: everything in flight, plus the gaps between those rows. */
+const draggedHeight = (rows: readonly HTMLElement[]): number => {
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  if (first === undefined || last === undefined) return 0
+  return last.getBoundingClientRect().bottom - first.getBoundingClientRect().top
+}
+
+/** Set while a drag is in flight, so every placeholder is cut to the size of what is being moved. */
+let draggedPixels = 0
+
 const placeholder = (depth: number): HTMLElement => {
   const el = document.createElement('div')
   el.className = 'wts-placeholder'
@@ -237,6 +268,9 @@ const placeholder = (depth: number): HTMLElement => {
   // Indented to the level it would land at, so the outline says *where* and not merely *between
   // which two rows* — the two differ exactly when the drop would change a row's parent.
   el.style.marginLeft = `${0.25 + depth * 1.125}rem`
+  // The hole is the shape of what would fill it. A folder carrying nine templates leaves a
+  // one-row gap otherwise, which reads as "this lands here alone" and makes the list jump on drop.
+  if (draggedPixels > 0) el.style.height = `${draggedPixels}px`
   // The outline accepts the drop itself. Aiming at a gap and having to hit a row instead is the
   // thing that made filing into a folder feel like a trick — and a `dragover` alone was not enough,
   // since a drop landing here bubbled past every row's handler and was simply lost.
@@ -530,17 +564,27 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.addEventListener('dragstart', (event) => {
     event.dataTransfer?.setData('text/plain', options.key)
     dragging = { key: options.key, parentKey: options.parentKey ?? null }
-    // Take the row out of the flow, so what is on screen is the drag image plus the hole it will
-    // land in — nothing else. Leaving it in place at reduced opacity reads as a duplicate, and
+    // A folder travels with what is inside it. Measured before anything is hidden, because a hidden
+    // row has no height and the hole has to be the size of what left it.
+    const moving = draggedRows(row)
+    draggedPixels = draggedHeight(moving)
+    // Take the rows out of the flow, so what is on screen is the drag image plus the hole they will
+    // land in — nothing else. Leaving them in place at reduced opacity reads as a duplicate, and
     // every row below shifts as the placeholder is inserted.
     //
     // Deferred by a tick because the browser captures the drag image *after* dragstart returns;
     // hiding it synchronously would drag an invisible ghost.
-    setTimeout(() => row.classList.add('wts-dragging'), 0)
+    setTimeout(() => {
+      for (const moved of moving) moved.classList.add('wts-dragging')
+    }, 0)
   })
   row.addEventListener('dragend', () => {
-    row.classList.remove('wts-dragging')
-    clearDropMarks(row.parentElement ?? document)
+    const parent = row.parentElement ?? document
+    for (const moved of parent.querySelectorAll('.wts-dragging')) {
+      moved.classList.remove('wts-dragging')
+    }
+    draggedPixels = 0
+    clearDropMarks(parent)
     dropTarget = null
     dragging = null
   })
