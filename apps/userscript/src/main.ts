@@ -9,6 +9,7 @@ import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
+import { shortcutFor } from './shortcuts.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
 import {
   appearanceOf,
@@ -29,10 +30,10 @@ import {
   reconcileDrafts,
   type TileFrame,
 } from './tile-transform.js'
-import { refreshOverlayMenu, renderOverlayControls } from './ui/overlay-menu.js'
-import { installPanel } from './ui/panel.js'
+import { refreshOverlayMenu, renderOverlayControls, toggleOverlayMenu } from './ui/overlay-menu.js'
+import { installPanel, togglePanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
-import { onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
+import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 import { installColourPicker } from './wplace-picker.js'
 
 /**
@@ -140,35 +141,38 @@ const step = (what: string, run: () => void): void => {
 }
 
 /**
- * Whether a keystroke belongs to something else on the page.
- *
- * A bare letter is only ours when nobody is typing and no modifier is held: `⌘S` is the browser's
- * and always will be, and a chat box or a template name must never lose a character to a shortcut.
- */
-const isTyping = (target: EventTarget | null): boolean => {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-}
-
-/**
  * The keyboard shortcuts, such as they are.
  *
  * Deliberately few and deliberately not on letters wplace already use. Scanned across all 150 of
  * their bundles, the only keys they compare against are MapLibre's own — arrows, `+`, `-`, `=`, `_`,
- * `0`, `r`/`R` — plus Escape, Enter and Space. `S` is free, and stays free of a modifier so it costs
- * nothing to reach mid-brushstroke.
+ * `0`, `r`/`R` — plus Escape, Enter and Space. `C`, `S`, `T`, and `W` are free, and stay free of a
+ * modifier so they cost nothing to reach mid-brushstroke. A bare letter is only ours when nobody is
+ * typing and no modifier is held: `⌘S` remains the browser's, and a chat box or template name never
+ * loses a character to a shortcut.
  *
  * Anything acting on one template asks `templateAtCentre` which one that is, rather than deciding
  * for itself — see the module for why the answer has to be shared.
  */
 const installKeys = (): void => {
   window.addEventListener('keydown', (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return
-    if (isTyping(event.target)) return
+    const shortcut = shortcutFor(event)
+    if (shortcut === null) return
 
-    if (event.key === 's' || event.key === 'S') {
+    if (shortcut === 'toggle-panel') {
+      event.preventDefault()
+      togglePanel()
+      return
+    }
+
+    if (shortcut === 'toggle-template-menu') {
+      const nearest = templateAtCentre()
+      if (nearest === null) return
+      event.preventDefault()
+      toggleOverlayMenu(nearest.id, redraw)
+      return
+    }
+
+    if (shortcut === 'toggle-colour') {
       event.preventDefault()
       setState({ onlySelectedColour: !getState().onlySelectedColour })
       return
@@ -187,7 +191,7 @@ const installKeys = (): void => {
      * way it was not for the colour mode, because markers genuinely are per template — each asserts
      * its own pixels — where the colour mode is a lens over the whole view.
      */
-    if (event.key === 'w' || event.key === 'W') {
+    if (shortcut === 'toggle-markers') {
       event.preventDefault()
       const nearest = templateAtCentre()
       if (nearest !== null && ownsGroup(nearest, 'markers')) {
@@ -282,11 +286,15 @@ const main = (): void => {
    * is why a tile panned to answered in under a second while the ones already on screen took ten.
    */
   step('tile pixel capture', () => {
-    const sync = (): void => captureTilePixels(wantsTilePixels())
+    // The pipette fallback reads the exact pixel-art tile, so Paint itself is a pixel consumer even
+    // when mismatch markers are off. Starting at drawer-open gives visible tiles time to populate
+    // before the one-shot picker click; a miss is also chased on demand by `placedIndexAt`.
+    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen())
     sync()
     onStateChange(sync)
     onLocalChange(sync)
-    // And on every frame that carries tiles. The three above are the events that *should* cover it,
+    onPaintSelectionChange(sync)
+    // And on every frame that carries tiles. The four above are the events that *should* cover it,
     // and between them they missed the only one that mattered: at start-up nothing is restored yet,
     // so the first call answers "nothing wants this" and the restore that follows does not
     // necessarily announce itself. Asking again per frame costs a comparison and cannot be wrong.

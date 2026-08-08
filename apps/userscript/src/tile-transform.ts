@@ -10,6 +10,7 @@ import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
 import { draftedPixelsIn } from './templates/drafted.js'
+import { wplaceRasterRole } from './tile-draw-state.js'
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -815,6 +816,14 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
   return installValueHook(realm, 'Blob', Wrapped)
 }
 
+/**
+ * Placed pixels per tile, as palette indices, for the tiles we have been asked to keep.
+ *
+ * Off unless something wants it. Converting a tile is a 1000x1000 `getImageData` and a million-entry
+ * walk, which is cheap enough once per tile and absurd if nothing reads the result — so the capture
+ * is switched on only while a feature needs exact base pixels: mismatch markers or the paint
+ * drawer's source-only colour picker.
+ */
 const pixelsOfTile = new Map<string, Uint8Array>()
 let capturePixels = false
 
@@ -2152,6 +2161,22 @@ export const install = (
         const drawnProjection = projectionByProgram.get(activeProgram) ?? null
         if (drawnTexture === null || drawnProjection === null) {
           count('draw:no-texture-or-matrix')
+          return
+        }
+        const map = getMap() as {
+          painter?: { currentLayer?: number }
+          style?: { _order?: readonly string[] }
+        } | null
+        const layerIndex = map?.painter?.currentLayer
+        const layerId = layerIndex === undefined ? null : (map?.style?._order?.[layerIndex] ?? null)
+        const role = wplaceRasterRole(layerId)
+        if (role === 'draft') {
+          refreshDraft(drawnTexture)
+          count('draw:draft-layer')
+          return
+        }
+        if (layerId !== null && role !== 'tile') {
+          count('draw:not-pixel-art-layer')
           return
         }
         const tile = tileOfTexture.get(drawnTexture)

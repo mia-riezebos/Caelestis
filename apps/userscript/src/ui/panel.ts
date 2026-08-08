@@ -165,7 +165,7 @@ const railButton = (): HTMLButtonElement => {
   button.setAttribute('aria-expanded', 'false')
   button.setAttribute('aria-controls', PANEL_ID)
   button.appendChild(icon('extension'))
-  button.addEventListener('click', () => setOpen(!open))
+  button.addEventListener('click', togglePanel)
   return button
 }
 
@@ -1847,6 +1847,9 @@ const setOpen = (next: boolean): void => {
   document.body.appendChild(buildPanel())
   showView(currentView)
 }
+
+/** Open or close the main Caelestis panel through the same path as its rail button. */
+export const togglePanel = (): void => setOpen(!open)
 
 const RAIL_ID = 'wts-rail'
 
