@@ -132,9 +132,30 @@ export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
 }
 
 export interface MarkerStyle {
+  /** Both of these are **CSS pixels**; `drawMarkers` scales them to the device before drawing. */
   readonly size: number
   readonly thickness: number
   readonly colour: readonly [number, number, number]
+}
+
+/**
+ * How many device pixels one CSS pixel is, right now.
+ *
+ * Read per draw rather than captured once: dragging a window between a laptop's own display and an
+ * external monitor changes it without reloading the page, and a marker that stayed the size it was
+ * on the other screen is exactly the bug this is here to avoid.
+ *
+ * Falls back to the drawing buffer against the canvas's CSS width, because that is what MapLibre
+ * itself sized the buffer by — on a page that has overridden `devicePixelRatio`, the buffer is the
+ * honest answer and `window.devicePixelRatio` is not.
+ */
+const deviceScale = (gl: WebGL2RenderingContext): number => {
+  const canvas = gl.canvas
+  if (canvas instanceof HTMLCanvasElement) {
+    const width = canvas.getBoundingClientRect().width
+    if (width > 0) return gl.drawingBufferWidth / width
+  }
+  return window.devicePixelRatio || 1
 }
 
 /**
@@ -162,8 +183,11 @@ export const drawMarkers = (
   gl.uniform2f(uniform(gl, 'u_tileScreen'), tile.x, tile.y)
   gl.uniform2f(uniform(gl, 'u_tileScale'), tile.width / TILE_SIZE, tile.height / TILE_SIZE)
   gl.uniform2f(uniform(gl, 'u_buffer'), gl.drawingBufferWidth, gl.drawingBufferHeight)
-  gl.uniform1f(uniform(gl, 'u_size'), style.size)
-  gl.uniform1f(uniform(gl, 'u_thickness'), style.thickness)
+  // `gl_PointSize` is in device pixels, so a size fixed there is half as big on a 2x display and a
+  // quarter on 3x — the markers shrank exactly where the screen has more room to show them.
+  const scale = deviceScale(gl)
+  gl.uniform1f(uniform(gl, 'u_size'), style.size * scale)
+  gl.uniform1f(uniform(gl, 'u_thickness'), Math.max(1, Math.round(style.thickness * scale)))
   gl.uniform3f(uniform(gl, 'u_colour'), ...style.colour)
   gl.uniform1f(uniform(gl, 'u_fade'), fade)
 
@@ -255,10 +279,13 @@ export const keepMarkersAboveDrafts = (): void => {
 }
 
 /**
- * Same shape at every zoom, in device pixels.
+ * Same shape at every zoom, and the same *apparent* size on every display.
  *
  * Sized in cells it shrinks with the zoom, and the view where you are hunting for one wrong pixel in
- * a hundred thousand is exactly the view where a cell is a speck.
+ * a hundred thousand is exactly the view where a cell is a speck. So it is fixed — but fixed in CSS
+ * pixels rather than device pixels, which is the correction here. `gl_PointSize` is device pixels,
+ * so 9 of them is 9 physical dots: fine at 1x, and a 4.5pt speck on a Retina display, which is the
+ * one place there was room to draw it properly.
  */
 const MARKER_STYLE: MarkerStyle = {
   size: 9,
