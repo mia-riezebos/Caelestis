@@ -947,6 +947,44 @@ describe('D1SqlStore', () => {
     ).toEqual([{ kept: 2 }])
   })
 
+  it('serves only published templates to members, and every season only its own', async () => {
+    // The whole manifest read path ran on the memory store alone: `listNodes`,
+    // `listManifestTemplates`, `listManifestTiles`, `setTemplatePublishedAt` and `deleteNode` had no
+    // D1 test at all. Dropping `isNotNull(publishedAt)` from both queries left 301 tests green while
+    // serving every unpublished draft — with its chunk hashes, which /chunks/:hash then hands over —
+    // to any read-scope member. Same for the season filter, which put two seasons' nodes into one
+    // manifest and made it undecodable.
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('s1', 1, NULL, '/one', 'One', NULL, 1);
+      INSERT INTO nodes VALUES ('s2', 2, NULL, '/two', 'Two', NULL, 1);
+    `)
+    const place = (templateId: string, nodeId: string, minX: number, hash: string) => ({
+      templateId,
+      nodeId,
+      name: templateId,
+      versionId: `${templateId}-v`,
+      createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      createdByUserId: null,
+      createdAt: millis(1_000),
+      bbox: { minX, minY: 0, maxX: minX + 10, maxY: 10 },
+      totalPixels: 4,
+      chunks: [{ tileX: minX, tileY: 0, hash }],
+    })
+    await store.insertTemplateVersion(place('pub', 's1', 0, '1'.repeat(64)))
+    await store.insertTemplateVersion(place('draft', 's1', 100, '2'.repeat(64)))
+    await store.insertTemplateVersion(place('other', 's2', 0, '3'.repeat(64)))
+    await store.setTemplatePublishedAt('pub', millis(2_000))
+
+    const members = await store.listManifestTemplates(1, false)
+    const admins = await store.listManifestTemplates(1, true)
+    const memberTiles = await store.listManifestTiles(1, false)
+
+    expect(members.map((t) => t.id)).toEqual(['pub'])
+    expect(admins.map((t) => t.id).sort()).toEqual(['draft', 'pub'])
+    expect(memberTiles.map((t) => t.hash)).toEqual(['1'.repeat(64)])
+    expect((await store.listNodes(1)).map((n) => n.id)).toEqual(['s1'])
+  })
+
   it('refuses a template overlapping a sibling in the same node', async () => {
     // The wire refuses same-group overlap, so storing such a pair lets the server assemble a
     // manifest every client rejects. Enforced in the adapter, not the route — four defects in this

@@ -80,6 +80,32 @@ describe('assembleManifest', () => {
     await sql.insertNode(node)
   })
 
+  it('drops a template whose tiles a concurrent publish has not revealed yet', async () => {
+    // The templates and tiles reads are not one snapshot. A publish landing between them shows the
+    // template to the first query and not the second, and `chunks: []` is something the wire
+    // refuses — so the torn read produced a 200 no client could decode rather than a slightly stale
+    // one. Modelled by a store whose tile list is a read behind.
+    const sql = new MemorySqlStore()
+    await sql.insertNode(node)
+    await sql.insertTemplateVersion(
+      version('01890f3a-6b7c-7def-8123-4560000000c1', '01890f3a-6b7c-7def-8123-4560000000c2', 0),
+    )
+    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000c1', createdAt)
+    const torn = {
+      listNodes: sql.listNodes.bind(sql),
+      listManifestTemplates: sql.listManifestTemplates.bind(sql),
+      listManifestTiles: async () => [],
+    } as unknown as MemorySqlStore
+
+    const manifest = await assembleManifest(
+      { sql: torn },
+      { server, season: 1, includeUnpublished: false },
+    )
+
+    expect(manifest.templates).toEqual([])
+    expectDecodes(manifest)
+  })
+
   it('emits a manifest the wire schema accepts, even for overlapping siblings', async () => {
     // Two templates in one node with intersecting boxes is what two uploads of a corrected image to
     // the same group produce. The wire refuses same-group overlap, so the server was able to emit a

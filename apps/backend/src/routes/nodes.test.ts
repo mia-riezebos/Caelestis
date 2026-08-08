@@ -41,6 +41,36 @@ const createNode = async (
 }
 
 describe('node routes', () => {
+  it.each([['read'], ['report']])(
+    'refuses a %s holder every method of the node surface',
+    async (scope) => {
+      // Every other test here authenticates as the bootstrap admin, which satisfies any scope — so
+      // downgrading this surface's gate from `admin` to `read` left all 301 tests green while
+      // letting an ordinary member create groups, enumerate any season's tree, and delete them.
+      const { app } = harness()
+      const minted = await app.request('/admin/tokens', {
+        method: 'POST',
+        headers: { ...bearer, 'content-type': 'application/json' },
+        body: JSON.stringify({ label: scope, scope }),
+      })
+      const token = ((await minted.json()) as { token: string }).token
+      const holder = { authorization: `Bearer ${token}` }
+
+      const created = await app.request('/admin/nodes', {
+        method: 'POST',
+        headers: holder,
+        body: JSON.stringify({ season: 1, parentId: null, name: 'Sneaky' }),
+      })
+      const listed = await app.request('/admin/nodes?season=1', { headers: holder })
+      const deleted = await app.request('/admin/nodes/whatever', {
+        method: 'DELETE',
+        headers: holder,
+      })
+
+      expect([created.status, listed.status, deleted.status]).toEqual([403, 403, 403])
+    },
+  )
+
   it('round-trips a root and child with server-derived paths', async () => {
     const { app } = harness()
     const root = await createNode(app, {

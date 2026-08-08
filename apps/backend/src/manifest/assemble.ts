@@ -38,7 +38,14 @@ export const assembleManifest = async (
     else chunks.push(chunk)
   }
 
+  // Templates and tiles are separate reads with no snapshot between them, so a publish landing in
+  // the gap can be seen by one and not the other. A template that arrives with no tiles is emitted
+  // as `chunks: []`, which the wire refuses outright — one admin publish concurrent with one member
+  // poll would produce a 200 nobody can decode. Dropping it is the recoverable direction: the next
+  // poll, microseconds later, carries it complete. The reverse ordering is already benign, since
+  // orphan tile rows simply find no template to attach to.
   const templates = templateRecords
+    .filter((template) => (chunksByTemplate.get(template.id)?.length ?? 0) > 0)
     .map((template) => ({
       id: template.id,
       nodeId: template.nodeId,
