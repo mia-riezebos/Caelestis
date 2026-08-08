@@ -103,7 +103,9 @@ export class D1SqlStore implements SqlStore {
       .from(accessTokens)
       .orderBy(desc(accessTokens.createdAtMs))
     // Re-sorted rather than trusted: SQL leaves equal created_at_ms unspecified, and the port
-    // promises one order both adapters return. ORDER BY still does the work; this only settles ties.
+    // promises one order both adapters return. The JS sort is a total order, so it does all of the
+    // work — reversing the ORDER BY above changes nothing observable. The clause stays because
+    // asking SQLite for the order we want is cheaper than making it sort a shuffled result.
     return rows.map(toAccessToken).sort(compareAccessTokens)
   }
 
