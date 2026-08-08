@@ -463,6 +463,16 @@ export const closeOverlayMenu = (): void => {
   document.getElementById(MENU_ID)?.remove()
 }
 
+/** Open or close one template's local menu through the same path as its on-canvas button. */
+export const toggleOverlayMenu = (id: string, rerender: () => void): void => {
+  if (isOverlayMenuOpen(id)) {
+    closeOverlayMenu()
+    rerender()
+    return
+  }
+  openOverlayMenu(id, rerender)
+}
+
 /**
  * Throw an open menu away so the next frame draws it from current values.
  *
@@ -537,9 +547,7 @@ export const renderOverlayControls = (rerender: () => void): void => {
       button.style.transition = FADE_TRANSITION
       button.addEventListener('click', (event) => {
         event.stopPropagation()
-        if (openFor === template.id) closeOverlayMenu()
-        else openOverlayMenu(template.id, rerender)
-        rerender()
+        toggleOverlayMenu(template.id, rerender)
       })
       document.body.appendChild(button)
     }
