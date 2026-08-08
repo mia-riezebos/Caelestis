@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TRANSPARENT_INDEX } from './palette.js'
-import { SliceError, sliceTemplate } from './slice.js'
+import { boundsOverlap, SliceError, sliceTemplate } from './slice.js'
 import { TILE_SIZE, WORLD_PIXELS } from './tiles.js'
 
 const T = TRANSPARENT_INDEX
@@ -224,5 +224,29 @@ describe('rejections', () => {
   it('rejects a template running past the south edge', () => {
     const { indices, width, height } = image([[1], [2]])
     expect(() => sliceTemplate(indices, width, height, 0, WORLD_PIXELS - 1)).toThrow(/south edge/)
+  })
+})
+
+describe('boundsOverlap', () => {
+  it.each([
+    ['identical boxes', { minX: 0, minY: 0, maxX: 10, maxY: 10 }, true],
+    ['touching on x only', { minX: 10, minY: 0, maxX: 20, maxY: 10 }, false],
+    ['touching on y only', { minX: 0, minY: 10, maxX: 10, maxY: 20 }, false],
+    ['overlapping by one pixel', { minX: 9, minY: 9, maxX: 20, maxY: 20 }, true],
+    ['disjoint in y, overlapping in x', { minX: 0, minY: 50, maxX: 10, maxY: 60 }, false],
+  ])('%s', (_label, other, want) => {
+    expect(boundsOverlap({ minX: 0, minY: 0, maxX: 10, maxY: 10 }, other)).toBe(want)
+    expect(boundsOverlap(other, { minX: 0, minY: 0, maxX: 10, maxY: 10 })).toBe(want)
+  })
+
+  it('reads a wrapped box as two ranges', () => {
+    // minX > maxX spans the antimeridian, so it meets boxes at both ends of the canvas and misses
+    // the middle. Treating it as one range would get all three of these wrong.
+    const wrapped = { minX: WORLD_PIXELS - 100, minY: 0, maxX: 100, maxY: 10 }
+    expect(boundsOverlap(wrapped, { minX: 0, minY: 0, maxX: 50, maxY: 10 })).toBe(true)
+    expect(
+      boundsOverlap(wrapped, { minX: WORLD_PIXELS - 50, minY: 0, maxX: WORLD_PIXELS, maxY: 10 }),
+    ).toBe(true)
+    expect(boundsOverlap(wrapped, { minX: 500, minY: 0, maxX: 600, maxY: 10 })).toBe(false)
   })
 })

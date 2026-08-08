@@ -36,9 +36,15 @@ importers:
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
+      '@wts/wire-schema':
+        specifier: workspace:*
+        version: link:../../packages/wire-schema
       drizzle-kit:
         specifier: 0.31.10
         version: 0.31.10
+      effect:
+        specifier: 4.0.0-beta.102
+        version: 4.0.0-beta.102
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

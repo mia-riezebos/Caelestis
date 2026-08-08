@@ -35,6 +35,7 @@ export {
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
+  TemplateOverlapError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from './sql-store.js'

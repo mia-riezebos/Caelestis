@@ -1,8 +1,22 @@
 import { millis, type ServerInfo } from '@wts/shared'
+import { Manifest } from '@wts/wire-schema'
+import { Schema } from 'effect'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import type { NodeRecord, TemplateVersionRecord } from '../ports/index.js'
 import { assembleManifest } from './assemble.js'
+
+/**
+ * The acceptance-critical property nothing could test: does a manifest this server emits actually
+ * decode against the schema every client validates it with?
+ *
+ * `apps/backend` did not depend on `@wts/wire-schema` at all — not even for tests — so the question
+ * had no way to be asked, and the answer was no. Two templates in one node with intersecting boxes
+ * are a normal admin action, and the wire refuses the result.
+ */
+const expectDecodes = (manifest: unknown) => {
+  expect(() => Schema.decodeUnknownSync(Manifest)(manifest)).not.toThrow()
+}
 
 const server: ServerInfo = {
   id: '01890f3a-6b7c-7def-8123-456789abcdef',
@@ -64,6 +78,33 @@ describe('assembleManifest', () => {
   beforeEach(async () => {
     sql = new MemorySqlStore()
     await sql.insertNode(node)
+  })
+
+  it('emits a manifest the wire schema accepts, even for overlapping siblings', async () => {
+    // Two templates in one node with intersecting boxes is what two uploads of a corrected image to
+    // the same group produce. The wire refuses same-group overlap, so the server was able to emit a
+    // 200 that every client rejects — bricking the season's manifest from a normal admin action,
+    // with no server-side error to notice.
+    const sql = new MemorySqlStore()
+    await sql.insertNode(node)
+    const overlapping = (templateId: string, versionId: string): TemplateVersionRecord => ({
+      ...version(templateId, versionId, 0),
+      bbox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
+      chunks: [{ tileX: 0, tileY: 0, hash: 'b'.repeat(64) }],
+    })
+    const templateA = '01890f3a-6b7c-7def-8123-4560000000a1'
+    const templateB = '01890f3a-6b7c-7def-8123-4560000000b1'
+    await sql.insertTemplateVersion(overlapping(templateA, '01890f3a-6b7c-7def-8123-4560000000a2'))
+    await expect(
+      sql.insertTemplateVersion(overlapping(templateB, '01890f3a-6b7c-7def-8123-4560000000b2')),
+    ).rejects.toThrow(/overlaps/)
+    await sql.setTemplatePublishedAt(templateA, createdAt)
+
+    // Whatever the store did accept has to assemble into something the wire takes. The check is on
+    // the way in rather than here, because dropping a template at assembly time would hide a
+    // template an admin believes they published.
+    expectDecodes(await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false }))
+    expectDecodes(await assembleManifest({ sql }, { server, season: 1, includeUnpublished: true }))
   })
 
   it('assembles the same version regardless of the order rows were written', async () => {

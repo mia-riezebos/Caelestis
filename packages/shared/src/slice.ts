@@ -12,6 +12,28 @@ import { TILE_SIZE, WORLD_PIXELS } from './tiles.js'
  */
 
 /** Half-open, matching the wire: `min` is inclusive, `max` exclusive. */
+/**
+ * Whether two placed bounding boxes share a pixel.
+ *
+ * The canvas wraps in x and does not in y, so `minX > maxX` means "spans the antimeridian" and has
+ * to be read as two ranges; `minY > maxY` has no meaning and cannot occur. The wire refuses two
+ * templates in one group that overlap, so a server that stores such a pair can emit a manifest its
+ * own clients reject — which is why this lives here rather than only in the decoder.
+ */
+export const boundsOverlap = (left: PixelBounds, right: PixelBounds): boolean => {
+  if (left.minY >= right.maxY || right.minY >= left.maxY) return false
+  const spans = ({ minX, maxX }: PixelBounds): [number, number][] =>
+    minX < maxX
+      ? [[minX, maxX]]
+      : [
+          [minX, WORLD_PIXELS],
+          [0, maxX],
+        ]
+  return spans(left).some(([leftStart, leftEnd]) =>
+    spans(right).some(([rightStart, rightEnd]) => leftStart < rightEnd && rightStart < leftEnd),
+  )
+}
+
 export interface PixelBounds {
   readonly minX: number
   readonly minY: number
