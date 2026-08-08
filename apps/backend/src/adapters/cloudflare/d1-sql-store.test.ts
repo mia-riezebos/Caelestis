@@ -804,6 +804,15 @@ describe('D1SqlStore', () => {
       createdAt: millis(1_000),
     }
     await store.insertAccessToken(token)
+    // A second credential, because one row cannot tell a targeted delete from a WHERE-less one, and
+    // a revoke that took the whole table with it would lock the deployment out of its own admin
+    // surface the moment the operator dropped ADMIN_TOKEN. The memory store pins this; D1 did not.
+    const bystander = {
+      ...token,
+      tokenHash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      label: 'bystander',
+    }
+    await store.insertAccessToken(bystander)
     // Both tables carry reported state, so both have to survive. Seeding only tile_history left a
     // cascade on contributions passing green.
     d1.sqlite.exec(`
@@ -817,6 +826,9 @@ describe('D1SqlStore', () => {
     await store.revokeAccessToken(token.tokenHash)
 
     await expect(store.readAccessToken(token.tokenHash)).resolves.toBeNull()
+    await expect(store.readAccessToken(bystander.tokenHash)).resolves.toMatchObject({
+      label: 'bystander',
+    })
     expect(
       d1.sqlite
         .prepare(
@@ -944,7 +956,8 @@ describe('D1SqlStore', () => {
       "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7), (0, 0, 0, 60, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
   ])('%s', (_label, statement) => {
-    // reported_by is a foreign key to access_tokens, so the tokens have to exist.
+    // Nothing references access_tokens — reported_by is a shape-checked digest, not a foreign key —
+    // so these rows exist only because the assertions read them back.
     // Each composite primary key is the identity the draft specifies. Dropping a component makes
     // these two rows collide, so the insert throws — nothing else in the suite writes two rows that
     // differ only in the trailing key column.

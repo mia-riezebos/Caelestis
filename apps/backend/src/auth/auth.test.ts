@@ -159,6 +159,45 @@ describe('the admin token surface', () => {
     expect(response.status).toBe(401)
   })
 
+  it('answers every 401 cause with one identical body', async () => {
+    // The rule is that nothing in a rejection varies with its cause — that is what stops a holder
+    // of one credential probing for the existence of others. Eight lines of docstring asserted it
+    // and no test read a body, so adding `reason: 'no such token'` to any branch stayed green.
+    const { app, sql } = harness()
+    const revoked = await mint(app, 'revoked', 'read')
+    await sql.revokeAccessToken(revoked.body.tokenHash as string)
+
+    const bodies = await Promise.all(
+      [
+        undefined,
+        `Basic ${BOOTSTRAP}`,
+        BOOTSTRAP,
+        'Bearer ABCDEFGHJKMNPQRSTVWXYZ2345',
+        `Bearer ${revoked.body.token as string}`,
+      ].map(async (authorization) => {
+        const response = await app.request('/admin/tokens', {
+          ...(authorization === undefined ? {} : { headers: { authorization } }),
+        })
+        expect(response.status).toBe(401)
+        return response.text()
+      }),
+    )
+
+    expect(new Set(bodies).size).toBe(1)
+  })
+
+  it('stamps a token with the time it was minted', async () => {
+    // Nothing asserted createdAt, so `millis(0)` on every mint passed — and then "newest first"
+    // collapses to the hash tiebreak and the admin surface misreports provisioning order. The
+    // ordering machinery is pinned on both adapters; the value feeding it was not.
+    const before = Date.now()
+    const { app } = harness()
+    const created = await mint(app, 'stamped', 'read')
+
+    expect(created.body.createdAt).toBeGreaterThanOrEqual(before)
+    expect(created.body.createdAt).toBeLessThanOrEqual(Date.now())
+  })
+
   it('hashes the whole token, not a prefix of it', async () => {
     // A known SHA-256 vector over a non-empty input. The empty-string vector alone left
     // `encode(token)` mutable to `encode(token.slice(0, 8))` — mint and read share the hash, so
