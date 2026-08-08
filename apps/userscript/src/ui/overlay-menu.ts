@@ -16,7 +16,13 @@ import {
   setAppearance,
   setLocalVisible,
 } from '../templates/local-store.js'
-import { beginMove } from '../templates/move.js'
+import {
+  abort as abortMove,
+  beginMove,
+  commit as commitMove,
+  isMoving,
+  movingId,
+} from '../templates/move.js'
 import { isDrawingTiles } from '../tile-transform.js'
 import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
@@ -222,47 +228,6 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   title.style.whiteSpace = 'nowrap'
   title.textContent = template?.name ?? 'Overlay'
 
-  const hide = document.createElement('button')
-  hide.className = visible ? 'btn btn-ghost btn-xs btn-circle' : 'btn btn-xs btn-circle btn-active'
-  hide.title = visible ? 'Hide this overlay' : 'Show this overlay'
-  hide.setAttribute('aria-label', hide.title)
-  hide.appendChild(icon(visible ? 'image' : 'close', 'size-4'))
-  hide.addEventListener('click', () => {
-    setLocalVisible(id, !visible)
-    rerender()
-  })
-
-  const move = document.createElement('button')
-  move.className = 'btn btn-ghost btn-xs btn-circle'
-  move.title = 'Move this overlay'
-  move.setAttribute('aria-label', 'Move this overlay')
-  move.appendChild(icon('move', 'size-4'))
-  move.addEventListener('click', () => {
-    closeOverlayMenu()
-    beginMove(id, rerender)
-  })
-
-  // Deleting from here rather than from a panel row, for the same reason Move is here: this menu is
-  // already about one specific template, so there is no doubt which one goes.
-  const remove = document.createElement('button')
-  remove.className = 'btn btn-ghost btn-xs btn-circle text-error'
-  remove.title = 'Delete this template'
-  remove.setAttribute('aria-label', 'Delete this template')
-  remove.appendChild(icon('trash', 'size-4'))
-  remove.addEventListener('click', () => {
-    void confirmDestructive({
-      title: 'Delete template?',
-      body: `${template?.name ?? 'This template'} will be permanently removed.`,
-      note: 'It is stored in this browser only.',
-      confirmLabel: 'Delete',
-    }).then((yes) => {
-      if (!yes) return
-      closeOverlayMenu()
-      void removeLocalTemplate(id)
-      rerender()
-    })
-  })
-
   const close = document.createElement('button')
   close.className = 'btn btn-ghost btn-xs btn-circle'
   close.title = 'Close'
@@ -273,11 +238,72 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     rerender()
   })
 
-  header.append(title, hide, move, remove, close)
+  header.append(title, close)
   menu.appendChild(header)
 
-  const pixels = section('Pixels', 'tune')
-  pixels.className = `${pixels.className} flex items-center justify-between gap-2`
+  /**
+   * The three things you do *to* a template, as targets rather than as chrome.
+   *
+   * They were in the header beside the close button, at the size a close button wants to be — which
+   * put Delete a few pixels from Close and made all three read as window furniture rather than as
+   * the actions the menu exists for. A row of large cells says they are the point, and being the
+   * only unlabelled controls here they can afford to be: the icons are a crossed-out picture, a move
+   * cross and a bin, and the tooltip carries the rest.
+   */
+  const actions = document.createElement('div')
+  actions.className = 'grid gap-1'
+  actions.style.gridTemplateColumns = 'repeat(3, 1fr)'
+  actions.style.padding = '0.5rem 0 0.25rem'
+
+  const action = (
+    glyph: IconName,
+    label: string,
+    extra: string,
+    run: () => void,
+  ): HTMLButtonElement => {
+    const button = document.createElement('button')
+    button.className = `btn ${extra}`
+    button.title = label
+    button.setAttribute('aria-label', label)
+    button.style.height = '2.75rem'
+    button.appendChild(icon(glyph, 'size-5'))
+    button.addEventListener('click', run)
+    return button
+  }
+
+  actions.append(
+    action(visible ? 'imageOff' : 'image', visible ? 'Hide' : 'Show', 'btn-ghost', () => {
+      setLocalVisible(id, !visible)
+      rerender()
+    }),
+    action('move', 'Move', 'btn-ghost', () => {
+      closeOverlayMenu()
+      beginMove(id, rerender)
+    }),
+    // Deleting from here rather than from a panel row: this menu is already about one specific
+    // template, so there is no doubt which one goes.
+    action('trash', 'Delete', 'btn-ghost text-error', () => {
+      void confirmDestructive({
+        title: 'Delete template?',
+        body: `${template?.name ?? 'This template'} will be permanently removed.`,
+        note: 'It is stored in this browser only.',
+        confirmLabel: 'Delete',
+      }).then((yes) => {
+        if (!yes) return
+        closeOverlayMenu()
+        removeLocalTemplate(id)
+        rerender()
+      })
+    }),
+  )
+  menu.appendChild(actions)
+
+  // The heading and the switch that governs everything under it, on one line. The heading keeps its
+  // own layout — chip beside title — and only the pair of them is spread apart.
+  const pixels = document.createElement('div')
+  pixels.className = 'flex items-center justify-between gap-2'
+  const pixelsHeading = section('Pixels', 'tune')
+  pixels.appendChild(pixelsHeading)
   menu.appendChild(pixels)
 
   /**
@@ -299,7 +325,10 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   defaults.title = 'Follow the appearance set in settings'
   defaultsBox = document.createElement('input')
   defaultsBox.type = 'checkbox'
-  defaultsBox.className = 'checkbox checkbox-xs'
+  // A switch, not a tick. Everything under it is a live setting rather than an item in a list, and
+  // this turns that whole group between two states — which is what a switch means and a tick does
+  // not.
+  defaultsBox.className = 'toggle toggle-xs'
   defaultsBox.checked = usingDefaults
   defaultsBox.addEventListener('change', () => {
     // Null puts it back on the global values; a copy of them is what it already shows, so the only
@@ -573,6 +602,48 @@ export const renderOverlayControls = (rerender: () => void): void => {
       )
       const fitsWithin = bottomRight.y - topLeft.y >= length
       return fitsWithin ? Math.min(sticky, bottomRight.y - length) : sticky
+    }
+
+    /**
+     * While this template is being placed, its menu button becomes apply and cancel.
+     *
+     * In the same spot rather than a bar somewhere else, because that spot is already where this
+     * template's controls live — and a placement is a thing you finish, so the two ways to finish it
+     * belong under the hand that started it. The kebab goes for the duration: opening a menu about a
+     * template you are in the middle of moving is a question with no good answer.
+     */
+    const placing = isMoving() && movingId() === template.id
+    const barId = `wts-overlay-move-${template.id}`
+    let bar = document.getElementById(barId)
+    if (placing && bar === null) {
+      bar = document.createElement('div')
+      bar.id = barId
+      bar.className = 'flex items-center gap-1'
+      bar.style.position = 'fixed'
+      bar.style.zIndex = '29'
+      const make = (glyph: IconName, label: string, extra: string, run: () => void): void => {
+        const control = document.createElement('button')
+        control.className = `${RAIL_BUTTON_CLASS} ${extra}`
+        control.title = label
+        control.setAttribute('aria-label', label)
+        control.appendChild(icon(glyph))
+        control.addEventListener('click', (event) => {
+          event.stopPropagation()
+          run()
+        })
+        bar?.appendChild(control)
+      }
+      make('check', 'Apply placement', 'btn-primary', () => void commitMove().then(rerender))
+      make('close', 'Cancel placement', '', () => void abortMove().then(rerender))
+      document.body.appendChild(bar)
+    }
+    if (!placing) bar?.remove()
+    button.style.display = placing ? 'none' : ''
+
+    if (bar !== null && placing) {
+      const width = bar.getBoundingClientRect().width || size * 2 + 4
+      bar.style.left = `${leftFor(width)}px`
+      bar.style.top = `${topFor(size)}px`
     }
 
     button.style.left = `${leftFor(size)}px`

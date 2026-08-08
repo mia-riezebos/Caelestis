@@ -21,6 +21,7 @@ export type IconName =
   | 'caret'
   | 'folder'
   | 'image'
+  | 'imageOff'
   | 'server'
   | 'createFolder'
   | 'uploadFile'
@@ -65,6 +66,10 @@ const PATHS: Record<IconName, string> = {
     'M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Z',
   image:
     'M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm40-160h480L570-480 450-320l-90-120-120 160Z',
+  // The same frame with a stroke through it: hiding an overlay is the picture, negated. An eye would
+  // say "preview", which is a different idea — this is about what is drawn on the map.
+  imageOff:
+    'M840-234 720-354v-406H314L194-880h566q33 0 56.5 23.5T840-800v566ZM792-56l-64-64H200q-33 0-56.5-23.5T120-200v-528l-64-64 56-56 736 736-56 56ZM240-280h360L481-399l-41 55-80-106-120 170Z',
   // A rack of servers, distinct from a folder at a glance even at 16px.
   server:
     'M160-160q-33 0-56.5-23.5T80-240v-120q0-33 23.5-56.5T160-440h640q33 0 56.5 23.5T880-360v120q0 33-23.5 56.5T800-160H160Zm0-360q-33 0-56.5-23.5T80-600v-120q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v120q0 33-23.5 56.5T800-520H160Zm100-80q17 0 28.5-11.5T300-640q0-17-11.5-28.5T260-680q-17 0-28.5 11.5T220-640q0 17 11.5 28.5T260-600Zm0 360q17 0 28.5-11.5T300-280q0-17-11.5-28.5T260-320q-17 0-28.5 11.5T220-280q0 17 11.5 28.5T260-240Z',

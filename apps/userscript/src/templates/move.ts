@@ -1,7 +1,6 @@
 import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget } from '../main.js'
-import { icon } from '../ui/icons.js'
 import {
   clearLocalPreview,
   localTemplates,
@@ -14,9 +13,11 @@ import {
 /**
  * Placing a template on the map.
  *
- * The map has to keep working. Pan, zoom and paint are what someone is here to do, and a placement
- * mode that swallows them would be worse than no placement mode — so dragging requires a modifier
- * *and* the cursor to be over the template. Everything else falls through to wplace untouched.
+ * The map has to keep working — pan, zoom and paint are what someone is here to do — and the
+ * template's own outline is what separates the two. Over it, a drag moves the template and the
+ * cursor says so by becoming a hand; anywhere else, every gesture falls through to wplace
+ * untouched. A modifier used to be required as well, which made the one mode you deliberately
+ * entered feel like it had not started.
  *
  * Middle-click centres the template on the cursor. Without it, moving a template across the world
  * while zoomed in means dragging it the whole way; with it, the long move is one click and the drag
@@ -25,8 +26,6 @@ import {
  * No resizing. A template's size is decided by its source image, and a scaled one no longer
  * corresponds to pixels anybody can paint.
  */
-
-const MODIFIER_HINT = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl'
 
 interface MoveSession {
   readonly id: string
@@ -76,53 +75,17 @@ const boundedOrigin = (
   y: Math.min(Math.max(0, Math.round(y)), WORLD_PIXELS - template.height),
 })
 
-const bar = (): HTMLElement => {
-  const existing = document.querySelector<HTMLElement>('[data-wts-movebar]')
-  if (existing !== null) return existing
-  const el = document.createElement('div')
-  el.setAttribute('data-wts-movebar', '')
-  el.className = 'bg-base-100 shadow-2xl flex items-center gap-2'
-  Object.assign(el.style, {
-    position: 'fixed',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    top: '1rem',
-    zIndex: '35',
-    borderRadius: '0.5rem',
-    padding: '0.375rem 0.5rem',
-    color: 'var(--color-base-content, inherit)',
-  })
-  document.body.appendChild(el)
-  return el
-}
-
-const renderBar = (name: string): void => {
-  const el = bar()
-  el.replaceChildren()
-
-  const label = document.createElement('span')
-  label.className = 'text-sm'
-  label.style.padding = '0 0.25rem'
-  label.textContent = `Placing “${name}”`
-  const hint = document.createElement('span')
-  hint.className = 'text-xs opacity-60'
-  hint.textContent = `${MODIFIER_HINT}+drag to move · middle-click to centre here`
-
-  const apply = document.createElement('button')
-  apply.className = 'btn btn-sm btn-primary btn-circle'
-  apply.title = 'Apply placement'
-  apply.setAttribute('aria-label', 'Apply placement')
-  apply.appendChild(icon('check', 'size-4'))
-  apply.addEventListener('click', () => void commit())
-
-  const cancel = document.createElement('button')
-  cancel.className = 'btn btn-sm btn-ghost btn-circle'
-  cancel.title = 'Cancel'
-  cancel.setAttribute('aria-label', 'Cancel placement')
-  cancel.appendChild(icon('close', 'size-4'))
-  cancel.addEventListener('click', () => void abort())
-
-  el.append(label, hint, apply, cancel)
+/**
+ * The map's own cursor, borrowed for as long as the placement lasts.
+ *
+ * The cursor is the only thing on screen that can say "this is draggable" at the moment it becomes
+ * true, which is while hovering — a label somewhere else cannot. Set inline so it beats whatever
+ * MapLibre is setting for its own state, and cleared on the way out so the map gets it back.
+ */
+const setCursor = (shape: string): void => {
+  const canvas = document.querySelector<HTMLElement>('canvas.maplibregl-canvas')
+  if (canvas === null) return
+  canvas.style.cursor = shape
 }
 
 const onPointerDown = (event: PointerEvent): void => {
@@ -151,12 +114,12 @@ const onPointerDown = (event: PointerEvent): void => {
     return
   }
   if (event.button !== 0) return
-  // Both conditions, deliberately: the modifier alone would steal every drag on the map, and
-  // hovering alone would steal every pan that happens to start over the template.
-  if (!(event.metaKey || event.ctrlKey)) return
+  // The template's own outline is the boundary. Starting a drag anywhere else is a pan, which is
+  // what makes this mode livable — the map underneath keeps working the whole time.
   if (!isOverTemplate(event.clientX, event.clientY)) return
   event.preventDefault()
   event.stopPropagation()
+  setCursor('grabbing')
   session.dragging = {
     pointerId: event.pointerId,
     pointerX: event.clientX,
@@ -167,7 +130,11 @@ const onPointerDown = (event: PointerEvent): void => {
 }
 
 const onPointerMove = (event: PointerEvent): void => {
-  if (session?.dragging == null || finishing) return
+  if (session === null || finishing) return
+  if (session.dragging === null) {
+    setCursor(isOverTemplate(event.clientX, event.clientY) ? 'grab' : '')
+    return
+  }
   if (event.pointerId !== session.dragging.pointerId) return
   event.preventDefault()
   event.stopPropagation()
@@ -194,7 +161,10 @@ const previewMove = (id: string, x: number, y: number): void => {
 }
 
 const onPointerUp = (event: PointerEvent): void => {
-  if (session?.dragging?.pointerId === event.pointerId) session.dragging = null
+  if (session?.dragging?.pointerId === event.pointerId) {
+    session.dragging = null
+    setCursor(isOverTemplate(event.clientX, event.clientY) ? 'grab' : '')
+  }
   if (suppressMiddleAuxClickFor === event.pointerId) {
     const pointerId = event.pointerId
     setTimeout(() => {
@@ -275,14 +245,16 @@ export const beginMove = (id: string, finished: () => void): void => {
   onFinish = finished
   finishing = false
   suppressMiddleAuxClickFor = null
-  renderBar(template.name)
   listen(true)
+  // Apply and cancel are drawn where the template's own menu button was, by `renderOverlayControls`
+  // — the controls for this template stay in the one place they have always been.
+  finished()
   log('install', `move started for ${template.name}`)
 }
 
 const finish = (): void => {
   listen(false)
-  document.querySelector('[data-wts-movebar]')?.remove()
+  setCursor('')
   session = null
   finishing = false
   suppressMiddleAuxClickFor = null
