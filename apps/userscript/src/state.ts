@@ -183,6 +183,11 @@ export const loadState = (): State => {
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
   }
+  // Loading *is* a change, and the biggest one there is — it is where the connected servers arrive.
+  // Assigning silently meant nothing watching the state ever heard about them, so the templates a
+  // server publishes were not fetched until something else happened to change the state, which in
+  // practice was opening the panel. The map sat empty until then for no reason anyone could see.
+  for (const listener of listeners) listener(state)
   return state
 }
 

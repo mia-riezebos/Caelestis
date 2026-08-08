@@ -9,7 +9,7 @@ import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
-import { onStateChange } from './state.js'
+import { loadState, onStateChange } from './state.js'
 import {
   isTemplateVisible,
   localTemplates,
@@ -171,6 +171,16 @@ const main = (): void => {
     })
   })
   step('tile capture', install)
+  /**
+   * Settings and connected servers, before anything reads either.
+   *
+   * This used to happen as a side effect of the panel installing, which is late and in the wrong
+   * place: everything before it — the appearance defaults, the colour filter, the list of servers to
+   * fetch from — was reading the defaults instead of what was stored. Loading it here makes the rest
+   * of this sequence mean what it says.
+   */
+  step('settings', () => void loadState())
+  // Templates outlive a page load, which is what makes navigating to one survivable at all.
   step('local templates', () => void restoreLocalTemplates())
   // Server templates do not: they are re-fetched, because the server is where they live and a copy
   // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
