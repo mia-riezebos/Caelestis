@@ -135,6 +135,8 @@ CREATE TABLE `tile_history` (
 	`reported_by_user_id` integer NOT NULL,
 	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by_user_id`),
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
+	CONSTRAINT "tile_history_sha256_check" CHECK(typeof("tile_history"."sha256") = 'text' AND length("tile_history"."sha256") = 64
+        AND "tile_history"."sha256" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "tile_history_reported_by_check" CHECK(typeof("tile_history"."reported_by") = 'text' AND length("tile_history"."reported_by") = 64
         AND "tile_history"."reported_by" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "tile_history_reported_by_user_id_check" CHECK(typeof("tile_history"."reported_by_user_id") = 'integer' AND "tile_history"."reported_by_user_id" >= 0),
@@ -152,6 +154,8 @@ CREATE TABLE `version_tiles` (
 	`hash` text NOT NULL,
 	PRIMARY KEY(`version_id`, `tile_x`, `tile_y`),
 	FOREIGN KEY (`version_id`) REFERENCES `template_versions`(`id`) ON UPDATE no action ON DELETE no action,
+	CONSTRAINT "version_tiles_hash_check" CHECK(typeof("version_tiles"."hash") = 'text' AND length("version_tiles"."hash") = 64
+        AND "version_tiles"."hash" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "version_tiles_coordinate_check" CHECK(typeof("version_tiles"."tile_x") = 'integer' AND typeof("version_tiles"."tile_y") = 'integer'
         AND "version_tiles"."tile_x" BETWEEN 0 AND 2047
         AND "version_tiles"."tile_y" BETWEEN 0 AND 2047)

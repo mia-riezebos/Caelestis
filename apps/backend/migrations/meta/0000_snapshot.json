@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "dad9cd09-aacf-46b5-b20e-644fce086192",
+  "id": "708044c9-13ea-4db9-92db-60bf298c4134",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "access_tokens": {
@@ -700,6 +700,10 @@
           "name": "tile_history_resolution_s_check",
           "value": "\"tile_history\".\"resolution_s\" IN (0, 3600, 21600, 86400)"
         },
+        "tile_history_sha256_check": {
+          "name": "tile_history_sha256_check",
+          "value": "typeof(\"tile_history\".\"sha256\") = 'text' AND length(\"tile_history\".\"sha256\") = 64\n        AND \"tile_history\".\"sha256\" NOT GLOB '*[^0-9a-f]*'"
+        },
         "tile_history_reported_by_check": {
           "name": "tile_history_reported_by_check",
           "value": "typeof(\"tile_history\".\"reported_by\") = 'text' AND length(\"tile_history\".\"reported_by\") = 64\n        AND \"tile_history\".\"reported_by\" NOT GLOB '*[^0-9a-f]*'"
@@ -787,6 +791,10 @@
       },
       "uniqueConstraints": {},
       "checkConstraints": {
+        "version_tiles_hash_check": {
+          "name": "version_tiles_hash_check",
+          "value": "typeof(\"version_tiles\".\"hash\") = 'text' AND length(\"version_tiles\".\"hash\") = 64\n        AND \"version_tiles\".\"hash\" NOT GLOB '*[^0-9a-f]*'"
+        },
         "version_tiles_coordinate_check": {
           "name": "version_tiles_coordinate_check",
           "value": "typeof(\"version_tiles\".\"tile_x\") = 'integer' AND typeof(\"version_tiles\".\"tile_y\") = 'integer'\n        AND \"version_tiles\".\"tile_x\" BETWEEN 0 AND 2047\n        AND \"version_tiles\".\"tile_y\" BETWEEN 0 AND 2047"

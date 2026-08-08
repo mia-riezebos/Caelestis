@@ -235,12 +235,16 @@ describe('D1SqlStore', () => {
   // message. The accept cases matter more: a CHECK that rejects a valid scope or ladder tier would
   // otherwise ship green, and nothing would notice until production.
   it.each([
-    ["INSERT INTO access_tokens VALUES ('h', 'l', 'superadmin', 'c', 1)"],
+    [
+      "INSERT INTO access_tokens VALUES ('6666666666666666666666666666666666666666666666666666666666666666', 'l', 'superadmin', 'c', 1)",
+    ],
     ["INSERT INTO telemetry_buckets VALUES ('template', 42, 60, 1, 1, 0)"],
     [
-      "INSERT INTO tile_history VALUES (0, 0, 60, 0, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+      "INSERT INTO tile_history VALUES (0, 0, 60, 0, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
-    ["INSERT INTO version_tiles VALUES ('v', 2048, 0, 'hash')"],
+    [
+      "INSERT INTO version_tiles VALUES ('v', 2048, 0, '5555555555555555555555555555555555555555555555555555555555555555')",
+    ],
   ])('rejects a value outside its SQL domain: %s', (statement) => {
     expect(() => d1.sqlite.prepare(statement).run()).toThrow(/CHECK constraint failed/)
   })
@@ -270,7 +274,7 @@ describe('D1SqlStore', () => {
       expect(() =>
         d1.sqlite
           .prepare(
-            "INSERT INTO tile_history VALUES (0, 0, ?, ?, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+            "INSERT INTO tile_history VALUES (0, 0, ?, ?, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
           )
           .run(resolution, resolution),
       ).not.toThrow()
@@ -354,7 +358,7 @@ describe('D1SqlStore', () => {
     expect(() =>
       d1.sqlite
         .prepare(
-          "INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+          "INSERT INTO tile_history VALUES (?, ?, 0, 0, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
         )
         .run(tileX, tileY),
     ).toThrow(/CHECK constraint failed/)
@@ -367,7 +371,7 @@ describe('D1SqlStore', () => {
     expect(() =>
       d1.sqlite
         .prepare(
-          "INSERT INTO tile_history VALUES (?, ?, 0, 0, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+          "INSERT INTO tile_history VALUES (?, ?, 0, 0, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
         )
         .run(tileX, tileY),
     ).toThrow(/CHECK constraint failed/)
@@ -383,7 +387,11 @@ describe('D1SqlStore', () => {
   ])('rejects version-tile coordinates outside the canvas: %s/%s', (tileX, tileY) => {
     // Only tile_x = 2048 was covered here, so the y bound and both integer guards were free.
     expect(() =>
-      d1.sqlite.prepare("INSERT INTO version_tiles VALUES ('v', ?, ?, 'hash')").run(tileX, tileY),
+      d1.sqlite
+        .prepare(
+          "INSERT INTO version_tiles VALUES ('v', ?, ?, '5555555555555555555555555555555555555555555555555555555555555555')",
+        )
+        .run(tileX, tileY),
     ).toThrow(/CHECK constraint failed/)
   })
 
@@ -490,28 +498,28 @@ describe('D1SqlStore', () => {
       "INSERT INTO contributions VALUES ('abc', 'ct', 0, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1, 0)",
     ],
     [
-      "INSERT INTO tile_history VALUES (0, 0, 3600, 3601, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+      "INSERT INTO tile_history VALUES (0, 0, 3600, 3601, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
     // Aligned to the hourly tier but not to this row's own. Every accepted start is a multiple of
     // 3600, so without this the divisor can be hardcoded to 3600 and still pass — the check would
     // stop reading the resolution column it is written against.
     [
-      "INSERT INTO tile_history VALUES (0, 0, 21600, 3600, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+      "INSERT INTO tile_history VALUES (0, 0, 21600, 3600, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
     [
-      "INSERT INTO tile_history VALUES (0, 0, 3600, 3600.5, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+      "INSERT INTO tile_history VALUES (0, 0, 3600, 3600.5, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
     [
-      "INSERT INTO tile_history VALUES (0, 0, 0, -1, 'hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+      "INSERT INTO tile_history VALUES (0, 0, 0, -1, '5555555555555555555555555555555555555555555555555555555555555555', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
     // The four *_user_id domains, none of which had a reject case: every fixture here used a small
     // positive literal, so the type and sign guards on the columns that now carry quorum identity
     // were each individually deletable.
     [
-      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', -1)",
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', -1)",
     ],
     [
-      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1.5)",
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1.5)",
     ],
     [
       "INSERT INTO contributions VALUES (1, 'ct', 0, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', -1, 1, 1, 0)",
@@ -528,7 +536,7 @@ describe('D1SqlStore', () => {
     // both conjuncts passed and the row was invisible to every digest query — reachable by binding
     // crypto.subtle.digest's ArrayBuffer instead of its hex string.
     [
-      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', X'61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161', 7)",
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', X'61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161', 7)",
     ],
     [
       "INSERT INTO contributions VALUES (1, 'ct', 0, X'61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161', 7, 1, 1, 0)",
@@ -536,6 +544,22 @@ describe('D1SqlStore', () => {
     // applied_events was the one table with an attacker-supplied integer and no guard at all.
     ["INSERT INTO applied_events VALUES ('e', 1.5, 1)"],
     ["INSERT INTO applied_events VALUES ('e', -1, 1)"],
+    // The content digests, which had the rule their credential siblings carry and were left out of
+    // it. A BLOB here is invisible to text lookups, cannot satisfy the wire's Chunk.hash or an R2
+    // object key, and splits the quorum two spellings of one hash should agree on.
+    [
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, X'61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+    ],
+    [
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'short', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+    ],
+    [
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+    ],
+    [
+      "INSERT INTO version_tiles VALUES ('v1', 0, 0, X'61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161')",
+    ],
+    ["INSERT INTO version_tiles VALUES ('v1', 0, 0, 'short')"],
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', NULL, '/cn', 'CN', 1);
@@ -555,9 +579,9 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
       INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
-      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
-      INSERT OR IGNORE INTO tile_history VALUES (0, 0, 0, 100, 'attacker-hash', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
-      INSERT INTO tile_history VALUES (0, 0, 0, 100, 'honest-hash', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
+      INSERT INTO tile_history VALUES (0, 0, 0, 100, '2222222222222222222222222222222222222222222222222222222222222222', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
+      INSERT OR IGNORE INTO tile_history VALUES (0, 0, 0, 100, '2222222222222222222222222222222222222222222222222222222222222222', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
+      INSERT INTO tile_history VALUES (0, 0, 0, 100, '3333333333333333333333333333333333333333333333333333333333333333', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
     `)
     expect(
       d1.sqlite
@@ -566,8 +590,8 @@ describe('D1SqlStore', () => {
         )
         .all(),
     ).toEqual([
-      { sha256: 'attacker-hash', reporters: 1 },
-      { sha256: 'honest-hash', reporters: 1 },
+      { sha256: '2222222222222222222222222222222222222222222222222222222222222222', reporters: 1 },
+      { sha256: '3333333333333333333333333333333333333333333333333333333333333333', reporters: 1 },
     ])
   })
 
@@ -579,13 +603,13 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO access_tokens VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'l', 'report', 'c', 1);
       INSERT OR IGNORE INTO access_tokens VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'l', 'report', 'c', 1);
-      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11);
-      INSERT INTO tile_history VALUES (1, 1, 0, 100, 'agreed-hash', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 22);
+      INSERT INTO tile_history VALUES (1, 1, 0, 100, '1111111111111111111111111111111111111111111111111111111111111111', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 11);
+      INSERT INTO tile_history VALUES (1, 1, 0, 100, '1111111111111111111111111111111111111111111111111111111111111111', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 22);
     `)
     expect(
       d1.sqlite
         .prepare('SELECT COUNT(*) AS reporters FROM tile_history WHERE tile_x = 1 AND sha256 = ?')
-        .all('agreed-hash'),
+        .all('1111111111111111111111111111111111111111111111111111111111111111'),
     ).toEqual([{ reporters: 2 }])
   })
 
@@ -676,8 +700,8 @@ describe('D1SqlStore', () => {
     // on. The identity is the token *and* the wplace /me id of whoever is running the script, so
     // these two rows coexist and COUNT(*) reads 2.
     d1.sqlite.exec(`
-      INSERT INTO tile_history VALUES (2, 2, 0, 100, 'agreed', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 11);
-      INSERT INTO tile_history VALUES (2, 2, 0, 100, 'agreed', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 22);
+      INSERT INTO tile_history VALUES (2, 2, 0, 100, '4444444444444444444444444444444444444444444444444444444444444444', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 11);
+      INSERT INTO tile_history VALUES (2, 2, 0, 100, '4444444444444444444444444444444444444444444444444444444444444444', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 22);
     `)
     expect(
       d1.sqlite.prepare('SELECT COUNT(*) AS reporters FROM tile_history WHERE tile_x = 2').all(),
@@ -690,8 +714,8 @@ describe('D1SqlStore', () => {
     // could manufacture the two-distinct-client quorum the ladder prefers. The account is the
     // client; the token is only what it authenticated with.
     d1.sqlite.exec(`
-      INSERT INTO tile_history VALUES (3, 3, 0, 100, 'agreed', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7);
-      INSERT OR REPLACE INTO tile_history VALUES (3, 3, 0, 100, 'agreed', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
+      INSERT INTO tile_history VALUES (3, 3, 0, 100, '4444444444444444444444444444444444444444444444444444444444444444', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7);
+      INSERT OR REPLACE INTO tile_history VALUES (3, 3, 0, 100, '4444444444444444444444444444444444444444444444444444444444444444', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 7);
     `)
     expect(
       d1.sqlite.prepare('SELECT COUNT(*) AS reporters FROM tile_history WHERE tile_x = 3').all(),
@@ -705,7 +729,9 @@ describe('D1SqlStore', () => {
     // an orphan is the intended state, and only the digest shape is enforced.
     expect(() =>
       d1.sqlite
-        .prepare("INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', ?, 7)")
+        .prepare(
+          "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', ?, 7)",
+        )
         .run('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'),
     ).not.toThrow()
   })
@@ -718,7 +744,11 @@ describe('D1SqlStore', () => {
     // The foreign key's real job was "keeps this a token, not free text". A 64-character
     // lowercase hex digest still is not free text, and it holds for a token row long deleted.
     expect(() =>
-      d1.sqlite.prepare("INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', ?, 7)").run(reportedBy),
+      d1.sqlite
+        .prepare(
+          "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', ?, 7)",
+        )
+        .run(reportedBy),
     ).toThrow(/CHECK constraint failed/)
   })
 
@@ -799,7 +829,7 @@ describe('D1SqlStore', () => {
   it.each([
     [
       'version_tiles keeps one row per tile of a version',
-      "INSERT INTO version_tiles VALUES ('v1', 0, 0, 'h'), ('v1', 0, 1, 'h')",
+      "INSERT INTO version_tiles VALUES ('v1', 0, 0, '6666666666666666666666666666666666666666666666666666666666666666'), ('v1', 0, 1, '6666666666666666666666666666666666666666666666666666666666666666')",
     ],
     [
       'contributions keeps one row per user, template, day and reporter',
@@ -811,7 +841,7 @@ describe('D1SqlStore', () => {
     ],
     [
       'tile_history keeps one row per tile, tier and bucket',
-      "INSERT INTO tile_history VALUES (0, 0, 0, 0, 'h', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7), (0, 0, 0, 60, 'h', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
+      "INSERT INTO tile_history VALUES (0, 0, 0, 0, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7), (0, 0, 0, 60, '6666666666666666666666666666666666666666666666666666666666666666', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7)",
     ],
   ])('%s', (_label, statement) => {
     // reported_by is a foreign key to access_tokens, so the tokens have to exist.

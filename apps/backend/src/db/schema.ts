@@ -180,6 +180,11 @@ export const versionTiles = sqliteTable(
   },
   (table) => [
     check(
+      'version_tiles_hash_check',
+      sql`typeof(${table.hash}) = 'text' AND length(${table.hash}) = 64
+        AND ${table.hash} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+    check(
       'version_tiles_coordinate_check',
       sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
         AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
@@ -456,6 +461,14 @@ export const tileHistory = sqliteTable(
     // time itself, aligned to nothing. Stating that as an explicit disjunct rather than leaning on
     // `x % 0` evaluating to NULL — a CHECK that is NULL does not fail, so the exemption would hold
     // by accident and read as an oversight.
+    // The content digest gets the rule its credential sibling already has. A BLOB stored here is
+    // invisible to text lookups and cannot satisfy the wire's Chunk.hash or an R2 object key, and
+    // two spellings of one hash split the quorum they should agree on.
+    check(
+      'tile_history_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
     check(
       'tile_history_reported_by_check',
       sql`typeof(${table.reportedBy}) = 'text' AND length(${table.reportedBy}) = 64
