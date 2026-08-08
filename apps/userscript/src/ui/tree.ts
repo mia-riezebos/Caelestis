@@ -3,19 +3,13 @@ import {
   type ConnectedServer,
   getState,
   isScopeVisible,
-  type LocalFolder,
   listServerContents,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
   type TreeNode,
 } from '../state.js'
-import {
-  isServerTemplate,
-  localTemplates,
-  type PlacedTemplate,
-  setLocalVisible,
-} from '../templates/local-store.js'
+import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
 import { serverTemplateKey, syncServerTemplates } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
@@ -341,7 +335,7 @@ const placeholder = (depth: number): HTMLElement => {
 }
 
 /** Rows in document order, ignoring the one being dragged and the placeholder. */
-const visibleRows = (root: ParentNode): HTMLElement[] =>
+const _visibleRows = (root: ParentNode): HTMLElement[] =>
   [...root.querySelectorAll<HTMLElement>('[data-wts-key]')].filter(
     (row) => !row.classList.contains('wts-dragging'),
   )
@@ -712,6 +706,49 @@ const treeRow = (options: RowOptions): HTMLElement => {
   return row
 }
 
+/**
+ * One row, as the thing supplying it sees it.
+ *
+ * Everything a row needs that depends on *what* it is, and nothing that depends on where it sits.
+ * Depth, siblings, ordering, expansion and recursion belong to the renderer below, which is the
+ * whole point: they were the parts that had drifted.
+ */
+interface TreeItem {
+  readonly key: string
+  readonly name: string
+  readonly kind: IconName
+  /** Its id as a container, so the renderer can ask for its children. Null for a leaf. */
+  readonly childrenOf: string | null
+  readonly meta?: string | undefined
+  readonly muted?: boolean | undefined
+  readonly visible: boolean
+  readonly setVisible: (on: boolean) => void
+  readonly canReparent: boolean
+  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  readonly onRename?: ((name: string) => void) | undefined
+  readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
+  readonly onDropAt?:
+    | ((draggedKey: string, parentKey: string | null, beforeKey: string | null) => void)
+    | undefined
+}
+
+/**
+ * Where a level of the tree comes from.
+ *
+ * Local templates and a server's published ones are the same thing from two places, and they were
+ * drawn by two recursive functions written months apart. The second never caught up: server folders
+ * ignored the custom order entirely, could not be interleaved with templates, and their visibility
+ * switch reached nothing. Three bugs, one cause — so there is one renderer now, and a source is the
+ * three things that genuinely differ.
+ *
+ * What is genuinely different, and all that is: mutations here go over HTTP and can be refused,
+ * a row can exist before its pixels do, and order is this browser's preference while structure is
+ * the server's. None of that is the shape of a tree.
+ */
+interface TreeSource {
+  readonly children: (parentId: string | null) => readonly TreeItem[]
+}
+
 const childText = (text: string, depth: number): HTMLElement => {
   const el = document.createElement('p')
   el.className = 'text-xs opacity-60'
@@ -719,6 +756,61 @@ const childText = (text: string, depth: number): HTMLElement => {
   el.style.paddingLeft = `${2.5 + depth * 1.125}rem`
   el.textContent = text
   return el
+}
+
+/**
+ * One level of a tree, and every level below it.
+ *
+ * Ordered and interleaved: folders and templates go into one list and come out in whatever order
+ * the user dragged them into. Not folders-first — sorting by kind means a template can never be put
+ * above a folder, and a rule that quietly overrides a custom order makes the drag look broken
+ * rather than constrained. This used to be true of Local only.
+ */
+const renderLevel = (
+  into: HTMLElement,
+  source: TreeSource,
+  parentId: string | null,
+  depth: number,
+  parentKey: string,
+  rerender: () => void,
+): void => {
+  const byKey = new Map(source.children(parentId).map((item) => [item.key, item]))
+  const keys = orderedKeys([...byKey.keys()])
+
+  for (const key of keys) {
+    const item = byKey.get(key)
+    if (item === undefined) continue
+    into.appendChild(
+      treeRow({
+        key,
+        name: item.name,
+        kind: item.kind,
+        depth,
+        container: item.childrenOf !== null,
+        siblings: keys,
+        parentKey,
+        canReparent: item.canReparent,
+        rerender,
+        checked: item.visible,
+        onToggleChecked: (on) => {
+          item.setVisible(on)
+          rerender()
+        },
+        ...(item.meta === undefined ? {} : { meta: item.meta }),
+        ...(item.muted === undefined ? {} : { muted: item.muted }),
+        ...(item.actions === undefined ? {} : { actions: item.actions }),
+        ...(item.onRename === undefined ? {} : { onRename: item.onRename }),
+        ...(item.onContextMenu === undefined ? {} : { onContextMenu: item.onContextMenu }),
+        ...(item.onDropAt === undefined ? {} : { onDropAt: item.onDropAt }),
+      }),
+    )
+    if (item.childrenOf === null || !isExpanded(key)) continue
+    renderLevel(into, source, item.childrenOf, depth + 1, key, rerender)
+  }
+
+  // Only inside something. "Nothing here" is worth saying about a folder you have just opened; at
+  // the top of a source it is the source's own empty state, which says more than this can.
+  if (parentId !== null && keys.length === 0) into.appendChild(childText('Empty.', depth))
 }
 
 export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HTMLElement => {
@@ -816,159 +908,138 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         // First sight of this server: kick off the fetch, draw nothing extra this pass.
         void refreshNodes(server, rerender)
       } else {
-        const byParent = new Map<string | null, TreeNode[]>()
-        for (const node of known) {
-          const siblings = byParent.get(node.parentId) ?? []
-          siblings.push(node)
-          byParent.set(node.parentId, siblings)
-        }
         const published = templatesByServer.get(server.url) ?? []
-        const templatesIn = (nodeId: string): readonly ServerTemplate[] =>
-          published.filter((template) => template.nodeId === nodeId)
 
-        const renderChildren = (parentId: string | null, depth: number): void => {
-          for (const node of byParent.get(parentId) ?? []) {
-            const nodeKey = `node:${node.id}`
-            const nodeTarget: TreeTarget = {
-              server,
-              nodeId: node.id,
-              key: nodeKey,
-              name: node.name,
-            }
-            wrap.appendChild(
-              treeRow({
-                key: nodeKey,
-                name: node.name,
-                kind: 'folder',
-                depth,
-                container: true,
-                siblings: (byParent.get(parentId) ?? []).map((n) => `node:${n.id}`),
-                parentKey: parentId === null ? key : `node:${parentId}`,
-                canReparent: canEdit,
-                rerender,
-                /**
-                 * A folder on a server is a group like a Local folder is.
-                 *
-                 * Without these the switch fell through to a set kept for the session and read by
-                 * nothing: the box moved, everything under it stayed exactly where it was, and the
-                 * choice was gone on reload. Switching one off now takes its templates *and* its
-                 * subfolders off the canvas, and leaves every row inside saying what it said before
-                 * — so switching the folder back on restores the arrangement rather than flattening
-                 * it.
-                 *
-                 * Whether someone else's folder is on your canvas is your decision, so this is
-                 * stored here and never sent anywhere.
-                 */
-                checked: isScopeVisible(nodeScopeKey(node.id)),
-                onToggleChecked: (on) => {
-                  setScopeVisible(nodeScopeKey(node.id), on)
-                  rerender()
-                },
-                onContextMenu: canEdit
-                  ? (event) => callbacks.onContextMenu(nodeTarget, event)
-                  : undefined,
-                onRename: canEdit ? (value) => callbacks.onRename(nodeTarget, value) : undefined,
-                /**
-                 * Where a drop lands says everything: which folder, and where in it.
-                 *
-                 * Both halves matter and they are different kinds of thing. Order is this browser's
-                 * preference and stays here; the parent is shared structure and goes to the server.
-                 * The one gesture settles both, which is why they are answered together rather than
-                 * by two different interactions.
-                 */
-                onDropAt: canEdit
-                  ? (draggedKey, dropParent, beforeKey) => {
-                      const into =
-                        dropParent === null || dropParent === key
-                          ? null
-                          : dropParent.startsWith('node:')
-                            ? dropParent.slice('node:'.length)
-                            : undefined
-                      if (into === undefined) return
-                      callbacks.onDropInServer(server, into, draggedKey, beforeKey)
-                    }
-                  : undefined,
-                actions: canEdit
-                  ? [
-                      {
-                        icon: 'createFolder',
-                        label: 'New folder',
-                        run: () => callbacks.onCreateFolder(nodeTarget),
-                      },
-                      {
-                        icon: 'uploadFile',
-                        label: 'Import template',
-                        run: () => callbacks.onImportTemplate(nodeTarget),
-                      },
-                    ]
-                  : undefined,
-              }),
-            )
-            if (!isExpanded(nodeKey)) continue
-            renderChildren(node.id, depth + 1)
-            for (const template of templatesIn(node.id)) {
-              const templateKey = `st:${template.id}`
-              // The copy on the canvas, if the sync has fetched it yet. Absent means the row is
-              // drawn from the manifest alone — which is the right first frame, since the manifest
-              // arrives long before the chunks do.
-              const drawn = localTemplates().find(
-                (candidate) => candidate.id === serverTemplateKey(server.url, template.id),
-              )
-              const templateTarget: TreeTarget = {
-                server,
-                nodeId: node.id,
-                key: templateKey,
-                name: template.name,
-                templateId: template.id,
-              }
-              wrap.appendChild(
-                treeRow({
-                  key: templateKey,
-                  name: template.name,
-                  // The same glyph a Local template row wears: it is the same kind of thing, and
-                  // where it lives is said by the tree rather than by the icon.
-                  kind: 'image',
-                  depth: depth + 1,
-                  container: false,
-                  siblings: templatesIn(node.id).map((candidate) => `st:${candidate.id}`),
-                  parentKey: nodeKey,
+        /**
+         * A drop anywhere in this server's tree, resolved to a folder.
+         *
+         * One handler for folder rows and template rows alike. Both used to carry their own, and
+         * they disagreed: the template one refused a drop at the server's top level, which is a rule
+         * about the thing being *dragged* rather than about the row it landed near. `dropOnServerNode`
+         * already enforces it from the dragged key, which is the only place that knows.
+         */
+        const intoServer = (
+          draggedKey: string,
+          dropParent: string | null,
+          beforeKey: string | null,
+        ): void => {
+          const into =
+            dropParent === null || dropParent === key
+              ? null
+              : dropParent.startsWith('node:')
+                ? dropParent.slice('node:'.length)
+                : undefined
+          if (into === undefined) return
+          callbacks.onDropInServer(server, into, draggedKey, beforeKey)
+        }
+
+        /**
+         * A server's folders and the templates hanging off them.
+         *
+         * The three things that make this different from Local live here and nowhere else: renaming
+         * and re-parenting go over HTTP and are refused without admin scope, a template row is drawn
+         * from the manifest before its pixels have finished downloading, and the switch is this
+         * browser's own record rather than anything the server said.
+         */
+        const source: TreeSource = {
+          children: (parentId) => {
+            const folders: TreeItem[] = known
+              .filter((node) => node.parentId === parentId)
+              .map((node) => {
+                const nodeTarget: TreeTarget = {
+                  server,
+                  nodeId: node.id,
+                  key: `node:${node.id}`,
+                  name: node.name,
+                }
+                return {
+                  key: `node:${node.id}`,
+                  name: node.name,
+                  kind: 'folder' as const,
+                  childrenOf: node.id,
+                  // Whether someone else's folder is on your canvas is your decision, so this is
+                  // kept here and never sent anywhere. Switching it off takes its templates and its
+                  // subfolders off the map while every row inside keeps saying what it said.
+                  visible: isScopeVisible(nodeScopeKey(node.id)),
+                  setVisible: (on: boolean) => setScopeVisible(nodeScopeKey(node.id), on),
                   canReparent: canEdit,
-                  rerender,
-                  onDropAt: canEdit
-                    ? (draggedKey, dropParent, beforeKey) => {
-                        if (dropParent === null || !dropParent.startsWith('node:')) return
-                        callbacks.onDropInServer(
-                          server,
-                          dropParent.slice('node:'.length),
-                          draggedKey,
-                          beforeKey,
-                        )
-                      }
-                    : undefined,
-                  // Unpublished ones are visible to an admin and nobody else, so they have to look
-                  // different — otherwise the tree shows a template that members cannot see and
-                  // gives no hint why.
-                  muted: !template.published,
-                  ...(template.published ? {} : { meta: 'unpublished' }),
-                  // Drafts draw too — for the admin who can see them, which is the only person the
-                  // manifest lists them for — so they get the same switch as anything else.
-                  checked: drawn?.visible ?? false,
-                  onToggleChecked: (on: boolean) => {
-                    if (drawn !== undefined) setLocalVisible(drawn.id, on)
-                    rerender()
-                  },
+                  onDropAt: canEdit ? intoServer : undefined,
                   onContextMenu: canEdit
-                    ? (event) => callbacks.onContextMenu(templateTarget, event)
+                    ? (event: MouseEvent) => callbacks.onContextMenu(nodeTarget, event)
                     : undefined,
                   onRename: canEdit
-                    ? (value) => callbacks.onRename(templateTarget, value)
+                    ? (value: string) => callbacks.onRename(nodeTarget, value)
                     : undefined,
-                }),
-              )
-            }
-          }
+                  actions: canEdit
+                    ? [
+                        {
+                          icon: 'createFolder' as const,
+                          label: 'New folder',
+                          run: () => callbacks.onCreateFolder(nodeTarget),
+                        },
+                        {
+                          icon: 'uploadFile' as const,
+                          label: 'Import template',
+                          run: () => callbacks.onImportTemplate(nodeTarget),
+                        },
+                      ]
+                    : undefined,
+                }
+              })
+
+            // Templates hang off a folder, never off the server's own row: the top level of a
+            // server holds folders only, which is what `parentId === null` means here.
+            const templates: TreeItem[] =
+              parentId === null
+                ? []
+                : published
+                    .filter((template) => template.nodeId === parentId)
+                    .map((template) => {
+                      // The copy on the canvas, if the sync has fetched it yet. Absent means the row
+                      // is drawn from the manifest alone — the right first frame, since the manifest
+                      // arrives long before the chunks do.
+                      const drawn = localTemplates().find(
+                        (candidate) => candidate.id === serverTemplateKey(server.url, template.id),
+                      )
+                      const templateTarget: TreeTarget = {
+                        server,
+                        nodeId: parentId,
+                        key: `st:${template.id}`,
+                        name: template.name,
+                        templateId: template.id,
+                      }
+                      return {
+                        key: `st:${template.id}`,
+                        name: template.name,
+                        // The same glyph a Local template row wears: it is the same kind of thing,
+                        // and where it lives is said by the tree rather than by the icon.
+                        kind: 'image' as const,
+                        childrenOf: null,
+                        // Unpublished ones are visible to an admin and nobody else, so they have to
+                        // look different — otherwise the tree shows a template members cannot see
+                        // and gives no hint why.
+                        muted: !template.published,
+                        meta: template.published ? undefined : 'unpublished',
+                        visible: drawn?.visible ?? false,
+                        setVisible: (on: boolean) => {
+                          if (drawn !== undefined) setLocalVisible(drawn.id, on)
+                        },
+                        canReparent: canEdit,
+                        onDropAt: canEdit ? intoServer : undefined,
+                        onContextMenu: canEdit
+                          ? (event: MouseEvent) => callbacks.onContextMenu(templateTarget, event)
+                          : undefined,
+                        onRename: canEdit
+                          ? (value: string) => callbacks.onRename(templateTarget, value)
+                          : undefined,
+                      }
+                    })
+
+            return [...folders, ...templates]
+          },
         }
-        renderChildren(null, 1)
+
+        renderLevel(wrap, source, null, 1, key, rerender)
         if (known.length === 0) wrap.appendChild(childText('No templates published yet.', 0))
         continue
       }
@@ -979,126 +1050,89 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
       // draws them takes a `PlacedTemplate` and does not care where it came from — but they are
       // listed under the server publishing them, not here.
       const mine = localTemplates().filter((template) => !isServerTemplate(template))
-      const folders = getState().localFolders
 
-      /** Templates sitting directly in one folder, or at the top of Local when null. */
-      const templatesIn = (folderId: string | null): readonly PlacedTemplate[] =>
-        mine.filter((template) => (template.folderId ?? null) === folderId)
-      const foldersIn = (parentId: string | null): readonly LocalFolder[] =>
-        folders.filter((folder) => folder.parentId === parentId)
-
-      const templateRow = (
-        template: PlacedTemplate,
-        depth: number,
-        siblings: readonly string[],
-        parentKey: string,
-      ): HTMLElement => {
-        const key = `local:${template.id}`
-        const templateTarget: TreeTarget = {
-          server: null,
-          nodeId: null,
-          key,
-          name: template.name,
-        }
-        return treeRow({
-          key,
-          name: template.name,
-          kind: 'image',
-          depth,
-          meta: `${template.width}×${template.height}`,
-          container: false,
-          parentKey,
-          canReparent: true,
-          siblings,
-          rerender,
-          onDropAt: callbacks.onMoveLocal,
-          checked: template.visible,
-          onToggleChecked: (on) => {
-            setLocalVisible(template.id, on)
-            rerender()
-          },
-          onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
-          onRename: (value) => callbacks.onRename(templateTarget, value),
-          // Only the two that are safe to hit by accident on a hover target. Move takes over the
-          // canvas and Remove destroys the template, so both live in the right-click menu and in
-          // the template's own menu on the canvas, where reaching them is deliberate.
-          actions: [
-            { icon: 'search', label: 'Go to', run: () => callbacks.onGoTo(template.id) },
-            {
-              icon: 'uploadFile',
-              label: 'Copy to a server',
-              run: () => callbacks.onCopyToServer(template.id),
-            },
-          ],
-        })
-      }
-
-      /**
-       * One ordered list per level, folders and templates together.
-       *
-       * Not folders-first. Sorting by kind means a template can never be put above a folder, and the
-       * order someone drags things into is the whole point of a custom order — a rule that quietly
-       * overrides it makes the drag look broken rather than constrained.
-       */
-      const renderLocal = (parentId: string | null, depth: number, parentKey: string): void => {
-        const childFolders = foldersIn(parentId)
-        const childTemplates = templatesIn(parentId)
-        const byKey = new Map<string, LocalFolder | PlacedTemplate>()
-        for (const folder of childFolders) byKey.set(`lf:${folder.id}`, folder)
-        for (const template of childTemplates) byKey.set(`local:${template.id}`, template)
-        const keys = orderedKeys([...byKey.keys()])
-
-        for (const key of keys) {
-          const item = byKey.get(key)
-          if (item === undefined) continue
-
-          if (key.startsWith('lf:')) {
-            const folder = item as LocalFolder
-            const folderTarget: TreeTarget = { server: null, nodeId: null, key, name: folder.name }
-            wrap.appendChild(
-              treeRow({
-                key,
+      const source: TreeSource = {
+        children: (parentId) => {
+          const folders: TreeItem[] = getState()
+            .localFolders.filter((folder) => folder.parentId === parentId)
+            .map((folder) => {
+              const folderTarget: TreeTarget = {
+                server: null,
+                nodeId: null,
+                key: `lf:${folder.id}`,
                 name: folder.name,
-                kind: 'folder',
-                depth,
-                container: true,
-                parentKey,
+              }
+              return {
+                key: `lf:${folder.id}`,
+                name: folder.name,
+                kind: 'folder' as const,
+                childrenOf: folder.id,
+                visible: folder.visible,
+                setVisible: (on: boolean) => setLocalFolderVisible(folder.id, on),
                 canReparent: true,
-                siblings: keys,
-                rerender,
-                checked: folder.visible,
-                onToggleChecked: (on) => {
-                  setLocalFolderVisible(folder.id, on)
-                  rerender()
-                },
-                onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
-                onRename: (value) => callbacks.onRename(folderTarget, value),
                 onDropAt: callbacks.onMoveLocal,
+                onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(folderTarget, event),
+                onRename: (value: string) => callbacks.onRename(folderTarget, value),
                 actions: [
                   {
-                    icon: 'createFolder',
+                    icon: 'createFolder' as const,
                     label: 'New folder',
                     run: () => callbacks.onCreateFolder(folderTarget),
                   },
                   {
-                    icon: 'uploadFile',
+                    icon: 'uploadFile' as const,
                     label: 'Import template',
                     run: () => callbacks.onImportTemplate(folderTarget),
                   },
                 ],
-              }),
-            )
-            if (isExpanded(key)) renderLocal(folder.id, depth + 1, key)
-            continue
-          }
+              }
+            })
 
-          wrap.appendChild(templateRow(item as PlacedTemplate, depth, keys, parentKey))
-        }
+          const templates: TreeItem[] = mine
+            .filter((template) => (template.folderId ?? null) === parentId)
+            .map((template) => {
+              const templateTarget: TreeTarget = {
+                server: null,
+                nodeId: null,
+                key: `local:${template.id}`,
+                name: template.name,
+              }
+              return {
+                key: `local:${template.id}`,
+                name: template.name,
+                kind: 'image' as const,
+                childrenOf: null,
+                meta: `${template.width}×${template.height}`,
+                visible: template.visible,
+                setVisible: (on: boolean) => setLocalVisible(template.id, on),
+                canReparent: true,
+                onDropAt: callbacks.onMoveLocal,
+                onContextMenu: (event: MouseEvent) =>
+                  callbacks.onContextMenu(templateTarget, event),
+                onRename: (value: string) => callbacks.onRename(templateTarget, value),
+                // Only the two that are safe to hit by accident on a hover target. Move takes over
+                // the canvas and Remove destroys the template, so both live in the right-click menu
+                // and in the template's own menu on the canvas, where reaching them is deliberate.
+                actions: [
+                  {
+                    icon: 'search' as const,
+                    label: 'Go to',
+                    run: () => callbacks.onGoTo(template.id),
+                  },
+                  {
+                    icon: 'uploadFile' as const,
+                    label: 'Copy to a server',
+                    run: () => callbacks.onCopyToServer(template.id),
+                  },
+                ],
+              }
+            })
 
-        if (parentId !== null && keys.length === 0) wrap.appendChild(childText('Empty.', depth))
+          return [...folders, ...templates]
+        },
       }
 
-      renderLocal(null, 1, 'local')
+      renderLevel(wrap, source, null, 1, 'local', rerender)
       if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.
