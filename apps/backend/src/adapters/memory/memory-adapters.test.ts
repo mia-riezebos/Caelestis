@@ -7,6 +7,7 @@ import {
   GRACE_SECONDS,
   MAX_COUNTER_DELTA_VALUE,
   MAX_COUNTER_DELTAS_PER_RECORD,
+  MAX_READ_BUCKETS_TEMPLATE_IDS,
   type Ports,
   RESOLUTION_SECONDS,
   RETENTION_SECONDS,
@@ -65,6 +66,26 @@ describe('memory adapters', () => {
         toSeconds: seconds(1_860),
       }),
     ).resolves.toEqual([later])
+  })
+
+  it('readBuckets refuses a template set beyond the port budget, as D1 does', async () => {
+    // The memory store is the oracle the differential tests measure against. With the cap enforced
+    // only on D1, the oracle said no such limit existed, and a caller developed against it would
+    // have met the real one in production. Duplicates are read once, so the bound is on the
+    // distinct set, not on the array.
+    const store = new MemorySqlStore()
+    const templateIds = Array.from(
+      { length: MAX_READ_BUCKETS_TEMPLATE_IDS + 1 },
+      (_, index) => `template-${index}`,
+    )
+    const query = { resolution: 60, fromSeconds: seconds(0), toSeconds: seconds(60) }
+
+    await expect(store.readBuckets({ ...query, templateIds })).rejects.toThrow(
+      /at most 3600 template ids/,
+    )
+    await expect(
+      store.readBuckets({ ...query, templateIds: [...templateIds.slice(0, -1), 'template-0'] }),
+    ).resolves.toEqual([])
   })
 
   it('counters read back all recorded deltas exactly', async () => {

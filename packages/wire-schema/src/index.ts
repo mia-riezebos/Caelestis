@@ -281,7 +281,7 @@ const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
 }
 
 /**
- * Reject a group whose templates overlap, in O(n log n).
+ * Reject a group whose templates overlap, by a sort and sweep.
  *
  * This was an all-pairs scan. It was correct — an earlier sort-and-sweep over `minX` missed wrapped
  * boxes, because two fully-overlapping wrapped templates both start high and end low, so the early
@@ -289,6 +289,14 @@ const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
  * MAX_MANIFEST_TEMPLATES templates in one group it is ~5e9 comparisons: measured at 31.7s for
  * 32,000 templates and 150s for 100,000, against a 30s Worker CPU limit. A schema-valid 23.6MB
  * manifest was a remote CPU kill, reachable by any client that can read a manifest.
+ *
+ * The sweep is not O(n log n), which an earlier version of this comment claimed. `active.splice` is
+ * linear in the active set, so templates that are y-disjoint, x-overlapping and supplied in
+ * descending `minY` insert at the front every time and the sweep degrades to quadratic. Measured on
+ * that input: 6ms at 10,000, 105ms at 50,000, 1.6s at the 100,000 cap. That is a 90x improvement on
+ * the scan it replaced and comfortably inside the CPU limit, so it is the shape of the bound that is
+ * wrong rather than the decision — recorded here so the next person to raise the cap does not read
+ * a guarantee that was never measured.
  *
  * The sweep keeps wrap correctness by sorting *spans* rather than boxes. The y test rests on an
  * invariant this function maintains itself: it returns on the first overlap found, so every span

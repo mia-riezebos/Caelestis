@@ -1,4 +1,10 @@
-import type { BucketQuery, SqlStore, TelemetryBucket } from '../../ports/index.js'
+import {
+  type BucketQuery,
+  MAX_READ_BUCKETS_TEMPLATE_IDS,
+  type SqlStore,
+  type TelemetryBucket,
+  tooManyTemplateIds,
+} from '../../ports/index.js'
 
 const bucketKey = (bucket: TelemetryBucket): string =>
   `${bucket.templateId}\u0000${bucket.resolution}\u0000${bucket.bucketStart}`
@@ -14,6 +20,7 @@ export class MemorySqlStore implements SqlStore {
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
     const templateIds = new Set(query.templateIds)
+    if (templateIds.size > MAX_READ_BUCKETS_TEMPLATE_IDS) throw tooManyTemplateIds(templateIds.size)
 
     return [...this.buckets.values()]
       .filter(
