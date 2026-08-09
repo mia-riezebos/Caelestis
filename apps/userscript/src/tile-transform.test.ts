@@ -476,7 +476,7 @@ describe('transparent browser hooks', () => {
       COLOR_BUFFER_BIT: 0x4000,
       MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
       getParameter: vi.fn(() => 2),
-      getUniformLocation: native('getUniformLocation', null),
+      getUniformLocation: native('getUniformLocation', 1),
       useProgram: native('useProgram'),
       uniform1i: native('uniform1i'),
       uniformMatrix4fv: native('uniformMatrix4fv'),
@@ -506,6 +506,9 @@ describe('transparent browser hooks', () => {
     } as unknown as Window & typeof globalThis
     install(realm, () => null)
     const gl = new FakeCanvas().getContext('webgl2') as unknown as WebGL2RenderingContext
+    expect(gl.getUniformLocation({} as WebGLProgram, 'hostile-shim')).toBe(
+      1 as unknown as WebGLUniformLocation,
+    )
     receivers.length = 0
     const other = {} as WebGL2RenderingContext
     const calls: Array<[keyof WebGL2RenderingContext, unknown[]]> = [
@@ -640,7 +643,6 @@ describe('transparent browser hooks', () => {
       width = 1_000
       height = 1_000
     }
-    vi.stubGlobal('ImageBitmap', FakeImageBitmap)
     const realm = {
       ...globalThis,
       Object,
@@ -745,6 +747,35 @@ describe('transparent browser hooks', () => {
     await Promise.resolve()
     expect(frames).toHaveLength(7)
     expect(frames[6]?.quads).toEqual([])
+  })
+
+  it('preserves native Blob construction contracts', () => {
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: globalThis.fetch,
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const callWithoutNew = realm.Blob as unknown as () => Blob
+    class ExtendedBlob extends realm.Blob {}
+
+    expect(() => callWithoutNew()).toThrow(TypeError)
+    expect(() => new realm.Blob(null as never)).toThrow(TypeError)
+    expect(new ExtendedBlob([])).toBeInstanceOf(ExtendedBlob)
+    expect(new realm.Blob([])).toBeInstanceOf(realm.Blob)
   })
 
   it('does not consume an arbitrary Blob-parts iterable a second time', () => {

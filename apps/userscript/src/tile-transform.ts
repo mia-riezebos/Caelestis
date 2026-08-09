@@ -749,16 +749,22 @@ export const install = (
 
     const nativeGetUniformLocation = gl.getUniformLocation
     gl.getUniformLocation = function (this: WebGL2RenderingContext, program, name) {
-      const location = nativeGetUniformLocation.call(this, program, name)
-      if (this === gl && location !== null) {
-        uniforms.set(location, { program, name })
-        // WebGL sampler uniforms default to texture unit zero. Remember that before the first
-        // explicit upload too: wrappers such as MapLibre cache uniforms and may not set one again.
-        if (name === 'u_image0' && !primarySamplerUnits.has(program)) {
-          primarySamplerUnits.set(program, gl.TEXTURE0)
-        }
-      }
-      return location
+      let location: WebGLUniformLocation | null = null
+      return runObservedCall(
+        () => {
+          location = nativeGetUniformLocation.call(this, program, name)
+          return location
+        },
+        () => {
+          if (this !== gl || location === null) return
+          uniforms.set(location, { program, name })
+          // WebGL sampler uniforms default to texture unit zero. Remember that before the first
+          // explicit upload too: wrappers such as MapLibre cache uniforms and may not set one again.
+          if (name === 'u_image0' && !primarySamplerUnits.has(program)) {
+            primarySamplerUnits.set(program, gl.TEXTURE0)
+          }
+        },
+      )
     }
 
     const nativeUseProgram = gl.useProgram
@@ -868,7 +874,10 @@ export const install = (
     const attributeUpload = (target: number, source: unknown): void => {
       if (target !== gl.TEXTURE_2D) return
       const texture = texture2DByUnit.get(activeTextureUnit) ?? null
-      if (texture === null || !isPageInstance(source, 'ImageBitmap')) {
+      if (
+        texture === null ||
+        !isPageInstance(source, 'ImageBitmap', realm as unknown as Record<string, unknown>)
+      ) {
         if (texture !== null && tileOfTexture.has(texture)) {
           const had = tileOfTexture.get(texture)
           warn('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
