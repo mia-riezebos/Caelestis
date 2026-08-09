@@ -194,6 +194,38 @@ export const resetQueues = (): void => tilesByByteLength.clear()
 const tileOfBitmap = new WeakMap<ImageBitmap, TileCoord>()
 
 /**
+ * Blob parts worth inspecting for tagged buffers. Kept separate because the Blob constructor has
+ * already consumed the input once before attribution gets a look at it.
+ */
+export const blobPartsForAttribution = (parts: unknown): readonly unknown[] => {
+  if (!Array.isArray(parts)) return []
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(parts)
+    const values: unknown[] = []
+    for (const [property, descriptor] of Object.entries(descriptors)) {
+      if (!/^\d+$/.test(property)) continue
+      // Do not invoke accessors a second time. Native Blob already observed them once.
+      if ('value' in descriptor) values.push(descriptor.value)
+    }
+    return values
+  } catch {
+    // Proxies can trap descriptor reads. Attribution is not worth another observable failure.
+    return []
+  }
+}
+
+/** Run instrumentation around a native call without changing the native call's contract. */
+export const runObservedCall = <Result>(native: () => Result, observe: () => void): Result => {
+  const result = native()
+  try {
+    observe()
+  } catch {
+    // The page already got a successful native operation. Instrumentation cannot change that fact.
+  }
+  return result
+}
+
+/**
  * The exact route, in two hops.
  *
  * wplace reads a tile with `arrayBuffer()` — measured, 16 calls and not one `blob()` — and builds
@@ -324,14 +356,14 @@ export const onTileFrame = (listener: FrameListener): void => {
   listeners.push(listener)
 }
 
-const installFetchTap = (): void => {
-  const nativeFetch = pageWindow().fetch
-  pageWindow().fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
+const installFetchTap = (realm: Window & typeof globalThis): void => {
+  const nativeFetch = realm.fetch
+  realm.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
     const url =
       typeof input === 'string'
         ? input
-        : isPageInstance(input, 'Request')
+        : isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)
           ? (input as Request).url
           : String(input)
     const tile = tileFromUrl(url)
@@ -393,8 +425,8 @@ const installFetchTap = (): void => {
   } as typeof globalThis.fetch
 }
 
-const installBlobTap = (): void => {
-  const NativeBlob = pageWindow().Blob
+const installBlobTap = (realm: Window & typeof globalThis): void => {
+  const NativeBlob = realm.Blob
   // Built through `Reflect.construct` with the caller's `new.target`, so `Blob()` without `new`
   // still throws and `class X extends Blob {}` still produces an `X`. A plain `new NativeBlob(...)`
   // changed both.
@@ -417,74 +449,92 @@ const installBlobTap = (): void => {
       args,
       (target as unknown) === (Wrapped as unknown) ? NativeBlob : target,
     ) as Blob
-    for (const part of (args[0] as unknown[]) ?? []) {
-      const buffer = isPageInstance(part, 'ArrayBuffer')
-        ? (part as ArrayBuffer)
-        : ArrayBuffer.isView(part)
-          ? part.buffer
-          : undefined
-      const tile = buffer === undefined ? undefined : tileOfBuffer.get(buffer)
-      if (tile !== undefined) {
-        tileOfBlob.set(blob, tile)
-        log('bitmap', `blob built from tagged buffer ${tile.x}/${tile.y}`, { bytes: blob.size })
-        break
+    try {
+      for (const part of blobPartsForAttribution(args[0])) {
+        const buffer = isPageInstance(
+          part,
+          'ArrayBuffer',
+          realm as unknown as Record<string, unknown>,
+        )
+          ? (part as ArrayBuffer)
+          : realm.ArrayBuffer.isView(part)
+            ? part.buffer
+            : undefined
+        const tile = buffer === undefined ? undefined : tileOfBuffer.get(buffer)
+        if (tile !== undefined) {
+          tileOfBlob.set(blob, tile)
+          log('bitmap', `blob built from tagged buffer ${tile.x}/${tile.y}`, { bytes: blob.size })
+          break
+        }
       }
+    } catch {
+      // Native construction already succeeded. Attribution must not change that observable result.
     }
     return blob
   } as unknown as typeof Blob
   Wrapped.prototype = NativeBlob.prototype
   Object.defineProperty(Wrapped, 'name', { value: NativeBlob.name, configurable: true })
-  pageWindow().Blob = Wrapped
+  realm.Blob = Wrapped
 }
 
-const installBitmapTap = (): void => {
-  const nativeCreateImageBitmap = pageWindow().createImageBitmap
+const installBitmapTap = (realm: Window & typeof globalThis): void => {
+  const nativeCreateImageBitmap = realm.createImageBitmap
   // biome-ignore lint/suspicious/noExplicitAny: createImageBitmap has two overload shapes
-  pageWindow().createImageBitmap = (async (...args: any[]) => {
+  realm.createImageBitmap = (async (...args: any[]) => {
     const bitmap = await (nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>)(
       ...args,
     )
-    const source = args[0]
-    if (isPageInstance(source, 'Blob')) {
-      // Exact first: this is the Blob we handed back from the fetch tap.
-      const exact = tileOfBlob.get(source as Blob)
-      if (exact !== undefined) {
-        tileOfBitmap.set(bitmap, exact)
-        // Retire the size entry this tile queued: it has been attributed exactly and must not stay
-        // behind to answer for some later blob that merely happens to be the same length.
-        consumeBySize((source as Blob).size, exact)
-        log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: (source as Blob).size })
-        return bitmap
+    try {
+      const source = args[0]
+      if (isPageInstance(source, 'Blob', realm as unknown as Record<string, unknown>)) {
+        // Exact first: this is the Blob we handed back from the fetch tap.
+        const exact = tileOfBlob.get(source as Blob)
+        if (exact !== undefined) {
+          tileOfBitmap.set(bitmap, exact)
+          // Retire the size entry this tile queued: it has been attributed exactly and must not stay
+          // behind to answer for some later blob that merely happens to be the same length.
+          consumeBySize((source as Blob).size, exact)
+          log('bitmap', `matched ${exact.x}/${exact.y} by identity`, {
+            bytes: (source as Blob).size,
+          })
+          return bitmap
+        }
+        count('bitmap:fell-back-to-byte-length')
+        const tile = takeBySize((source as Blob).size)
+        if (tile !== undefined) {
+          tileOfBitmap.set(bitmap, tile)
+          log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: (source as Blob).size })
+        } else if (bitmap.width === 1000 && bitmap.height === 1000) {
+          // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
+          // thins out: it will overwrite a texture's identity below.
+          warn('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
+            bytes: (source as Blob).size,
+            sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
+          })
+        }
       }
-      count('bitmap:fell-back-to-byte-length')
-      const tile = takeBySize((source as Blob).size)
-      if (tile !== undefined) {
-        tileOfBitmap.set(bitmap, tile)
-        log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: (source as Blob).size })
-      } else if (bitmap.width === 1000 && bitmap.height === 1000) {
-        // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
-        // thins out: it will overwrite a texture's identity below.
-        warn('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
-          bytes: (source as Blob).size,
-          sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
-        })
-      }
+    } catch {
+      // Native decoding already succeeded. A diagnostic or hostile object cannot reject its promise.
     }
     return bitmap
   }) as typeof globalThis.createImageBitmap
 }
 
-export const install = (): void => {
-  installFetchTap()
-  installBlobTap()
-  installBitmapTap()
+export const install = (
+  realm: Window & typeof globalThis = pageWindow(),
+  mapHandle: () => ReturnType<typeof getMap> = getMap,
+): void => {
+  installFetchTap(realm)
+  installBlobTap(realm)
+  installBitmapTap(realm)
 
-  const nativeGetContext = pageWindow().HTMLCanvasElement.prototype.getContext
+  const nativeGetContext = realm.HTMLCanvasElement.prototype.getContext
   let wrapped = false
   // Whether the wrapped context is one the map has confirmed as its own, rather than a guess.
   let wrappedIsMapOwned = false
+  let activeContextGeneration = 0
 
-  pageWindow().HTMLCanvasElement.prototype.getContext = function (
+  realm.HTMLCanvasElement.prototype.getContext = function (
     this: HTMLCanvasElement,
     // biome-ignore lint/suspicious/noExplicitAny: matching the DOM overload set is not worth it
     ...args: any[]
@@ -505,7 +555,7 @@ export const install = (): void => {
     // a later match correct it.
     let mapOwned: HTMLCanvasElement | undefined
     try {
-      mapOwned = getMap()?.getCanvas?.()
+      mapOwned = mapHandle()?.getCanvas?.()
     } catch {
       // A map mid-construction may not answer yet; treat that as no opinion.
     }
@@ -516,6 +566,7 @@ export const install = (): void => {
     if (wrapped) log('install', 're-targeting onto the map canvas', { type })
     wrapped = true
     wrappedIsMapOwned = mapOwned !== undefined
+    const contextGeneration = ++activeContextGeneration
     mapCanvas = this
     log('install', 'wrapped the map WebGL context', {
       type,
@@ -538,28 +589,31 @@ export const install = (): void => {
 
     const nativeUniformMatrix4fv = gl.uniformMatrix4fv.bind(gl)
     // biome-ignore lint/suspicious/noExplicitAny: the WebGL2 overloads differ from WebGL1's
-    gl.uniformMatrix4fv = ((location: any, transpose: any, value: any, ...rest: any[]) => {
-      if (location !== null && uniformNames.get(location) === 'u_projection_matrix') {
-        // A copy of exactly the values WebGL is about to read. MapLibre reuses a scratch array and
-        // WebGL2 lets an upload start at an offset, so keeping the array itself meant reading a
-        // different matrix than the GPU got — sixteen values from the wrong place, or the right
-        // place after someone else overwrote it.
-        const offset = typeof rest[0] === 'number' ? rest[0] : 0
-        const source = value as ArrayLike<number>
-        const snapshot = new Float32Array(MATRIX_LENGTH)
-        for (let index = 0; index < MATRIX_LENGTH; index += 1) {
-          snapshot[index] = source[offset + index] ?? 0
-        }
-        projection = snapshot
-      }
-      return nativeUniformMatrix4fv(location, transpose, value, ...rest)
-    }) as typeof gl.uniformMatrix4fv
+    gl.uniformMatrix4fv = ((location: any, transpose: any, value: any, ...rest: any[]) =>
+      runObservedCall(
+        () => nativeUniformMatrix4fv(location, transpose, value, ...rest),
+        () => {
+          if (location === null || uniformNames.get(location) !== 'u_projection_matrix') return
+          // A copy of exactly the values WebGL accepted. MapLibre reuses a scratch array and WebGL2
+          // lets an upload start at an offset, so retaining the caller's array reads another matrix.
+          const offset = typeof rest[0] === 'number' ? rest[0] : 0
+          const source = value as ArrayLike<number>
+          const snapshot = new Float32Array(MATRIX_LENGTH)
+          for (let index = 0; index < MATRIX_LENGTH; index += 1) {
+            snapshot[index] = source[offset + index] ?? 0
+          }
+          projection = snapshot
+        },
+      )) as typeof gl.uniformMatrix4fv
 
     const nativeBindTexture = gl.bindTexture.bind(gl)
-    gl.bindTexture = (target, texture) => {
-      boundTexture = texture
-      return nativeBindTexture(target, texture)
-    }
+    gl.bindTexture = (target, texture) =>
+      runObservedCall(
+        () => nativeBindTexture(target, texture),
+        () => {
+          boundTexture = texture
+        },
+      )
 
     /**
      * Both upload paths have to be watched, and missing one is not a gap in coverage but a source
@@ -607,18 +661,25 @@ export const install = (): void => {
     const nativeTexSubImage2D = gl.texSubImage2D.bind(gl)
     // biome-ignore lint/suspicious/noExplicitAny: texSubImage2D has as many overloads as texImage2D
     gl.texSubImage2D = ((...subArgs: any[]) => {
-      attributeUpload(subArgs[subArgs.length - 1])
-      return (nativeTexSubImage2D as (...a: unknown[]) => void)(...subArgs)
+      return runObservedCall(
+        () => (nativeTexSubImage2D as (...a: unknown[]) => void)(...subArgs),
+        () => attributeUpload(subArgs[subArgs.length - 1]),
+      )
     }) as typeof gl.texSubImage2D
 
     const nativeTexImage2D = gl.texImage2D.bind(gl)
     // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
     gl.texImage2D = ((...texArgs: any[]) => {
-      attributeUpload(texArgs[texArgs.length - 1])
-      return (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs)
+      return runObservedCall(
+        () => (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs),
+        () => attributeUpload(texArgs[texArgs.length - 1]),
+      )
     }) as typeof gl.texImage2D
 
     const recordDraw = (): void => {
+      // A provisional context remains wrapped after the real map context appears. Its later draws
+      // must not schedule a flush against the new map canvas or clear/corrupt the live overlay.
+      if (contextGeneration !== activeContextGeneration) return
       // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
       // wplace tiles in it still reaches the listener. That empty frame is what clears the overlay
       // when the user zooms out past the point where wplace serves tiles at all.
@@ -654,15 +715,11 @@ export const install = (): void => {
     }
 
     const nativeDrawArrays = gl.drawArrays.bind(gl)
-    gl.drawArrays = (mode, first, count) => {
-      recordDraw()
-      return nativeDrawArrays(mode, first, count)
-    }
+    gl.drawArrays = (mode, first, count) =>
+      runObservedCall(() => nativeDrawArrays(mode, first, count), recordDraw)
     const nativeDrawElements = gl.drawElements.bind(gl)
-    gl.drawElements = (mode, count, elementType, offset) => {
-      recordDraw()
-      return nativeDrawElements(mode, count, elementType, offset)
-    }
+    gl.drawElements = (mode, count, elementType, offset) =>
+      runObservedCall(() => nativeDrawElements(mode, count, elementType, offset), recordDraw)
 
     return gl
   }

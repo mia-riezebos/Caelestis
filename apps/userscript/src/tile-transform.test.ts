@@ -1,5 +1,17 @@
-import { describe, expect, it } from 'vitest'
-import { project, quadFromMatrix, tileFromUrl } from './tile-transform.js'
+import { describe, expect, it, vi } from 'vitest'
+import { counters } from './debug.js'
+import {
+  blobPartsForAttribution,
+  consumeBySize,
+  enqueueBySize,
+  install,
+  project,
+  quadFromMatrix,
+  resetQueues,
+  runObservedCall,
+  takeBySize,
+  tileFromUrl,
+} from './tile-transform.js'
 
 /**
  * The parts of the overlay that are arithmetic rather than browser.
@@ -164,5 +176,142 @@ describe('quadFromMatrix', () => {
     const m = tileMatrix(1)
     m[5] = -(m[0] ?? 0) * 1.01
     expect(quadFromMatrix(m, tile, canvas(1000))).not.toBeNull()
+  })
+})
+
+describe('byte-length attribution queue', () => {
+  it('expires stale entries before a later fallback can consume them', () => {
+    resetQueues()
+    enqueueBySize(73, { x: 1, y: 2 }, 1_000)
+
+    expect(takeBySize(73, 31_000)).toBeUndefined()
+  })
+
+  it('caps one compressed size and consumes an exact identity match', () => {
+    resetQueues()
+    for (let x = 0; x < 9; x += 1) enqueueBySize(73, { x, y: 0 }, 1_000)
+    consumeBySize(73, { x: 4, y: 0 })
+
+    expect(takeBySize(73, 1_001)).toEqual({ x: 1, y: 0 })
+    expect(Array.from({ length: 6 }, () => takeBySize(73, 1_001))).not.toContainEqual({
+      x: 4,
+      y: 0,
+    })
+    expect(takeBySize(73, 1_001)).toBeUndefined()
+  })
+})
+
+describe('transparent browser hooks', () => {
+  it('deactivates a provisional WebGL context after retargeting to the map', async () => {
+    const fakeGl = () => ({
+      getUniformLocation: vi.fn(() => null),
+      uniformMatrix4fv: vi.fn(),
+      bindTexture: vi.fn(),
+      texSubImage2D: vi.fn(),
+      texImage2D: vi.fn(),
+      drawArrays: vi.fn(),
+      drawElements: vi.fn(),
+    })
+    class FakeCanvas {
+      width = 100
+      height = 100
+      constructor(readonly context: ReturnType<typeof fakeGl>) {}
+      getContext(_type?: string): ReturnType<typeof fakeGl> {
+        return this.context
+      }
+    }
+    const realm = {
+      fetch: globalThis.fetch,
+      Blob: globalThis.Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer: globalThis.ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    let mapCanvas: FakeCanvas | null = null
+    const mapHandle = () =>
+      mapCanvas === null
+        ? null
+        : {
+            flyTo: () => undefined,
+            easeTo: () => undefined,
+            jumpTo: () => undefined,
+            getZoom: () => 1,
+            getCenter: () => ({ lng: 0, lat: 0 }),
+            getCanvas: () => mapCanvas as unknown as HTMLCanvasElement,
+          }
+
+    install(realm, mapHandle)
+    const provisional = new FakeCanvas(fakeGl())
+    provisional.getContext('webgl2')
+    mapCanvas = new FakeCanvas(fakeGl())
+    mapCanvas.getContext('webgl2')
+    counters.clear()
+
+    provisional.context.drawArrays()
+    await Promise.resolve()
+    expect(counters.get('draw:no-texture-or-matrix')).toBeUndefined()
+
+    mapCanvas.context.drawArrays()
+    await Promise.resolve()
+    expect(counters.get('draw:no-texture-or-matrix')).toBe(1)
+  })
+
+  it('does not consume an arbitrary Blob-parts iterable a second time', () => {
+    let iterations = 0
+    const parts = {
+      *[Symbol.iterator]() {
+        iterations += 1
+        if (iterations > 1) throw new Error('iterated twice')
+        yield new Uint8Array([1, 2, 3])
+      },
+    }
+
+    new Blob(parts as unknown as BlobPart[])
+    expect(() => blobPartsForAttribution(parts)).not.toThrow()
+    expect(iterations).toBe(1)
+  })
+
+  it('inspects ordinary Blob-part arrays without invoking accessors', () => {
+    const first = new Uint8Array([1])
+    const second = new Uint8Array([2])
+    const parts: BlobPart[] = [first, second]
+    let accessorReads = 0
+    Object.defineProperty(parts, '2', {
+      enumerable: true,
+      get() {
+        accessorReads += 1
+        return new Uint8Array([3])
+      },
+    })
+
+    expect(blobPartsForAttribution(parts)).toEqual([first, second])
+    expect(accessorReads).toBe(0)
+  })
+
+  it('does not commit observations when the native call fails', () => {
+    let observed = false
+
+    expect(() =>
+      runObservedCall(
+        () => {
+          throw new DOMException('tainted', 'SecurityError')
+        },
+        () => {
+          observed = true
+        },
+      ),
+    ).toThrowError(DOMException)
+    expect(observed).toBe(false)
+  })
+
+  it('does not expose an instrumentation failure after the native call succeeds', () => {
+    expect(
+      runObservedCall(
+        () => 'native result',
+        () => {
+          throw new Error('observer failed')
+        },
+      ),
+    ).toBe('native result')
   })
 })

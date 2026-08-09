@@ -35,11 +35,20 @@ export const isSandboxed = (): boolean => typeof window !== 'undefined' && pageW
  * false for every single value the hooks exist to recognise — which fails the way the sandbox
  * problem always fails here, by capturing nothing and reporting nothing.
  */
-export const isPageInstance = (value: unknown, name: string): boolean => {
-  const local = (globalThis as Record<string, unknown>)[name]
-  const page = (pageWindow() as unknown as Record<string, unknown>)[name]
-  for (const candidate of [page, local]) {
-    if (typeof candidate === 'function' && value instanceof (candidate as never)) return true
+export const isPageInstance = (
+  value: unknown,
+  name: string,
+  realm: Record<string, unknown> = pageWindow() as unknown as Record<string, unknown>,
+): boolean => {
+  const candidate = realm[name]
+  if (typeof candidate !== 'function') return false
+  try {
+    // Only the page constructor counts. Falling back to the sandbox constructor accepts the exact
+    // cross-realm objects these hooks must ignore and can consume a real tile's fallback attribution.
+    return value instanceof (candidate as never)
+  } catch {
+    // A page can replace a writable intrinsic with a callable that has no valid instanceof target.
+    // Instrumentation is best-effort and must never turn that into an exception from page code.
+    return false
   }
-  return false
 }
