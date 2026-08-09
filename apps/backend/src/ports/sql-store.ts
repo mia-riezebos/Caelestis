@@ -312,7 +312,20 @@ export class NodeNotEmptyError extends Error {
 }
 
 export interface SqlStore {
-  insertNode(node: NodeRecord): Promise<void>
+  /**
+   * Insert a node, and answer with the row as stored.
+   *
+   * Only the last segment of `node.path` is honoured. The prefix is taken from the parent row at the
+   * moment of the write, because a caller derives it from its own earlier read and a rename landing
+   * in between would otherwise attach the child under a prefix its parent no longer has. Everything
+   * downstream — the uniqueness check, the length bound, the returned record — is decided on the
+   * composed path, so nothing can disagree about which path this node has.
+   *
+   * Throws `NodePathConflictError` when that composed path is taken, `NodePathTooLongError` when it
+   * exceeds `MAX_NODE_PATH_LENGTH`, and `InvalidNodeParentError` when the parent is missing or in
+   * another season.
+   */
+  insertNode(node: NodeRecord): Promise<NodeRecord>
 
   readNode(nodeId: string): Promise<NodeRecord | null>
 

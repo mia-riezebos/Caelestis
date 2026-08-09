@@ -90,15 +90,22 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
       description: description ?? null,
       createdAt: millis(Date.now()),
     }
+    let inserted: NodeRecord
     try {
-      await sql.insertNode(node)
+      // The store composes the prefix from the parent row, so the record it answers with is the one
+      // to report — the path assembled here is only a bound check and a proposal.
+      inserted = await sql.insertNode(node)
     } catch (error) {
-      if (error instanceof NodePathConflictError || error instanceof InvalidNodeParentError) {
+      if (
+        error instanceof NodePathConflictError ||
+        error instanceof InvalidNodeParentError ||
+        error instanceof NodePathTooLongError
+      ) {
         return c.json({ error: error.message }, 400)
       }
       throw error
     }
-    return c.json(publicNode(node), 201)
+    return c.json(publicNode(inserted), 201)
   })
 
   routes.get('/', async (c) => {

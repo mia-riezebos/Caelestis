@@ -111,7 +111,7 @@ export class D1SqlStore implements SqlStore {
     this.database = drizzle(database)
   }
 
-  async insertNode(node: NodeRecord): Promise<void> {
+  async insertNode(node: NodeRecord): Promise<NodeRecord> {
     if (node.parentId !== null) {
       const parent = await this.readNode(node.parentId)
       if (parent === null) throw new InvalidNodeParentError('parent node does not exist')
@@ -151,8 +151,18 @@ export class D1SqlStore implements SqlStore {
       if (mentions(error, 'FOREIGN KEY constraint failed')) {
         throw new InvalidNodeParentError('parent node does not exist')
       }
+      // The route bounds the path it derived, but the prefix written here comes from the parent row,
+      // which a rename may have lengthened since. The CHECK is the authority; losing to it answers
+      // the same 400 as failing the route's own check rather than a 500.
+      if (mentions(error, 'CHECK constraint failed: nodes_path_check')) {
+        throw new NodePathTooLongError(`node path is longer than ${MAX_NODE_PATH_LENGTH}`)
+      }
       throw error
     }
+    // Re-read rather than assemble: the path the database composed is the one that is true.
+    const inserted = await this.readNode(node.id)
+    if (inserted === null) throw new NodeNotFoundError(`node does not exist: ${node.id}`)
+    return inserted
   }
 
   async readNode(nodeId: string): Promise<NodeRecord | null> {

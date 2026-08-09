@@ -51,29 +51,37 @@ export class MemorySqlStore implements SqlStore {
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
 
-  async insertNode(node: NodeRecord): Promise<void> {
+  async insertNode(node: NodeRecord): Promise<NodeRecord> {
     if (this.nodes.has(node.id)) throw new Error(`node already exists: ${node.id}`)
+
+    // Composed before anything is checked. Checking the caller's path and storing a different one
+    // let a child land on a path the check had already cleared as free — two rows, one path, and the
+    // oracle disagreeing with a database that has a unique index to stop exactly that.
+    let path = node.path
+    if (node.parentId !== null) {
+      const parent = this.nodes.get(node.parentId)
+      if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
+      if (parent.season !== node.season) {
+        throw new InvalidNodeParentError('parent node belongs to a different season')
+      }
+      path = `${parent.path}/${node.path.slice(node.path.lastIndexOf('/') + 1)}`
+    }
+
+    if (path.length > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(`node path is longer than ${MAX_NODE_PATH_LENGTH}`)
+    }
     if (
       [...this.nodes.values()].some(
         (candidate) =>
-          candidate.season === node.season && foldPath(candidate.path) === foldPath(node.path),
+          candidate.season === node.season && foldPath(candidate.path) === foldPath(path),
       )
     ) {
       throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
     }
-    if (node.parentId === null) {
-      this.nodes.set(node.id, { ...node })
-      return
-    }
-    const parent = this.nodes.get(node.parentId)
-    if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
-    if (parent.season !== node.season) {
-      throw new InvalidNodeParentError('parent node belongs to a different season')
-    }
-    // The prefix is the parent's, not whatever the caller derived from its own earlier read of it.
-    // Same rule as `renameNode`; only the last segment is the caller's to choose.
-    const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
-    this.nodes.set(node.id, { ...node, path: `${parent.path}/${segment}` })
+
+    const inserted = { ...node, path }
+    this.nodes.set(node.id, inserted)
+    return inserted
   }
 
   async readNode(nodeId: string): Promise<NodeRecord | null> {
@@ -102,6 +110,11 @@ export class MemorySqlStore implements SqlStore {
     // Folded, because SQLite's LIKE is case-insensitive over ASCII and so selects `/CANADA/x` under
     // the prefix `/canada/`. A case-sensitive match here would leave that child behind in the oracle
     // while production moved it.
+    //
+    // No reachable state needs it any more: `insertNode` composes a child's prefix from its parent,
+    // so a tree cannot hold two spellings of one prefix, and there is deliberately no test for it.
+    // Kept because the fold is what SQLite does, and this store's job is to answer as SQLite would —
+    // if such a row ever arrives, from a migration or a future write path, the two still agree.
     const foldedPrefix = foldPath(oldPrefix)
     const descendants = [...this.nodes.values()].filter(
       (candidate) =>
