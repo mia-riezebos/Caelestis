@@ -264,6 +264,19 @@ export class NodePathConflictError extends Error {
   override readonly name = 'NodePathConflictError'
 }
 
+/**
+ * The longest a node path may be, mirroring `nodes_path_check` and the wire's `NodePath`.
+ *
+ * Lives here rather than in the route because a rename is what can exceed it without anyone naming
+ * an over-long string: renaming an ancestor lengthens every path beneath it, so the request that
+ * breaks the bound is one whose own path is comfortably inside it.
+ */
+export const MAX_NODE_PATH_LENGTH = 256
+
+export class NodePathTooLongError extends Error {
+  override readonly name = 'NodePathTooLongError'
+}
+
 export class InvalidNodeParentError extends Error {
   override readonly name = 'InvalidNodeParentError'
 }
@@ -309,10 +322,19 @@ export interface SqlStore {
    * Rename a node and rewrite the paths of everything beneath it.
    *
    * `path` is a materialized prefix, so a rename is not a one-row update: every descendant carries
-   * the old path as a prefix and has to move with it, atomically. Returns false when the id does not
-   * exist, and throws `NodePathConflictError` when the new path collides with a sibling.
+   * the old path as a prefix and has to move with it, atomically.
+   *
+   * Takes the new last segment rather than the whole path, and composes the destination from the
+   * node's own current path. A caller that derived the full path would be deriving it from a read
+   * that can go stale: two concurrent renames, one of a node and one of its parent, could each
+   * compute a destination under a prefix the other is in the middle of moving, and the loser writes
+   * a path its own `parentId` contradicts. The prefix is never the caller's to supply.
+   *
+   * Returns the renamed node, or null when the id does not exist. Throws `NodePathConflictError`
+   * when the destination collides with a sibling, and `NodePathTooLongError` when the rename would
+   * push the node or any descendant past `MAX_NODE_PATH_LENGTH`.
    */
-  renameNode(nodeId: string, name: string, path: string): Promise<boolean>
+  renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null>
 
   deleteNode(nodeId: string): Promise<void>
 

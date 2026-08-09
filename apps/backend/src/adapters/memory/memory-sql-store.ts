@@ -8,12 +8,14 @@ import {
   compareAccessTokens,
   compareBuckets,
   InvalidNodeParentError,
+  MAX_NODE_PATH_LENGTH,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
+  NodePathTooLongError,
   type NodeRecord,
   type SqlStore,
   type TelemetryBucket,
@@ -81,30 +83,48 @@ export class MemorySqlStore implements SqlStore {
       .map((node) => ({ ...node }))
   }
 
-  async renameNode(nodeId: string, name: string, path: string): Promise<boolean> {
+  async renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null> {
     const node = this.nodes.get(nodeId)
-    if (node === undefined) return false
+    if (node === undefined) return null
+    // Composed from the node's own path, so the prefix is whatever its parent established — see the
+    // port docstring on why a caller-supplied path is a race.
+    const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
+
     const taken = [...this.nodes.values()].some(
       (candidate) =>
         candidate.id !== nodeId &&
         candidate.season === node.season &&
-        candidate.path.toLowerCase() === path.toLowerCase(),
+        foldPath(candidate.path) === foldPath(path),
     )
-    if (taken)
+    if (taken) {
       throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+    }
 
     const oldPrefix = `${node.path}/`
+    // Folded, because SQLite's LIKE is case-insensitive over ASCII and so selects `/CANADA/x` under
+    // the prefix `/canada/`. A case-sensitive match here would leave that child behind in the oracle
+    // while production moved it.
+    const foldedPrefix = foldPath(oldPrefix)
     const descendants = [...this.nodes.values()].filter(
-      (candidate) => candidate.season === node.season && candidate.path.startsWith(oldPrefix),
+      (candidate) =>
+        candidate.season === node.season && foldPath(candidate.path).startsWith(foldedPrefix),
     )
-    this.nodes.set(nodeId, { ...node, name, path })
-    for (const descendant of descendants) {
-      this.nodes.set(descendant.id, {
-        ...descendant,
-        path: `${path}/${descendant.path.slice(oldPrefix.length)}`,
-      })
+
+    const rewritten = descendants.map((descendant) => ({
+      ...descendant,
+      path: `${path}${descendant.path.slice(node.path.length)}`,
+    }))
+    const longest = Math.max(path.length, ...rewritten.map((entry) => entry.path.length))
+    if (longest > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(
+        `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+      )
     }
-    return true
+
+    const renamed = { ...node, name, path }
+    this.nodes.set(nodeId, renamed)
+    for (const descendant of rewritten) this.nodes.set(descendant.id, descendant)
+    return renamed
   }
 
   async deleteNode(nodeId: string): Promise<void> {

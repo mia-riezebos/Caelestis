@@ -2,7 +2,12 @@ import { millis, uuidV7 } from '@wts/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { NodeRecord, SqlStore } from '../ports/index.js'
-import { InvalidNodeParentError, NodeNotEmptyError, NodePathConflictError } from '../ports/index.js'
+import {
+  InvalidNodeParentError,
+  NodeNotEmptyError,
+  NodePathConflictError,
+  NodePathTooLongError,
+} from '../ports/index.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 // Seasons are 1-based, matching `Season` in the wire and the Worker's own `SEASON` refusal.
@@ -116,22 +121,18 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
     const segment = slug(name)
     if (segment.length === 0) return c.json({ error: 'name must contain a letter or number' }, 400)
 
-    const node = await sql.readNode(nodeId)
-    if (node === null) return c.json({ error: 'not found' }, 404)
-    // The path is the parent's plus this node's own segment, so a rename only ever rewrites the
-    // last segment — the prefix is whatever the parent already established.
-    const parentPath = node.path.slice(0, node.path.lastIndexOf('/'))
-    const path = `${parentPath}/${segment}`
-    if (path.length > MAX_PATH_LENGTH) return c.json({ error: 'derived path is too long' }, 400)
-
+    // The destination prefix is the store's to compose, not this route's: it comes from the node's
+    // own path at the moment of the write, so a concurrent rename of an ancestor cannot leave this
+    // one writing a path under a prefix that has since moved.
     try {
-      const renamed = await sql.renameNode(nodeId, name, path)
-      if (!renamed) return c.json({ error: 'not found' }, 404)
+      const renamed = await sql.renameNode(nodeId, name, segment)
+      if (renamed === null) return c.json({ error: 'not found' }, 404)
+      return c.json(publicNode(renamed))
     } catch (error) {
       if (error instanceof NodePathConflictError) return c.json({ error: error.message }, 409)
+      if (error instanceof NodePathTooLongError) return c.json({ error: error.message }, 400)
       throw error
     }
-    return c.json(publicNode({ ...node, name, path }))
   })
 
   routes.delete('/:id', async (c) => {

@@ -17,12 +17,14 @@ import {
   compareAccessTokens,
   compareBuckets,
   InvalidNodeParentError,
+  MAX_NODE_PATH_LENGTH,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
+  NodePathTooLongError,
   type NodeRecord,
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
@@ -159,30 +161,54 @@ export class D1SqlStore implements SqlStore {
     return rows.map(toNode)
   }
 
-  async renameNode(nodeId: string, name: string, path: string): Promise<boolean> {
+  async renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null> {
     const node = await this.readNode(nodeId)
-    if (node === null) return false
+    if (node === null) return null
+    // Composed from the node's own path — see the port docstring on why a caller-supplied path is a
+    // race between two concurrent renames.
+    const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
+
+    // Renaming an ancestor lengthens every path beneath it, so the request that breaks the bound is
+    // one whose own path is well inside it. Every descendant keeps its suffix, so the longest result
+    // is the longest current path shifted by the change in the prefix — one aggregate, no scan.
+    const oldPrefix = `${node.path}/`
+    const descendants = and(eq(nodes.season, node.season), like(nodes.path, `${oldPrefix}%`))
+    const [longest] = await this.database
+      .select({ length: sql<number>`coalesce(max(length(${nodes.path})), 0)` })
+      .from(nodes)
+      .where(descendants)
+    const deepest = (longest?.length ?? 0) + path.length - node.path.length
+    if (Math.max(path.length, deepest) > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(
+        `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+      )
+    }
 
     // One batch: the node and every descendant move together or not at all. A half-applied rename
     // leaves children whose path no longer starts with their parent's, which silently breaks every
     // prefix rollup rather than failing loudly.
-    const oldPrefix = `${node.path}/`
+    //
+    // The suffix starts at the old path's length rather than the old prefix's, so it keeps the
+    // separating slash — cutting past it concatenated `/renamed` with `child` and wrote
+    // `/renamedchild` for every descendant of every rename. And the offset comes from SQLite's own
+    // `length()`, which counts characters, where JavaScript's counts UTF-16 units: an astral
+    // character anywhere in the old path made the two disagree and sliced the suffix short.
     const statements = [
       this.database.update(nodes).set({ name, path }).where(eq(nodes.id, nodeId)),
       this.database
         .update(nodes)
-        .set({ path: sql`${path} || substr(${nodes.path}, ${oldPrefix.length + 1})` })
-        .where(and(eq(nodes.season, node.season), like(nodes.path, `${oldPrefix}%`))),
+        .set({ path: sql`${path} || substr(${nodes.path}, length(${node.path}) + 1)` })
+        .where(descendants),
     ] as const
     try {
       await this.database.batch([statements[0], statements[1]])
     } catch (error) {
-      if (mentions(error, 'UNIQUE constraint failed')) {
+      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
       throw error
     }
-    return true
+    return { ...node, name, path }
   }
 
   async deleteNode(nodeId: string): Promise<void> {
