@@ -25,8 +25,8 @@ import { isPageInstance, pageWindow } from './page-world.js'
  * `document-start`.
  */
 
-/** MapLibre's tile coordinate extent. Tile-local `(0,0)`..`(EXTENT,EXTENT)` spans one whole tile. */
 const MATRIX_LENGTH = 16
+/** MapLibre's tile coordinate extent. Tile-local `(0,0)`..`(EXTENT,EXTENT)` spans one whole tile. */
 const MAPLIBRE_TILE_EXTENT = 8192
 
 /** How square a quad must be to be believed, as a fraction of its width. */
@@ -360,6 +360,45 @@ export const runObservedCall = <Result>(native: () => Result, observe: () => voi
   return result
 }
 
+interface InstalledValueHook {
+  restore(): void
+}
+
+/** Install an own hook without inheriting another script's non-writable prototype descriptor. */
+const installValueHook = (
+  target: object,
+  property: PropertyKey,
+  value: unknown,
+): InstalledValueHook | null => {
+  let previous: PropertyDescriptor | undefined
+  try {
+    previous = Object.getOwnPropertyDescriptor(target, property)
+    const descriptor =
+      previous?.configurable === false
+        ? { value }
+        : {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: previous?.enumerable ?? false,
+          }
+    Object.defineProperty(target, property, descriptor)
+  } catch {
+    return null
+  }
+  return {
+    restore() {
+      try {
+        if (Object.getOwnPropertyDescriptor(target, property)?.value !== value) return
+        if (previous === undefined) Reflect.deleteProperty(target, property)
+        else Object.defineProperty(target, property, previous)
+      } catch {
+        // A later owner changed the surface; restoring ours is no longer safe or necessary.
+      }
+    },
+  }
+}
+
 /**
  * The exact route, in two hops.
  *
@@ -444,7 +483,13 @@ let overlayHasContent = false
 const emit = (quads: readonly TileQuad[]): void => {
   if (mapCanvas === null) return
   const frame: TileFrame = { canvas: mapCanvas, quads }
-  for (const listener of listeners) listener(frame)
+  for (const listener of listeners) {
+    try {
+      listener(frame)
+    } catch {
+      count('frame:listener-failed')
+    }
+  }
 }
 
 const flush = (): void => {
@@ -478,9 +523,9 @@ const flush = (): void => {
   }
 
   // No tiles this frame, and the overlay has ink on it: clear now, in this same frame.
-  overlayHasContent = false
   log('clear', 'no tiles this frame — clearing now')
   emit([])
+  overlayHasContent = false
 }
 
 /**
@@ -491,10 +536,15 @@ export const onTileFrame = (listener: FrameListener): void => {
   listeners.push(listener)
 }
 
-const installFetchTap = (realm: Window & typeof globalThis): void => {
+/** Clear module-owned listeners between isolated installs. Exported for tests. */
+export const resetTileFrameListeners = (): void => {
+  listeners.length = 0
+}
+
+const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const nativeFetch = realm.fetch
   const urlGetters = captureFetchUrlGetters(realm)
-  realm.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
+  const wrappedFetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
     // Snapshot only safely observable metadata before native fetch consumes mutable RequestInit
     // dictionaries. An accessor may delete itself while WebIDL reads it; inspecting afterward would
@@ -581,9 +631,10 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       return response
     }
   } as typeof globalThis.fetch
+  return installValueHook(realm, 'fetch', wrappedFetch)
 }
 
-const installBlobTap = (realm: Window & typeof globalThis): void => {
+const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const NativeBlob = realm.Blob
   // Built through `Reflect.construct` with the caller's `new.target`, so `Blob()` without `new`
   // still throws and `class X extends Blob {}` still produces an `X`. A plain `new NativeBlob(...)`
@@ -632,13 +683,13 @@ const installBlobTap = (realm: Window & typeof globalThis): void => {
   } as unknown as typeof Blob
   Wrapped.prototype = NativeBlob.prototype
   Object.defineProperty(Wrapped, 'name', { value: NativeBlob.name, configurable: true })
-  realm.Blob = Wrapped
+  return installValueHook(realm, 'Blob', Wrapped)
 }
 
-const installBitmapTap = (realm: Window & typeof globalThis): void => {
+const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const nativeCreateImageBitmap = realm.createImageBitmap
   // biome-ignore lint/suspicious/noExplicitAny: createImageBitmap has two overload shapes
-  realm.createImageBitmap = (async (...args: any[]) => {
+  const wrappedCreateImageBitmap = (async (...args: any[]) => {
     const pendingBitmap = (nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>)(
       ...args,
     )
@@ -676,7 +727,7 @@ const installBitmapTap = (realm: Window & typeof globalThis): void => {
         } else if (bitmap.width === 1000 && bitmap.height === 1000) {
           // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
           // thins out: it will overwrite a texture's identity below.
-          warn('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
+          log('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
             bytes: sourceBytes,
             sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
           })
@@ -687,17 +738,44 @@ const installBitmapTap = (realm: Window & typeof globalThis): void => {
     }
     return bitmap
   }) as typeof globalThis.createImageBitmap
+  return installValueHook(realm, 'createImageBitmap', wrappedCreateImageBitmap)
 }
 
 export const install = (
   realm: Window & typeof globalThis = pageWindow(),
   mapHandle: () => ReturnType<typeof getMap> = getMap,
 ): void => {
-  installFetchTap(realm)
-  installBlobTap(realm)
-  installBitmapTap(realm)
+  const browserHooks: InstalledValueHook[] = []
+  const addBrowserHook = (installer: () => InstalledValueHook | null): boolean => {
+    try {
+      const hook = installer()
+      if (hook === null) return false
+      browserHooks.push(hook)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const abandonBrowserHooks = (): void => {
+    for (const hook of browserHooks.reverse()) hook.restore()
+  }
+  if (!addBrowserHook(() => installFetchTap(realm))) return
+  if (!addBrowserHook(() => installBlobTap(realm))) {
+    abandonBrowserHooks()
+    return
+  }
+  if (!addBrowserHook(() => installBitmapTap(realm))) {
+    abandonBrowserHooks()
+    return
+  }
 
-  const nativeGetContext = realm.HTMLCanvasElement.prototype.getContext
+  let nativeGetContext: typeof realm.HTMLCanvasElement.prototype.getContext
+  try {
+    nativeGetContext = realm.HTMLCanvasElement.prototype.getContext
+  } catch {
+    abandonBrowserHooks()
+    return
+  }
   let wrapped = false
   // Whether the wrapped context is one the map has confirmed as its own, rather than a guess.
   let wrappedIsMapOwned = false
@@ -712,7 +790,7 @@ export const install = (
     }
   }
 
-  realm.HTMLCanvasElement.prototype.getContext = function (
+  const wrappedGetContext = function (
     this: HTMLCanvasElement,
     // biome-ignore lint/suspicious/noExplicitAny: matching the DOM overload set is not worth it
     ...args: any[]
@@ -752,16 +830,38 @@ export const install = (
       if (currentLooksLikeMap || !candidateLooksLikeMap) return context
     }
     if (wrapped) log('install', 're-targeting onto the map canvas', { type })
+    const previousWrapped = wrapped
+    const previousWrappedIsMapOwned = wrappedIsMapOwned
+    const previousContextGeneration = activeContextGeneration
+    const previousMapCanvas = mapCanvas
     wrapped = true
     wrappedIsMapOwned = mapOwned !== undefined
     const contextGeneration = ++activeContextGeneration
     mapCanvas = this
-    log('install', 'wrapped the map WebGL context', {
-      type,
-      canvas: `${this.width}x${this.height}`,
-    })
 
     const gl = context as WebGL2RenderingContext
+    const glHooks: InstalledValueHook[] = []
+    let glHookFailed = false
+    // The empty proxy keeps assignment's contextual WebGL types without inheriting the real
+    // context's property invariants. Its setter installs own properties through defineProperty,
+    // which safely bypasses a co-installed script's inherited non-writable method.
+    const hookedGl = new Proxy({} as WebGL2RenderingContext, {
+      set(_target, property, value) {
+        if (glHookFailed) return true
+        const hook = installValueHook(gl, property, value)
+        if (hook === null) glHookFailed = true
+        else glHooks.push(hook)
+        return true
+      },
+    })
+    const abandonGlHooks = (): typeof context => {
+      for (const hook of glHooks.reverse()) hook.restore()
+      wrapped = previousWrapped
+      wrappedIsMapOwned = previousWrappedIsMapOwned
+      activeContextGeneration = previousContextGeneration
+      mapCanvas = previousMapCanvas
+      return context
+    }
     // Weak: a long session rebuilds programs, and this only ever needs object identity.
     interface UniformIdentity {
       readonly program: WebGLProgram
@@ -787,7 +887,7 @@ export const install = (
     }
 
     const nativeGetUniformLocation = gl.getUniformLocation
-    gl.getUniformLocation = function (this: WebGL2RenderingContext, program, name) {
+    hookedGl.getUniformLocation = function (this: WebGL2RenderingContext, program, name) {
       let location: WebGLUniformLocation | null = null
       return runObservedCall(
         () => {
@@ -807,7 +907,7 @@ export const install = (
     }
 
     const nativeUseProgram = gl.useProgram
-    gl.useProgram = function (this: WebGL2RenderingContext, program) {
+    hookedGl.useProgram = function (this: WebGL2RenderingContext, program) {
       return runObservedCall(
         () => nativeUseProgram.call(this, program),
         () => {
@@ -821,7 +921,7 @@ export const install = (
     }
 
     const nativeUniform1i = gl.uniform1i
-    gl.uniform1i = function (this: WebGL2RenderingContext, location, value) {
+    hookedGl.uniform1i = function (this: WebGL2RenderingContext, location, value) {
       return runObservedCall(
         () => nativeUniform1i.call(this, location, value),
         () => {
@@ -834,7 +934,7 @@ export const install = (
     }
 
     const nativeUniformMatrix4fv = gl.uniformMatrix4fv
-    gl.uniformMatrix4fv = function (
+    hookedGl.uniformMatrix4fv = function (
       this: WebGL2RenderingContext,
       location: WebGLUniformLocation | null,
       transpose: GLboolean,
@@ -878,7 +978,7 @@ export const install = (
     } as typeof gl.uniformMatrix4fv
 
     const nativeActiveTexture = gl.activeTexture
-    gl.activeTexture = function (this: WebGL2RenderingContext, texture) {
+    hookedGl.activeTexture = function (this: WebGL2RenderingContext, texture) {
       return runObservedCall(
         () => nativeActiveTexture.call(this, texture),
         () => {
@@ -891,7 +991,7 @@ export const install = (
     }
 
     const nativeBindTexture = gl.bindTexture
-    gl.bindTexture = function (this: WebGL2RenderingContext, target, texture) {
+    hookedGl.bindTexture = function (this: WebGL2RenderingContext, target, texture) {
       return runObservedCall(
         () => nativeBindTexture.call(this, target, texture),
         () => {
@@ -922,7 +1022,7 @@ export const install = (
       ) {
         if (texture !== null && tileOfTexture.has(texture)) {
           const had = tileOfTexture.get(texture)
-          warn('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
+          log('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
             sourceKind:
               source === null ? 'null' : ((source as object)?.constructor?.name ?? typeof source),
           })
@@ -943,7 +1043,7 @@ export const install = (
       }
       const had = tileOfTexture.get(texture)
       if (had !== undefined) {
-        warn('texture', `DROPPED attribution ${had.x}/${had.y} — re-uploaded unattributed`, {
+        log('texture', `DROPPED attribution ${had.x}/${had.y} — re-uploaded unattributed`, {
           size: `${bitmap.width}x${bitmap.height}`,
         })
         tileOfTexture.delete(texture)
@@ -952,7 +1052,7 @@ export const install = (
 
     const nativeTexSubImage2D = gl.texSubImage2D
     // biome-ignore lint/suspicious/noExplicitAny: texSubImage2D has as many overloads as texImage2D
-    gl.texSubImage2D = function (this: WebGL2RenderingContext, ...subArgs: any[]) {
+    hookedGl.texSubImage2D = function (this: WebGL2RenderingContext, ...subArgs: any[]) {
       return runObservedCall(
         () => Reflect.apply(nativeTexSubImage2D, this, subArgs),
         () => {
@@ -963,7 +1063,7 @@ export const install = (
 
     const nativeTexImage2D = gl.texImage2D
     // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
-    gl.texImage2D = function (this: WebGL2RenderingContext, ...texArgs: any[]) {
+    hookedGl.texImage2D = function (this: WebGL2RenderingContext, ...texArgs: any[]) {
       return runObservedCall(
         () => Reflect.apply(nativeTexImage2D, this, texArgs),
         () => {
@@ -1000,7 +1100,7 @@ export const install = (
     }
 
     const nativeBindFramebuffer = gl.bindFramebuffer
-    gl.bindFramebuffer = function (this: WebGL2RenderingContext, target, framebuffer) {
+    hookedGl.bindFramebuffer = function (this: WebGL2RenderingContext, target, framebuffer) {
       return runObservedCall(
         () => nativeBindFramebuffer.call(this, target, framebuffer),
         () => {
@@ -1013,7 +1113,7 @@ export const install = (
     }
 
     const nativeDeleteFramebuffer = gl.deleteFramebuffer
-    gl.deleteFramebuffer = function (this: WebGL2RenderingContext, framebuffer) {
+    hookedGl.deleteFramebuffer = function (this: WebGL2RenderingContext, framebuffer) {
       return runObservedCall(
         () => nativeDeleteFramebuffer.call(this, framebuffer),
         () => {
@@ -1027,7 +1127,7 @@ export const install = (
     }
 
     const nativeEnable = gl.enable
-    gl.enable = function (this: WebGL2RenderingContext, cap) {
+    hookedGl.enable = function (this: WebGL2RenderingContext, cap) {
       return runObservedCall(
         () => nativeEnable.call(this, cap),
         () => {
@@ -1037,7 +1137,7 @@ export const install = (
     }
 
     const nativeDisable = gl.disable
-    gl.disable = function (this: WebGL2RenderingContext, cap) {
+    hookedGl.disable = function (this: WebGL2RenderingContext, cap) {
       return runObservedCall(
         () => nativeDisable.call(this, cap),
         () => {
@@ -1047,7 +1147,7 @@ export const install = (
     }
 
     const nativeColorMask = gl.colorMask
-    gl.colorMask = function (this: WebGL2RenderingContext, red, green, blue, alpha) {
+    hookedGl.colorMask = function (this: WebGL2RenderingContext, red, green, blue, alpha) {
       return runObservedCall(
         () => nativeColorMask.call(this, red, green, blue, alpha),
         () => {
@@ -1059,7 +1159,7 @@ export const install = (
     }
 
     const nativeClear = gl.clear
-    gl.clear = function (this: WebGL2RenderingContext, mask) {
+    hookedGl.clear = function (this: WebGL2RenderingContext, mask) {
       return runObservedCall(
         () => nativeClear.call(this, mask),
         () => {
@@ -1125,7 +1225,7 @@ export const install = (
     }
 
     const nativeDrawArrays = gl.drawArrays
-    gl.drawArrays = function (this: WebGL2RenderingContext, mode, first, count) {
+    hookedGl.drawArrays = function (this: WebGL2RenderingContext, mode, first, count) {
       return runObservedCall(
         () => nativeDrawArrays.call(this, mode, first, count),
         () => {
@@ -1134,7 +1234,13 @@ export const install = (
       )
     }
     const nativeDrawElements = gl.drawElements
-    gl.drawElements = function (this: WebGL2RenderingContext, mode, count, elementType, offset) {
+    hookedGl.drawElements = function (
+      this: WebGL2RenderingContext,
+      mode,
+      count,
+      elementType,
+      offset,
+    ) {
       return runObservedCall(
         () => nativeDrawElements.call(this, mode, count, elementType, offset),
         () => {
@@ -1142,6 +1248,12 @@ export const install = (
         },
       )
     }
+
+    if (glHookFailed) return abandonGlHooks()
+    log('install', 'wrapped the map WebGL context', {
+      type,
+      canvas: `${this.width}x${this.height}`,
+    })
 
     try {
       this.addEventListener('webglcontextlost', () => {
@@ -1166,5 +1278,12 @@ export const install = (
     }
 
     return gl
+  }
+  if (
+    !addBrowserHook(() =>
+      installValueHook(realm.HTMLCanvasElement.prototype, 'getContext', wrappedGetContext),
+    )
+  ) {
+    abandonBrowserHooks()
   }
 }

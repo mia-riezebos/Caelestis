@@ -13,6 +13,7 @@ import {
   project,
   quadFromMatrix,
   resetQueues,
+  resetTileFrameListeners,
   runObservedCall,
   type TileFrame,
   takeBySize,
@@ -57,7 +58,10 @@ const canvas = (width: number, height = width) => ({ width, height }) as HTMLCan
 
 const tile = { x: 3, y: 4 }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  resetTileFrameListeners()
+  vi.unstubAllGlobals()
+})
 
 describe('tileFromUrl', () => {
   it.each([
@@ -247,6 +251,32 @@ describe('byte-length attribution queue', () => {
 })
 
 describe('transparent browser hooks', () => {
+  it('degrades without changing browser globals when the first hook is locked', () => {
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const nativeFetch = vi.fn(globalThis.fetch)
+    const realm = {
+      ...globalThis,
+      fetch: nativeFetch,
+      Blob: globalThis.Blob,
+      createImageBitmap: globalThis.createImageBitmap,
+      HTMLCanvasElement: FakeCanvas,
+    } as unknown as Window & typeof globalThis
+    Object.defineProperty(realm, 'fetch', {
+      value: nativeFetch,
+      writable: false,
+      configurable: false,
+    })
+
+    expect(() => install(realm, () => null)).not.toThrow()
+    expect(realm.fetch).toBe(nativeFetch)
+    expect(realm.Blob).toBe(globalThis.Blob)
+    expect(realm.createImageBitmap).toBe(globalThis.createImageBitmap)
+  })
+
   it('reads URL and Request inputs through snapshotted native getters', () => {
     const realm = globalThis as unknown as Window & typeof globalThis
     const getters = captureFetchUrlGetters(realm)
@@ -415,6 +445,11 @@ describe('transparent browser hooks', () => {
 
     install(realm, mapHandle)
     const provisional = new FakeCanvas(fakeGl())
+    Object.defineProperty(provisional.context, 'getUniformLocation', {
+      value: provisional.context.getUniformLocation,
+      writable: false,
+      configurable: false,
+    })
     provisional.getContext('webgl2')
     mapCanvas = new FakeCanvas(fakeGl())
     mapCanvas.getContext('webgl2')
@@ -526,6 +561,15 @@ describe('transparent browser hooks', () => {
       colorMask: native('colorMask'),
       clear: native('clear'),
     }
+    const nativeTexImage2D = fakeGl.texImage2D
+    Reflect.deleteProperty(fakeGl, 'texImage2D')
+    const inheritedHooks = Object.create(Object.getPrototypeOf(fakeGl)) as object
+    Object.defineProperty(inheritedHooks, 'texImage2D', {
+      value: nativeTexImage2D,
+      writable: false,
+      configurable: false,
+    })
+    Object.setPrototypeOf(fakeGl, inheritedHooks)
     class FakeCanvas {
       width = 100
       height = 100
@@ -650,6 +694,7 @@ describe('transparent browser hooks', () => {
   })
 
   it('keeps raster identity and projection scoped to their WebGL state', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const locations = new WeakMap<object, Map<string, object>>()
     let nativeProgram: object | null = null
     const rejectedProgram = {}
@@ -756,6 +801,11 @@ describe('transparent browser hooks', () => {
     gl.texImage2D(gl.TEXTURE_CUBE_MAP, 0, 0, 0, 0, new FakeImageBitmap() as unknown as ImageBitmap)
     gl.uniformMatrix4fv(projection, false, new Float32Array(tileMatrix(1)))
     const frames: TileFrame[] = []
+    let listenerFailures = 0
+    onTileFrame(() => {
+      listenerFailures++
+      throw new Error('one frame listener must not abort the rest')
+    })
     onTileFrame((frame) => frames.push(frame))
     gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
@@ -858,6 +908,11 @@ describe('transparent browser hooks', () => {
     await Promise.resolve()
     expect(frames).toHaveLength(14)
     expect(frames[13]?.quads).toEqual([])
+    expect(listenerFailures).toBe(14)
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('DROPPED attribution'),
+      expect.anything(),
+    )
   })
 
   it('preserves native Blob construction contracts', () => {

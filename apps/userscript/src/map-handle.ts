@@ -55,14 +55,6 @@ const looksLikeMap = (value: unknown): value is MapLike =>
   typeof (value as MapLike).getZoom === 'function'
 
 /**
- * The setters this installation put on `Object.prototype`, and what was there before them.
- *
- * Both halves matter. Deleting whatever setter currently sits under one of these names would remove
- * a setter the page installed after capture — these are ordinary private-ish names and nothing says
- * wplace will not use one — and overwriting a pre-existing descriptor without keeping it means it
- * never comes back.
- */
-/**
  * The page's `Object.prototype`, which in a separate-realm sandbox is not this one.
  *
  * MapLibre's objects inherit from the page's. Trapping the local prototype means the assignment this
@@ -72,7 +64,7 @@ const looksLikeMap = (value: unknown): value is MapLike =>
 const pageProto = (): object =>
   (pageWindow() as unknown as { Object: ObjectConstructor }).Object.prototype
 
-const installed = new Map<string, PropertyDescriptor | undefined>()
+const installed = new Set<string>()
 const ours = new Map<string, PropertyDescriptor>()
 let releaseTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -81,15 +73,11 @@ const removeTraps = (): void => {
     clearTimeout(releaseTimer)
     releaseTimer = null
   }
-  for (const [property, original] of installed) {
+  for (const property of installed) {
     const current = Object.getOwnPropertyDescriptor(pageProto(), property)
     // Only if it is still ours. Someone else's setter under this name is theirs to remove.
     if (current === undefined || current.set !== ours.get(property)?.set) continue
-    if (original === undefined) {
-      delete (pageProto() as Record<string, unknown>)[property]
-    } else {
-      Object.defineProperty(pageProto(), property, original)
-    }
+    delete (pageProto() as Record<string, unknown>)[property]
   }
   installed.clear()
   ours.clear()
@@ -133,7 +121,7 @@ export const installMapCapture = (): void => {
         },
       }
       Object.defineProperty(pageProto(), property, descriptor)
-      installed.set(property, original)
+      installed.add(property)
       ours.set(property, descriptor)
     } catch {
       // A property already defined non-configurably is not worth fighting over; the others remain.

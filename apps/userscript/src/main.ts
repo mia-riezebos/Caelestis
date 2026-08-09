@@ -61,7 +61,8 @@ const draw = (frame: TileFrame): void => {
   lastFrame = frame
   const { canvas: mapCanvas, quads } = frame
   const canvas = overlayCanvas()
-  if (canvas.parentElement === null) mapCanvas.parentElement?.appendChild(canvas)
+  const mapParent = mapCanvas.parentElement
+  if (mapParent !== null && canvas.parentElement !== mapParent) mapParent.appendChild(canvas)
   if (canvas.width !== mapCanvas.width || canvas.height !== mapCanvas.height) {
     canvas.width = mapCanvas.width
     canvas.height = mapCanvas.height
@@ -124,19 +125,35 @@ const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void =>
 
 const main = (): void => {
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
-  installMapCapture()
-  installDebugApi({
-    mark(x?: number, y?: number) {
-      marked = x === undefined || y === undefined ? null : { x, y }
-      repaint()
-      if (marked === null) return '[wts] mark cleared'
-      return `[wts] marking tile ${x},${y} — __wts.mark() with no arguments to clear`
-    },
-  })
-  install()
+  try {
+    installMapCapture()
+  } catch {
+    // Map capture is optional; URL-based navigation remains available without it.
+  }
+  try {
+    installDebugApi({
+      mark(x?: number, y?: number) {
+        marked = x === undefined || y === undefined ? null : { x, y }
+        repaint()
+        if (marked === null) return '[wts] mark cleared'
+        return `[wts] marking tile ${x},${y} — __wts.mark() with no arguments to clear`
+      },
+    })
+  } catch {
+    // Diagnostics are optional and must not prevent the render hooks from installing.
+  }
+  try {
+    install()
+  } catch {
+    // Browser hooks are best-effort around page-owned surfaces.
+  }
   onPaint(paintMark)
   onTileFrame(draw)
-  console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
+  try {
+    console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
+  } catch {
+    // A replaced console is not part of the render path.
+  }
 }
 
 main()

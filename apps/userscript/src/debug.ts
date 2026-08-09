@@ -146,10 +146,22 @@ export const installDebugApi = (extra: Record<string, unknown> = {}): void => {
     },
     ...extra,
   }
-  ;(pageWindow() as unknown as Record<string, unknown>).__wts = api
-  console.info(
-    enabled
-      ? '[wts] debug is ON. __wts.dump() to print, __wts.debug(false) to stop.'
-      : '[wts] debug is off. __wts.debug(true) then reload to capture everything.',
-  )
+  try {
+    Object.defineProperty(pageWindow(), '__wts', {
+      value: api,
+      writable: true,
+      configurable: true,
+    })
+  } catch {
+    // Debug access is optional; a locked page global must not abort the userscript at document-start.
+  }
+  try {
+    console.info(
+      enabled
+        ? '[wts] debug is ON. __wts.dump() to print, __wts.debug(false) to stop.'
+        : '[wts] debug is off. __wts.debug(true) then reload to capture everything.',
+    )
+  } catch {
+    // A replaced console is not part of the render path.
+  }
 }

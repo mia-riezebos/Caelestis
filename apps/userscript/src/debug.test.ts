@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { count, counterKey, counters, log, warn } from './debug.js'
 
 /**
@@ -61,9 +61,11 @@ describe('warn', () => {
   it('keys its counter the same way log does', () => {
     // The two hottest warnings carry tile coordinates. Keyed raw, they filled the table on their own
     // and every counter first seen afterwards was refused.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     for (let x = 0; x < 300; x += 1) warn('texture', `DROPPED attribution ${x}/1 — re-uploaded`)
 
     expect(counters.size).toBeLessThan(10)
+    expect(consoleWarn).toHaveBeenCalledTimes(300)
     count('bitmap:fell-back-to-byte-length')
     expect(counters.get('bitmap:fell-back-to-byte-length')).toBe(1)
   })
