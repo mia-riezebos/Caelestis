@@ -800,6 +800,8 @@ describe('transparent browser hooks', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const locations = new WeakMap<object, Map<string, object>>()
     let nativeProgram: object | null = null
+    let nativeDrawFramebuffer: object | null = null
+    const nativeFramebuffers = new WeakSet<object>()
     const rejectedProgram = {}
     const fakeGl = {
       TEXTURE0: 0x84c0,
@@ -814,9 +816,11 @@ describe('transparent browser hooks', () => {
       SCISSOR_TEST: 0x0c11,
       MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
       CURRENT_PROGRAM: 0x8b8d,
+      DRAW_FRAMEBUFFER_BINDING: 0x8ca6,
       getParameter: vi.fn((parameter: number) => {
         if (parameter === 0x8b4d) return 2
         if (parameter === 0x8b8d) return nativeProgram
+        if (parameter === 0x8ca6) return nativeDrawFramebuffer
         return null
       }),
       getUniformLocation: vi.fn((program: object, name: string) => {
@@ -837,8 +841,21 @@ describe('transparent browser hooks', () => {
       texImage2D: vi.fn(),
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
-      bindFramebuffer: vi.fn(),
-      deleteFramebuffer: vi.fn(),
+      createFramebuffer: vi.fn(() => {
+        const framebuffer = {}
+        nativeFramebuffers.add(framebuffer)
+        return framebuffer
+      }),
+      bindFramebuffer: vi.fn((_target: number, framebuffer?: object | null) => {
+        const normalized = framebuffer ?? null
+        if (normalized === null || nativeFramebuffers.has(normalized)) {
+          nativeDrawFramebuffer = normalized
+        }
+      }),
+      deleteFramebuffer: vi.fn((framebuffer: object | null) => {
+        if (framebuffer === null || !nativeFramebuffers.delete(framebuffer)) return
+        if (nativeDrawFramebuffer === framebuffer) nativeDrawFramebuffer = null
+      }),
       enable: vi.fn(),
       disable: vi.fn(),
       colorMask: vi.fn(),
@@ -902,7 +919,12 @@ describe('transparent browser hooks', () => {
     // Uploading another target must not delete the active unit's 2D tile attribution.
     gl.activeTexture(gl.TEXTURE0)
     gl.texImage2D(gl.TEXTURE_CUBE_MAP, 0, 0, 0, 0, new FakeImageBitmap() as unknown as ImageBitmap)
-    gl.uniformMatrix4fv(projection, false, new Float32Array(tileMatrix(1)))
+    Reflect.apply(gl.uniformMatrix4fv, gl, [
+      projection,
+      false,
+      new Float32Array(tileMatrix(1)),
+      undefined,
+    ])
     const frames: TileFrame[] = []
     let listenerFailures = 0
     onTileFrame(() => {
@@ -954,7 +976,7 @@ describe('transparent browser hooks', () => {
     gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(6)
-    const offscreen = {} as WebGLFramebuffer
+    const offscreen = gl.createFramebuffer()
     gl.bindFramebuffer(gl.FRAMEBUFFER, offscreen)
     gl.clear(gl.COLOR_BUFFER_BIT)
     gl.drawElements(0, 1, 0, 0)
@@ -1007,11 +1029,28 @@ describe('transparent browser hooks', () => {
     expect(frames).toHaveLength(13)
     expect(frames[12]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
 
+    const beforeFramebufferEdges = frames.length
+    const secondOffscreen = gl.createFramebuffer()
+    gl.bindFramebuffer(gl.FRAMEBUFFER, secondOffscreen)
+    Reflect.apply(gl.bindFramebuffer, gl, [gl.FRAMEBUFFER, undefined])
+    gl.drawElements(0, 1, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(beforeFramebufferEdges + 1)
+    expect(frames.at(-1)?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
+
+    // Native WebGL rejects a framebuffer from another context without throwing. The observer must
+    // retain the accepted default binding instead of treating subsequent visible draws as offscreen.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, {} as WebGLFramebuffer)
+    gl.drawElements(0, 1, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(beforeFramebufferEdges + 2)
+    expect(frames.at(-1)?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
+
     canvas.dispatchEvent(new Event('webglcontextlost'))
     await Promise.resolve()
-    expect(frames).toHaveLength(14)
-    expect(frames[13]?.quads).toEqual([])
-    expect(listenerFailures).toBe(14)
+    expect(frames).toHaveLength(beforeFramebufferEdges + 3)
+    expect(frames.at(-1)?.quads).toEqual([])
+    expect(listenerFailures).toBe(beforeFramebufferEdges + 3)
     expect(warnSpy).not.toHaveBeenCalledWith(
       expect.stringContaining('DROPPED attribution'),
       expect.anything(),
@@ -1049,6 +1088,88 @@ describe('transparent browser hooks', () => {
       Object.getOwnPropertyDescriptor(Blob, 'prototype'),
     )
     expect(Reflect.set(realm.Blob, 'prototype', {})).toBe(false)
+  })
+
+  it('delegates invalid Blob calls to the page-realm constructor', () => {
+    class PageTypeError extends TypeError {}
+    const PageBlob = function (this: unknown, ...args: ConstructorParameters<typeof Blob>): Blob {
+      if (new.target === undefined) throw new PageTypeError('page Blob requires new')
+      return Reflect.construct(Blob, args, new.target) as Blob
+    } as unknown as typeof Blob
+    const nativePrototype = Object.getOwnPropertyDescriptor(Blob, 'prototype')
+    if (nativePrototype === undefined) throw new Error('Blob must expose its prototype descriptor')
+    Object.defineProperty(PageBlob, 'prototype', nativePrototype)
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: globalThis.fetch,
+      Blob: PageBlob,
+      TypeError: PageTypeError,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    let thrown: unknown
+    try {
+      const callWithoutNew = realm.Blob as unknown as () => Blob
+      callWithoutNew()
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(PageTypeError)
+  })
+
+  it('returns page-realm promises from every asynchronous browser hook', async () => {
+    class PagePromise<Value> extends Promise<Value> {}
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const response = {
+      ok: true,
+      status: 200,
+      arrayBuffer: () => PagePromise.resolve(new Uint8Array([1, 2, 3]).buffer),
+      blob: () => PagePromise.resolve(new Blob([new Uint8Array([1, 2, 3])])),
+    } as Response
+    const bitmap = { width: 1, height: 1 } as ImageBitmap
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      Promise: PagePromise,
+      fetch: vi.fn(() => PagePromise.resolve(response)),
+      Blob,
+      createImageBitmap: vi.fn(() => PagePromise.resolve(bitmap)),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const fetchPromise = realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    expect(fetchPromise).toBeInstanceOf(PagePromise)
+    const tapped = await fetchPromise
+    const arrayBufferPromise = tapped.arrayBuffer()
+    const blobPromise = tapped.blob()
+    const bitmapPromise = realm.createImageBitmap(new realm.Blob([]))
+
+    expect(arrayBufferPromise).toBeInstanceOf(PagePromise)
+    expect(blobPromise).toBeInstanceOf(PagePromise)
+    expect(bitmapPromise).toBeInstanceOf(PagePromise)
+    await Promise.all([arrayBufferPromise, blobPromise, bitmapPromise])
   })
 
   it('retires exact byte-length fallback before bitmap decoding settles', async () => {

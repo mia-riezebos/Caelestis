@@ -576,100 +576,113 @@ export const resetTileFrameListeners = (): void => {
 const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const nativeFetch = realm.fetch
   const urlGetters = captureFetchUrlGetters(realm)
-  const wrappedFetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
-    const input = args[0]
-    // Snapshot only safely observable metadata before native fetch consumes mutable RequestInit
-    // dictionaries. An accessor may delete itself while WebIDL reads it; inspecting afterward would
-    // then mistake a HEAD request for the default GET.
-    let tile: TileCoord | null = null
-    let shouldNormalizeMissing = false
-    try {
-      const url = urlForFetchInput(input, realm, urlGetters)
-      if (url !== null) {
-        tile = tileFromUrl(url)
-        if (tile !== null) shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
+  const wrappedFetch = {
+    fetch(this: unknown, ...args: Parameters<typeof fetch>) {
+      const input = args[0]
+      // Snapshot only safely observable metadata before native fetch consumes mutable RequestInit
+      // dictionaries. An accessor may delete itself while WebIDL reads it; inspecting afterward would
+      // then mistake a HEAD request for the default GET.
+      let tile: TileCoord | null = null
+      let shouldNormalizeMissing = false
+      try {
+        const url = urlForFetchInput(input, realm, urlGetters)
+        if (url !== null) {
+          tile = tileFromUrl(url)
+          if (tile !== null) shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
+        }
+      } catch {
+        // An unusual input that cannot be observed safely is simply untapped.
       }
-    } catch {
-      // An unusual input that cannot be observed safely is simply untapped.
-    }
-    const pendingResponse = nativeFetch.apply(this as never, args)
-    let response = await pendingResponse
-    if (tile === null) return response
-    const observedTile = tile
+      const pendingResponse = nativeFetch.apply(this as never, args)
+      return pendingResponse.then((response) => {
+        if (tile === null) return response
+        const observedTile = tile
 
-    // Real tile pixels are only tapped, never composited with ours: that would make the two layers
-    // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
-    // origin tile, normalized to the transparent response wplace's service worker ordinarily gives.
-    try {
-      // With no controlling service worker, the origin returns 404 HTML for an unpainted tile. The
-      // service worker normally turns that into a tiny transparent PNG; do the same so first visits
-      // still give MapLibre a texture and therefore give the overlay a quad to align against.
-      if (shouldNormalizeMissing) {
-        response = normalizeMissingTileResponse(response, realm)
-      }
-      if (!response.ok) return response
-      // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
-      // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
-      // inferred. Overriding blob()/arrayBuffer() as own properties shadows Response.prototype;
-      // without that the platform mints a fresh Blob on every call and the tag is lost, which is
-      // the whole reason the first attempt at this matched zero tiles.
-      // The native response is handed back, with only its two read methods shadowed. Replacing it
-      // with a freshly constructed `Response` lost `url`, `redirected` and `type`, and gave it an
-      // `arrayBuffer` that never set `bodyUsed` and never rejected on a second read — so any wplace
-      // code that consults ordinary response metadata got the wrong answer from a tap that claims to
-      // be transparent. Own properties shadow `Response.prototype`, which is what makes wplace call
-      // these and receive the objects this tagged, rather than fresh ones the platform mints.
-      const tappedResponse = response
-      const nativeArrayBuffer = response.arrayBuffer
-      const nativeBlob = response.blob
-      const recordRead = (bytes: number): void => {
-        // The size queue is only a last resort. Queue when the page actually consumes the body,
-        // rather than delaying fetch to duplicate every response pre-emptively.
-        enqueueBySize(bytes, observedTile)
-        log('fetch', `tile ${observedTile.x}/${observedTile.y}`, {
-          bytes,
-          status: response.status,
-          sizesWaiting: tilesByByteLength.size,
-        })
-      }
-      const wrappedArrayBuffer = async function (this: Response): Promise<ArrayBuffer> {
-        const own = await nativeArrayBuffer.call(this)
+        // Real tile pixels are only tapped, never composited with ours: that would make the two layers
+        // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
+        // origin tile, normalized to the transparent response wplace's service worker ordinarily gives.
         try {
-          if (this === tappedResponse) {
-            tileOfBuffer.set(own, observedTile)
-            recordRead(own.byteLength)
+          // With no controlling service worker, the origin returns 404 HTML for an unpainted tile. The
+          // service worker normally turns that into a tiny transparent PNG; do the same so first visits
+          // still give MapLibre a texture and therefore give the overlay a quad to align against.
+          if (shouldNormalizeMissing) {
+            response = normalizeMissingTileResponse(response, realm)
           }
-        } catch {
-          // The native read already consumed the body successfully; observation cannot reject it.
-        }
-        return own
-      }
-      const wrappedBlob = async function (this: Response): Promise<Blob> {
-        const blob = await nativeBlob.call(this)
-        try {
-          if (this === tappedResponse) {
-            tileOfBlob.set(blob, observedTile)
-            recordRead(blob.size)
+          if (!response.ok) return response
+          // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
+          // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
+          // inferred. Overriding blob()/arrayBuffer() as own properties shadows Response.prototype;
+          // without that the platform mints a fresh Blob on every call and the tag is lost, which is
+          // the whole reason the first attempt at this matched zero tiles.
+          // The native response is handed back, with only its two read methods shadowed. Replacing it
+          // with a freshly constructed `Response` lost `url`, `redirected` and `type`, and gave it an
+          // `arrayBuffer` that never set `bodyUsed` and never rejected on a second read — so any wplace
+          // code that consults ordinary response metadata got the wrong answer from a tap that claims to
+          // be transparent. Own properties shadow `Response.prototype`, which is what makes wplace call
+          // these and receive the objects this tagged, rather than fresh ones the platform mints.
+          const tappedResponse = response
+          const nativeArrayBuffer = response.arrayBuffer
+          const nativeBlob = response.blob
+          const recordRead = (bytes: number): void => {
+            // The size queue is only a last resort. Queue when the page actually consumes the body,
+            // rather than delaying fetch to duplicate every response pre-emptively.
+            enqueueBySize(bytes, observedTile)
+            log('fetch', `tile ${observedTile.x}/${observedTile.y}`, {
+              bytes,
+              status: response.status,
+              sizesWaiting: tilesByByteLength.size,
+            })
           }
-        } catch {
-          // The native read already consumed the body successfully; observation cannot reject it.
+          const wrappedArrayBuffer = {
+            arrayBuffer(this: Response): Promise<ArrayBuffer> {
+              return nativeArrayBuffer.call(this).then((own) => {
+                try {
+                  if (this === tappedResponse) {
+                    tileOfBuffer.set(own, observedTile)
+                    recordRead(own.byteLength)
+                  }
+                } catch {
+                  // The native read already consumed the body successfully; observation cannot reject it.
+                }
+                return own
+              })
+            },
+          }.arrayBuffer
+          const wrappedBlob = {
+            blob(this: Response): Promise<Blob> {
+              return nativeBlob.call(this).then((blob) => {
+                try {
+                  if (this === tappedResponse) {
+                    tileOfBlob.set(blob, observedTile)
+                    recordRead(blob.size)
+                  }
+                } catch {
+                  // The native read already consumed the body successfully; observation cannot reject it.
+                }
+                return blob
+              })
+            },
+          }.blob
+          const arrayBufferHook = installValueHook(response, 'arrayBuffer', wrappedArrayBuffer)
+          if (arrayBufferHook === null) return response
+          const blobHook = installValueHook(response, 'blob', wrappedBlob)
+          if (blobHook === null) {
+            arrayBufferHook.restore()
+            return response
+          }
+          return response
+        } catch (error) {
+          // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
+          warn(
+            'fetch',
+            `could not read body for ${observedTile.x}/${observedTile.y}`,
+            String(error),
+          )
+          return response
         }
-        return blob
-      }
-      const arrayBufferHook = installValueHook(response, 'arrayBuffer', wrappedArrayBuffer)
-      if (arrayBufferHook === null) return response
-      const blobHook = installValueHook(response, 'blob', wrappedBlob)
-      if (blobHook === null) {
-        arrayBufferHook.restore()
-        return response
-      }
-      return response
-    } catch (error) {
-      // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
-      warn('fetch', `could not read body for ${observedTile.x}/${observedTile.y}`, String(error))
-      return response
-    }
-  } as typeof globalThis.fetch
+      })
+    },
+  }.fetch as typeof globalThis.fetch
   return installValueHook(realm, 'fetch', wrappedFetch)
 }
 
@@ -685,7 +698,9 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
   // biome-ignore lint/suspicious/noExplicitAny: standing in for the Blob constructor overloads
   const Wrapped = function (this: unknown, ...args: any[]) {
     if (new.target === undefined) {
-      throw new TypeError("Failed to construct 'Blob': Please use the 'new' operator.")
+      // Delegate the invalid call too: the browser supplies both the native message and a page-realm
+      // TypeError, while throwing here would manufacture the error in the userscript sandbox.
+      return Reflect.apply(NativeBlob, this, args)
     }
     // A direct `new Blob(...)` targets the wrapper, which has no native slots — hand the native
     // constructor to `Reflect.construct` in that case, and the subclass otherwise.
@@ -729,56 +744,61 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
 
 const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const nativeCreateImageBitmap = realm.createImageBitmap
-  // biome-ignore lint/suspicious/noExplicitAny: createImageBitmap has two overload shapes
-  const wrappedCreateImageBitmap = (async (...args: any[]) => {
-    const pendingBitmap = (nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>)(
-      ...args,
-    )
-    let sourceBlob: Blob | undefined
-    let sourceBytes: number | undefined
-    let exact: TileCoord | undefined
-    try {
-      const source = args[0]
-      if (isPageInstance(source, 'Blob', realm as unknown as Record<string, unknown>)) {
-        sourceBlob = source as Blob
-        sourceBytes = sourceBlob.size
-        exact = tileOfBlob.get(sourceBlob)
-        if (exact !== undefined) {
-          // Reserve exact attribution before decode yields. Otherwise an untagged same-size bitmap
-          // can settle first and steal this tile's sole byte-length fallback entry.
-          consumeBySize(sourceBytes, exact)
+  const wrappedCreateImageBitmap = {
+    // biome-ignore lint/suspicious/noExplicitAny: createImageBitmap has two overload shapes
+    createImageBitmap(this: unknown, ...args: any[]): Promise<ImageBitmap> {
+      const pendingBitmap = Reflect.apply(
+        nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>,
+        this,
+        args,
+      )
+      let sourceBlob: Blob | undefined
+      let sourceBytes: number | undefined
+      let exact: TileCoord | undefined
+      try {
+        const source = args[0]
+        if (isPageInstance(source, 'Blob', realm as unknown as Record<string, unknown>)) {
+          sourceBlob = source as Blob
+          sourceBytes = sourceBlob.size
+          exact = tileOfBlob.get(sourceBlob)
+          if (exact !== undefined) {
+            // Reserve exact attribution before decode yields. Otherwise an untagged same-size bitmap
+            // can settle first and steal this tile's sole byte-length fallback entry.
+            consumeBySize(sourceBytes, exact)
+          }
         }
+      } catch {
+        // Native decoding has started. Attribution must not change its eventual result.
       }
-    } catch {
-      // Native decoding has started. Attribution must not change its eventual result.
-    }
-    const bitmap = await pendingBitmap
-    try {
-      if (sourceBlob !== undefined && sourceBytes !== undefined) {
-        if (exact !== undefined) {
-          tileOfBitmap.set(bitmap, exact)
-          log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: sourceBytes })
-          return bitmap
+      return pendingBitmap.then((bitmap) => {
+        try {
+          if (sourceBlob !== undefined && sourceBytes !== undefined) {
+            if (exact !== undefined) {
+              tileOfBitmap.set(bitmap, exact)
+              log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: sourceBytes })
+              return bitmap
+            }
+            count('bitmap:fell-back-to-byte-length')
+            const tile = takeBySizeForBitmap(sourceBytes, bitmap.width, bitmap.height)
+            if (tile !== undefined) {
+              tileOfBitmap.set(bitmap, tile)
+              log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: sourceBytes })
+            } else if (bitmap.width === 1000 && bitmap.height === 1000) {
+              // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
+              // thins out: it will overwrite a texture's identity below.
+              log('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
+                bytes: sourceBytes,
+                sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
+              })
+            }
+          }
+        } catch {
+          // Native decoding already succeeded. A diagnostic or hostile object cannot reject its promise.
         }
-        count('bitmap:fell-back-to-byte-length')
-        const tile = takeBySizeForBitmap(sourceBytes, bitmap.width, bitmap.height)
-        if (tile !== undefined) {
-          tileOfBitmap.set(bitmap, tile)
-          log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: sourceBytes })
-        } else if (bitmap.width === 1000 && bitmap.height === 1000) {
-          // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
-          // thins out: it will overwrite a texture's identity below.
-          log('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
-            bytes: sourceBytes,
-            sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
-          })
-        }
-      }
-    } catch {
-      // Native decoding already succeeded. A diagnostic or hostile object cannot reject its promise.
-    }
-    return bitmap
-  }) as typeof globalThis.createImageBitmap
+        return bitmap
+      })
+    },
+  }.createImageBitmap as typeof globalThis.createImageBitmap
   return installValueHook(realm, 'createImageBitmap', wrappedCreateImageBitmap)
 }
 
@@ -1023,7 +1043,8 @@ export const install = (
                 !realm.ArrayBuffer.isView(value)
               )
                 return
-              const offset = rest.length === 0 ? 0 : rest[0]
+              // WebIDL's default applies both when the argument is absent and explicitly undefined.
+              const offset = rest[0] === undefined ? 0 : rest[0]
               if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return
               const source = value as Float32Array
               const suppliedLength = rest[1]
@@ -1155,6 +1176,23 @@ export const install = (
         },
       }.texImage2D as typeof gl.texImage2D
 
+      const framebuffers = new WeakSet<WebGLFramebuffer>()
+      const nativeCreateFramebuffer = gl.createFramebuffer
+      hookedGl.createFramebuffer = {
+        createFramebuffer(this: WebGL2RenderingContext): WebGLFramebuffer {
+          let created: WebGLFramebuffer | undefined
+          return runObservedCall(
+            () => {
+              created = nativeCreateFramebuffer.call(this)
+              return created
+            },
+            () => {
+              if (this === gl && created !== undefined) framebuffers.add(created)
+            },
+          )
+        },
+      }.createFramebuffer
+
       let drawFramebuffer: WebGLFramebuffer | null = null
       let scissorEnabled = false
       let colorWriteMask: [boolean, boolean, boolean, boolean] = [true, true, true, true]
@@ -1197,7 +1235,22 @@ export const install = (
             () => {
               if (this !== gl) return
               if (target === gl.FRAMEBUFFER || target === gl.DRAW_FRAMEBUFFER) {
-                drawFramebuffer = framebuffer
+                // WebIDL treats an explicit undefined as null. Known same-context objects are the
+                // ordinary MapLibre path and need no synchronous state query.
+                if (framebuffer === null || framebuffer === undefined) {
+                  drawFramebuffer = null
+                } else if (framebuffers.has(framebuffer)) {
+                  drawFramebuffer = framebuffer
+                } else {
+                  // An object created before instrumentation may be valid; a foreign or deleted one
+                  // is rejected without throwing. Query only this unusual path so normal frame binds
+                  // never pay for a synchronous getParameter call.
+                  const accepted = nativeGetParameter.call(gl, gl.DRAW_FRAMEBUFFER_BINDING)
+                  if (accepted === null || typeof accepted === 'object') {
+                    drawFramebuffer = accepted as WebGLFramebuffer | null
+                    if (accepted === framebuffer) framebuffers.add(framebuffer)
+                  }
+                }
               }
             },
           )
@@ -1210,7 +1263,12 @@ export const install = (
           return runObservedCall(
             () => nativeDeleteFramebuffer.call(this, framebuffer),
             () => {
-              if (this === gl && framebuffer !== null && framebuffer === drawFramebuffer) {
+              if (
+                this === gl &&
+                framebuffer !== null &&
+                framebuffers.delete(framebuffer) &&
+                framebuffer === drawFramebuffer
+              ) {
                 // WebGL automatically restores the default draw framebuffer when the bound object is
                 // deleted; keep the mirror on the same transition.
                 drawFramebuffer = null
