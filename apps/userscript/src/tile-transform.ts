@@ -988,6 +988,7 @@ export const install = (
       // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
       // wplace tiles in it still reaches the listener. A default-framebuffer colour clear above
       // covers the rarer frame that contains no draw call at all.
+      if (drawFramebuffer !== null) return
       if (!scheduleFrameFlush()) return
       frameDraws++
       if (activeProgram === null) {

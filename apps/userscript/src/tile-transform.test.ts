@@ -740,6 +740,7 @@ describe('transparent browser hooks', () => {
     const offscreen = {} as WebGLFramebuffer
     gl.bindFramebuffer(gl.FRAMEBUFFER, offscreen)
     gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.drawElements(0, 0, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(6)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
