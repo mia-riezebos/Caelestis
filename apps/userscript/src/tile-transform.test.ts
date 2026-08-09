@@ -277,6 +277,37 @@ describe('transparent browser hooks', () => {
     expect(realm.createImageBitmap).toBe(globalThis.createImageBitmap)
   })
 
+  it('restores a non-configurable writable hook when a later hook is locked', () => {
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const nativeFetch = vi.fn(globalThis.fetch)
+    const realm = {
+      ...globalThis,
+      fetch: nativeFetch,
+      Blob: globalThis.Blob,
+      createImageBitmap: globalThis.createImageBitmap,
+      HTMLCanvasElement: FakeCanvas,
+    } as unknown as Window & typeof globalThis
+    Object.defineProperty(realm, 'fetch', {
+      value: nativeFetch,
+      writable: true,
+      configurable: false,
+    })
+    Object.defineProperty(realm, 'Blob', {
+      value: globalThis.Blob,
+      writable: false,
+      configurable: false,
+    })
+    const originalFetchDescriptor = Object.getOwnPropertyDescriptor(realm, 'fetch')
+
+    install(realm, () => null)
+
+    expect(Object.getOwnPropertyDescriptor(realm, 'fetch')).toEqual(originalFetchDescriptor)
+  })
+
   it('reads URL and Request inputs through snapshotted native getters', () => {
     const realm = globalThis as unknown as Window & typeof globalThis
     const getters = captureFetchUrlGetters(realm)
@@ -415,10 +446,12 @@ describe('transparent browser hooks', () => {
       colorMask: vi.fn(),
       clear: vi.fn(),
     })
-    class FakeCanvas {
+    class FakeCanvas extends EventTarget {
       width = 100
       height = 100
-      constructor(readonly context: ReturnType<typeof fakeGl>) {}
+      constructor(readonly context: ReturnType<typeof fakeGl>) {
+        super()
+      }
       getContext(_type?: string): ReturnType<typeof fakeGl> {
         return this.context
       }
@@ -465,10 +498,15 @@ describe('transparent browser hooks', () => {
 
     const provisional = new FakeCanvas(fakeGl())
     const originalProvisionalDrawArrays = provisional.context.drawArrays
+    const removeProvisionalListener = vi.spyOn(provisional, 'removeEventListener')
     provisional.getContext('webgl2')
-    mapCanvas = new FakeCanvas(fakeGl())
-    mapCanvas.getContext('webgl2')
+    const firstMap = new FakeCanvas(fakeGl())
+    const originalFirstMapDrawArrays = firstMap.context.drawArrays
+    const removeFirstMapListener = vi.spyOn(firstMap, 'removeEventListener')
+    mapCanvas = firstMap
+    firstMap.getContext('webgl2')
     expect(provisional.context.drawArrays).toBe(originalProvisionalDrawArrays)
+    expect(removeProvisionalListener).toHaveBeenCalledWith('webglcontextlost', expect.any(Function))
     counters.clear()
 
     locked.context.drawArrays(0, 0, 1)
@@ -477,7 +515,17 @@ describe('transparent browser hooks', () => {
     await Promise.resolve()
     expect(counters.get('draw:no-texture-or-matrix')).toBeUndefined()
 
-    mapCanvas.context.drawArrays(0, 0, 1)
+    firstMap.context.drawArrays(0, 0, 1)
+    await Promise.resolve()
+    expect(counters.get('draw:not-raster-program')).toBe(1)
+
+    const replacement = new FakeCanvas(fakeGl())
+    mapCanvas = replacement
+    replacement.getContext('webgl2')
+    expect(firstMap.context.drawArrays).toBe(originalFirstMapDrawArrays)
+    expect(removeFirstMapListener).toHaveBeenCalledWith('webglcontextlost', expect.any(Function))
+    counters.clear()
+    replacement.context.drawArrays(0, 0, 1)
     await Promise.resolve()
     expect(counters.get('draw:not-raster-program')).toBe(1)
   })

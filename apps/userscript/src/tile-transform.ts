@@ -807,7 +807,6 @@ export const install = (
     // answer, so an earlier WebGL context — a fingerprinting probe, an effect, another userscript —
     // was instrumented and the latch closed behind it, leaving MapLibre's real context untouched for
     // the rest of the session. Provisional instrumentation stays open to being replaced.
-    if (wrapped && wrappedIsMapOwned) return context
     // The first WebGL context in the document is not necessarily the map's. wplace may well make one
     // for something else first — a fingerprinting probe, an effect — and instrumenting that one and
     // then refusing every context after it means the overlay simply never receives a frame. If the
@@ -819,6 +818,9 @@ export const install = (
     } catch {
       // A map mid-construction may not answer yet; treat that as no opinion.
     }
+    // Repeated getContext calls on the active canvas return its already-wrapped context. A different
+    // canvas confirmed by the live Map handle is a replacement and must be allowed to retarget.
+    if (wrapped && wrappedIsMapOwned && mapCanvas === this) return context
     if (mapOwned !== undefined && mapOwned !== this) {
       log('install', 'skipped a WebGL context that is not the map canvas', { type })
       return context
@@ -826,9 +828,18 @@ export const install = (
     if (wrapped && mapOwned === undefined) {
       const currentLooksLikeMap = looksLikeMapCanvas(mapCanvas)
       const candidateLooksLikeMap = looksLikeMapCanvas(this)
+      if (wrappedIsMapOwned) {
+        let currentIsDetached = false
+        try {
+          currentIsDetached = mapCanvas?.isConnected === false
+        } catch {
+          return context
+        }
+        if (!currentIsDetached || !candidateLooksLikeMap) return context
+      }
       // Keep the first provisional context until there is positive evidence that a later canvas is
       // MapLibre's. Once the measured map class is wrapped, an unrelated context cannot steal it.
-      if (currentLooksLikeMap || !candidateLooksLikeMap) return context
+      else if (currentLooksLikeMap || !candidateLooksLikeMap) return context
     }
     if (wrapped) log('install', 're-targeting onto the map canvas', { type })
     const previousWrapped = wrapped
@@ -844,10 +855,12 @@ export const install = (
     const gl = context as WebGL2RenderingContext
     const glHooks: InstalledValueHook[] = []
     let glHookFailed = false
+    let detachContextLossListener = (): void => undefined
     const restoreGlHooks = (): void => {
       for (let index = glHooks.length - 1; index >= 0; index -= 1) glHooks[index]?.restore()
     }
     const abandonGlHooks = (): typeof context => {
+      detachContextLossListener()
       restoreGlHooks()
       wrapped = previousWrapped
       wrappedIsMapOwned = previousWrappedIsMapOwned
@@ -1268,7 +1281,9 @@ export const install = (
       })
 
       try {
-        this.addEventListener('webglcontextlost', () => {
+        const nativeAddEventListener = this.addEventListener
+        const nativeRemoveEventListener = this.removeEventListener
+        const onContextLost = (): void => {
           try {
             if (contextGeneration !== activeContextGeneration) return
             pending = []
@@ -1284,13 +1299,24 @@ export const install = (
           } catch {
             // Context-loss bookkeeping is observational and must never escape into page event code.
           }
-        })
+        }
+        nativeAddEventListener.call(this, 'webglcontextlost', onContextLost)
+        detachContextLossListener = () => {
+          try {
+            nativeRemoveEventListener.call(this, 'webglcontextlost', onContextLost)
+          } catch {
+            // Retiring observation must not disturb the replacement context that already committed.
+          }
+        }
       } catch {
         // A hostile or partial canvas shim must not break a successfully created WebGL context.
       }
 
       previousActiveContextRestore?.()
-      restoreActiveContextHooks = restoreGlHooks
+      restoreActiveContextHooks = () => {
+        detachContextLossListener()
+        restoreGlHooks()
+      }
       return gl
     } catch {
       return abandonGlHooks()

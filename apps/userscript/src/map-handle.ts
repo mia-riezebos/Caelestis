@@ -112,8 +112,8 @@ export const installMapCapture = (): void => {
           try {
             if (captured === null && looksLikeMap(this)) {
               captured = this
-              log('install', `captured the map via ${property}`)
               removeTraps()
+              log('install', `captured the map via ${property}`)
             }
           } catch {
             // Detection is best-effort; a failure here must not become the page's problem.
