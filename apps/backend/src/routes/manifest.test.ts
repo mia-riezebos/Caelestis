@@ -96,6 +96,16 @@ describe('server and manifest routes', () => {
     // then 401ing `/manifest` made that decision wrong, which is the one thing this endpoint exists
     // to prevent. Admin stays shut: publishing a manifest does not publish the write surface.
     expect((await open.request('/manifest')).status).toBe(200)
+    // An admin on an open server still has to see drafts. Treating open access as a short circuit
+    // rather than a fallback downgraded every authenticated caller to `read`, so the one caller the
+    // unpublished view exists for stopped getting it.
+    const openAdmin = await open.request('/manifest', bearer(BOOTSTRAP))
+    const openAnonymous = await open.request('/manifest')
+    expect(((await openAdmin.json()) as { templates: unknown[] }).templates.length).toBeGreaterThan(
+      ((await openAnonymous.json()) as { templates: unknown[] }).templates.length,
+    )
+    // And a credential that is presented and invalid still fails rather than silently downgrading.
+    expect((await open.request('/manifest', bearer('ABCDEFGHJKMNPQRSTVWXYZ2345'))).status).toBe(401)
     expect((await open.request('/chunks/'.concat('c'.repeat(64)))).status).toBe(404)
     expect((await open.request('/admin/nodes?season=7')).status).toBe(401)
   })

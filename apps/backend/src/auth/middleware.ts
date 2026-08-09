@@ -73,6 +73,11 @@ export interface AuthOptions {
    *
    * `read` only. `report` writes counters and `admin` writes everything, and neither becomes public
    * because a server chose to publish its manifest.
+   *
+   * A credential that is presented is still read: an admin on an open server must keep seeing
+   * drafts. A credential that is presented and invalid still fails, rather than quietly falling back
+   * to anonymous — a holder whose token was revoked needs to learn that, and anyone who wants the
+   * anonymous view can have it by sending no header at all.
    */
   readonly openAccess?: boolean | undefined
 }
@@ -100,13 +105,17 @@ const OPEN_ACCESS_HASH = '0'.repeat(64)
 export const requireScope =
   ({ sql, bootstrapAdminToken, openAccess }: AuthOptions, required: Scope): MiddlewareHandler =>
   async (c, next) => {
-    if (required === 'read' && openAccess === true) {
+    const presented = bearerToken(c.req.header('authorization'))
+    // A fallback, not a short circuit. Returning here before reading the credential downgraded an
+    // authenticated admin to `read` on an open server, so `includeUnpublished` went false and the
+    // one caller who is supposed to see drafts stopped seeing them. Anonymous access is what a
+    // request with no usable credential gets, not what every request gets.
+    const anonymousRead = required === 'read' && openAccess === true
+    if (presented === null) {
+      if (!anonymousRead) return c.json({ error: 'unauthorized' }, 401)
       c.set('caller', { scope: 'read', token: null, tokenHash: OPEN_ACCESS_HASH })
       return next()
     }
-
-    const presented = bearerToken(c.req.header('authorization'))
-    if (presented === null) return c.json({ error: 'unauthorized' }, 401)
 
     // The `length > 0` arm is unreachable today and kept deliberately: `bearerToken` returns null
     // for an empty token, so `presented` is never '' and an empty configured secret can never match
