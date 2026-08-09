@@ -166,7 +166,8 @@ export const isGetFetch = (
       // A plain dictionary with no method inherits no override. Exotic prototypes may.
       return (prototype === realm.Object.prototype || prototype === null) && method === 'GET'
     }
-    if (!('value' in descriptor) || descriptor.value === undefined) return false
+    if (!('value' in descriptor)) return false
+    if (descriptor.value === undefined) return method === 'GET'
     return typeof descriptor.value === 'string' && descriptor.value.toUpperCase() === 'GET'
   } catch {
     return false
@@ -680,6 +681,7 @@ export const install = (
     }
     const uniforms = new WeakMap<WebGLUniformLocation, UniformIdentity>()
     const primarySamplerUnits = new WeakMap<WebGLProgram, number>()
+    const projectionByProgram = new WeakMap<WebGLProgram, ArrayLike<number>>()
     const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
     const texture2DByUnit = new Map<number, WebGLTexture | null>()
     let activeProgram: WebGLProgram | null = null
@@ -728,7 +730,9 @@ export const install = (
       runObservedCall(
         () => nativeUniformMatrix4fv(location, transpose, value, ...rest),
         () => {
-          if (location === null || uniforms.get(location)?.name !== 'u_projection_matrix') return
+          if (location === null) return
+          const uniform = uniforms.get(location)
+          if (uniform?.name !== 'u_projection_matrix' || uniform.program !== activeProgram) return
           // A copy of exactly the values WebGL accepted. MapLibre reuses a scratch array and WebGL2
           // lets an upload start at an offset, so retaining the caller's array reads another matrix.
           const offset = typeof rest[0] === 'number' ? rest[0] : 0
@@ -738,6 +742,7 @@ export const install = (
             snapshot[index] = source[offset + index] ?? 0
           }
           projection = snapshot
+          projectionByProgram.set(uniform.program, snapshot)
         },
       )) as typeof gl.uniformMatrix4fv
 
@@ -755,8 +760,10 @@ export const install = (
       runObservedCall(
         () => nativeBindTexture(target, texture),
         () => {
-          boundTexture = texture
-          if (target === gl.TEXTURE_2D) texture2DByUnit.set(activeTextureUnit, texture)
+          if (target === gl.TEXTURE_2D) {
+            boundTexture = texture
+            texture2DByUnit.set(activeTextureUnit, texture)
+          }
         },
       )
 
@@ -772,34 +779,35 @@ export const install = (
      * to draw on vanished from the list entirely.
      */
     const attributeUpload = (source: unknown): void => {
-      if (boundTexture === null || !isPageInstance(source, 'ImageBitmap')) {
-        if (boundTexture !== null && tileOfTexture.has(boundTexture)) {
-          const had = tileOfTexture.get(boundTexture)
+      const texture = texture2DByUnit.get(activeTextureUnit) ?? null
+      if (texture === null || !isPageInstance(source, 'ImageBitmap')) {
+        if (texture !== null && tileOfTexture.has(texture)) {
+          const had = tileOfTexture.get(texture)
           warn('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
             sourceKind:
               source === null ? 'null' : ((source as object)?.constructor?.name ?? typeof source),
           })
-          tileOfTexture.delete(boundTexture)
+          tileOfTexture.delete(texture)
         }
         return
       }
       const bitmap = source as ImageBitmap
       const tile = tileOfBitmap.get(bitmap)
       if (tile !== undefined) {
-        const had = tileOfTexture.get(boundTexture)
-        tileOfTexture.set(boundTexture, tile)
+        const had = tileOfTexture.get(texture)
+        tileOfTexture.set(texture, tile)
         log('texture', `attributed ${tile.x}/${tile.y}`, {
           size: `${bitmap.width}x${bitmap.height}`,
           replaced: had ? `${had.x}/${had.y}` : null,
         })
         return
       }
-      const had = tileOfTexture.get(boundTexture)
+      const had = tileOfTexture.get(texture)
       if (had !== undefined) {
         warn('texture', `DROPPED attribution ${had.x}/${had.y} — re-uploaded unattributed`, {
           size: `${bitmap.width}x${bitmap.height}`,
         })
-        tileOfTexture.delete(boundTexture)
+        tileOfTexture.delete(texture)
       }
     }
 
@@ -851,7 +859,11 @@ export const install = (
       // u_image1. The last bind is therefore the wrong identity for the child's projection matrix.
       const drawnTexture =
         primaryUnit === undefined ? boundTexture : (texture2DByUnit.get(primaryUnit) ?? null)
-      if (drawnTexture === null || projection === null) {
+      const drawnProjection =
+        activeProgram === null || primaryUnit === undefined
+          ? projection
+          : (projectionByProgram.get(activeProgram) ?? null)
+      if (drawnTexture === null || drawnProjection === null) {
         count('draw:no-texture-or-matrix')
         return
       }
@@ -861,7 +873,7 @@ export const install = (
         return
       }
       frameTileDraws++
-      const quad = quadFromMatrix(projection, tile, this)
+      const quad = quadFromMatrix(drawnProjection, tile, this)
       if (quad !== null) pending.push(quad)
     }
 

@@ -275,10 +275,13 @@ describe('transparent browser hooks', () => {
     const realm = globalThis as unknown as Window & typeof globalThis
     const getters = captureFetchUrlGetters(realm)
     const url = 'https://backend.wplace.live/files/s0/tiles/1/2.png'
+    const undefinedMethod: RequestInit = {}
+    Object.defineProperty(undefinedMethod, 'method', { value: undefined, enumerable: true })
 
     expect(isGetFetch(url, undefined, realm, getters)).toBe(true)
     expect(isGetFetch(new Request(url), undefined, realm, getters)).toBe(true)
     expect(isGetFetch(url, { headers: { accept: 'image/png' } }, realm, getters)).toBe(true)
+    expect(isGetFetch(url, undefinedMethod, realm, getters)).toBe(true)
     expect(isGetFetch(url, { method: 'HEAD' }, realm, getters)).toBe(false)
     expect(isGetFetch(new Request(url, { method: 'POST' }), undefined, realm, getters)).toBe(false)
   })
@@ -368,15 +371,18 @@ describe('transparent browser hooks', () => {
     expect(counters.get('draw:no-texture-or-matrix')).toBe(1)
   })
 
-  it('attributes a raster crossfade draw to u_image0 instead of the last bound parent', async () => {
-    const locations = new Map<string, object>()
+  it('keeps raster identity and projection scoped to their WebGL state', async () => {
+    const locations = new WeakMap<object, Map<string, object>>()
     const fakeGl = {
       TEXTURE0: 0x84c0,
       TEXTURE1: 0x84c1,
       TEXTURE_2D: 0x0de1,
-      getUniformLocation: vi.fn((_program: object, name: string) => {
-        const location = locations.get(name) ?? {}
-        locations.set(name, location)
+      TEXTURE_CUBE_MAP: 0x8513,
+      getUniformLocation: vi.fn((program: object, name: string) => {
+        const programLocations = locations.get(program) ?? new Map<string, object>()
+        locations.set(program, programLocations)
+        const location = programLocations.get(name) ?? {}
+        programLocations.set(name, location)
         return location
       }),
       useProgram: vi.fn(),
@@ -418,11 +424,12 @@ describe('transparent browser hooks', () => {
     install(realm, () => null)
     canvas.getContext('webgl2')
     const gl = fakeGl as unknown as WebGL2RenderingContext
-    const program = {} as WebGLProgram
-    gl.useProgram(program)
-    const image0 = gl.getUniformLocation(program, 'u_image0')
-    const projection = gl.getUniformLocation(program, 'u_projection_matrix')
-    if (image0 === null || projection === null) throw new Error('fake locations must exist')
+    const rasterProgram = {} as WebGLProgram
+    const otherProgram = {} as WebGLProgram
+    gl.useProgram(rasterProgram)
+    const image0 = gl.getUniformLocation(rasterProgram, 'u_image0')
+    const projection = gl.getUniformLocation(rasterProgram, 'u_projection_matrix')
+    if (image0 === null || projection === null) throw new Error('fake raster locations must exist')
     gl.uniform1i(image0, 0)
 
     const upload = async (unit: number, texture: WebGLTexture, x: number): Promise<void> => {
@@ -432,6 +439,8 @@ describe('transparent browser hooks', () => {
       const bitmap = await realm.createImageBitmap(blob)
       gl.activeTexture(unit)
       gl.bindTexture(gl.TEXTURE_2D, texture)
+      // Another target on the same unit must not steal a 2D upload's attribution.
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, {} as WebGLTexture)
       gl.texImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, bitmap)
     }
 
@@ -446,6 +455,17 @@ describe('transparent browser hooks', () => {
 
     expect(frames).toHaveLength(1)
     expect(frames.at(-1)?.quads[0]?.tile).toEqual({ x: 3, y: 4 })
+
+    gl.useProgram(otherProgram)
+    const otherProjection = gl.getUniformLocation(otherProgram, 'u_projection_matrix')
+    if (otherProjection === null) throw new Error('fake secondary location must exist')
+    gl.uniformMatrix4fv(otherProjection, false, tileMatrix(0.5, 0.5, 0.5))
+    gl.useProgram(rasterProgram)
+    gl.drawElements(0, 0, 0, 0)
+    await Promise.resolve()
+
+    expect(frames).toHaveLength(2)
+    expect(frames[1]?.quads[0]).toEqual(frames[0]?.quads[0])
   })
 
   it('does not consume an arbitrary Blob-parts iterable a second time', () => {
