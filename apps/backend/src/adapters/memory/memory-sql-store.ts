@@ -61,14 +61,19 @@ export class MemorySqlStore implements SqlStore {
     ) {
       throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
     }
-    if (node.parentId !== null) {
-      const parent = this.nodes.get(node.parentId)
-      if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
-      if (parent.season !== node.season) {
-        throw new InvalidNodeParentError('parent node belongs to a different season')
-      }
+    if (node.parentId === null) {
+      this.nodes.set(node.id, { ...node })
+      return
     }
-    this.nodes.set(node.id, { ...node })
+    const parent = this.nodes.get(node.parentId)
+    if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
+    if (parent.season !== node.season) {
+      throw new InvalidNodeParentError('parent node belongs to a different season')
+    }
+    // The prefix is the parent's, not whatever the caller derived from its own earlier read of it.
+    // Same rule as `renameNode`; only the last segment is the caller's to choose.
+    const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
+    this.nodes.set(node.id, { ...node, path: `${parent.path}/${segment}` })
   }
 
   async readNode(nodeId: string): Promise<NodeRecord | null> {
@@ -86,9 +91,12 @@ export class MemorySqlStore implements SqlStore {
   async renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null> {
     const node = this.nodes.get(nodeId)
     if (node === undefined) return null
-    // Composed from the node's own path, so the prefix is whatever its parent established — see the
-    // port docstring on why a caller-supplied path is a race.
-    const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
+    // Composed from the parent row rather than from this node's own path — see the port docstring on
+    // why a caller-supplied path is a race. Reading it off the node's own path would keep whatever
+    // case that prefix was stored in, so a child at `/CANADA/x` under a parent at `/canada` renamed
+    // to `/CANADA/new` here and `/canada/new` in production. Both are legal; only one can be right.
+    const parentPath = node.parentId === null ? '' : (this.nodes.get(node.parentId)?.path ?? '')
+    const path = `${parentPath}/${segment}`
 
     const oldPrefix = `${node.path}/`
     // Folded, because SQLite's LIKE is case-insensitive over ASCII and so selects `/CANADA/x` under
@@ -108,7 +116,12 @@ export class MemorySqlStore implements SqlStore {
     // Length before collision, matching D1 — which cannot ask its unique index anything until the
     // write, so the order is not a choice there. Checked the other way round, a rename that both
     // collides and overflows answered 409 here and 400 in production.
-    const longest = Math.max(path.length, ...rewritten.map((entry) => entry.path.length))
+    // Reduced rather than spread: a season may hold 100,000 nodes and that many arguments is a
+    // RangeError, not a large number.
+    const longest = rewritten.reduce(
+      (worst, entry) => Math.max(worst, entry.path.length),
+      path.length,
+    )
     if (longest > MAX_NODE_PATH_LENGTH) {
       throw new NodePathTooLongError(
         `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,

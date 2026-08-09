@@ -119,12 +119,21 @@ export class D1SqlStore implements SqlStore {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
     }
+    // The prefix comes from the parent row, not from `node.path`. A caller derives that path from
+    // its own read of the parent, and a rename committing in between leaves the child inserted under
+    // a prefix its parent no longer has — a hierarchy the wire refuses, written by two requests that
+    // both succeeded. Only the last segment is the caller's to choose. Same rule as `renameNode`.
+    const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
+    const path =
+      node.parentId === null
+        ? sql`${node.path}`
+        : sql`coalesce((select path from nodes where id = ${node.parentId}), '') || '/' || ${segment}`
     try {
       await this.database.insert(nodes).values({
         id: node.id,
         season: node.season,
         parentId: node.parentId,
-        path: node.path,
+        path,
         name: node.name,
         description: node.description,
         createdAtMs: node.createdAt,
@@ -179,10 +188,22 @@ export class D1SqlStore implements SqlStore {
     // This reads the paths rather than aggregating them because the alternative is a bound that is
     // wrong in one direction or the other, and the rows read here are exactly the rows the rename is
     // about to write anyway.
-    const existing = await this.database.select({ path: nodes.path }).from(nodes).where(descendants)
     const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
     const shift = path.length - node.path.length
-    const longest = Math.max(path.length, ...existing.map((row) => row.path.length + shift))
+    // Only rows that could possibly overflow: a code point is at most two UTF-16 units, so a path of
+    // `c` characters is at most `2c` units and anything under this threshold is provably safe. That
+    // keeps a rename near the root from materialising an entire season's paths — 100,000 of them is
+    // a result set D1 will refuse and an argument list V8 will refuse — while never missing a row
+    // that would overflow.
+    const couldOverflow = sql`length(${nodes.path}) * 2 + ${shift} > ${MAX_NODE_PATH_LENGTH}`
+    const existing = await this.database
+      .select({ path: nodes.path })
+      .from(nodes)
+      .where(and(descendants, couldOverflow))
+    const longest = existing.reduce(
+      (worst, row) => Math.max(worst, row.path.length + shift),
+      path.length,
+    )
     if (longest > MAX_NODE_PATH_LENGTH) {
       throw new NodePathTooLongError(
         `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
@@ -226,6 +247,14 @@ export class D1SqlStore implements SqlStore {
     } catch (error) {
       if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+      }
+      // The guard above reads a snapshot, so a child inserted between it and this batch can be
+      // lengthened past the bound by a rename that was measured without it. The CHECK is the
+      // authority; losing to it answers the same 400 as failing the guard rather than a 500.
+      if (mentions(error, 'CHECK constraint failed: nodes_path_check')) {
+        throw new NodePathTooLongError(
+          `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+        )
       }
       throw error
     }
