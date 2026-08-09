@@ -156,7 +156,7 @@ const inCreationOrder = (branch: Branch): Branch['folders'] => {
  * Copy a branch to its destination, then take it off the source.
  *
  * Returns what happened rather than throwing, because every failure here is one a person needs told
- * in a sentence: a server refused a name, a template has not finished loading, a code turned out not
+ * in a sentence: a server refused a name, a template has not finished loading, a token turned out not
  * to be admin after all.
  */
 export const transplant = async (
