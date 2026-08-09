@@ -90,16 +90,6 @@ export class MemorySqlStore implements SqlStore {
     // port docstring on why a caller-supplied path is a race.
     const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
 
-    const taken = [...this.nodes.values()].some(
-      (candidate) =>
-        candidate.id !== nodeId &&
-        candidate.season === node.season &&
-        foldPath(candidate.path) === foldPath(path),
-    )
-    if (taken) {
-      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
-    }
-
     const oldPrefix = `${node.path}/`
     // Folded, because SQLite's LIKE is case-insensitive over ASCII and so selects `/CANADA/x` under
     // the prefix `/canada/`. A case-sensitive match here would leave that child behind in the oracle
@@ -114,11 +104,25 @@ export class MemorySqlStore implements SqlStore {
       ...descendant,
       path: `${path}${descendant.path.slice(node.path.length)}`,
     }))
+
+    // Length before collision, matching D1 — which cannot ask its unique index anything until the
+    // write, so the order is not a choice there. Checked the other way round, a rename that both
+    // collides and overflows answered 409 here and 400 in production.
     const longest = Math.max(path.length, ...rewritten.map((entry) => entry.path.length))
     if (longest > MAX_NODE_PATH_LENGTH) {
       throw new NodePathTooLongError(
         `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
       )
+    }
+
+    const taken = [...this.nodes.values()].some(
+      (candidate) =>
+        candidate.id !== nodeId &&
+        candidate.season === node.season &&
+        foldPath(candidate.path) === foldPath(path),
+    )
+    if (taken) {
+      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
     }
 
     const renamed = { ...node, name, path }
