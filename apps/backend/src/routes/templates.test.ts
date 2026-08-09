@@ -9,17 +9,23 @@ import type { Ports } from '../ports/index.js'
 const BOOTSTRAP = 'bootstrap-operator-token'
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 
-const harness = () => {
+const harness = async () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
-  // templates.node_id is a foreign key; the oracle models it now, so the group has to exist before
-  // a template can be placed in it.
-  sql.insertNode(NODE_ID)
   const ports: Ports = {
     blobs,
     sql,
     counters: new MemoryCounterStore(sql, () => millis(Date.now())),
   }
+  await sql.insertNode({
+    id: NODE_ID,
+    season: 1,
+    parentId: null,
+    path: '/templates',
+    name: 'Templates',
+    description: null,
+    createdAt: millis(Date.now()),
+  })
   return { blobs, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
@@ -32,14 +38,13 @@ const templateForm = (png: Uint8Array): FormData => {
   form.set('png', new File([png.slice()], 'template.png', { type: 'image/png' }))
   form.set('nodeId', NODE_ID)
   form.set('name', 'Route template')
-  form.set('season', '1')
   form.set('originX', '0')
   form.set('originY', '0')
   return form
 }
 
 const mintToken = async (
-  app: ReturnType<typeof harness>['app'],
+  app: Awaited<ReturnType<typeof harness>>['app'],
   scope: 'read' | 'report' | 'admin',
 ): Promise<string> => {
   const response = await app.request('/admin/tokens', {
@@ -51,12 +56,12 @@ const mintToken = async (
   return body.token
 }
 
-const mintReportToken = (app: ReturnType<typeof harness>['app']): Promise<string> =>
+const mintReportToken = (app: Awaited<ReturnType<typeof harness>>['app']): Promise<string> =>
   mintToken(app, 'report')
 
 describe('template routes', () => {
   it('stores a template and serves the exact stored chunk bytes', async () => {
-    const { app, blobs } = harness()
+    const { app, blobs } = await harness()
     const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
     const created = await app.request('/admin/templates', {
       method: 'POST',
@@ -82,13 +87,13 @@ describe('template routes', () => {
   })
 
   it('404s an unknown chunk hash', async () => {
-    const { app } = harness()
+    const { app } = await harness()
     const response = await app.request(`/chunks/${'f'.repeat(64)}`, bearer(BOOTSTRAP))
     expect(response.status).toBe(404)
   })
 
   it('refuses a report-scope holder on template upload', async () => {
-    const { app } = harness()
+    const { app } = await harness()
     const reportToken = await mintReportToken(app)
     const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
 
@@ -102,19 +107,17 @@ describe('template routes', () => {
   })
 
   it('requires a token to read a chunk', async () => {
-    const { app } = harness()
+    const { app } = await harness()
     const response = await app.request(`/chunks/${'a'.repeat(64)}`)
     expect(response.status).toBe(401)
   })
 
   it('returns 400, not 500, for a node that does not exist', async () => {
-    // templates.node_id is a foreign key and nothing in this slice creates nodes, so every upload
-    // reached D1 and came back "FOREIGN KEY constraint failed" — rethrown as a 500 for what is
-    // squarely a client error. The oracle could not see it: shape validation cannot check whether a
-    // row something points at exists, which is how both adapters agreed on every field and still
-    // disagreed about whether the insert works.
-    const { app } = harness()
-    const form = templateForm(new Uint8Array([1, 2, 3, 4]))
+    // templates.node_id is a foreign key, but an unknown node is still a client error. The store
+    // boundary turns it into NodeNotFoundError so the route does not expose it as a generic 500.
+    const { app } = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const form = templateForm(png)
     form.set('nodeId', '01890f3e-7b2c-7abc-8def-999999999999')
 
     const response = await app.request('/admin/templates', {
@@ -125,12 +128,12 @@ describe('template routes', () => {
 
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({
-      error: expect.stringMatching(/no node/),
+      error: expect.stringMatching(/node does not exist/),
     })
   })
 
   it('returns 400 for a non-PNG upload', async () => {
-    const { app } = harness()
+    const { app } = await harness()
     const response = await app.request('/admin/templates', {
       method: 'POST',
       body: templateForm(new Uint8Array([1, 2, 3, 4])),
@@ -140,6 +143,44 @@ describe('template routes', () => {
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toEqual({ error: 'not a PNG' })
   })
+
+  it('returns 400 when nodeId does not name an existing node', async () => {
+    const { app } = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const form = templateForm(png)
+    form.set('nodeId', '01890f3e-7b2c-7abc-8def-0123456789ac')
+
+    const response = await app.request('/admin/templates', {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({
+      error: 'node does not exist: 01890f3e-7b2c-7abc-8def-0123456789ac',
+    })
+  })
+
+  it('creates templates unpublished and publishes them with PATCH', async () => {
+    const { app } = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const created = await app.request('/admin/templates', {
+      method: 'POST',
+      body: templateForm(png),
+      ...bearer(BOOTSTRAP),
+    })
+    const template = (await created.json()) as { templateId: string; published: boolean }
+    expect(template.published).toBe(false)
+
+    const published = await app.request(`/admin/templates/${template.templateId}`, {
+      method: 'PATCH',
+      headers: { ...bearer(BOOTSTRAP).headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ published: true }),
+    })
+    expect(published.status).toBe(200)
+    await expect(published.json()).resolves.toEqual({ id: template.templateId, published: true })
+  })
 })
 
 describe('chunk delivery is reachable by ordinary members', () => {
@@ -147,7 +188,7 @@ describe('chunk delivery is reachable by ordinary members', () => {
     // Every other chunk test authenticates as the bootstrap admin, which satisfies `read` as well —
     // so tightening this route to `admin` passed the whole suite while locking out every member the
     // read scope exists for. This is the case that fails when that happens.
-    const { app } = harness()
+    const { app } = await harness()
     const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
     const upload = await app.request('/admin/templates', {
       method: 'POST',

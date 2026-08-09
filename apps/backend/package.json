@@ -19,7 +19,9 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
     "@types/node": "^26.1.2",
+    "@wts/wire-schema": "workspace:*",
     "drizzle-kit": "0.31.10",
+    "effect": "4.0.0-beta.102",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.114.0"

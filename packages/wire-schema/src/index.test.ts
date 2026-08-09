@@ -1,4 +1,4 @@
-import { tileKey, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { millis, tileKey, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -19,7 +19,7 @@ import {
 
 const HASH = 'a'.repeat(64)
 const SECONDS = 1_750_000_000
-const MILLIS = SECONDS * 1_000
+const MILLIS = millis(SECONDS * 1_000)
 
 const SERVER_ID = '01890f3a-6b7c-7def-8123-456789abcdef'
 const NODE_ID = '01890f3a-6b7c-7def-8123-456789abcde0'
@@ -67,13 +67,22 @@ const validTemplate = {
   bbox: { minX: 325_000, minY: 1_781_000, maxX: 326_000, maxY: 1_782_000 },
   totalPixels: 1,
   chunks: [{ tile: '325/1781', hash: HASH }],
+  published: true,
+  createdAt: MILLIS,
 }
 
-const validNode = { id: NODE_ID, parentId: null, path: '/group', name: 'Group' }
+const validNode = {
+  id: NODE_ID,
+  parentId: null,
+  path: '/group',
+  name: 'Group',
+  createdAt: MILLIS,
+}
 
 const validManifest = {
   version: 'manifest-1',
-  server: { id: SERVER_ID, name: 'Server', requiresAuth: false },
+  season: 1,
+  server: { id: SERVER_ID, name: 'Server', auth: 'none' as const },
   nodes: [validNode],
   templates: [validTemplate],
   tiles: ['325/1781'],
@@ -227,7 +236,7 @@ describe('tile and template schemas', () => {
     const server = {
       id: SERVER_ID,
       name: 'Server',
-      requiresAuth: false,
+      auth: 'none',
       description: 'x'.repeat(length),
     }
     if (accepted) expect(Schema.decodeUnknownSync(ServerInfo)(server)).toEqual(server)
@@ -321,6 +330,9 @@ describe('PaintEvent', () => {
     ['wplaceUserId', Number.NaN],
     ['season', -1.5],
     ['season', 1e21],
+    // Seasons are 1-based. This was `NonNegativeInteger`, so season 0 decoded here while the Worker
+    // refused to be configured for it — a season a server could never serve as its own.
+    ['season', 0],
   ] as const)('rejects invalid %s value %s', (field, value) => {
     expectRejected(PaintEvent, { ...validEvent, [field]: value })
   })
@@ -460,6 +472,12 @@ describe('PaintEvent', () => {
 })
 
 describe('cross-field and time-unit schemas', () => {
+  it('refuses a manifest for season zero, since seasons start at one', () => {
+    // The season field was `NonNegativeInteger` on both sides of the wire while `worker.ts` refused
+    // `SEASON=0`, so a whole tree could exist in a season no deployment could ever make its default.
+    expectRejected(Manifest, { ...validManifest, season: 0 })
+  })
+
   it('requires manifest tiles to exactly match the unique tiles referenced by chunks', () => {
     expectRejected(Manifest, { ...validManifest, tiles: [] })
   })
@@ -479,8 +497,8 @@ describe('cross-field and time-unit schemas', () => {
   it('rejects duplicate node identifiers carrying different paths', () => {
     // Duplicating the whole node makes the path-uniqueness rule do the rejecting, which leaves the
     // id rule deletable. Distinct paths isolate it.
-    const first = { id: uuid(100), parentId: null, path: '/one', name: 'One' }
-    const second = { id: uuid(100), parentId: null, path: '/two', name: 'Two' }
+    const first = { id: uuid(100), parentId: null, path: '/one', name: 'One', createdAt: MILLIS }
+    const second = { id: uuid(100), parentId: null, path: '/two', name: 'Two', createdAt: MILLIS }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [first, second],
@@ -493,8 +511,6 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('rejects duplicate template identifiers', () => {
-    // The bboxes must NOT overlap. Reusing validTemplate's bbox makes the overlap filter do the
-    // rejecting, and the uniqueness conjunct this test names becomes deletable.
     const duplicate = {
       ...validTemplate,
       version: uuid(4),
@@ -538,6 +554,8 @@ describe('cross-field and time-unit schemas', () => {
           }),
           hash: HASH,
         })),
+        published: true,
+        createdAt: MILLIS,
       }
     })
     const manifest = {
@@ -564,90 +582,6 @@ describe('cross-field and time-unit schemas', () => {
     }
     expectRejected(Manifest, { ...validManifest, templates: [duplicate] })
   })
-
-  it('rejects two wrapped templates that overlap across the antimeridian seam', () => {
-    // A sort-and-sweep over minX misses this: both wrapped boxes start high and end low, so the
-    // early break skips the comparison and the forbidden same-group overlap decodes clean.
-    const wrapped = (id: number) => ({
-      ...validTemplate,
-      id: uuid(500 + id),
-      version: uuid(600 + id),
-      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
-    })
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [wrapped(1), wrapped(2)],
-      tiles: [tileKey({ x: 2047, y: 0 })],
-    })
-  })
-
-  it.each([
-    // Both halves of the wrapped span must be compared against the unwrapped one. Pairing two
-    // wrapped boxes — as the seam test above does — leaves either half deletable, because whichever
-    // half survives still reports the overlap. Only a wrapped-against-unwrapped pair separates them.
-    ['the low half, past the seam', { minX: 0, maxX: 500 }],
-    ['the high half, before the seam', { minX: 2_047_500, maxX: 2_048_000 }],
-  ])('rejects a wrapped template overlapping an unwrapped one on %s', (_, xs) => {
-    const wrapped = {
-      ...validTemplate,
-      id: uuid(900),
-      version: uuid(901),
-      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
-    }
-    const unwrapped = {
-      ...validTemplate,
-      id: uuid(902),
-      version: uuid(903),
-      bbox: { ...xs, minY: 0, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [wrapped, unwrapped],
-      tiles: [tileKey({ x: 2047, y: 0 }), tileKey({ x: 0, y: 0 })],
-    })
-  })
-
-  it.each([
-    // The tests above pin which halves the wrap splits into, but not where those halves end: both
-    // spans overlap by hundreds of pixels, so moving an endpoint one pixel changes no outcome.
-    // These two overlap on exactly one column each — the first on WORLD_PIXELS - 1, the last column
-    // before the seam, and the second on column 0, the first one after it. Shrinking the high half
-    // to WORLD_PIXELS - 1 or lifting the low half to 1 empties that interval and the overlap
-    // disappears, so each endpoint now fails on its own.
-    [
-      'the last column before the seam',
-      { minX: 2_047_999, maxX: 1_000 },
-      { minX: 2_047_999, maxX: 2_048_000 },
-      2047,
-    ],
-    ['the first column after the seam', { minX: 2_047_000, maxX: 1 }, { minX: 0, maxX: 1 }, 0],
-  ])(
-    'rejects a wrapped template overlapping an unwrapped one on %s',
-    (_, wrappedX, unwrappedX, tile) => {
-      const wrapped = {
-        ...validTemplate,
-        id: uuid(920),
-        version: uuid(921),
-        bbox: { ...wrappedX, minY: 0, maxY: 1_000 },
-        chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
-      }
-      const unwrapped = {
-        ...validTemplate,
-        id: uuid(922),
-        version: uuid(923),
-        bbox: { ...unwrappedX, minY: 0, maxY: 1_000 },
-        chunks: [{ tile: tileKey({ x: tile, y: 0 }), hash: HASH }],
-      }
-      expectRejected(Manifest, {
-        ...validManifest,
-        templates: [wrapped, unwrapped],
-        tiles: [...new Set([tileKey({ x: 2047, y: 0 }), tileKey({ x: tile, y: 0 })])],
-      })
-    },
-  )
 
   it('accepts a wrapped template beside an unwrapped one that clears both of its halves', () => {
     const wrapped = {
@@ -780,12 +714,15 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it.each([
-    ['a node that is its own parent', [{ id: NODE_ID, parentId: NODE_ID, path: '/g', name: 'G' }]],
+    [
+      'a node that is its own parent',
+      [{ id: NODE_ID, parentId: NODE_ID, path: '/g', name: 'G', createdAt: MILLIS }],
+    ],
     [
       'two nodes that name each other',
       [
-        { id: uuid(20), parentId: uuid(21), path: '/a', name: 'A' },
-        { id: uuid(21), parentId: uuid(20), path: '/b', name: 'B' },
+        { id: uuid(20), parentId: uuid(21), path: '/a', name: 'A', createdAt: MILLIS },
+        { id: uuid(21), parentId: uuid(20), path: '/b', name: 'B', createdAt: MILLIS },
       ],
     ],
   ])('rejects %s', (_label, nodes) => {
@@ -800,8 +737,20 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('accepts a genuine two-level group tree', () => {
-    const parent = { id: uuid(30), parentId: null, path: '/canada', name: 'Canada' }
-    const child = { id: uuid(31), parentId: parent.id, path: '/canada/toronto', name: 'Toronto' }
+    const parent = {
+      id: uuid(30),
+      parentId: null,
+      path: '/canada',
+      name: 'Canada',
+      createdAt: MILLIS,
+    }
+    const child = {
+      id: uuid(31),
+      parentId: parent.id,
+      path: '/canada/toronto',
+      name: 'Toronto',
+      createdAt: MILLIS,
+    }
     const manifest = {
       ...validManifest,
       nodes: [parent, child],
@@ -813,8 +762,8 @@ describe('cross-field and time-unit schemas', () => {
   it('rejects two nodes sharing one path', () => {
     // path is the prefix-rollup key, so duplicates make a rollup attribute one group's templates to
     // another.
-    const first = { id: uuid(40), parentId: null, path: '/canada', name: 'A' }
-    const second = { id: uuid(41), parentId: null, path: '/canada', name: 'B' }
+    const first = { id: uuid(40), parentId: null, path: '/canada', name: 'A', createdAt: MILLIS }
+    const second = { id: uuid(41), parentId: null, path: '/canada', name: 'B', createdAt: MILLIS }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [first, second],
@@ -823,8 +772,7 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('rejects a manifest whose chunks exceed the total cap', () => {
-    // The per-template cap bounds no total. Each template sits in its OWN group, so the same tiles
-    // may be covered repeatedly without tripping the same-group overlap rule — that is what keeps
+    // The per-template cap bounds no total: the same tiles may be covered repeatedly, which keeps
     // the declared union at 1,000 tiles while the chunk arrays sum past the cap.
     const tiles = Array.from({ length: 1_000 }, (_, index) => tileKey({ x: index, y: 0 }))
     const chunks = tiles.map((tile) => ({ tile, hash: HASH }))
@@ -833,6 +781,7 @@ describe('cross-field and time-unit schemas', () => {
       parentId: null,
       path: `/bulk${index}`,
       name: 'Bulk',
+      createdAt: MILLIS,
     }))
     const templates = nodes.map((node, index) => ({
       ...validTemplate,
@@ -856,6 +805,7 @@ describe('cross-field and time-unit schemas', () => {
       parentId: null,
       path: `/cap${index}`,
       name: 'Cap',
+      createdAt: MILLIS,
     }))
     const templates = nodes.map((node, index) => ({
       ...validTemplate,
@@ -1021,8 +971,20 @@ describe('cross-field and time-unit schemas', () => {
   it('rejects a node whose path skips a level below its parent', () => {
     // startsWith alone accepts /a/b/c under /a, which claims a level of hierarchy no node declares:
     // a rollup over /a/b finds nothing while /a/b/c's templates sit below it.
-    const parent = { id: uuid(140), parentId: null, path: '/canada', name: 'Canada' }
-    const child = { id: uuid(141), parentId: parent.id, path: '/canada/on/toronto', name: 'T' }
+    const parent = {
+      id: uuid(140),
+      parentId: null,
+      path: '/canada',
+      name: 'Canada',
+      createdAt: MILLIS,
+    }
+    const child = {
+      id: uuid(141),
+      parentId: parent.id,
+      path: '/canada/on/toronto',
+      name: 'T',
+      createdAt: MILLIS,
+    }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [parent, child],
@@ -1059,8 +1021,20 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('rejects a node whose path is not under its parent', () => {
-    const parent = { id: uuid(50), parentId: null, path: '/canada', name: 'Canada' }
-    const child = { id: uuid(51), parentId: parent.id, path: '/usa/x', name: 'Stray' }
+    const parent = {
+      id: uuid(50),
+      parentId: null,
+      path: '/canada',
+      name: 'Canada',
+      createdAt: MILLIS,
+    }
+    const child = {
+      id: uuid(51),
+      parentId: parent.id,
+      path: '/usa/x',
+      name: 'Stray',
+      createdAt: MILLIS,
+    }
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [parent, child],
@@ -1087,8 +1061,20 @@ describe('cross-field and time-unit schemas', () => {
     // still spell its parent's prefix in the other case. SQLite's LIKE is ASCII-case-insensitive,
     // so /Canada/x does roll up under /canada; the case-sensitive comparison is the one that would
     // disagree with the database, so the prefix test folds case the way the uniqueness rule does.
-    const parent = { id: uuid(54), parentId: null, path: '/canada', name: 'Canada' }
-    const child = { id: uuid(55), parentId: parent.id, path: '/Canada/x', name: 'Child' }
+    const parent = {
+      id: uuid(54),
+      parentId: null,
+      path: '/canada',
+      name: 'Canada',
+      createdAt: MILLIS,
+    }
+    const child = {
+      id: uuid(55),
+      parentId: parent.id,
+      path: '/Canada/x',
+      name: 'Child',
+      createdAt: MILLIS,
+    }
     const manifest = {
       ...validManifest,
       nodes: [parent, child],
@@ -1103,8 +1089,8 @@ describe('cross-field and time-unit schemas', () => {
     expectRejected(Manifest, {
       ...validManifest,
       nodes: [
-        { id: uuid(110), parentId: null, path: '/Canada', name: 'Upper' },
-        { id: uuid(111), parentId: null, path: '/canada', name: 'Lower' },
+        { id: uuid(110), parentId: null, path: '/Canada', name: 'Upper', createdAt: MILLIS },
+        { id: uuid(111), parentId: null, path: '/canada', name: 'Lower', createdAt: MILLIS },
       ],
       templates: [{ ...validTemplate, nodeId: uuid(110) }],
     })
@@ -1140,8 +1126,20 @@ describe('cross-field and time-unit schemas', () => {
     // move over one cannot capture the other. Folding with JavaScript's Unicode-aware toLowerCase
     // collapsed them here instead, leaving the manifest endpoint unable to emit a decodable
     // manifest for state the database had accepted.
-    const upper = { id: uuid(113), parentId: null, path: '/QUÉBEC', name: 'Upper' }
-    const lower = { id: uuid(114), parentId: null, path: '/québec', name: 'Lower' }
+    const upper = {
+      id: uuid(113),
+      parentId: null,
+      path: '/QUÉBEC',
+      name: 'Upper',
+      createdAt: MILLIS,
+    }
+    const lower = {
+      id: uuid(114),
+      parentId: null,
+      path: '/québec',
+      name: 'Lower',
+      createdAt: MILLIS,
+    }
     const manifest = {
       ...validManifest,
       nodes: [upper, lower],
@@ -1157,7 +1155,7 @@ describe('cross-field and time-unit schemas', () => {
     // ASCII-only restriction the pattern was widened to remove, just one category further out.
     // Marks are allowed only after a letter or digit, so a segment still cannot open with one, and
     // neither LIKE metacharacter is a mark.
-    const node = { id: uuid(115), parentId: null, path, name: 'Group' }
+    const node = { id: uuid(115), parentId: null, path, name: 'Group', createdAt: MILLIS }
     const manifest = {
       ...validManifest,
       nodes: [node],
@@ -1173,7 +1171,13 @@ describe('cross-field and time-unit schemas', () => {
   it('accepts a path with non-ASCII letters', () => {
     // Alliances are not all anglophone, and D1 stores these happily — an ASCII-only pattern made a
     // legitimate stored path impossible to emit in a manifest.
-    const node = { id: uuid(112), parentId: null, path: '/québec', name: 'Québec' }
+    const node = {
+      id: uuid(112),
+      parentId: null,
+      path: '/québec',
+      name: 'Québec',
+      createdAt: MILLIS,
+    }
     const manifest = {
       ...validManifest,
       nodes: [node],
@@ -1194,32 +1198,6 @@ describe('cross-field and time-unit schemas', () => {
     },
   )
 
-  it('rejects an overlap the sweep meets on its upper side', () => {
-    // The two neighbour branches must each fail on their own. Every other overlap fixture is caught
-    // by the lower-neighbour branch, so deleting the upper one left the suite green while these two
-    // same-group boxes decoded clean — the second sorts before the first by minY, so it is the
-    // successor comparison that has to reject it.
-    const first = {
-      ...validTemplate,
-      id: uuid(120),
-      version: uuid(121),
-      bbox: { minX: 0, minY: 10, maxX: 100, maxY: 20 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }
-    const second = {
-      ...validTemplate,
-      id: uuid(122),
-      version: uuid(123),
-      bbox: { minX: 0, minY: 0, maxX: 100, maxY: 15 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [first, second],
-      tiles: [tileKey({ x: 0, y: 0 })],
-    })
-  })
-
   it('accepts many templates stacked in one x column', () => {
     // The sweep's structural worst case: every span shares an x interval, so all of them stay
     // active at once and only the y ordering separates them. It is also a shape the all-pairs scan
@@ -1235,31 +1213,7 @@ describe('cross-field and time-unit schemas', () => {
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
-  it('rejects an overlap between the first and last of a large group', () => {
-    // The sweep returns on the first overlap it finds, so a pair far apart in sweep order is the
-    // case most likely to be missed by a wrong active-set or ordering.
-    const templates = Array.from({ length: 400 }, (_, index) => ({
-      ...validTemplate,
-      id: uuid(5_000 + index),
-      version: uuid(6_000 + index),
-      bbox: { minX: 2 * index + 1, minY: 0, maxX: 2 * index + 2, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }))
-    templates.push({
-      ...validTemplate,
-      id: uuid(7_000),
-      version: uuid(7_001),
-      bbox: { minX: 1, minY: 0, maxX: 2, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    })
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates,
-      tiles: [tileKey({ x: 0, y: 0 })],
-    })
-  })
-
-  it('accepts two wrapped templates that do not overlap in y', () => {
+  it('accepts two wrapped templates in one group', () => {
     const wrapped = (id: number, minY: number, maxY: number) => ({
       ...validTemplate,
       id: uuid(700 + id),
@@ -1292,38 +1246,6 @@ describe('cross-field and time-unit schemas', () => {
       const manifest = { ...validManifest, templates, tiles: ['0/0', '0/1'] }
       expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
     }
-  })
-
-  it.each([
-    [
-      { minX: 2_047_999, maxX: 2_048_000 },
-      { minX: 2_047_999, maxX: 2_048_000 },
-    ],
-    [
-      { minX: 0, maxX: 1 },
-      { minX: 0, maxX: 1 },
-    ],
-  ])('rejects overlap confined to a seam endpoint', (leftX, rightX) => {
-    const makeTemplate = (id: number, x: { minX: number; maxX: number }) => ({
-      ...validTemplate,
-      id: uuid(940 + id),
-      version: uuid(950 + id),
-      bbox: { ...x, minY: 0, maxY: 1 },
-    })
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [makeTemplate(1, leftX), makeTemplate(2, rightX)],
-    })
-  })
-
-  it('rejects overlapping templates within one group', () => {
-    const overlapping = {
-      ...validTemplate,
-      id: uuid(2),
-      version: uuid(3),
-      bbox: { ...validTemplate.bbox, minX: validTemplate.bbox.minX + 1 },
-    }
-    expectRejected(Manifest, { ...validManifest, templates: [validTemplate, overlapping] })
   })
 
   it('rejects milliseconds where seconds are required', () => {

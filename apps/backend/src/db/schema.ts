@@ -19,15 +19,17 @@ export const nodes = sqliteTable(
   'nodes',
   {
     id: text('id').primaryKey(),
+    season: integer('season').notNull(),
     parentId: text('parent_id').references((): AnySQLiteColumn => nodes.id),
     path: text('path').notNull(),
     name: text('name').notNull(),
+    description: text('description'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
-  // path is the prefix-rollup key and the subtree-rewrite key. Two nodes sharing one path make a
-  // rollup attribute one group's templates to another, and make the documented
+  // Within a season, path is the prefix-rollup key and subtree-rewrite key. Two nodes sharing one
+  // path make a rollup attribute one group's templates to another, and make the documented
   // `UPDATE ... WHERE path LIKE '<old>/%'` move rewrite both subtrees when either is renamed.
-  // NOCASE, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
+  // Lowercase, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
   // the documented `LIKE '<old>/%'` subtree move rewrites the other one's descendants too.
   //
   // That asymmetry constrains how the move is written. LIKE selects case-insensitively, so it picks
@@ -35,7 +37,7 @@ export const nodes = sqliteTable(
   // with it leaves that row pointing at a prefix that no longer exists. The move has to rebuild the
   // path from its length: `<new> || substr(path, length(<old>) + 1)`.
   (table) => [
-    uniqueIndex('nodes_path_idx').on(sql`lower(${table.path})`),
+    uniqueIndex('nodes_season_path_idx').on(table.season, sql`lower(${table.path})`),
     // The wire's NodePath states this shape, and that schema validates the manifest *response* —
     // nothing stood between a create-or-rename-group route and this column, and `nodes` was the one
     // table in this file carrying no CHECK at all.
@@ -64,7 +66,6 @@ export const nodes = sqliteTable(
     ),
   ],
 )
-
 export const templateVersions = sqliteTable(
   'template_versions',
   {
@@ -132,8 +133,8 @@ export const templates = sqliteTable(
       .notNull()
       .references(() => nodes.id),
     name: text('name').notNull(),
-    season: integer('season').notNull(),
     currentVersionId: text('current_version_id'),
+    publishedAt: integer('published_at').$type<Millis>(),
     /**
      * Who created this template.
      *

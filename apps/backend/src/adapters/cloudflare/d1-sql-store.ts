@@ -1,5 +1,5 @@
-import { seconds } from '@wts/shared'
-import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
+import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -16,10 +16,18 @@ import {
   type BucketQuery,
   compareAccessTokens,
   compareBuckets,
+  InvalidNodeParentError,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
+  type ManifestTemplateRecord,
+  type ManifestTileRecord,
+  NodeNotEmptyError,
+  NodeNotFoundError,
+  NodePathConflictError,
+  type NodeRecord,
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
+  TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -46,6 +54,30 @@ const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
   return out
 }
 
+/**
+ * Whether `text` appears anywhere in an error's chain.
+ *
+ * Drizzle wraps every failure in a `DrizzleQueryError` whose own message is `Failed query: insert
+ * into "nodes" ...` — the driver's text, including `UNIQUE constraint failed`, is on `cause`. So a
+ * check against `error.message` never matched, a duplicate group name escaped as an unhandled error,
+ * and an ordinary admin action answered 500 where the route means 400. The memory store threw the
+ * right error, so every test agreed with the route and only production disagreed.
+ *
+ * Walks the chain rather than reading `cause` once: D1 adds its own `D1_ERROR:` wrapper on top of
+ * drizzle's, and neither depth is something to hard-code.
+ *
+ * The `UNIQUE` translation is covered by a test. The two `FOREIGN KEY` ones guard races between a
+ * guard read and the write that follows it, which a single-threaded test cannot open — they are here
+ * because the constraint, not the read, is the authority, and losing that race should give the same
+ * answer as failing the check.
+ */
+const mentions = (error: unknown, text: string): boolean => {
+  for (let current = error; current instanceof Error; current = current.cause) {
+    if (current.message.includes(text)) return true
+  }
+  return false
+}
+
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
   resolution: row.resolution,
@@ -55,6 +87,16 @@ const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => 
   repairs: row.repairs,
 })
 
+const toNode = (row: typeof nodes.$inferSelect): NodeRecord => ({
+  id: row.id,
+  season: row.season,
+  parentId: row.parentId,
+  path: row.path,
+  name: row.name,
+  description: row.description,
+  createdAt: row.createdAtMs,
+})
+
 export class D1SqlStore implements SqlStore {
   private readonly database: DrizzleD1Database
 
@@ -62,17 +104,122 @@ export class D1SqlStore implements SqlStore {
     this.database = drizzle(database)
   }
 
-  async nodeExists(nodeId: string): Promise<boolean> {
+  async insertNode(node: NodeRecord): Promise<void> {
+    if (node.parentId !== null) {
+      const parent = await this.readNode(node.parentId)
+      if (parent === null) throw new InvalidNodeParentError('parent node does not exist')
+      if (parent.season !== node.season) {
+        throw new InvalidNodeParentError('parent node belongs to a different season')
+      }
+    }
+    try {
+      await this.database.insert(nodes).values({
+        id: node.id,
+        season: node.season,
+        parentId: node.parentId,
+        path: node.path,
+        name: node.name,
+        description: node.description,
+        createdAtMs: node.createdAt,
+      })
+    } catch (error) {
+      // The named index, not the bare string: `nodes` has two unique constraints, and reporting a
+      // primary-key collision as a path conflict sends the caller after the wrong recovery — and
+      // gave a different answer than the memory store, which leaves an id collision untyped.
+      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
+        throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+      }
+      // The parent check above is a separate read, so a concurrent delete can remove the parent
+      // between the two and the foreign key rejects this insert. Same outcome as the check finding
+      // it missing, so it gets the same error rather than escaping as a 500.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new InvalidNodeParentError('parent node does not exist')
+      }
+      throw error
+    }
+  }
+
+  async readNode(nodeId: string): Promise<NodeRecord | null> {
+    const rows = await this.database.select().from(nodes).where(eq(nodes.id, nodeId)).limit(1)
+    const row = rows[0]
+    return row === undefined ? null : toNode(row)
+  }
+
+  async listNodes(season: number): Promise<readonly NodeRecord[]> {
     const rows = await this.database
-      .select({ id: nodes.id })
+      .select()
       .from(nodes)
-      .where(eq(nodes.id, nodeId))
-      .limit(1)
-    return rows.length > 0
+      .where(eq(nodes.season, season))
+      .orderBy(asc(nodes.id))
+    return rows.map(toNode)
+  }
+
+  async deleteNode(nodeId: string): Promise<void> {
+    const [children, attachedTemplates] = await Promise.all([
+      this.database.select({ id: nodes.id }).from(nodes).where(eq(nodes.parentId, nodeId)).limit(1),
+      this.database
+        .select({ id: templates.id })
+        .from(templates)
+        .where(eq(templates.nodeId, nodeId))
+        .limit(1),
+    ])
+    if (children.length > 0 || attachedTemplates.length > 0) {
+      throw new NodeNotEmptyError('node has children or templates')
+    }
+    try {
+      await this.database.delete(nodes).where(eq(nodes.id, nodeId))
+    } catch (error) {
+      // The guards are reads, so a child or template can be attached after they come back empty and
+      // before this runs. The foreign key is the authority either way; translate it rather than
+      // letting the race be the one path that answers 500 instead of 409.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new NodeNotEmptyError('node has children or templates')
+      }
+      throw error
+    }
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
     assertValidTemplateVersion(version)
+    if ((await this.readNode(version.nodeId)) === null) {
+      throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+    }
+    // A version replaces content in place, so it has to be a version of the same thing: same name,
+    // same dimensions. Position may move and the hash obviously differs. See TemplateIdentityError.
+    const previous = await this.database
+      .select({
+        name: templates.name,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+      })
+      .from(templates)
+      .leftJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
+      .where(eq(templates.id, version.templateId))
+      .limit(1)
+    const existing = previous[0]
+    if (existing !== undefined) {
+      if (existing.name !== version.name) {
+        throw new TemplateIdentityError(
+          `template ${version.templateId} is named ${existing.name}, not ${version.name}`,
+        )
+      }
+      if (existing.minX !== null && existing.maxX !== null) {
+        const span = (min: number, max: number) =>
+          max >= min ? max - min : WORLD_PIXELS - min + max
+        const wasWidth = span(existing.minX, existing.maxX)
+        const wasHeight = (existing.maxY ?? 0) - (existing.minY ?? 0)
+        const nowWidth = span(version.bbox.minX, version.bbox.maxX)
+        const nowHeight = version.bbox.maxY - version.bbox.minY
+        if (wasWidth !== nowWidth || wasHeight !== nowHeight) {
+          throw new TemplateIdentityError(
+            `template ${version.templateId} is ${wasWidth}x${wasHeight}, not ${nowWidth}x${nowHeight}`,
+          )
+        }
+      }
+    }
+
     const statements = [
       this.database
         .insert(templates)
@@ -80,8 +227,8 @@ export class D1SqlStore implements SqlStore {
           id: version.templateId,
           nodeId: version.nodeId,
           name: version.name,
-          season: version.season,
           currentVersionId: null,
+          publishedAt: null,
           createdWithToken: version.createdWithToken,
           createdByUserId: version.createdByUserId,
           createdAtMs: version.createdAt,
@@ -120,9 +267,20 @@ export class D1SqlStore implements SqlStore {
         .where(eq(templates.id, version.templateId)),
     ]
 
-    await this.database.batch(
-      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
-    )
+    try {
+      await this.database.batch(
+        statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+      )
+    } catch (error) {
+      // The node check above is a separate read, so a concurrent delete can remove the node between
+      // the two — allowed, since no template row referenced it yet — and the foreign key rejects
+      // this insert. Same outcome as the check finding it missing, so it gets the same error rather
+      // than escaping as a 500. Same rule as `insertNode` and `deleteNode`.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+      }
+      throw error
+    }
   }
 
   async readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null> {
@@ -131,7 +289,6 @@ export class D1SqlStore implements SqlStore {
         templateId: templates.id,
         nodeId: templates.nodeId,
         name: templates.name,
-        season: templates.season,
         versionId: templateVersions.id,
         createdWithToken: templateVersions.createdWithToken,
         createdByUserId: templateVersions.createdByUserId,
@@ -159,7 +316,6 @@ export class D1SqlStore implements SqlStore {
       templateId: row.templateId,
       nodeId: row.nodeId,
       name: row.name,
-      season: row.season,
       versionId: row.versionId,
       createdByUserId: row.createdByUserId,
       createdWithToken: row.createdWithToken,
@@ -168,6 +324,84 @@ export class D1SqlStore implements SqlStore {
       totalPixels: row.totalPixels,
       chunks,
     }
+  }
+
+  async setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean> {
+    const existing = await this.database
+      .select({ id: templates.id })
+      .from(templates)
+      .where(eq(templates.id, templateId))
+      .limit(1)
+    if (existing.length === 0) return false
+    await this.database.update(templates).set({ publishedAt }).where(eq(templates.id, templateId))
+    return true
+  }
+
+  async listManifestTemplates(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTemplateRecord[]> {
+    const rows = await this.database
+      .select({
+        id: templates.id,
+        nodeId: templates.nodeId,
+        name: templates.name,
+        versionId: templateVersions.id,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+        totalPixels: templateVersions.totalPixels,
+        publishedAt: templates.publishedAt,
+        createdAt: templates.createdAtMs,
+      })
+      .from(templates)
+      .innerJoin(nodes, eq(nodes.id, templates.nodeId))
+      .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
+      .where(
+        includeUnpublished
+          ? eq(nodes.season, season)
+          : and(eq(nodes.season, season), isNotNull(templates.publishedAt)),
+      )
+
+    return rows.map((row) => ({
+      id: row.id,
+      nodeId: row.nodeId,
+      name: row.name,
+      versionId: row.versionId,
+      bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
+      totalPixels: row.totalPixels,
+      published: row.publishedAt !== null,
+      createdAt: row.createdAt,
+    }))
+  }
+
+  async listManifestTiles(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly ManifestTileRecord[]> {
+    return this.database
+      .select({
+        templateId: templates.id,
+        tileX: versionTiles.tileX,
+        tileY: versionTiles.tileY,
+        hash: versionTiles.hash,
+      })
+      .from(versionTiles)
+      .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
+      .innerJoin(
+        templates,
+        and(
+          eq(templates.id, templateVersions.templateId),
+          eq(templates.currentVersionId, templateVersions.id),
+        ),
+      )
+      .innerJoin(nodes, eq(nodes.id, templates.nodeId))
+      .where(
+        includeUnpublished
+          ? eq(nodes.season, season)
+          : and(eq(nodes.season, season), isNotNull(templates.publishedAt)),
+      )
   }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {

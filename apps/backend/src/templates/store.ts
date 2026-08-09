@@ -12,11 +12,11 @@ import {
   uuidV7,
 } from '@wts/shared'
 import type { Ports, TemplateVersionRecord } from '../ports/index.js'
+import { NodeNotFoundError } from '../ports/index.js'
 
 export interface StoreTemplateInput {
   readonly nodeId: string
   readonly name: string
-  readonly season: number
   readonly createdWithToken: string
   /** The uploader's wplace account when the client presented one; null for a server-side upload. */
   readonly createdByUserId: number | null
@@ -32,6 +32,7 @@ export interface StoredTemplate {
   readonly totalPixels: number
   readonly chunks: readonly { readonly tile: TileKey; readonly hash: string }[]
   readonly report: QuantiseReport
+  readonly published: false
 }
 
 /**
@@ -53,14 +54,8 @@ export const storeTemplate = async (
   ports: Pick<Ports, 'blobs' | 'sql'>,
   input: StoreTemplateInput,
 ): Promise<StoredTemplate> => {
-  // Asked before any decoding: `templates.node_id` is a foreign key, so an unknown node is a
-  // database error the caller cannot tell from an outage, and the whole pipeline would run first
-  // only to fail on the last statement. Referential existence is the one thing the shape validation
-  // on the port cannot cover, which is why both adapters agreed on every field and still disagreed
-  // about whether the insert succeeds.
-  if (!(await ports.sql.nodeExists(input.nodeId))) {
-    throw new StoreTemplateError(`no node with id ${input.nodeId}`)
-  }
+  const node = await ports.sql.readNode(input.nodeId)
+  if (node === null) throw new NodeNotFoundError(`node does not exist: ${input.nodeId}`)
 
   const { width, height, pixels } = await decodePng(input.png)
   const { indices, report } = quantiseToPalette(pixels)
@@ -105,7 +100,6 @@ export const storeTemplate = async (
     templateId,
     nodeId: input.nodeId,
     name: input.name,
-    season: input.season,
     versionId,
     createdWithToken: input.createdWithToken,
     createdByUserId: input.createdByUserId,
@@ -126,5 +120,6 @@ export const storeTemplate = async (
       hash,
     })),
     report,
+    published: false,
   }
 }

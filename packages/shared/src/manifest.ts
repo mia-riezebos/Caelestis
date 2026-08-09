@@ -1,4 +1,5 @@
 import type { TileKey } from './tiles.js'
+import type { Millis } from './time.js'
 
 /**
  * A server's manifest is the only thing a client needs before it can decide whether to touch a
@@ -8,6 +9,7 @@ import type { TileKey } from './tiles.js'
 export interface Manifest {
   /** Opaque, changes whenever anything below changes. Surfaced to the user as a "what changed" diff. */
   readonly version: string
+  readonly season: number
   readonly server: ServerInfo
   readonly nodes: readonly Node[]
   readonly templates: readonly Template[]
@@ -22,8 +24,7 @@ export interface ServerInfo {
   readonly id: string
   readonly name: string
   readonly description?: string
-  /** Whether this server requires an invite code. Public servers run the same code path ungated. */
-  readonly requiresAuth: boolean
+  readonly auth: 'none' | 'access_token'
 }
 
 /**
@@ -36,6 +37,8 @@ export interface Node {
   /** e.g. `/canada/toronto/skyline` */
   readonly path: string
   readonly name: string
+  readonly description?: string
+  readonly createdAt: Millis
 }
 
 export interface Template {
@@ -47,6 +50,8 @@ export interface Template {
   /** Non-transparent pixel count — the denominator for every progress figure. */
   readonly totalPixels: number
   readonly chunks: readonly Chunk[]
+  readonly published: boolean
+  readonly createdAt: Millis
 }
 
 /** Global canvas pixel coordinates, inclusive of `min`, exclusive of `max`. */
