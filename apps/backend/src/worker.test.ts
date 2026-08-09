@@ -85,3 +85,32 @@ it.each([['abc'], ['-1'], ['0'], ['1.5'], ['']])(
     ).rejects.toThrow(/SEASON is not a season number/)
   },
 )
+
+it('forwards the configured identity, season and open access to the app', async () => {
+  // Every positive assertion about these options was made against `createApp` directly, so the
+  // forwarding itself was pinned only by its refusals. Dropping `serverDescription`, coercing a
+  // validated season back to 1, or forwarding `openAccess: false` unconditionally all left the
+  // suite green while making a configured deployment advertise defaults, serve the wrong season's
+  // manifest, or demand a token it was told not to.
+  const configured = {
+    ...env(),
+    SERVER_ID: '01890f3a-6b7c-7def-8123-456789abcdef',
+    SERVER_NAME: 'Second Season Server',
+    SERVER_DESCRIPTION: 'Configured, not defaulted',
+    SEASON: '7',
+    OPEN_ACCESS: 'true',
+  } as unknown as Env
+
+  const server = await worker.fetch(new Request('https://example.com/server'), configured)
+  // No credential: open access has to be what answers this, not the bootstrap token.
+  const manifest = await worker.fetch(new Request('https://example.com/manifest'), configured)
+
+  await expect(server.json()).resolves.toEqual({
+    id: '01890f3a-6b7c-7def-8123-456789abcdef',
+    name: 'Second Season Server',
+    description: 'Configured, not defaulted',
+    auth: 'none',
+  })
+  expect(manifest.status).toBe(200)
+  await expect(manifest.json()).resolves.toMatchObject({ season: 7 })
+})
