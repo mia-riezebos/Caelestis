@@ -53,45 +53,83 @@ const looksLikeMap = (value: unknown): value is MapLike =>
   typeof (value as MapLike).flyTo === 'function' &&
   typeof (value as MapLike).getZoom === 'function'
 
+/**
+ * The setters this installation put on `Object.prototype`, and what was there before them.
+ *
+ * Both halves matter. Deleting whatever setter currently sits under one of these names would remove
+ * a setter the page installed after capture — these are ordinary private-ish names and nothing says
+ * wplace will not use one — and overwriting a pre-existing descriptor without keeping it means it
+ * never comes back.
+ */
+const installed = new Map<string, PropertyDescriptor | undefined>()
+const ours = new Map<string, PropertyDescriptor>()
+let releaseTimer: ReturnType<typeof setTimeout> | null = null
+
 const removeTraps = (): void => {
-  for (const property of WITNESS_PROPERTIES) {
-    const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, property)
-    if (descriptor?.set !== undefined) {
-      // Restoring Object.prototype is the whole point: the setter must not outlive the first hit.
+  if (releaseTimer !== null) {
+    clearTimeout(releaseTimer)
+    releaseTimer = null
+  }
+  for (const [property, original] of installed) {
+    const current = Object.getOwnPropertyDescriptor(Object.prototype, property)
+    // Only if it is still ours. Someone else's setter under this name is theirs to remove.
+    if (current === undefined || current.set !== ours.get(property)?.set) continue
+    if (original === undefined) {
       delete (Object.prototype as Record<string, unknown>)[property]
+    } else {
+      Object.defineProperty(Object.prototype, property, original)
     }
   }
+  installed.clear()
+  ours.clear()
 }
 
 export const installMapCapture = (): void => {
   for (const property of WITNESS_PROPERTIES) {
     try {
-      Object.defineProperty(Object.prototype, property, {
+      const original = Object.getOwnPropertyDescriptor(Object.prototype, property)
+      const descriptor: PropertyDescriptor = {
         configurable: true,
         get() {
           return undefined
         },
         set(this: object, value: unknown) {
-          if (captured === null && looksLikeMap(this)) {
-            captured = this
-            log('install', `captured the map via ${property}`)
-            removeTraps()
+          // Everything this setter does beyond completing the assignment is wrapped, because it runs
+          // inside someone else's assignment statement. A throwing `flyTo` getter, a proxy trap, a
+          // frozen receiver — any of them would otherwise throw out of an ordinary `obj.x = y` in
+          // page code and abort whatever was initialising, which for MapLibre is the map itself.
+          try {
+            if (captured === null && looksLikeMap(this)) {
+              captured = this
+              log('install', `captured the map via ${property}`)
+              removeTraps()
+            }
+          } catch {
+            // Detection is best-effort; a failure here must not become the page's problem.
           }
           // Complete the assignment the object was making, as an ordinary own property, so nothing
           // downstream can tell this happened.
-          Object.defineProperty(this, property, {
-            value,
-            writable: true,
-            configurable: true,
-            enumerable: true,
-          })
+          try {
+            Object.defineProperty(this, property, {
+              value,
+              writable: true,
+              configurable: true,
+              enumerable: true,
+            })
+          } catch {
+            // A non-extensible or otherwise hostile receiver refuses the write. That is the same
+            // answer it would have given without this setter in the way, so it is not ours to fix.
+          }
         },
-      })
+      }
+      Object.defineProperty(Object.prototype, property, descriptor)
+      installed.set(property, original)
+      ours.set(property, descriptor)
     } catch {
       // A property already defined non-configurably is not worth fighting over; the others remain.
     }
   }
-  setTimeout(removeTraps, RELEASE_AFTER_MS)
+  releaseTimer = setTimeout(removeTraps, RELEASE_AFTER_MS)
 }
 
 export const getMap = (): MapLike | null => captured
