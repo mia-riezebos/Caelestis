@@ -95,6 +95,19 @@ describe('D1SqlStore', () => {
     expect(await seed(new MemorySqlStore())).toBe('/canada/x')
   })
 
+  it('composes a root from its final segment too', async () => {
+    // The port promises only the last segment is honoured, and a root took the whole proposed path —
+    // so a stale multi-segment proposal created a root whose path claims to be nested, which the
+    // manifest's hierarchy rule then refuses. Roots and children now compose the same way.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) =>
+      (await target.insertNode({ ...base, id: 'r', parentId: null, path: '/stale/x', name: 'x' }))
+        .path
+
+    expect(await seed(store)).toBe('/x')
+    expect(await seed(new MemorySqlStore())).toBe('/x')
+  })
+
   it('decides a collision on the composed path, not the proposed one', async () => {
     // The oracle checked the caller's path and stored the composed one, so a child could clear a
     // uniqueness check for a path it was never going to occupy: D1 raised a conflict on its unique

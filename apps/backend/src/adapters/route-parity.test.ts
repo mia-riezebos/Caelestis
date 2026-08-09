@@ -245,6 +245,37 @@ describe('route parity between adapters', () => {
     expect(fromD1).toEqual({ status: 409, paths: ['/other', '/other/child', '/taken'] })
   })
 
+  it('renames a node whose path is longer than a LIKE pattern may be', async () => {
+    // D1 caps a LIKE or GLOB pattern at 50 bytes. The subtree match was a LIKE over the node's path,
+    // which may be 256 characters, so every rename of anything but a shallow group answered "LIKE or
+    // GLOB pattern too complex" — a 500 for the ordinary case, invisible here until the D1 fake was
+    // taught the same limit.
+    const deep = async (target: ReturnType<typeof memApp>['app']) => {
+      const parent = await post(target, { season: 1, parentId: null, name: 'g'.repeat(60) })
+      const parentId = ((await parent.json()) as { id: string }).id
+      await post(target, { season: 1, parentId, name: 'Child' })
+
+      const renamed = await target.request(`/admin/nodes/${parentId}`, {
+        method: 'PATCH',
+        headers: bearer,
+        body: JSON.stringify({ name: 'h'.repeat(60) }),
+      })
+      const listed = await target.request('/admin/nodes?season=1', { headers: bearer })
+      const body = (await listed.json()) as ReadonlyArray<{ path: string }>
+      return { status: renamed.status, paths: body.map((entry) => entry.path).sort() }
+    }
+    const { d1, app } = d1App()
+    const { app: memory } = memApp()
+    const fromD1 = await deep(app)
+    d1.close()
+
+    expect(fromD1).toEqual(await deep(memory))
+    expect(fromD1).toEqual({
+      status: 200,
+      paths: [`/${'h'.repeat(60)}`, `/${'h'.repeat(60)}/child`],
+    })
+  })
+
   it('accepts a rename that lands exactly on the bound', async () => {
     // Every other length case is one past it, so a `>=` would reject a legal path and no test would
     // notice. `/` plus 255 is exactly 256.
