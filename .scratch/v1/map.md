@@ -29,7 +29,9 @@ updated until v1 actually runs.
   is "how should this look or behave"; `/research` for wplace recon; `/setup-ts-deep-modules` for
   userscript module layout; `/codebase-design` for server structure.
 - **Tracker.** Files under `.scratch/v1/` are the working copy. GitHub issues on
-  `mia-riezebos/wplace-template-server` are the mirror, batch-synced after scratch edits settle.
+  `mia-riezebos/Caelestis` are the mirror, batch-synced after scratch edits settle. (The repo moved
+  on 2026-08-08; the old `wplace-template-server` name still resolves through GitHub's redirect, so
+  older links above keep working.)
 - **Payload discipline (standing constraint).** The userscript never transmits session cookies,
   captcha tokens, wplace user ids, or raw wplace request bodies. Username + painted pixels +
   timestamp is the ceiling.
@@ -39,9 +41,14 @@ updated until v1 actually runs.
 - [Template storage & chunk model](issues/01-template-storage-and-chunk-model.md) — pre-quantised
   uploads, validated then sliced on wplace tile boundaries, stored content-addressed as indexed PNG.
 - [Manifest, group tree & z-order](issues/02-manifest-group-tree-and-z-order.md) — materialized-path
-  tree, one parent per template, sparse sort orders, ETag-polled manifest gates all interception.
+  tree, one parent per template, ETag-polled manifest gates all interception. **Amended 2026-08-09**:
+  templates may overlap anywhere, the no-overlap rule and the wire constraint enforcing it are gone,
+  and no sort order reaches the wire at all — ordering is entirely the client's. The manifest is
+  season-scoped and seasons are 1-based.
 - [Auth model](issues/03-auth-model.md) — server-generated high-entropy invite codes, three scopes
-  (read/report/admin), signed URLs for read, bearer for admin, one env admin token to bootstrap.
+  (read/report/admin), bearer for everything, one env admin token to bootstrap. **Amended
+  2026-08-09**: there are no signed URLs anywhere. Read is bearer like the rest — see the chunk
+  delivery decision below.
 - [Telemetry model](issues/04-telemetry-model.md) — POST events as the delta stream, tile snapshots
   as ground-truth anchors and the only progress source, DO memory for live truth, time series on a decay ladder
   capped at 6h buckets. **Amended 2026-08-03**: tile history lives server-side, so the server (not
@@ -59,6 +66,39 @@ updated until v1 actually runs.
   every ladder tier; the DO is a write-absorption buffer for live counters and sub-1m data.
   `shardStrategy: 'single'` in v1, `per-template` and `dynamic` stubbed. `wrangler dev` locally.
   Free-tier viable for small alliances.
+
+### Settled by building it — 2026-08-09
+
+Four PRs landed on `main` and decided things this map was still describing differently. Recording
+them here for the same reason as the 2026-08-07 batch above: the map misdirects whoever reads it next
+otherwise.
+
+- [Chunk delivery: signed URLs vs public-by-hash](https://github.com/mia-riezebos/Caelestis/issues/16)
+  — **neither, as posed.** Content-addressed `GET /chunks/:hash` behind a read scope, answering
+  `cache-control: private, max-age=31536000, immutable`. No signature to vary on, and deliberately no
+  shared cache: `public` would let one authorised fetch make a chunk readable by anyone holding its
+  hash. Client-side caching does the work; there is no CDN tier in front of chunks.
+- [Nodes, seasons and manifest assembly](https://github.com/mia-riezebos/Caelestis/pull/37) — node
+  CRUD under `/admin/nodes`, season-scoped manifest assembly, publication as a per-template flag.
+  **Seasons are 1-based**: the wire, both route parsers and the Worker's `SEASON` binding all refuse
+  0. The assembler drops a template whose node or chunks a torn read missed, rather than emitting a
+  200 no client can decode.
+- [Renaming a node moves its subtree](https://github.com/mia-riezebos/Caelestis/pull/38) —
+  `PATCH /admin/nodes/:id` rewrites every descendant's path in one batch. Two rules came out of
+  building it and now hold for *every* node write: **only the last path segment is ever the
+  caller's**, with the prefix composed from the parent row inside the write, so a concurrent rename
+  cannot leave a child under a prefix its parent no longer has; and **derived paths stay inside the
+  BMP**, so SQLite's character count and the wire's UTF-16 count are the same number. The subtree
+  match is a `substr`/`lower` prefix comparison and **not** `LIKE` — D1 caps LIKE/GLOB patterns at 50
+  bytes while a node path may be 256 characters, so the obvious implementation is a production-only
+  500 on every rename of anything but a shallow node.
+- [Credentials named for what they hold](https://github.com/mia-riezebos/Caelestis/pull/56) —
+  `created_with_token` rather than `created_by`, and `created_by_user_id` is nullable: authorship
+  needs only a credential, while anything quorum-related needs an account.
+
+**Standing caveat.** `migrations/0000_baseline.sql` is still edited in place rather than superseded.
+That is only correct while nothing has been deployed from this schema. The moment a live D1 has
+applied it, this becomes a forward-migration problem and every amendment above needs one.
 
 ## Pre-v1: the first deployable, shareable cut
 
@@ -122,6 +162,11 @@ recorded, which is what prompted `31-ui-inventory`.
 
 ## Not yet specified
 
+**Where the gap to a running v1 actually is, as of 2026-08-09.** The telemetry write path is the last
+server-side hole: the Durable Object shard exists and is tested, and nothing mounts it, so the
+userscript has nowhere to report to. Everything else it needs from a server — `/server`, `/manifest`,
+`/chunks`, `/admin/nodes`, `/admin/templates`, `/admin/tokens` — is mounted and in use.
+
 - **Telemetry wire schema and the functional CRUD surface** it maps onto. No longer blocked — the
   real paint request is recorded in `07-recon-paint-request` and `packages/shared` needs updating to
   its multi-tile shape.
@@ -140,7 +185,9 @@ recorded, which is what prompted `31-ui-inventory`.
   surfaced, and where the "what did this server just add" trust diff lives in the userscript UI.
 - **Admin surface without a web frontend** — how an alliance leader uploads templates and edits the
   tree when the only UI is the userscript. **The credential half is settled** (see the pre-v1
-  decision below); what remains is template upload and tree editing from inside the userscript.
+  decision below), and as of 2026-08-09 the *server* half is built: `/admin/nodes` does full node
+  CRUD including rename-with-subtree-move, and `/admin/templates` does upload and publication. What
+  remains is entirely userscript-side — the UI that drives those routes.
 - **Decay-ladder compaction** — the actual cascade job, its trigger, and the differing fold
   functions for state columns vs delta columns.
 - **Abuse and rate limiting** at 1000+ user alliance scale, including report throttling and the

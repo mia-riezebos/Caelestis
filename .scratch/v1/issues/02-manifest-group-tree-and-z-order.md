@@ -214,3 +214,30 @@ Closes the "default order" question left open above and in `schema-draft.md`.
 
 Follows from ordering being client-side at all — the client is the only thing that knows what it has
 already seen.
+
+## Amendment — 2026-08-09: overlap is allowed, and the wire carries no order at all
+
+Two things this ticket still asserted are gone from the code that shipped in #37, and a reader
+following the text above would design against a server that no longer exists.
+
+**Templates may overlap, anywhere, including within one group.** The no-overlap rule — narrowed on
+2026-08-03 to direct-group only — was enforced in the wire schema as `hasNoGroupOverlap`, and it has
+been removed outright along with its sweep and the `XSpan` machinery that supported it. Two ordinary
+uploads into one group produced a manifest every client rejected, so the *constraint* was the defect,
+not the data. Overlap is how a group layers, and the client's own ordering decides what draws on top.
+
+The rollup consequence the rule was protecting against is unchanged and now simply true everywhere:
+**prefix rollups can double-count overlapping pixels.** That was already accepted for cross-group
+overlap in the 2026-08-03 amendment; it now applies within a group as well.
+
+**No sort order reaches the wire.** `Template` carries `id`, `nodeId`, `name`, `version`, `bbox`,
+`totalPixels`, `chunks`, `published`, `createdAt` — and nothing else. There is no `sortOrder`, no
+sparse ordering, and no server-side z-order key. Everything above about *client-side* ordering stands
+and is now the whole story; everything implying the server has an opinion about draw order does not.
+
+**The manifest is season-scoped, and seasons are 1-based.** `Manifest.season` is a positive integer;
+season 0 is refused by the wire, both season-parsing routes and the Worker's own `SEASON` binding.
+`/manifest` answers the deployment's configured season unless asked otherwise with `?season=`.
+
+Recorded here rather than rewritten above, because the reasoning that produced the original rule is
+worth keeping: it explains why the rollups behave as they do.
