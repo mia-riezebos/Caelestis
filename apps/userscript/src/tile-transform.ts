@@ -366,6 +366,19 @@ export const runObservedCall = <Result>(native: () => Result, observe: () => voi
   return result
 }
 
+/** Mirror WebIDL's unsigned-long conversion without re-running user-controlled object coercion. */
+const sideEffectFreeUnsignedLong = (value: unknown): number | undefined => {
+  if (value === undefined || value === null) return 0
+  if (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'boolean') {
+    return undefined
+  }
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric === 0) return 0
+  const integer = Math.trunc(numeric)
+  const range = 2 ** 32
+  return ((integer % range) + range) % range
+}
+
 interface InstalledValueHook {
   restore(): void
 }
@@ -594,10 +607,9 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
         // An unusual input that cannot be observed safely is simply untapped.
       }
       const pendingResponse = nativeFetch.apply(this as never, args)
+      if (tile === null) return pendingResponse
+      const observedTile = tile
       return pendingResponse.then((response) => {
-        if (tile === null) return response
-        const observedTile = tile
-
         // Real tile pixels are only tapped, never composited with ours: that would make the two layers
         // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
         // origin tile, normalized to the transparent response wplace's service worker ordinarily gives.
@@ -755,9 +767,11 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
       let sourceBlob: Blob | undefined
       let sourceBytes: number | undefined
       let exact: TileCoord | undefined
+      let sourceIsPageBlob = false
       try {
         const source = args[0]
         if (isPageInstance(source, 'Blob', realm as unknown as Record<string, unknown>)) {
+          sourceIsPageBlob = true
           sourceBlob = source as Blob
           sourceBytes = sourceBlob.size
           exact = tileOfBlob.get(sourceBlob)
@@ -770,6 +784,7 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
       } catch {
         // Native decoding has started. Attribution must not change its eventual result.
       }
+      if (!sourceIsPageBlob) return pendingBitmap
       return pendingBitmap.then((bitmap) => {
         try {
           if (sourceBlob !== undefined && sourceBytes !== undefined) {
@@ -942,6 +957,7 @@ export const install = (
       const primarySamplerUnits = new WeakMap<WebGLProgram, number>()
       const projectionByProgram = new WeakMap<WebGLProgram, ArrayLike<number>>()
       const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
+      let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
       let activeProgram: WebGLProgram | null = null
       let activeTextureUnit: number = gl.TEXTURE0
@@ -1027,7 +1043,7 @@ export const install = (
             () =>
               Reflect.apply(nativeUniformMatrix4fv, this, [location, transpose, value, ...rest]),
             () => {
-              if (this !== gl || location === null || transpose !== false) return
+              if (this !== gl || location === null || transpose) return
               const uniform = uniforms.get(location)
               if (uniform?.name !== 'u_projection_matrix' || uniform.program !== activeProgram)
                 return
@@ -1043,17 +1059,14 @@ export const install = (
                 !realm.ArrayBuffer.isView(value)
               )
                 return
-              // WebIDL's default applies both when the argument is absent and explicitly undefined.
-              const offset = rest[0] === undefined ? 0 : rest[0]
-              if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return
+              const offset = sideEffectFreeUnsignedLong(rest[0])
+              if (offset === undefined) return
               const source = value as Float32Array
-              const suppliedLength = rest[1]
+              const suppliedLength = sideEffectFreeUnsignedLong(rest[1])
               if (
-                suppliedLength !== undefined &&
-                (typeof suppliedLength !== 'number' ||
-                  !Number.isInteger(suppliedLength) ||
-                  suppliedLength < 0 ||
-                  (suppliedLength !== 0 && suppliedLength < MATRIX_LENGTH))
+                suppliedLength === undefined ||
+                (suppliedLength !== 0 &&
+                  (suppliedLength < MATRIX_LENGTH || offset + suppliedLength > source.length))
               )
                 return
               if (source.length - offset < MATRIX_LENGTH) return
@@ -1082,6 +1095,22 @@ export const install = (
         },
       }.activeTexture
 
+      const nativeCreateTexture = gl.createTexture
+      hookedGl.createTexture = {
+        createTexture(this: WebGL2RenderingContext): WebGLTexture {
+          let created: WebGLTexture | undefined
+          return runObservedCall(
+            () => {
+              created = nativeCreateTexture.call(this)
+              return created
+            },
+            () => {
+              if (this === gl && created !== undefined) textures.add(created)
+            },
+          )
+        },
+      }.createTexture
+
       const nativeBindTexture = gl.bindTexture
       hookedGl.bindTexture = {
         bindTexture(this: WebGL2RenderingContext, target: GLenum, texture: WebGLTexture | null) {
@@ -1089,12 +1118,40 @@ export const install = (
             () => nativeBindTexture.call(this, target, texture),
             () => {
               if (this === gl && target === gl.TEXTURE_2D) {
-                texture2DByUnit.set(activeTextureUnit, texture)
+                if (texture === null || texture === undefined) {
+                  texture2DByUnit.set(activeTextureUnit, null)
+                } else if (textures.has(texture)) {
+                  texture2DByUnit.set(activeTextureUnit, texture)
+                } else {
+                  // Same strategy as framebuffers below: only pre-hook or foreign objects need a
+                  // synchronous query. MapLibre-created textures stay on the WeakSet fast path.
+                  const accepted = nativeGetParameter.call(gl, gl.TEXTURE_BINDING_2D)
+                  if (accepted === null || typeof accepted === 'object') {
+                    texture2DByUnit.set(activeTextureUnit, accepted as WebGLTexture | null)
+                    if (accepted === texture) textures.add(texture)
+                  }
+                }
               }
             },
           )
         },
       }.bindTexture
+
+      const nativeDeleteTexture = gl.deleteTexture
+      hookedGl.deleteTexture = {
+        deleteTexture(this: WebGL2RenderingContext, texture: WebGLTexture | null) {
+          return runObservedCall(
+            () => nativeDeleteTexture.call(this, texture),
+            () => {
+              if (this !== gl || texture === null || !textures.delete(texture)) return
+              tileOfTexture.delete(texture)
+              for (const [unit, bound] of texture2DByUnit) {
+                if (bound === texture) texture2DByUnit.set(unit, null)
+              }
+            },
+          )
+        },
+      }.deleteTexture
 
       /**
        * Both upload paths have to be watched, and missing one is not a gap in coverage but a source
@@ -1176,7 +1233,7 @@ export const install = (
         },
       }.texImage2D as typeof gl.texImage2D
 
-      const framebuffers = new WeakSet<WebGLFramebuffer>()
+      let framebuffers = new WeakSet<WebGLFramebuffer>()
       const nativeCreateFramebuffer = gl.createFramebuffer
       hookedGl.createFramebuffer = {
         createFramebuffer(this: WebGL2RenderingContext): WebGLFramebuffer {
@@ -1436,7 +1493,9 @@ export const install = (
             frameTileDraws = 0
             activeProgram = null
             activeTextureUnit = gl.TEXTURE0
+            textures = new WeakSet<WebGLTexture>()
             texture2DByUnit.clear()
+            framebuffers = new WeakSet<WebGLFramebuffer>()
             drawFramebuffer = null
             scissorEnabled = false
             colorWriteMask = [true, true, true, true]
