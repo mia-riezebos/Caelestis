@@ -43,7 +43,7 @@ import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen } from '../wplace-paint.js'
-import { accessTokenSection } from './access-tokens.js'
+import { accessTokenSection, prefetchAccessTokens } from './access-tokens.js'
 import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
@@ -549,26 +549,29 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   name.textContent = server.info?.name ?? server.url
   name.title = server.url
 
-  const badge = document.createElement('span')
-  badge.className =
-    server.status === 'connected'
-      ? 'badge badge-xs badge-success'
-      : server.status === 'needs-token'
-        ? 'badge badge-xs badge-warning'
-        : 'badge badge-xs badge-error'
-  badge.textContent =
-    server.status === 'connected'
-      ? 'connected'
-      : server.status === 'needs-token'
-        ? 'token'
-        : 'offline'
-
-  top.append(caret, name, badge)
+  top.append(caret, name)
+  // Only trouble gets a badge. A server that is in this list at all is one you added and one that
+  // works, so "connected" was a green label on every row saying what the absence of a label already
+  // said — and it made the two rows that do need attention harder to pick out, not easier.
+  if (server.status !== 'connected') {
+    const badge = document.createElement('span')
+    badge.className =
+      server.status === 'needs-token'
+        ? 'badge badge-sm badge-warning'
+        : 'badge badge-sm badge-error'
+    badge.textContent = server.status === 'needs-token' ? 'token' : 'offline'
+    top.appendChild(badge)
+  }
   top.addEventListener('click', () => {
     if (open) expandedServers.delete(server.url)
     else expandedServers.add(server.url)
     showView('settings')
   })
+  // A pointer arriving at the row is the earliest honest sign someone is about to open it, and the
+  // tokens are the one thing inside that has to be asked for. Fetching now means the expansion opens
+  // at its final height rather than growing a moment later, and it costs a request that was about to
+  // happen anyway.
+  top.addEventListener('pointerenter', () => prefetchAccessTokens(server))
   wrap.appendChild(top)
 
   // A server asking for a token says so on the collapsed row too. It is the one state that needs
@@ -604,13 +607,13 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   const code = document.createElement('input')
   code.type = 'password'
   code.autocomplete = 'off'
-  code.className = 'input input-xs input-bordered'
+  code.className = 'input input-sm input-bordered'
   code.style.flex = '1'
   code.style.minWidth = '0'
   code.placeholder = server.token === null ? 'Access token' : '••••••••'
   code.setAttribute('aria-label', 'Your access token for this server')
   const submit = document.createElement('button')
-  submit.className = 'btn btn-xs btn-primary'
+  submit.className = 'btn btn-sm btn-primary'
   submit.textContent = server.status === 'connected' ? 'Update' : 'Connect'
 
   const status = document.createElement('p')
@@ -659,7 +662,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   if (server.isAdmin) body.appendChild(accessTokenSection(server))
 
   const disconnect = document.createElement('button')
-  disconnect.className = 'btn btn-xs btn-ghost text-error'
+  disconnect.className = 'btn btn-sm btn-ghost text-error'
   disconnect.style.marginTop = '0.75rem'
   disconnect.textContent = 'Disconnect'
   disconnect.addEventListener('click', () => {

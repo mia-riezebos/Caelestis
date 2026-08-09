@@ -24,9 +24,9 @@ import { showNewToken } from './token-dialog.js'
 
 /** The three things a token can be allowed to do, in the order they get more dangerous. */
 const SCOPES = [
-  { id: 'read', label: 'Read', note: 'See the templates and folders this server publishes' },
-  { id: 'report', label: 'Report', note: 'And send back what has been painted' },
-  { id: 'admin', label: 'Admin', note: 'And change everything, including these tokens' },
+  { id: 'read', label: 'Read', note: 'See what this server publishes' },
+  { id: 'report', label: 'Report', note: 'And report what gets painted' },
+  { id: 'admin', label: 'Admin', note: 'And change anything, including tokens' },
 ] as const
 
 type ScopeId = (typeof SCOPES)[number]['id']
@@ -76,10 +76,10 @@ const tokenRow = (server: ConnectedServer, token: AccessToken, reload: () => voi
   }
 
   const revoke = document.createElement('button')
-  revoke.className = 'btn btn-ghost btn-xs btn-circle'
+  revoke.className = 'btn btn-ghost btn-sm btn-circle'
   revoke.title = 'Revoke'
   revoke.setAttribute('aria-label', `Revoke ${token.label}`)
-  revoke.appendChild(icon('close', 'size-3'))
+  revoke.appendChild(icon('close', 'size-4'))
   revoke.addEventListener('click', () => {
     void (async () => {
       // Asked first, because this takes someone's access away without warning them and cannot be
@@ -110,7 +110,7 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
 
   const label = document.createElement('input')
   label.type = 'text'
-  label.className = 'input input-xs input-bordered'
+  label.className = 'input input-sm input-bordered'
   label.style.flex = '1'
   label.style.minWidth = '0'
   // Who it is for, not what it is — the label is the only thing that will ever identify this token
@@ -119,8 +119,12 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
   label.maxLength = 128
 
   const scope = document.createElement('select')
-  scope.className = 'select select-xs select-bordered'
+  scope.className = 'select select-sm select-bordered'
+  // Sized to its own labels, not to what is left over. A select's min-width is content-based and it
+  // will not shrink in a flex row, so the field beside it gave up all of its width instead and
+  // collapsed to a stub — with the dropdown taking most of the panel to say "Read".
   scope.style.flex = '0 0 auto'
+  scope.style.width = '6.5rem'
   for (const option of SCOPES) {
     const item = document.createElement('option')
     item.value = option.id
@@ -130,11 +134,13 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
   }
 
   const create = document.createElement('button')
-  create.className = 'btn btn-xs btn-primary'
+  create.className = 'btn btn-sm btn-primary'
   create.textContent = 'Create'
 
   const note = document.createElement('p')
   note.className = 'text-xs opacity-60'
+  // Room for the longest of them, always. Otherwise picking a scope moves everything below it.
+  note.style.minHeight = '2rem'
   note.textContent = SCOPES[0].note
   scope.addEventListener('change', () => {
     note.className = 'text-xs opacity-60'
@@ -173,11 +179,49 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
 }
 
 /**
- * The whole section, which fills itself in.
+ * What each server last said, so opening a row twice does not make it jump twice.
  *
- * Returns synchronously with a placeholder and replaces it when the server answers, because the
- * panel renders synchronously and blocking a settings pane on a network call would mean the
- * expansion opening onto nothing for as long as the server took.
+ * The panel renders synchronously and the tokens arrive over the network, so the first paint of this
+ * section can only be a placeholder — and a placeholder that is a different height from the list
+ * replacing it moves everything below it a moment after you looked at it. Remembering the answer
+ * makes that happen once per server per session rather than once per expand.
+ *
+ * Held in memory only. These are the labels of a server's keys, and they are cheap to re-ask for;
+ * writing them to disk would mean the answer outliving the admin rights that were allowed to see it.
+ */
+const cached = new Map<string, readonly AccessToken[]>()
+const inFlight = new Map<string, Promise<readonly AccessToken[] | null>>()
+
+const fetchTokens = (server: ConnectedServer): Promise<readonly AccessToken[] | null> => {
+  const running = inFlight.get(server.url)
+  if (running !== undefined) return running
+  const run = listAccessTokens(server)
+    .then((tokens) => {
+      if (tokens !== null) cached.set(server.url, tokens)
+      return tokens
+    })
+    .finally(() => inFlight.delete(server.url))
+  inFlight.set(server.url, run)
+  return run
+}
+
+/**
+ * Ask before anyone opens the row, so the list is already there when they do.
+ *
+ * Called from the server row on hover. A pointer arriving at a row is the earliest honest signal
+ * that someone is about to open it, and the request costs one GET that would have happened a moment
+ * later anyway. Nothing is drawn from this; it only warms the cache above.
+ */
+export const prefetchAccessTokens = (server: ConnectedServer): void => {
+  if (!server.isAdmin || cached.has(server.url)) return
+  void fetchTokens(server)
+}
+
+/**
+ * The whole section.
+ *
+ * Drawn from the cache when there is one, which is the case every time but the first — so the
+ * expansion opens at its final height instead of growing under the pointer.
  */
 export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
   const wrap = document.createElement('div')
@@ -189,35 +233,45 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
 
   const list = document.createElement('div')
   list.className = 'flex flex-col'
-  const status = document.createElement('p')
-  status.className = 'text-xs opacity-60'
-  status.textContent = 'Loading…'
-  list.appendChild(status)
+
+  const draw = (tokens: readonly AccessToken[] | null, reload: () => void): void => {
+    list.replaceChildren()
+    if (tokens === null) {
+      const failed = document.createElement('p')
+      failed.className = 'text-xs opacity-60'
+      // Not "no tokens". A server that could not be asked and a server with no way into it are
+      // very different things to be told.
+      failed.textContent = 'Could not read the tokens on this server.'
+      list.appendChild(failed)
+      return
+    }
+    if (tokens.length === 0) {
+      const empty = document.createElement('p')
+      empty.className = 'text-xs opacity-60'
+      empty.textContent = 'No tokens yet. Anyone with the address can read this server.'
+      list.appendChild(empty)
+      return
+    }
+    for (const token of tokens) list.appendChild(tokenRow(server, token, reload))
+  }
 
   const reload = (): void => {
-    void (async () => {
-      const tokens = await listAccessTokens(server)
-      list.replaceChildren()
-      if (tokens === null) {
-        const failed = document.createElement('p')
-        failed.className = 'text-xs opacity-60'
-        // Not "no tokens". A server that could not be asked and a server with no way into it are
-        // very different things to be told.
-        failed.textContent = 'Could not read the tokens on this server.'
-        list.appendChild(failed)
-        return
-      }
-      if (tokens.length === 0) {
-        const empty = document.createElement('p')
-        empty.className = 'text-xs opacity-60'
-        empty.textContent = 'No tokens yet. Anyone with the address can read this server.'
-        list.appendChild(empty)
-        return
-      }
-      for (const token of tokens) list.appendChild(tokenRow(server, token, reload))
-    })()
+    void fetchTokens(server).then((tokens) => draw(tokens, reload))
   }
-  reload()
+
+  const known = cached.get(server.url)
+  if (known === undefined) {
+    const status = document.createElement('p')
+    status.className = 'text-xs opacity-60'
+    status.textContent = 'Loading…'
+    list.appendChild(status)
+    reload()
+  } else {
+    // Straight from the cache, then refreshed behind it. A token revoked from another browser should
+    // not stay on this list forever, and re-drawing over an identical list is invisible.
+    draw(known, reload)
+    reload()
+  }
 
   wrap.append(heading, list, newTokenForm(server, reload))
   return wrap
