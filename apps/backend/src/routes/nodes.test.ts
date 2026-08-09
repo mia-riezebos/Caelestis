@@ -100,6 +100,40 @@ describe('node routes', () => {
     )
   })
 
+  it('refuses a name or description one character past what the wire will carry', async () => {
+    // Neither bound is a SQL constraint, so deleting either route guard left the suite green — and
+    // an over-long name is not a rejected request, it is a season whose manifest every client
+    // refuses to decode, permanently, for one group nobody can see is at fault.
+    //
+    // At the root the binding bound is the path, not the name: the path is `/` + the slug, so a
+    // 256-character name derives a 257-character path and the shorter limit is what answers.
+    const { app } = harness()
+    const create = async (body: Parameters<typeof createNode>[1]) =>
+      (await createNode(app, body)).response.status
+
+    expect(await create({ season: 1, parentId: null, name: 'x'.repeat(255) })).toBe(201)
+    expect(await create({ season: 1, parentId: null, name: 'y'.repeat(256) })).toBe(400)
+    expect(await create({ season: 1, parentId: null, name: 'z'.repeat(257) })).toBe(400)
+    expect(
+      await create({ season: 1, parentId: null, name: 'Ok', description: 'd'.repeat(4_096) }),
+    ).toBe(201)
+    expect(
+      await create({ season: 1, parentId: null, name: 'Ok2', description: 'd'.repeat(4_097) }),
+    ).toBe(400)
+  })
+
+  it('refuses season zero, which no deployment can be configured to serve', async () => {
+    // The wire and the routes used to accept season 0 while `worker.ts` refused `SEASON=0`, so an
+    // admin could build a whole tree in a season the server could never make its default — visible
+    // only to a client that already knew to ask for it by number.
+    const { app } = harness()
+
+    expect(
+      (await createNode(app, { season: 0, parentId: null, name: 'Ghost' })).response.status,
+    ).toBe(400)
+    expect((await app.request('/admin/nodes?season=0', { headers: bearer })).status).toBe(400)
+  })
+
   it('rejects duplicate paths case-insensitively within a season but accepts them across seasons', async () => {
     const { app } = harness()
     expect(
