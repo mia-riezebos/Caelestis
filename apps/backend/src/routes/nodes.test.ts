@@ -164,6 +164,22 @@ describe('node routes', () => {
     })
   })
 
+  it('accepts a rename to the name the node already has', async () => {
+    // What a rename dialog sends when it is confirmed without an edit. The node's own row is in the
+    // table it checks for collisions, so without excluding itself this is a 409 against itself.
+    const { app } = harness()
+    const created = await createNode(app, { season: 1, parentId: null, name: 'Same' })
+
+    const response = await app.request(`/admin/nodes/${created.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Same' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ path: '/same' })
+  })
+
   it('refuses a rename that would collide with a sibling', async () => {
     const { app } = harness()
     await createNode(app, { season: 1, parentId: null, name: 'Taken' })
