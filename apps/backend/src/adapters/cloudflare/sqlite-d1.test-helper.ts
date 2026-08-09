@@ -29,7 +29,32 @@ const result = <T>(results: T[]): D1Result<T> =>
  * https://developers.cloudflare.com/d1/platform/limits/
  */
 const MAX_LIKE_PATTERN_BYTES = 50
-const MATCHES_PATTERN = /\b(like|glob)\b/i
+
+/**
+ * The parameter indexes that are the pattern operand of a LIKE or GLOB, and the literal patterns.
+ *
+ * The cap applies to the pattern, not to the value being searched — `? LIKE 'x%'` with a long value
+ * is fine by D1 and only the two-byte pattern counts. Matching on the operand rather than on every
+ * binding keeps the fake from refusing queries D1 would run.
+ *
+ * A regex, not a parser: this reads statements drizzle generates, where the pattern is either a bound
+ * `?` or a quoted literal directly after the operator.
+ */
+const PATTERN_OPERAND = /\b(?:like|glob)\s+(\?|'((?:[^']|'')*)')/gi
+
+const patternBytes = (sql: string): { indexes: Set<number>; literals: number[] } => {
+  const indexes = new Set<number>()
+  const literals: number[] = []
+  for (const match of sql.matchAll(PATTERN_OPERAND)) {
+    if (match[1] === '?') {
+      // Ordinal of this `?` among all of them, which is the binding it takes.
+      indexes.add((sql.slice(0, match.index).match(/\?/g) ?? []).length)
+    } else if (match[2] !== undefined) {
+      literals.push(Buffer.byteLength(match[2].replaceAll("''", "'"), 'utf8'))
+    }
+  }
+  return { indexes, literals }
+}
 
 class SqliteD1Statement {
   constructor(
@@ -43,12 +68,13 @@ class SqliteD1Statement {
   }
 
   private refusePatternsD1WouldRefuse(): void {
-    if (!MATCHES_PATTERN.test(this.sql)) return
-    for (const binding of this.bindings) {
-      if (typeof binding !== 'string') continue
-      if (Buffer.byteLength(binding, 'utf8') > MAX_LIKE_PATTERN_BYTES) {
-        throw new Error('LIKE or GLOB pattern too complex')
-      }
+    const { indexes, literals } = patternBytes(this.sql)
+    const bound = [...indexes].map((index) => {
+      const binding = this.bindings[index]
+      return typeof binding === 'string' ? Buffer.byteLength(binding, 'utf8') : 0
+    })
+    if ([...bound, ...literals].some((bytes) => bytes > MAX_LIKE_PATTERN_BYTES)) {
+      throw new Error('LIKE or GLOB pattern too complex')
     }
   }
 

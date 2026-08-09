@@ -209,6 +209,12 @@ export class D1SqlStore implements SqlStore {
     // count and the UTF-16 count the wire uses are the same number; this used to read every
     // descendant path because they were not, which a season-sized subtree turns into a result set D1
     // refuses.
+    //
+    // That equality is an assumption, and the route is what holds it up: every stored path is one
+    // `slug` derived. A path with an astral character would make this under-count, the CHECK agree
+    // with it, and the resulting manifest stop decoding — so if a second writer ever appears, or rows
+    // arrive from anywhere but this route, this aggregate has to go back to measuring the rows.
+    // Nothing has been deployed from this schema, so there are no such rows to migrate today.
     const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
     const shift = path.length - node.path.length
     const [deepest] = await this.database

@@ -23,3 +23,26 @@ it('leaves a long binding alone when the statement has no pattern match', async 
   await expect(d1.prepare('select ? as value').bind('y'.repeat(500)).all()).resolves.toBeDefined()
   d1.close()
 })
+
+it('caps the pattern operand rather than the value being searched', async () => {
+  // D1 bounds the pattern, not the haystack. Capping every binding made the fake refuse queries D1
+  // runs happily — a false failure is as misleading as a missed one.
+  const d1 = new SqliteD1Database()
+
+  await expect(
+    d1.prepare('select 1 as ok where ? like ?').bind('y'.repeat(500), 'x%').all(),
+  ).resolves.toBeDefined()
+  await expect(
+    d1.prepare("select 1 as ok where ? like 'x%'").bind('y'.repeat(500)).all(),
+  ).resolves.toBeDefined()
+  d1.close()
+})
+
+it('caps a pattern written as a literal, not only a bound one', async () => {
+  const d1 = new SqliteD1Database()
+
+  await expect(
+    d1.prepare(`select 1 as ok where 'x' like '${'y'.repeat(51)}'`).all(),
+  ).rejects.toThrow(/LIKE or GLOB pattern too complex/)
+  d1.close()
+})
