@@ -112,12 +112,14 @@ export class D1SqlStore implements SqlStore {
   }
 
   async insertNode(node: NodeRecord): Promise<NodeRecord> {
+    let parentPath = ''
     if (node.parentId !== null) {
       const parent = await this.readNode(node.parentId)
       if (parent === null) throw new InvalidNodeParentError('parent node does not exist')
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
+      parentPath = parent.path
     }
     // The prefix comes from the parent row, not from `node.path`. A caller derives that path from
     // its own read of the parent, and a rename committing in between leaves the child inserted under
@@ -126,9 +128,7 @@ export class D1SqlStore implements SqlStore {
     const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
     // Bounded here as well as by the CHECK, because the memory store bounds it here and the two are
     // meant to answer alike. The CHECK stays the backstop for the window between this read and the
-    // insert, in which a rename can lengthen the prefix underneath us.
-    const parentPath =
-      node.parentId === null ? '' : ((await this.readNode(node.parentId))?.path ?? '')
+    // write, in which a rename can lengthen the prefix underneath us.
     if (`${parentPath}/${segment}`.length > MAX_NODE_PATH_LENGTH) {
       throw new NodePathTooLongError(`node path is longer than ${MAX_NODE_PATH_LENGTH}`)
     }
@@ -237,6 +237,11 @@ export class D1SqlStore implements SqlStore {
     //
     // The destination is composed from the parent's path for the same reason. `parentId` cannot
     // change here, so the parent row is a stable place to ask.
+    //
+    // Untested on purpose: `insertNode` composes the same way, so no tree holds a child whose prefix
+    // differs from its parent's, and the only thing this guards is a concurrent ancestor rename —
+    // which a single-threaded suite cannot stage. A test that seeded the mismatch through the store
+    // would be testing a state the stores no longer allow.
     const parentPath =
       node.parentId === null
         ? sql`''`
