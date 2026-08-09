@@ -674,17 +674,53 @@ export const install = (
 
     const gl = context as WebGL2RenderingContext
     // Weak: a long session rebuilds programs, and this only ever needs object identity.
-    const uniformNames = new WeakMap<WebGLUniformLocation, string>()
+    interface UniformIdentity {
+      readonly program: WebGLProgram
+      readonly name: string
+    }
+    const uniforms = new WeakMap<WebGLUniformLocation, UniformIdentity>()
+    const primarySamplerUnits = new WeakMap<WebGLProgram, number>()
     const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
+    const texture2DByUnit = new Map<number, WebGLTexture | null>()
+    let activeProgram: WebGLProgram | null = null
+    let activeTextureUnit: number = gl.TEXTURE0
     let boundTexture: WebGLTexture | null = null
     let projection: ArrayLike<number> | null = null
 
     const nativeGetUniformLocation = gl.getUniformLocation.bind(gl)
     gl.getUniformLocation = (program, name) => {
       const location = nativeGetUniformLocation(program, name)
-      if (location !== null) uniformNames.set(location, name)
+      if (location !== null) {
+        uniforms.set(location, { program, name })
+        // WebGL sampler uniforms default to texture unit zero. Remember that before the first
+        // explicit upload too: wrappers such as MapLibre cache uniforms and may not set one again.
+        if (name === 'u_image0' && !primarySamplerUnits.has(program)) {
+          primarySamplerUnits.set(program, gl.TEXTURE0)
+        }
+      }
       return location
     }
+
+    const nativeUseProgram = gl.useProgram.bind(gl)
+    gl.useProgram = (program) =>
+      runObservedCall(
+        () => nativeUseProgram(program),
+        () => {
+          activeProgram = program
+        },
+      )
+
+    const nativeUniform1i = gl.uniform1i.bind(gl)
+    gl.uniform1i = (location, value) =>
+      runObservedCall(
+        () => nativeUniform1i(location, value),
+        () => {
+          if (location === null) return
+          const uniform = uniforms.get(location)
+          if (uniform?.name !== 'u_image0' || uniform.program !== activeProgram) return
+          primarySamplerUnits.set(uniform.program, gl.TEXTURE0 + value)
+        },
+      )
 
     const nativeUniformMatrix4fv = gl.uniformMatrix4fv.bind(gl)
     // biome-ignore lint/suspicious/noExplicitAny: the WebGL2 overloads differ from WebGL1's
@@ -692,7 +728,7 @@ export const install = (
       runObservedCall(
         () => nativeUniformMatrix4fv(location, transpose, value, ...rest),
         () => {
-          if (location === null || uniformNames.get(location) !== 'u_projection_matrix') return
+          if (location === null || uniforms.get(location)?.name !== 'u_projection_matrix') return
           // A copy of exactly the values WebGL accepted. MapLibre reuses a scratch array and WebGL2
           // lets an upload start at an offset, so retaining the caller's array reads another matrix.
           const offset = typeof rest[0] === 'number' ? rest[0] : 0
@@ -705,12 +741,22 @@ export const install = (
         },
       )) as typeof gl.uniformMatrix4fv
 
+    const nativeActiveTexture = gl.activeTexture.bind(gl)
+    gl.activeTexture = (texture) =>
+      runObservedCall(
+        () => nativeActiveTexture(texture),
+        () => {
+          activeTextureUnit = texture
+        },
+      )
+
     const nativeBindTexture = gl.bindTexture.bind(gl)
     gl.bindTexture = (target, texture) =>
       runObservedCall(
         () => nativeBindTexture(target, texture),
         () => {
           boundTexture = texture
+          if (target === gl.TEXTURE_2D) texture2DByUnit.set(activeTextureUnit, texture)
         },
       )
 
@@ -799,11 +845,17 @@ export const install = (
         queueMicrotask(flush)
       }
       frameDraws++
-      if (boundTexture === null || projection === null) {
+      const primaryUnit =
+        activeProgram === null ? undefined : primarySamplerUnits.get(activeProgram)
+      // Raster crossfades bind the child/current tile to u_image0, then bind the parent to
+      // u_image1. The last bind is therefore the wrong identity for the child's projection matrix.
+      const drawnTexture =
+        primaryUnit === undefined ? boundTexture : (texture2DByUnit.get(primaryUnit) ?? null)
+      if (drawnTexture === null || projection === null) {
         count('draw:no-texture-or-matrix')
         return
       }
-      const tile = tileOfTexture.get(boundTexture)
+      const tile = tileOfTexture.get(drawnTexture)
       if (tile === undefined) {
         count('draw:texture-not-a-known-tile')
         return

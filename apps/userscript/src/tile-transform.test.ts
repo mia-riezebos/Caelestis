@@ -1,5 +1,5 @@
 import { decodePng } from '@wts/shared'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { counters } from './debug.js'
 import {
   blobPartsForAttribution,
@@ -9,10 +9,12 @@ import {
   install,
   isGetFetch,
   normalizeMissingTileResponse,
+  onTileFrame,
   project,
   quadFromMatrix,
   resetQueues,
   runObservedCall,
+  type TileFrame,
   takeBySize,
   tileFromUrl,
   urlForFetchInput,
@@ -53,6 +55,8 @@ const tileMatrix = (clipSize: number, clipX = -clipSize / 2, clipY = clipSize / 
 const canvas = (width: number, height = width) => ({ width, height }) as HTMLCanvasElement
 
 const tile = { x: 3, y: 4 }
+
+afterEach(() => vi.unstubAllGlobals())
 
 describe('tileFromUrl', () => {
   it.each([
@@ -307,8 +311,13 @@ describe('transparent browser hooks', () => {
 
   it('deactivates a provisional WebGL context after retargeting to the map', async () => {
     const fakeGl = () => ({
+      TEXTURE0: 0x84c0,
+      TEXTURE_2D: 0x0de1,
       getUniformLocation: vi.fn(() => null),
+      useProgram: vi.fn(),
+      uniform1i: vi.fn(),
       uniformMatrix4fv: vi.fn(),
+      activeTexture: vi.fn(),
       bindTexture: vi.fn(),
       texSubImage2D: vi.fn(),
       texImage2D: vi.fn(),
@@ -357,6 +366,86 @@ describe('transparent browser hooks', () => {
     mapCanvas.context.drawArrays()
     await Promise.resolve()
     expect(counters.get('draw:no-texture-or-matrix')).toBe(1)
+  })
+
+  it('attributes a raster crossfade draw to u_image0 instead of the last bound parent', async () => {
+    const locations = new Map<string, object>()
+    const fakeGl = {
+      TEXTURE0: 0x84c0,
+      TEXTURE1: 0x84c1,
+      TEXTURE_2D: 0x0de1,
+      getUniformLocation: vi.fn((_program: object, name: string) => {
+        const location = locations.get(name) ?? {}
+        locations.set(name, location)
+        return location
+      }),
+      useProgram: vi.fn(),
+      uniform1i: vi.fn(),
+      uniformMatrix4fv: vi.fn(),
+      activeTexture: vi.fn(),
+      bindTexture: vi.fn(),
+      texSubImage2D: vi.fn(),
+      texImage2D: vi.fn(),
+      drawArrays: vi.fn(),
+      drawElements: vi.fn(),
+    }
+    class FakeCanvas {
+      width = 1_000
+      height = 1_000
+      getContext(_type?: string): typeof fakeGl {
+        return fakeGl
+      }
+    }
+    class FakeImageBitmap {
+      width = 1_000
+      height = 1_000
+    }
+    vi.stubGlobal('ImageBitmap', FakeImageBitmap)
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))),
+      Blob,
+      ImageBitmap: FakeImageBitmap,
+      createImageBitmap: vi.fn(async () => new FakeImageBitmap()),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    const canvas = new FakeCanvas()
+    install(realm, () => null)
+    canvas.getContext('webgl2')
+    const gl = fakeGl as unknown as WebGL2RenderingContext
+    const program = {} as WebGLProgram
+    gl.useProgram(program)
+    const image0 = gl.getUniformLocation(program, 'u_image0')
+    const projection = gl.getUniformLocation(program, 'u_projection_matrix')
+    if (image0 === null || projection === null) throw new Error('fake locations must exist')
+    gl.uniform1i(image0, 0)
+
+    const upload = async (unit: number, texture: WebGLTexture, x: number): Promise<void> => {
+      const response = await realm.fetch(`https://backend.wplace.live/files/s0/tiles/${x}/4.png`)
+      const buffer = await response.arrayBuffer()
+      const blob = new realm.Blob([buffer])
+      const bitmap = await realm.createImageBitmap(blob)
+      gl.activeTexture(unit)
+      gl.bindTexture(gl.TEXTURE_2D, texture)
+      gl.texImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, bitmap)
+    }
+
+    counters.clear()
+    await upload(gl.TEXTURE0, {} as WebGLTexture, 3)
+    await upload(gl.TEXTURE1, {} as WebGLTexture, 1)
+    gl.uniformMatrix4fv(projection, false, tileMatrix(1))
+    const frames: TileFrame[] = []
+    onTileFrame((frame) => frames.push(frame))
+    gl.drawElements(0, 0, 0, 0)
+    await Promise.resolve()
+
+    expect(frames).toHaveLength(1)
+    expect(frames.at(-1)?.quads[0]?.tile).toEqual({ x: 3, y: 4 })
   })
 
   it('does not consume an arbitrary Blob-parts iterable a second time', () => {
