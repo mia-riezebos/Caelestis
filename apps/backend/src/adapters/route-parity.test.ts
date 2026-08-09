@@ -338,17 +338,22 @@ describe('route parity between adapters', () => {
         const parent = await post(target, { season, parentId: null, name: 'Canada' })
         const parentId = ((await parent.json()) as { id: string }).id
         ids[season] = parentId
-        await post(target, { season, parentId, name: 'Child' })
+        // Season 2's child is long enough that measuring it would refuse season 1's rename. The
+        // guard's season scope is a separate expression from the rewrite's, so it is independently
+        // mutable — and only the rewrite's was covered.
+        await post(target, { season, parentId, name: season === 2 ? 'c'.repeat(248) : 'Child' })
       }
 
-      await target.request(`/admin/nodes/${ids[1]}`, {
+      const renamed = await target.request(`/admin/nodes/${ids[1]}`, {
         method: 'PATCH',
         headers: bearer,
         body: JSON.stringify({ name: 'Renamed' }),
       })
       const listed = await target.request('/admin/nodes?season=2', { headers: bearer })
       const body = (await listed.json()) as ReadonlyArray<{ path: string }>
-      return body.map((entry) => entry.path).sort()
+      // The status matters as much as the rows: a guard that measured season 2 would refuse this
+      // rename outright, and season 2 would look untouched for the wrong reason.
+      return { status: renamed.status, paths: body.map((entry) => entry.path).sort() }
     }
     const { d1, app } = d1App()
     const { app: memory } = memApp()
@@ -356,7 +361,10 @@ describe('route parity between adapters', () => {
     d1.close()
 
     expect(fromD1).toEqual(await across(memory))
-    expect(fromD1).toEqual(['/canada', '/canada/child'])
+    expect(fromD1).toEqual({
+      status: 200,
+      paths: [`/canada/${'c'.repeat(248)}`, '/canada'].sort(),
+    })
   })
 
   it('bounds the renamed path itself, not only what hangs beneath it', async () => {
