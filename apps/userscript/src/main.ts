@@ -7,6 +7,7 @@ import {
 } from './coordinates.js'
 import { installDebugApi, log } from './debug.js'
 import { installMapCapture } from './map-handle.js'
+import { type FramePainter, paintFrame } from './paint.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 
 /**
@@ -38,7 +39,7 @@ const overlayCanvas = (): HTMLCanvasElement => {
 let lastFrame: TileFrame | null = null
 
 /** Painters registered by later layers. Each is handed the 2D context and the frame's quads. */
-export type Painter = (context: CanvasRenderingContext2D, frame: TileFrame) => void
+export type Painter = FramePainter
 
 const painters: Painter[] = []
 
@@ -66,9 +67,7 @@ const draw = (frame: TileFrame): void => {
   if (context === null) return
   // Cleared unconditionally, including on frames with no tiles, so zooming out past the point where
   // wplace stops serving tiles does not strand the last frame on screen.
-  context.clearRect(0, 0, canvas.width, canvas.height)
-
-  for (const painter of painters) painter(context, frame)
+  paintFrame(context, frame, painters)
 
   log('frame', 'painted', { quads: quads.length, painters: painters.length })
 }
