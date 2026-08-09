@@ -1,5 +1,5 @@
 import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
-import { and, asc, desc, eq, gte, inArray, isNotNull, like, lt, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, type SQL, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -124,9 +124,11 @@ export class D1SqlStore implements SqlStore {
     // a prefix its parent no longer has — a hierarchy the wire refuses, written by two requests that
     // both succeeded. Only the last segment is the caller's to choose. Same rule as `renameNode`.
     const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
+    // Roots get the same treatment as children: only the last segment is the caller's, so a stale
+    // multi-segment proposal cannot create a root whose path claims to be nested.
     const path =
       node.parentId === null
-        ? sql`${node.path}`
+        ? sql`${`/${segment}`}`
         : sql`coalesce((select path from nodes where id = ${node.parentId}), '') || '/' || ${segment}`
     try {
       await this.database.insert(nodes).values({
@@ -184,8 +186,15 @@ export class D1SqlStore implements SqlStore {
     const node = await this.readNode(nodeId)
     if (node === null) return null
 
+    // Not LIKE: D1 caps a LIKE or GLOB pattern at 50 bytes, and a node path may be 256 characters,
+    // so renaming anything but a shallow node answered "LIKE or GLOB pattern too complex" — every
+    // ordinary rename of a nested group, in production only. `substr` compares the same prefix with
+    // no pattern at all, and `lower` folds ASCII exactly as LIKE did. Lengths come from SQLite's own
+    // `length()` so the comparison stays in characters throughout.
     const oldPrefix = `${node.path}/`
-    const descendants = and(eq(nodes.season, node.season), like(nodes.path, `${oldPrefix}%`))
+    const startsWithOldPrefix = (prefix: SQL | string): SQL =>
+      sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
+    const descendants = and(eq(nodes.season, node.season), startsWithOldPrefix(oldPrefix))
 
     // Every descendant keeps its suffix, so its new length is its old one shifted by the change in
     // the prefix. Measured in UTF-16 units, which is what the wire counts — and since a code point
@@ -249,7 +258,7 @@ export class D1SqlStore implements SqlStore {
       this.database
         .update(nodes)
         .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
-        .where(and(eq(nodes.season, node.season), sql`${nodes.path} like ${oldPath} || '/%'`)),
+        .where(and(eq(nodes.season, node.season), startsWithOldPrefix(sql`${oldPath} || '/'`))),
       this.database.update(nodes).set({ name, path: destination }).where(eq(nodes.id, nodeId)),
     ] as const
     try {

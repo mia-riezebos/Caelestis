@@ -57,14 +57,17 @@ export class MemorySqlStore implements SqlStore {
     // Composed before anything is checked. Checking the caller's path and storing a different one
     // let a child land on a path the check had already cleared as free — two rows, one path, and the
     // oracle disagreeing with a database that has a unique index to stop exactly that.
-    let path = node.path
+    // Roots get the same treatment as children: only the last segment is the caller's, so a stale
+    // multi-segment proposal cannot create a root whose path claims to be nested.
+    const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
+    let path = `/${segment}`
     if (node.parentId !== null) {
       const parent = this.nodes.get(node.parentId)
       if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
-      path = `${parent.path}/${node.path.slice(node.path.lastIndexOf('/') + 1)}`
+      path = `${parent.path}/${segment}`
     }
 
     if (path.length > MAX_NODE_PATH_LENGTH) {
