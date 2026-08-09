@@ -89,6 +89,23 @@ describe('D1SqlStore', () => {
     expect(await seed(new MemorySqlStore())).toBe('/plain/x')
   })
 
+  it('canonicalises a renamed child onto the prefix its parent carries', async () => {
+    // The unique index folds ASCII, so `/canada` and `/CANADA` are one path to it and a caller could
+    // ask for a child at either spelling. Whichever it asks for, both stores compose the row from
+    // the parent's own prefix, so the tree only ever holds one spelling and a later rename has
+    // nothing to disagree about. Asserted here rather than through a route because `slug` lowercases
+    // and no request can pose the question.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'p', parentId: null, path: '/canada', name: 'canada' })
+      await target.insertNode({ ...base, id: 'c', parentId: 'p', path: '/CANADA/x', name: 'x' })
+      return (await target.renameNode('c', 'New', 'new'))?.path
+    }
+
+    expect(await seed(store)).toBe('/canada/new')
+    expect(await seed(new MemorySqlStore())).toBe('/canada/new')
+  })
+
   it('folds only ASCII when deciding a rename collides', async () => {
     // `lower()` in SQLite folds ASCII and nothing else, so `/QUÉBEC` and `/québec` are two distinct
     // paths to the database. The memory store used `toLowerCase()`, which folds `É`, and refused a

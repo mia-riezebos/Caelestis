@@ -178,6 +178,96 @@ describe('route parity between adapters', () => {
     })
   })
 
+  it('renames a nested node and keeps its parent prefix', async () => {
+    // Every successful D1-backed rename above targets a root, and the only child rename exits at the
+    // length guard before any SQL runs. So breaking the parent prefix — writing a child as
+    // `/renamed` rather than `/parent/renamed` — was invisible to the whole suite.
+    const nested = async (target: ReturnType<typeof memApp>['app']) => {
+      const parent = await post(target, { season: 1, parentId: null, name: 'Parent' })
+      const parentId = ((await parent.json()) as { id: string }).id
+      const child = await post(target, { season: 1, parentId, name: 'Child' })
+      const childId = ((await child.json()) as { id: string }).id
+      await post(target, { season: 1, parentId: childId, name: 'Grand' })
+
+      const renamed = await target.request(`/admin/nodes/${childId}`, {
+        method: 'PATCH',
+        headers: bearer,
+        body: JSON.stringify({ name: 'Moved' }),
+      })
+      const listed = await target.request('/admin/nodes?season=1', { headers: bearer })
+      const body = (await listed.json()) as ReadonlyArray<{ path: string; name: string }>
+      // Ids and timestamps differ between the two runs by construction; everything else must not.
+      const { name, path } = (await renamed.json()) as { name: string; path: string }
+      return {
+        renamed: { name, path },
+        paths: body.map((entry) => entry.path).sort(),
+        names: body.map((entry) => entry.name).sort(),
+      }
+    }
+    const { d1, app } = d1App()
+    const { app: memory } = memApp()
+    const fromD1 = await nested(app)
+    d1.close()
+
+    expect(fromD1).toEqual(await nested(memory))
+    // The name is asserted too: nothing else compared it across adapters, so dropping `name` from
+    // D1's root update left PATCH not performing its primary operation, green.
+    expect(fromD1.renamed).toMatchObject({ name: 'Moved', path: '/parent/moved' })
+    expect(fromD1.paths).toEqual(['/parent', '/parent/moved', '/parent/moved/grand'])
+    expect(fromD1.names).toEqual(['Grand', 'Moved', 'Parent'])
+  })
+
+  it('rolls the subtree back when the rename itself collides', async () => {
+    // The descendant update runs first, so without one transaction it commits and the root update
+    // then hits the unique index — leaving children under a prefix their parent never took. The
+    // existing collision case renames a childless node, so sequential updates would pass it.
+    const rollback = async (target: ReturnType<typeof memApp>['app']) => {
+      await post(target, { season: 1, parentId: null, name: 'Taken' })
+      const other = await post(target, { season: 1, parentId: null, name: 'Other' })
+      const otherId = ((await other.json()) as { id: string }).id
+      await post(target, { season: 1, parentId: otherId, name: 'Child' })
+
+      const renamed = await target.request(`/admin/nodes/${otherId}`, {
+        method: 'PATCH',
+        headers: bearer,
+        body: JSON.stringify({ name: 'Taken' }),
+      })
+      const listed = await target.request('/admin/nodes?season=1', { headers: bearer })
+      const body = (await listed.json()) as ReadonlyArray<{ path: string }>
+      return { status: renamed.status, paths: body.map((entry) => entry.path).sort() }
+    }
+    const { d1, app } = d1App()
+    const { app: memory } = memApp()
+    const fromD1 = await rollback(app)
+    d1.close()
+
+    expect(fromD1).toEqual(await rollback(memory))
+    expect(fromD1).toEqual({ status: 409, paths: ['/other', '/other/child', '/taken'] })
+  })
+
+  it('accepts a rename that lands exactly on the bound', async () => {
+    // Every other length case is one past it, so a `>=` would reject a legal path and no test would
+    // notice. `/` plus 255 is exactly 256.
+    const exact = async (target: ReturnType<typeof memApp>['app']) => {
+      const created = await post(target, { season: 1, parentId: null, name: 'n' })
+      const id = ((await created.json()) as { id: string }).id
+      const renamed = await target.request(`/admin/nodes/${id}`, {
+        method: 'PATCH',
+        headers: bearer,
+        body: JSON.stringify({ name: 'e'.repeat(255) }),
+      })
+      const body = (await renamed.json()) as { path?: string }
+      return { status: renamed.status, length: body.path?.length }
+    }
+    const { d1, app } = d1App()
+    const { app: memory } = memApp()
+    const fromD1 = await exact(app)
+    d1.close()
+
+    expect(fromD1).toEqual(await exact(memory))
+    expect(fromD1).toEqual({ status: 200, length: 256 })
+  })
+
   it('leaves another season alone when a rename moves a subtree', async () => {
     // The descendant match is scoped by season as well as by prefix, and the same path legally
     // exists in two seasons. Without the season clause a rename reaches into the other one and
