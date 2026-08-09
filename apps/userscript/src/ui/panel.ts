@@ -43,6 +43,7 @@ import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen } from '../wplace-paint.js'
+import { accessTokenSection } from './access-tokens.js'
 import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
@@ -509,24 +510,42 @@ const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputE
   return el
 }
 
+/** Which servers' rows are open. Kept across re-renders, which rebuild the whole pane. */
+const expandedServers = new Set<string>()
+
 /**
- * One connected server, and the single action its status implies.
+ * One connected server: its name and state, and everything about it behind a caret.
  *
- * The code field only exists once the server has said it wants one. Asking up front is the fastest
- * way to lose someone whose server does not need a code at all, which most will not.
+ * Expandable because a server has more than one thing to say about it and only one of them is worth
+ * a line in a list. Collapsed it is a name and whether it is working; open it is the token you
+ * connect with, the tokens it will accept from other people, and the way to disconnect.
+ *
+ * Disconnect lives inside rather than on the collapsed row. It used to sit beside the name, one
+ * stray click from throwing a server away, in a list where every other control is harmless — and it
+ * is not something anyone reaches for while scanning.
  */
 const serverRow = (server: ConnectedServer): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'px-3 py-2'
+  const open = expandedServers.has(server.url)
 
-  const top = document.createElement('div')
-  top.className = 'flex items-center gap-2'
+  const top = document.createElement('button')
+  top.type = 'button'
+  top.className = 'flex items-center gap-2 w-full'
+  top.setAttribute('aria-expanded', String(open))
+
+  const caret = icon('caret', 'size-3 opacity-60')
+  caret.style.flex = '0 0 auto'
+  caret.style.transition = 'transform 120ms ease-out'
+  caret.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)'
+
   const name = document.createElement('span')
   name.className = 'text-sm'
   name.style.flex = '1'
   name.style.overflow = 'hidden'
   name.style.textOverflow = 'ellipsis'
   name.style.whiteSpace = 'nowrap'
+  name.style.textAlign = 'left'
   name.textContent = server.info?.name ?? server.url
   name.title = server.url
 
@@ -541,51 +560,70 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     server.status === 'connected'
       ? 'connected'
       : server.status === 'needs-token'
-        ? 'code'
+        ? 'token'
         : 'offline'
 
-  const remove = document.createElement('button')
-  remove.className = 'btn btn-ghost btn-xs btn-circle'
-  remove.title = 'Disconnect'
-  remove.setAttribute('aria-label', `Disconnect ${server.info?.name ?? server.url}`)
-  remove.appendChild(icon('close', 'size-3'))
-  remove.addEventListener('click', () => {
-    removeServer(server.url)
-    void forgetServer(server.url)
+  top.append(caret, name, badge)
+  top.addEventListener('click', () => {
+    if (open) expandedServers.delete(server.url)
+    else expandedServers.add(server.url)
     showView('settings')
   })
-
-  top.append(name, badge, remove)
   wrap.appendChild(top)
 
-  if (server.status !== 'needs-token') {
-    if (server.status === 'unreachable') {
+  // A server asking for a token says so on the collapsed row too. It is the one state that needs
+  // something *done* about it, and a row that has to be opened to find that out is a row that gets
+  // scrolled past.
+  if (!open) {
+    if (server.status === 'unreachable' || server.status === 'needs-token') {
       const why = document.createElement('p')
       why.className = 'text-xs opacity-60'
-      why.textContent = server.error ?? 'Could not be reached.'
+      why.style.marginTop = '0.125rem'
+      why.textContent =
+        server.status === 'needs-token'
+          ? 'Needs an access token.'
+          : (server.error ?? 'Could not be reached.')
       wrap.appendChild(why)
     }
     return wrap
   }
 
+  const body = document.createElement('div')
+  body.style.marginTop = '0.5rem'
+  body.style.paddingLeft = '1.25rem'
+
+  /**
+   * The token you connect with, always editable.
+   *
+   * It used to appear only while the server was refusing you, so a token that had been accepted
+   * could not be changed without disconnecting and adding the server again — which is exactly what
+   * you need to do when yours is rotated or upgraded to admin.
+   */
   const codeRow = document.createElement('div')
   codeRow.className = 'flex gap-2'
-  codeRow.style.marginTop = '0.375rem'
   const code = document.createElement('input')
   code.type = 'password'
   code.autocomplete = 'off'
-  code.className = 'input input-sm input-bordered'
+  code.className = 'input input-xs input-bordered'
   code.style.flex = '1'
   code.style.minWidth = '0'
-  code.placeholder = 'Access code'
+  code.placeholder = server.token === null ? 'Access token' : '••••••••'
+  code.setAttribute('aria-label', 'Your access token for this server')
   const submit = document.createElement('button')
-  submit.className = 'btn btn-sm btn-primary'
-  submit.textContent = 'Connect'
+  submit.className = 'btn btn-xs btn-primary'
+  submit.textContent = server.status === 'connected' ? 'Update' : 'Connect'
 
   const status = document.createElement('p')
   status.className = 'text-xs opacity-60'
   status.style.marginTop = '0.25rem'
-  status.textContent = 'This server needs an access code from whoever runs it.'
+  status.textContent =
+    server.status === 'needs-token'
+      ? 'This server needs an access token from whoever runs it.'
+      : server.status === 'unreachable'
+        ? (server.error ?? 'Could not be reached.')
+        : server.isAdmin
+          ? 'Your token can change this server.'
+          : 'Your token can read this server.'
 
   const attempt = async (): Promise<void> => {
     const value = code.value.trim()
@@ -600,12 +638,12 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
       showView('settings')
       return
     }
-    // A wrong code and an unreachable server are different problems with different fixes, so they
+    // A wrong token and an unreachable server are different problems with different fixes, so they
     // must not share a message.
     status.className = 'text-xs text-error'
     status.textContent =
       next.status === 'needs-token'
-        ? 'That code was not accepted. Ask whoever runs the server for a current one.'
+        ? 'That token was not accepted. Ask whoever runs the server for a current one.'
         : `Could not reach the server. ${next.error ?? ''}`.trim()
   }
 
@@ -613,9 +651,26 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   code.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') void attempt()
   })
-
   codeRow.append(code, submit)
-  wrap.append(codeRow, status)
+  body.append(codeRow, status)
+
+  // Only for someone who can actually use it. The routes are admin-only, so for anyone else this
+  // would be a section that exists to say 403.
+  if (server.isAdmin) body.appendChild(accessTokenSection(server))
+
+  const disconnect = document.createElement('button')
+  disconnect.className = 'btn btn-xs btn-ghost text-error'
+  disconnect.style.marginTop = '0.75rem'
+  disconnect.textContent = 'Disconnect'
+  disconnect.addEventListener('click', () => {
+    expandedServers.delete(server.url)
+    removeServer(server.url)
+    void forgetServer(server.url)
+    showView('settings')
+  })
+  body.appendChild(disconnect)
+
+  wrap.appendChild(body)
   return wrap
 }
 
@@ -755,7 +810,7 @@ const settingsView = (): HTMLElement => {
     upsertServer(server)
     url.value = ''
     // Re-render so the new server's row appears — it is what carries the status badge and, when the
-    // server wants one, the access-code field. Without this the panel reported "needs a code" and
+    // server wants one, the access-token field. Without this the panel reported "needs a token" and
     // then offered nowhere to type one.
     showView('settings')
   }

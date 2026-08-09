@@ -137,7 +137,7 @@ export const templatesOfNode = (
 /**
  * Re-read what a server publishes: its folders and the templates under them.
  *
- * **Not gated on admin.** The tree is what a read code is for — seeing what the alliance is
+ * **Not gated on admin.** The tree is what a read token is for — seeing what the alliance is
  * building. Only *changing* it is privileged, and that boundary is drawn per row by `canEdit`.
  * Refusing to fetch here left every member looking at a connected server with nothing under it.
  *
@@ -1155,7 +1155,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
     if (server.status === 'connected') {
       wrap.appendChild(childText('No templates published yet.', 0))
     } else if (server.status === 'needs-token') {
-      wrap.appendChild(childText('Needs an access code — add it in settings.', 0))
+      wrap.appendChild(childText('Needs an access token — add it in settings.', 0))
     } else {
       wrap.appendChild(childText(`Could not be reached. ${server.error ?? ''}`.trim(), 0))
     }

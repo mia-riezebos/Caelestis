@@ -25,7 +25,7 @@ export const resolveServerInfo = async (
 
 export const createServerRoutes = (ports: Pick<Ports, 'sql'>, base: ServerInfo) => {
   const routes = new Hono()
-  // Public, and deliberately so: this is how a userscript decides whether it needs a code at all.
+  // Public, and deliberately so: this is how a userscript decides whether it needs a token at all.
   routes.get('/', async (c) => c.json(await resolveServerInfo(ports, base)))
   return routes
 }

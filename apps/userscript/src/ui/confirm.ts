@@ -17,13 +17,15 @@
  * closed, which quietly turned "delete" into "nothing happened" for anything reachable from the map.
  */
 
-const BOX_CLASS =
+/** Shared with the other dialogs here, so every one of them is the same surface as wplace's. */
+export const DIALOG_BOX_CLASS =
   'modal-box p-0 flex flex-col w-11/12 max-h-11/12 rounded-xl max-sm:!max-h-none max-w-md ' +
   'max-sm:!w-11/12 max-sm:!h-auto max-sm:!max-w-md max-sm:!max-h-[85vh] max-sm:!rounded-xl'
-const HEADER_CLASS =
+export const DIALOG_HEADER_CLASS =
   'bg-base-100/70 sticky top-0 z-40 flex shrink-0 items-center justify-between px-4 py-4 ' +
   'backdrop-blur sm:px-6 border-base-content/10 border-b'
-const BODY_CLASS = 'flex flex-1 flex-col overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-6'
+export const DIALOG_BODY_CLASS =
+  'flex flex-1 flex-col overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-6'
 
 export interface ConfirmOptions {
   /** The question, as a heading. Theirs is "Delete overlay?". */
@@ -49,10 +51,10 @@ export const confirmDestructive = ({
     dialog.setAttribute('data-wts-confirm', '')
 
     const box = document.createElement('div')
-    box.className = BOX_CLASS
+    box.className = DIALOG_BOX_CLASS
 
     const header = document.createElement('header')
-    header.className = HEADER_CLASS
+    header.className = DIALOG_HEADER_CLASS
     const headingWrap = document.createElement('div')
     headingWrap.className = 'flex flex-1 items-center gap-3 overflow-hidden'
     const heading = document.createElement('h3')
@@ -62,7 +64,7 @@ export const confirmDestructive = ({
     header.appendChild(headingWrap)
 
     const content = document.createElement('div')
-    content.className = BODY_CLASS
+    content.className = DIALOG_BODY_CLASS
     const inner = document.createElement('div')
     const lead = document.createElement('p')
     lead.className = 'text-lg'

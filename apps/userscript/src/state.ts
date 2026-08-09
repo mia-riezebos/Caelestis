@@ -332,7 +332,7 @@ const probeAdmin = async (base: string, token: string | null): Promise<boolean> 
  * Ask a server who it is.
  *
  * `GET /server` is deliberately public and always answers, so a client can learn whether a token is
- * needed *before* asking anyone for one. Asking for a code up front is the likeliest way to lose
+ * needed *before* asking anyone for one. Asking for a token up front is the likeliest way to lose
  * someone on first run — most servers will not want one.
  */
 export const probeServer = async (url: string, token: string | null): Promise<ConnectedServer> => {
@@ -362,7 +362,7 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     }
 
     // `GET /server` is public and never looks at the Authorization header, so reaching it proves
-    // nothing about a code. Without this second call any non-empty string read as "connected" and
+    // nothing about a token. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
     const authed = await fetch(`${base}/manifest`, {
       headers: { authorization: `Bearer ${token}` },
@@ -426,7 +426,7 @@ export const createNode = async (
     })
     if (response.ok) return { ok: true, node: (await response.json()) as TreeNode }
     if (response.status === 401 || response.status === 403) {
-      return { ok: false, message: 'That code cannot create folders — it needs admin access.' }
+      return { ok: false, message: 'That token cannot create folders — it needs admin access.' }
     }
     const body = (await response.json().catch(() => null)) as { error?: string } | null
     return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
@@ -442,7 +442,7 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
 
 const failure = (response: Response, body: { error?: string } | null): string =>
   response.status === 401 || response.status === 403
-    ? 'That code cannot change this server — it needs admin access.'
+    ? 'That token cannot change this server — it needs admin access.'
     : (body?.error ?? `Server said ${response.status}.`)
 
 export const renameNode = async (
@@ -649,7 +649,7 @@ export const uploadTemplate = async (
       return { ok: true, id: body.templateId ?? '' }
     }
     if (response.status === 401 || response.status === 403) {
-      return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
+      return { ok: false, message: 'That token cannot upload templates — it needs admin access.' }
     }
     const body = (await response.json().catch(() => null)) as { error?: string } | null
     return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
@@ -757,6 +757,83 @@ export const uploadTemplateVersion = async (
       const body = (await response.json()) as { versionId?: string }
       return { ok: true, versionId: body.versionId ?? '' }
     }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * An access token as the server will ever describe it back to us.
+ *
+ * No secret. The plaintext exists once, in the response to the call that mints it, and is never
+ * stored anywhere — the server keeps a hash, so there is nothing to reveal later even if a route
+ * wanted to. Which is the point: a list that could show them would turn one leaked admin session
+ * into every token the server has.
+ */
+export interface AccessToken {
+  readonly tokenHash: string
+  readonly label: string
+  readonly scope: 'read' | 'report' | 'admin'
+  readonly createdBy: string
+  readonly createdAt: number
+  readonly revokedAt: number | null
+}
+
+export const listAccessTokens = async (
+  server: ConnectedServer,
+): Promise<readonly AccessToken[] | null> => {
+  try {
+    const response = await fetch(`${server.url}/admin/tokens`, { headers: adminHeaders(server) })
+    if (!response.ok) return null
+    const body = (await response.json()) as { tokens?: readonly AccessToken[] }
+    return body.tokens ?? []
+  } catch {
+    // Null rather than empty, so the panel can say "could not ask" instead of "there are none" —
+    // the difference between those two is the difference between a blip and a server with no way in.
+    return null
+  }
+}
+
+/** Mint one. The `token` in the result is the only time the plaintext will ever exist here. */
+export const createAccessToken = async (
+  server: ConnectedServer,
+  label: string,
+  scope: AccessToken['scope'],
+): Promise<{ ok: true; token: string } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/tokens`, {
+      method: 'POST',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ label, scope }),
+    })
+    const body = (await response.json().catch(() => null)) as {
+      token?: string
+      error?: string
+    } | null
+    if (response.ok && typeof body?.token === 'string') return { ok: true, token: body.token }
+    return { ok: false, message: failure(response, body) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Revoke one, by the hash the list gave us.
+ *
+ * The row stays afterwards, with a date on it. A revoked token is a fact about who used to have a
+ * way in, and deleting the record would leave nothing to answer that with.
+ */
+export const revokeAccessToken = async (
+  server: ConnectedServer,
+  tokenHash: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/tokens/${tokenHash}`, {
+      method: 'DELETE',
+      headers: adminHeaders(server),
+    })
+    if (response.ok) return { ok: true }
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
     return { ok: false, message: String(error) }
