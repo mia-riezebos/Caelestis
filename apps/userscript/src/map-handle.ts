@@ -1,4 +1,5 @@
 import { log } from './debug.js'
+import { pageWindow } from './page-world.js'
 
 /**
  * A live reference to wplace's MapLibre `Map`.
@@ -61,6 +62,16 @@ const looksLikeMap = (value: unknown): value is MapLike =>
  * wplace will not use one — and overwriting a pre-existing descriptor without keeping it means it
  * never comes back.
  */
+/**
+ * The page's `Object.prototype`, which in a separate-realm sandbox is not this one.
+ *
+ * MapLibre's objects inherit from the page's. Trapping the local prototype means the assignment this
+ * is waiting for never reaches a setter, `getMap()` stays null for the session, and everything built
+ * on the handle — the WebGL context ownership check, any later camera move — is silently inert.
+ */
+const pageProto = (): object =>
+  (pageWindow() as unknown as { Object: ObjectConstructor }).Object.prototype
+
 const installed = new Map<string, PropertyDescriptor | undefined>()
 const ours = new Map<string, PropertyDescriptor>()
 let releaseTimer: ReturnType<typeof setTimeout> | null = null
@@ -71,13 +82,13 @@ const removeTraps = (): void => {
     releaseTimer = null
   }
   for (const [property, original] of installed) {
-    const current = Object.getOwnPropertyDescriptor(Object.prototype, property)
+    const current = Object.getOwnPropertyDescriptor(pageProto(), property)
     // Only if it is still ours. Someone else's setter under this name is theirs to remove.
     if (current === undefined || current.set !== ours.get(property)?.set) continue
     if (original === undefined) {
-      delete (Object.prototype as Record<string, unknown>)[property]
+      delete (pageProto() as Record<string, unknown>)[property]
     } else {
-      Object.defineProperty(Object.prototype, property, original)
+      Object.defineProperty(pageProto(), property, original)
     }
   }
   installed.clear()
@@ -87,7 +98,7 @@ const removeTraps = (): void => {
 export const installMapCapture = (): void => {
   for (const property of WITNESS_PROPERTIES) {
     try {
-      const original = Object.getOwnPropertyDescriptor(Object.prototype, property)
+      const original = Object.getOwnPropertyDescriptor(pageProto(), property)
       const descriptor: PropertyDescriptor = {
         configurable: true,
         get() {
@@ -122,7 +133,7 @@ export const installMapCapture = (): void => {
           }
         },
       }
-      Object.defineProperty(Object.prototype, property, descriptor)
+      Object.defineProperty(pageProto(), property, descriptor)
       installed.set(property, original)
       ours.set(property, descriptor)
     } catch {
@@ -133,3 +144,14 @@ export const installMapCapture = (): void => {
 }
 
 export const getMap = (): MapLike | null => captured
+
+/**
+ * Remove the traps and forget the map.
+ *
+ * A test seam, and the honest name for what `removeTraps` already does: this module owns global
+ * state, and a test that cannot put it back cannot run twice.
+ */
+export const releaseMapCapture = (): void => {
+  removeTraps()
+  captured = null
+}

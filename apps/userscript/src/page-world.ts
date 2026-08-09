@@ -18,8 +18,28 @@ declare const unsafeWindow: (Window & typeof globalThis) | undefined
  * Resolved on call rather than at import: this module is imported by tests that have no `window` at
  * all, and by a bundle whose import order should not decide which world it patches.
  */
-export const pageWindow = (): Window & typeof globalThis =>
-  typeof unsafeWindow === 'undefined' ? window : unsafeWindow
+export const pageWindow = (): Window & typeof globalThis => {
+  if (typeof unsafeWindow !== 'undefined') return unsafeWindow
+  // `globalThis` where there is no DOM at all, so the hooks below can be exercised under node.
+  return typeof window === 'undefined' ? (globalThis as Window & typeof globalThis) : window
+}
 
 /** True when the sandbox and the page really are separate objects, which is worth logging once. */
-export const isSandboxed = (): boolean => pageWindow() !== window
+export const isSandboxed = (): boolean => typeof window !== 'undefined' && pageWindow() !== window
+
+/**
+ * `value instanceof Type`, asked of the page's constructor rather than this realm's.
+ *
+ * A separate-realm sandbox has its own `Blob`, `Request`, `ArrayBuffer` and `ImageBitmap`, and every
+ * object arriving from wplace is built from the page's. `instanceof` against the local one is then
+ * false for every single value the hooks exist to recognise — which fails the way the sandbox
+ * problem always fails here, by capturing nothing and reporting nothing.
+ */
+export const isPageInstance = (value: unknown, name: string): boolean => {
+  const local = (globalThis as Record<string, unknown>)[name]
+  const page = (pageWindow() as unknown as Record<string, unknown>)[name]
+  for (const candidate of [page, local]) {
+    if (typeof candidate === 'function' && value instanceof (candidate as never)) return true
+  }
+  return false
+}

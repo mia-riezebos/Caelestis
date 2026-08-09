@@ -1,3 +1,4 @@
+import { pageWindow } from './page-world.js'
 /**
  * Debug instrumentation for the render path.
  *
@@ -36,7 +37,8 @@ const NOISY: ReadonlySet<Category> = new Set(['frame', 'draw', 'quad'])
 
 let enabled = false
 let ring: Entry[] = []
-const counters = new Map<string, number>()
+/** Exported for tests: this is module state, and a test needs to start from a known one. */
+export const counters = new Map<string, number>()
 const lastNoisy = new Map<Category, string>()
 const started = Date.now()
 
@@ -92,7 +94,10 @@ export const log = (category: Category, message: string, data?: unknown): void =
 
 /** Always reaches the console, debug on or off: something that should not have happened. */
 export const warn = (category: Category, message: string, data?: unknown): void => {
-  count(`${category}:${message}`)
+  // Same stable key as `log`. Keyed on the raw message, the two hottest warnings carry tile
+  // coordinates and filled the 200-key table with single-use entries — after which every genuinely
+  // new counter was refused, and `dump()` stopped showing the ones worth reading.
+  count(counterKey(category, message))
   ring.push({ at: Date.now() - started, category, message, data })
   if (ring.length > RING_SIZE) ring.shift()
   console.warn(`[wts:${category}] ${message}`, data ?? '')
@@ -141,7 +146,7 @@ export const installDebugApi = (extra: Record<string, unknown> = {}): void => {
     },
     ...extra,
   }
-  ;(window as unknown as Record<string, unknown>).__wts = api
+  ;(pageWindow() as unknown as Record<string, unknown>).__wts = api
   console.info(
     enabled
       ? '[wts] debug is ON. __wts.dump() to print, __wts.debug(false) to stop.'

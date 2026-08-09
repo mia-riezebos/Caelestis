@@ -1,7 +1,7 @@
 import type { TileCoord } from '@wts/shared'
 import { count, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
-import { pageWindow } from './page-world.js'
+import { isPageInstance, pageWindow } from './page-world.js'
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -71,7 +71,31 @@ const MAX_TILE_SCREEN_WIDTH = 1e9
  */
 const ROTATION_TOLERANCE = 1e-6
 
-export const TILE_URL = /\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png/
+const TILE_PATH = /^\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png$/
+const TILE_ORIGIN = 'https://wplace.live'
+
+/**
+ * The tile this URL names, or null.
+ *
+ * Anchored, and matched against a parsed origin and pathname rather than anywhere in the string. The
+ * unanchored version matched a query parameter that merely contained the shape — so an API call to
+ * `?u=/files/s0/tiles/9999/9999.png` had its whole body buffered and put tile 9999/9999 into the
+ * attribution queue, where a later same-sized bitmap picked it up and drew a template in the wrong
+ * place. It also matched any other origin's URL, meaning this tap read bodies that were none of its
+ * business.
+ */
+export const tileFromUrl = (url: string): TileCoord | null => {
+  let parsed: URL
+  try {
+    parsed = new URL(url, typeof location === 'undefined' ? TILE_ORIGIN : location.href)
+  } catch {
+    return null
+  }
+  if (parsed.origin !== TILE_ORIGIN) return null
+  const match = TILE_PATH.exec(parsed.pathname)
+  if (match === null) return null
+  return { x: Number(match[1]), y: Number(match[2]) }
+}
 
 export interface TileQuad {
   readonly tile: TileCoord
@@ -105,7 +129,20 @@ let scheduled = false
  * response byte length. A queue per length, because two tiles can compress to the same size — every
  * empty tile is 73 bytes — so same-size tiles are matched first-in, first-out.
  */
-const tilesByByteLength = new Map<number, TileCoord[]>()
+interface QueuedTile {
+  readonly tile: TileCoord
+  readonly at: number
+}
+
+const tilesByByteLength = new Map<number, QueuedTile[]>()
+
+const expireQueues = (now: number): void => {
+  for (const [bytes, queue] of tilesByByteLength) {
+    const live = queue.filter((entry) => now - entry.at < MAX_QUEUE_AGE_MS)
+    if (live.length === 0) tilesByByteLength.delete(bytes)
+    else if (live.length !== queue.length) tilesByByteLength.set(bytes, live)
+  }
+}
 
 /**
  * How many unattributed tiles of one size to remember.
@@ -116,20 +153,44 @@ const tilesByByteLength = new Map<number, TileCoord[]>()
  */
 const MAX_QUEUED_PER_SIZE = 8
 
-const consumeBySize = (bytes: number, tile: TileCoord): void => {
+/**
+ * How long an unattributed tile stays in the size queue.
+ *
+ * A tile's fetch-to-decode gap is milliseconds. Anything older than this was fetched and never
+ * decoded — MapLibre dropped it from the viewport mid-pan — and keeping it does not help a later
+ * bitmap, it mislabels one: a stale entry answers for any unrelated tile that happens to be the same
+ * number of bytes. Bounding the depth per size bounded how many; nothing bounded how long, or how
+ * many distinct sizes accumulated over a session.
+ */
+const MAX_QUEUE_AGE_MS = 30_000
+
+export const consumeBySize = (bytes: number, tile: TileCoord): void => {
   const queue = tilesByByteLength.get(bytes)
   if (queue === undefined) return
-  const at = queue.findIndex((candidate) => candidate.x === tile.x && candidate.y === tile.y)
+  const at = queue.findIndex((entry) => entry.tile.x === tile.x && entry.tile.y === tile.y)
   if (at !== -1) queue.splice(at, 1)
   if (queue.length === 0) tilesByByteLength.delete(bytes)
 }
 
-const enqueueBySize = (bytes: number, tile: TileCoord): void => {
+export const enqueueBySize = (bytes: number, tile: TileCoord, now = Date.now()): void => {
+  expireQueues(now)
   const queue = tilesByByteLength.get(bytes) ?? []
-  queue.push(tile)
+  queue.push({ tile, at: now })
   if (queue.length > MAX_QUEUED_PER_SIZE) queue.shift()
   tilesByByteLength.set(bytes, queue)
 }
+
+/** The oldest tile still queued at this size, removed. Exported for tests. */
+export const takeBySize = (bytes: number, now = Date.now()): TileCoord | undefined => {
+  expireQueues(now)
+  const queue = tilesByByteLength.get(bytes)
+  const entry = queue?.shift()
+  if (queue !== undefined && queue.length === 0) tilesByByteLength.delete(bytes)
+  return entry?.tile
+}
+
+/** Test seam: the queue is module state, and a test needs to start from a known one. */
+export const resetQueues = (): void => tilesByByteLength.clear()
 const tileOfBitmap = new WeakMap<ImageBitmap, TileCoord>()
 
 /**
@@ -199,9 +260,13 @@ export const quadFromMatrix = (
   if (skew > ROTATION_TOLERANCE) return reject('map is rotated or pitched', { skew })
   if (width < MIN_TILE_SCREEN_WIDTH) return reject('too small', { width })
   if (width > MAX_TILE_SCREEN_WIDTH) return reject('too large', { width })
-  if (Math.abs(Math.abs(height) - width) > width * SQUARENESS_TOLERANCE)
+  // Refused, not normalised. `Math.abs` here hid a y-inverted quad: `y` still reported the top-left
+  // corner, so the rectangle was drawn a whole tile below the tile it names. A negative width is
+  // already rejected by the width bounds; the two axes now agree.
+  if (height <= 0) return reject('y-inverted', { height })
+  if (Math.abs(height - width) > width * SQUARENESS_TOLERANCE)
     return reject('not square', { width, height })
-  return { tile, x, y, width, height: Math.abs(height) }
+  return { tile, x, y, width, height }
 }
 
 let frameDraws = 0
@@ -264,15 +329,18 @@ const installFetchTap = (): void => {
   pageWindow().fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
     const url =
-      typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
-    const match = TILE_URL.exec(url)
+      typeof input === 'string'
+        ? input
+        : isPageInstance(input, 'Request')
+          ? (input as Request).url
+          : String(input)
+    const tile = tileFromUrl(url)
     const response = await nativeFetch.apply(this as never, args)
-    if (match === null) return response
+    if (tile === null) return response
 
     // A tap, not a rewrite: the response is handed back untouched. Compositing into wplace's own
     // tiles would make our pixels indistinguishable from theirs, which is exactly what per-colour
     // toggles and view modes need to be able to tell apart.
-    const tile: TileCoord = { x: Number(match[1]), y: Number(match[2]) }
     try {
       // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
       // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
@@ -328,24 +396,33 @@ const installFetchTap = (): void => {
 const installBlobTap = (): void => {
   const NativeBlob = pageWindow().Blob
   // Built through `Reflect.construct` with the caller's `new.target`, so `Blob()` without `new`
-  // still throws, `class X extends Blob {}` still produces an `X`, and `blob.constructor` still
-  // matches. A plain `new NativeBlob(...)` quietly changed all three.
+  // still throws and `class X extends Blob {}` still produces an `X`. A plain `new NativeBlob(...)`
+  // changed both.
+  //
+  // `blob.constructor` still answers `NativeBlob` rather than this wrapper, because the wrapper
+  // borrows the native prototype rather than building its own. Replacing the prototype to fix that
+  // would put an object in the chain that no page-realm Blob has, which is the worse trade.
   // biome-ignore lint/suspicious/noExplicitAny: standing in for the Blob constructor overloads
-  const Wrapped = function (this: unknown, parts?: any[], options?: BlobPropertyBag) {
+  const Wrapped = function (this: unknown, ...args: any[]) {
     if (new.target === undefined) {
       throw new TypeError("Failed to construct 'Blob': Please use the 'new' operator.")
     }
     // A direct `new Blob(...)` targets the wrapper, which has no native slots — hand the native
     // constructor to `Reflect.construct` in that case, and the subclass otherwise.
     const target = new.target as unknown as typeof Blob
+    // Arguments forwarded exactly as given, arity included: defaulting them turned an explicit
+    // `new Blob(null)` — which the platform rejects — into an empty 0-byte Blob.
     const blob = Reflect.construct(
       NativeBlob,
-      [parts ?? [], options],
+      args,
       (target as unknown) === (Wrapped as unknown) ? NativeBlob : target,
     ) as Blob
-    for (const part of parts ?? []) {
-      const buffer =
-        part instanceof ArrayBuffer ? part : ArrayBuffer.isView(part) ? part.buffer : undefined
+    for (const part of (args[0] as unknown[]) ?? []) {
+      const buffer = isPageInstance(part, 'ArrayBuffer')
+        ? (part as ArrayBuffer)
+        : ArrayBuffer.isView(part)
+          ? part.buffer
+          : undefined
       const tile = buffer === undefined ? undefined : tileOfBuffer.get(buffer)
       if (tile !== undefined) {
         tileOfBlob.set(blob, tile)
@@ -368,32 +445,27 @@ const installBitmapTap = (): void => {
       ...args,
     )
     const source = args[0]
-    if (source instanceof Blob) {
+    if (isPageInstance(source, 'Blob')) {
       // Exact first: this is the Blob we handed back from the fetch tap.
-      const exact = tileOfBlob.get(source)
+      const exact = tileOfBlob.get(source as Blob)
       if (exact !== undefined) {
         tileOfBitmap.set(bitmap, exact)
         // Retire the size entry this tile queued: it has been attributed exactly and must not stay
         // behind to answer for some later blob that merely happens to be the same length.
-        consumeBySize(source.size, exact)
-        log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: source.size })
+        consumeBySize((source as Blob).size, exact)
+        log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: (source as Blob).size })
         return bitmap
       }
       count('bitmap:fell-back-to-byte-length')
-      const queue = tilesByByteLength.get(source.size)
-      const tile = queue?.shift()
+      const tile = takeBySize((source as Blob).size)
       if (tile !== undefined) {
         tileOfBitmap.set(bitmap, tile)
-        if (queue !== undefined && queue.length === 0) tilesByByteLength.delete(source.size)
-        log('bitmap', `matched ${tile.x}/${tile.y}`, {
-          bytes: source.size,
-          left: queue?.length ?? 0,
-        })
+        log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: (source as Blob).size })
       } else if (bitmap.width === 1000 && bitmap.height === 1000) {
         // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
         // thins out: it will overwrite a texture's identity below.
         warn('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
-          bytes: source.size,
+          bytes: (source as Blob).size,
           sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
         })
       }
@@ -409,6 +481,8 @@ export const install = (): void => {
 
   const nativeGetContext = pageWindow().HTMLCanvasElement.prototype.getContext
   let wrapped = false
+  // Whether the wrapped context is one the map has confirmed as its own, rather than a guess.
+  let wrappedIsMapOwned = false
 
   pageWindow().HTMLCanvasElement.prototype.getContext = function (
     this: HTMLCanvasElement,
@@ -418,7 +492,12 @@ export const install = (): void => {
   ): any {
     const context = nativeGetContext.apply(this, args as never)
     const type = String(args[0])
-    if (wrapped || !type.startsWith('webgl') || context === null) return context
+    if (!type.startsWith('webgl') || context === null) return context
+    // Latched only once the map has confirmed this canvas is its own. Before capture the map cannot
+    // answer, so an earlier WebGL context — a fingerprinting probe, an effect, another userscript —
+    // was instrumented and the latch closed behind it, leaving MapLibre's real context untouched for
+    // the rest of the session. Provisional instrumentation stays open to being replaced.
+    if (wrapped && wrappedIsMapOwned) return context
     // The first WebGL context in the document is not necessarily the map's. wplace may well make one
     // for something else first — a fingerprinting probe, an effect — and instrumenting that one and
     // then refusing every context after it means the overlay simply never receives a frame. If the
@@ -434,7 +513,9 @@ export const install = (): void => {
       log('install', 'skipped a WebGL context that is not the map canvas', { type })
       return context
     }
+    if (wrapped) log('install', 're-targeting onto the map canvas', { type })
     wrapped = true
+    wrappedIsMapOwned = mapOwned !== undefined
     mapCanvas = this
     log('install', 'wrapped the map WebGL context', {
       type,
@@ -492,7 +573,7 @@ export const install = (): void => {
      * to draw on vanished from the list entirely.
      */
     const attributeUpload = (source: unknown): void => {
-      if (boundTexture === null || !(source instanceof ImageBitmap)) {
+      if (boundTexture === null || !isPageInstance(source, 'ImageBitmap')) {
         if (boundTexture !== null && tileOfTexture.has(boundTexture)) {
           const had = tileOfTexture.get(boundTexture)
           warn('texture', `DROPPED attribution ${had?.x}/${had?.y} — re-uploaded from non-bitmap`, {
@@ -503,12 +584,13 @@ export const install = (): void => {
         }
         return
       }
-      const tile = tileOfBitmap.get(source)
+      const bitmap = source as ImageBitmap
+      const tile = tileOfBitmap.get(bitmap)
       if (tile !== undefined) {
         const had = tileOfTexture.get(boundTexture)
         tileOfTexture.set(boundTexture, tile)
         log('texture', `attributed ${tile.x}/${tile.y}`, {
-          size: `${source.width}x${source.height}`,
+          size: `${bitmap.width}x${bitmap.height}`,
           replaced: had ? `${had.x}/${had.y}` : null,
         })
         return
@@ -516,7 +598,7 @@ export const install = (): void => {
       const had = tileOfTexture.get(boundTexture)
       if (had !== undefined) {
         warn('texture', `DROPPED attribution ${had.x}/${had.y} — re-uploaded unattributed`, {
-          size: `${source.width}x${source.height}`,
+          size: `${bitmap.width}x${bitmap.height}`,
         })
         tileOfTexture.delete(boundTexture)
       }
