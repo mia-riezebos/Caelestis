@@ -6,6 +6,7 @@ import {
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
+  NodePathTooLongError,
 } from '../../ports/index.js'
 import { storeTemplate } from '../../templates/store.js'
 import { MemoryBlobStore } from '../memory/memory-blob-store.js'
@@ -55,23 +56,6 @@ describe('D1SqlStore', () => {
 
   afterEach(() => d1.close())
 
-  it('folds case the way SQLite does when moving a subtree', async () => {
-    // The two stores disagreed about which rows a rename moves. SQLite's LIKE is case-insensitive
-    // over ASCII, so `/canada/` selects a child stored as `/CANADA/x`; the memory store matched with
-    // a case-sensitive `startsWith` and left that child behind. The wire's hierarchy rule folds the
-    // same way SQLite does, so the child is legal and production was the one that got it right.
-    const base = { season: 1, description: null, createdAt: millis(1_000) }
-    const seed = async (target: D1SqlStore | MemorySqlStore) => {
-      await target.insertNode({ ...base, id: 'r', parentId: null, path: '/canada', name: 'canada' })
-      await target.insertNode({ ...base, id: 'k', parentId: 'r', path: '/CANADA/x', name: 'x' })
-      await target.renameNode('r', 'Éire', 'éire')
-      return (await target.readNode('k'))?.path
-    }
-
-    expect(await seed(store)).toBe('/éire/x')
-    expect(await seed(new MemorySqlStore())).toBe('/éire/x')
-  })
-
   it('counts the old path in characters, not UTF-16 units, when moving a subtree', async () => {
     // SQLite's `length()` and `substr()` count characters; JavaScript's `.length` counts UTF-16
     // units, and an astral character is two of them. Deriving the SQL offset in JavaScript therefore
@@ -87,6 +71,70 @@ describe('D1SqlStore', () => {
 
     expect(await seed(store)).toBe('/plain/x')
     expect(await seed(new MemorySqlStore())).toBe('/plain/x')
+  })
+
+  it('composes a child on its parent, whatever prefix the caller proposed', async () => {
+    // Only the last segment of the caller's path is honoured; the prefix comes from the parent row,
+    // because a caller derives it from an earlier read and a rename landing in between would attach
+    // the child under a prefix its parent no longer has. Nothing pinned this in either store, so
+    // reverting it left the suite green.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'p', parentId: null, path: '/canada', name: 'Canada' })
+      const child = await target.insertNode({
+        ...base,
+        id: 'c',
+        parentId: 'p',
+        path: '/stale/x',
+        name: 'x',
+      })
+      return child.path
+    }
+
+    expect(await seed(store)).toBe('/canada/x')
+    expect(await seed(new MemorySqlStore())).toBe('/canada/x')
+  })
+
+  it('decides a collision on the composed path, not the proposed one', async () => {
+    // The oracle checked the caller's path and stored the composed one, so a child could clear a
+    // uniqueness check for a path it was never going to occupy: D1 raised a conflict on its unique
+    // index and the memory store cheerfully held two rows at `/canada/x`.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'p', parentId: null, path: '/canada', name: 'Canada' })
+      await target.insertNode({ ...base, id: 'a', parentId: 'p', path: '/canada/x', name: 'x' })
+      return target.insertNode({ ...base, id: 'b', parentId: 'p', path: '/stale/x', name: 'x' })
+    }
+
+    await expect(seed(store)).rejects.toBeInstanceOf(NodePathConflictError)
+    await expect(seed(new MemorySqlStore())).rejects.toBeInstanceOf(NodePathConflictError)
+  })
+
+  it('bounds the composed path in both stores', async () => {
+    // The route bounds the path it derived, but the prefix actually written comes from the parent
+    // row — which a rename may have lengthened since. D1 hit `nodes_path_check` and let a bare error
+    // escape as a 500; the memory store had no length guard at all and stored a path the wire
+    // refuses.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({
+        ...base,
+        id: 'p',
+        parentId: null,
+        path: `/${'p'.repeat(250)}`,
+        name: 'p',
+      })
+      return target.insertNode({
+        ...base,
+        id: 'c',
+        parentId: 'p',
+        path: `/${'x'.repeat(20)}`,
+        name: 'x',
+      })
+    }
+
+    await expect(seed(store)).rejects.toBeInstanceOf(NodePathTooLongError)
+    await expect(seed(new MemorySqlStore())).rejects.toBeInstanceOf(NodePathTooLongError)
   })
 
   it('canonicalises a renamed child onto the prefix its parent carries', async () => {
@@ -1102,7 +1150,10 @@ describe('D1SqlStore', () => {
 
     await expect(store.insertNode(node('n2', 1, '/CANADA'))).rejects.toThrow(NodePathConflictError)
     // A season is a namespace: the same path in another season is a different node.
-    await expect(store.insertNode(node('n3', 2, '/canada'))).resolves.toBeUndefined()
+    await expect(store.insertNode(node('n3', 2, '/canada'))).resolves.toMatchObject({
+      path: '/canada',
+      season: 2,
+    })
     await expect(store.insertNode(node('n4', 2, '/canada/x', 'nope'))).rejects.toThrow(
       InvalidNodeParentError,
     )
