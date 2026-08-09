@@ -1,0 +1,155 @@
+import { describe, expect, it } from 'vitest'
+import { project, quadFromMatrix, TILE_URL } from './tile-transform.js'
+
+/**
+ * The parts of the overlay that are arithmetic rather than browser.
+ *
+ * This package shipped with `--passWithNoTests` while a thousand lines of projection and attribution
+ * landed in it, so the column-major indexing, the corner derivation and every drop predicate could
+ * be broken without anything going red. None of this needs a browser: a matrix is sixteen numbers
+ * and a canvas is two of them.
+ */
+const MAPLIBRE_TILE_EXTENT = 8192
+
+/**
+ * Column-major, the layout WebGL wants: scale then translate, no rotation.
+ *
+ * `m[5]` is negated because tile space counts y downward and clip space counts it upward, which is
+ * the flip a real MapLibre matrix carries. Without it the tile's own origin projects to the bottom
+ * of the screen quad rather than the top.
+ */
+const matrix = (scale: number, translateX: number, translateY: number): number[] => {
+  const m = new Array<number>(16).fill(0)
+  m[0] = scale
+  m[5] = -scale
+  m[10] = 1
+  m[12] = translateX
+  m[13] = translateY
+  m[15] = 1
+  return m
+}
+
+/** A matrix that maps the tile's own extent onto a square of `size` clip units at the origin. */
+const tileMatrix = (clipSize: number, clipX = -clipSize / 2, clipY = clipSize / 2): number[] =>
+  matrix(clipSize / MAPLIBRE_TILE_EXTENT, clipX, clipY)
+
+const canvas = (width: number, height = width) => ({ width, height }) as HTMLCanvasElement
+
+const tile = { x: 3, y: 4 }
+
+describe('TILE_URL', () => {
+  it.each([
+    ['https://wplace.live/files/s0/tiles/12/34.png', ['12', '34']],
+    ['https://wplace.live/files/s99/tiles/0/0.png', ['0', '0']],
+    ['/files/s1/tiles/1023/2047.png?v=2', ['1023', '2047']],
+  ])('reads the coordinates out of %s', (url, expected) => {
+    const match = TILE_URL.exec(url)
+    expect(match).not.toBeNull()
+    expect([match?.[1], match?.[2]]).toEqual(expected)
+  })
+
+  it.each([
+    ['https://wplace.live/files/s0/tiles/12/34.webp'],
+    ['https://wplace.live/files/tiles/12/34.png'],
+    ['https://wplace.live/files/s0/tiles/12.png'],
+    ['https://wplace.live/api/pixel/12/34'],
+  ])('does not match %s', (url) => {
+    expect(TILE_URL.exec(url)).toBeNull()
+  })
+})
+
+describe('project', () => {
+  it('reads the matrix column-major, the way WebGL wrote it', () => {
+    // Row-major indexing would read the translation out of 3/7 instead of 12/13 and put every tile
+    // at the origin.
+    expect(project(matrix(1, 0.25, -0.5), 0, 0)).toEqual([0.25, -0.5])
+  })
+
+  it('divides through by w so a perspective matrix is not read as an affine one', () => {
+    const m = matrix(1, 0, 0)
+    m[15] = 2
+    expect(project(m, 0, 0)).toEqual([0, 0])
+    expect(project(m, 1, 0)).toEqual([0.5, 0])
+  })
+})
+
+describe('quadFromMatrix', () => {
+  it('turns a centred tile into a screen rectangle', () => {
+    // Half the clip space, centred: a 1000-pixel canvas gives a 500-pixel quad at (250, 250).
+    const quad = quadFromMatrix(tileMatrix(1), tile, canvas(1000))
+
+    expect(quad).toEqual({ tile, x: 250, y: 250, width: 500, height: 500 })
+  })
+
+  it('scales each axis by its own canvas dimension', () => {
+    // A square tile over the same clip extent on a 1000x600 canvas is 500x300 on screen — which is
+    // not square, and is rejected for it. That is the intended answer: MapLibre scales both axes
+    // alike, so a tile that arrives non-square in screen pixels is not a whole-tile draw.
+    expect(quadFromMatrix(tileMatrix(1), tile, canvas(1000, 600))).toBeNull()
+
+    // Compensating the matrix for the canvas gives a square quad again, and the height comes from
+    // the canvas height rather than its width.
+    const m = tileMatrix(1)
+    m[5] = -((m[0] ?? 0) * (1000 / 600))
+    const quad = quadFromMatrix(m, tile, canvas(1000, 600))
+    expect(quad?.width).toBe(500)
+    expect(quad?.height).toBeCloseTo(500, 6)
+  })
+
+  it('flips y, because clip space counts up and the canvas counts down', () => {
+    // A tile placed high in clip space must land high on the canvas, not low.
+    const high = quadFromMatrix(tileMatrix(0.5, -0.25, 0.75), tile, canvas(1000))
+    const low = quadFromMatrix(tileMatrix(0.5, -0.25, -0.25), tile, canvas(1000))
+
+    expect(high?.y).toBeLessThan(low?.y ?? 0)
+  })
+
+  it.each([
+    ['rotated', 0.02],
+    ['barely skewed past tolerance', 1e-4],
+  ])('rejects a %s matrix', (_label, skew) => {
+    const m = tileMatrix(1)
+    m[1] = (m[0] ?? 0) * skew
+    expect(quadFromMatrix(m, tile, canvas(1000))).toBeNull()
+  })
+
+  it('rejects a pitched matrix whose diagonal still measures square', () => {
+    // The reason all four corners are projected. This trapezoid has matching diagonal width and
+    // height, so a diagonal-only check accepts it and paints an axis-aligned rectangle over pixels
+    // that are not axis-aligned.
+    const m = tileMatrix(1)
+    m[3] = 1 / MAPLIBRE_TILE_EXTENT / 8
+    expect(quadFromMatrix(m, tile, canvas(1000))).toBeNull()
+  })
+
+  it('rejects a shear that only moves the bottom edge', () => {
+    // The other reason all four corners are projected: this leaves the top edge exactly where an
+    // unsheared tile would put it, so any check that looks at one edge — or at the diagonal — sees
+    // nothing wrong while the tile is a parallelogram.
+    const m = tileMatrix(1)
+    m[4] = (m[0] ?? 0) * 0.05
+    expect(quadFromMatrix(m, tile, canvas(1000))).toBeNull()
+  })
+
+  it('rejects a non-finite matrix rather than drawing at NaN', () => {
+    const m = tileMatrix(1)
+    m[15] = 0
+    expect(quadFromMatrix(m, tile, canvas(1000))).toBeNull()
+  })
+
+  it('rejects a quad too small to be a whole-tile draw', () => {
+    expect(quadFromMatrix(tileMatrix(0.002), tile, canvas(1000))).toBeNull()
+  })
+
+  it('rejects a quad that is not square', () => {
+    const m = tileMatrix(1)
+    m[5] = -(m[0] ?? 0) * 0.5
+    expect(quadFromMatrix(m, tile, canvas(1000))).toBeNull()
+  })
+
+  it('accepts a quad inside the squareness tolerance', () => {
+    const m = tileMatrix(1)
+    m[5] = -(m[0] ?? 0) * 1.01
+    expect(quadFromMatrix(m, tile, canvas(1000))).not.toBeNull()
+  })
+})
