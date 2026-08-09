@@ -276,6 +276,34 @@ describe('route parity between adapters', () => {
     })
   })
 
+  it('measures only descendants, not siblings that share a prefix', async () => {
+    // The guard's prefix and the rewrite's prefix are spliced separately, so the trailing slash on
+    // the guard's is independently mutable — and dropping it widens the guard from descendants to
+    // prefix-siblings, so a long unrelated `/parentx…` counts toward the longest resulting path and
+    // a perfectly legal rename is refused. The existing `/parentx` case only guards the rewrite.
+    const siblings = async (target: ReturnType<typeof memApp>['app']) => {
+      const parent = await post(target, { season: 1, parentId: null, name: 'parent' })
+      const parentId = ((await parent.json()) as { id: string }).id
+      await post(target, { season: 1, parentId, name: 'Child' })
+      // 255 characters: legal on its own, and over the bound if the guard mistakes it for a descendant.
+      await post(target, { season: 1, parentId: null, name: `parentx${'y'.repeat(248)}` })
+
+      const renamed = await target.request(`/admin/nodes/${parentId}`, {
+        method: 'PATCH',
+        headers: bearer,
+        body: JSON.stringify({ name: 'parentlonger' }),
+      })
+      return renamed.status
+    }
+    const { d1, app } = d1App()
+    const { app: memory } = memApp()
+    const fromD1 = await siblings(app)
+    d1.close()
+
+    expect(fromD1).toBe(await siblings(memory))
+    expect(fromD1).toBe(200)
+  })
+
   it('accepts a rename that lands exactly on the bound', async () => {
     // Every other length case is one past it, so a `>=` would reject a legal path and no test would
     // notice. `/` plus 255 is exactly 256.
@@ -356,33 +384,41 @@ describe('route parity between adapters', () => {
     expect(fromD1).toBe(400)
   })
 
-  it("counts a rename against the wire's units, not the database's", async () => {
-    // The bound was derived by mixing SQLite's character count with JavaScript's UTF-16 count, so an
-    // astral descendant slipped past it: the CHECK saw 138 characters and passed, the wire saw 264
-    // units and refused, and `/manifest` stopped decoding for every client with nothing raised
-    // server-side. The memory store refused the same request, so the route suite could not see it.
-    const astral = async (target: ReturnType<typeof memApp>['app']) => {
-      const parent = await post(target, { season: 1, parentId: null, name: 'a' })
-      const parentId = ((await parent.json()) as { id: string }).id
-      await post(target, { season: 1, parentId, name: '𝐀'.repeat(126) })
-
-      const renamed = await target.request(`/admin/nodes/${parentId}`, {
-        method: 'PATCH',
-        headers: bearer,
-        body: JSON.stringify({ name: 'b'.repeat(10) }),
-      })
-      const listed = await target.request('/admin/nodes?season=1', { headers: bearer })
-      const body = (await listed.json()) as ReadonlyArray<{ path: string }>
-      return { status: renamed.status, longest: Math.max(...body.map((e) => e.path.length)) }
+  it('keeps a derived path inside the BMP, so both length counts agree', async () => {
+    // SQLite counts characters and JavaScript counts UTF-16 units, and an astral code point is one
+    // of the former and two of the latter — so the CHECK, the store guards and the wire were
+    // measuring one string and getting different numbers. Three defects came from that gap, so the
+    // path no longer carries astral characters at all. The name still does.
+    const shapes = async (target: ReturnType<typeof memApp>['app']) => {
+      const mixed = await post(target, { season: 1, parentId: null, name: 'Art 𝐀 Group' })
+      const onlyAstral = await post(target, { season: 1, parentId: null, name: '𝐀𝐁𝐂' })
+      const long = await post(target, { season: 1, parentId: null, name: '𝐀'.repeat(126) })
+      const mixedBody = (await mixed.json()) as { path?: string; name?: string }
+      return {
+        mixed: mixed.status,
+        path: mixedBody.path,
+        name: mixedBody.name,
+        onlyAstral: onlyAstral.status,
+        long: long.status,
+      }
     }
     const { d1, app } = d1App()
     const { app: memory } = memApp()
-    const fromD1 = await astral(app)
+    const fromD1 = await shapes(app)
     d1.close()
 
-    expect(fromD1).toEqual(await astral(memory))
-    expect(fromD1.status).toBe(400)
-    expect(fromD1.longest).toBeLessThanOrEqual(256)
+    expect(fromD1).toEqual(await shapes(memory))
+    // The name is untouched; only the path is narrowed. A name that is nothing but astral letters
+    // derives no segment at all and is refused where the caller can see why.
+    expect(fromD1).toEqual({
+      mixed: 201,
+      path: '/art-group',
+      name: 'Art 𝐀 Group',
+      onlyAstral: 400,
+      long: 400,
+    })
+    // Characters and UTF-16 units are now the same number for any path the server derives.
+    expect([...(fromD1.path ?? '')].length).toBe((fromD1.path ?? '').length)
   })
 
   it('answers an overflowing collision the same way on both sides', async () => {
