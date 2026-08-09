@@ -106,6 +106,7 @@ export const tileFromUrl = (url: string): TileCoord | null => {
 
 interface FetchUrlGetters {
   readonly requestUrl: ((this: Request) => string) | undefined
+  readonly requestMethod: ((this: Request) => string) | undefined
   readonly urlHref: ((this: URL) => string) | undefined
 }
 
@@ -114,10 +115,11 @@ export const captureFetchUrlGetters = (realm: Window & typeof globalThis): Fetch
   try {
     return {
       requestUrl: realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'url')?.get,
+      requestMethod: realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'method')?.get,
       urlHref: realm.Object.getOwnPropertyDescriptor(realm.URL.prototype, 'href')?.get,
     }
   } catch {
-    return { requestUrl: undefined, urlHref: undefined }
+    return { requestUrl: undefined, requestMethod: undefined, urlHref: undefined }
   }
 }
 
@@ -139,6 +141,36 @@ export const urlForFetchInput = (
     // A proxy or a replaced constructor can refuse its native slot. Attribution is optional.
   }
   return null
+}
+
+/** Whether fetch used GET, observed without repeating an accessor or generic string conversion. */
+export const isGetFetch = (
+  input: unknown,
+  init: RequestInit | null | undefined,
+  realm: Window & typeof globalThis,
+  getters: FetchUrlGetters,
+): boolean => {
+  let method: string | null = null
+  try {
+    if (typeof input === 'string') method = 'GET'
+    else if (isPageInstance(input, 'URL', realm as unknown as Record<string, unknown>))
+      method = 'GET'
+    else if (isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)) {
+      method = getters.requestMethod?.call(input as Request) ?? null
+    }
+    if (method === null || init === undefined || init === null) return method === 'GET'
+
+    const descriptor = realm.Object.getOwnPropertyDescriptor(init, 'method')
+    if (descriptor === undefined) {
+      const prototype = realm.Object.getPrototypeOf(init)
+      // A plain dictionary with no method inherits no override. Exotic prototypes may.
+      return (prototype === realm.Object.prototype || prototype === null) && method === 'GET'
+    }
+    if (!('value' in descriptor) || descriptor.value === undefined) return false
+    return typeof descriptor.value === 'string' && descriptor.value.toUpperCase() === 'GET'
+  } catch {
+    return false
+  }
 }
 
 /** Make an origin 404 decodable, matching the service worker's transparent-tile behavior. */
@@ -435,26 +467,15 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       // With no controlling service worker, the origin returns 404 HTML for an unpainted tile. The
       // service worker normally turns that into a tiny transparent PNG; do the same so first visits
       // still give MapLibre a texture and therefore give the overlay a quad to align against.
-      response = normalizeMissingTileResponse(response, realm)
+      if (isGetFetch(input, args[1], realm, urlGetters)) {
+        response = normalizeMissingTileResponse(response, realm)
+      }
       if (!response.ok) return response
       // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
       // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
       // inferred. Overriding blob()/arrayBuffer() as own properties shadows Response.prototype;
       // without that the platform mints a fresh Blob on every call and the tag is lost, which is
       // the whole reason the first attempt at this matched zero tiles.
-      const buffer = await response.clone().arrayBuffer()
-      tileOfBuffer.set(buffer, tile)
-      // The size queue is the last resort, for a bitmap that arrives with no tagged object behind
-      // it. Entries are consumed when it is used; queueing on every fetch and only ever consuming
-      // on the fallback path grew these arrays for the whole session and eventually handed a
-      // same-sized tile a stale neighbour's coordinates.
-      enqueueBySize(buffer.byteLength, tile)
-      log('fetch', `tile ${tile.x}/${tile.y}`, {
-        bytes: buffer.byteLength,
-        status: response.status,
-        sizesWaiting: tilesByByteLength.size,
-      })
-
       // The native response is handed back, with only its two read methods shadowed. Replacing it
       // with a freshly constructed `Response` lost `url`, `redirected` and `type`, and gave it an
       // `arrayBuffer` that never set `bodyUsed` and never rejected on a second read — so any wplace
@@ -463,11 +484,22 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       // these and receive the objects this tagged, rather than fresh ones the platform mints.
       const nativeArrayBuffer = response.arrayBuffer.bind(response)
       const nativeBlob = response.blob.bind(response)
+      const recordRead = (bytes: number): void => {
+        // The size queue is only a last resort. Queue when the page actually consumes the body,
+        // rather than delaying fetch to duplicate every response pre-emptively.
+        enqueueBySize(bytes, tile)
+        log('fetch', `tile ${tile.x}/${tile.y}`, {
+          bytes,
+          status: response.status,
+          sizesWaiting: tilesByByteLength.size,
+        })
+      }
       Object.defineProperty(response, 'arrayBuffer', {
         configurable: true,
         value: async () => {
           const own = await nativeArrayBuffer()
           tileOfBuffer.set(own, tile)
+          recordRead(own.byteLength)
           return own
         },
       })
@@ -476,6 +508,7 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
         value: async () => {
           const blob = await nativeBlob()
           tileOfBlob.set(blob, tile)
+          recordRead(blob.size)
           return blob
         },
       })

@@ -7,6 +7,7 @@ import {
   consumeBySize,
   enqueueBySize,
   install,
+  isGetFetch,
   normalizeMissingTileResponse,
   project,
   quadFromMatrix,
@@ -266,6 +267,18 @@ describe('transparent browser hooks', () => {
     expect(urlForFetchInput(url, realm, getters)).toBe(url.nativeHref)
   })
 
+  it('recognizes only safely observable GET requests for 404 normalization', () => {
+    const realm = globalThis as unknown as Window & typeof globalThis
+    const getters = captureFetchUrlGetters(realm)
+    const url = 'https://backend.wplace.live/files/s0/tiles/1/2.png'
+
+    expect(isGetFetch(url, undefined, realm, getters)).toBe(true)
+    expect(isGetFetch(new Request(url), undefined, realm, getters)).toBe(true)
+    expect(isGetFetch(url, { headers: { accept: 'image/png' } }, realm, getters)).toBe(true)
+    expect(isGetFetch(url, { method: 'HEAD' }, realm, getters)).toBe(false)
+    expect(isGetFetch(new Request(url, { method: 'POST' }), undefined, realm, getters)).toBe(false)
+  })
+
   it('normalizes an origin 404 to a decodable transparent PNG', async () => {
     const realm = globalThis as unknown as Window & typeof globalThis
     const original = new Response('missing', {
@@ -434,6 +447,39 @@ describe('transparent browser hooks', () => {
     await realm.fetch(input as unknown as RequestInfo)
 
     expect(conversions).toBe(1)
+  })
+
+  it('does not clone or buffer a tile before the page reads its body', async () => {
+    resetQueues()
+    const nativeResponse = new Response(new Uint8Array([1, 2, 3]))
+    const clone = vi.spyOn(nativeResponse, 'clone')
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => nativeResponse),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+
+    expect(response).toBe(nativeResponse)
+    expect(clone).not.toHaveBeenCalled()
+    expect(takeBySize(3)).toBeUndefined()
+
+    await response.arrayBuffer()
+    expect(takeBySize(3)).toEqual({ x: 1, y: 2 })
   })
 
   it('does not coerce a non-string context id after the native call', () => {
