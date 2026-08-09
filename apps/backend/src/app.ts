@@ -31,16 +31,43 @@ export interface AppOptions {
 
 export const createApp = (ports: Ports, options: AppOptions = {}) => {
   const app = new Hono()
-  const auth = { sql: ports.sql, bootstrapAdminToken: options.bootstrapAdminToken }
+  const auth = {
+    sql: ports.sql,
+    bootstrapAdminToken: options.bootstrapAdminToken,
+    openAccess: options.openAccess,
+  }
+  // `??` guards `undefined` and nothing else, and every one of these is a wrangler.toml var an
+  // operator edits by hand. A non-UUIDv7 id, an empty name or an empty description all passed
+  // through and then failed the wire schema — so the deployment's own manifest became undecodable
+  // and the operator heard about it from a client, if at all. Refuse at startup instead.
+  const configured = <T>(value: T, valid: (value: T) => boolean, name: string): T => {
+    if (!valid(value)) throw new Error(`${name} is not valid: ${JSON.stringify(value)}`)
+    return value
+  }
   const serverBase = {
-    id: options.serverId ?? '00000000-0000-7000-8000-000000000000',
-    name: options.serverName ?? 'Wplace Template Server',
+    id: configured(
+      options.serverId ?? '00000000-0000-7000-8000-000000000000',
+      (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+      'serverId',
+    ),
+    name: configured(
+      options.serverName ?? 'Wplace Template Server',
+      (name) => name.length > 0 && name.length <= 256,
+      'serverName',
+    ),
     auth: options.openAccess === true ? 'none' : 'access_token',
   } as const
   const server: ServerInfo =
     options.serverDescription === undefined
       ? serverBase
-      : { ...serverBase, description: options.serverDescription }
+      : {
+          ...serverBase,
+          description: configured(
+            options.serverDescription,
+            (description) => description.length > 0 && description.length <= 4_096,
+            'serverDescription',
+          ),
+        }
 
   // The userscript runs on wplace.live and calls this server cross-origin.
   app.use('/*', cors())

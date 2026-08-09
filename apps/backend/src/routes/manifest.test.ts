@@ -90,6 +90,14 @@ describe('server and manifest routes', () => {
     }
     const open = createApp(ports, { ...serverOptions, openAccess: true })
     await expect((await open.request('/server')).json()).resolves.toMatchObject({ auth: 'none' })
+
+    // And the advertisement has to be true. `/server` is public precisely so a userscript can decide
+    // whether to ask its user for a token before adding the server; advertising `auth: 'none'` and
+    // then 401ing `/manifest` made that decision wrong, which is the one thing this endpoint exists
+    // to prevent. Admin stays shut: publishing a manifest does not publish the write surface.
+    expect((await open.request('/manifest')).status).toBe(200)
+    expect((await open.request('/chunks/'.concat('c'.repeat(64)))).status).toBe(404)
+    expect((await open.request('/admin/nodes?season=7')).status).toBe(401)
   })
 
   it('authenticates manifests, varies by scope, and answers a matching ETag with 304', async () => {

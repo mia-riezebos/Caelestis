@@ -23,6 +23,12 @@ export default {
       serverId: env.SERVER_ID,
       serverName: env.SERVER_NAME,
       serverDescription: env.SERVER_DESCRIPTION,
+      // Both were reachable only from tests. Without the season, every deployment answered as
+      // season 1 — a season-2 server served season 1's manifest, which for a fresh one is empty, and
+      // `ServerInfo` carries no season for a client to notice. Without openAccess, a server could
+      // not be opened at all.
+      currentSeason: env.SEASON === undefined ? undefined : Number(env.SEASON),
+      openAccess: env.OPEN_ACCESS === 'true',
     }).fetch(request)
   },
 } satisfies ExportedHandler<Env>

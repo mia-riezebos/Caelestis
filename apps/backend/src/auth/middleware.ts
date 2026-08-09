@@ -62,6 +62,19 @@ export interface AuthOptions {
    * means the server has no bootstrap path, which is the right default once real tokens exist.
    */
   readonly bootstrapAdminToken?: string | undefined
+
+  /**
+   * Serve the read surface without a credential.
+   *
+   * `/server` advertises `auth: 'none'` when this is set, and that advertisement is the entire
+   * reason `/server` is public: a userscript reads it to decide whether to ask its user for a token
+   * before adding the server. When the flag only changed the advertisement, a client that believed
+   * it got a 401 from `/manifest` — the one thing the endpoint exists to prevent.
+   *
+   * `read` only. `report` writes counters and `admin` writes everything, and neither becomes public
+   * because a server chose to publish its manifest.
+   */
+  readonly openAccess?: boolean | undefined
 }
 
 /**
@@ -77,9 +90,21 @@ export interface AuthOptions {
  * distinction that is deliberate — it tells a caller whether to authenticate or give up, and it
  * says nothing about any credential the caller does not already hold.
  */
+/**
+ * The digest recorded for an anonymous caller on an open server. Not a credential and cannot be one:
+ * no token hashes to all zeroes, so it can never collide with a real one, and the author columns
+ * still receive something of the right shape.
+ */
+const OPEN_ACCESS_HASH = '0'.repeat(64)
+
 export const requireScope =
-  ({ sql, bootstrapAdminToken }: AuthOptions, required: Scope): MiddlewareHandler =>
+  ({ sql, bootstrapAdminToken, openAccess }: AuthOptions, required: Scope): MiddlewareHandler =>
   async (c, next) => {
+    if (required === 'read' && openAccess === true) {
+      c.set('caller', { scope: 'read', token: null, tokenHash: OPEN_ACCESS_HASH })
+      return next()
+    }
+
     const presented = bearerToken(c.req.header('authorization'))
     if (presented === null) return c.json({ error: 'unauthorized' }, 401)
 
