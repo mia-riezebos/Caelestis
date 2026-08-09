@@ -444,17 +444,35 @@ describe('transparent browser hooks', () => {
           }
 
     install(realm, mapHandle)
-    const provisional = new FakeCanvas(fakeGl())
-    Object.defineProperty(provisional.context, 'getUniformLocation', {
-      value: provisional.context.getUniformLocation,
+    const locked = new FakeCanvas(fakeGl())
+    Object.defineProperty(locked.context, 'getUniformLocation', {
+      value: locked.context.getUniformLocation,
       writable: false,
       configurable: false,
     })
+    expect(() => locked.getContext('webgl2')).not.toThrow()
+
+    const throwingSetup = new FakeCanvas(fakeGl())
+    const originalThrowingGetUniformLocation = throwingSetup.context.getUniformLocation
+    Object.defineProperty(throwingSetup.context, 'getParameter', {
+      configurable: true,
+      get() {
+        throw new Error('a co-installed WebGL getter failed')
+      },
+    })
+    expect(() => throwingSetup.getContext('webgl2')).not.toThrow()
+    expect(throwingSetup.context.getUniformLocation).toBe(originalThrowingGetUniformLocation)
+
+    const provisional = new FakeCanvas(fakeGl())
+    const originalProvisionalDrawArrays = provisional.context.drawArrays
     provisional.getContext('webgl2')
     mapCanvas = new FakeCanvas(fakeGl())
     mapCanvas.getContext('webgl2')
+    expect(provisional.context.drawArrays).toBe(originalProvisionalDrawArrays)
     counters.clear()
 
+    locked.context.drawArrays(0, 0, 1)
+    throwingSetup.context.drawArrays(0, 0, 1)
     provisional.context.drawArrays(0, 0, 1)
     await Promise.resolve()
     expect(counters.get('draw:no-texture-or-matrix')).toBeUndefined()
