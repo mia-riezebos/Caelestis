@@ -263,12 +263,10 @@ const parseTile = (tile: string): { x: number; y: number } => {
   return { x: Number(tile.slice(0, separator)), y: Number(tile.slice(separator + 1)) }
 }
 
-/** One non-wrapping x span of a template's bounding box, carrying that box's y range. */
+/** One non-wrapping x span of a template's bounding box. */
 type XSpan = {
   readonly start: number
   readonly end: number
-  readonly minY: number
-  readonly maxY: number
 }
 
 /**
@@ -276,13 +274,12 @@ type XSpan = {
  * Splitting into non-wrapping spans first makes every later comparison ordinary.
  */
 const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
-  const { minX, maxX, minY, maxY } = template.bbox
-  const base = { minY, maxY }
+  const { minX, maxX } = template.bbox
   return minX < maxX
-    ? [{ ...base, start: minX, end: maxX }]
+    ? [{ start: minX, end: maxX }]
     : [
-        { ...base, start: minX, end: WORLD_PIXELS },
-        { ...base, start: 0, end: maxX },
+        { start: minX, end: WORLD_PIXELS },
+        { start: 0, end: maxX },
       ]
 }
 

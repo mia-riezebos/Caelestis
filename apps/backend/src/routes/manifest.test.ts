@@ -110,6 +110,42 @@ describe('server and manifest routes', () => {
     expect((await open.request('/admin/nodes?season=7')).status).toBe(401)
   })
 
+  it('honours a weak or listed If-None-Match, and a season query', async () => {
+    // The one conditional test sent a single exact strong tag, which the old `header === etag`
+    // compare satisfied too — so the RFC 9110 parsing was untested. And no test sent `?season=` at
+    // all: the route's parse and its 400 could both be deleted with the suite green, while
+    // season-scoping is an acceptance criterion covered only at the store level.
+    const first = await app.request('/manifest', bearer(MEMBER))
+    const etag = first.headers.get('etag') as string
+
+    const weak = await app.request('/manifest', {
+      headers: { ...bearer(MEMBER).headers, 'if-none-match': `W/${etag}` },
+    })
+    const listed = await app.request('/manifest', {
+      headers: { ...bearer(MEMBER).headers, 'if-none-match': `"other", ${etag}` },
+    })
+    const wildcard = await app.request('/manifest', {
+      headers: { ...bearer(MEMBER).headers, 'if-none-match': '*' },
+    })
+    const stale = await app.request('/manifest', {
+      headers: { ...bearer(MEMBER).headers, 'if-none-match': '"stale"' },
+    })
+
+    expect([weak.status, listed.status, wildcard.status, stale.status]).toEqual([
+      304, 304, 304, 200,
+    ])
+
+    // The ETag has to be readable cross-origin or none of the above is reachable by the userscript,
+    // which is the only client and is cross-origin by definition.
+    expect(first.headers.get('access-control-expose-headers')).toContain('ETag')
+
+    // A season the caller asks for, and a season that is not one.
+    const other = await app.request('/manifest?season=99', bearer(MEMBER))
+    expect(other.status).toBe(200)
+    expect(((await other.json()) as { season: number }).season).toBe(99)
+    expect((await app.request('/manifest?season=abc', bearer(MEMBER))).status).toBe(400)
+  })
+
   it('authenticates manifests, varies by scope, and answers a matching ETag with 304', async () => {
     expect((await app.request('/manifest')).status).toBe(401)
 

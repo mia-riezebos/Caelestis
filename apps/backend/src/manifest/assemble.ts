@@ -47,8 +47,16 @@ export const assembleManifest = async (
   // poll would produce a 200 nobody can decode. Dropping it is the recoverable direction: the next
   // poll, microseconds later, carries it complete. The reverse ordering is already benign, since
   // orphan tile rows simply find no template to attach to.
+  const nodeIds = new Set(nodes.map((node) => node.id))
   const templates = templateRecords
-    .filter((template) => (chunksByTemplate.get(template.id)?.length ?? 0) > 0)
+    // Both directions of the same tear. The node read can also land before a group is created while
+    // the template read lands after one is placed in it, leaving a template naming a node the
+    // manifest does not carry — which the wire refuses just as firmly as `chunks: []`. Dropping is
+    // recoverable; the next poll has both.
+    .filter(
+      (template) =>
+        nodeIds.has(template.nodeId) && (chunksByTemplate.get(template.id)?.length ?? 0) > 0,
+    )
     .map((template) => ({
       id: template.id,
       nodeId: template.nodeId,

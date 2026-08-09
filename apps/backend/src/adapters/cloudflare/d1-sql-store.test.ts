@@ -1,7 +1,12 @@
 import { encodeIndexedPng, millis, seconds } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
-import { NodeNotFoundError } from '../../ports/index.js'
+import {
+  InvalidNodeParentError,
+  NodeNotEmptyError,
+  NodeNotFoundError,
+  NodePathConflictError,
+} from '../../ports/index.js'
 import { storeTemplate } from '../../templates/store.js'
 import { MemoryBlobStore } from '../memory/memory-blob-store.js'
 import { D1SqlStore } from './d1-sql-store.js'
@@ -945,6 +950,40 @@ describe('D1SqlStore', () => {
         )
         .all(),
     ).toEqual([{ kept: 2 }])
+  })
+
+  it('rejects a duplicate path per season, keeps them across seasons, and guards deletes', async () => {
+    // Nothing touched insertNode's conflict path, deleteNode or cross-season reuse on D1 — the
+    // unique index on (season, lower(path)) was proven only by the oracle's hand-written fold. That
+    // is how a 500 got through: drizzle wraps the driver error, so the `UNIQUE constraint failed`
+    // check never matched and a duplicate group name escaped as an unhandled error while every test
+    // asserted 400 against the memory store.
+    const node = (id: string, season: number, path: string, parentId: string | null = null) => ({
+      id,
+      season,
+      parentId,
+      path,
+      name: id,
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertNode(node('n1', 1, '/canada'))
+
+    await expect(store.insertNode(node('n2', 1, '/CANADA'))).rejects.toThrow(NodePathConflictError)
+    // A season is a namespace: the same path in another season is a different node.
+    await expect(store.insertNode(node('n3', 2, '/canada'))).resolves.toBeUndefined()
+    await expect(store.insertNode(node('n4', 2, '/canada/x', 'nope'))).rejects.toThrow(
+      InvalidNodeParentError,
+    )
+    await expect(store.insertNode(node('n5', 1, '/canada/x', 'n3'))).rejects.toThrow(
+      InvalidNodeParentError,
+    )
+
+    await store.insertNode(node('n6', 1, '/canada/leaf', 'n1'))
+    await expect(store.deleteNode('n1')).rejects.toThrow(NodeNotEmptyError)
+    await expect(store.deleteNode('n6')).resolves.toBeUndefined()
+    await expect(store.readNode('n6')).resolves.toBeNull()
+    await expect(store.deleteNode('n1')).resolves.toBeUndefined()
   })
 
   it('serves only published templates to members, and every season only its own', async () => {

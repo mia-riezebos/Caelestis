@@ -281,9 +281,14 @@ export class NodeNotFoundError extends Error {
  * not a different template — and the content hash obviously differs, which is the point of
  * uploading at all.
  *
- * Without this, "upload a new version" silently accepted a completely different image under an
- * existing template's id, and every client's progress figure for it became a comparison against
- * something else.
+ * **No route reaches this yet.** `storeTemplate` mints a fresh template id on every upload, so
+ * "upload a new version of an existing template" is not an operation the API exposes — the rule is
+ * here so that the store holds it when that route lands, rather than being remembered then. The
+ * route-level 409 was removed with the rest of the dead branch; add it back with the route.
+ *
+ * One thing to settle when it does: the bounds compared here are the *painted extent*, which
+ * `sliceTemplate` derives from non-transparent pixels rather than from the image rectangle. Editing
+ * artwork at its outer edge changes that extent and would be refused as a different template.
  */
 export class TemplateIdentityError extends Error {
   override readonly name = 'TemplateIdentityError'

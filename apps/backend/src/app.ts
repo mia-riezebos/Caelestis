@@ -70,7 +70,13 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
         }
 
   // The userscript runs on wplace.live and calls this server cross-origin.
-  app.use('/*', cors())
+  // `ETag` has to be named explicitly. It is not a CORS-safelisted response header, and Hono only
+  // emits `Access-Control-Expose-Headers` when `exposeHeaders` is non-empty — so the userscript,
+  // which is cross-origin by definition, read `null` from `response.headers.get('etag')` and could
+  // never build an `If-None-Match`. The whole 304 path was unreachable for the only client it
+  // exists for, which is also what `assembleManifest` goes to the trouble of being deterministic
+  // for. `/chunks` was unaffected: it signals with `Cache-Control`, which is safelisted.
+  app.use('/*', cors({ exposeHeaders: ['ETag'] }))
 
   app.get('/health', (c) => c.json({ ok: true }))
   app.route('/server', createServerRoutes(server))

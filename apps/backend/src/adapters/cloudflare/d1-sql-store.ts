@@ -54,6 +54,25 @@ const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
   return out
 }
 
+/**
+ * Whether `text` appears anywhere in an error's chain.
+ *
+ * Drizzle wraps every failure in a `DrizzleQueryError` whose own message is `Failed query: insert
+ * into "nodes" ...` — the driver's text, including `UNIQUE constraint failed`, is on `cause`. So a
+ * check against `error.message` never matched, a duplicate group name escaped as an unhandled error,
+ * and an ordinary admin action answered 500 where the route means 400. The memory store threw the
+ * right error, so every test agreed with the route and only production disagreed.
+ *
+ * Walks the chain rather than reading `cause` once: D1 adds its own `D1_ERROR:` wrapper on top of
+ * drizzle's, and neither depth is something to hard-code.
+ */
+const mentions = (error: unknown, text: string): boolean => {
+  for (let current = error; current instanceof Error; current = current.cause) {
+    if (current.message.includes(text)) return true
+  }
+  return false
+}
+
 const fromRow = (row: typeof telemetryBuckets.$inferSelect): TelemetryBucket => ({
   templateId: row.templateId,
   resolution: row.resolution,
@@ -99,7 +118,7 @@ export class D1SqlStore implements SqlStore {
         createdAtMs: node.createdAt,
       })
     } catch (error) {
-      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+      if (mentions(error, 'UNIQUE constraint failed')) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
       throw error
