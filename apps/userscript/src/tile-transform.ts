@@ -600,30 +600,37 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
           sizesWaiting: tilesByByteLength.size,
         })
       }
-      Object.defineProperty(response, 'arrayBuffer', {
-        configurable: true,
-        writable: true,
-        value: async function (this: Response) {
-          const own = await nativeArrayBuffer.call(this)
+      const wrappedArrayBuffer = async function (this: Response): Promise<ArrayBuffer> {
+        const own = await nativeArrayBuffer.call(this)
+        try {
           if (this === tappedResponse) {
             tileOfBuffer.set(own, observedTile)
             recordRead(own.byteLength)
           }
-          return own
-        },
-      })
-      Object.defineProperty(response, 'blob', {
-        configurable: true,
-        writable: true,
-        value: async function (this: Response) {
-          const blob = await nativeBlob.call(this)
+        } catch {
+          // The native read already consumed the body successfully; observation cannot reject it.
+        }
+        return own
+      }
+      const wrappedBlob = async function (this: Response): Promise<Blob> {
+        const blob = await nativeBlob.call(this)
+        try {
           if (this === tappedResponse) {
             tileOfBlob.set(blob, observedTile)
             recordRead(blob.size)
           }
-          return blob
-        },
-      })
+        } catch {
+          // The native read already consumed the body successfully; observation cannot reject it.
+        }
+        return blob
+      }
+      const arrayBufferHook = installValueHook(response, 'arrayBuffer', wrappedArrayBuffer)
+      if (arrayBufferHook === null) return response
+      const blobHook = installValueHook(response, 'blob', wrappedBlob)
+      if (blobHook === null) {
+        arrayBufferHook.restore()
+        return response
+      }
       return response
     } catch (error) {
       // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
@@ -822,8 +829,20 @@ export const install = (
     // canvas confirmed by the live Map handle is a replacement and must be allowed to retarget.
     if (wrapped && wrappedIsMapOwned && mapCanvas === this) return context
     if (mapOwned !== undefined && mapOwned !== this) {
-      log('install', 'skipped a WebGL context that is not the map canvas', { type })
-      return context
+      let staleMapWasDetached = false
+      try {
+        staleMapWasDetached =
+          wrappedIsMapOwned && mapOwned.isConnected === false && looksLikeMapCanvas(this)
+      } catch {
+        // A hostile canvas shim is not enough evidence to replace a confirmed map context.
+      }
+      if (!staleMapWasDetached) {
+        log('install', 'skipped a WebGL context that is not the map canvas', { type })
+        return context
+      }
+      // The captured Map belongs to a previous SPA mount. Its detached canvas cannot veto the new
+      // measured MapLibre canvas even though the one-shot Object.prototype witness is now gone.
+      mapOwned = undefined
     }
     if (wrapped && mapOwned === undefined) {
       const currentLooksLikeMap = looksLikeMapCanvas(mapCanvas)
@@ -1119,7 +1138,10 @@ export const install = (
           // This is also why the overlay needs no motion prediction: there is no lag left to predict
           // away, and predicting would mean reproducing the transform, which is the drift this whole
           // approach exists to avoid.
-          queueMicrotask(flush)
+          queueMicrotask(() => {
+            if (contextGeneration !== activeContextGeneration) return
+            flush()
+          })
         }
         return true
       }
@@ -1313,6 +1335,12 @@ export const install = (
       }
 
       previousActiveContextRestore?.()
+      // A queued microtask from the retired context must neither paint its quads onto this canvas
+      // nor consume draws this context records before that stale callback runs.
+      pending = []
+      frameDraws = 0
+      frameTileDraws = 0
+      scheduled = false
       restoreActiveContextHooks = () => {
         detachContextLossListener()
         restoreGlHooks()

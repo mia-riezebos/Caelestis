@@ -449,6 +449,8 @@ describe('transparent browser hooks', () => {
     class FakeCanvas extends EventTarget {
       width = 100
       height = 100
+      isConnected = true
+      readonly classList = { contains: (name: string) => name === 'maplibregl-canvas' }
       constructor(readonly context: ReturnType<typeof fakeGl>) {
         super()
       }
@@ -520,7 +522,9 @@ describe('transparent browser hooks', () => {
     expect(counters.get('draw:not-raster-program')).toBe(1)
 
     const replacement = new FakeCanvas(fakeGl())
-    mapCanvas = replacement
+    // The one-shot map capture still points at the first Map instance after an SPA remount. Its
+    // detached canvas must not veto the new measured MapLibre canvas.
+    firstMap.isConnected = false
     replacement.getContext('webgl2')
     expect(firstMap.context.drawArrays).toBe(originalFirstMapDrawArrays)
     expect(removeFirstMapListener).toHaveBeenCalledWith('webglcontextlost', expect.any(Function))
@@ -1280,6 +1284,72 @@ describe('transparent browser hooks', () => {
     expect(arrayBufferDescriptor?.writable).toBe(true)
     expect(blobDescriptor?.writable).toBe(true)
     await expect(response.blob.call(undefined as unknown as Response)).rejects.toThrow()
+  })
+
+  it('rolls back response hooks when both body methods cannot be replaced', async () => {
+    const tileResponse = new Response(new Uint8Array([1, 2, 3]))
+    const nativeBlob = tileResponse.blob
+    Object.defineProperty(tileResponse, 'blob', {
+      value: nativeBlob,
+      writable: false,
+      configurable: false,
+    })
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => tileResponse),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+
+    expect(Object.hasOwn(response, 'arrayBuffer')).toBe(false)
+    expect(response.blob).toBe(nativeBlob)
+  })
+
+  it('returns a consumed body when attribution bookkeeping fails', async () => {
+    const tileResponse = new Response(new Uint8Array([1, 2, 3]))
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => tileResponse),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => {
+      throw new Error('page diagnostic clock failed')
+    })
+    try {
+      await expect(response.arrayBuffer()).resolves.toBeInstanceOf(ArrayBuffer)
+      expect(response.bodyUsed).toBe(true)
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('does not coerce a non-string context id after the native call', () => {
