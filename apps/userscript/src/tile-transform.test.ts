@@ -537,7 +537,7 @@ describe('transparent browser hooks', () => {
     expect(counters.get('draw:not-raster-program')).toBe(1)
 
     const secondReplacement = new FakeCanvas(fakeGl())
-    replacement.isConnected = false
+    // SPA mounts can overlap: the replacement context is created before the old canvas disconnects.
     secondReplacement.getContext('webgl2')
     expect(replacement.context.drawArrays).toBe(originalReplacementDrawArrays)
     counters.clear()
@@ -681,7 +681,12 @@ describe('transparent browser hooks', () => {
     } as unknown as Window & typeof globalThis
     install(realm, () => null)
     const gl = new FakeCanvas().getContext('webgl2') as unknown as WebGL2RenderingContext
+    const installedGetContext = realm.HTMLCanvasElement.prototype.getContext
     const texImage2DDescriptor = Object.getOwnPropertyDescriptor(gl, 'texImage2D')
+    expect(Object.hasOwn(installedGetContext, 'prototype')).toBe(false)
+    expect(() => Reflect.construct(Object, [], installedGetContext)).toThrow(TypeError)
+    expect(Object.hasOwn(gl.drawArrays, 'prototype')).toBe(false)
+    expect(() => Reflect.construct(Object, [], gl.drawArrays)).toThrow(TypeError)
     expect(gl.texImage2D.name).toBe(nativeTexImage2D.name)
     expect(gl.texImage2D.length).toBe(nativeTexImage2D.length)
     expect(texImage2DDescriptor?.enumerable).toBe(true)
@@ -1040,6 +1045,10 @@ describe('transparent browser hooks', () => {
     expect(() => new realm.Blob(null as never)).toThrow(TypeError)
     expect(new ExtendedBlob([])).toBeInstanceOf(ExtendedBlob)
     expect(new realm.Blob([])).toBeInstanceOf(realm.Blob)
+    expect(Object.getOwnPropertyDescriptor(realm.Blob, 'prototype')).toEqual(
+      Object.getOwnPropertyDescriptor(Blob, 'prototype'),
+    )
+    expect(Reflect.set(realm.Blob, 'prototype', {})).toBe(false)
   })
 
   it('retires exact byte-length fallback before bitmap decoding settles', async () => {

@@ -720,7 +720,9 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
     }
     return blob
   } as unknown as typeof Blob
-  Wrapped.prototype = NativeBlob.prototype
+  const nativePrototype = Object.getOwnPropertyDescriptor(NativeBlob, 'prototype')
+  if (nativePrototype === undefined) return null
+  Object.defineProperty(Wrapped, 'prototype', nativePrototype)
   Object.defineProperty(Wrapped, 'name', { value: NativeBlob.name, configurable: true })
   return installValueHook(realm, 'Blob', Wrapped)
 }
@@ -828,7 +830,7 @@ export const install = (
     }
   }
 
-  const wrappedGetContext = function (
+  const wrappedGetContextImplementation = function (
     this: HTMLCanvasElement,
     // biome-ignore lint/suspicious/noExplicitAny: matching the DOM overload set is not worth it
     ...args: any[]
@@ -844,8 +846,9 @@ export const install = (
     // for something else first — a fingerprinting probe, an effect — and instrumenting that one and
     // then refusing every context after it means the overlay simply never receives a frame. If the
     // map has already been captured, only its own canvas counts; before that, take the first and let
-    // a later canvas carrying MapLibre's measured class correct it. A detached measured canvas also
-    // yields to the next measured one so repeated SPA remounts do not strand the overlay.
+    // a later canvas carrying MapLibre's measured class correct it. A measured map canvas also
+    // yields to the next measured one so overlapping or repeated SPA remounts do not strand the
+    // overlay waiting for a getContext retry that never comes.
     let mapOwned: HTMLCanvasElement | undefined
     try {
       mapOwned = mapHandle()?.getCanvas?.()
@@ -856,25 +859,18 @@ export const install = (
     // canvas confirmed by the live Map handle is a replacement and must be allowed to retarget.
     if (wrapped && mapCanvas === this) return context
     const candidateLooksLikeMap = looksLikeMapCanvas(this)
-    let replacingDetachedMapCanvas = false
-    if (wrapped && candidateLooksLikeMap) {
-      try {
-        const capturedMapIsStale = mapOwned === undefined || mapOwned.isConnected === false
-        replacingDetachedMapCanvas = mapCanvas?.isConnected === false && capturedMapIsStale
-      } catch {
-        // A hostile canvas shim is not enough evidence to replace a confirmed map context.
-      }
-    }
+    const replacingMeasuredMapCanvas =
+      wrapped && candidateLooksLikeMap && looksLikeMapCanvas(mapCanvas)
     if (mapOwned !== undefined && mapOwned !== this) {
-      if (!replacingDetachedMapCanvas) {
+      if (!replacingMeasuredMapCanvas) {
         log('install', 'skipped a WebGL context that is not the map canvas', { type })
         return context
       }
-      // The captured Map belongs to a previous SPA mount. Its detached canvas cannot veto the new
-      // measured MapLibre canvas even though the one-shot Object.prototype witness is now gone.
+      // The captured Map belongs to a previous SPA mount. Its canvas cannot veto the next measured
+      // MapLibre canvas: overlapping mounts create the new context before detaching the old one.
       mapOwned = undefined
     }
-    if (wrapped && mapOwned === undefined && !replacingDetachedMapCanvas) {
+    if (wrapped && mapOwned === undefined && !replacingMeasuredMapCanvas) {
       const currentLooksLikeMap = looksLikeMapCanvas(mapCanvas)
       // Keep the first provisional context until there is positive evidence that a later canvas is
       // MapLibre's. Once the measured map class is wrapped, an unrelated context cannot steal it.
@@ -942,120 +938,142 @@ export const install = (
       }
 
       const nativeGetUniformLocation = gl.getUniformLocation
-      hookedGl.getUniformLocation = function (this: WebGL2RenderingContext, program, name) {
-        let location: WebGLUniformLocation | null = null
-        return runObservedCall(
-          () => {
-            location = nativeGetUniformLocation.call(this, program, name)
-            return location
-          },
-          () => {
-            if (this !== gl || location === null) return
-            uniforms.set(location, { program, name })
-            // WebGL sampler uniforms default to texture unit zero. Remember that before the first
-            // explicit upload too: wrappers such as MapLibre cache uniforms and may not set one again.
-            if (name === 'u_image0' && !primarySamplerUnits.has(program)) {
-              primarySamplerUnits.set(program, gl.TEXTURE0)
-            }
-          },
-        )
-      }
+      hookedGl.getUniformLocation = {
+        getUniformLocation(this: WebGL2RenderingContext, program: WebGLProgram, name: string) {
+          let location: WebGLUniformLocation | null = null
+          return runObservedCall(
+            () => {
+              location = nativeGetUniformLocation.call(this, program, name)
+              return location
+            },
+            () => {
+              if (this !== gl || location === null) return
+              uniforms.set(location, { program, name })
+              // WebGL sampler uniforms default to texture unit zero. Remember that before the first
+              // explicit upload too: wrappers such as MapLibre cache uniforms and may not set one again.
+              if (name === 'u_image0' && !primarySamplerUnits.has(program)) {
+                primarySamplerUnits.set(program, gl.TEXTURE0)
+              }
+            },
+          )
+        },
+      }.getUniformLocation
 
       const nativeUseProgram = gl.useProgram
-      hookedGl.useProgram = function (this: WebGL2RenderingContext, program) {
-        return runObservedCall(
-          () => nativeUseProgram.call(this, program),
-          () => {
-            if (this !== gl) return
-            const accepted = nativeGetParameter.call(gl, gl.CURRENT_PROGRAM)
-            if (accepted === null || typeof accepted === 'object') {
-              activeProgram = accepted as WebGLProgram | null
-            }
-          },
-        )
-      }
+      hookedGl.useProgram = {
+        useProgram(this: WebGL2RenderingContext, program: WebGLProgram | null) {
+          return runObservedCall(
+            () => nativeUseProgram.call(this, program),
+            () => {
+              if (this !== gl) return
+              const accepted = nativeGetParameter.call(gl, gl.CURRENT_PROGRAM)
+              if (accepted === null || typeof accepted === 'object') {
+                activeProgram = accepted as WebGLProgram | null
+              }
+            },
+          )
+        },
+      }.useProgram
 
       const nativeUniform1i = gl.uniform1i
-      hookedGl.uniform1i = function (this: WebGL2RenderingContext, location, value) {
-        return runObservedCall(
-          () => nativeUniform1i.call(this, location, value),
-          () => {
-            if (this !== gl || location === null || typeof value !== 'number') return
-            const uniform = uniforms.get(location)
-            if (uniform?.name !== 'u_image0' || uniform.program !== activeProgram) return
-            primarySamplerUnits.set(uniform.program, gl.TEXTURE0 + value)
-          },
-        )
-      }
+      hookedGl.uniform1i = {
+        uniform1i(
+          this: WebGL2RenderingContext,
+          location: WebGLUniformLocation | null,
+          value: GLint,
+        ) {
+          return runObservedCall(
+            () => nativeUniform1i.call(this, location, value),
+            () => {
+              if (this !== gl || location === null || typeof value !== 'number') return
+              const uniform = uniforms.get(location)
+              if (uniform?.name !== 'u_image0' || uniform.program !== activeProgram) return
+              primarySamplerUnits.set(uniform.program, gl.TEXTURE0 + value)
+            },
+          )
+        },
+      }.uniform1i
 
       const nativeUniformMatrix4fv = gl.uniformMatrix4fv
-      hookedGl.uniformMatrix4fv = function (
-        this: WebGL2RenderingContext,
-        location: WebGLUniformLocation | null,
-        transpose: GLboolean,
-        value: Float32List,
-        ...rest: [srcOffset?: number, srcLength?: number]
-      ) {
-        return runObservedCall(
-          () => Reflect.apply(nativeUniformMatrix4fv, this, [location, transpose, value, ...rest]),
-          () => {
-            if (this !== gl || location === null || transpose !== false) return
-            const uniform = uniforms.get(location)
-            if (uniform?.name !== 'u_projection_matrix' || uniform.program !== activeProgram) return
-            // Plain sequences have already had every element converted by WebIDL. Reading them again
-            // can invoke accessors twice and capture different values, so only page-realm typed arrays
-            // are safe to snapshot.
-            if (
-              !isPageInstance(value, 'Float32Array', realm as unknown as Record<string, unknown>) ||
-              !realm.ArrayBuffer.isView(value)
-            )
-              return
-            const offset = rest.length === 0 ? 0 : rest[0]
-            if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return
-            const source = value as Float32Array
-            const suppliedLength = rest[1]
-            if (
-              suppliedLength !== undefined &&
-              (typeof suppliedLength !== 'number' ||
-                !Number.isInteger(suppliedLength) ||
-                suppliedLength < 0 ||
-                (suppliedLength !== 0 && suppliedLength < MATRIX_LENGTH))
-            )
-              return
-            if (source.length - offset < MATRIX_LENGTH) return
-            const snapshot = new Float32Array(MATRIX_LENGTH)
-            for (let index = 0; index < MATRIX_LENGTH; index += 1) {
-              snapshot[index] = source[offset + index] ?? 0
-            }
-            projectionByProgram.set(uniform.program, snapshot)
-          },
-        )
-      } as typeof gl.uniformMatrix4fv
+      hookedGl.uniformMatrix4fv = {
+        uniformMatrix4fv(
+          this: WebGL2RenderingContext,
+          location: WebGLUniformLocation | null,
+          transpose: GLboolean,
+          value: Float32List,
+          ...rest: [srcOffset?: number, srcLength?: number]
+        ) {
+          return runObservedCall(
+            () =>
+              Reflect.apply(nativeUniformMatrix4fv, this, [location, transpose, value, ...rest]),
+            () => {
+              if (this !== gl || location === null || transpose !== false) return
+              const uniform = uniforms.get(location)
+              if (uniform?.name !== 'u_projection_matrix' || uniform.program !== activeProgram)
+                return
+              // Plain sequences have already had every element converted by WebIDL. Reading them again
+              // can invoke accessors twice and capture different values, so only page-realm typed arrays
+              // are safe to snapshot.
+              if (
+                !isPageInstance(
+                  value,
+                  'Float32Array',
+                  realm as unknown as Record<string, unknown>,
+                ) ||
+                !realm.ArrayBuffer.isView(value)
+              )
+                return
+              const offset = rest.length === 0 ? 0 : rest[0]
+              if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return
+              const source = value as Float32Array
+              const suppliedLength = rest[1]
+              if (
+                suppliedLength !== undefined &&
+                (typeof suppliedLength !== 'number' ||
+                  !Number.isInteger(suppliedLength) ||
+                  suppliedLength < 0 ||
+                  (suppliedLength !== 0 && suppliedLength < MATRIX_LENGTH))
+              )
+                return
+              if (source.length - offset < MATRIX_LENGTH) return
+              const snapshot = new Float32Array(MATRIX_LENGTH)
+              for (let index = 0; index < MATRIX_LENGTH; index += 1) {
+                snapshot[index] = source[offset + index] ?? 0
+              }
+              projectionByProgram.set(uniform.program, snapshot)
+            },
+          )
+        },
+      }.uniformMatrix4fv as typeof gl.uniformMatrix4fv
 
       const nativeActiveTexture = gl.activeTexture
-      hookedGl.activeTexture = function (this: WebGL2RenderingContext, texture) {
-        return runObservedCall(
-          () => nativeActiveTexture.call(this, texture),
-          () => {
-            if (this !== gl || typeof texture !== 'number') return
-            const index = texture - gl.TEXTURE0
-            if (!Number.isInteger(index) || index < 0 || index >= maxTextureUnits) return
-            activeTextureUnit = texture
-          },
-        )
-      }
+      hookedGl.activeTexture = {
+        activeTexture(this: WebGL2RenderingContext, texture: GLenum) {
+          return runObservedCall(
+            () => nativeActiveTexture.call(this, texture),
+            () => {
+              if (this !== gl || typeof texture !== 'number') return
+              const index = texture - gl.TEXTURE0
+              if (!Number.isInteger(index) || index < 0 || index >= maxTextureUnits) return
+              activeTextureUnit = texture
+            },
+          )
+        },
+      }.activeTexture
 
       const nativeBindTexture = gl.bindTexture
-      hookedGl.bindTexture = function (this: WebGL2RenderingContext, target, texture) {
-        return runObservedCall(
-          () => nativeBindTexture.call(this, target, texture),
-          () => {
-            if (this === gl && target === gl.TEXTURE_2D) {
-              texture2DByUnit.set(activeTextureUnit, texture)
-            }
-          },
-        )
-      }
+      hookedGl.bindTexture = {
+        bindTexture(this: WebGL2RenderingContext, target: GLenum, texture: WebGLTexture | null) {
+          return runObservedCall(
+            () => nativeBindTexture.call(this, target, texture),
+            () => {
+              if (this === gl && target === gl.TEXTURE_2D) {
+                texture2DByUnit.set(activeTextureUnit, texture)
+              }
+            },
+          )
+        },
+      }.bindTexture
 
       /**
        * Both upload paths have to be watched, and missing one is not a gap in coverage but a source
@@ -1112,26 +1130,30 @@ export const install = (
       }
 
       const nativeTexSubImage2D = gl.texSubImage2D
-      // biome-ignore lint/suspicious/noExplicitAny: texSubImage2D has as many overloads as texImage2D
-      hookedGl.texSubImage2D = function (this: WebGL2RenderingContext, ...subArgs: any[]) {
-        return runObservedCall(
-          () => Reflect.apply(nativeTexSubImage2D, this, subArgs),
-          () => {
-            if (this === gl) attributeUpload(subArgs[0], subArgs[subArgs.length - 1])
-          },
-        )
-      } as typeof gl.texSubImage2D
+      hookedGl.texSubImage2D = {
+        // biome-ignore lint/suspicious/noExplicitAny: texSubImage2D has as many overloads as texImage2D
+        texSubImage2D(this: WebGL2RenderingContext, ...subArgs: any[]) {
+          return runObservedCall(
+            () => Reflect.apply(nativeTexSubImage2D, this, subArgs),
+            () => {
+              if (this === gl) attributeUpload(subArgs[0], subArgs[subArgs.length - 1])
+            },
+          )
+        },
+      }.texSubImage2D as typeof gl.texSubImage2D
 
       const nativeTexImage2D = gl.texImage2D
-      // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
-      hookedGl.texImage2D = function (this: WebGL2RenderingContext, ...texArgs: any[]) {
-        return runObservedCall(
-          () => Reflect.apply(nativeTexImage2D, this, texArgs),
-          () => {
-            if (this === gl) attributeUpload(texArgs[0], texArgs[texArgs.length - 1])
-          },
-        )
-      } as typeof gl.texImage2D
+      hookedGl.texImage2D = {
+        // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
+        texImage2D(this: WebGL2RenderingContext, ...texArgs: any[]) {
+          return runObservedCall(
+            () => Reflect.apply(nativeTexImage2D, this, texArgs),
+            () => {
+              if (this === gl) attributeUpload(texArgs[0], texArgs[texArgs.length - 1])
+            },
+          )
+        },
+      }.texImage2D as typeof gl.texImage2D
 
       let drawFramebuffer: WebGLFramebuffer | null = null
       let scissorEnabled = false
@@ -1164,92 +1186,114 @@ export const install = (
       }
 
       const nativeBindFramebuffer = gl.bindFramebuffer
-      hookedGl.bindFramebuffer = function (this: WebGL2RenderingContext, target, framebuffer) {
-        return runObservedCall(
-          () => nativeBindFramebuffer.call(this, target, framebuffer),
-          () => {
-            if (this !== gl) return
-            if (target === gl.FRAMEBUFFER || target === gl.DRAW_FRAMEBUFFER) {
-              drawFramebuffer = framebuffer
-            }
-          },
-        )
-      }
+      hookedGl.bindFramebuffer = {
+        bindFramebuffer(
+          this: WebGL2RenderingContext,
+          target: GLenum,
+          framebuffer: WebGLFramebuffer | null,
+        ) {
+          return runObservedCall(
+            () => nativeBindFramebuffer.call(this, target, framebuffer),
+            () => {
+              if (this !== gl) return
+              if (target === gl.FRAMEBUFFER || target === gl.DRAW_FRAMEBUFFER) {
+                drawFramebuffer = framebuffer
+              }
+            },
+          )
+        },
+      }.bindFramebuffer
 
       const nativeDeleteFramebuffer = gl.deleteFramebuffer
-      hookedGl.deleteFramebuffer = function (this: WebGL2RenderingContext, framebuffer) {
-        return runObservedCall(
-          () => nativeDeleteFramebuffer.call(this, framebuffer),
-          () => {
-            if (this === gl && framebuffer !== null && framebuffer === drawFramebuffer) {
-              // WebGL automatically restores the default draw framebuffer when the bound object is
-              // deleted; keep the mirror on the same transition.
-              drawFramebuffer = null
-            }
-          },
-        )
-      }
+      hookedGl.deleteFramebuffer = {
+        deleteFramebuffer(this: WebGL2RenderingContext, framebuffer: WebGLFramebuffer | null) {
+          return runObservedCall(
+            () => nativeDeleteFramebuffer.call(this, framebuffer),
+            () => {
+              if (this === gl && framebuffer !== null && framebuffer === drawFramebuffer) {
+                // WebGL automatically restores the default draw framebuffer when the bound object is
+                // deleted; keep the mirror on the same transition.
+                drawFramebuffer = null
+              }
+            },
+          )
+        },
+      }.deleteFramebuffer
 
       const nativeEnable = gl.enable
-      hookedGl.enable = function (this: WebGL2RenderingContext, cap) {
-        return runObservedCall(
-          () => nativeEnable.call(this, cap),
-          () => {
-            if (this === gl && cap === gl.SCISSOR_TEST) scissorEnabled = true
-          },
-        )
-      }
+      hookedGl.enable = {
+        enable(this: WebGL2RenderingContext, cap: GLenum) {
+          return runObservedCall(
+            () => nativeEnable.call(this, cap),
+            () => {
+              if (this === gl && cap === gl.SCISSOR_TEST) scissorEnabled = true
+            },
+          )
+        },
+      }.enable
 
       const nativeDisable = gl.disable
-      hookedGl.disable = function (this: WebGL2RenderingContext, cap) {
-        return runObservedCall(
-          () => nativeDisable.call(this, cap),
-          () => {
-            if (this === gl && cap === gl.SCISSOR_TEST) scissorEnabled = false
-          },
-        )
-      }
+      hookedGl.disable = {
+        disable(this: WebGL2RenderingContext, cap: GLenum) {
+          return runObservedCall(
+            () => nativeDisable.call(this, cap),
+            () => {
+              if (this === gl && cap === gl.SCISSOR_TEST) scissorEnabled = false
+            },
+          )
+        },
+      }.disable
 
       const nativeColorMask = gl.colorMask
-      hookedGl.colorMask = function (this: WebGL2RenderingContext, red, green, blue, alpha) {
-        return runObservedCall(
-          () => nativeColorMask.call(this, red, green, blue, alpha),
-          () => {
-            if (this === gl) {
-              colorWriteMask = [Boolean(red), Boolean(green), Boolean(blue), Boolean(alpha)]
-            }
-          },
-        )
-      }
+      hookedGl.colorMask = {
+        colorMask(
+          this: WebGL2RenderingContext,
+          red: GLboolean,
+          green: GLboolean,
+          blue: GLboolean,
+          alpha: GLboolean,
+        ) {
+          return runObservedCall(
+            () => nativeColorMask.call(this, red, green, blue, alpha),
+            () => {
+              if (this === gl) {
+                colorWriteMask = [Boolean(red), Boolean(green), Boolean(blue), Boolean(alpha)]
+              }
+            },
+          )
+        },
+      }.colorMask
 
       const nativeClear = gl.clear
-      hookedGl.clear = function (this: WebGL2RenderingContext, mask) {
-        return runObservedCall(
-          () => nativeClear.call(this, mask),
-          () => {
-            if (
-              this === gl &&
-              drawFramebuffer === null &&
-              typeof mask === 'number' &&
-              Number.isInteger(mask) &&
-              mask >= 0 &&
-              mask <= 0xffffffff &&
-              (mask & gl.COLOR_BUFFER_BIT) !== 0 &&
-              (mask & ~validClearMask) === 0 &&
-              !scissorEnabled &&
-              colorWriteMask.every(Boolean)
-            ) {
-              if (scheduleFrameFlush()) {
-                // The GPU discarded every earlier default-framebuffer draw in this task. Do the same
-                // to quads accumulated for the pending microtask.
-                pending = []
-                frameDraws = 0
-                frameTileDraws = 0
+      hookedGl.clear = {
+        clear(this: WebGL2RenderingContext, mask: GLbitfield) {
+          return runObservedCall(
+            () => nativeClear.call(this, mask),
+            () => {
+              if (
+                this === gl &&
+                drawFramebuffer === null &&
+                typeof mask === 'number' &&
+                Number.isInteger(mask) &&
+                mask >= 0 &&
+                mask <= 0xffffffff &&
+                (mask & gl.COLOR_BUFFER_BIT) !== 0 &&
+                (mask & ~validClearMask) === 0 &&
+                !scissorEnabled &&
+                colorWriteMask.every(Boolean)
+              ) {
+                if (scheduleFrameFlush()) {
+                  // The GPU discarded every earlier default-framebuffer draw in this task. Do the same
+                  // to quads accumulated for the pending microtask.
+                  pending = []
+                  frameDraws = 0
+                  frameTileDraws = 0
+                }
               }
-            }
-          },
-        )
-      }
+            },
+          )
+        },
+      }.clear
 
       const recordDraw = (drawCount: number): void => {
         // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
@@ -1289,29 +1333,33 @@ export const install = (
       }
 
       const nativeDrawArrays = gl.drawArrays
-      hookedGl.drawArrays = function (this: WebGL2RenderingContext, mode, first, count) {
-        return runObservedCall(
-          () => nativeDrawArrays.call(this, mode, first, count),
-          () => {
-            if (this === gl) recordDraw(count)
-          },
-        )
-      }
+      hookedGl.drawArrays = {
+        drawArrays(this: WebGL2RenderingContext, mode: GLenum, first: GLint, count: GLsizei) {
+          return runObservedCall(
+            () => nativeDrawArrays.call(this, mode, first, count),
+            () => {
+              if (this === gl) recordDraw(count)
+            },
+          )
+        },
+      }.drawArrays
       const nativeDrawElements = gl.drawElements
-      hookedGl.drawElements = function (
-        this: WebGL2RenderingContext,
-        mode,
-        count,
-        elementType,
-        offset,
-      ) {
-        return runObservedCall(
-          () => nativeDrawElements.call(this, mode, count, elementType, offset),
-          () => {
-            if (this === gl) recordDraw(count)
-          },
-        )
-      }
+      hookedGl.drawElements = {
+        drawElements(
+          this: WebGL2RenderingContext,
+          mode: GLenum,
+          count: GLsizei,
+          elementType: GLenum,
+          offset: GLintptr,
+        ) {
+          return runObservedCall(
+            () => nativeDrawElements.call(this, mode, count, elementType, offset),
+            () => {
+              if (this === gl) recordDraw(count)
+            },
+          )
+        },
+      }.drawElements
 
       if (glHookFailed) return abandonGlHooks()
       log('install', 'wrapped the map WebGL context', {
@@ -1367,6 +1415,16 @@ export const install = (
       return abandonGlHooks()
     }
   }
+  const wrappedGetContext = {
+    getContext(
+      this: HTMLCanvasElement,
+      // biome-ignore lint/suspicious/noExplicitAny: matching the DOM overload set is not worth it
+      ...args: any[]
+      // biome-ignore lint/suspicious/noExplicitAny: the return type follows the overload set too
+    ): any {
+      return wrappedGetContextImplementation.apply(this, args)
+    },
+  }.getContext
   if (
     !addBrowserHook(() =>
       installValueHook(realm.HTMLCanvasElement.prototype, 'getContext', wrappedGetContext),
