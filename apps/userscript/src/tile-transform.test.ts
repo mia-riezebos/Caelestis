@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { project, quadFromMatrix, TILE_URL } from './tile-transform.js'
+import { project, quadFromMatrix, tileFromUrl } from './tile-transform.js'
 
 /**
  * The parts of the overlay that are arithmetic rather than browser.
@@ -37,24 +37,29 @@ const canvas = (width: number, height = width) => ({ width, height }) as HTMLCan
 
 const tile = { x: 3, y: 4 }
 
-describe('TILE_URL', () => {
+describe('tileFromUrl', () => {
   it.each([
-    ['https://wplace.live/files/s0/tiles/12/34.png', ['12', '34']],
-    ['https://wplace.live/files/s99/tiles/0/0.png', ['0', '0']],
-    ['/files/s1/tiles/1023/2047.png?v=2', ['1023', '2047']],
+    ['https://wplace.live/files/s0/tiles/12/34.png', { x: 12, y: 34 }],
+    ['https://wplace.live/files/s99/tiles/0/0.png', { x: 0, y: 0 }],
+    ['https://wplace.live/files/s1/tiles/1023/2047.png?v=2', { x: 1023, y: 2047 }],
   ])('reads the coordinates out of %s', (url, expected) => {
-    const match = TILE_URL.exec(url)
-    expect(match).not.toBeNull()
-    expect([match?.[1], match?.[2]]).toEqual(expected)
+    expect(tileFromUrl(url)).toEqual(expected)
   })
 
   it.each([
-    ['https://wplace.live/files/s0/tiles/12/34.webp'],
-    ['https://wplace.live/files/tiles/12/34.png'],
-    ['https://wplace.live/files/s0/tiles/12.png'],
-    ['https://wplace.live/api/pixel/12/34'],
-  ])('does not match %s', (url) => {
-    expect(TILE_URL.exec(url)).toBeNull()
+    ['a different extension', 'https://wplace.live/files/s0/tiles/12/34.webp'],
+    ['no shard', 'https://wplace.live/files/tiles/12/34.png'],
+    ['one coordinate', 'https://wplace.live/files/s0/tiles/12.png'],
+    ['another route entirely', 'https://wplace.live/api/pixel/12/34'],
+    // Unanchored, all three of these matched — and matching means buffering the whole body and
+    // putting the coordinates it found into the attribution queue.
+    ['another origin', 'https://evil.example/x/files/s0/tiles/1/2.png'],
+    ['another origin with the exact path', 'https://evil.example/files/s0/tiles/1/2.png'],
+    ['the pattern in a query string', 'https://wplace.live/api/report?u=/files/s0/tiles/9/9.png'],
+    ['a suffix past the extension', 'https://wplace.live/files/s0/tiles/1/2.png.exe'],
+    ['not a URL at all', 'http://['],
+  ])('refuses %s', (_label, url) => {
+    expect(tileFromUrl(url)).toBeNull()
   })
 })
 
@@ -128,6 +133,14 @@ describe('quadFromMatrix', () => {
     // nothing wrong while the tile is a parallelogram.
     const m = tileMatrix(1)
     m[4] = (m[0] ?? 0) * 0.05
+    expect(quadFromMatrix(m, tile, canvas(1000))).toBeNull()
+  })
+
+  it('rejects a y-inverted quad instead of normalising it', () => {
+    // `Math.abs` on the height used to hide this: `y` still reported the top-left corner, so the
+    // overlay was drawn a whole tile below the tile it names, and entirely off it.
+    const m = tileMatrix(1)
+    m[5] = -(m[5] ?? 0)
     expect(quadFromMatrix(m, tile, canvas(1000))).toBeNull()
   })
 
