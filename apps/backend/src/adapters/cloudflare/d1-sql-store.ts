@@ -1,4 +1,4 @@
-import { type Millis, seconds } from '@wts/shared'
+import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
 import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
@@ -27,6 +27,7 @@ import {
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
+  TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -140,6 +141,42 @@ export class D1SqlStore implements SqlStore {
     if ((await this.readNode(version.nodeId)) === null) {
       throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
     }
+    // A version replaces content in place, so it has to be a version of the same thing: same name,
+    // same dimensions. Position may move and the hash obviously differs. See TemplateIdentityError.
+    const previous = await this.database
+      .select({
+        name: templates.name,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+      })
+      .from(templates)
+      .leftJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
+      .where(eq(templates.id, version.templateId))
+      .limit(1)
+    const existing = previous[0]
+    if (existing !== undefined) {
+      if (existing.name !== version.name) {
+        throw new TemplateIdentityError(
+          `template ${version.templateId} is named ${existing.name}, not ${version.name}`,
+        )
+      }
+      if (existing.minX !== null && existing.maxX !== null) {
+        const span = (min: number, max: number) =>
+          max >= min ? max - min : WORLD_PIXELS - min + max
+        const wasWidth = span(existing.minX, existing.maxX)
+        const wasHeight = (existing.maxY ?? 0) - (existing.minY ?? 0)
+        const nowWidth = span(version.bbox.minX, version.bbox.maxX)
+        const nowHeight = version.bbox.maxY - version.bbox.minY
+        if (wasWidth !== nowWidth || wasHeight !== nowHeight) {
+          throw new TemplateIdentityError(
+            `template ${version.templateId} is ${wasWidth}x${wasHeight}, not ${nowWidth}x${nowHeight}`,
+          )
+        }
+      }
+    }
+
     const statements = [
       this.database
         .insert(templates)

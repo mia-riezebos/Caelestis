@@ -985,6 +985,43 @@ describe('D1SqlStore', () => {
     expect((await store.listNodes(1)).map((n) => n.id)).toEqual(['s1'])
   })
 
+  it('accepts a re-placed version and refuses one that is a different template', async () => {
+    // A version replaces content in place and every client keeps its own placement, ordering and
+    // progress against the template — so the identity has to hold. Name and dimensions must match;
+    // position may move, and the hash differs, which is the point of uploading.
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('id-node', 1, NULL, '/id', 'Id', NULL, 1)")
+    const place = (versionId: string, name: string, minX: number, width: number) => ({
+      templateId: 'id-t',
+      nodeId: 'id-node',
+      name,
+      versionId,
+      createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      createdByUserId: null,
+      createdAt: millis(1_000),
+      bbox: { minX, minY: 0, maxX: minX + width, maxY: 100 },
+      totalPixels: 4,
+      chunks: [
+        {
+          tileX: 0,
+          tileY: 0,
+          hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
+      ],
+    })
+
+    await store.insertTemplateVersion(place('id-v1', 'Mural', 0, 100))
+    // Moved, same size and name: a re-place, which is allowed.
+    await expect(
+      store.insertTemplateVersion(place('id-v2', 'Mural', 500, 100)),
+    ).resolves.toBeUndefined()
+    await expect(store.insertTemplateVersion(place('id-v3', 'Mural', 0, 250))).rejects.toThrow(
+      /is 100x100, not 250x100/,
+    )
+    await expect(store.insertTemplateVersion(place('id-v4', 'Other', 0, 100))).rejects.toThrow(
+      /is named Mural, not Other/,
+    )
+  })
+
   it('keeps a many-tile template inside D1 per-invocation query budget', async () => {
     // One statement per tile put a 48-chunk template at 51 — template, version, 48 tiles, pointer —
     // against the 50 D1 allows per Worker invocation on the free plan. A 48,000x1 one-colour upload

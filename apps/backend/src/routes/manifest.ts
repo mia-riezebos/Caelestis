@@ -33,7 +33,16 @@ export const createManifestRoutes = (
     })
     const etag = `"${manifest.version}"`
     const headers = { ETag: etag, Vary: 'Authorization' }
-    if (c.req.header('if-none-match') === etag) return c.body(null, 304, headers)
+    // RFC 9110 lets If-None-Match carry a comma-separated list and mark each entry weak with `W/`.
+    // An exact string compare therefore missed a conforming client entirely: send two etags, or one
+    // a cache has weakened, and you never get a 304 again. Weak comparison is the right one here —
+    // the manifest is a content hash, so a weak and a strong tag over the same bytes mean the same.
+    const candidates = (c.req.header('if-none-match') ?? '')
+      .split(',')
+      .map((candidate) => candidate.trim().replace(/^W\//, ''))
+    if (candidates.includes(etag) || candidates.includes('*')) {
+      return c.body(null, 304, headers)
+    }
     return c.json(manifest, 200, headers)
   })
 

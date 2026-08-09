@@ -272,6 +272,23 @@ export class NodeNotFoundError extends Error {
   override readonly name = 'NodeNotFoundError'
 }
 
+/**
+ * A new version of an existing template that is not a version of the same thing.
+ *
+ * A version replaces a template's content in place, and every client that already has the template
+ * keeps its own placement, ordering and progress against it. So the identity has to hold: the name
+ * and the dimensions must match the version being replaced. Position may move — that is a re-place,
+ * not a different template — and the content hash obviously differs, which is the point of
+ * uploading at all.
+ *
+ * Without this, "upload a new version" silently accepted a completely different image under an
+ * existing template's id, and every client's progress figure for it became a comparison against
+ * something else.
+ */
+export class TemplateIdentityError extends Error {
+  override readonly name = 'TemplateIdentityError'
+}
+
 export class NodeNotEmptyError extends Error {
   override readonly name = 'NodeNotEmptyError'
 }

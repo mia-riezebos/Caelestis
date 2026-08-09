@@ -1,4 +1,4 @@
-import type { Millis } from '@wts/shared'
+import { type Millis, WORLD_PIXELS } from '@wts/shared'
 import {
   type AccessToken,
   assertValidAccessToken,
@@ -17,9 +17,21 @@ import {
   type NodeRecord,
   type SqlStore,
   type TelemetryBucket,
+  TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
+
+/**
+ * Fold a path the way SQLite's `lower()` does, which is ASCII only.
+ *
+ * `nodes_season_path_idx` is a unique index on `lower(path)`, so D1 treats `/QUÉBEC` and `/québec`
+ * as different paths and stores both. JavaScript's `toLowerCase` folds all of Unicode and made the
+ * oracle refuse a pair production accepts — the same asymmetry the wire schema already documents at
+ * `foldPath`, reintroduced here. Stricter than production is the safer direction, but it is still a
+ * divergence, and this store is what the route tests measure against.
+ */
+const foldPath = (path: string): string => path.replace(/[A-Z]/g, (c) => c.toLowerCase())
 
 const bucketKey = (bucket: TelemetryBucket): string =>
   `${bucket.templateId}\u0000${bucket.resolution}\u0000${bucket.bucketStart}`
@@ -42,8 +54,7 @@ export class MemorySqlStore implements SqlStore {
     if (
       [...this.nodes.values()].some(
         (candidate) =>
-          candidate.season === node.season &&
-          candidate.path.toLowerCase() === node.path.toLowerCase(),
+          candidate.season === node.season && foldPath(candidate.path) === foldPath(node.path),
       )
     ) {
       throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
@@ -93,7 +104,29 @@ export class MemorySqlStore implements SqlStore {
       throw new Error(`template version repeats a tile: ${version.versionId}`)
     }
 
-    const existingTemplate = this.templates.get(version.templateId)
+    const previous = this.templates.get(version.templateId)
+    if (previous !== undefined) {
+      const current = this.templateVersions.get(previous.currentVersionId)
+      const dimensions = (bbox: TemplateVersionRecord['bbox']) => ({
+        width:
+          bbox.maxX >= bbox.minX ? bbox.maxX - bbox.minX : WORLD_PIXELS - bbox.minX + bbox.maxX,
+        height: bbox.maxY - bbox.minY,
+      })
+      const was = current === undefined ? null : dimensions(current.bbox)
+      const now = dimensions(version.bbox)
+      if (previous.name !== version.name) {
+        throw new TemplateIdentityError(
+          `template ${version.templateId} is named ${previous.name}, not ${version.name}`,
+        )
+      }
+      if (was !== null && (was.width !== now.width || was.height !== now.height)) {
+        throw new TemplateIdentityError(
+          `template ${version.templateId} is ${was.width}x${was.height}, not ${now.width}x${now.height}`,
+        )
+      }
+    }
+
+    const existingTemplate = previous
     const template = existingTemplate ?? {
       nodeId: version.nodeId,
       name: version.name,

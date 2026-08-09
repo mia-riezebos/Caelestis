@@ -2,7 +2,7 @@ import { millis, PngError, SliceError } from '@wts/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
-import { NodeNotFoundError } from '../ports/index.js'
+import { NodeNotFoundError, TemplateIdentityError } from '../ports/index.js'
 import { StoreTemplateError, storeTemplate } from '../templates/store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -68,6 +68,10 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
         error instanceof NodeNotFoundError
       ) {
         return c.json({ error: error.message }, 400)
+      }
+      // 409: the upload is well-formed and the template exists, but it is not a version of it.
+      if (error instanceof TemplateIdentityError) {
+        return c.json({ error: error.message }, 409)
       }
       throw error
     }
