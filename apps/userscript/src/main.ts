@@ -95,16 +95,21 @@ export const canvasPixelAt = (
 ): { x: number; y: number } | null => {
   if (lastFrame === null) return null
   const box = lastFrame.canvas.getBoundingClientRect()
-  const ratio = lastFrame.canvas.width / box.width
-  const px = (clientX - box.left) * ratio
-  const py = (clientY - box.top) * ratio
+  // Each axis gets its own ratio and its own quad extent. Using the horizontal one for both was
+  // right only while the backing store and the CSS box shared an aspect ratio and every quad came
+  // out exactly square — and a quad is accepted at up to the squareness tolerance, so neither is
+  // guaranteed. Where they differed, vertical positions drifted and this stopped being the inverse
+  // of `screenPointFor`.
+  const ratioX = lastFrame.canvas.width / box.width
+  const ratioY = lastFrame.canvas.height / box.height
+  const px = (clientX - box.left) * ratioX
+  const py = (clientY - box.top) * ratioY
   for (const quad of lastFrame.quads) {
     if (px < quad.x || px >= quad.x + quad.width) continue
     if (py < quad.y || py >= quad.y + quad.height) continue
-    const scale = TILE_SIZE / quad.width
     return {
-      x: quad.tile.x * TILE_SIZE + (px - quad.x) * scale,
-      y: quad.tile.y * TILE_SIZE + (py - quad.y) * scale,
+      x: quad.tile.x * TILE_SIZE + ((px - quad.x) * TILE_SIZE) / quad.width,
+      y: quad.tile.y * TILE_SIZE + ((py - quad.y) * TILE_SIZE) / quad.height,
     }
   }
   return null
@@ -121,17 +126,22 @@ export const screenPointFor = (x: number, y: number): { x: number; y: number } |
   const reference = lastFrame.quads[0]
   if (reference === undefined) return null
   const box = lastFrame.canvas.getBoundingClientRect()
-  const ratio = lastFrame.canvas.width / box.width
+  const ratioX = lastFrame.canvas.width / box.width
+  const ratioY = lastFrame.canvas.height / box.height
   // Any one tile fixes the whole mapping: the scale is uniform and the map is never rotated, so a
   // single quad is a complete reference frame. Requiring the point to fall *inside* a visible tile
   // meant a target whose position was just off-screen had no position at all — which is exactly
   // when something anchored to it needs to stay reachable.
-  const scale = reference.width / TILE_SIZE
+  //
+  // Per axis, so this stays the exact inverse of `canvasPixelAt` for a quad that is square only
+  // within tolerance.
+  const scaleX = reference.width / TILE_SIZE
+  const scaleY = reference.height / TILE_SIZE
   const originX = reference.tile.x * TILE_SIZE
   const originY = reference.tile.y * TILE_SIZE
   return {
-    x: box.left + (reference.x + (x - originX) * scale) / ratio,
-    y: box.top + (reference.y + (y - originY) * scale) / ratio,
+    x: box.left + (reference.x + (x - originX) * scaleX) / ratioX,
+    y: box.top + (reference.y + (y - originY) * scaleY) / ratioY,
   }
 }
 

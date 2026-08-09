@@ -48,12 +48,32 @@ const readInitialSetting = (): boolean => {
   }
 }
 
+/**
+ * How many distinct counter keys to keep.
+ *
+ * Counters run even with debugging off, and callers write tile coordinates into their messages — so
+ * keying on the message meant panning across a map added a permanent entry per tile. The ring bounds
+ * the log; nothing bounded this.
+ */
+const MAX_COUNTERS = 200
+
+const DROPPED = 'debug:counter-keys-dropped'
+
 export const count = (key: string, by = 1): void => {
+  if (!counters.has(key) && counters.size >= MAX_COUNTERS) {
+    // Set directly rather than recursing: at capacity, counting the drop would count its own drop.
+    counters.set(DROPPED, (counters.get(DROPPED) ?? 0) + 1)
+    return
+  }
   counters.set(key, (counters.get(key) ?? 0) + by)
 }
 
+/** The stable part of a message: everything up to the first digit-bearing word. */
+export const counterKey = (category: Category, message: string): string =>
+  `${category}:${message.replace(/\s*\S*\d\S*/g, '').trim()}`
+
 export const log = (category: Category, message: string, data?: unknown): void => {
-  count(`${category}:${message}`)
+  count(counterKey(category, message))
   if (!enabled) return
 
   const entry: Entry = { at: Date.now() - started, category, message, data }

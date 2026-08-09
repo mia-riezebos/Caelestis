@@ -1,5 +1,7 @@
 import type { TileCoord } from '@wts/shared'
 import { count, log, warn } from './debug.js'
+import { getMap } from './map-handle.js'
+import { pageWindow } from './page-world.js'
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -24,6 +26,7 @@ import { count, log, warn } from './debug.js'
  */
 
 /** MapLibre's tile coordinate extent. Tile-local `(0,0)`..`(EXTENT,EXTENT)` spans one whole tile. */
+const MATRIX_LENGTH = 16
 const MAPLIBRE_TILE_EXTENT = 8192
 
 /** How square a quad must be to be believed, as a fraction of its width. */
@@ -68,7 +71,7 @@ const MAX_TILE_SCREEN_WIDTH = 1e9
  */
 const ROTATION_TOLERANCE = 1e-6
 
-const TILE_URL = /\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png/
+export const TILE_URL = /\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png/
 
 export interface TileQuad {
   readonly tile: TileCoord
@@ -103,6 +106,30 @@ let scheduled = false
  * empty tile is 73 bytes — so same-size tiles are matched first-in, first-out.
  */
 const tilesByByteLength = new Map<number, TileCoord[]>()
+
+/**
+ * How many unattributed tiles of one size to remember.
+ *
+ * The queue only answers the case where a bitmap arrives with no tagged object behind it, which is
+ * rare. Unbounded, a long pan filled it with tiles that were attributed by identity and never
+ * consumed, and the oldest of those eventually answered for a completely different tile.
+ */
+const MAX_QUEUED_PER_SIZE = 8
+
+const consumeBySize = (bytes: number, tile: TileCoord): void => {
+  const queue = tilesByByteLength.get(bytes)
+  if (queue === undefined) return
+  const at = queue.findIndex((candidate) => candidate.x === tile.x && candidate.y === tile.y)
+  if (at !== -1) queue.splice(at, 1)
+  if (queue.length === 0) tilesByByteLength.delete(bytes)
+}
+
+const enqueueBySize = (bytes: number, tile: TileCoord): void => {
+  const queue = tilesByByteLength.get(bytes) ?? []
+  queue.push(tile)
+  if (queue.length > MAX_QUEUED_PER_SIZE) queue.shift()
+  tilesByByteLength.set(bytes, queue)
+}
 const tileOfBitmap = new WeakMap<ImageBitmap, TileCoord>()
 
 /**
@@ -118,7 +145,7 @@ const tileOfBlob = new WeakMap<Blob, TileCoord>()
 const tileOfBuffer = new WeakMap<ArrayBufferLike, TileCoord>()
 
 /** Column-major 4x4, the layout WebGL uses. */
-const project = (m: ArrayLike<number>, x: number, y: number): readonly [number, number] => {
+export const project = (m: ArrayLike<number>, x: number, y: number): readonly [number, number] => {
   const at = (index: number): number => m[index] ?? 0
   const clipX = at(0) * x + at(4) * y + at(12)
   const clipY = at(1) * x + at(5) * y + at(13)
@@ -126,32 +153,50 @@ const project = (m: ArrayLike<number>, x: number, y: number): readonly [number, 
   return [clipX / clipW, clipY / clipW]
 }
 
-const quadFromMatrix = (
+export const quadFromMatrix = (
   m: ArrayLike<number>,
   tile: TileCoord,
   canvas: HTMLCanvasElement,
 ): TileQuad | null => {
-  const [x0, y0] = project(m, 0, 0)
-  const [x1, y1] = project(m, MAPLIBRE_TILE_EXTENT, MAPLIBRE_TILE_EXTENT)
+  const e = MAPLIBRE_TILE_EXTENT
   // Clip space is -1..1 with y up; the canvas is 0..size with y down.
   const toScreenX = (clip: number) => (clip * 0.5 + 0.5) * canvas.width
   const toScreenY = (clip: number) => (1 - (clip * 0.5 + 0.5)) * canvas.height
-  const x = toScreenX(x0)
-  const y = toScreenY(y0)
-  const width = toScreenX(x1) - x
-  const height = toScreenY(y1) - y
-  // Not every draw that binds a tile texture is a whole-tile draw. Requiring the quad to be square
-  // rejects the others; bounding the width alone let one undersized rectangle through.
-  const at = (index: number): number => m[index] ?? 0
-  const scale = Math.max(Math.abs(at(0)), Math.abs(at(5))) || 1
-  const skew = Math.max(Math.abs(at(1)), Math.abs(at(4))) / scale
+  const corner = (u: number, v: number): readonly [number, number] => {
+    const [cx, cy] = project(m, u, v)
+    return [toScreenX(cx), toScreenY(cy)]
+  }
+  // All four, not just the diagonal. A pitched or perspective transform turns a tile into a
+  // trapezoid whose diagonal still measures square, and an axis-aligned rectangle drawn over it
+  // lands on pixels that are not where the overlay thinks they are.
+  const [topLeft, topRight, bottomLeft, bottomRight] = [
+    corner(0, 0),
+    corner(e, 0),
+    corner(0, e),
+    corner(e, e),
+  ]
+  const x = topLeft[0]
+  const y = topLeft[1]
+  const width = topRight[0] - x
+  const height = bottomLeft[1] - y
+
   const reject = (why: string, data: unknown): null => {
     log('quad', `rejected ${tile.x}/${tile.y}: ${why}`, data)
     return null
   }
-  if (skew > ROTATION_TOLERANCE) return reject('map is rotated', { skew })
-  if (!Number.isFinite(width) || !Number.isFinite(height))
-    return reject('non-finite', { width, height })
+  const finite = [topLeft, topRight, bottomLeft, bottomRight].flat().every(Number.isFinite)
+  if (!finite) return reject('non-finite', { topLeft, bottomRight })
+  // Axis alignment measured on the screen quad itself: opposite edges must be parallel to the axes
+  // and to each other, which is what a rotation, a pitch or a skew breaks.
+  const span = Math.max(Math.abs(width), Math.abs(height)) || 1
+  const skew =
+    Math.max(
+      Math.abs(topRight[1] - topLeft[1]),
+      Math.abs(bottomRight[1] - bottomLeft[1]),
+      Math.abs(bottomLeft[0] - topLeft[0]),
+      Math.abs(bottomRight[0] - topRight[0]),
+    ) / span
+  if (skew > ROTATION_TOLERANCE) return reject('map is rotated or pitched', { skew })
   if (width < MIN_TILE_SCREEN_WIDTH) return reject('too small', { width })
   if (width > MAX_TILE_SCREEN_WIDTH) return reject('too large', { width })
   if (Math.abs(Math.abs(height) - width) > width * SQUARENESS_TOLERANCE)
@@ -215,8 +260,8 @@ export const onTileFrame = (listener: FrameListener): void => {
 }
 
 const installFetchTap = (): void => {
-  const nativeFetch = window.fetch
-  window.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
+  const nativeFetch = pageWindow().fetch
+  pageWindow().fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
     const url =
       typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
@@ -236,45 +281,68 @@ const installFetchTap = (): void => {
       // the whole reason the first attempt at this matched zero tiles.
       const buffer = await response.clone().arrayBuffer()
       tileOfBuffer.set(buffer, tile)
-      tilesByByteLength.set(buffer.byteLength, [
-        ...(tilesByByteLength.get(buffer.byteLength) ?? []),
-        tile,
-      ])
+      // The size queue is the last resort, for a bitmap that arrives with no tagged object behind
+      // it. Entries are consumed when it is used; queueing on every fetch and only ever consuming
+      // on the fallback path grew these arrays for the whole session and eventually handed a
+      // same-sized tile a stale neighbour's coordinates.
+      enqueueBySize(buffer.byteLength, tile)
       log('fetch', `tile ${tile.x}/${tile.y}`, {
         bytes: buffer.byteLength,
         status: response.status,
         sizesWaiting: tilesByByteLength.size,
       })
 
-      const wrapped = new Response(buffer, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      })
-      // Own properties shadow Response.prototype, so wplace receives the tagged instances rather
-      // than fresh ones the platform mints per call.
-      Object.defineProperty(wrapped, 'arrayBuffer', { value: () => Promise.resolve(buffer) })
-      Object.defineProperty(wrapped, 'blob', {
-        value: () => {
-          const blob = new Blob([buffer], { type: 'image/png' })
-          tileOfBlob.set(blob, tile)
-          return Promise.resolve(blob)
+      // The native response is handed back, with only its two read methods shadowed. Replacing it
+      // with a freshly constructed `Response` lost `url`, `redirected` and `type`, and gave it an
+      // `arrayBuffer` that never set `bodyUsed` and never rejected on a second read — so any wplace
+      // code that consults ordinary response metadata got the wrong answer from a tap that claims to
+      // be transparent. Own properties shadow `Response.prototype`, which is what makes wplace call
+      // these and receive the objects this tagged, rather than fresh ones the platform mints.
+      const nativeArrayBuffer = response.arrayBuffer.bind(response)
+      const nativeBlob = response.blob.bind(response)
+      Object.defineProperty(response, 'arrayBuffer', {
+        configurable: true,
+        value: async () => {
+          const own = await nativeArrayBuffer()
+          tileOfBuffer.set(own, tile)
+          return own
         },
       })
-      return wrapped
+      Object.defineProperty(response, 'blob', {
+        configurable: true,
+        value: async () => {
+          const blob = await nativeBlob()
+          tileOfBlob.set(blob, tile)
+          return blob
+        },
+      })
+      return response
     } catch (error) {
       // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
       warn('fetch', `could not read body for ${tile.x}/${tile.y}`, String(error))
       return response
     }
-  } as typeof window.fetch
+  } as typeof globalThis.fetch
 }
 
 const installBlobTap = (): void => {
-  const NativeBlob = window.Blob
+  const NativeBlob = pageWindow().Blob
+  // Built through `Reflect.construct` with the caller's `new.target`, so `Blob()` without `new`
+  // still throws, `class X extends Blob {}` still produces an `X`, and `blob.constructor` still
+  // matches. A plain `new NativeBlob(...)` quietly changed all three.
   // biome-ignore lint/suspicious/noExplicitAny: standing in for the Blob constructor overloads
   const Wrapped = function (this: unknown, parts?: any[], options?: BlobPropertyBag) {
-    const blob = new NativeBlob(parts ?? [], options)
+    if (new.target === undefined) {
+      throw new TypeError("Failed to construct 'Blob': Please use the 'new' operator.")
+    }
+    // A direct `new Blob(...)` targets the wrapper, which has no native slots — hand the native
+    // constructor to `Reflect.construct` in that case, and the subclass otherwise.
+    const target = new.target as unknown as typeof Blob
+    const blob = Reflect.construct(
+      NativeBlob,
+      [parts ?? [], options],
+      (target as unknown) === (Wrapped as unknown) ? NativeBlob : target,
+    ) as Blob
     for (const part of parts ?? []) {
       const buffer =
         part instanceof ArrayBuffer ? part : ArrayBuffer.isView(part) ? part.buffer : undefined
@@ -288,13 +356,14 @@ const installBlobTap = (): void => {
     return blob
   } as unknown as typeof Blob
   Wrapped.prototype = NativeBlob.prototype
-  window.Blob = Wrapped
+  Object.defineProperty(Wrapped, 'name', { value: NativeBlob.name, configurable: true })
+  pageWindow().Blob = Wrapped
 }
 
 const installBitmapTap = (): void => {
-  const nativeCreateImageBitmap = window.createImageBitmap
+  const nativeCreateImageBitmap = pageWindow().createImageBitmap
   // biome-ignore lint/suspicious/noExplicitAny: createImageBitmap has two overload shapes
-  window.createImageBitmap = (async (...args: any[]) => {
+  pageWindow().createImageBitmap = (async (...args: any[]) => {
     const bitmap = await (nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>)(
       ...args,
     )
@@ -304,6 +373,9 @@ const installBitmapTap = (): void => {
       const exact = tileOfBlob.get(source)
       if (exact !== undefined) {
         tileOfBitmap.set(bitmap, exact)
+        // Retire the size entry this tile queued: it has been attributed exactly and must not stay
+        // behind to answer for some later blob that merely happens to be the same length.
+        consumeBySize(source.size, exact)
         log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: source.size })
         return bitmap
       }
@@ -327,7 +399,7 @@ const installBitmapTap = (): void => {
       }
     }
     return bitmap
-  }) as typeof window.createImageBitmap
+  }) as typeof globalThis.createImageBitmap
 }
 
 export const install = (): void => {
@@ -335,14 +407,33 @@ export const install = (): void => {
   installBlobTap()
   installBitmapTap()
 
-  const nativeGetContext = HTMLCanvasElement.prototype.getContext
+  const nativeGetContext = pageWindow().HTMLCanvasElement.prototype.getContext
   let wrapped = false
 
-  // biome-ignore lint/suspicious/noExplicitAny: matching the DOM overload set is not worth it here
-  HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, ...args: any[]): any {
+  pageWindow().HTMLCanvasElement.prototype.getContext = function (
+    this: HTMLCanvasElement,
+    // biome-ignore lint/suspicious/noExplicitAny: matching the DOM overload set is not worth it
+    ...args: any[]
+    // biome-ignore lint/suspicious/noExplicitAny: the return type follows the overload set too
+  ): any {
     const context = nativeGetContext.apply(this, args as never)
     const type = String(args[0])
     if (wrapped || !type.startsWith('webgl') || context === null) return context
+    // The first WebGL context in the document is not necessarily the map's. wplace may well make one
+    // for something else first — a fingerprinting probe, an effect — and instrumenting that one and
+    // then refusing every context after it means the overlay simply never receives a frame. If the
+    // map has already been captured, only its own canvas counts; before that, take the first and let
+    // a later match correct it.
+    let mapOwned: HTMLCanvasElement | undefined
+    try {
+      mapOwned = getMap()?.getCanvas?.()
+    } catch {
+      // A map mid-construction may not answer yet; treat that as no opinion.
+    }
+    if (mapOwned !== undefined && mapOwned !== this) {
+      log('install', 'skipped a WebGL context that is not the map canvas', { type })
+      return context
+    }
     wrapped = true
     mapCanvas = this
     log('install', 'wrapped the map WebGL context', {
@@ -351,7 +442,8 @@ export const install = (): void => {
     })
 
     const gl = context as WebGL2RenderingContext
-    const uniformNames = new Map<WebGLUniformLocation, string>()
+    // Weak: a long session rebuilds programs, and this only ever needs object identity.
+    const uniformNames = new WeakMap<WebGLUniformLocation, string>()
     const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
     let boundTexture: WebGLTexture | null = null
     let projection: ArrayLike<number> | null = null
@@ -367,7 +459,17 @@ export const install = (): void => {
     // biome-ignore lint/suspicious/noExplicitAny: the WebGL2 overloads differ from WebGL1's
     gl.uniformMatrix4fv = ((location: any, transpose: any, value: any, ...rest: any[]) => {
       if (location !== null && uniformNames.get(location) === 'u_projection_matrix') {
-        projection = value
+        // A copy of exactly the values WebGL is about to read. MapLibre reuses a scratch array and
+        // WebGL2 lets an upload start at an offset, so keeping the array itself meant reading a
+        // different matrix than the GPU got — sixteen values from the wrong place, or the right
+        // place after someone else overwrote it.
+        const offset = typeof rest[0] === 'number' ? rest[0] : 0
+        const source = value as ArrayLike<number>
+        const snapshot = new Float32Array(MATRIX_LENGTH)
+        for (let index = 0; index < MATRIX_LENGTH; index += 1) {
+          snapshot[index] = source[offset + index] ?? 0
+        }
+        projection = snapshot
       }
       return nativeUniformMatrix4fv(location, transpose, value, ...rest)
     }) as typeof gl.uniformMatrix4fv
