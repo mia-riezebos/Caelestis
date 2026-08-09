@@ -9,8 +9,10 @@ export interface AssembleManifestOptions {
 
 const VERSION_PLACEHOLDER = '0'.repeat(64)
 
-/** Mirrors `MAX_MANIFEST_CHUNKS` in `@wts/wire-schema`, which is what refuses the assembled result. */
+/** Mirror the bounds in `@wts/wire-schema`, which is what refuses the assembled result. */
 const MAX_MANIFEST_CHUNKS = 200_000
+const MAX_MANIFEST_NODES = 100_000
+const MAX_MANIFEST_TEMPLATES = 100_000
 
 export const assembleManifest = async (
   ports: Pick<Ports, 'sql'>,
@@ -81,12 +83,24 @@ export const assembleManifest = async (
   // to refuse the publish that crosses the line, so an admin learns at the moment they cause it —
   // that needs the season and the season's current chunk total at the publish route, which is port
   // surface this slice does not have.
-  const chunkTotal = templates.reduce((total, template) => total + template.chunks.length, 0)
-  if (chunkTotal > MAX_MANIFEST_CHUNKS) {
-    throw new Error(
-      `season ${options.season} assembles ${chunkTotal} chunks, more than the ${MAX_MANIFEST_CHUNKS} a manifest may carry`,
-    )
+  // Nodes and templates are bounded arrays on the wire for the same reason chunks are, and nothing
+  // on the write path enforces either. Guarding only chunks was an oversight, not a judgement: a
+  // season past 100,000 nodes assembles no chunks at all, sails through the check below, and fails
+  // decode at the client — the exact silent break this is here to convert into a named cause.
+  const refuse = (count: number, limit: number, what: string) => {
+    if (count > limit) {
+      throw new Error(
+        `season ${options.season} assembles ${count} ${what}, more than the ${limit} a manifest may carry`,
+      )
+    }
   }
+  refuse(nodes.length, MAX_MANIFEST_NODES, 'nodes')
+  refuse(templates.length, MAX_MANIFEST_TEMPLATES, 'templates')
+  refuse(
+    templates.reduce((total, template) => total + template.chunks.length, 0),
+    MAX_MANIFEST_CHUNKS,
+    'chunks',
+  )
 
   const tiles = [
     ...new Set(templates.flatMap((template) => template.chunks.map(({ tile }) => tile))),

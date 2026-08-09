@@ -106,6 +106,52 @@ describe('assembleManifest', () => {
     expectDecodes(manifest)
   })
 
+  it('drops a template whose node a concurrent create has not revealed yet', async () => {
+    // The other direction of the same tear, and the one that had no test: the node read can land
+    // before a group is created while the template read lands after one is placed in it, leaving a
+    // template naming a node the manifest does not carry. The wire refuses that just as firmly as
+    // `chunks: []`, so the conjunct guarding it could be deleted and the whole suite stayed green.
+    const sql = new MemorySqlStore()
+    await sql.insertNode(node)
+    await sql.insertTemplateVersion(
+      version('01890f3a-6b7c-7def-8123-4560000000d1', '01890f3a-6b7c-7def-8123-4560000000d2', 0),
+    )
+    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000d1', createdAt)
+    const torn = {
+      listNodes: async () => [],
+      listManifestTemplates: sql.listManifestTemplates.bind(sql),
+      listManifestTiles: sql.listManifestTiles.bind(sql),
+    } as unknown as MemorySqlStore
+
+    const manifest = await assembleManifest(
+      { sql: torn },
+      { server, season: 1, includeUnpublished: false },
+    )
+
+    expect(manifest.templates).toEqual([])
+    expectDecodes(manifest)
+  })
+
+  it('refuses a season with more nodes than a manifest may carry', async () => {
+    // Nodes and templates are bounded on the wire exactly as chunks are, and only chunks were
+    // guarded. An over-cap season assembles no chunks at all, so it sailed past that guard and broke
+    // at the client instead — a 200 nobody can decode, with nothing server-side naming the cause.
+    const overCap = Array.from({ length: 100_001 }, (_, index) => ({
+      ...node,
+      id: `n${index}`,
+      path: `/g${index}`,
+    }))
+    const flooded = {
+      listNodes: async () => overCap,
+      listManifestTemplates: async () => [],
+      listManifestTiles: async () => [],
+    } as unknown as MemorySqlStore
+
+    await expect(
+      assembleManifest({ sql: flooded }, { server, season: 1, includeUnpublished: false }),
+    ).rejects.toThrow(/assembles 100001 nodes, more than the 100000/)
+  })
+
   it('emits a decodable manifest when two templates in a group overlap', async () => {
     // Overlapping templates in one group are the point, not a fault: that is how a group layers, and
     // the client's own ordering decides what draws on top. The wire used to refuse it, so two
