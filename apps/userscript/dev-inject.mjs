@@ -159,17 +159,30 @@ if (shotPath) {
 
 if (watching) {
   console.log('watching src/ — save to rebuild and reload. Ctrl-C to stop.')
-  let queued = false
-  watch(join(here, 'src'), { recursive: true }, () => {
-    if (queued) return
-    queued = true
-    setTimeout(async () => {
-      queued = false
+  let debounce = null
+  let reloading = false
+  let dirty = false
+  const reload = async () => {
+    if (reloading) {
+      dirty = true
+      return
+    }
+    reloading = true
+    do {
+      dirty = false
       try {
         await load()
       } catch (error) {
         console.error('reload failed:', error.message)
       }
+    } while (dirty)
+    reloading = false
+  }
+  watch(join(here, 'src'), { recursive: true }, () => {
+    if (debounce !== null) clearTimeout(debounce)
+    debounce = setTimeout(() => {
+      debounce = null
+      void reload()
     }, 150)
   })
 } else {
