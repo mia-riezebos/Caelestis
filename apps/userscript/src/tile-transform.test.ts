@@ -399,12 +399,14 @@ describe('transparent browser hooks', () => {
       status: 404,
       headers: { 'content-type': 'text/html' },
     })
+    const cancel = vi.spyOn(original.body as ReadableStream, 'cancel')
 
     const normalized = normalizeMissingTileResponse(original, realm)
     const decoded = await decodePng(new Uint8Array(await normalized.arrayBuffer()))
 
     expect(normalized.status).toBe(200)
     expect(normalized.headers.get('content-type')).toBe('image/png')
+    expect(cancel).toHaveBeenCalledOnce()
     expect({ width: decoded.width, height: decoded.height, pixels: [...decoded.pixels] }).toEqual({
       width: 1,
       height: 1,
@@ -522,6 +524,7 @@ describe('transparent browser hooks', () => {
     expect(counters.get('draw:not-raster-program')).toBe(1)
 
     const replacement = new FakeCanvas(fakeGl())
+    const originalReplacementDrawArrays = replacement.context.drawArrays
     // The one-shot map capture still points at the first Map instance after an SPA remount. Its
     // detached canvas must not veto the new measured MapLibre canvas.
     firstMap.isConnected = false
@@ -530,6 +533,15 @@ describe('transparent browser hooks', () => {
     expect(removeFirstMapListener).toHaveBeenCalledWith('webglcontextlost', expect.any(Function))
     counters.clear()
     replacement.context.drawArrays(0, 0, 1)
+    await Promise.resolve()
+    expect(counters.get('draw:not-raster-program')).toBe(1)
+
+    const secondReplacement = new FakeCanvas(fakeGl())
+    replacement.isConnected = false
+    secondReplacement.getContext('webgl2')
+    expect(replacement.context.drawArrays).toBe(originalReplacementDrawArrays)
+    counters.clear()
+    secondReplacement.context.drawArrays(0, 0, 1)
     await Promise.resolve()
     expect(counters.get('draw:not-raster-program')).toBe(1)
   })
@@ -564,6 +576,7 @@ describe('transparent browser hooks', () => {
     class FakeCanvas {
       width = 100
       height = 100
+      isConnected = true
       readonly classList: { contains: (name: string) => boolean }
       constructor(
         readonly context: ReturnType<typeof fakeGl>,
@@ -584,6 +597,7 @@ describe('transparent browser hooks', () => {
     } as unknown as Window & typeof globalThis
     install(realm, () => null)
     const map = new FakeCanvas(fakeGl(), true)
+    const originalMapDrawArrays = map.context.drawArrays
     const unrelated = new FakeCanvas(fakeGl(), false)
     map.getContext('webgl2')
     unrelated.getContext('webgl2')
@@ -592,6 +606,15 @@ describe('transparent browser hooks', () => {
     map.context.drawArrays(0, 0, 1)
     await Promise.resolve()
 
+    expect(counters.get('draw:not-raster-program')).toBe(1)
+
+    const replacement = new FakeCanvas(fakeGl(), true)
+    map.isConnected = false
+    replacement.getContext('webgl2')
+    expect(map.context.drawArrays).toBe(originalMapDrawArrays)
+    counters.clear()
+    replacement.context.drawArrays(0, 0, 1)
+    await Promise.resolve()
     expect(counters.get('draw:not-raster-program')).toBe(1)
   })
 
@@ -638,6 +661,7 @@ describe('transparent browser hooks', () => {
       value: nativeTexImage2D,
       writable: false,
       configurable: false,
+      enumerable: true,
     })
     Object.setPrototypeOf(fakeGl, inheritedHooks)
     class FakeCanvas {
@@ -657,6 +681,10 @@ describe('transparent browser hooks', () => {
     } as unknown as Window & typeof globalThis
     install(realm, () => null)
     const gl = new FakeCanvas().getContext('webgl2') as unknown as WebGL2RenderingContext
+    const texImage2DDescriptor = Object.getOwnPropertyDescriptor(gl, 'texImage2D')
+    expect(gl.texImage2D.name).toBe(nativeTexImage2D.name)
+    expect(gl.texImage2D.length).toBe(nativeTexImage2D.length)
+    expect(texImage2DDescriptor?.enumerable).toBe(true)
     expect(gl.getUniformLocation({} as WebGLProgram, 'hostile-shim')).toBe(
       1 as unknown as WebGLUniformLocation,
     )
@@ -1276,6 +1304,8 @@ describe('transparent browser hooks', () => {
     const buffer = await response.arrayBuffer.call(otherResponse)
     const arrayBufferDescriptor = Object.getOwnPropertyDescriptor(response, 'arrayBuffer')
     const blobDescriptor = Object.getOwnPropertyDescriptor(response, 'blob')
+    const nativeArrayBuffer = Response.prototype.arrayBuffer
+    const nativeBlob = Response.prototype.blob
 
     expect([...new Uint8Array(buffer)]).toEqual([4, 5])
     expect(response.bodyUsed).toBe(false)
@@ -1283,6 +1313,16 @@ describe('transparent browser hooks', () => {
     expect(takeBySize(2)).toBeUndefined()
     expect(arrayBufferDescriptor?.writable).toBe(true)
     expect(blobDescriptor?.writable).toBe(true)
+    expect(response.arrayBuffer.name).toBe(nativeArrayBuffer.name)
+    expect(response.arrayBuffer.length).toBe(nativeArrayBuffer.length)
+    expect(arrayBufferDescriptor?.enumerable).toBe(
+      Object.getOwnPropertyDescriptor(Response.prototype, 'arrayBuffer')?.enumerable,
+    )
+    expect(response.blob.name).toBe(nativeBlob.name)
+    expect(response.blob.length).toBe(nativeBlob.length)
+    expect(blobDescriptor?.enumerable).toBe(
+      Object.getOwnPropertyDescriptor(Response.prototype, 'blob')?.enumerable,
+    )
     await expect(response.blob.call(undefined as unknown as Response)).rejects.toThrow()
   })
 

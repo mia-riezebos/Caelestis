@@ -1,5 +1,5 @@
 import { parseTileKey, TILE_SIZE, type TileCoord } from '@wts/shared'
-import { count, log, warn } from './debug.js'
+import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
 
@@ -211,10 +211,16 @@ export const normalizeMissingTileResponse = (
   realm: Window & typeof globalThis,
 ): Response => {
   if (response.status !== 404) return response
-  return new realm.Response(TRANSPARENT_PNG, {
+  const substitute = new realm.Response(TRANSPARENT_PNG, {
     status: 200,
     headers: { 'content-type': 'image/png' },
   })
+  try {
+    void response.body?.cancel().catch(() => undefined)
+  } catch {
+    // The substitute is independent; a hostile or locked original stream is disposable.
+  }
+  return substitute
 }
 
 export interface TileQuad {
@@ -373,6 +379,26 @@ const installValueHook = (
   let previous: PropertyDescriptor | undefined
   try {
     previous = Object.getOwnPropertyDescriptor(target, property)
+    let inherited: PropertyDescriptor | undefined
+    if (previous === undefined) {
+      let prototype = Object.getPrototypeOf(target)
+      while (prototype !== null && inherited === undefined) {
+        inherited = Object.getOwnPropertyDescriptor(prototype, property)
+        prototype = Object.getPrototypeOf(prototype)
+      }
+    }
+    const replaced = previous ?? inherited
+    if (typeof value === 'function' && typeof replaced?.value === 'function') {
+      for (const metadata of ['name', 'length'] as const) {
+        const metadataDescriptor = Object.getOwnPropertyDescriptor(replaced.value, metadata)
+        if (metadataDescriptor !== undefined && 'value' in metadataDescriptor) {
+          Object.defineProperty(value, metadata, {
+            value: metadataDescriptor.value,
+            configurable: true,
+          })
+        }
+      }
+    }
     const descriptor =
       previous?.configurable === false
         ? { value }
@@ -380,7 +406,7 @@ const installValueHook = (
             value,
             writable: true,
             configurable: true,
-            enumerable: previous?.enumerable ?? false,
+            enumerable: previous?.enumerable ?? inherited?.enumerable ?? false,
           }
     Object.defineProperty(target, property, descriptor)
   } catch {
@@ -498,12 +524,18 @@ const flush = (): void => {
   const quads = pending
   pending = []
 
-  log('frame', 'rendered', {
-    draws: frameDraws,
-    tileTextureDraws: frameTileDraws,
-    quads: quads.length,
-    tiles: quads.map((q) => `${q.tile.x}/${q.tile.y}`).join(' ') || '(none)',
-  })
+  log(
+    'frame',
+    'rendered',
+    isEnabled()
+      ? {
+          draws: frameDraws,
+          tileTextureDraws: frameTileDraws,
+          quads: quads.length,
+          tiles: quads.map((q) => `${q.tile.x}/${q.tile.y}`).join(' ') || '(none)',
+        }
+      : undefined,
+  )
   frameDraws = 0
   frameTileDraws = 0
 
@@ -784,8 +816,6 @@ export const install = (
     return
   }
   let wrapped = false
-  // Whether the wrapped context is one the map has confirmed as its own, rather than a guess.
-  let wrappedIsMapOwned = false
   let activeContextGeneration = 0
   let restoreActiveContextHooks: (() => void) | null = null
 
@@ -810,15 +840,12 @@ export const install = (
     if (typeof args[0] !== 'string') return context
     const type = args[0]
     if (!type.startsWith('webgl') || context === null) return context
-    // Latched only once the map has confirmed this canvas is its own. Before capture the map cannot
-    // answer, so an earlier WebGL context — a fingerprinting probe, an effect, another userscript —
-    // was instrumented and the latch closed behind it, leaving MapLibre's real context untouched for
-    // the rest of the session. Provisional instrumentation stays open to being replaced.
     // The first WebGL context in the document is not necessarily the map's. wplace may well make one
     // for something else first — a fingerprinting probe, an effect — and instrumenting that one and
     // then refusing every context after it means the overlay simply never receives a frame. If the
     // map has already been captured, only its own canvas counts; before that, take the first and let
-    // a later canvas carrying MapLibre's measured class correct it.
+    // a later canvas carrying MapLibre's measured class correct it. A detached measured canvas also
+    // yields to the next measured one so repeated SPA remounts do not strand the overlay.
     let mapOwned: HTMLCanvasElement | undefined
     try {
       mapOwned = mapHandle()?.getCanvas?.()
@@ -827,16 +854,19 @@ export const install = (
     }
     // Repeated getContext calls on the active canvas return its already-wrapped context. A different
     // canvas confirmed by the live Map handle is a replacement and must be allowed to retarget.
-    if (wrapped && wrappedIsMapOwned && mapCanvas === this) return context
-    if (mapOwned !== undefined && mapOwned !== this) {
-      let staleMapWasDetached = false
+    if (wrapped && mapCanvas === this) return context
+    const candidateLooksLikeMap = looksLikeMapCanvas(this)
+    let replacingDetachedMapCanvas = false
+    if (wrapped && candidateLooksLikeMap) {
       try {
-        staleMapWasDetached =
-          wrappedIsMapOwned && mapOwned.isConnected === false && looksLikeMapCanvas(this)
+        const capturedMapIsStale = mapOwned === undefined || mapOwned.isConnected === false
+        replacingDetachedMapCanvas = mapCanvas?.isConnected === false && capturedMapIsStale
       } catch {
         // A hostile canvas shim is not enough evidence to replace a confirmed map context.
       }
-      if (!staleMapWasDetached) {
+    }
+    if (mapOwned !== undefined && mapOwned !== this) {
+      if (!replacingDetachedMapCanvas) {
         log('install', 'skipped a WebGL context that is not the map canvas', { type })
         return context
       }
@@ -844,30 +874,18 @@ export const install = (
       // measured MapLibre canvas even though the one-shot Object.prototype witness is now gone.
       mapOwned = undefined
     }
-    if (wrapped && mapOwned === undefined) {
+    if (wrapped && mapOwned === undefined && !replacingDetachedMapCanvas) {
       const currentLooksLikeMap = looksLikeMapCanvas(mapCanvas)
-      const candidateLooksLikeMap = looksLikeMapCanvas(this)
-      if (wrappedIsMapOwned) {
-        let currentIsDetached = false
-        try {
-          currentIsDetached = mapCanvas?.isConnected === false
-        } catch {
-          return context
-        }
-        if (!currentIsDetached || !candidateLooksLikeMap) return context
-      }
       // Keep the first provisional context until there is positive evidence that a later canvas is
       // MapLibre's. Once the measured map class is wrapped, an unrelated context cannot steal it.
-      else if (currentLooksLikeMap || !candidateLooksLikeMap) return context
+      if (currentLooksLikeMap || !candidateLooksLikeMap) return context
     }
     if (wrapped) log('install', 're-targeting onto the map canvas', { type })
     const previousWrapped = wrapped
-    const previousWrappedIsMapOwned = wrappedIsMapOwned
     const previousContextGeneration = activeContextGeneration
     const previousMapCanvas = mapCanvas
     const previousActiveContextRestore = restoreActiveContextHooks
     wrapped = true
-    wrappedIsMapOwned = mapOwned !== undefined
     const contextGeneration = ++activeContextGeneration
     mapCanvas = this
 
@@ -882,7 +900,6 @@ export const install = (
       detachContextLossListener()
       restoreGlHooks()
       wrapped = previousWrapped
-      wrappedIsMapOwned = previousWrappedIsMapOwned
       activeContextGeneration = previousContextGeneration
       mapCanvas = previousMapCanvas
       return context
