@@ -124,6 +124,14 @@ export class D1SqlStore implements SqlStore {
     // a prefix its parent no longer has — a hierarchy the wire refuses, written by two requests that
     // both succeeded. Only the last segment is the caller's to choose. Same rule as `renameNode`.
     const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
+    // Bounded here as well as by the CHECK, because the memory store bounds it here and the two are
+    // meant to answer alike. The CHECK stays the backstop for the window between this read and the
+    // insert, in which a rename can lengthen the prefix underneath us.
+    const parentPath =
+      node.parentId === null ? '' : ((await this.readNode(node.parentId))?.path ?? '')
+    if (`${parentPath}/${segment}`.length > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(`node path is longer than ${MAX_NODE_PATH_LENGTH}`)
+    }
     // Roots get the same treatment as children: only the last segment is the caller's, so a stale
     // multi-segment proposal cannot create a root whose path claims to be nested.
     const path =
@@ -197,32 +205,17 @@ export class D1SqlStore implements SqlStore {
     const descendants = and(eq(nodes.season, node.season), startsWithOldPrefix(oldPrefix))
 
     // Every descendant keeps its suffix, so its new length is its old one shifted by the change in
-    // the prefix. Measured in UTF-16 units, which is what the wire counts — and since a code point
-    // is never more units than characters, staying inside the bound here also satisfies the
-    // `nodes_path_check` CHECK, which counts characters. Deriving one from the other was the bug:
-    // `max(length(path))` is SQLite characters and `path.length` is JavaScript units, and mixing
-    // them let an astral descendant through at 264 units, where it broke `/manifest` for every
-    // client with nothing raised server-side.
-    //
-    // This reads the paths rather than aggregating them because the alternative is a bound that is
-    // wrong in one direction or the other, and the rows read here are exactly the rows the rename is
-    // about to write anyway.
+    // the prefix — one aggregate, no rows. `slug` keeps paths inside the BMP, so SQLite's character
+    // count and the UTF-16 count the wire uses are the same number; this used to read every
+    // descendant path because they were not, which a season-sized subtree turns into a result set D1
+    // refuses.
     const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
     const shift = path.length - node.path.length
-    // Only rows that could possibly overflow: a code point is at most two UTF-16 units, so a path of
-    // `c` characters is at most `2c` units and anything under this threshold is provably safe. That
-    // keeps a rename near the root from materialising an entire season's paths — 100,000 of them is
-    // a result set D1 will refuse and an argument list V8 will refuse — while never missing a row
-    // that would overflow.
-    const couldOverflow = sql`length(${nodes.path}) * 2 + ${shift} > ${MAX_NODE_PATH_LENGTH}`
-    const existing = await this.database
-      .select({ path: nodes.path })
+    const [deepest] = await this.database
+      .select({ length: sql<number>`coalesce(max(length(${nodes.path})), 0)` })
       .from(nodes)
-      .where(and(descendants, couldOverflow))
-    const longest = existing.reduce(
-      (worst, row) => Math.max(worst, row.path.length + shift),
-      path.length,
-    )
+      .where(descendants)
+    const longest = Math.max(path.length, (deepest?.length ?? 0) + shift)
     if (longest > MAX_NODE_PATH_LENGTH) {
       throw new NodePathTooLongError(
         `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,

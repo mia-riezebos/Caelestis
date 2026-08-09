@@ -14,7 +14,6 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const SEASON_NUMBER = /^[1-9]\d*$/
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4_096
-const MAX_PATH_LENGTH = 256
 
 const parseSeason = (value: unknown): number | null => {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 1 ? value : null
@@ -23,10 +22,26 @@ const parseSeason = (value: unknown): number | null => {
   return Number.isSafeInteger(parsed) ? parsed : null
 }
 
+/**
+ * Derive a path segment from a display name.
+ *
+ * Astral characters are replaced rather than kept, which is what keeps the three places that bound a
+ * path agreeing with each other. SQLite's `length()` counts characters and JavaScript's `.length`
+ * counts UTF-16 units, and a code point outside the BMP is one of the former and two of the latter —
+ * so `nodes_path_check`, the store guards and the wire's `NodePath` were measuring the same string
+ * and getting different numbers. Three separate defects came out of that gap. Confined to the BMP
+ * the two counts are equal by construction and the gap cannot reopen.
+ *
+ * The name keeps every character the caller sent; only the derived path is narrowed. A name with
+ * nothing but astral letters therefore slugs to nothing and is refused, which the route reports.
+ */
+const ASTRAL = /[\u{10000}-\u{10FFFF}]/gu
+
 const slug = (name: string): string =>
   name
     .trim()
     .toLowerCase()
+    .replace(ASTRAL, '-')
     .replace(/[^\p{L}\p{N}.]+/gu, '-')
     .replace(/^[^\p{L}\p{N}]+/u, '')
     .trim()
@@ -78,8 +93,9 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
       }
       parentPath = parent.path
     }
+    // Not bounded here: the store composes the path it will actually store and bounds that, and a
+    // check on the path assembled from this read could only ever agree with it or be wrong.
     const path = `${parentPath}/${segment}`
-    if (path.length > MAX_PATH_LENGTH) return c.json({ error: 'derived path is too long' }, 400)
 
     const node: NodeRecord = {
       id: uuidV7(),
