@@ -109,10 +109,18 @@ export const installMapCapture = (): void => {
           return undefined
         },
         set(this: object, value: unknown) {
+          // Preserve the assignment's native success/failure semantics first. Without this
+          // inherited trap, strict assignment to a non-extensible receiver throws.
+          Object.defineProperty(this, property, {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          })
           // Everything this setter does beyond completing the assignment is wrapped, because it runs
           // inside someone else's assignment statement. A throwing `flyTo` getter, a proxy trap, a
-          // frozen receiver — any of them would otherwise throw out of an ordinary `obj.x = y` in
-          // page code and abort whatever was initialising, which for MapLibre is the map itself.
+          // hostile receiver — any of them would otherwise throw after a successful assignment and
+          // abort whatever was initialising, which for MapLibre is the map itself.
           try {
             if (captured === null && looksLikeMap(this)) {
               captured = this
@@ -121,19 +129,6 @@ export const installMapCapture = (): void => {
             }
           } catch {
             // Detection is best-effort; a failure here must not become the page's problem.
-          }
-          // Complete the assignment the object was making, as an ordinary own property, so nothing
-          // downstream can tell this happened.
-          try {
-            Object.defineProperty(this, property, {
-              value,
-              writable: true,
-              configurable: true,
-              enumerable: true,
-            })
-          } catch {
-            // A non-extensible or otherwise hostile receiver refuses the write. That is the same
-            // answer it would have given without this setter in the way, so it is not ours to fix.
           }
         },
       }

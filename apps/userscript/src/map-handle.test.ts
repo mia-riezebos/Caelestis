@@ -133,9 +133,7 @@ describe('installMapCapture', () => {
     delete (Object.prototype as Record<string, unknown>)[WITNESS]
   })
 
-  it('does not let a hostile receiver throw out of the page assignment', () => {
-    // The setter runs inside somebody else's `obj.x = y`. A detection failure there aborts whatever
-    // was initialising, which on this path is the map itself.
+  it('preserves a failed assignment to a non-extensible receiver', () => {
     installMapCapture()
     const hostile = Object.preventExtensions({
       get flyTo(): never {
@@ -145,6 +143,6 @@ describe('installMapCapture', () => {
 
     expect(() => {
       ;(hostile as Record<string, unknown>)[WITNESS] = {}
-    }).not.toThrow()
+    }).toThrow(TypeError)
   })
 })

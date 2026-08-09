@@ -222,6 +222,16 @@ describe('byte-length attribution queue', () => {
     expect(takeBySizeForBitmap(73, 512, 512, 1_001)).toBeUndefined()
     expect(takeBySize(73, 1_001)).toEqual({ x: 4, y: 5 })
   })
+
+  it('declines an ambiguous same-size bitmap fallback', () => {
+    resetQueues()
+    enqueueBySize(73, { x: 4, y: 5 }, 1_000)
+    enqueueBySize(73, { x: 6, y: 7 }, 1_000)
+
+    expect(takeBySizeForBitmap(73, 1_000, 1_000, 1_001)).toBeUndefined()
+    expect(takeBySize(73, 1_001)).toEqual({ x: 4, y: 5 })
+    expect(takeBySize(73, 1_001)).toEqual({ x: 6, y: 7 })
+  })
 })
 
 describe('transparent browser hooks', () => {
@@ -336,6 +346,9 @@ describe('transparent browser hooks', () => {
     const fakeGl = () => ({
       TEXTURE0: 0x84c0,
       TEXTURE_2D: 0x0de1,
+      FRAMEBUFFER: 0x8d40,
+      DRAW_FRAMEBUFFER: 0x8ca9,
+      COLOR_BUFFER_BIT: 0x4000,
       getUniformLocation: vi.fn(() => null),
       useProgram: vi.fn(),
       uniform1i: vi.fn(),
@@ -346,6 +359,8 @@ describe('transparent browser hooks', () => {
       texImage2D: vi.fn(),
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
+      bindFramebuffer: vi.fn(),
+      clear: vi.fn(),
     })
     class FakeCanvas {
       width = 100
@@ -395,6 +410,9 @@ describe('transparent browser hooks', () => {
     const fakeGl = () => ({
       TEXTURE0: 0x84c0,
       TEXTURE_2D: 0x0de1,
+      FRAMEBUFFER: 0x8d40,
+      DRAW_FRAMEBUFFER: 0x8ca9,
+      COLOR_BUFFER_BIT: 0x4000,
       getUniformLocation: vi.fn(() => null),
       useProgram: vi.fn(),
       uniform1i: vi.fn(),
@@ -405,6 +423,8 @@ describe('transparent browser hooks', () => {
       texImage2D: vi.fn(),
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
+      bindFramebuffer: vi.fn(),
+      clear: vi.fn(),
     })
     class FakeCanvas {
       width = 100
@@ -440,6 +460,144 @@ describe('transparent browser hooks', () => {
     expect(counters.get('draw:not-raster-program')).toBe(1)
   })
 
+  it('preserves receivers for every wrapped WebGL method', () => {
+    const receivers: Array<{ method: string; receiver: unknown }> = []
+    const native = (method: string, result?: unknown) =>
+      vi.fn(function (this: unknown) {
+        if (this === undefined || this === null) throw new TypeError('invalid WebGL receiver')
+        receivers.push({ method, receiver: this })
+        return result
+      })
+    const fakeGl = {
+      TEXTURE0: 0x84c0,
+      TEXTURE_2D: 0x0de1,
+      FRAMEBUFFER: 0x8d40,
+      DRAW_FRAMEBUFFER: 0x8ca9,
+      COLOR_BUFFER_BIT: 0x4000,
+      MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
+      getParameter: vi.fn(() => 2),
+      getUniformLocation: native('getUniformLocation', null),
+      useProgram: native('useProgram'),
+      uniform1i: native('uniform1i'),
+      uniformMatrix4fv: native('uniformMatrix4fv'),
+      activeTexture: native('activeTexture'),
+      bindTexture: native('bindTexture'),
+      texSubImage2D: native('texSubImage2D'),
+      texImage2D: native('texImage2D'),
+      drawArrays: native('drawArrays'),
+      drawElements: native('drawElements'),
+      bindFramebuffer: native('bindFramebuffer'),
+      clear: native('clear'),
+    }
+    class FakeCanvas {
+      width = 100
+      height = 100
+      getContext(_type?: string): typeof fakeGl {
+        return fakeGl
+      }
+    }
+    const realm = {
+      ...globalThis,
+      fetch: globalThis.fetch,
+      Blob: globalThis.Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer: globalThis.ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    install(realm, () => null)
+    const gl = new FakeCanvas().getContext('webgl2') as unknown as WebGL2RenderingContext
+    receivers.length = 0
+    const other = {} as WebGL2RenderingContext
+    const calls: Array<[keyof WebGL2RenderingContext, unknown[]]> = [
+      ['getUniformLocation', [{}, 'name']],
+      ['useProgram', [null]],
+      ['uniform1i', [null, 0]],
+      ['uniformMatrix4fv', [null, false, new Float32Array(16)]],
+      ['activeTexture', [gl.TEXTURE0]],
+      ['bindTexture', [gl.TEXTURE_2D, null]],
+      ['texSubImage2D', [gl.TEXTURE_2D]],
+      ['texImage2D', [gl.TEXTURE_2D]],
+      ['drawArrays', [0, 0, 0]],
+      ['drawElements', [0, 0, 0, 0]],
+      ['bindFramebuffer', [gl.FRAMEBUFFER, null]],
+      ['clear', [gl.COLOR_BUFFER_BIT]],
+    ]
+
+    for (const [method, args] of calls) {
+      Reflect.apply(gl[method] as (...args: unknown[]) => unknown, other, args)
+    }
+    expect(receivers).toEqual(calls.map(([method]) => ({ method, receiver: other })))
+
+    for (const [method, args] of calls) {
+      expect(() =>
+        Reflect.apply(gl[method] as (...args: unknown[]) => unknown, undefined, args),
+      ).toThrow(TypeError)
+    }
+  })
+
+  it('does not reread sequence elements after a matrix upload', () => {
+    let reads = 0
+    const location = {} as WebGLUniformLocation
+    const fakeGl = {
+      TEXTURE0: 0x84c0,
+      TEXTURE_2D: 0x0de1,
+      FRAMEBUFFER: 0x8d40,
+      DRAW_FRAMEBUFFER: 0x8ca9,
+      COLOR_BUFFER_BIT: 0x4000,
+      MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
+      getParameter: vi.fn(() => 2),
+      getUniformLocation: vi.fn(() => location),
+      useProgram: vi.fn(),
+      uniform1i: vi.fn(),
+      uniformMatrix4fv: vi.fn((_location, _transpose, value: ArrayLike<number>) => {
+        for (let index = 0; index < 16; index += 1) void value[index]
+      }),
+      activeTexture: vi.fn(),
+      bindTexture: vi.fn(),
+      texSubImage2D: vi.fn(),
+      texImage2D: vi.fn(),
+      drawArrays: vi.fn(),
+      drawElements: vi.fn(),
+      bindFramebuffer: vi.fn(),
+      clear: vi.fn(),
+    }
+    class FakeCanvas {
+      width = 100
+      height = 100
+      getContext(_type?: string): typeof fakeGl {
+        return fakeGl
+      }
+    }
+    const realm = {
+      ...globalThis,
+      fetch: globalThis.fetch,
+      Blob: globalThis.Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer: globalThis.ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    const sequence: number[] = []
+    for (let index = 0; index < 16; index += 1) {
+      Object.defineProperty(sequence, index, {
+        configurable: true,
+        get() {
+          reads += 1
+          return index
+        },
+      })
+    }
+    sequence.length = 16
+
+    install(realm, () => null)
+    const gl = new FakeCanvas().getContext('webgl2') as unknown as WebGL2RenderingContext
+    const program = {} as WebGLProgram
+    gl.useProgram(program)
+    gl.getUniformLocation(program, 'u_projection_matrix')
+    gl.uniformMatrix4fv(location, false, sequence)
+
+    expect(reads).toBe(16)
+  })
+
   it('keeps raster identity and projection scoped to their WebGL state', async () => {
     const locations = new WeakMap<object, Map<string, object>>()
     const fakeGl = {
@@ -447,6 +605,11 @@ describe('transparent browser hooks', () => {
       TEXTURE1: 0x84c1,
       TEXTURE_2D: 0x0de1,
       TEXTURE_CUBE_MAP: 0x8513,
+      FRAMEBUFFER: 0x8d40,
+      DRAW_FRAMEBUFFER: 0x8ca9,
+      COLOR_BUFFER_BIT: 0x4000,
+      MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
+      getParameter: vi.fn(() => 2),
       getUniformLocation: vi.fn((program: object, name: string) => {
         const programLocations = locations.get(program) ?? new Map<string, object>()
         locations.set(program, programLocations)
@@ -463,6 +626,8 @@ describe('transparent browser hooks', () => {
       texImage2D: vi.fn(),
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
+      bindFramebuffer: vi.fn(),
+      clear: vi.fn(),
     }
     class FakeCanvas {
       width = 1_000
@@ -488,6 +653,7 @@ describe('transparent browser hooks', () => {
       createImageBitmap: vi.fn(async () => new FakeImageBitmap()),
       HTMLCanvasElement: FakeCanvas,
       ArrayBuffer,
+      Float32Array,
     } as unknown as Window & typeof globalThis
     const canvas = new FakeCanvas()
     install(realm, () => null)
@@ -501,11 +667,14 @@ describe('transparent browser hooks', () => {
     if (image0 === null || projection === null) throw new Error('fake raster locations must exist')
     gl.uniform1i(image0, 0)
 
-    const upload = async (unit: number, texture: WebGLTexture, x: number): Promise<void> => {
+    const bitmapFor = async (x: number): Promise<ImageBitmap> => {
       const response = await realm.fetch(`https://backend.wplace.live/files/s0/tiles/${x}/4.png`)
       const buffer = await response.arrayBuffer()
       const blob = new realm.Blob([buffer])
-      const bitmap = await realm.createImageBitmap(blob)
+      return realm.createImageBitmap(blob)
+    }
+    const upload = async (unit: number, texture: WebGLTexture, x: number): Promise<void> => {
+      const bitmap = await bitmapFor(x)
       gl.activeTexture(unit)
       gl.bindTexture(gl.TEXTURE_2D, texture)
       // Another target on the same unit must not steal a 2D upload's attribution.
@@ -519,7 +688,7 @@ describe('transparent browser hooks', () => {
     // Uploading another target must not delete the active unit's 2D tile attribution.
     gl.activeTexture(gl.TEXTURE0)
     gl.texImage2D(gl.TEXTURE_CUBE_MAP, 0, 0, 0, 0, new FakeImageBitmap() as unknown as ImageBitmap)
-    gl.uniformMatrix4fv(projection, false, tileMatrix(1))
+    gl.uniformMatrix4fv(projection, false, new Float32Array(tileMatrix(1)))
     const frames: TileFrame[] = []
     onTileFrame((frame) => frames.push(frame))
     gl.drawElements(0, 0, 0, 0)
@@ -531,7 +700,7 @@ describe('transparent browser hooks', () => {
     gl.useProgram(otherProgram)
     const otherProjection = gl.getUniformLocation(otherProgram, 'u_projection_matrix')
     if (otherProjection === null) throw new Error('fake secondary location must exist')
-    gl.uniformMatrix4fv(otherProjection, false, tileMatrix(0.5, 0.5, 0.5))
+    gl.uniformMatrix4fv(otherProjection, false, new Float32Array(tileMatrix(0.5, 0.5, 0.5)))
     gl.drawElements(0, 0, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(2)
@@ -543,6 +712,39 @@ describe('transparent browser hooks', () => {
 
     expect(frames).toHaveLength(3)
     expect(frames[2]?.quads[0]).toEqual(frames[0]?.quads[0])
+
+    // INVALID_ENUM leaves the native active unit unchanged. The mirror must not drift onto an
+    // unbounded bogus key and attribute the following valid bind/upload to the wrong unit.
+    const replacement = {} as WebGLTexture
+    gl.activeTexture(gl.TEXTURE0 + 99)
+    gl.bindTexture(gl.TEXTURE_2D, replacement)
+    gl.texImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, await bitmapFor(7))
+    gl.uniform1i(image0, 0)
+    gl.drawElements(0, 0, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(4)
+    expect(frames[3]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
+
+    // A frame can clear the default framebuffer without issuing any draw calls. That must clear a
+    // previously painted overlay, while an offscreen framebuffer clear must not become a map frame.
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    await Promise.resolve()
+    expect(frames).toHaveLength(5)
+    expect(frames[4]?.quads).toEqual([])
+
+    gl.drawElements(0, 0, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(6)
+    const offscreen = {} as WebGLFramebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, offscreen)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    await Promise.resolve()
+    expect(frames).toHaveLength(6)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    await Promise.resolve()
+    expect(frames).toHaveLength(7)
+    expect(frames[6]?.quads).toEqual([])
   })
 
   it('does not consume an arbitrary Blob-parts iterable a second time', () => {
@@ -708,6 +910,42 @@ describe('transparent browser hooks', () => {
     expect(takeBySize(bytes.byteLength)).toEqual({ x: 1, y: 2 })
   })
 
+  it('does not infer GET after native fetch consumes a self-deleting method getter', async () => {
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const init: RequestInit = {}
+    Object.defineProperty(init, 'method', {
+      configurable: true,
+      get() {
+        Reflect.deleteProperty(init, 'method')
+        return 'HEAD'
+      },
+    })
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async (_input: RequestInfo | URL, nativeInit?: RequestInit) => {
+        void nativeInit?.method
+        return new Response('missing', { status: 404 })
+      }),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png', init)
+
+    expect(response.status).toBe(404)
+  })
+
   it('preserves the receiver semantics of tapped response body methods', async () => {
     resetQueues()
     const tileResponse = new Response(new Uint8Array([1, 2, 3]))
@@ -733,11 +971,15 @@ describe('transparent browser hooks', () => {
     install(realm, () => null)
     const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
     const buffer = await response.arrayBuffer.call(otherResponse)
+    const arrayBufferDescriptor = Object.getOwnPropertyDescriptor(response, 'arrayBuffer')
+    const blobDescriptor = Object.getOwnPropertyDescriptor(response, 'blob')
 
     expect([...new Uint8Array(buffer)]).toEqual([4, 5])
     expect(response.bodyUsed).toBe(false)
     expect(otherResponse.bodyUsed).toBe(true)
     expect(takeBySize(2)).toBeUndefined()
+    expect(arrayBufferDescriptor?.writable).toBe(true)
+    expect(blobDescriptor?.writable).toBe(true)
     await expect(response.blob.call(undefined as unknown as Response)).rejects.toThrow()
   })
 

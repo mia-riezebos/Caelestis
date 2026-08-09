@@ -288,8 +288,14 @@ export const takeBySizeForBitmap = (
   width: number,
   height: number,
   now = Date.now(),
-): TileCoord | undefined =>
-  width === TILE_SIZE && height === TILE_SIZE ? takeBySize(bytes, now) : undefined
+): TileCoord | undefined => {
+  if (width !== TILE_SIZE || height !== TILE_SIZE) return undefined
+  expireQueues(now)
+  // Same-size decodes can resolve out of order. Missing an overlay tile is visible and
+  // self-correcting; confidently swapping two coordinates is not.
+  if (tilesByByteLength.get(bytes)?.length !== 1) return undefined
+  return takeBySize(bytes, now)
+}
 
 /** Test seam: the queue is module state, and a test needs to start from a known one. */
 export const resetQueues = (): void => tilesByByteLength.clear()
@@ -463,9 +469,9 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
   const urlGetters = captureFetchUrlGetters(realm)
   realm.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
-    // Native fetch snapshots mutable URL/RequestInit data during this call. Observe immediately
-    // afterward, before awaiting its response gives the caller a chance to mutate those objects.
-    const pendingResponse = nativeFetch.apply(this as never, args)
+    // Snapshot only safely observable metadata before native fetch consumes mutable RequestInit
+    // dictionaries. An accessor may delete itself while WebIDL reads it; inspecting afterward would
+    // then mistake a HEAD request for the default GET.
     let tile: TileCoord | null = null
     let shouldNormalizeMissing = false
     try {
@@ -477,6 +483,7 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
     } catch {
       // An unusual input that cannot be observed safely is simply untapped.
     }
+    const pendingResponse = nativeFetch.apply(this as never, args)
     let response = await pendingResponse
     if (tile === null) return response
     const observedTile = tile
@@ -518,6 +525,7 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       }
       Object.defineProperty(response, 'arrayBuffer', {
         configurable: true,
+        writable: true,
         value: async function (this: Response) {
           const own = await nativeArrayBuffer.call(this)
           if (this === tappedResponse) {
@@ -529,6 +537,7 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       })
       Object.defineProperty(response, 'blob', {
         configurable: true,
+        writable: true,
         value: async function (this: Response) {
           const blob = await nativeBlob.call(this)
           if (this === tappedResponse) {
@@ -727,11 +736,21 @@ export const install = (
     const texture2DByUnit = new Map<number, WebGLTexture | null>()
     let activeProgram: WebGLProgram | null = null
     let activeTextureUnit: number = gl.TEXTURE0
+    let maxTextureUnits = Number.POSITIVE_INFINITY
+    try {
+      const measured = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS)
+      if (typeof measured === 'number' && Number.isInteger(measured) && measured > 0) {
+        maxTextureUnits = measured
+      }
+    } catch {
+      // The real context answers this. A partial test double or hostile shim leaves validation at
+      // the enum's non-negative/integer baseline instead of breaking installation.
+    }
 
-    const nativeGetUniformLocation = gl.getUniformLocation.bind(gl)
-    gl.getUniformLocation = (program, name) => {
-      const location = nativeGetUniformLocation(program, name)
-      if (location !== null) {
+    const nativeGetUniformLocation = gl.getUniformLocation
+    gl.getUniformLocation = function (this: WebGL2RenderingContext, program, name) {
+      const location = nativeGetUniformLocation.call(this, program, name)
+      if (this === gl && location !== null) {
         uniforms.set(location, { program, name })
         // WebGL sampler uniforms default to texture unit zero. Remember that before the first
         // explicit upload too: wrappers such as MapLibre cache uniforms and may not set one again.
@@ -742,67 +761,98 @@ export const install = (
       return location
     }
 
-    const nativeUseProgram = gl.useProgram.bind(gl)
-    gl.useProgram = (program) =>
-      runObservedCall(
-        () => nativeUseProgram(program),
+    const nativeUseProgram = gl.useProgram
+    gl.useProgram = function (this: WebGL2RenderingContext, program) {
+      return runObservedCall(
+        () => nativeUseProgram.call(this, program),
         () => {
+          if (this !== gl) return
           activeProgram = program
         },
       )
+    }
 
-    const nativeUniform1i = gl.uniform1i.bind(gl)
-    gl.uniform1i = (location, value) =>
-      runObservedCall(
-        () => nativeUniform1i(location, value),
+    const nativeUniform1i = gl.uniform1i
+    gl.uniform1i = function (this: WebGL2RenderingContext, location, value) {
+      return runObservedCall(
+        () => nativeUniform1i.call(this, location, value),
         () => {
-          if (location === null) return
+          if (this !== gl || location === null || typeof value !== 'number') return
           const uniform = uniforms.get(location)
           if (uniform?.name !== 'u_image0' || uniform.program !== activeProgram) return
           primarySamplerUnits.set(uniform.program, gl.TEXTURE0 + value)
         },
       )
+    }
 
-    const nativeUniformMatrix4fv = gl.uniformMatrix4fv.bind(gl)
-    // biome-ignore lint/suspicious/noExplicitAny: the WebGL2 overloads differ from WebGL1's
-    gl.uniformMatrix4fv = ((location: any, transpose: any, value: any, ...rest: any[]) =>
-      runObservedCall(
-        () => nativeUniformMatrix4fv(location, transpose, value, ...rest),
+    const nativeUniformMatrix4fv = gl.uniformMatrix4fv
+    gl.uniformMatrix4fv = function (
+      this: WebGL2RenderingContext,
+      location: WebGLUniformLocation | null,
+      transpose: GLboolean,
+      value: Float32List,
+      ...rest: [srcOffset?: number, srcLength?: number]
+    ) {
+      return runObservedCall(
+        () => Reflect.apply(nativeUniformMatrix4fv, this, [location, transpose, value, ...rest]),
         () => {
-          if (location === null) return
+          if (this !== gl || location === null || transpose !== false) return
           const uniform = uniforms.get(location)
           if (uniform?.name !== 'u_projection_matrix' || uniform.program !== activeProgram) return
-          // A copy of exactly the values WebGL accepted. MapLibre reuses a scratch array and WebGL2
-          // lets an upload start at an offset, so retaining the caller's array reads another matrix.
-          const offset = typeof rest[0] === 'number' ? rest[0] : 0
-          const source = value as ArrayLike<number>
+          // Plain sequences have already had every element converted by WebIDL. Reading them again
+          // can invoke accessors twice and capture different values, so only page-realm typed arrays
+          // are safe to snapshot.
+          if (
+            !isPageInstance(value, 'Float32Array', realm as unknown as Record<string, unknown>) ||
+            !realm.ArrayBuffer.isView(value)
+          )
+            return
+          const offset = rest.length === 0 ? 0 : rest[0]
+          if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return
+          const source = value as Float32Array
+          const suppliedLength = rest[1]
+          if (
+            suppliedLength !== undefined &&
+            (typeof suppliedLength !== 'number' ||
+              !Number.isInteger(suppliedLength) ||
+              suppliedLength < 0 ||
+              (suppliedLength !== 0 && suppliedLength < MATRIX_LENGTH))
+          )
+            return
+          if (source.length - offset < MATRIX_LENGTH) return
           const snapshot = new Float32Array(MATRIX_LENGTH)
           for (let index = 0; index < MATRIX_LENGTH; index += 1) {
             snapshot[index] = source[offset + index] ?? 0
           }
           projectionByProgram.set(uniform.program, snapshot)
         },
-      )) as typeof gl.uniformMatrix4fv
+      )
+    } as typeof gl.uniformMatrix4fv
 
-    const nativeActiveTexture = gl.activeTexture.bind(gl)
-    gl.activeTexture = (texture) =>
-      runObservedCall(
-        () => nativeActiveTexture(texture),
+    const nativeActiveTexture = gl.activeTexture
+    gl.activeTexture = function (this: WebGL2RenderingContext, texture) {
+      return runObservedCall(
+        () => nativeActiveTexture.call(this, texture),
         () => {
+          if (this !== gl || typeof texture !== 'number') return
+          const index = texture - gl.TEXTURE0
+          if (!Number.isInteger(index) || index < 0 || index >= maxTextureUnits) return
           activeTextureUnit = texture
         },
       )
+    }
 
-    const nativeBindTexture = gl.bindTexture.bind(gl)
-    gl.bindTexture = (target, texture) =>
-      runObservedCall(
-        () => nativeBindTexture(target, texture),
+    const nativeBindTexture = gl.bindTexture
+    gl.bindTexture = function (this: WebGL2RenderingContext, target, texture) {
+      return runObservedCall(
+        () => nativeBindTexture.call(this, target, texture),
         () => {
-          if (target === gl.TEXTURE_2D) {
+          if (this === gl && target === gl.TEXTURE_2D) {
             texture2DByUnit.set(activeTextureUnit, texture)
           }
         },
       )
+    }
 
     /**
      * Both upload paths have to be watched, and missing one is not a gap in coverage but a source
@@ -849,31 +899,33 @@ export const install = (
       }
     }
 
-    const nativeTexSubImage2D = gl.texSubImage2D.bind(gl)
+    const nativeTexSubImage2D = gl.texSubImage2D
     // biome-ignore lint/suspicious/noExplicitAny: texSubImage2D has as many overloads as texImage2D
-    gl.texSubImage2D = ((...subArgs: any[]) => {
+    gl.texSubImage2D = function (this: WebGL2RenderingContext, ...subArgs: any[]) {
       return runObservedCall(
-        () => (nativeTexSubImage2D as (...a: unknown[]) => void)(...subArgs),
-        () => attributeUpload(subArgs[0], subArgs[subArgs.length - 1]),
+        () => Reflect.apply(nativeTexSubImage2D, this, subArgs),
+        () => {
+          if (this === gl) attributeUpload(subArgs[0], subArgs[subArgs.length - 1])
+        },
       )
-    }) as typeof gl.texSubImage2D
+    } as typeof gl.texSubImage2D
 
-    const nativeTexImage2D = gl.texImage2D.bind(gl)
+    const nativeTexImage2D = gl.texImage2D
     // biome-ignore lint/suspicious/noExplicitAny: texImage2D has ten overloads
-    gl.texImage2D = ((...texArgs: any[]) => {
+    gl.texImage2D = function (this: WebGL2RenderingContext, ...texArgs: any[]) {
       return runObservedCall(
-        () => (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs),
-        () => attributeUpload(texArgs[0], texArgs[texArgs.length - 1]),
+        () => Reflect.apply(nativeTexImage2D, this, texArgs),
+        () => {
+          if (this === gl) attributeUpload(texArgs[0], texArgs[texArgs.length - 1])
+        },
       )
-    }) as typeof gl.texImage2D
+    } as typeof gl.texImage2D
 
-    const recordDraw = (): void => {
+    let drawFramebuffer: WebGLFramebuffer | null = null
+    const scheduleFrameFlush = (): boolean => {
       // A provisional context remains wrapped after the real map context appears. Its later draws
       // must not schedule a flush against the new map canvas or clear/corrupt the live overlay.
-      if (contextGeneration !== activeContextGeneration) return
-      // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
-      // wplace tiles in it still reaches the listener. That empty frame is what clears the overlay
-      // when the user zooms out past the point where wplace serves tiles at all.
+      if (contextGeneration !== activeContextGeneration) return false
       if (!scheduled) {
         scheduled = true
         // A microtask, deliberately, not requestAnimationFrame.
@@ -890,6 +942,44 @@ export const install = (
         // approach exists to avoid.
         queueMicrotask(flush)
       }
+      return true
+    }
+
+    const nativeBindFramebuffer = gl.bindFramebuffer
+    gl.bindFramebuffer = function (this: WebGL2RenderingContext, target, framebuffer) {
+      return runObservedCall(
+        () => nativeBindFramebuffer.call(this, target, framebuffer),
+        () => {
+          if (this !== gl) return
+          if (target === gl.FRAMEBUFFER || target === gl.DRAW_FRAMEBUFFER) {
+            drawFramebuffer = framebuffer
+          }
+        },
+      )
+    }
+
+    const nativeClear = gl.clear
+    gl.clear = function (this: WebGL2RenderingContext, mask) {
+      return runObservedCall(
+        () => nativeClear.call(this, mask),
+        () => {
+          if (
+            this === gl &&
+            drawFramebuffer === null &&
+            typeof mask === 'number' &&
+            (mask & gl.COLOR_BUFFER_BIT) !== 0
+          ) {
+            scheduleFrameFlush()
+          }
+        },
+      )
+    }
+
+    const recordDraw = (): void => {
+      // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
+      // wplace tiles in it still reaches the listener. A default-framebuffer colour clear above
+      // covers the rarer frame that contains no draw call at all.
+      if (!scheduleFrameFlush()) return
       frameDraws++
       if (activeProgram === null) {
         count('draw:not-raster-program')
@@ -918,12 +1008,24 @@ export const install = (
       if (quad !== null) pending.push(quad)
     }
 
-    const nativeDrawArrays = gl.drawArrays.bind(gl)
-    gl.drawArrays = (mode, first, count) =>
-      runObservedCall(() => nativeDrawArrays(mode, first, count), recordDraw)
-    const nativeDrawElements = gl.drawElements.bind(gl)
-    gl.drawElements = (mode, count, elementType, offset) =>
-      runObservedCall(() => nativeDrawElements(mode, count, elementType, offset), recordDraw)
+    const nativeDrawArrays = gl.drawArrays
+    gl.drawArrays = function (this: WebGL2RenderingContext, mode, first, count) {
+      return runObservedCall(
+        () => nativeDrawArrays.call(this, mode, first, count),
+        () => {
+          if (this === gl) recordDraw()
+        },
+      )
+    }
+    const nativeDrawElements = gl.drawElements
+    gl.drawElements = function (this: WebGL2RenderingContext, mode, count, elementType, offset) {
+      return runObservedCall(
+        () => nativeDrawElements.call(this, mode, count, elementType, offset),
+        () => {
+          if (this === gl) recordDraw()
+        },
+      )
+    }
 
     return gl
   }
