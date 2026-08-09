@@ -65,6 +65,11 @@ const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
  *
  * Walks the chain rather than reading `cause` once: D1 adds its own `D1_ERROR:` wrapper on top of
  * drizzle's, and neither depth is something to hard-code.
+ *
+ * The `UNIQUE` translation is covered by a test. The two `FOREIGN KEY` ones guard races between a
+ * guard read and the write that follows it, which a single-threaded test cannot open — they are here
+ * because the constraint, not the read, is the authority, and losing that race should give the same
+ * answer as failing the check.
  */
 const mentions = (error: unknown, text: string): boolean => {
   for (let current = error; current instanceof Error; current = current.cause) {
@@ -121,6 +126,12 @@ export class D1SqlStore implements SqlStore {
       if (mentions(error, 'UNIQUE constraint failed')) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
+      // The parent check above is a separate read, so a concurrent delete can remove the parent
+      // between the two and the foreign key rejects this insert. Same outcome as the check finding
+      // it missing, so it gets the same error rather than escaping as a 500.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new InvalidNodeParentError('parent node does not exist')
+      }
       throw error
     }
   }
@@ -152,7 +163,17 @@ export class D1SqlStore implements SqlStore {
     if (children.length > 0 || attachedTemplates.length > 0) {
       throw new NodeNotEmptyError('node has children or templates')
     }
-    await this.database.delete(nodes).where(eq(nodes.id, nodeId))
+    try {
+      await this.database.delete(nodes).where(eq(nodes.id, nodeId))
+    } catch (error) {
+      // The guards are reads, so a child or template can be attached after they come back empty and
+      // before this runs. The foreign key is the authority either way; translate it rather than
+      // letting the race be the one path that answers 500 instead of 409.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new NodeNotEmptyError('node has children or templates')
+      }
+      throw error
+    }
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
