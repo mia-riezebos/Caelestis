@@ -123,7 +123,10 @@ export class D1SqlStore implements SqlStore {
         createdAtMs: node.createdAt,
       })
     } catch (error) {
-      if (mentions(error, 'UNIQUE constraint failed')) {
+      // The named index, not the bare string: `nodes` has two unique constraints, and reporting a
+      // primary-key collision as a path conflict sends the caller after the wrong recovery — and
+      // gave a different answer than the memory store, which leaves an id collision untyped.
+      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
         throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
       }
       // The parent check above is a separate read, so a concurrent delete can remove the parent
@@ -264,9 +267,20 @@ export class D1SqlStore implements SqlStore {
         .where(eq(templates.id, version.templateId)),
     ]
 
-    await this.database.batch(
-      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
-    )
+    try {
+      await this.database.batch(
+        statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+      )
+    } catch (error) {
+      // The node check above is a separate read, so a concurrent delete can remove the node between
+      // the two — allowed, since no template row referenced it yet — and the foreign key rejects
+      // this insert. Same outcome as the check finding it missing, so it gets the same error rather
+      // than escaping as a 500. Same rule as `insertNode` and `deleteNode`.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+      }
+      throw error
+    }
   }
 
   async readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null> {

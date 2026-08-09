@@ -54,6 +54,49 @@ describe('D1SqlStore', () => {
 
   afterEach(() => d1.close())
 
+  it('does not report an id collision as a path conflict', async () => {
+    // `nodes` has two unique constraints and the translation matched the bare string, so a
+    // primary-key collision came back as "node path is already taken" — the wrong reason, the wrong
+    // recovery, and a different class of error than the memory store gives for the same input.
+    const node = {
+      season: 1,
+      parentId: null,
+      description: null,
+      createdAt: millis(1_000),
+    }
+    const id = '01890f3a-6b7c-7def-8123-456789abcde2'
+    await store.insertNode({ ...node, id, path: '/first', name: 'First' })
+
+    await expect(
+      store.insertNode({ ...node, id, path: '/second', name: 'Second' }),
+    ).rejects.not.toBeInstanceOf(NodePathConflictError)
+  })
+
+  it('answers a node deleted under its guard read the same way the guard would', async () => {
+    // `insertTemplateVersion` checks the node exists and then writes, and the check is a separate
+    // statement — a concurrent delete lands between them (allowed, since no template referenced the
+    // node yet) and the foreign key is what notices. Untranslated, losing that race was the one path
+    // that answered 500 for what the route means as a 400.
+    //
+    // A single-threaded test cannot open the real window, so the guard read is made to lie instead:
+    // that exercises the same translation the race reaches. Same shape as `insertNode` and
+    // `deleteNode`, which commit fe4c50e fixed and this site was left out of.
+    const nodeId = '01890f3a-6b7c-7def-8123-456789abcde1'
+    store.readNode = async () => ({
+      id: nodeId,
+      season: 1,
+      parentId: null,
+      path: '/gone',
+      name: 'Gone',
+      description: null,
+      createdAt: millis(1_000),
+    })
+
+    await expect(store.insertTemplateVersion(templateVersion({ nodeId }))).rejects.toBeInstanceOf(
+      NodeNotFoundError,
+    )
+  })
+
   it('stores through the real D1 adapter only when the node exists', async () => {
     const blobs = new MemoryBlobStore()
     const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
