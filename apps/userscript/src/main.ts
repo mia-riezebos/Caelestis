@@ -1,4 +1,10 @@
 import { TILE_SIZE } from '@wts/shared'
+import {
+  canvasPixelAtIn,
+  pixelsPerCanvasPixelIn,
+  screenPointForIn,
+  viewportCentreIn,
+} from './coordinates.js'
 import { installDebugApi, log } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
@@ -69,23 +75,7 @@ const draw = (frame: TileFrame): void => {
 
 /** Where the middle of the viewport is, in canvas pixels — used to place an image on import. */
 export const viewportCentre = (): { x: number; y: number } | null => {
-  if (lastFrame === null || lastFrame.quads.length === 0) return null
-  const canvas = lastFrame.canvas
-  const midX = canvas.width / 2
-  const midY = canvas.height / 2
-  for (const quad of lastFrame.quads) {
-    if (midX < quad.x || midX >= quad.x + quad.width) continue
-    if (midY < quad.y || midY >= quad.y + quad.height) continue
-    const scale = TILE_SIZE / quad.width
-    return {
-      x: quad.tile.x * TILE_SIZE + (midX - quad.x) * scale,
-      y: quad.tile.y * TILE_SIZE + (midY - quad.y) * scale,
-    }
-  }
-  // No tile under the centre: fall back to the first one we have, which is still in view.
-  const first = lastFrame.quads[0]
-  if (first === undefined) return null
-  return { x: first.tile.x * TILE_SIZE, y: first.tile.y * TILE_SIZE }
+  return lastFrame === null ? null : viewportCentreIn(lastFrame)
 }
 
 /** Canvas pixel under a screen point, for centring something on the cursor. */
@@ -93,26 +83,7 @@ export const canvasPixelAt = (
   clientX: number,
   clientY: number,
 ): { x: number; y: number } | null => {
-  if (lastFrame === null) return null
-  const box = lastFrame.canvas.getBoundingClientRect()
-  // Each axis gets its own ratio and its own quad extent. Using the horizontal one for both was
-  // right only while the backing store and the CSS box shared an aspect ratio and every quad came
-  // out exactly square — and a quad is accepted at up to the squareness tolerance, so neither is
-  // guaranteed. Where they differed, vertical positions drifted and this stopped being the inverse
-  // of `screenPointFor`.
-  const ratioX = lastFrame.canvas.width / box.width
-  const ratioY = lastFrame.canvas.height / box.height
-  const px = (clientX - box.left) * ratioX
-  const py = (clientY - box.top) * ratioY
-  for (const quad of lastFrame.quads) {
-    if (px < quad.x || px >= quad.x + quad.width) continue
-    if (py < quad.y || py >= quad.y + quad.height) continue
-    return {
-      x: quad.tile.x * TILE_SIZE + ((px - quad.x) * TILE_SIZE) / quad.width,
-      y: quad.tile.y * TILE_SIZE + ((py - quad.y) * TILE_SIZE) / quad.height,
-    }
-  }
-  return null
+  return lastFrame === null ? null : canvasPixelAtIn(lastFrame, clientX, clientY)
 }
 
 /**
@@ -122,33 +93,12 @@ export const canvasPixelAt = (
  * canvas: we can see where a target is without asking MapLibre anything.
  */
 export const screenPointFor = (x: number, y: number): { x: number; y: number } | null => {
-  if (lastFrame === null) return null
-  const reference = lastFrame.quads[0]
-  if (reference === undefined) return null
-  const box = lastFrame.canvas.getBoundingClientRect()
-  const ratioX = lastFrame.canvas.width / box.width
-  const ratioY = lastFrame.canvas.height / box.height
-  // Any one tile fixes the whole mapping: the scale is uniform and the map is never rotated, so a
-  // single quad is a complete reference frame. Requiring the point to fall *inside* a visible tile
-  // meant a target whose position was just off-screen had no position at all — which is exactly
-  // when something anchored to it needs to stay reachable.
-  //
-  // Per axis, so this stays the exact inverse of `canvasPixelAt` for a quad that is square only
-  // within tolerance.
-  const scaleX = reference.width / TILE_SIZE
-  const scaleY = reference.height / TILE_SIZE
-  const originX = reference.tile.x * TILE_SIZE
-  const originY = reference.tile.y * TILE_SIZE
-  return {
-    x: box.left + (reference.x + (x - originX) * scaleX) / ratioX,
-    y: box.top + (reference.y + (y - originY) * scaleY) / ratioY,
-  }
+  return lastFrame === null ? null : screenPointForIn(lastFrame, x, y)
 }
 
 /** Screen scale: how many device pixels one canvas pixel currently occupies. */
 export const pixelsPerCanvasPixel = (): number => {
-  const quad = lastFrame?.quads[0]
-  return quad === undefined ? 1 : quad.width / TILE_SIZE
+  return pixelsPerCanvasPixelIn(lastFrame)
 }
 
 /**
