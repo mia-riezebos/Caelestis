@@ -668,6 +668,79 @@ describe('transparent browser hooks', () => {
     expect(takeBySize(3)).toEqual({ x: 1, y: 2 })
   })
 
+  it('snapshots mutable fetch metadata before the caller can change it', async () => {
+    resetQueues()
+    let resolveFetch: ((response: Response) => void) | undefined
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve
+          }),
+      ),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    const url = new URL('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    const init = { method: 'GET' }
+
+    install(realm, () => null)
+    const pending = realm.fetch(url, init)
+    url.pathname = '/files/s0/tiles/8/9.png'
+    init.method = 'HEAD'
+    resolveFetch?.(new Response('missing', { status: 404 }))
+    const response = await pending
+    const bytes = await response.arrayBuffer()
+
+    expect(response.status).toBe(200)
+    expect(takeBySize(bytes.byteLength)).toEqual({ x: 1, y: 2 })
+  })
+
+  it('preserves the receiver semantics of tapped response body methods', async () => {
+    resetQueues()
+    const tileResponse = new Response(new Uint8Array([1, 2, 3]))
+    const otherResponse = new Response(new Uint8Array([4, 5]))
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => tileResponse),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    const buffer = await response.arrayBuffer.call(otherResponse)
+
+    expect([...new Uint8Array(buffer)]).toEqual([4, 5])
+    expect(response.bodyUsed).toBe(false)
+    expect(otherResponse.bodyUsed).toBe(true)
+    expect(takeBySize(2)).toBeUndefined()
+    await expect(response.blob.call(undefined as unknown as Response)).rejects.toThrow()
+  })
+
   it('does not coerce a non-string context id after the native call', () => {
     let conversions = 0
     const id = {

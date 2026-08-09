@@ -463,16 +463,23 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
   const urlGetters = captureFetchUrlGetters(realm)
   realm.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
-    let response = await nativeFetch.apply(this as never, args)
+    // Native fetch snapshots mutable URL/RequestInit data during this call. Observe immediately
+    // afterward, before awaiting its response gives the caller a chance to mutate those objects.
+    const pendingResponse = nativeFetch.apply(this as never, args)
     let tile: TileCoord | null = null
+    let shouldNormalizeMissing = false
     try {
       const url = urlForFetchInput(input, realm, urlGetters)
-      if (url !== null) tile = tileFromUrl(url)
+      if (url !== null) {
+        tile = tileFromUrl(url)
+        if (tile !== null) shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
+      }
     } catch {
-      // Fetch already succeeded. An unusual input that cannot be observed safely is simply untapped.
-      return response
+      // An unusual input that cannot be observed safely is simply untapped.
     }
+    let response = await pendingResponse
     if (tile === null) return response
+    const observedTile = tile
 
     // Real tile pixels are only tapped, never composited with ours: that would make the two layers
     // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
@@ -481,7 +488,7 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       // With no controlling service worker, the origin returns 404 HTML for an unpainted tile. The
       // service worker normally turns that into a tiny transparent PNG; do the same so first visits
       // still give MapLibre a texture and therefore give the overlay a quad to align against.
-      if (isGetFetch(input, args[1], realm, urlGetters)) {
+      if (shouldNormalizeMissing) {
         response = normalizeMissingTileResponse(response, realm)
       }
       if (!response.ok) return response
@@ -496,13 +503,14 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       // code that consults ordinary response metadata got the wrong answer from a tap that claims to
       // be transparent. Own properties shadow `Response.prototype`, which is what makes wplace call
       // these and receive the objects this tagged, rather than fresh ones the platform mints.
-      const nativeArrayBuffer = response.arrayBuffer.bind(response)
-      const nativeBlob = response.blob.bind(response)
+      const tappedResponse = response
+      const nativeArrayBuffer = response.arrayBuffer
+      const nativeBlob = response.blob
       const recordRead = (bytes: number): void => {
         // The size queue is only a last resort. Queue when the page actually consumes the body,
         // rather than delaying fetch to duplicate every response pre-emptively.
-        enqueueBySize(bytes, tile)
-        log('fetch', `tile ${tile.x}/${tile.y}`, {
+        enqueueBySize(bytes, observedTile)
+        log('fetch', `tile ${observedTile.x}/${observedTile.y}`, {
           bytes,
           status: response.status,
           sizesWaiting: tilesByByteLength.size,
@@ -510,26 +518,30 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
       }
       Object.defineProperty(response, 'arrayBuffer', {
         configurable: true,
-        value: async () => {
-          const own = await nativeArrayBuffer()
-          tileOfBuffer.set(own, tile)
-          recordRead(own.byteLength)
+        value: async function (this: Response) {
+          const own = await nativeArrayBuffer.call(this)
+          if (this === tappedResponse) {
+            tileOfBuffer.set(own, observedTile)
+            recordRead(own.byteLength)
+          }
           return own
         },
       })
       Object.defineProperty(response, 'blob', {
         configurable: true,
-        value: async () => {
-          const blob = await nativeBlob()
-          tileOfBlob.set(blob, tile)
-          recordRead(blob.size)
+        value: async function (this: Response) {
+          const blob = await nativeBlob.call(this)
+          if (this === tappedResponse) {
+            tileOfBlob.set(blob, observedTile)
+            recordRead(blob.size)
+          }
           return blob
         },
       })
       return response
     } catch (error) {
       // A body we cannot read is a tile we cannot attribute; it simply goes undrawn.
-      warn('fetch', `could not read body for ${tile.x}/${tile.y}`, String(error))
+      warn('fetch', `could not read body for ${observedTile.x}/${observedTile.y}`, String(error))
       return response
     }
   } as typeof globalThis.fetch
