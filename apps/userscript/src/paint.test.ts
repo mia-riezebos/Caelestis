@@ -19,7 +19,7 @@ describe('paintFrame', () => {
       vi.fn(() => calls.push('second')),
     ]
 
-    paintFrame(context, frame, painters)
+    paintFrame(context, frame, painters, vi.fn())
 
     expect(calls).toEqual([
       'reset',
@@ -34,7 +34,7 @@ describe('paintFrame', () => {
     expect(context.clearRect).toHaveBeenCalledWith(0, 0, 320, 180)
   })
 
-  it('restores the context when a painter throws', () => {
+  it('restores the context and continues when a painter throws', () => {
     const context = {
       canvas: { width: 1, height: 1 },
       reset: vi.fn(),
@@ -43,14 +43,24 @@ describe('paintFrame', () => {
       restore: vi.fn(),
     } as unknown as CanvasRenderingContext2D
     const failure = new Error('painter failed')
+    const later = vi.fn()
+    const onError = vi.fn()
 
     expect(() =>
-      paintFrame(context, frame, [
-        () => {
-          throw failure
-        },
-      ]),
-    ).toThrow(failure)
-    expect(context.restore).toHaveBeenCalledOnce()
+      paintFrame(
+        context,
+        frame,
+        [
+          () => {
+            throw failure
+          },
+          later,
+        ],
+        onError,
+      ),
+    ).not.toThrow()
+    expect(context.restore).toHaveBeenCalledTimes(2)
+    expect(onError).toHaveBeenCalledWith(failure)
+    expect(later).toHaveBeenCalledOnce()
   })
 })

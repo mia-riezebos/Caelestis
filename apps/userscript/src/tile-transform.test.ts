@@ -16,6 +16,7 @@ import {
   runObservedCall,
   type TileFrame,
   takeBySize,
+  takeBySizeForBitmap,
   tileFromUrl,
   urlForFetchInput,
 } from './tile-transform.js'
@@ -213,6 +214,14 @@ describe('byte-length attribution queue', () => {
     })
     expect(takeBySize(73, 1_001)).toBeUndefined()
   })
+
+  it('does not consume a tile fallback for a non-tile bitmap', () => {
+    resetQueues()
+    enqueueBySize(73, { x: 4, y: 5 }, 1_000)
+
+    expect(takeBySizeForBitmap(73, 512, 512, 1_001)).toBeUndefined()
+    expect(takeBySize(73, 1_001)).toEqual({ x: 4, y: 5 })
+  })
 })
 
 describe('transparent browser hooks', () => {
@@ -379,6 +388,55 @@ describe('transparent browser hooks', () => {
 
     mapCanvas.context.drawArrays()
     await Promise.resolve()
+    expect(counters.get('draw:not-raster-program')).toBe(1)
+  })
+
+  it('does not let a later unrelated context steal an uncaptured map canvas', async () => {
+    const fakeGl = () => ({
+      TEXTURE0: 0x84c0,
+      TEXTURE_2D: 0x0de1,
+      getUniformLocation: vi.fn(() => null),
+      useProgram: vi.fn(),
+      uniform1i: vi.fn(),
+      uniformMatrix4fv: vi.fn(),
+      activeTexture: vi.fn(),
+      bindTexture: vi.fn(),
+      texSubImage2D: vi.fn(),
+      texImage2D: vi.fn(),
+      drawArrays: vi.fn(),
+      drawElements: vi.fn(),
+    })
+    class FakeCanvas {
+      width = 100
+      height = 100
+      readonly classList: { contains: (name: string) => boolean }
+      constructor(
+        readonly context: ReturnType<typeof fakeGl>,
+        isMap: boolean,
+      ) {
+        this.classList = { contains: (name) => isMap && name === 'maplibregl-canvas' }
+      }
+      getContext(_type?: string): ReturnType<typeof fakeGl> {
+        return this.context
+      }
+    }
+    const realm = {
+      fetch: globalThis.fetch,
+      Blob: globalThis.Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer: globalThis.ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    install(realm, () => null)
+    const map = new FakeCanvas(fakeGl(), true)
+    const unrelated = new FakeCanvas(fakeGl(), false)
+    map.getContext('webgl2')
+    unrelated.getContext('webgl2')
+    counters.clear()
+
+    map.context.drawArrays()
+    await Promise.resolve()
+
     expect(counters.get('draw:not-raster-program')).toBe(1)
   })
 

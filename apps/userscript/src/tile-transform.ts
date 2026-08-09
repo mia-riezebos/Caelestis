@@ -1,4 +1,4 @@
-import { parseTileKey, type TileCoord } from '@wts/shared'
+import { parseTileKey, TILE_SIZE, type TileCoord } from '@wts/shared'
 import { count, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
@@ -281,6 +281,15 @@ export const takeBySize = (bytes: number, now = Date.now()): TileCoord | undefin
   if (queue !== undefined && queue.length === 0) tilesByByteLength.delete(bytes)
   return entry?.tile
 }
+
+/** Consume a byte-length fallback for a decoded bitmap. */
+export const takeBySizeForBitmap = (
+  bytes: number,
+  width: number,
+  height: number,
+  now = Date.now(),
+): TileCoord | undefined =>
+  width === TILE_SIZE && height === TILE_SIZE ? takeBySize(bytes, now) : undefined
 
 /** Test seam: the queue is module state, and a test needs to start from a known one. */
 export const resetQueues = (): void => tilesByByteLength.clear()
@@ -601,7 +610,7 @@ const installBitmapTap = (realm: Window & typeof globalThis): void => {
           return bitmap
         }
         count('bitmap:fell-back-to-byte-length')
-        const tile = takeBySize((source as Blob).size)
+        const tile = takeBySizeForBitmap((source as Blob).size, bitmap.width, bitmap.height)
         if (tile !== undefined) {
           tileOfBitmap.set(bitmap, tile)
           log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: (source as Blob).size })
@@ -635,6 +644,15 @@ export const install = (
   let wrappedIsMapOwned = false
   let activeContextGeneration = 0
 
+  const looksLikeMapCanvas = (canvas: HTMLCanvasElement | null): boolean => {
+    try {
+      return canvas?.classList.contains('maplibregl-canvas') === true
+    } catch {
+      // A hostile canvas shim must not change a successful native getContext call.
+      return false
+    }
+  }
+
   realm.HTMLCanvasElement.prototype.getContext = function (
     this: HTMLCanvasElement,
     // biome-ignore lint/suspicious/noExplicitAny: matching the DOM overload set is not worth it
@@ -656,7 +674,7 @@ export const install = (
     // for something else first — a fingerprinting probe, an effect — and instrumenting that one and
     // then refusing every context after it means the overlay simply never receives a frame. If the
     // map has already been captured, only its own canvas counts; before that, take the first and let
-    // a later match correct it.
+    // a later canvas carrying MapLibre's measured class correct it.
     let mapOwned: HTMLCanvasElement | undefined
     try {
       mapOwned = mapHandle()?.getCanvas?.()
@@ -666,6 +684,13 @@ export const install = (
     if (mapOwned !== undefined && mapOwned !== this) {
       log('install', 'skipped a WebGL context that is not the map canvas', { type })
       return context
+    }
+    if (wrapped && mapOwned === undefined) {
+      const currentLooksLikeMap = looksLikeMapCanvas(mapCanvas)
+      const candidateLooksLikeMap = looksLikeMapCanvas(this)
+      // Keep the first provisional context until there is positive evidence that a later canvas is
+      // MapLibre's. Once the measured map class is wrapped, an unrelated context cannot steal it.
+      if (currentLooksLikeMap || !candidateLooksLikeMap) return context
     }
     if (wrapped) log('install', 're-targeting onto the map canvas', { type })
     wrapped = true

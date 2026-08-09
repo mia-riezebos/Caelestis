@@ -5,7 +5,7 @@ import {
   screenPointForIn,
   viewportCentreIn,
 } from './coordinates.js'
-import { installDebugApi, log } from './debug.js'
+import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
@@ -43,6 +43,10 @@ export type Painter = FramePainter
 
 const painters: Painter[] = []
 
+const reportPainterError = (error: unknown): void => {
+  warn('frame', 'painter failed', String(error))
+}
+
 /** Register something to draw on the overlay. Called on every frame, in registration order. */
 export const onPaint = (painter: Painter): void => {
   painters.push(painter)
@@ -67,7 +71,7 @@ const draw = (frame: TileFrame): void => {
   if (context === null) return
   // Cleared unconditionally, including on frames with no tiles, so zooming out past the point where
   // wplace stops serving tiles does not strand the last frame on screen.
-  paintFrame(context, frame, painters)
+  paintFrame(context, frame, painters, reportPainterError)
 
   log('frame', 'painted', { quads: quads.length, painters: painters.length })
 }
