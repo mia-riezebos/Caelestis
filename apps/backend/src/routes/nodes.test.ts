@@ -97,6 +97,73 @@ describe('node routes', () => {
     await expect(sql.readNode(child.body.id)).resolves.toMatchObject({ path: '/renamed/child' })
   })
 
+  it.each([
+    ['a malformed id', 'not-a-uuid', { name: 'Fine' }, 400],
+    ['an unknown id', '01890f3a-6b7c-7def-8123-4560000000ff', { name: 'Fine' }, 404],
+    ['a missing name', '01890f3a-6b7c-7def-8123-4560000000ff', {}, 400],
+    ['a name of the wrong type', '01890f3a-6b7c-7def-8123-4560000000ff', { name: 7 }, 400],
+    ['an empty name', '01890f3a-6b7c-7def-8123-4560000000ff', { name: '' }, 400],
+    ['an over-long name', '01890f3a-6b7c-7def-8123-4560000000ff', { name: 'x'.repeat(257) }, 400],
+    [
+      'a name with no letter or number',
+      '01890f3a-6b7c-7def-8123-4560000000ff',
+      { name: '---' },
+      400,
+    ],
+  ] as const)('refuses a rename with %s', async (_label, id, body, status) => {
+    // Each guard on PATCH was deletable: the id check, the body parse, the three name checks and the
+    // sluggability check all had the surface to themselves, and the one success test walked past all
+    // of them. Ordered so the id and body checks answer before anything reads the store.
+    const { app } = harness()
+
+    const response = await app.request(`/admin/nodes/${id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify(body),
+    })
+
+    expect(response.status).toBe(status)
+  })
+
+  it('refuses a rename whose body is not JSON at all', async () => {
+    const { app } = harness()
+    const response = await app.request('/admin/nodes/01890f3a-6b7c-7def-8123-4560000000ff', {
+      method: 'PATCH',
+      headers: bearer,
+      body: 'not json',
+    })
+
+    expect(response.status).toBe(400)
+  })
+
+  it('returns the whole renamed node, not just what changed', async () => {
+    // The route used to answer with a record it assembled itself. It now returns what the store
+    // wrote, which is the only version that reflects the path the store actually composed.
+    const { app } = harness()
+    const created = await createNode(app, {
+      season: 1,
+      parentId: null,
+      name: 'Before',
+      description: 'Kept',
+    })
+
+    const response = await app.request(`/admin/nodes/${created.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'After' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      id: created.body.id,
+      parentId: null,
+      path: '/after',
+      name: 'After',
+      description: 'Kept',
+      createdAt: created.body.createdAt,
+    })
+  })
+
   it('refuses a rename that would collide with a sibling', async () => {
     const { app } = harness()
     await createNode(app, { season: 1, parentId: null, name: 'Taken' })

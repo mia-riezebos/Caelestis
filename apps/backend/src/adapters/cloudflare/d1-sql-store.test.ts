@@ -9,6 +9,7 @@ import {
 } from '../../ports/index.js'
 import { storeTemplate } from '../../templates/store.js'
 import { MemoryBlobStore } from '../memory/memory-blob-store.js'
+import { MemorySqlStore } from '../memory/memory-sql-store.js'
 import { D1SqlStore } from './d1-sql-store.js'
 import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 
@@ -53,6 +54,55 @@ describe('D1SqlStore', () => {
   })
 
   afterEach(() => d1.close())
+
+  it('folds case the way SQLite does when moving a subtree', async () => {
+    // The two stores disagreed about which rows a rename moves. SQLite's LIKE is case-insensitive
+    // over ASCII, so `/canada/` selects a child stored as `/CANADA/x`; the memory store matched with
+    // a case-sensitive `startsWith` and left that child behind. The wire's hierarchy rule folds the
+    // same way SQLite does, so the child is legal and production was the one that got it right.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'r', parentId: null, path: '/canada', name: 'canada' })
+      await target.insertNode({ ...base, id: 'k', parentId: 'r', path: '/CANADA/x', name: 'x' })
+      await target.renameNode('r', 'Éire', 'éire')
+      return (await target.readNode('k'))?.path
+    }
+
+    expect(await seed(store)).toBe('/éire/x')
+    expect(await seed(new MemorySqlStore())).toBe('/éire/x')
+  })
+
+  it('counts the old path in characters, not UTF-16 units, when moving a subtree', async () => {
+    // SQLite's `length()` and `substr()` count characters; JavaScript's `.length` counts UTF-16
+    // units, and an astral character is two of them. Deriving the SQL offset in JavaScript therefore
+    // cut one unit too far into every descendant for each astral character in the ancestor's path —
+    // silently, and only against real D1, since the memory store slices in the same units it counts.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'r', parentId: null, path: '/𝐀', name: '𝐀' })
+      await target.insertNode({ ...base, id: 'k', parentId: 'r', path: '/𝐀/x', name: 'x' })
+      await target.renameNode('r', 'Plain', 'plain')
+      return (await target.readNode('k'))?.path
+    }
+
+    expect(await seed(store)).toBe('/plain/x')
+    expect(await seed(new MemorySqlStore())).toBe('/plain/x')
+  })
+
+  it('folds only ASCII when deciding a rename collides', async () => {
+    // `lower()` in SQLite folds ASCII and nothing else, so `/QUÉBEC` and `/québec` are two distinct
+    // paths to the database. The memory store used `toLowerCase()`, which folds `É`, and refused a
+    // rename production would have accepted.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'a', parentId: null, path: '/QUÉBEC', name: 'QUÉBEC' })
+      await target.insertNode({ ...base, id: 'b', parentId: null, path: '/other', name: 'Other' })
+      return (await target.renameNode('b', 'québec', 'québec'))?.path
+    }
+
+    expect(await seed(store)).toBe('/québec')
+    expect(await seed(new MemorySqlStore())).toBe('/québec')
+  })
 
   it('does not report an id collision as a path conflict', async () => {
     // `nodes` has two unique constraints and the translation matched the bare string, so a
