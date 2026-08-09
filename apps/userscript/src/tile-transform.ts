@@ -1,4 +1,4 @@
-import type { TileCoord } from '@wts/shared'
+import { parseTileKey, type TileCoord } from '@wts/shared'
 import { count, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
@@ -74,6 +74,13 @@ const ROTATION_TOLERANCE = 1e-6
 const TILE_PATH = /^\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png$/
 const TILE_ORIGIN = 'https://backend.wplace.live'
 
+/** The same transparent pixel shape wplace's service worker substitutes for an absent tile. */
+const TRANSPARENT_PNG = new Uint8Array([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0,
+  0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 96, 96, 0, 0, 0, 3, 0, 1, 43, 9, 77,
+  132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+])
+
 /**
  * The tile this URL names, or null.
  *
@@ -94,7 +101,56 @@ export const tileFromUrl = (url: string): TileCoord | null => {
   if (parsed.origin !== TILE_ORIGIN) return null
   const match = TILE_PATH.exec(parsed.pathname)
   if (match === null) return null
-  return { x: Number(match[1]), y: Number(match[2]) }
+  return parseTileKey(`${match[1]}/${match[2]}`)
+}
+
+interface FetchUrlGetters {
+  readonly requestUrl: ((this: Request) => string) | undefined
+  readonly urlHref: ((this: URL) => string) | undefined
+}
+
+/** Snapshot native URL readers before page code or another userscript can replace them. */
+export const captureFetchUrlGetters = (realm: Window & typeof globalThis): FetchUrlGetters => {
+  try {
+    return {
+      requestUrl: realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'url')?.get,
+      urlHref: realm.Object.getOwnPropertyDescriptor(realm.URL.prototype, 'href')?.get,
+    }
+  } catch {
+    return { requestUrl: undefined, urlHref: undefined }
+  }
+}
+
+/** Observe a fetch input without repeating its generic string conversion. */
+export const urlForFetchInput = (
+  input: unknown,
+  realm: Window & typeof globalThis,
+  getters: FetchUrlGetters,
+): string | null => {
+  if (typeof input === 'string') return input
+  try {
+    if (isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)) {
+      return getters.requestUrl?.call(input as Request) ?? null
+    }
+    if (isPageInstance(input, 'URL', realm as unknown as Record<string, unknown>)) {
+      return getters.urlHref?.call(input as URL) ?? null
+    }
+  } catch {
+    // A proxy or a replaced constructor can refuse its native slot. Attribution is optional.
+  }
+  return null
+}
+
+/** Make an origin 404 decodable, matching the service worker's transparent-tile behavior. */
+export const normalizeMissingTileResponse = (
+  response: Response,
+  realm: Window & typeof globalThis,
+): Response => {
+  if (response.status !== 404) return response
+  return new realm.Response(TRANSPARENT_PNG, {
+    status: 200,
+    headers: { 'content-type': 'image/png' },
+  })
 }
 
 export interface TileQuad {
@@ -358,30 +414,29 @@ export const onTileFrame = (listener: FrameListener): void => {
 
 const installFetchTap = (realm: Window & typeof globalThis): void => {
   const nativeFetch = realm.fetch
+  const urlGetters = captureFetchUrlGetters(realm)
   realm.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
-    const response = await nativeFetch.apply(this as never, args)
+    let response = await nativeFetch.apply(this as never, args)
     let tile: TileCoord | null = null
     try {
-      if (typeof input === 'string') {
-        tile = tileFromUrl(input)
-      } else if (isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)) {
-        // Read the native slot after fetch has succeeded. An own `url` getter or a second generic
-        // stringification could run page code twice and either throw or describe a different fetch.
-        const getter = realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'url')?.get
-        const url = getter?.call(input)
-        if (typeof url === 'string') tile = tileFromUrl(url)
-      }
+      const url = urlForFetchInput(input, realm, urlGetters)
+      if (url !== null) tile = tileFromUrl(url)
     } catch {
       // Fetch already succeeded. An unusual input that cannot be observed safely is simply untapped.
       return response
     }
     if (tile === null) return response
 
-    // A tap, not a rewrite: the response is handed back untouched. Compositing into wplace's own
-    // tiles would make our pixels indistinguishable from theirs, which is exactly what per-colour
-    // toggles and view modes need to be able to tell apart.
+    // Real tile pixels are only tapped, never composited with ours: that would make the two layers
+    // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
+    // origin tile, normalized to the transparent response wplace's service worker ordinarily gives.
     try {
+      // With no controlling service worker, the origin returns 404 HTML for an unpainted tile. The
+      // service worker normally turns that into a tiny transparent PNG; do the same so first visits
+      // still give MapLibre a texture and therefore give the overlay a quad to align against.
+      response = normalizeMissingTileResponse(response, realm)
+      if (!response.ok) return response
       // Hand back a Response whose blob() returns a Blob *we* made, and tag that object. wplace
       // then calls createImageBitmap on the very object we tagged, so identity is exact rather than
       // inferred. Overriding blob()/arrayBuffer() as own properties shadows Response.prototype;

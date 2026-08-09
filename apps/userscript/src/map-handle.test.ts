@@ -105,14 +105,20 @@ describe('installMapCapture', () => {
     delete (Object.prototype as Record<string, unknown>)[WITNESS]
   })
 
-  it('restores a descriptor it replaced rather than deleting it', () => {
-    const theirs = { configurable: true, writable: true, enumerable: false, value: 'theirs' }
-    Object.defineProperty(Object.prototype, WITNESS, theirs)
+  it('leaves a pre-existing witness descriptor and its assignment semantics alone', () => {
+    const assigned: unknown[] = []
+    const theirs = (value: unknown) => assigned.push(value)
+    Object.defineProperty(Object.prototype, WITNESS, { configurable: true, set: theirs })
+    const candidate = mapLike() as Record<string, unknown>
+    const container = { nodeName: 'DIV' }
 
     installMapCapture()
-    ;(mapLike() as Record<string, unknown>)[WITNESS] = {}
+    candidate[WITNESS] = container
 
-    expect(witnessDescriptor()).toMatchObject({ value: 'theirs' })
+    expect(assigned).toEqual([container])
+    expect(Object.hasOwn(candidate, WITNESS)).toBe(false)
+    expect(witnessDescriptor()?.set).toBe(theirs)
+    expect(getMap()).toBeNull()
     delete (Object.prototype as Record<string, unknown>)[WITNESS]
   })
 

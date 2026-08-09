@@ -1,16 +1,20 @@
+import { decodePng } from '@wts/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { counters } from './debug.js'
 import {
   blobPartsForAttribution,
+  captureFetchUrlGetters,
   consumeBySize,
   enqueueBySize,
   install,
+  normalizeMissingTileResponse,
   project,
   quadFromMatrix,
   resetQueues,
   runObservedCall,
   takeBySize,
   tileFromUrl,
+  urlForFetchInput,
 } from './tile-transform.js'
 
 /**
@@ -73,6 +77,7 @@ describe('tileFromUrl', () => {
       'https://backend.wplace.live/api/report?u=/files/s0/tiles/9/9.png',
     ],
     ['a suffix past the extension', 'https://backend.wplace.live/files/s0/tiles/1/2.png.exe'],
+    ['an out-of-range tile', 'https://backend.wplace.live/files/s0/tiles/2048/1.png'],
     ['not a URL at all', 'http://['],
   ])('refuses %s', (_label, url) => {
     expect(tileFromUrl(url)).toBeNull()
@@ -206,6 +211,87 @@ describe('byte-length attribution queue', () => {
 })
 
 describe('transparent browser hooks', () => {
+  it('reads URL and Request inputs through snapshotted native getters', () => {
+    const realm = globalThis as unknown as Window & typeof globalThis
+    const getters = captureFetchUrlGetters(realm)
+    const url = new URL('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    const request = new Request('https://backend.wplace.live/files/s0/tiles/3/4.png')
+    Object.defineProperty(url, 'toString', {
+      value: () => {
+        throw new Error('generic conversion must not run')
+      },
+    })
+
+    expect(urlForFetchInput(url, realm, getters)).toBe(url.href)
+    expect(urlForFetchInput(request, realm, getters)).toBe(request.url)
+  })
+
+  it('keeps using the captured URL getters if page prototypes change later', () => {
+    class FakeRequest {
+      constructor(readonly nativeUrl: string) {}
+    }
+    class FakeUrl {
+      constructor(readonly nativeHref: string) {}
+    }
+    Object.defineProperty(FakeRequest.prototype, 'url', {
+      configurable: true,
+      get(this: FakeRequest) {
+        return this.nativeUrl
+      },
+    })
+    Object.defineProperty(FakeUrl.prototype, 'href', {
+      configurable: true,
+      get(this: FakeUrl) {
+        return this.nativeHref
+      },
+    })
+    const realm = {
+      Object,
+      Request: FakeRequest,
+      URL: FakeUrl,
+    } as unknown as Window & typeof globalThis
+    const getters = captureFetchUrlGetters(realm)
+    const request = new FakeRequest('https://backend.wplace.live/files/s0/tiles/5/6.png')
+    const url = new FakeUrl('https://backend.wplace.live/files/s0/tiles/7/8.png')
+    Object.defineProperty(FakeRequest.prototype, 'url', {
+      configurable: true,
+      get: () => 'https://evil.example/files/s0/tiles/5/6.png',
+    })
+    Object.defineProperty(FakeUrl.prototype, 'href', {
+      configurable: true,
+      get: () => 'https://evil.example/files/s0/tiles/7/8.png',
+    })
+
+    expect(urlForFetchInput(request, realm, getters)).toBe(request.nativeUrl)
+    expect(urlForFetchInput(url, realm, getters)).toBe(url.nativeHref)
+  })
+
+  it('normalizes an origin 404 to a decodable transparent PNG', async () => {
+    const realm = globalThis as unknown as Window & typeof globalThis
+    const original = new Response('missing', {
+      status: 404,
+      headers: { 'content-type': 'text/html' },
+    })
+
+    const normalized = normalizeMissingTileResponse(original, realm)
+    const decoded = await decodePng(new Uint8Array(await normalized.arrayBuffer()))
+
+    expect(normalized.status).toBe(200)
+    expect(normalized.headers.get('content-type')).toBe('image/png')
+    expect({ width: decoded.width, height: decoded.height, pixels: [...decoded.pixels] }).toEqual({
+      width: 1,
+      height: 1,
+      pixels: [0, 0, 0, 0],
+    })
+  })
+
+  it('leaves non-404 failures untouched instead of queuing their bodies', () => {
+    const realm = globalThis as unknown as Window & typeof globalThis
+    const failed = new Response('unavailable', { status: 503 })
+
+    expect(normalizeMissingTileResponse(failed, realm)).toBe(failed)
+  })
+
   it('deactivates a provisional WebGL context after retargeting to the map', async () => {
     const fakeGl = () => ({
       getUniformLocation: vi.fn(() => null),

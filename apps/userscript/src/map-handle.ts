@@ -99,6 +99,10 @@ export const installMapCapture = (): void => {
   for (const property of WITNESS_PROPERTIES) {
     try {
       const original = Object.getOwnPropertyDescriptor(pageProto(), property)
+      // An inherited descriptor already has page-visible assignment semantics. Replacing it, even
+      // temporarily, can suppress a setter or turn a rejected write into an own property. The other
+      // witness names are enough; an occupied one belongs to whoever installed it first.
+      if (original !== undefined) continue
       const descriptor: PropertyDescriptor = {
         configurable: true,
         get() {

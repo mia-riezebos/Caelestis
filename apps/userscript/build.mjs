@@ -18,6 +18,7 @@ const metadata = `// ==UserScript==
 // @author       mia-riezebos
 // @match        https://wplace.live/*
 // @run-at       document-start
+// @inject-into  page
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
