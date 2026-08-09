@@ -1,5 +1,5 @@
 import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, type SQL, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -17,12 +17,14 @@ import {
   compareAccessTokens,
   compareBuckets,
   InvalidNodeParentError,
+  MAX_NODE_PATH_LENGTH,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
+  NodePathTooLongError,
   type NodeRecord,
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
@@ -64,16 +66,21 @@ const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
  * right error, so every test agreed with the route and only production disagreed.
  *
  * Walks the chain rather than reading `cause` once: D1 adds its own `D1_ERROR:` wrapper on top of
- * drizzle's, and neither depth is something to hard-code.
+ * drizzle's, and neither depth is something to hard-code. Bounded anyway, because `cause` is an
+ * ordinary property and nothing stops a chain from pointing back at itself.
  *
  * The `UNIQUE` translation is covered by a test. The two `FOREIGN KEY` ones guard races between a
  * guard read and the write that follows it, which a single-threaded test cannot open — they are here
  * because the constraint, not the read, is the authority, and losing that race should give the same
  * answer as failing the check.
  */
+const MAX_CAUSE_DEPTH = 5
+
 const mentions = (error: unknown, text: string): boolean => {
-  for (let current = error; current instanceof Error; current = current.cause) {
+  let current: unknown = error
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth += 1) {
     if (current.message.includes(text)) return true
+    current = current.cause
   }
   return false
 }
@@ -104,20 +111,39 @@ export class D1SqlStore implements SqlStore {
     this.database = drizzle(database)
   }
 
-  async insertNode(node: NodeRecord): Promise<void> {
+  async insertNode(node: NodeRecord): Promise<NodeRecord> {
+    let parentPath = ''
     if (node.parentId !== null) {
       const parent = await this.readNode(node.parentId)
       if (parent === null) throw new InvalidNodeParentError('parent node does not exist')
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
+      parentPath = parent.path
     }
+    // The prefix comes from the parent row, not from `node.path`. A caller derives that path from
+    // its own read of the parent, and a rename committing in between leaves the child inserted under
+    // a prefix its parent no longer has — a hierarchy the wire refuses, written by two requests that
+    // both succeeded. Only the last segment is the caller's to choose. Same rule as `renameNode`.
+    const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
+    // Bounded here as well as by the CHECK, because the memory store bounds it here and the two are
+    // meant to answer alike. The CHECK stays the backstop for the window between this read and the
+    // write, in which a rename can lengthen the prefix underneath us.
+    if (`${parentPath}/${segment}`.length > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(`node path is longer than ${MAX_NODE_PATH_LENGTH}`)
+    }
+    // Roots get the same treatment as children: only the last segment is the caller's, so a stale
+    // multi-segment proposal cannot create a root whose path claims to be nested.
+    const path =
+      node.parentId === null
+        ? sql`${`/${segment}`}`
+        : sql`coalesce((select path from nodes where id = ${node.parentId}), '') || '/' || ${segment}`
     try {
       await this.database.insert(nodes).values({
         id: node.id,
         season: node.season,
         parentId: node.parentId,
-        path: node.path,
+        path,
         name: node.name,
         description: node.description,
         createdAtMs: node.createdAt,
@@ -135,8 +161,18 @@ export class D1SqlStore implements SqlStore {
       if (mentions(error, 'FOREIGN KEY constraint failed')) {
         throw new InvalidNodeParentError('parent node does not exist')
       }
+      // The route bounds the path it derived, but the prefix written here comes from the parent row,
+      // which a rename may have lengthened since. The CHECK is the authority; losing to it answers
+      // the same 400 as failing the route's own check rather than a 500.
+      if (mentions(error, 'CHECK constraint failed: nodes_path_check')) {
+        throw new NodePathTooLongError(`node path is longer than ${MAX_NODE_PATH_LENGTH}`)
+      }
       throw error
     }
+    // Re-read rather than assemble: the path the database composed is the one that is true.
+    const inserted = await this.readNode(node.id)
+    if (inserted === null) throw new NodeNotFoundError(`node does not exist: ${node.id}`)
+    return inserted
   }
 
   async readNode(nodeId: string): Promise<NodeRecord | null> {
@@ -152,6 +188,101 @@ export class D1SqlStore implements SqlStore {
       .where(eq(nodes.season, season))
       .orderBy(asc(nodes.id))
     return rows.map(toNode)
+  }
+
+  async renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null> {
+    const node = await this.readNode(nodeId)
+    if (node === null) return null
+
+    // Not LIKE: D1 caps a LIKE or GLOB pattern at 50 bytes, and a node path may be 256 characters,
+    // so renaming anything but a shallow node answered "LIKE or GLOB pattern too complex" — every
+    // ordinary rename of a nested group, in production only. `substr` compares the same prefix with
+    // no pattern at all, and `lower` folds ASCII exactly as LIKE did. Lengths come from SQLite's own
+    // `length()` so the comparison stays in characters throughout.
+    const oldPrefix = `${node.path}/`
+    const startsWithOldPrefix = (prefix: SQL | string): SQL =>
+      sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
+    const descendants = and(eq(nodes.season, node.season), startsWithOldPrefix(oldPrefix))
+
+    // Every descendant keeps its suffix, so its new length is its old one shifted by the change in
+    // the prefix — one aggregate, no rows. `slug` keeps paths inside the BMP, so SQLite's character
+    // count and the UTF-16 count the wire uses are the same number; this used to read every
+    // descendant path because they were not, which a season-sized subtree turns into a result set D1
+    // refuses.
+    //
+    // That equality is an assumption, and the route is what holds it up: every stored path is one
+    // `slug` derived. A path with an astral character would make this under-count, the CHECK agree
+    // with it, and the resulting manifest stop decoding — so if a second writer ever appears, or rows
+    // arrive from anywhere but this route, this aggregate has to go back to measuring the rows.
+    // Nothing has been deployed from this schema, so there are no such rows to migrate today.
+    const path = `${node.path.slice(0, node.path.lastIndexOf('/'))}/${segment}`
+    const shift = path.length - node.path.length
+    const [deepest] = await this.database
+      .select({ length: sql<number>`coalesce(max(length(${nodes.path})), 0)` })
+      .from(nodes)
+      .where(descendants)
+    const longest = Math.max(path.length, (deepest?.length ?? 0) + shift)
+    if (longest > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(
+        `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+      )
+    }
+
+    // The old path is read inside the batch rather than carried in from the read above, so the two
+    // statements agree about what they are moving. Carried in, two concurrent renames of the same
+    // node both saw `/x`: the first moved the node to `/a` and its children with it, the second then
+    // moved the node to `/b` and rewrote `/x/%`, which by then matched nothing — leaving the node at
+    // `/b` and its children at `/a/c`. The batch was atomic the whole time; the value it was built
+    // from was not.
+    //
+    // The destination is composed from the parent's path for the same reason. `parentId` cannot
+    // change here, so the parent row is a stable place to ask.
+    //
+    // Untested on purpose: `insertNode` composes the same way, so no tree holds a child whose prefix
+    // differs from its parent's, and the only thing this guards is a concurrent ancestor rename —
+    // which a single-threaded suite cannot stage. A test that seeded the mismatch through the store
+    // would be testing a state the stores no longer allow.
+    const parentPath =
+      node.parentId === null
+        ? sql`''`
+        : sql`coalesce((select path from nodes where id = ${node.parentId}), '')`
+    const destination = sql`${parentPath} || '/' || ${segment}`
+    const oldPath = sql`(select path from nodes where id = ${nodeId})`
+
+    // One batch: the node and every descendant move together or not at all. A half-applied rename
+    // leaves children whose path no longer starts with their parent's, which silently breaks every
+    // prefix rollup rather than failing loudly.
+    //
+    // Descendants first, while the node row still holds the old path they are matched against. The
+    // suffix starts at the old path's length rather than the old prefix's, so it keeps the
+    // separating slash — cutting past it concatenated `/renamed` with `child` and wrote
+    // `/renamedchild`. `length()` is SQLite's, which counts characters like `substr` does, where
+    // JavaScript's counts UTF-16 units and sliced every descendant short past an astral character.
+    const statements = [
+      this.database
+        .update(nodes)
+        .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
+        .where(and(eq(nodes.season, node.season), startsWithOldPrefix(sql`${oldPath} || '/'`))),
+      this.database.update(nodes).set({ name, path: destination }).where(eq(nodes.id, nodeId)),
+    ] as const
+    try {
+      await this.database.batch([statements[0], statements[1]])
+    } catch (error) {
+      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
+        throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+      }
+      // The guard above reads a snapshot, so a child inserted between it and this batch can be
+      // lengthened past the bound by a rename that was measured without it. The CHECK is the
+      // authority; losing to it answers the same 400 as failing the guard rather than a 500.
+      if (mentions(error, 'CHECK constraint failed: nodes_path_check')) {
+        throw new NodePathTooLongError(
+          `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+        )
+      }
+      throw error
+    }
+    // Re-read rather than assemble: the path the database composed is the one that is true.
+    return this.readNode(nodeId)
   }
 
   async deleteNode(nodeId: string): Promise<void> {

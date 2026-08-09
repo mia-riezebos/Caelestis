@@ -28,9 +28,9 @@ export const nodes = sqliteTable(
   },
   // Within a season, path is the prefix-rollup key and subtree-rewrite key. Two nodes sharing one
   // path make a rollup attribute one group's templates to another, and make the documented
-  // `UPDATE ... WHERE path LIKE '<old>/%'` move rewrite both subtrees when either is renamed.
+  // prefix-matched subtree move rewrites both subtrees when either one is renamed.
   // Lowercase, because SQLite's LIKE is ASCII-case-insensitive: with both /Canada and /canada stored,
-  // the documented `LIKE '<old>/%'` subtree move rewrites the other one's descendants too.
+  // a subtree move matched on `<old>/` rewrites the other one's descendants too.
   //
   // That asymmetry constrains how the move is written. LIKE selects case-insensitively, so it picks
   // up a `/CANADA/x` descendant of `/canada` — and SQLite's `replace()` is byte-exact, so rewriting
@@ -43,7 +43,7 @@ export const nodes = sqliteTable(
     // table in this file carrying no CHECK at all.
     //
     // `%` and `_` are LIKE metacharacters and this is the subtree-rewrite key, so `/canada%`
-    // expands the documented move to `LIKE '/canada%/%'` and captures every sibling subtree
+    // expands the move's prefix to `/canada%/` and captures every sibling subtree
     // starting with "canada"; `/%` captures the whole tree. The structural rules come with them: a
     // path is absolute, has no empty segment, and does not end in a slash, or the prefix rollup and
     // the move disagree about where a subtree begins.

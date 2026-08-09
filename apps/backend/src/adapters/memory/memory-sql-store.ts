@@ -8,12 +8,14 @@ import {
   compareAccessTokens,
   compareBuckets,
   InvalidNodeParentError,
+  MAX_NODE_PATH_LENGTH,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
+  NodePathTooLongError,
   type NodeRecord,
   type SqlStore,
   type TelemetryBucket,
@@ -49,24 +51,40 @@ export class MemorySqlStore implements SqlStore {
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
 
-  async insertNode(node: NodeRecord): Promise<void> {
+  async insertNode(node: NodeRecord): Promise<NodeRecord> {
     if (this.nodes.has(node.id)) throw new Error(`node already exists: ${node.id}`)
-    if (
-      [...this.nodes.values()].some(
-        (candidate) =>
-          candidate.season === node.season && foldPath(candidate.path) === foldPath(node.path),
-      )
-    ) {
-      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
-    }
+
+    // Composed before anything is checked. Checking the caller's path and storing a different one
+    // let a child land on a path the check had already cleared as free — two rows, one path, and the
+    // oracle disagreeing with a database that has a unique index to stop exactly that.
+    // Roots get the same treatment as children: only the last segment is the caller's, so a stale
+    // multi-segment proposal cannot create a root whose path claims to be nested.
+    const segment = node.path.slice(node.path.lastIndexOf('/') + 1)
+    let path = `/${segment}`
     if (node.parentId !== null) {
       const parent = this.nodes.get(node.parentId)
       if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
       if (parent.season !== node.season) {
         throw new InvalidNodeParentError('parent node belongs to a different season')
       }
+      path = `${parent.path}/${segment}`
     }
-    this.nodes.set(node.id, { ...node })
+
+    if (path.length > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(`node path is longer than ${MAX_NODE_PATH_LENGTH}`)
+    }
+    if (
+      [...this.nodes.values()].some(
+        (candidate) =>
+          candidate.season === node.season && foldPath(candidate.path) === foldPath(path),
+      )
+    ) {
+      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+    }
+
+    const inserted = { ...node, path }
+    this.nodes.set(node.id, inserted)
+    return inserted
   }
 
   async readNode(nodeId: string): Promise<NodeRecord | null> {
@@ -79,6 +97,67 @@ export class MemorySqlStore implements SqlStore {
       .filter((node) => node.season === season)
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((node) => ({ ...node }))
+  }
+
+  async renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) return null
+    // Composed from the parent row rather than from this node's own path — see the port docstring on
+    // why a caller-supplied path is a race. Reading it off the node's own path would keep whatever
+    // case that prefix was stored in, so a child at `/CANADA/x` under a parent at `/canada` renamed
+    // to `/CANADA/new` here and `/canada/new` in production. Both are legal; only one can be right.
+    const parentPath = node.parentId === null ? '' : (this.nodes.get(node.parentId)?.path ?? '')
+    const path = `${parentPath}/${segment}`
+
+    const oldPrefix = `${node.path}/`
+    // Folded, because SQLite's LIKE is case-insensitive over ASCII and so selects `/CANADA/x` under
+    // the prefix `/canada/`. A case-sensitive match here would leave that child behind in the oracle
+    // while production moved it.
+    //
+    // No reachable state needs it any more: `insertNode` composes a child's prefix from its parent,
+    // so a tree cannot hold two spellings of one prefix, and there is deliberately no test for it.
+    // Kept because the fold is what SQLite does, and this store's job is to answer as SQLite would —
+    // if such a row ever arrives, from a migration or a future write path, the two still agree.
+    const foldedPrefix = foldPath(oldPrefix)
+    const descendants = [...this.nodes.values()].filter(
+      (candidate) =>
+        candidate.season === node.season && foldPath(candidate.path).startsWith(foldedPrefix),
+    )
+
+    const rewritten = descendants.map((descendant) => ({
+      ...descendant,
+      path: `${path}${descendant.path.slice(node.path.length)}`,
+    }))
+
+    // Length before collision, matching D1 — which cannot ask its unique index anything until the
+    // write, so the order is not a choice there. Checked the other way round, a rename that both
+    // collides and overflows answered 409 here and 400 in production.
+    // Reduced rather than spread: a season may hold 100,000 nodes and that many arguments is a
+    // RangeError, not a large number.
+    const longest = rewritten.reduce(
+      (worst, entry) => Math.max(worst, entry.path.length),
+      path.length,
+    )
+    if (longest > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(
+        `rename would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+      )
+    }
+
+    const taken = [...this.nodes.values()].some(
+      (candidate) =>
+        candidate.id !== nodeId &&
+        candidate.season === node.season &&
+        foldPath(candidate.path) === foldPath(path),
+    )
+    if (taken) {
+      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+    }
+
+    const renamed = { ...node, name, path }
+    this.nodes.set(nodeId, renamed)
+    for (const descendant of rewritten) this.nodes.set(descendant.id, descendant)
+    return renamed
   }
 
   async deleteNode(nodeId: string): Promise<void> {

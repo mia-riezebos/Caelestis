@@ -193,7 +193,7 @@ export const ServerInfo = Schema.Struct({
  * A materialized group path: a leading slash and at least one segment.
  *
  * `%` and `_` are excluded because this value is the subtree-rewrite key. The documented move is
- * `UPDATE ... WHERE path LIKE '<old>/%'`, and in a LIKE pattern `%` matches any run and `_` matches
+ * a prefix match on `<old>/`, and were that written as a LIKE — as it was — `%` matches any run and `_` matches
  * any single character — so a node created as `/canada%` rewrites every sibling subtree when it
  * moves, and `/%` captures the whole tree. Callers should still pass ESCAPE; excluding the two
  * metacharacters means a missing ESCAPE cannot be exploited from the wire.

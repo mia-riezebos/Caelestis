@@ -62,14 +62,137 @@ describe('node routes', () => {
         body: JSON.stringify({ season: 1, parentId: null, name: 'Sneaky' }),
       })
       const listed = await app.request('/admin/nodes?season=1', { headers: holder })
+      const patched = await app.request('/admin/nodes/whatever', {
+        method: 'PATCH',
+        headers: holder,
+        body: JSON.stringify({ name: 'Sneaky' }),
+      })
       const deleted = await app.request('/admin/nodes/whatever', {
         method: 'DELETE',
         headers: holder,
       })
 
-      expect([created.status, listed.status, deleted.status]).toEqual([403, 403, 403])
+      expect([created.status, listed.status, patched.status, deleted.status]).toEqual([
+        403, 403, 403, 403,
+      ])
     },
   )
+
+  it('renames a node and carries its descendants along', async () => {
+    // `path` is a materialized prefix, so a rename is not a one-row update: every descendant holds
+    // the old path as a prefix. Leaving them behind breaks every rollup silently rather than loudly.
+    const { sql, app } = harness()
+    const parent = await createNode(app, { season: 1, parentId: null, name: 'Parent' })
+    const child = await createNode(app, { season: 1, parentId: parent.body.id, name: 'Child' })
+    expect(child.body.path).toBe('/parent/child')
+
+    const response = await app.request(`/admin/nodes/${parent.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Renamed' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ name: 'Renamed', path: '/renamed' })
+    await expect(sql.readNode(child.body.id)).resolves.toMatchObject({ path: '/renamed/child' })
+  })
+
+  it.each([
+    ['a malformed id', 'not-a-uuid', { name: 'Fine' }, 400],
+    ['an unknown id', '01890f3a-6b7c-7def-8123-4560000000ff', { name: 'Fine' }, 404],
+    ['a missing name', '01890f3a-6b7c-7def-8123-4560000000ff', {}, 400],
+    ['a name of the wrong type', '01890f3a-6b7c-7def-8123-4560000000ff', { name: 7 }, 400],
+    ['an empty name', '01890f3a-6b7c-7def-8123-4560000000ff', { name: '' }, 400],
+    ['an over-long name', '01890f3a-6b7c-7def-8123-4560000000ff', { name: 'x'.repeat(257) }, 400],
+    [
+      'a name with no letter or number',
+      '01890f3a-6b7c-7def-8123-4560000000ff',
+      { name: '---' },
+      400,
+    ],
+  ] as const)('refuses a rename with %s', async (_label, id, body, status) => {
+    // Each guard on PATCH was deletable: the id check, the body parse, the three name checks and the
+    // sluggability check all had the surface to themselves, and the one success test walked past all
+    // of them. Ordered so the id and body checks answer before anything reads the store.
+    const { app } = harness()
+
+    const response = await app.request(`/admin/nodes/${id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify(body),
+    })
+
+    expect(response.status).toBe(status)
+  })
+
+  it('refuses a rename whose body is not JSON at all', async () => {
+    const { app } = harness()
+    const response = await app.request('/admin/nodes/01890f3a-6b7c-7def-8123-4560000000ff', {
+      method: 'PATCH',
+      headers: bearer,
+      body: 'not json',
+    })
+
+    expect(response.status).toBe(400)
+  })
+
+  it('returns the whole renamed node, not just what changed', async () => {
+    // The route used to answer with a record it assembled itself. It now returns what the store
+    // wrote, which is the only version that reflects the path the store actually composed.
+    const { app } = harness()
+    const created = await createNode(app, {
+      season: 1,
+      parentId: null,
+      name: 'Before',
+      description: 'Kept',
+    })
+
+    const response = await app.request(`/admin/nodes/${created.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'After' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      id: created.body.id,
+      parentId: null,
+      path: '/after',
+      name: 'After',
+      description: 'Kept',
+      createdAt: created.body.createdAt,
+    })
+  })
+
+  it('accepts a rename to the name the node already has', async () => {
+    // What a rename dialog sends when it is confirmed without an edit. The node's own row is in the
+    // table it checks for collisions, so without excluding itself this is a 409 against itself.
+    const { app } = harness()
+    const created = await createNode(app, { season: 1, parentId: null, name: 'Same' })
+
+    const response = await app.request(`/admin/nodes/${created.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Same' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ path: '/same' })
+  })
+
+  it('refuses a rename that would collide with a sibling', async () => {
+    const { app } = harness()
+    await createNode(app, { season: 1, parentId: null, name: 'Taken' })
+    const other = await createNode(app, { season: 1, parentId: null, name: 'Other' })
+
+    const response = await app.request(`/admin/nodes/${other.body.id}`, {
+      method: 'PATCH',
+      headers: bearer,
+      body: JSON.stringify({ name: 'Taken' }),
+    })
+
+    expect(response.status).toBe(409)
+  })
 
   it('round-trips a root and child with server-derived paths', async () => {
     const { app } = harness()

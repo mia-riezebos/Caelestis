@@ -2,14 +2,18 @@ import { millis, uuidV7 } from '@wts/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { NodeRecord, SqlStore } from '../ports/index.js'
-import { InvalidNodeParentError, NodeNotEmptyError, NodePathConflictError } from '../ports/index.js'
+import {
+  InvalidNodeParentError,
+  NodeNotEmptyError,
+  NodePathConflictError,
+  NodePathTooLongError,
+} from '../ports/index.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 // Seasons are 1-based, matching `Season` in the wire and the Worker's own `SEASON` refusal.
 const SEASON_NUMBER = /^[1-9]\d*$/
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4_096
-const MAX_PATH_LENGTH = 256
 
 const parseSeason = (value: unknown): number | null => {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 1 ? value : null
@@ -18,10 +22,26 @@ const parseSeason = (value: unknown): number | null => {
   return Number.isSafeInteger(parsed) ? parsed : null
 }
 
+/**
+ * Derive a path segment from a display name.
+ *
+ * Astral characters are replaced rather than kept, which is what keeps the three places that bound a
+ * path agreeing with each other. SQLite's `length()` counts characters and JavaScript's `.length`
+ * counts UTF-16 units, and a code point outside the BMP is one of the former and two of the latter —
+ * so `nodes_path_check`, the store guards and the wire's `NodePath` were measuring the same string
+ * and getting different numbers. Three separate defects came out of that gap. Confined to the BMP
+ * the two counts are equal by construction and the gap cannot reopen.
+ *
+ * The name keeps every character the caller sent; only the derived path is narrowed. A name with
+ * nothing but astral letters therefore slugs to nothing and is refused, which the route reports.
+ */
+const ASTRAL = /[\u{10000}-\u{10FFFF}]/gu
+
 const slug = (name: string): string =>
   name
     .trim()
     .toLowerCase()
+    .replace(ASTRAL, '-')
     .replace(/[^\p{L}\p{N}.]+/gu, '-')
     .replace(/^[^\p{L}\p{N}]+/u, '')
     .trim()
@@ -73,8 +93,9 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
       }
       parentPath = parent.path
     }
+    // Not bounded here: the store composes the path it will actually store and bounds that, and a
+    // check on the path assembled from this read could only ever agree with it or be wrong.
     const path = `${parentPath}/${segment}`
-    if (path.length > MAX_PATH_LENGTH) return c.json({ error: 'derived path is too long' }, 400)
 
     const node: NodeRecord = {
       id: uuidV7(),
@@ -85,21 +106,56 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
       description: description ?? null,
       createdAt: millis(Date.now()),
     }
+    let inserted: NodeRecord
     try {
-      await sql.insertNode(node)
+      // The store composes the prefix from the parent row, so the record it answers with is the one
+      // to report — the path assembled here is only a bound check and a proposal.
+      inserted = await sql.insertNode(node)
     } catch (error) {
-      if (error instanceof NodePathConflictError || error instanceof InvalidNodeParentError) {
+      if (
+        error instanceof NodePathConflictError ||
+        error instanceof InvalidNodeParentError ||
+        error instanceof NodePathTooLongError
+      ) {
         return c.json({ error: error.message }, 400)
       }
       throw error
     }
-    return c.json(publicNode(node), 201)
+    return c.json(publicNode(inserted), 201)
   })
 
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'))
     if (season === null) return c.json({ error: 'season must be a positive integer' }, 400)
     return c.json((await sql.listNodes(season)).map(publicNode))
+  })
+
+  routes.patch('/:id', async (c) => {
+    const nodeId = c.req.param('id')
+    if (!UUID_V7.test(nodeId)) {
+      return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
+    }
+    const body: unknown = await c.req.json().catch(() => null)
+    if (typeof body !== 'object' || body === null) return c.json({ error: 'invalid body' }, 400)
+    const { name } = body as { name?: unknown }
+    if (typeof name !== 'string' || name.length === 0 || name.length > MAX_NAME_LENGTH) {
+      return c.json({ error: 'name must be 1..256 characters' }, 400)
+    }
+    const segment = slug(name)
+    if (segment.length === 0) return c.json({ error: 'name must contain a letter or number' }, 400)
+
+    // The destination prefix is the store's to compose, not this route's: it comes from the node's
+    // own path at the moment of the write, so a concurrent rename of an ancestor cannot leave this
+    // one writing a path under a prefix that has since moved.
+    try {
+      const renamed = await sql.renameNode(nodeId, name, segment)
+      if (renamed === null) return c.json({ error: 'not found' }, 404)
+      return c.json(publicNode(renamed))
+    } catch (error) {
+      if (error instanceof NodePathConflictError) return c.json({ error: error.message }, 409)
+      if (error instanceof NodePathTooLongError) return c.json({ error: error.message }, 400)
+      throw error
+    }
   })
 
   routes.delete('/:id', async (c) => {

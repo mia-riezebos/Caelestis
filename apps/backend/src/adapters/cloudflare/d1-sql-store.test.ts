@@ -6,9 +6,11 @@ import {
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
+  NodePathTooLongError,
 } from '../../ports/index.js'
 import { storeTemplate } from '../../templates/store.js'
 import { MemoryBlobStore } from '../memory/memory-blob-store.js'
+import { MemorySqlStore } from '../memory/memory-sql-store.js'
 import { D1SqlStore } from './d1-sql-store.js'
 import { SqliteD1Database } from './sqlite-d1.test-helper.js'
 
@@ -53,6 +55,115 @@ describe('D1SqlStore', () => {
   })
 
   afterEach(() => d1.close())
+
+  it('counts the old path in characters, not UTF-16 units, when moving a subtree', async () => {
+    // SQLite's `length()` and `substr()` count characters; JavaScript's `.length` counts UTF-16
+    // units, and an astral character is two of them. Deriving the SQL offset in JavaScript therefore
+    // cut one unit too far into every descendant for each astral character in the ancestor's path —
+    // silently, and only against real D1, since the memory store slices in the same units it counts.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'r', parentId: null, path: '/𝐀', name: '𝐀' })
+      await target.insertNode({ ...base, id: 'k', parentId: 'r', path: '/𝐀/x', name: 'x' })
+      await target.renameNode('r', 'Plain', 'plain')
+      return (await target.readNode('k'))?.path
+    }
+
+    expect(await seed(store)).toBe('/plain/x')
+    expect(await seed(new MemorySqlStore())).toBe('/plain/x')
+  })
+
+  it('composes a child on its parent, whatever prefix the caller proposed', async () => {
+    // Only the last segment of the caller's path is honoured; the prefix comes from the parent row,
+    // because a caller derives it from an earlier read and a rename landing in between would attach
+    // the child under a prefix its parent no longer has. Nothing pinned this in either store, so
+    // reverting it left the suite green.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'p', parentId: null, path: '/canada', name: 'Canada' })
+      const child = await target.insertNode({
+        ...base,
+        id: 'c',
+        parentId: 'p',
+        path: '/stale/x',
+        name: 'x',
+      })
+      return child.path
+    }
+
+    expect(await seed(store)).toBe('/canada/x')
+    expect(await seed(new MemorySqlStore())).toBe('/canada/x')
+  })
+
+  it('composes a root from its final segment too', async () => {
+    // The port promises only the last segment is honoured, and a root took the whole proposed path —
+    // so a stale multi-segment proposal created a root whose path claims to be nested, which the
+    // manifest's hierarchy rule then refuses. Roots and children now compose the same way.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) =>
+      (await target.insertNode({ ...base, id: 'r', parentId: null, path: '/stale/x', name: 'x' }))
+        .path
+
+    expect(await seed(store)).toBe('/x')
+    expect(await seed(new MemorySqlStore())).toBe('/x')
+  })
+
+  it('decides a collision on the composed path, not the proposed one', async () => {
+    // The oracle checked the caller's path and stored the composed one, so a child could clear a
+    // uniqueness check for a path it was never going to occupy: D1 raised a conflict on its unique
+    // index and the memory store cheerfully held two rows at `/canada/x`.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'p', parentId: null, path: '/canada', name: 'Canada' })
+      await target.insertNode({ ...base, id: 'a', parentId: 'p', path: '/canada/x', name: 'x' })
+      return target.insertNode({ ...base, id: 'b', parentId: 'p', path: '/stale/x', name: 'x' })
+    }
+
+    await expect(seed(store)).rejects.toBeInstanceOf(NodePathConflictError)
+    await expect(seed(new MemorySqlStore())).rejects.toBeInstanceOf(NodePathConflictError)
+  })
+
+  it('bounds the composed path in both stores', async () => {
+    // The route bounds the path it derived, but the prefix actually written comes from the parent
+    // row — which a rename may have lengthened since. D1 hit `nodes_path_check` and let a bare error
+    // escape as a 500; the memory store had no length guard at all and stored a path the wire
+    // refuses.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({
+        ...base,
+        id: 'p',
+        parentId: null,
+        path: `/${'p'.repeat(250)}`,
+        name: 'p',
+      })
+      return target.insertNode({
+        ...base,
+        id: 'c',
+        parentId: 'p',
+        path: `/${'x'.repeat(20)}`,
+        name: 'x',
+      })
+    }
+
+    await expect(seed(store)).rejects.toBeInstanceOf(NodePathTooLongError)
+    await expect(seed(new MemorySqlStore())).rejects.toBeInstanceOf(NodePathTooLongError)
+  })
+
+  it('folds only ASCII when deciding a rename collides', async () => {
+    // `lower()` in SQLite folds ASCII and nothing else, so `/QUÉBEC` and `/québec` are two distinct
+    // paths to the database. The memory store used `toLowerCase()`, which folds `É`, and refused a
+    // rename production would have accepted.
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const seed = async (target: D1SqlStore | MemorySqlStore) => {
+      await target.insertNode({ ...base, id: 'a', parentId: null, path: '/QUÉBEC', name: 'QUÉBEC' })
+      await target.insertNode({ ...base, id: 'b', parentId: null, path: '/other', name: 'Other' })
+      return (await target.renameNode('b', 'québec', 'québec'))?.path
+    }
+
+    expect(await seed(store)).toBe('/québec')
+    expect(await seed(new MemorySqlStore())).toBe('/québec')
+  })
 
   it('does not report an id collision as a path conflict', async () => {
     // `nodes` has two unique constraints and the translation matched the bare string, so a
@@ -134,6 +245,27 @@ describe('D1SqlStore', () => {
       published_at: null,
     })
     await expect(store.readTemplateVersion(stored.versionId)).resolves.toMatchObject({ nodeId })
+  })
+
+  it('reports a duplicate path as a conflict rather than letting the driver error escape', async () => {
+    // The in-memory store threw NodePathConflictError here and D1 did not, because Drizzle wraps the
+    // database error: its own message is only "Failed query: insert into …" and the constraint text
+    // lives on `cause`, with D1 adding a further layer. Checking `error.message` alone matched
+    // neither, so a duplicate folder name surfaced as a 500. Only reproducible against real D1,
+    // which is why it belongs in this file and not beside the memory adapter.
+    const node = {
+      season: 1,
+      parentId: null,
+      path: '/duplicate',
+      name: 'Duplicate',
+      description: null,
+      createdAt: millis(1_750_000_000_000),
+    }
+    await store.insertNode({ ...node, id: '01890f3a-6b7c-7def-8123-4567890abcd1' })
+
+    await expect(
+      store.insertNode({ ...node, id: '01890f3a-6b7c-7def-8123-4567890abcd2' }),
+    ).rejects.toBeInstanceOf(NodePathConflictError)
   })
 
   it('writes a template, version, tile index and current pointer in one batch', async () => {
@@ -1014,7 +1146,10 @@ describe('D1SqlStore', () => {
 
     await expect(store.insertNode(node('n2', 1, '/CANADA'))).rejects.toThrow(NodePathConflictError)
     // A season is a namespace: the same path in another season is a different node.
-    await expect(store.insertNode(node('n3', 2, '/canada'))).resolves.toBeUndefined()
+    await expect(store.insertNode(node('n3', 2, '/canada'))).resolves.toMatchObject({
+      path: '/canada',
+      season: 2,
+    })
     await expect(store.insertNode(node('n4', 2, '/canada/x', 'nope'))).rejects.toThrow(
       InvalidNodeParentError,
     )
