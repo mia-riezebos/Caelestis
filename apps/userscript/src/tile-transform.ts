@@ -612,34 +612,45 @@ const installBitmapTap = (realm: Window & typeof globalThis): void => {
   const nativeCreateImageBitmap = realm.createImageBitmap
   // biome-ignore lint/suspicious/noExplicitAny: createImageBitmap has two overload shapes
   realm.createImageBitmap = (async (...args: any[]) => {
-    const bitmap = await (nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>)(
+    const pendingBitmap = (nativeCreateImageBitmap as (...a: unknown[]) => Promise<ImageBitmap>)(
       ...args,
     )
+    let sourceBlob: Blob | undefined
+    let sourceBytes: number | undefined
+    let exact: TileCoord | undefined
     try {
       const source = args[0]
       if (isPageInstance(source, 'Blob', realm as unknown as Record<string, unknown>)) {
-        // Exact first: this is the Blob we handed back from the fetch tap.
-        const exact = tileOfBlob.get(source as Blob)
+        sourceBlob = source as Blob
+        sourceBytes = sourceBlob.size
+        exact = tileOfBlob.get(sourceBlob)
+        if (exact !== undefined) {
+          // Reserve exact attribution before decode yields. Otherwise an untagged same-size bitmap
+          // can settle first and steal this tile's sole byte-length fallback entry.
+          consumeBySize(sourceBytes, exact)
+        }
+      }
+    } catch {
+      // Native decoding has started. Attribution must not change its eventual result.
+    }
+    const bitmap = await pendingBitmap
+    try {
+      if (sourceBlob !== undefined && sourceBytes !== undefined) {
         if (exact !== undefined) {
           tileOfBitmap.set(bitmap, exact)
-          // Retire the size entry this tile queued: it has been attributed exactly and must not stay
-          // behind to answer for some later blob that merely happens to be the same length.
-          consumeBySize((source as Blob).size, exact)
-          log('bitmap', `matched ${exact.x}/${exact.y} by identity`, {
-            bytes: (source as Blob).size,
-          })
+          log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: sourceBytes })
           return bitmap
         }
         count('bitmap:fell-back-to-byte-length')
-        const tile = takeBySizeForBitmap((source as Blob).size, bitmap.width, bitmap.height)
+        const tile = takeBySizeForBitmap(sourceBytes, bitmap.width, bitmap.height)
         if (tile !== undefined) {
           tileOfBitmap.set(bitmap, tile)
-          log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: (source as Blob).size })
+          log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: sourceBytes })
         } else if (bitmap.width === 1000 && bitmap.height === 1000) {
           // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
           // thins out: it will overwrite a texture's identity below.
           warn('bitmap', 'unmatched 1000x1000 bitmap — no tile queued at this byte length', {
-            bytes: (source as Blob).size,
+            bytes: sourceBytes,
             sizesWaiting: [...tilesByByteLength.keys()].slice(0, 8).join(' '),
           })
         }
@@ -967,6 +978,20 @@ export const install = (
       )
     }
 
+    const nativeDeleteFramebuffer = gl.deleteFramebuffer
+    gl.deleteFramebuffer = function (this: WebGL2RenderingContext, framebuffer) {
+      return runObservedCall(
+        () => nativeDeleteFramebuffer.call(this, framebuffer),
+        () => {
+          if (this === gl && framebuffer !== null && framebuffer === drawFramebuffer) {
+            // WebGL automatically restores the default draw framebuffer when the bound object is
+            // deleted; keep the mirror on the same transition.
+            drawFramebuffer = null
+          }
+        },
+      )
+    }
+
     const nativeClear = gl.clear
     gl.clear = function (this: WebGL2RenderingContext, mask) {
       return runObservedCall(
@@ -978,7 +1003,13 @@ export const install = (
             typeof mask === 'number' &&
             (mask & gl.COLOR_BUFFER_BIT) !== 0
           ) {
-            scheduleFrameFlush()
+            if (scheduleFrameFlush()) {
+              // The GPU discarded every earlier default-framebuffer draw in this task. Do the same
+              // to quads accumulated for the pending microtask.
+              pending = []
+              frameDraws = 0
+              frameTileDraws = 0
+            }
           }
         },
       )

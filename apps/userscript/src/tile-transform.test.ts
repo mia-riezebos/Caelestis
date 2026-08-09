@@ -360,6 +360,7 @@ describe('transparent browser hooks', () => {
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
+      deleteFramebuffer: vi.fn(),
       clear: vi.fn(),
     })
     class FakeCanvas {
@@ -424,6 +425,7 @@ describe('transparent browser hooks', () => {
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
+      deleteFramebuffer: vi.fn(),
       clear: vi.fn(),
     })
     class FakeCanvas {
@@ -487,6 +489,7 @@ describe('transparent browser hooks', () => {
       drawArrays: native('drawArrays'),
       drawElements: native('drawElements'),
       bindFramebuffer: native('bindFramebuffer'),
+      deleteFramebuffer: native('deleteFramebuffer'),
       clear: native('clear'),
     }
     class FakeCanvas {
@@ -523,6 +526,7 @@ describe('transparent browser hooks', () => {
       ['drawArrays', [0, 0, 0]],
       ['drawElements', [0, 0, 0, 0]],
       ['bindFramebuffer', [gl.FRAMEBUFFER, null]],
+      ['deleteFramebuffer', [null]],
       ['clear', [gl.COLOR_BUFFER_BIT]],
     ]
 
@@ -562,6 +566,7 @@ describe('transparent browser hooks', () => {
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
+      deleteFramebuffer: vi.fn(),
       clear: vi.fn(),
     }
     class FakeCanvas {
@@ -630,6 +635,7 @@ describe('transparent browser hooks', () => {
       drawArrays: vi.fn(),
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
+      deleteFramebuffer: vi.fn(),
       clear: vi.fn(),
     }
     class FakeCanvas {
@@ -743,11 +749,20 @@ describe('transparent browser hooks', () => {
     gl.drawElements(0, 0, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(6)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.deleteFramebuffer(offscreen)
     gl.clear(gl.COLOR_BUFFER_BIT)
     await Promise.resolve()
     expect(frames).toHaveLength(7)
     expect(frames[6]?.quads).toEqual([])
+
+    gl.drawElements(0, 0, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(8)
+    gl.drawElements(0, 0, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    await Promise.resolve()
+    expect(frames).toHaveLength(9)
+    expect(frames[8]?.quads).toEqual([])
   })
 
   it('preserves native Blob construction contracts', () => {
@@ -777,6 +792,42 @@ describe('transparent browser hooks', () => {
     expect(() => new realm.Blob(null as never)).toThrow(TypeError)
     expect(new ExtendedBlob([])).toBeInstanceOf(ExtendedBlob)
     expect(new realm.Blob([])).toBeInstanceOf(realm.Blob)
+  })
+
+  it('retires exact byte-length fallback before bitmap decoding settles', async () => {
+    resetQueues()
+    let resolveBitmap: ((bitmap: ImageBitmap) => void) | undefined
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))),
+      Blob,
+      createImageBitmap: vi.fn(
+        () =>
+          new Promise<ImageBitmap>((resolve) => {
+            resolveBitmap = resolve
+          }),
+      ),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    const blob = await response.blob()
+    const decoding = realm.createImageBitmap(blob)
+
+    expect(takeBySize(blob.size)).toBeUndefined()
+    resolveBitmap?.({ width: 1_000, height: 1_000 } as ImageBitmap)
+    await decoding
   })
 
   it('does not consume an arbitrary Blob-parts iterable a second time', () => {
