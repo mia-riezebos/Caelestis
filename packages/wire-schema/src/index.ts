@@ -92,6 +92,15 @@ const NonNegativeInteger = Schema.Number.pipe(
   Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 )
 
+/**
+ * Seasons are 1-based: the first canvas season is 1, and there is no season before it.
+ *
+ * This was `NonNegativeInteger`, which let season 0 exist in the wire while the Worker refused to be
+ * configured for it — so an admin could create a whole tree in a season no deployment could ever
+ * serve as its default, reachable only by a client that already knew to ask for it by number.
+ */
+const Season = Schema.Number.pipe(Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)))
+
 const Identifier = Schema.String.pipe(
   Schema.check(
     Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, {
@@ -250,7 +259,7 @@ export const Template = Schema.Struct({
 
 const ManifestStruct = Schema.Struct({
   version: VersionToken,
-  season: NonNegativeInteger,
+  season: Season,
   server: ServerInfo,
   nodes: boundedArray(Node, MAX_MANIFEST_NODES),
   templates: boundedArray(Template, MAX_MANIFEST_TEMPLATES),
@@ -492,7 +501,7 @@ const PaintEventStruct = Schema.Struct({
   eventId: Identifier,
   wplaceUserId: NonNegativeInteger,
   displayName: Name,
-  season: NonNegativeInteger,
+  season: Season,
   ts: Seconds,
   tiles: boundedArray(PaintTile, MAX_PAINT_TILES),
   painted: integerBetween(0, MAX_PAINTED_PIXELS),

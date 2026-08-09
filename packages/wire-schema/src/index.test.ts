@@ -330,6 +330,9 @@ describe('PaintEvent', () => {
     ['wplaceUserId', Number.NaN],
     ['season', -1.5],
     ['season', 1e21],
+    // Seasons are 1-based. This was `NonNegativeInteger`, so season 0 decoded here while the Worker
+    // refused to be configured for it — a season a server could never serve as its own.
+    ['season', 0],
   ] as const)('rejects invalid %s value %s', (field, value) => {
     expectRejected(PaintEvent, { ...validEvent, [field]: value })
   })
@@ -469,6 +472,12 @@ describe('PaintEvent', () => {
 })
 
 describe('cross-field and time-unit schemas', () => {
+  it('refuses a manifest for season zero, since seasons start at one', () => {
+    // The season field was `NonNegativeInteger` on both sides of the wire while `worker.ts` refused
+    // `SEASON=0`, so a whole tree could exist in a season no deployment could ever make its default.
+    expectRejected(Manifest, { ...validManifest, season: 0 })
+  })
+
   it('requires manifest tiles to exactly match the unique tiles referenced by chunks', () => {
     expectRejected(Manifest, { ...validManifest, tiles: [] })
   })
