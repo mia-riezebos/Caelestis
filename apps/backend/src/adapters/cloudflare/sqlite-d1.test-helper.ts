@@ -20,26 +20,51 @@ type SupportedValueType = null | number | bigint | string | NodeJS.ArrayBufferVi
 const result = <T>(results: T[]): D1Result<T> =>
   ({ success: true, results, meta: {} }) as D1Result<T>
 
+/**
+ * D1 caps a LIKE or GLOB pattern at 50 bytes, and `node:sqlite` uses SQLite's own default of 50,000
+ * — so a prefix match over a node path, which may be 256 characters, ran happily here and answered
+ * "LIKE or GLOB pattern too complex" in production. Modelled for the same reason `batchStatements`
+ * is: the limit is real, it is not a limit this SQLite has, and nothing else in the suite can see it.
+ *
+ * https://developers.cloudflare.com/d1/platform/limits/
+ */
+const MAX_LIKE_PATTERN_BYTES = 50
+const MATCHES_PATTERN = /\b(like|glob)\b/i
+
 class SqliteD1Statement {
   constructor(
     private readonly statement: StatementSync,
+    private readonly sql: string,
     private readonly bindings: readonly SupportedValueType[] = [],
   ) {}
 
   bind(...values: SupportedValueType[]): SqliteD1Statement {
-    return new SqliteD1Statement(this.statement, values)
+    return new SqliteD1Statement(this.statement, this.sql, values)
+  }
+
+  private refusePatternsD1WouldRefuse(): void {
+    if (!MATCHES_PATTERN.test(this.sql)) return
+    for (const binding of this.bindings) {
+      if (typeof binding !== 'string') continue
+      if (Buffer.byteLength(binding, 'utf8') > MAX_LIKE_PATTERN_BYTES) {
+        throw new Error('LIKE or GLOB pattern too complex')
+      }
+    }
   }
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    this.refusePatternsD1WouldRefuse()
     this.statement.run(...this.bindings)
     return result<T>([])
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    this.refusePatternsD1WouldRefuse()
     return result(this.statement.all(...this.bindings) as T[])
   }
 
   async raw<T = unknown[]>(): Promise<T[]> {
+    this.refusePatternsD1WouldRefuse()
     this.statement.setReturnArrays(true)
     return this.statement.all(...this.bindings) as T[]
   }
@@ -67,7 +92,7 @@ export class SqliteD1Database {
 
   prepare(query: string): SqliteD1Statement {
     this.prepareCalls += 1
-    return new SqliteD1Statement(this.sqlite.prepare(query))
+    return new SqliteD1Statement(this.sqlite.prepare(query), query)
   }
 
   failNextBatchAt(point: D1BatchFailurePoint, beforeBatch?: () => void): void {
