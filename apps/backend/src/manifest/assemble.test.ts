@@ -106,11 +106,11 @@ describe('assembleManifest', () => {
     expectDecodes(manifest)
   })
 
-  it('emits a manifest the wire schema accepts, even for overlapping siblings', async () => {
-    // Two templates in one node with intersecting boxes is what two uploads of a corrected image to
-    // the same group produce. The wire refuses same-group overlap, so the server was able to emit a
-    // 200 that every client rejects — bricking the season's manifest from a normal admin action,
-    // with no server-side error to notice.
+  it('emits a decodable manifest when two templates in a group overlap', async () => {
+    // Overlapping templates in one group are the point, not a fault: that is how a group layers, and
+    // the client's own ordering decides what draws on top. The wire used to refuse it, so two
+    // ordinary uploads into one group produced a 200 every client rejected — the constraint was
+    // wrong, not the data, and it is gone.
     const sql = new MemorySqlStore()
     await sql.insertNode(node)
     const overlapping = (templateId: string, versionId: string): TemplateVersionRecord => ({
@@ -121,16 +121,17 @@ describe('assembleManifest', () => {
     const templateA = '01890f3a-6b7c-7def-8123-4560000000a1'
     const templateB = '01890f3a-6b7c-7def-8123-4560000000b1'
     await sql.insertTemplateVersion(overlapping(templateA, '01890f3a-6b7c-7def-8123-4560000000a2'))
-    await expect(
-      sql.insertTemplateVersion(overlapping(templateB, '01890f3a-6b7c-7def-8123-4560000000b2')),
-    ).rejects.toThrow(/overlaps/)
+    await sql.insertTemplateVersion(overlapping(templateB, '01890f3a-6b7c-7def-8123-4560000000b2'))
     await sql.setTemplatePublishedAt(templateA, createdAt)
+    await sql.setTemplatePublishedAt(templateB, createdAt)
 
-    // Whatever the store did accept has to assemble into something the wire takes. The check is on
-    // the way in rather than here, because dropping a template at assembly time would hide a
-    // template an admin believes they published.
-    expectDecodes(await assembleManifest({ sql }, { server, season: 1, includeUnpublished: false }))
-    expectDecodes(await assembleManifest({ sql }, { server, season: 1, includeUnpublished: true }))
+    const manifest = await assembleManifest(
+      { sql },
+      { server, season: 1, includeUnpublished: false },
+    )
+
+    expect(manifest.templates).toHaveLength(2)
+    expectDecodes(manifest)
   })
 
   it('assembles the same version regardless of the order rows were written', async () => {

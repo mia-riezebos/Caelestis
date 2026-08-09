@@ -1,4 +1,4 @@
-import { boundsOverlap, type Millis } from '@wts/shared'
+import type { Millis } from '@wts/shared'
 import {
   type AccessToken,
   assertValidAccessToken,
@@ -17,7 +17,6 @@ import {
   type NodeRecord,
   type SqlStore,
   type TelemetryBucket,
-  TemplateOverlapError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -89,17 +88,6 @@ export class MemorySqlStore implements SqlStore {
     if (this.templateVersions.has(version.versionId)) {
       throw new Error(`template version already exists: ${version.versionId}`)
     }
-    for (const [templateId, existing] of this.templates) {
-      if (templateId === version.templateId || existing.nodeId !== version.nodeId) continue
-      const current = existing.currentVersionId
-      const bbox = current === null ? null : (this.templateVersions.get(current)?.bbox ?? null)
-      if (bbox !== null && boundsOverlap(bbox, version.bbox)) {
-        throw new TemplateOverlapError(
-          `template ${version.templateId} overlaps ${templateId} in node ${version.nodeId}`,
-        )
-      }
-    }
-
     const tileKeys = new Set(version.chunks.map((chunk) => `${chunk.tileX}/${chunk.tileY}`))
     if (tileKeys.size !== version.chunks.length) {
       throw new Error(`template version repeats a tile: ${version.versionId}`)

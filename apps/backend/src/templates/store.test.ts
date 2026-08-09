@@ -104,10 +104,8 @@ describe('storeTemplate', () => {
     const ports = await harness()
     const png = await encodeIndexedPng(2, 2, new Uint8Array([4, 4, 4, 4]))
 
-    // Placed apart, because two templates in one node may not overlap — the wire refuses it and the
-    // store now does too. Content addressing still dedupes the identical chunk across them.
     const first = await storeTemplate(ports, input(png))
-    const second = await storeTemplate(ports, { ...input(png), originX: 5_000, originY: 5_000 })
+    const second = await storeTemplate(ports, input(png))
 
     expect(second.chunks[0]?.hash).toBe(first.chunks[0]?.hash)
     expect(ports.blobs.puts).toHaveLength(1)

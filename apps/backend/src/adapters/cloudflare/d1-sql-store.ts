@@ -1,5 +1,5 @@
-import { boundsOverlap, type Millis, seconds } from '@wts/shared'
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from 'drizzle-orm'
+import { type Millis, seconds } from '@wts/shared'
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -27,7 +27,6 @@ import {
   READ_BUCKETS_CHUNK_SIZE,
   type SqlStore,
   type TelemetryBucket,
-  TemplateOverlapError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -141,27 +140,6 @@ export class D1SqlStore implements SqlStore {
     if ((await this.readNode(version.nodeId)) === null) {
       throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
     }
-    // Siblings' geometry comes from whichever version each one currently serves, which is what a
-    // manifest carries. A template replacing its own current version cannot overlap itself.
-    const siblings = await this.database
-      .select({
-        id: templates.id,
-        minX: templateVersions.minX,
-        minY: templateVersions.minY,
-        maxX: templateVersions.maxX,
-        maxY: templateVersions.maxY,
-      })
-      .from(templates)
-      .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
-      .where(and(eq(templates.nodeId, version.nodeId), ne(templates.id, version.templateId)))
-    for (const sibling of siblings) {
-      if (boundsOverlap(sibling, version.bbox)) {
-        throw new TemplateOverlapError(
-          `template ${version.templateId} overlaps ${sibling.id} in node ${version.nodeId}`,
-        )
-      }
-    }
-
     const statements = [
       this.database
         .insert(templates)

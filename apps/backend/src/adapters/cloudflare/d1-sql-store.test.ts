@@ -985,39 +985,6 @@ describe('D1SqlStore', () => {
     expect((await store.listNodes(1)).map((n) => n.id)).toEqual(['s1'])
   })
 
-  it('refuses a template overlapping a sibling in the same node', async () => {
-    // The wire refuses same-group overlap, so storing such a pair lets the server assemble a
-    // manifest every client rejects. Enforced in the adapter, not the route — four defects in this
-    // stack came from a rule the caller remembered and the store did not.
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('ov-node', 1, NULL, '/ov', 'Ov', NULL, 1)")
-    const place = (templateId: string, versionId: string, minX: number) => ({
-      templateId,
-      nodeId: 'ov-node',
-      name: 'T',
-      versionId,
-      createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      createdByUserId: null,
-      createdAt: millis(1_000),
-      bbox: { minX, minY: 0, maxX: minX + 100, maxY: 100 },
-      totalPixels: 4,
-      chunks: [
-        {
-          tileX: 0,
-          tileY: 0,
-          hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        },
-      ],
-    })
-
-    await store.insertTemplateVersion(place('ov-a', 'ov-av', 0))
-    await expect(store.insertTemplateVersion(place('ov-b', 'ov-bv', 50))).rejects.toThrow(
-      /overlaps ov-a/,
-    )
-    // Clear of it, and a new version of the template itself, are both fine.
-    await expect(store.insertTemplateVersion(place('ov-c', 'ov-cv', 500))).resolves.toBeUndefined()
-    await expect(store.insertTemplateVersion(place('ov-a', 'ov-av2', 0))).resolves.toBeUndefined()
-  })
-
   it('keeps a many-tile template inside D1 per-invocation query budget', async () => {
     // One statement per tile put a 48-chunk template at 51 — template, version, 48 tiles, pointer —
     // against the 50 D1 allows per Worker invocation on the free plan. A 48,000x1 one-colour upload

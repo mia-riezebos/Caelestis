@@ -272,22 +272,6 @@ export class NodeNotFoundError extends Error {
   override readonly name = 'NodeNotFoundError'
 }
 
-/**
- * Two templates in one node whose bounding boxes intersect.
- *
- * The wire refuses same-group overlap, so a server that stores such a pair can assemble a manifest
- * every one of its clients rejects — a 200 that bricks the season, from an admin uploading a
- * corrected copy of a template into the group the original is already in. The rule is not about
- * publication: an admin manifest carries unpublished templates too, so the constraint has to hold
- * across every template in the node.
- *
- * Enforced in the adapters rather than in the caller. Four defects in this stack have come from a
- * rule the route remembered and the store did not.
- */
-export class TemplateOverlapError extends Error {
-  override readonly name = 'TemplateOverlapError'
-}
-
 export class NodeNotEmptyError extends Error {
   override readonly name = 'NodeNotEmptyError'
 }

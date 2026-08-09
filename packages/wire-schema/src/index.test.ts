@@ -576,90 +576,6 @@ describe('cross-field and time-unit schemas', () => {
     expectRejected(Manifest, { ...validManifest, templates: [duplicate] })
   })
 
-  it('rejects two wrapped templates that overlap across the antimeridian seam', () => {
-    // A sort-and-sweep over minX misses this: both wrapped boxes start high and end low, so the
-    // early break skips the comparison and the forbidden same-group overlap decodes clean.
-    const wrapped = (id: number) => ({
-      ...validTemplate,
-      id: uuid(500 + id),
-      version: uuid(600 + id),
-      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
-    })
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [wrapped(1), wrapped(2)],
-      tiles: [tileKey({ x: 2047, y: 0 })],
-    })
-  })
-
-  it.each([
-    // Both halves of the wrapped span must be compared against the unwrapped one. Pairing two
-    // wrapped boxes — as the seam test above does — leaves either half deletable, because whichever
-    // half survives still reports the overlap. Only a wrapped-against-unwrapped pair separates them.
-    ['the low half, past the seam', { minX: 0, maxX: 500 }],
-    ['the high half, before the seam', { minX: 2_047_500, maxX: 2_048_000 }],
-  ])('rejects a wrapped template overlapping an unwrapped one on %s', (_, xs) => {
-    const wrapped = {
-      ...validTemplate,
-      id: uuid(900),
-      version: uuid(901),
-      bbox: { minX: 2_047_000, minY: 0, maxX: 1_000, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
-    }
-    const unwrapped = {
-      ...validTemplate,
-      id: uuid(902),
-      version: uuid(903),
-      bbox: { ...xs, minY: 0, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [wrapped, unwrapped],
-      tiles: [tileKey({ x: 2047, y: 0 }), tileKey({ x: 0, y: 0 })],
-    })
-  })
-
-  it.each([
-    // The tests above pin which halves the wrap splits into, but not where those halves end: both
-    // spans overlap by hundreds of pixels, so moving an endpoint one pixel changes no outcome.
-    // These two overlap on exactly one column each — the first on WORLD_PIXELS - 1, the last column
-    // before the seam, and the second on column 0, the first one after it. Shrinking the high half
-    // to WORLD_PIXELS - 1 or lifting the low half to 1 empties that interval and the overlap
-    // disappears, so each endpoint now fails on its own.
-    [
-      'the last column before the seam',
-      { minX: 2_047_999, maxX: 1_000 },
-      { minX: 2_047_999, maxX: 2_048_000 },
-      2047,
-    ],
-    ['the first column after the seam', { minX: 2_047_000, maxX: 1 }, { minX: 0, maxX: 1 }, 0],
-  ])(
-    'rejects a wrapped template overlapping an unwrapped one on %s',
-    (_, wrappedX, unwrappedX, tile) => {
-      const wrapped = {
-        ...validTemplate,
-        id: uuid(920),
-        version: uuid(921),
-        bbox: { ...wrappedX, minY: 0, maxY: 1_000 },
-        chunks: [{ tile: tileKey({ x: 2047, y: 0 }), hash: HASH }],
-      }
-      const unwrapped = {
-        ...validTemplate,
-        id: uuid(922),
-        version: uuid(923),
-        bbox: { ...unwrappedX, minY: 0, maxY: 1_000 },
-        chunks: [{ tile: tileKey({ x: tile, y: 0 }), hash: HASH }],
-      }
-      expectRejected(Manifest, {
-        ...validManifest,
-        templates: [wrapped, unwrapped],
-        tiles: [...new Set([tileKey({ x: 2047, y: 0 }), tileKey({ x: tile, y: 0 })])],
-      })
-    },
-  )
-
   it('accepts a wrapped template beside an unwrapped one that clears both of its halves', () => {
     const wrapped = {
       ...validTemplate,
@@ -1276,32 +1192,6 @@ describe('cross-field and time-unit schemas', () => {
     },
   )
 
-  it('rejects an overlap the sweep meets on its upper side', () => {
-    // The two neighbour branches must each fail on their own. Every other overlap fixture is caught
-    // by the lower-neighbour branch, so deleting the upper one left the suite green while these two
-    // same-group boxes decoded clean — the second sorts before the first by minY, so it is the
-    // successor comparison that has to reject it.
-    const first = {
-      ...validTemplate,
-      id: uuid(120),
-      version: uuid(121),
-      bbox: { minX: 0, minY: 10, maxX: 100, maxY: 20 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }
-    const second = {
-      ...validTemplate,
-      id: uuid(122),
-      version: uuid(123),
-      bbox: { minX: 0, minY: 0, maxX: 100, maxY: 15 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [first, second],
-      tiles: [tileKey({ x: 0, y: 0 })],
-    })
-  })
-
   it('accepts many templates stacked in one x column', () => {
     // The sweep's structural worst case: every span shares an x interval, so all of them stay
     // active at once and only the y ordering separates them. It is also a shape the all-pairs scan
@@ -1315,30 +1205,6 @@ describe('cross-field and time-unit schemas', () => {
     }))
     const manifest = { ...validManifest, templates, tiles: [tileKey({ x: 0, y: 0 })] }
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
-  })
-
-  it('rejects an overlap between the first and last of a large group', () => {
-    // The sweep returns on the first overlap it finds, so a pair far apart in sweep order is the
-    // case most likely to be missed by a wrong active-set or ordering.
-    const templates = Array.from({ length: 400 }, (_, index) => ({
-      ...validTemplate,
-      id: uuid(5_000 + index),
-      version: uuid(6_000 + index),
-      bbox: { minX: 2 * index + 1, minY: 0, maxX: 2 * index + 2, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    }))
-    templates.push({
-      ...validTemplate,
-      id: uuid(7_000),
-      version: uuid(7_001),
-      bbox: { minX: 1, minY: 0, maxX: 2, maxY: 1_000 },
-      chunks: [{ tile: tileKey({ x: 0, y: 0 }), hash: HASH }],
-    })
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates,
-      tiles: [tileKey({ x: 0, y: 0 })],
-    })
   })
 
   it('accepts two wrapped templates that do not overlap in y', () => {
@@ -1396,16 +1262,6 @@ describe('cross-field and time-unit schemas', () => {
       ...validManifest,
       templates: [makeTemplate(1, leftX), makeTemplate(2, rightX)],
     })
-  })
-
-  it('rejects overlapping templates within one group', () => {
-    const overlapping = {
-      ...validTemplate,
-      id: uuid(2),
-      version: uuid(3),
-      bbox: { ...validTemplate.bbox, minX: validTemplate.bbox.minX + 1 },
-    }
-    expectRejected(Manifest, { ...validManifest, templates: [validTemplate, overlapping] })
   })
 
   it('rejects milliseconds where seconds are required', () => {

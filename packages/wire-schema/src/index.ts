@@ -287,94 +287,16 @@ const xSpans = (template: Schema.Schema.Type<typeof Template>): XSpan[] => {
 }
 
 /**
- * Reject a group whose templates overlap, by a sort and sweep.
+ * Templates within a group may overlap, deliberately.
  *
- * This was an all-pairs scan. It was correct — an earlier sort-and-sweep over `minX` missed wrapped
- * boxes, because two fully-overlapping wrapped templates both start high and end low, so the early
- * break skipped the comparison — but its cost was never re-bounded afterwards. With
- * MAX_MANIFEST_TEMPLATES templates in one group it is ~5e9 comparisons: measured at 31.7s for
- * 32,000 templates and 150s for 100,000, against a 30s Worker CPU limit. A schema-valid 23.6MB
- * manifest was a remote CPU kill, reachable by any client that can read a manifest.
+ * An earlier version of this schema refused it, and carried a sort-and-sweep to detect it. That was
+ * a rule the product does not have: overlapping templates are how a group layers, and the client's
+ * own custom ordering decides what draws on top. Enforcing it here meant a server could assemble —
+ * from two ordinary uploads into one group — a manifest that every client then refused to decode.
  *
- * The sweep is not O(n log n), which an earlier version of this comment claimed. `active.splice` is
- * linear in the active set, so templates that are y-disjoint, x-overlapping and supplied in
- * descending `minY` insert at the front every time and the sweep degrades to quadratic. Measured on
- * that input: 6ms at 10,000, 105ms at 50,000, 1.6s at the 100,000 cap. That is a 90x improvement on
- * the scan it replaced and comfortably inside the CPU limit, so it is the shape of the bound that is
- * wrong rather than the decision — recorded here so the next person to raise the cap does not read
- * a guarantee that was never measured.
- *
- * The sweep keeps wrap correctness by sorting *spans* rather than boxes. The y test rests on an
- * invariant this function maintains itself: it returns on the first overlap found, so every span
- * still active is pairwise y-disjoint from every other. Actives are therefore an ordered set of
- * disjoint y intervals, and a new span can only overlap its immediate neighbours by `minY` —
- * everything beyond them is separated by whichever neighbour lies between.
- *
- * Expired spans are dropped when a neighbour walk reaches them rather than in a sweep of their own.
- * Each is removed once, and a span nobody walks past cannot affect an answer.
- *
- * A template is never compared against itself, and needs no guard to say so: a wrapped box's two
- * spans are `[minX, WORLD_PIXELS)` and `[0, maxX)` with `maxX < minX`, so the low half has always
- * expired by the time the high half is swept. A guard here would be unreachable, and a test for it
- * would only appear to pin something.
+ * Removed rather than relaxed. A constraint the domain does not want is not worth the sweep, its
+ * property test, or the next reader wondering which of the two rules is the real one.
  */
-const hasNoGroupOverlap = (
-  templates: ReadonlyArray<Schema.Schema.Type<typeof Template>>,
-): boolean => {
-  const groups = new Map<string, XSpan[]>()
-  for (const template of templates) {
-    const spans = groups.get(template.nodeId)
-    if (spans === undefined) groups.set(template.nodeId, xSpans(template))
-    else spans.push(...xSpans(template))
-  }
-
-  for (const spans of groups.values()) {
-    spans.sort((left, right) => left.start - right.start)
-    // Active spans, ordered by minY and pairwise y-disjoint.
-    const active: XSpan[] = []
-
-    for (const span of spans) {
-      // First index whose minY is greater than this span's, so the two candidates are the entries
-      // on either side of it.
-      let low = 0
-      let high = active.length
-      while (low < high) {
-        const middle = (low + high) >>> 1
-        // biome-ignore lint/style/noNonNullAssertion: middle is inside the array
-        if (active[middle]!.minY <= span.minY) low = middle + 1
-        else high = middle
-      }
-
-      let before = low - 1
-      while (before >= 0) {
-        // biome-ignore lint/style/noNonNullAssertion: before is inside the array
-        const candidate = active[before]!
-        if (candidate.end <= span.start) {
-          active.splice(before, 1)
-          before -= 1
-          low -= 1
-          continue
-        }
-        if (candidate.maxY > span.minY) return false
-        break
-      }
-
-      while (low < active.length) {
-        // biome-ignore lint/style/noNonNullAssertion: low is inside the array
-        const candidate = active[low]!
-        if (candidate.end <= span.start) {
-          active.splice(low, 1)
-          continue
-        }
-        if (span.maxY > candidate.minY) return false
-        break
-      }
-
-      active.splice(low, 0, span)
-    }
-  }
-  return true
-}
 
 export const Manifest = ManifestStruct.pipe(
   Schema.check(
@@ -520,11 +442,6 @@ export const Manifest = ManifestStruct.pipe(
           })
         }),
       'every chunk tile must intersect its template bounding box',
-    ),
-    booleanFilter(
-      (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
-        hasNoGroupOverlap(manifest.templates),
-      'templates within one group must not overlap',
     ),
   ),
 )

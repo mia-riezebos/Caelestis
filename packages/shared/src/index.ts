@@ -16,7 +16,6 @@ export {
   quantiseToPalette,
 } from './quantise.js'
 export {
-  boundsOverlap,
   type PixelBounds,
   SliceError,
   type SliceResult,
