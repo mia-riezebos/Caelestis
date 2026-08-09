@@ -6,6 +6,22 @@ import type { Ports } from './ports/index.js'
 
 export { TelemetryShard } from './telemetry-shard.js'
 
+/**
+ * `SEASON` as a season number, or a refusal.
+ *
+ * `Number('abc')` is NaN and `Number('-1')` is -1, and either reached `/manifest` as the season it
+ * reports — NaN serializes to `null`, which the wire refuses outright, so the deployment's own
+ * manifest stopped decoding because of a typo in a config var.
+ */
+const parseSeason = (value: string | undefined): number | undefined => {
+  if (value === undefined) return undefined
+  const season = Number(value)
+  if (!Number.isSafeInteger(season) || season < 1) {
+    throw new Error(`SEASON is not a season number: ${JSON.stringify(value)}`)
+  }
+  return season
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (env.SHARD_STRATEGY !== 'single') {
@@ -27,7 +43,7 @@ export default {
       // season 1 — a season-2 server served season 1's manifest, which for a fresh one is empty, and
       // `ServerInfo` carries no season for a client to notice. Without openAccess, a server could
       // not be opened at all.
-      currentSeason: env.SEASON === undefined ? undefined : Number(env.SEASON),
+      currentSeason: parseSeason(env.SEASON),
       openAccess: env.OPEN_ACCESS === 'true',
     }).fetch(request)
   },

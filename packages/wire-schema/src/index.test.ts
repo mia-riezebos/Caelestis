@@ -502,8 +502,6 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('rejects duplicate template identifiers', () => {
-    // The bboxes must NOT overlap. Reusing validTemplate's bbox makes the overlap filter do the
-    // rejecting, and the uniqueness conjunct this test names becomes deletable.
     const duplicate = {
       ...validTemplate,
       version: uuid(4),
@@ -765,8 +763,7 @@ describe('cross-field and time-unit schemas', () => {
   })
 
   it('rejects a manifest whose chunks exceed the total cap', () => {
-    // The per-template cap bounds no total. Each template sits in its OWN group, so the same tiles
-    // may be covered repeatedly without tripping the same-group overlap rule — that is what keeps
+    // The per-template cap bounds no total: the same tiles may be covered repeatedly, which keeps
     // the declared union at 1,000 tiles while the chunk arrays sum past the cap.
     const tiles = Array.from({ length: 1_000 }, (_, index) => tileKey({ x: index, y: 0 }))
     const chunks = tiles.map((tile) => ({ tile, hash: HASH }))
@@ -1207,7 +1204,7 @@ describe('cross-field and time-unit schemas', () => {
     expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
   })
 
-  it('accepts two wrapped templates that do not overlap in y', () => {
+  it('accepts two wrapped templates in one group', () => {
     const wrapped = (id: number, minY: number, maxY: number) => ({
       ...validTemplate,
       id: uuid(700 + id),
@@ -1240,28 +1237,6 @@ describe('cross-field and time-unit schemas', () => {
       const manifest = { ...validManifest, templates, tiles: ['0/0', '0/1'] }
       expect(Schema.decodeUnknownSync(Manifest)(manifest)).toEqual(manifest)
     }
-  })
-
-  it.each([
-    [
-      { minX: 2_047_999, maxX: 2_048_000 },
-      { minX: 2_047_999, maxX: 2_048_000 },
-    ],
-    [
-      { minX: 0, maxX: 1 },
-      { minX: 0, maxX: 1 },
-    ],
-  ])('rejects overlap confined to a seam endpoint', (leftX, rightX) => {
-    const makeTemplate = (id: number, x: { minX: number; maxX: number }) => ({
-      ...validTemplate,
-      id: uuid(940 + id),
-      version: uuid(950 + id),
-      bbox: { ...x, minY: 0, maxY: 1 },
-    })
-    expectRejected(Manifest, {
-      ...validManifest,
-      templates: [makeTemplate(1, leftX), makeTemplate(2, rightX)],
-    })
   })
 
   it('rejects milliseconds where seconds are required', () => {

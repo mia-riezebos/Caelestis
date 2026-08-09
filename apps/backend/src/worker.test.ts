@@ -70,3 +70,18 @@ it('refuses an unsupported shard strategy rather than serving on it', async () =
     } as unknown as Env),
   ).rejects.toThrow(/Unsupported telemetry shard strategy/)
 })
+
+it.each([['abc'], ['-1'], ['0'], ['1.5'], ['']])(
+  'refuses SEASON=%o rather than serving an unusable season',
+  async (season) => {
+    // Number('abc') is NaN and NaN serializes to null, which the wire refuses — so a typo in a
+    // config var made the deployment's own manifest undecodable, with the operator finding out from
+    // a client. Refused where the operator can read it instead.
+    await expect(
+      worker.fetch(new Request('https://example.com/health'), {
+        ...env(),
+        SEASON: season,
+      } as unknown as Env),
+    ).rejects.toThrow(/SEASON is not a season number/)
+  },
+)

@@ -9,6 +9,9 @@ export interface AssembleManifestOptions {
 
 const VERSION_PLACEHOLDER = '0'.repeat(64)
 
+/** Mirrors `MAX_MANIFEST_CHUNKS` in `@wts/wire-schema`, which is what refuses the assembled result. */
+const MAX_MANIFEST_CHUNKS = 200_000
+
 export const assembleManifest = async (
   ports: Pick<Ports, 'sql'>,
   options: AssembleManifestOptions,
@@ -60,6 +63,22 @@ export const assembleManifest = async (
       createdAt: template.createdAt,
     }))
     .sort((left, right) => left.id.localeCompare(right.id))
+
+  // The wire caps a manifest at 200,000 chunks in total, and nothing on the write path enforces an
+  // aggregate: 512 chunks per template is bounded, the number of published templates in a season is
+  // not, so ~391 of them cross the line. Past it, every client rejects the 200 this would return.
+  //
+  // INTERIM. Failing here turns a silent client-side break into a server-side error naming the
+  // cause, which is strictly better but still an outage for that season's manifest. The real fix is
+  // to refuse the publish that crosses the line, so an admin learns at the moment they cause it —
+  // that needs the season and the season's current chunk total at the publish route, which is port
+  // surface this slice does not have.
+  const chunkTotal = templates.reduce((total, template) => total + template.chunks.length, 0)
+  if (chunkTotal > MAX_MANIFEST_CHUNKS) {
+    throw new Error(
+      `season ${options.season} assembles ${chunkTotal} chunks, more than the ${MAX_MANIFEST_CHUNKS} a manifest may carry`,
+    )
+  }
 
   const tiles = [
     ...new Set(templates.flatMap((template) => template.chunks.map(({ tile }) => tile))),
