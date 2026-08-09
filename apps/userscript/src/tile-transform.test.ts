@@ -215,6 +215,18 @@ describe('byte-length attribution queue', () => {
     expect(takeBySize(73, 1_001)).toBeUndefined()
   })
 
+  it('retires every duplicate fallback for an exact tile', () => {
+    resetQueues()
+    enqueueBySize(73, { x: 4, y: 5 }, 1_000)
+    enqueueBySize(73, { x: 4, y: 5 }, 1_000)
+    enqueueBySize(73, { x: 6, y: 7 }, 1_000)
+
+    consumeBySize(73, { x: 4, y: 5 })
+
+    expect(takeBySize(73, 1_001)).toEqual({ x: 6, y: 7 })
+    expect(takeBySize(73, 1_001)).toBeUndefined()
+  })
+
   it('does not consume a tile fallback for a non-tile bitmap', () => {
     resetQueues()
     enqueueBySize(73, { x: 4, y: 5 }, 1_000)
@@ -240,13 +252,14 @@ describe('transparent browser hooks', () => {
     const getters = captureFetchUrlGetters(realm)
     const url = new URL('https://backend.wplace.live/files/s0/tiles/1/2.png')
     const request = new Request('https://backend.wplace.live/files/s0/tiles/3/4.png')
+    expect(urlForFetchInput(url, realm, getters)).toBe(url.href)
     Object.defineProperty(url, 'toString', {
       value: () => {
-        throw new Error('generic conversion must not run')
+        return '/not-a-tile'
       },
     })
 
-    expect(urlForFetchInput(url, realm, getters)).toBe(url.href)
+    expect(urlForFetchInput(url, realm, getters)).toBeNull()
     expect(urlForFetchInput(request, realm, getters)).toBe(request.url)
   })
 
@@ -256,6 +269,9 @@ describe('transparent browser hooks', () => {
     }
     class FakeUrl {
       constructor(readonly nativeHref: string) {}
+      toString(): string {
+        return this.nativeHref
+      }
     }
     Object.defineProperty(FakeRequest.prototype, 'url', {
       configurable: true,
@@ -349,6 +365,9 @@ describe('transparent browser hooks', () => {
       FRAMEBUFFER: 0x8d40,
       DRAW_FRAMEBUFFER: 0x8ca9,
       COLOR_BUFFER_BIT: 0x4000,
+      DEPTH_BUFFER_BIT: 0x0100,
+      STENCIL_BUFFER_BIT: 0x0400,
+      SCISSOR_TEST: 0x0c11,
       getUniformLocation: vi.fn(() => null),
       useProgram: vi.fn(),
       uniform1i: vi.fn(),
@@ -361,6 +380,9 @@ describe('transparent browser hooks', () => {
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
       deleteFramebuffer: vi.fn(),
+      enable: vi.fn(),
+      disable: vi.fn(),
+      colorMask: vi.fn(),
       clear: vi.fn(),
     })
     class FakeCanvas {
@@ -398,11 +420,11 @@ describe('transparent browser hooks', () => {
     mapCanvas.getContext('webgl2')
     counters.clear()
 
-    provisional.context.drawArrays()
+    provisional.context.drawArrays(0, 0, 1)
     await Promise.resolve()
     expect(counters.get('draw:no-texture-or-matrix')).toBeUndefined()
 
-    mapCanvas.context.drawArrays()
+    mapCanvas.context.drawArrays(0, 0, 1)
     await Promise.resolve()
     expect(counters.get('draw:not-raster-program')).toBe(1)
   })
@@ -414,6 +436,9 @@ describe('transparent browser hooks', () => {
       FRAMEBUFFER: 0x8d40,
       DRAW_FRAMEBUFFER: 0x8ca9,
       COLOR_BUFFER_BIT: 0x4000,
+      DEPTH_BUFFER_BIT: 0x0100,
+      STENCIL_BUFFER_BIT: 0x0400,
+      SCISSOR_TEST: 0x0c11,
       getUniformLocation: vi.fn(() => null),
       useProgram: vi.fn(),
       uniform1i: vi.fn(),
@@ -426,6 +451,9 @@ describe('transparent browser hooks', () => {
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
       deleteFramebuffer: vi.fn(),
+      enable: vi.fn(),
+      disable: vi.fn(),
+      colorMask: vi.fn(),
       clear: vi.fn(),
     })
     class FakeCanvas {
@@ -456,7 +484,7 @@ describe('transparent browser hooks', () => {
     unrelated.getContext('webgl2')
     counters.clear()
 
-    map.context.drawArrays()
+    map.context.drawArrays(0, 0, 1)
     await Promise.resolve()
 
     expect(counters.get('draw:not-raster-program')).toBe(1)
@@ -476,6 +504,9 @@ describe('transparent browser hooks', () => {
       FRAMEBUFFER: 0x8d40,
       DRAW_FRAMEBUFFER: 0x8ca9,
       COLOR_BUFFER_BIT: 0x4000,
+      DEPTH_BUFFER_BIT: 0x0100,
+      STENCIL_BUFFER_BIT: 0x0400,
+      SCISSOR_TEST: 0x0c11,
       MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
       getParameter: vi.fn(() => 2),
       getUniformLocation: native('getUniformLocation', 1),
@@ -490,6 +521,9 @@ describe('transparent browser hooks', () => {
       drawElements: native('drawElements'),
       bindFramebuffer: native('bindFramebuffer'),
       deleteFramebuffer: native('deleteFramebuffer'),
+      enable: native('enable'),
+      disable: native('disable'),
+      colorMask: native('colorMask'),
       clear: native('clear'),
     }
     class FakeCanvas {
@@ -527,6 +561,9 @@ describe('transparent browser hooks', () => {
       ['drawElements', [0, 0, 0, 0]],
       ['bindFramebuffer', [gl.FRAMEBUFFER, null]],
       ['deleteFramebuffer', [null]],
+      ['enable', [gl.SCISSOR_TEST]],
+      ['disable', [gl.SCISSOR_TEST]],
+      ['colorMask', [true, true, true, true]],
       ['clear', [gl.COLOR_BUFFER_BIT]],
     ]
 
@@ -551,6 +588,9 @@ describe('transparent browser hooks', () => {
       FRAMEBUFFER: 0x8d40,
       DRAW_FRAMEBUFFER: 0x8ca9,
       COLOR_BUFFER_BIT: 0x4000,
+      DEPTH_BUFFER_BIT: 0x0100,
+      STENCIL_BUFFER_BIT: 0x0400,
+      SCISSOR_TEST: 0x0c11,
       MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
       getParameter: vi.fn(() => 2),
       getUniformLocation: vi.fn(() => location),
@@ -567,6 +607,9 @@ describe('transparent browser hooks', () => {
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
       deleteFramebuffer: vi.fn(),
+      enable: vi.fn(),
+      disable: vi.fn(),
+      colorMask: vi.fn(),
       clear: vi.fn(),
     }
     class FakeCanvas {
@@ -608,6 +651,8 @@ describe('transparent browser hooks', () => {
 
   it('keeps raster identity and projection scoped to their WebGL state', async () => {
     const locations = new WeakMap<object, Map<string, object>>()
+    let nativeProgram: object | null = null
+    const rejectedProgram = {}
     const fakeGl = {
       TEXTURE0: 0x84c0,
       TEXTURE1: 0x84c1,
@@ -616,8 +661,16 @@ describe('transparent browser hooks', () => {
       FRAMEBUFFER: 0x8d40,
       DRAW_FRAMEBUFFER: 0x8ca9,
       COLOR_BUFFER_BIT: 0x4000,
+      DEPTH_BUFFER_BIT: 0x0100,
+      STENCIL_BUFFER_BIT: 0x0400,
+      SCISSOR_TEST: 0x0c11,
       MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
-      getParameter: vi.fn(() => 2),
+      CURRENT_PROGRAM: 0x8b8d,
+      getParameter: vi.fn((parameter: number) => {
+        if (parameter === 0x8b4d) return 2
+        if (parameter === 0x8b8d) return nativeProgram
+        return null
+      }),
       getUniformLocation: vi.fn((program: object, name: string) => {
         const programLocations = locations.get(program) ?? new Map<string, object>()
         locations.set(program, programLocations)
@@ -625,7 +678,9 @@ describe('transparent browser hooks', () => {
         programLocations.set(name, location)
         return location
       }),
-      useProgram: vi.fn(),
+      useProgram: vi.fn((program: object | null) => {
+        if (program !== rejectedProgram) nativeProgram = program
+      }),
       uniform1i: vi.fn(),
       uniformMatrix4fv: vi.fn(),
       activeTexture: vi.fn(),
@@ -636,9 +691,12 @@ describe('transparent browser hooks', () => {
       drawElements: vi.fn(),
       bindFramebuffer: vi.fn(),
       deleteFramebuffer: vi.fn(),
+      enable: vi.fn(),
+      disable: vi.fn(),
+      colorMask: vi.fn(),
       clear: vi.fn(),
     }
-    class FakeCanvas {
+    class FakeCanvas extends EventTarget {
       width = 1_000
       height = 1_000
       getContext(_type?: string): typeof fakeGl {
@@ -699,7 +757,7 @@ describe('transparent browser hooks', () => {
     gl.uniformMatrix4fv(projection, false, new Float32Array(tileMatrix(1)))
     const frames: TileFrame[] = []
     onTileFrame((frame) => frames.push(frame))
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
 
     expect(frames).toHaveLength(1)
@@ -709,13 +767,13 @@ describe('transparent browser hooks', () => {
     const otherProjection = gl.getUniformLocation(otherProgram, 'u_projection_matrix')
     if (otherProjection === null) throw new Error('fake secondary location must exist')
     gl.uniformMatrix4fv(otherProjection, false, new Float32Array(tileMatrix(0.5, 0.5, 0.5)))
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(2)
     expect(frames[1]?.quads).toEqual([])
 
     gl.useProgram(rasterProgram)
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
 
     expect(frames).toHaveLength(3)
@@ -728,7 +786,7 @@ describe('transparent browser hooks', () => {
     gl.bindTexture(gl.TEXTURE_2D, replacement)
     gl.texImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, await bitmapFor(7))
     gl.uniform1i(image0, 0)
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(4)
     expect(frames[3]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
@@ -740,13 +798,13 @@ describe('transparent browser hooks', () => {
     expect(frames).toHaveLength(5)
     expect(frames[4]?.quads).toEqual([])
 
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(6)
     const offscreen = {} as WebGLFramebuffer
     gl.bindFramebuffer(gl.FRAMEBUFFER, offscreen)
     gl.clear(gl.COLOR_BUFFER_BIT)
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(6)
     gl.deleteFramebuffer(offscreen)
@@ -755,14 +813,51 @@ describe('transparent browser hooks', () => {
     expect(frames).toHaveLength(7)
     expect(frames[6]?.quads).toEqual([])
 
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(8)
-    gl.drawElements(0, 0, 0, 0)
+    gl.drawElements(0, 1, 0, 0)
     gl.clear(gl.COLOR_BUFFER_BIT)
     await Promise.resolve()
     expect(frames).toHaveLength(9)
     expect(frames[8]?.quads).toEqual([])
+
+    gl.drawElements(0, 0, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(9)
+
+    gl.enable(gl.SCISSOR_TEST)
+    gl.drawElements(0, 1, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.disable(gl.SCISSOR_TEST)
+    await Promise.resolve()
+    expect(frames).toHaveLength(10)
+    expect(frames[9]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
+
+    gl.drawElements(0, 1, 0, 0)
+    gl.colorMask(true, false, true, true)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.colorMask(true, true, true, true)
+    await Promise.resolve()
+    expect(frames).toHaveLength(11)
+    expect(frames[10]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
+
+    gl.drawElements(0, 1, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT | 0x80000000)
+    await Promise.resolve()
+    expect(frames).toHaveLength(12)
+    expect(frames[11]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
+
+    gl.useProgram(rejectedProgram as WebGLProgram)
+    gl.drawElements(0, 1, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(13)
+    expect(frames[12]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
+
+    canvas.dispatchEvent(new Event('webglcontextlost'))
+    await Promise.resolve()
+    expect(frames).toHaveLength(14)
+    expect(frames[13]?.quads).toEqual([])
   })
 
   it('preserves native Blob construction contracts', () => {

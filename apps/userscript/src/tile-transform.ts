@@ -108,6 +108,8 @@ interface FetchUrlGetters {
   readonly requestUrl: ((this: Request) => string) | undefined
   readonly requestMethod: ((this: Request) => string) | undefined
   readonly urlHref: ((this: URL) => string) | undefined
+  readonly urlPrototype: object | undefined
+  readonly urlToString: ((this: URL) => string) | undefined
 }
 
 /** Snapshot native URL readers before page code or another userscript can replace them. */
@@ -117,9 +119,17 @@ export const captureFetchUrlGetters = (realm: Window & typeof globalThis): Fetch
       requestUrl: realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'url')?.get,
       requestMethod: realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'method')?.get,
       urlHref: realm.Object.getOwnPropertyDescriptor(realm.URL.prototype, 'href')?.get,
+      urlPrototype: realm.URL.prototype,
+      urlToString: realm.Object.getOwnPropertyDescriptor(realm.URL.prototype, 'toString')?.value,
     }
   } catch {
-    return { requestUrl: undefined, requestMethod: undefined, urlHref: undefined }
+    return {
+      requestUrl: undefined,
+      requestMethod: undefined,
+      urlHref: undefined,
+      urlPrototype: undefined,
+      urlToString: undefined,
+    }
   }
 }
 
@@ -135,6 +145,23 @@ export const urlForFetchInput = (
       return getters.requestUrl?.call(input as Request) ?? null
     }
     if (isPageInstance(input, 'URL', realm as unknown as Record<string, unknown>)) {
+      // Fetch converts URL objects through their stringifier. Reading `href` is equivalent only
+      // while neither the instance nor its prototype has replaced that coercion path.
+      if (getters.urlPrototype === undefined || getters.urlToString === undefined) return null
+      if (realm.Object.getPrototypeOf(input) !== getters.urlPrototype) return null
+      if (realm.Object.getOwnPropertyDescriptor(input, 'toString') !== undefined) return null
+      if (realm.Object.getOwnPropertyDescriptor(input, Symbol.toPrimitive) !== undefined)
+        return null
+      if (
+        realm.Object.getOwnPropertyDescriptor(getters.urlPrototype, Symbol.toPrimitive) !==
+        undefined
+      )
+        return null
+      if (
+        realm.Object.getOwnPropertyDescriptor(getters.urlPrototype, 'toString')?.value !==
+        getters.urlToString
+      )
+        return null
       return getters.urlHref?.call(input as URL) ?? null
     }
   } catch {
@@ -260,9 +287,9 @@ const MAX_QUEUE_AGE_MS = 30_000
 export const consumeBySize = (bytes: number, tile: TileCoord): void => {
   const queue = tilesByByteLength.get(bytes)
   if (queue === undefined) return
-  const at = queue.findIndex((entry) => entry.tile.x === tile.x && entry.tile.y === tile.y)
-  if (at !== -1) queue.splice(at, 1)
-  if (queue.length === 0) tilesByByteLength.delete(bytes)
+  const remaining = queue.filter((entry) => entry.tile.x !== tile.x || entry.tile.y !== tile.y)
+  if (remaining.length === 0) tilesByByteLength.delete(bytes)
+  else if (remaining.length !== queue.length) tilesByByteLength.set(bytes, remaining)
 }
 
 export const enqueueBySize = (bytes: number, tile: TileCoord, now = Date.now()): void => {
@@ -747,9 +774,10 @@ export const install = (
     const texture2DByUnit = new Map<number, WebGLTexture | null>()
     let activeProgram: WebGLProgram | null = null
     let activeTextureUnit: number = gl.TEXTURE0
+    const nativeGetParameter = gl.getParameter
     let maxTextureUnits = Number.POSITIVE_INFINITY
     try {
-      const measured = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS)
+      const measured = nativeGetParameter.call(gl, gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS)
       if (typeof measured === 'number' && Number.isInteger(measured) && measured > 0) {
         maxTextureUnits = measured
       }
@@ -784,7 +812,10 @@ export const install = (
         () => nativeUseProgram.call(this, program),
         () => {
           if (this !== gl) return
-          activeProgram = program
+          const accepted = nativeGetParameter.call(gl, gl.CURRENT_PROGRAM)
+          if (accepted === null || typeof accepted === 'object') {
+            activeProgram = accepted as WebGLProgram | null
+          }
         },
       )
     }
@@ -942,6 +973,9 @@ export const install = (
     } as typeof gl.texImage2D
 
     let drawFramebuffer: WebGLFramebuffer | null = null
+    let scissorEnabled = false
+    let colorWriteMask: [boolean, boolean, boolean, boolean] = [true, true, true, true]
+    const validClearMask = gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT
     const scheduleFrameFlush = (): boolean => {
       // A provisional context remains wrapped after the real map context appears. Its later draws
       // must not schedule a flush against the new map canvas or clear/corrupt the live overlay.
@@ -992,6 +1026,38 @@ export const install = (
       )
     }
 
+    const nativeEnable = gl.enable
+    gl.enable = function (this: WebGL2RenderingContext, cap) {
+      return runObservedCall(
+        () => nativeEnable.call(this, cap),
+        () => {
+          if (this === gl && cap === gl.SCISSOR_TEST) scissorEnabled = true
+        },
+      )
+    }
+
+    const nativeDisable = gl.disable
+    gl.disable = function (this: WebGL2RenderingContext, cap) {
+      return runObservedCall(
+        () => nativeDisable.call(this, cap),
+        () => {
+          if (this === gl && cap === gl.SCISSOR_TEST) scissorEnabled = false
+        },
+      )
+    }
+
+    const nativeColorMask = gl.colorMask
+    gl.colorMask = function (this: WebGL2RenderingContext, red, green, blue, alpha) {
+      return runObservedCall(
+        () => nativeColorMask.call(this, red, green, blue, alpha),
+        () => {
+          if (this === gl) {
+            colorWriteMask = [Boolean(red), Boolean(green), Boolean(blue), Boolean(alpha)]
+          }
+        },
+      )
+    }
+
     const nativeClear = gl.clear
     gl.clear = function (this: WebGL2RenderingContext, mask) {
       return runObservedCall(
@@ -1001,7 +1067,13 @@ export const install = (
             this === gl &&
             drawFramebuffer === null &&
             typeof mask === 'number' &&
-            (mask & gl.COLOR_BUFFER_BIT) !== 0
+            Number.isInteger(mask) &&
+            mask >= 0 &&
+            mask <= 0xffffffff &&
+            (mask & gl.COLOR_BUFFER_BIT) !== 0 &&
+            (mask & ~validClearMask) === 0 &&
+            !scissorEnabled &&
+            colorWriteMask.every(Boolean)
           ) {
             if (scheduleFrameFlush()) {
               // The GPU discarded every earlier default-framebuffer draw in this task. Do the same
@@ -1015,12 +1087,15 @@ export const install = (
       )
     }
 
-    const recordDraw = (): void => {
+    const recordDraw = (drawCount: number): void => {
       // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
       // wplace tiles in it still reaches the listener. A default-framebuffer colour clear above
       // covers the rarer frame that contains no draw call at all.
       if (drawFramebuffer !== null) return
       if (!scheduleFrameFlush()) return
+      // WebGL accepts a zero count as a no-op. It may still delimit a tile-less map frame, but it
+      // cannot reuse the last program/texture/matrix state to manufacture a quad that was not drawn.
+      if (!Number.isFinite(drawCount) || !Number.isInteger(drawCount) || drawCount <= 0) return
       frameDraws++
       if (activeProgram === null) {
         count('draw:not-raster-program')
@@ -1054,7 +1129,7 @@ export const install = (
       return runObservedCall(
         () => nativeDrawArrays.call(this, mode, first, count),
         () => {
-          if (this === gl) recordDraw()
+          if (this === gl) recordDraw(count)
         },
       )
     }
@@ -1063,9 +1138,31 @@ export const install = (
       return runObservedCall(
         () => nativeDrawElements.call(this, mode, count, elementType, offset),
         () => {
-          if (this === gl) recordDraw()
+          if (this === gl) recordDraw(count)
         },
       )
+    }
+
+    try {
+      this.addEventListener('webglcontextlost', () => {
+        try {
+          if (contextGeneration !== activeContextGeneration) return
+          pending = []
+          frameDraws = 0
+          frameTileDraws = 0
+          activeProgram = null
+          activeTextureUnit = gl.TEXTURE0
+          texture2DByUnit.clear()
+          drawFramebuffer = null
+          scissorEnabled = false
+          colorWriteMask = [true, true, true, true]
+          scheduleFrameFlush()
+        } catch {
+          // Context-loss bookkeeping is observational and must never escape into page event code.
+        }
+      })
+    } catch {
+      // A hostile or partial canvas shim must not break a successfully created WebGL context.
     }
 
     return gl
