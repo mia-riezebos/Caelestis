@@ -4,6 +4,13 @@
  * `wrangler types` regenerates `worker-configuration.d.ts` from `wrangler.toml`, and secrets are not
  * declared there — they are set with `wrangler secret put`. Declaring them here keeps them typed
  * without hand-editing a generated file that the next `wrangler types` would overwrite.
+ *
+ * `SEASON` and `OPEN_ACCESS` are `[vars]` and so *are* generated — but generated as the literal
+ * types of their defaults, `"1"` and `"false"`. Under those, `env.OPEN_ACCESS === 'true'` is a
+ * comparison TypeScript rejects as having no overlap, and a deployment that overrides the var is
+ * exactly the case the literal denies. Widening them back to `string` here is what makes reading
+ * them sound, so these two declarations are load-bearing rather than duplicates of the generated
+ * file. Removing them does not merely lose a docstring; it fails the build.
  */
 declare namespace Cloudflare {
   interface Env {
