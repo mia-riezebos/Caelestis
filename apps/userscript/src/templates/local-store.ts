@@ -933,6 +933,25 @@ export const forgetServerTemplate = (id: string): void => {
   notify()
 }
 
+/**
+ * Forget everything one server published, and free the bitmaps with it.
+ *
+ * For disconnecting. The ordinary sync removes templates a server has stopped publishing, but a
+ * disconnected server is never synced again — so its templates stayed in this store forever, drawn
+ * on the canvas, belonging to a server that is no longer in the list and with no row anywhere to
+ * switch them off from.
+ */
+export const forgetServerTemplates = (serverUrl: string): void => {
+  let removed = false
+  for (const template of [...templates.values()]) {
+    if (template.serverUrl !== serverUrl) continue
+    for (const tile of template.tiles.values()) for (const level of tile.levels) level.close()
+    templates.delete(template.id)
+    removed = true
+  }
+  if (removed) notify()
+}
+
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   const restoring = restoreInFlight
   if (restoring !== null) await restoring

@@ -1,5 +1,5 @@
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
-import { viewportCentre } from '../main.js'
+import { redraw, viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
   type ConnectedServer,
@@ -8,6 +8,7 @@ import {
   createNode,
   deleteNode as deleteNodeOnServer,
   deleteTemplate as deleteTemplateOnServer,
+  forgetScopes,
   getState,
   listNodes,
   loadState,
@@ -32,6 +33,7 @@ import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
   localTemplates as allLocal,
+  forgetServerTemplates,
   localTemplates,
   onLocalChange,
   removeLocalTemplate,
@@ -41,9 +43,10 @@ import {
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
-import { serverTemplateKey } from '../templates/server-sync.js'
+import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
+import { forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen } from '../wplace-paint.js'
-import { accessTokenSection, prefetchAccessTokens } from './access-tokens.js'
+import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
 import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
@@ -57,6 +60,7 @@ import { type Destination, type Source, transplant } from './transplant.js'
 import {
   findServerNode,
   findServerTemplate,
+  forgetServerRows,
   placeKey,
   primeFromCache,
   refreshNodes,
@@ -514,6 +518,41 @@ const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputE
 const expandedServers = new Set<string>()
 
 /**
+ * Servers whose row has already been opened for them, so it is done once and not fought over.
+ *
+ * A server asking for a token is opened without being asked, because the one thing it needs is
+ * inside. Doing that on every render would mean it could never be closed again.
+ */
+const autoExpanded = new Set<string>()
+
+/**
+ * Disconnect: take the server out of the list, and everything it put on this machine with it.
+ *
+ * Removing it from the list used to be all that happened, and the ordinary sync is what removes a
+ * server's templates — so a disconnected server was never synced again and its templates stayed on
+ * the canvas forever, belonging to a server no longer in the list, with no row anywhere to switch
+ * them off from. The only way back was a reload.
+ *
+ * Everything it left, in the order that keeps the map honest: the drawn templates first, then the
+ * things that describe them, then the bytes they were built from, then the preferences that can no
+ * longer refer to anything.
+ */
+const disconnectServer = (server: ConnectedServer): void => {
+  forgetServerTemplates(server.url)
+  const hashes = forgetServerRows(server.url)
+  const nodes = forgetNodes(server.url)
+  forgetChunks(hashes)
+  forgetCachedTokens(server.url)
+  forgetScopes([`server:${server.url}`, ...nodes.map(nodeScopeKey)])
+  expandedServers.delete(server.url)
+  autoExpanded.delete(server.url)
+  removeServer(server.url)
+  void forgetServer(server.url)
+  redraw()
+  showView('settings')
+}
+
+/**
  * One connected server: its name and state, and everything about it behind a caret.
  *
  * Expandable because a server has more than one thing to say about it and only one of them is worth
@@ -527,6 +566,12 @@ const expandedServers = new Set<string>()
 const serverRow = (server: ConnectedServer): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'px-3 py-2'
+  // Opened for you when it is asking for something, once — the token field is inside, and a row you
+  // have to discover before you can fix it is a row that reads as broken rather than as waiting.
+  if (server.status === 'needs-token' && !autoExpanded.has(server.url)) {
+    autoExpanded.add(server.url)
+    expandedServers.add(server.url)
+  }
   const open = expandedServers.has(server.url)
 
   const top = document.createElement('button')
@@ -574,18 +619,14 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   top.addEventListener('pointerenter', () => prefetchAccessTokens(server))
   wrap.appendChild(top)
 
-  // A server asking for a token says so on the collapsed row too. It is the one state that needs
-  // something *done* about it, and a row that has to be opened to find that out is a row that gets
-  // scrolled past.
+  // Why it is offline, which the two words on the row above cannot carry. Nothing extra for a
+  // server wanting a token: the row says so, and what to do about it is one click away.
   if (!open) {
-    if (server.status === 'unreachable' || server.status === 'needs-token') {
+    if (server.status === 'unreachable' && server.error !== undefined) {
       const why = document.createElement('p')
       why.className = 'text-xs opacity-60'
       why.style.marginTop = '0.125rem'
-      why.textContent =
-        server.status === 'needs-token'
-          ? 'Needs an access token.'
-          : (server.error ?? 'Could not be reached.')
+      why.textContent = server.error
       wrap.appendChild(why)
     }
     return wrap
@@ -638,6 +679,9 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     submit.classList.remove('btn-disabled')
     if (next.status === 'connected') {
       upsertServer(next)
+      // Closed again, because what was open for is done. Left open, a row that opened itself would
+      // stay open on a pane that is otherwise a short list of servers.
+      expandedServers.delete(server.url)
       showView('settings')
       return
     }
@@ -665,12 +709,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   disconnect.className = 'btn btn-sm btn-ghost text-error'
   disconnect.style.marginTop = '0.75rem'
   disconnect.textContent = 'Disconnect'
-  disconnect.addEventListener('click', () => {
-    expandedServers.delete(server.url)
-    removeServer(server.url)
-    void forgetServer(server.url)
-    showView('settings')
-  })
+  disconnect.addEventListener('click', () => disconnectServer(server))
   body.appendChild(disconnect)
 
   wrap.appendChild(body)
