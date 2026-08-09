@@ -146,17 +146,7 @@ const load = async () => {
   console.log(`injected ${(source.length / 1024).toFixed(1)} KB → ${url}`)
 }
 
-await load()
-await sleep(settleMs)
-
-if (shotPath) {
-  const { data } = await tab.send('Page.captureScreenshot', { format: 'png' })
-  writeFileSync(shotPath, Buffer.from(data, 'base64'))
-  console.log(`screenshot → ${shotPath}`)
-  await fetch(`${CDP}/json/close/${tab.target.id}`)
-  process.exit(0)
-}
-
+let initialLoad = load
 if (watching) {
   console.log('watching src/ — save to rebuild and reload. Ctrl-C to stop.')
   let debounce = null
@@ -178,6 +168,9 @@ if (watching) {
     } while (dirty)
     reloading = false
   }
+  initialLoad = reload
+  // Register before the first build/navigation: edits during startup become a dirty rerun instead
+  // of disappearing into the initial four-second settle window.
   watch(join(here, 'src'), { recursive: true }, () => {
     if (debounce !== null) clearTimeout(debounce)
     debounce = setTimeout(() => {
@@ -185,6 +178,19 @@ if (watching) {
       void reload()
     }, 150)
   })
-} else {
+}
+
+await initialLoad()
+if (!watching || shotPath) await sleep(settleMs)
+
+if (shotPath) {
+  const { data } = await tab.send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(shotPath, Buffer.from(data, 'base64'))
+  console.log(`screenshot → ${shotPath}`)
+  await fetch(`${CDP}/json/close/${tab.target.id}`)
+  process.exit(0)
+}
+
+if (!watching) {
   console.log('tab left open; re-run to reload.')
 }
