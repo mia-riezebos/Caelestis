@@ -203,6 +203,22 @@ export const primeFromCache = async (rerender: () => void): Promise<void> => {
   rerender()
 }
 
+/**
+ * Forget a server's folders and templates, and say which chunks they were made of.
+ *
+ * The hashes come back because the chunk cache is content-addressed and cannot tell whose bytes are
+ * whose — this map is the last thing that knows, so it answers on the way out.
+ */
+export const forgetServerRows = (serverUrl: string): readonly string[] => {
+  const hashes = (templatesByServer.get(serverUrl) ?? []).flatMap((template) =>
+    template.chunks.map((chunk) => chunk.hash),
+  )
+  nodesByServer.delete(serverUrl)
+  templatesByServer.delete(serverUrl)
+  refreshing.delete(serverUrl)
+  return hashes
+}
+
 export const startRenaming = (key: string): void => {
   renaming = key
 }

@@ -128,6 +128,16 @@ const assemble = async (
   return { width, height, indices }
 }
 
+/**
+ * Drop cached chunk bytes, by hash.
+ *
+ * Chunks are content-addressed, so the cache has no idea which server anything came from — the
+ * caller does, from the manifest it still holds, and hands the hashes over on the way out.
+ */
+export const forgetChunks = (hashes: Iterable<string>): void => {
+  for (const hash of hashes) chunkCache.delete(hash)
+}
+
 /** Our id for a server's template, namespaced so two servers cannot collide. */
 export const serverTemplateKey = (serverUrl: string, id: string): string => `srv:${serverUrl}:${id}`
 

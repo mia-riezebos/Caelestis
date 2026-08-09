@@ -50,3 +50,15 @@ export const nodeChainVisible = (serverUrl: string, nodeId: string | null): bool
   }
   return true
 }
+
+/**
+ * Drop one server's folders, and report which they were.
+ *
+ * The ids come back because their visibility switches are stored by node id, and once this map is
+ * gone there is nothing left that could work out which stored keys belonged to this server.
+ */
+export const forgetNodes = (serverUrl: string): readonly string[] => {
+  const byId = parents.get(serverUrl)
+  parents.delete(serverUrl)
+  return byId === undefined ? [] : [...byId.keys()]
+}

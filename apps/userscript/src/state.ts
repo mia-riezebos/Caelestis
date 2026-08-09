@@ -316,6 +316,20 @@ export const removeServer = (url: string): void => {
   setState({ servers: getState().servers.filter((s) => s.url !== url) })
 }
 
+/**
+ * Drop stored visibility for a set of keys.
+ *
+ * Disconnecting is deliberate, so its preferences go with it. Keeping them would mean reconnecting
+ * later to a tree with folders and templates already switched off for reasons nobody remembers —
+ * and the keys would otherwise accumulate forever, since nothing else can ever say what a
+ * `node:<id>` from a server you left refers to.
+ */
+export const forgetScopes = (keys: Iterable<string>): void => {
+  const drop = new Set(keys)
+  const hidden = getState().hiddenScopes.filter((key) => !drop.has(key))
+  if (hidden.length !== getState().hiddenScopes.length) setState({ hiddenScopes: hidden })
+}
+
 /** Can this code administer the server? The only way to know is to ask it to do something admin. */
 const probeAdmin = async (base: string, token: string | null): Promise<boolean> => {
   try {

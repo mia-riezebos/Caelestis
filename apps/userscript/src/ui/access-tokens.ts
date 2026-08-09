@@ -227,6 +227,11 @@ const fetchTokens = (server: ConnectedServer): Promise<readonly AccessToken[] | 
   return run
 }
 
+/** Drop what a server said about its tokens, for a server that is no longer connected. */
+export const forgetCachedTokens = (serverUrl: string): void => {
+  cached.delete(serverUrl)
+}
+
 /**
  * Ask before anyone opens the row, so the list is already there when they do.
  *
