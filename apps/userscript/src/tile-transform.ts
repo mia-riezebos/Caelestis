@@ -160,11 +160,15 @@ export const isGetFetch = (
     }
     if (method === null || init === undefined || init === null) return method === 'GET'
 
-    const descriptor = realm.Object.getOwnPropertyDescriptor(init, 'method')
+    let descriptor = realm.Object.getOwnPropertyDescriptor(init, 'method')
     if (descriptor === undefined) {
       const prototype = realm.Object.getPrototypeOf(init)
-      // A plain dictionary with no method inherits no override. Exotic prototypes may.
-      return (prototype === realm.Object.prototype || prototype === null) && method === 'GET'
+      if (prototype === null) return method === 'GET'
+      // WebIDL reads inherited dictionary members too. Inspect a plain Object prototype's data
+      // property without invoking it again; an accessor or exotic prototype is not safely known.
+      if (prototype !== realm.Object.prototype) return false
+      descriptor = realm.Object.getOwnPropertyDescriptor(prototype, 'method')
+      if (descriptor === undefined) return method === 'GET'
     }
     if (!('value' in descriptor)) return false
     if (descriptor.value === undefined) return method === 'GET'
@@ -686,8 +690,6 @@ export const install = (
     const texture2DByUnit = new Map<number, WebGLTexture | null>()
     let activeProgram: WebGLProgram | null = null
     let activeTextureUnit: number = gl.TEXTURE0
-    let boundTexture: WebGLTexture | null = null
-    let projection: ArrayLike<number> | null = null
 
     const nativeGetUniformLocation = gl.getUniformLocation.bind(gl)
     gl.getUniformLocation = (program, name) => {
@@ -741,7 +743,6 @@ export const install = (
           for (let index = 0; index < MATRIX_LENGTH; index += 1) {
             snapshot[index] = source[offset + index] ?? 0
           }
-          projection = snapshot
           projectionByProgram.set(uniform.program, snapshot)
         },
       )) as typeof gl.uniformMatrix4fv
@@ -761,7 +762,6 @@ export const install = (
         () => nativeBindTexture(target, texture),
         () => {
           if (target === gl.TEXTURE_2D) {
-            boundTexture = texture
             texture2DByUnit.set(activeTextureUnit, texture)
           }
         },
@@ -778,7 +778,8 @@ export const install = (
      * so a quad would be labelled `1051/672` while showing `1052/672`, and the tile we were asked
      * to draw on vanished from the list entirely.
      */
-    const attributeUpload = (source: unknown): void => {
+    const attributeUpload = (target: number, source: unknown): void => {
+      if (target !== gl.TEXTURE_2D) return
       const texture = texture2DByUnit.get(activeTextureUnit) ?? null
       if (texture === null || !isPageInstance(source, 'ImageBitmap')) {
         if (texture !== null && tileOfTexture.has(texture)) {
@@ -816,7 +817,7 @@ export const install = (
     gl.texSubImage2D = ((...subArgs: any[]) => {
       return runObservedCall(
         () => (nativeTexSubImage2D as (...a: unknown[]) => void)(...subArgs),
-        () => attributeUpload(subArgs[subArgs.length - 1]),
+        () => attributeUpload(subArgs[0], subArgs[subArgs.length - 1]),
       )
     }) as typeof gl.texSubImage2D
 
@@ -825,7 +826,7 @@ export const install = (
     gl.texImage2D = ((...texArgs: any[]) => {
       return runObservedCall(
         () => (nativeTexImage2D as (...a: unknown[]) => void)(...texArgs),
-        () => attributeUpload(texArgs[texArgs.length - 1]),
+        () => attributeUpload(texArgs[0], texArgs[texArgs.length - 1]),
       )
     }) as typeof gl.texImage2D
 
@@ -853,16 +854,19 @@ export const install = (
         queueMicrotask(flush)
       }
       frameDraws++
-      const primaryUnit =
-        activeProgram === null ? undefined : primarySamplerUnits.get(activeProgram)
+      if (activeProgram === null) {
+        count('draw:not-raster-program')
+        return
+      }
+      const primaryUnit = primarySamplerUnits.get(activeProgram)
+      if (primaryUnit === undefined) {
+        count('draw:not-raster-program')
+        return
+      }
       // Raster crossfades bind the child/current tile to u_image0, then bind the parent to
       // u_image1. The last bind is therefore the wrong identity for the child's projection matrix.
-      const drawnTexture =
-        primaryUnit === undefined ? boundTexture : (texture2DByUnit.get(primaryUnit) ?? null)
-      const drawnProjection =
-        activeProgram === null || primaryUnit === undefined
-          ? projection
-          : (projectionByProgram.get(activeProgram) ?? null)
+      const drawnTexture = texture2DByUnit.get(primaryUnit) ?? null
+      const drawnProjection = projectionByProgram.get(activeProgram) ?? null
       if (drawnTexture === null || drawnProjection === null) {
         count('draw:no-texture-or-matrix')
         return

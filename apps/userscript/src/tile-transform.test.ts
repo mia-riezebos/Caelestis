@@ -284,6 +284,17 @@ describe('transparent browser hooks', () => {
     expect(isGetFetch(url, undefinedMethod, realm, getters)).toBe(true)
     expect(isGetFetch(url, { method: 'HEAD' }, realm, getters)).toBe(false)
     expect(isGetFetch(new Request(url, { method: 'POST' }), undefined, realm, getters)).toBe(false)
+
+    Object.defineProperty(Object.prototype, 'method', {
+      configurable: true,
+      value: 'POST',
+      writable: true,
+    })
+    try {
+      expect(isGetFetch(url, {}, realm, getters)).toBe(false)
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'method')
+    }
   })
 
   it('normalizes an origin 404 to a decodable transparent PNG', async () => {
@@ -368,7 +379,7 @@ describe('transparent browser hooks', () => {
 
     mapCanvas.context.drawArrays()
     await Promise.resolve()
-    expect(counters.get('draw:no-texture-or-matrix')).toBe(1)
+    expect(counters.get('draw:not-raster-program')).toBe(1)
   })
 
   it('keeps raster identity and projection scoped to their WebGL state', async () => {
@@ -447,6 +458,9 @@ describe('transparent browser hooks', () => {
     counters.clear()
     await upload(gl.TEXTURE0, {} as WebGLTexture, 3)
     await upload(gl.TEXTURE1, {} as WebGLTexture, 1)
+    // Uploading another target must not delete the active unit's 2D tile attribution.
+    gl.activeTexture(gl.TEXTURE0)
+    gl.texImage2D(gl.TEXTURE_CUBE_MAP, 0, 0, 0, 0, new FakeImageBitmap() as unknown as ImageBitmap)
     gl.uniformMatrix4fv(projection, false, tileMatrix(1))
     const frames: TileFrame[] = []
     onTileFrame((frame) => frames.push(frame))
@@ -454,18 +468,23 @@ describe('transparent browser hooks', () => {
     await Promise.resolve()
 
     expect(frames).toHaveLength(1)
-    expect(frames.at(-1)?.quads[0]?.tile).toEqual({ x: 3, y: 4 })
+    expect(frames[0]?.quads[0]?.tile).toEqual({ x: 3, y: 4 })
 
     gl.useProgram(otherProgram)
     const otherProjection = gl.getUniformLocation(otherProgram, 'u_projection_matrix')
     if (otherProjection === null) throw new Error('fake secondary location must exist')
     gl.uniformMatrix4fv(otherProjection, false, tileMatrix(0.5, 0.5, 0.5))
+    gl.drawElements(0, 0, 0, 0)
+    await Promise.resolve()
+    expect(frames).toHaveLength(2)
+    expect(frames[1]?.quads).toEqual([])
+
     gl.useProgram(rasterProgram)
     gl.drawElements(0, 0, 0, 0)
     await Promise.resolve()
 
-    expect(frames).toHaveLength(2)
-    expect(frames[1]?.quads[0]).toEqual(frames[0]?.quads[0])
+    expect(frames).toHaveLength(3)
+    expect(frames[2]?.quads[0]).toEqual(frames[0]?.quads[0])
   })
 
   it('does not consume an arbitrary Blob-parts iterable a second time', () => {
