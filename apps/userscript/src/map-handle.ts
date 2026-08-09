@@ -57,7 +57,7 @@ const removeTraps = (): void => {
   for (const property of WITNESS_PROPERTIES) {
     const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, property)
     if (descriptor?.set !== undefined) {
-      // biome-ignore lint/performance/noDelete: restoring Object.prototype is the whole point
+      // Restoring Object.prototype is the whole point: the setter must not outlive the first hit.
       delete (Object.prototype as Record<string, unknown>)[property]
     }
   }
