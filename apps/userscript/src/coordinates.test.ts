@@ -34,6 +34,37 @@ describe('overlay coordinates', () => {
     expect(canvasPixelAtIn(current, screen?.x ?? 0, screen?.y ?? 0)).toEqual(canvasPoint)
   })
 
+  it('extrapolates the viewport centre through a temporarily missing tile', () => {
+    const canvas = {
+      width: 1000,
+      height: 500,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 500 }),
+    } as unknown as HTMLCanvasElement
+    const current: TileFrame = {
+      canvas,
+      quads: [{ tile: { x: 10, y: 20 }, x: 0, y: 0, width: 100, height: 100 }],
+    }
+
+    expect(viewportCentreIn(current)).toEqual({ x: 15_000, y: 22_500 })
+  })
+
+  it('projects canonical x coordinates across the antimeridian', () => {
+    const canvas = {
+      width: 1000,
+      height: 500,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 500 }),
+    } as unknown as HTMLCanvasElement
+    const current: TileFrame = {
+      canvas,
+      quads: [
+        { tile: { x: 2047, y: 1000 }, x: -100, y: 0, width: 500, height: 500 },
+        { tile: { x: 0, y: 1000 }, x: 400, y: 0, width: 500, height: 500 },
+      ],
+    }
+
+    expect(screenPointForIn(current, 500, 1_000_500)).toEqual({ x: 650, y: 250 })
+  })
+
   it('reports the current horizontal pixel scale and the no-frame fallback', () => {
     expect(pixelsPerCanvasPixelIn(frame())).toBe(0.2)
     expect(pixelsPerCanvasPixelIn(null)).toBe(1)

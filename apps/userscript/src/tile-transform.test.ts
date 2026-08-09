@@ -51,24 +51,28 @@ const tile = { x: 3, y: 4 }
 
 describe('tileFromUrl', () => {
   it.each([
-    ['https://wplace.live/files/s0/tiles/12/34.png', { x: 12, y: 34 }],
-    ['https://wplace.live/files/s99/tiles/0/0.png', { x: 0, y: 0 }],
-    ['https://wplace.live/files/s1/tiles/1023/2047.png?v=2', { x: 1023, y: 2047 }],
+    ['https://backend.wplace.live/files/s0/tiles/12/34.png', { x: 12, y: 34 }],
+    ['https://backend.wplace.live/files/s99/tiles/0/0.png', { x: 0, y: 0 }],
+    ['https://backend.wplace.live/files/s1/tiles/1023/2047.png?v=2', { x: 1023, y: 2047 }],
   ])('reads the coordinates out of %s', (url, expected) => {
     expect(tileFromUrl(url)).toEqual(expected)
   })
 
   it.each([
-    ['a different extension', 'https://wplace.live/files/s0/tiles/12/34.webp'],
-    ['no shard', 'https://wplace.live/files/tiles/12/34.png'],
-    ['one coordinate', 'https://wplace.live/files/s0/tiles/12.png'],
-    ['another route entirely', 'https://wplace.live/api/pixel/12/34'],
+    ['a different extension', 'https://backend.wplace.live/files/s0/tiles/12/34.webp'],
+    ['no shard', 'https://backend.wplace.live/files/tiles/12/34.png'],
+    ['one coordinate', 'https://backend.wplace.live/files/s0/tiles/12.png'],
+    ['another route entirely', 'https://backend.wplace.live/api/pixel/12/34'],
     // Unanchored, all three of these matched — and matching means buffering the whole body and
     // putting the coordinates it found into the attribution queue.
     ['another origin', 'https://evil.example/x/files/s0/tiles/1/2.png'],
     ['another origin with the exact path', 'https://evil.example/files/s0/tiles/1/2.png'],
-    ['the pattern in a query string', 'https://wplace.live/api/report?u=/files/s0/tiles/9/9.png'],
-    ['a suffix past the extension', 'https://wplace.live/files/s0/tiles/1/2.png.exe'],
+    ['the page origin', 'https://wplace.live/files/s0/tiles/1/2.png'],
+    [
+      'the pattern in a query string',
+      'https://backend.wplace.live/api/report?u=/files/s0/tiles/9/9.png',
+    ],
+    ['a suffix past the extension', 'https://backend.wplace.live/files/s0/tiles/1/2.png.exe'],
     ['not a URL at all', 'http://['],
   ])('refuses %s', (_label, url) => {
     expect(tileFromUrl(url)).toBeNull()
@@ -313,5 +317,65 @@ describe('transparent browser hooks', () => {
         },
       ),
     ).toBe('native result')
+  })
+
+  it('does not coerce a non-standard fetch input outside the native call', async () => {
+    let conversions = 0
+    const input = {
+      toString() {
+        conversions += 1
+        return 'https://backend.wplace.live/files/s0/tiles/1/2.png'
+      },
+    }
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      fetch: vi.fn(async (value: unknown) => {
+        String(value)
+        return new Response()
+      }),
+      Request: globalThis.Request,
+      Blob: globalThis.Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer: globalThis.ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    await realm.fetch(input as unknown as RequestInfo)
+
+    expect(conversions).toBe(1)
+  })
+
+  it('does not coerce a non-string context id after the native call', () => {
+    let conversions = 0
+    const id = {
+      toString() {
+        conversions += 1
+        return 'webgl2'
+      },
+    }
+    class FakeCanvas {
+      getContext(value: unknown): null {
+        String(value)
+        return null
+      }
+    }
+    const realm = {
+      fetch: globalThis.fetch,
+      Request: globalThis.Request,
+      Blob: globalThis.Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer: globalThis.ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    new FakeCanvas().getContext(id)
+
+    expect(conversions).toBe(1)
   })
 })

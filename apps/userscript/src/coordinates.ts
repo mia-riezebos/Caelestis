@@ -1,5 +1,15 @@
-import { TILE_SIZE } from '@wts/shared'
+import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
 import type { TileFrame } from './tile-transform.js'
+
+const wrapWorldX = (x: number): number => ((x % WORLD_PIXELS) + WORLD_PIXELS) % WORLD_PIXELS
+
+/** The nearest wrapped copy of a canonical x coordinate relative to an on-screen reference. */
+const wrappedXDelta = (x: number, reference: number): number => {
+  const delta = wrapWorldX(x) - wrapWorldX(reference)
+  return (
+    ((((delta + WORLD_PIXELS / 2) % WORLD_PIXELS) + WORLD_PIXELS) % WORLD_PIXELS) - WORLD_PIXELS / 2
+  )
+}
 
 /** Where the middle of the viewport falls in wplace's global pixel coordinates. */
 export const viewportCentreIn = (frame: TileFrame): { x: number; y: number } | null => {
@@ -17,7 +27,11 @@ export const viewportCentreIn = (frame: TileFrame): { x: number; y: number } | n
     }
   }
   const first = frame.quads[0]
-  return first === undefined ? null : { x: first.tile.x * TILE_SIZE, y: first.tile.y * TILE_SIZE }
+  if (first === undefined) return null
+  return {
+    x: wrapWorldX(first.tile.x * TILE_SIZE + ((midX - first.x) * TILE_SIZE) / first.width),
+    y: first.tile.y * TILE_SIZE + ((midY - first.y) * TILE_SIZE) / first.height,
+  }
 }
 
 /** Global canvas pixel under a browser client-coordinate point. */
@@ -58,7 +72,7 @@ export const screenPointForIn = (
   const originX = reference.tile.x * TILE_SIZE
   const originY = reference.tile.y * TILE_SIZE
   return {
-    x: box.left + (reference.x + (x - originX) * scaleX) / ratioX,
+    x: box.left + (reference.x + wrappedXDelta(x, originX) * scaleX) / ratioX,
     y: box.top + (reference.y + (y - originY) * scaleY) / ratioY,
   }
 }

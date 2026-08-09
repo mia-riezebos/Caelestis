@@ -72,7 +72,7 @@ const MAX_TILE_SCREEN_WIDTH = 1e9
 const ROTATION_TOLERANCE = 1e-6
 
 const TILE_PATH = /^\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png$/
-const TILE_ORIGIN = 'https://wplace.live'
+const TILE_ORIGIN = 'https://backend.wplace.live'
 
 /**
  * The tile this URL names, or null.
@@ -360,14 +360,22 @@ const installFetchTap = (realm: Window & typeof globalThis): void => {
   const nativeFetch = realm.fetch
   realm.fetch = async function (this: unknown, ...args: Parameters<typeof fetch>) {
     const input = args[0]
-    const url =
-      typeof input === 'string'
-        ? input
-        : isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)
-          ? (input as Request).url
-          : String(input)
-    const tile = tileFromUrl(url)
     const response = await nativeFetch.apply(this as never, args)
+    let tile: TileCoord | null = null
+    try {
+      if (typeof input === 'string') {
+        tile = tileFromUrl(input)
+      } else if (isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)) {
+        // Read the native slot after fetch has succeeded. An own `url` getter or a second generic
+        // stringification could run page code twice and either throw or describe a different fetch.
+        const getter = realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'url')?.get
+        const url = getter?.call(input)
+        if (typeof url === 'string') tile = tileFromUrl(url)
+      }
+    } catch {
+      // Fetch already succeeded. An unusual input that cannot be observed safely is simply untapped.
+      return response
+    }
     if (tile === null) return response
 
     // A tap, not a rewrite: the response is handed back untouched. Compositing into wplace's own
@@ -541,7 +549,10 @@ export const install = (
     // biome-ignore lint/suspicious/noExplicitAny: the return type follows the overload set too
   ): any {
     const context = nativeGetContext.apply(this, args as never)
-    const type = String(args[0])
+    // MapLibre uses literal context ids. Avoid repeating WebIDL's string conversion for unusual
+    // callers: instrumentation must not invoke their conversion hooks after native success.
+    if (typeof args[0] !== 'string') return context
+    const type = args[0]
     if (!type.startsWith('webgl') || context === null) return context
     // Latched only once the map has confirmed this canvas is its own. Before capture the map cannot
     // answer, so an earlier WebGL context — a fingerprinting probe, an effect, another userscript —
