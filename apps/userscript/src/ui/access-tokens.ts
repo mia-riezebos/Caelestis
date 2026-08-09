@@ -24,10 +24,19 @@ import { showNewToken } from './token-dialog.js'
 
 /** The three things a token can be allowed to do, in the order they get more dangerous. */
 const SCOPES = [
-  { id: 'read', label: 'Read', note: 'See what this server publishes' },
-  { id: 'report', label: 'Report', note: 'And report what gets painted' },
-  { id: 'admin', label: 'Admin', note: 'And change anything, including tokens' },
+  { id: 'read', label: 'Read' },
+  { id: 'report', label: 'Report' },
+  { id: 'admin', label: 'Admin' },
 ] as const
+
+/**
+ * What most tokens are for: someone painting who reports what they paint.
+ *
+ * Read alone is the safest and therefore the tempting default, but it is the one that makes the
+ * contribution counts wrong for whoever holds it, quietly and for as long as nobody notices. Admin
+ * is never a default.
+ */
+const DEFAULT_SCOPE = 'report'
 
 type ScopeId = (typeof SCOPES)[number]['id']
 
@@ -36,12 +45,7 @@ const dateText = (at: number): string =>
     ? 'unknown'
     : new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 
-/**
- * One token: what it is for, what it may do, and a way to take it away.
- *
- * A revoked one keeps its row. It is a fact about who used to have a way in, and removing the record
- * would leave nothing to answer that with — so it is struck through and stays.
- */
+/** One token: what it is for, what it may do, and a way to take it away. */
 const tokenRow = (server: ConnectedServer, token: AccessToken, reload: () => void): HTMLElement => {
   const row = document.createElement('div')
   row.className = 'flex items-center gap-2'
@@ -58,37 +62,36 @@ const tokenRow = (server: ConnectedServer, token: AccessToken, reload: () => voi
   label.style.textOverflow = 'ellipsis'
   label.style.whiteSpace = 'nowrap'
   label.textContent = token.label
-  if (token.revokedAt !== null) label.style.textDecoration = 'line-through'
 
   const meta = document.createElement('span')
   meta.className = 'text-xs opacity-60'
   meta.textContent =
-    token.revokedAt === null
-      ? `${token.scope} · ${dateText(token.createdAt)}`
-      : `${token.scope} · revoked ${dateText(token.revokedAt)}`
+    token.bootstrap === true
+      ? "admin · set in the server's environment"
+      : `${token.scope} · ${dateText(token.createdAt)}`
 
   text.append(label, meta)
   row.appendChild(text)
 
-  if (token.revokedAt !== null) {
-    row.style.opacity = '0.55'
-    return row
-  }
+  // Nothing to delete: it is an environment variable, so taking it away means changing the
+  // deployment. A disabled button would be a promise this interface cannot keep, so there is none —
+  // the line under the label is what says where it comes from and therefore where to remove it.
+  if (token.bootstrap === true) return row
 
   const revoke = document.createElement('button')
   revoke.className = 'btn btn-ghost btn-sm btn-circle'
-  revoke.title = 'Revoke'
-  revoke.setAttribute('aria-label', `Revoke ${token.label}`)
+  revoke.title = 'Delete'
+  revoke.setAttribute('aria-label', `Delete ${token.label}`)
   revoke.appendChild(icon('close', 'size-4'))
   revoke.addEventListener('click', () => {
     void (async () => {
       // Asked first, because this takes someone's access away without warning them and cannot be
       // undone — the same treatment deleting a template gets, for the same reason.
       const sure = await confirmDestructive({
-        title: 'Revoke this token?',
+        title: 'Delete this token?',
         body: `${token.label} will stop working immediately.`,
         note: 'Anyone using it will lose access to this server. This cannot be undone.',
-        confirmLabel: 'Revoke',
+        confirmLabel: 'Delete',
       })
       if (!sure) return
       await revokeAccessToken(server, token.tokenHash)
@@ -129,23 +132,24 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
     const item = document.createElement('option')
     item.value = option.id
     item.textContent = option.label
-    item.title = option.note
     scope.appendChild(item)
   }
+  scope.value = DEFAULT_SCOPE
 
   const create = document.createElement('button')
   create.className = 'btn btn-sm btn-primary'
   create.textContent = 'Create'
 
+  /**
+   * Only ever an error, and absent until there is one.
+   *
+   * There used to be a line under here explaining what the chosen scope allows. Three sentences that
+   * changed as you moved the dropdown, above a button, in a form used a handful of times in a
+   * server's life — it moved the layout more often than it told anyone anything.
+   */
   const note = document.createElement('p')
-  note.className = 'text-xs opacity-60'
-  // Room for the longest of them, always. Otherwise picking a scope moves everything below it.
-  note.style.minHeight = '2rem'
-  note.textContent = SCOPES[0].note
-  scope.addEventListener('change', () => {
-    note.className = 'text-xs opacity-60'
-    note.textContent = SCOPES.find((one) => one.id === scope.value)?.note ?? ''
-  })
+  note.className = 'text-xs text-error'
+  note.style.display = 'none'
 
   const submit = async (): Promise<void> => {
     const name = label.value.trim()
@@ -154,14 +158,16 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
       return
     }
     create.classList.add('btn-disabled')
+    note.style.display = 'none'
     const result = await createAccessToken(server, name, scope.value as ScopeId)
     create.classList.remove('btn-disabled')
     if (!result.ok) {
-      note.className = 'text-xs text-error'
+      note.style.display = ''
       note.textContent = result.message
       return
     }
     label.value = ''
+    scope.value = DEFAULT_SCOPE
     // The list is only refreshed once the dialog is gone. Redrawing the panel behind a modal that
     // holds the one copy of a secret is how the secret gets lost.
     await showNewToken(name, result.token)
@@ -192,13 +198,29 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
 const cached = new Map<string, readonly AccessToken[]>()
 const inFlight = new Map<string, Promise<readonly AccessToken[] | null>>()
 
+/**
+ * Deleting a token means it is gone.
+ *
+ * **This disagrees with the backend on this branch, deliberately and temporarily.** `DELETE
+ * /admin/tokens/:hash` still soft-revokes — it stamps `revokedAt` and keeps the row — while the
+ * decision taken further down the stack is that a deleted token is deleted and there is no revoked
+ * state at all. Until those meet, anything still carrying a `revokedAt` is filtered out here, so the
+ * interface says what was decided rather than what this branch's server happens to do.
+ *
+ * The filter comes out when the route does. It is one line and it is marked; what it must not become
+ * is a permanent client-side patch over a server that never got changed.
+ */
+const withoutDeleted = (tokens: readonly AccessToken[]): readonly AccessToken[] =>
+  tokens.filter((token) => token.revokedAt === null)
+
 const fetchTokens = (server: ConnectedServer): Promise<readonly AccessToken[] | null> => {
   const running = inFlight.get(server.url)
   if (running !== undefined) return running
   const run = listAccessTokens(server)
     .then((tokens) => {
-      if (tokens !== null) cached.set(server.url, tokens)
-      return tokens
+      const live = tokens === null ? null : withoutDeleted(tokens)
+      if (live !== null) cached.set(server.url, live)
+      return live
     })
     .finally(() => inFlight.delete(server.url))
   inFlight.set(server.url, run)

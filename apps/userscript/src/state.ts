@@ -778,6 +778,13 @@ export interface AccessToken {
   readonly createdBy: string
   readonly createdAt: number
   readonly revokedAt: number | null
+  /**
+   * The operator's credential from the server's environment, which has no row and cannot be deleted.
+   *
+   * Said by the server rather than inferred from the label, since anyone can call a real token
+   * "bootstrap" and an undeletable row is not something a label should be able to claim.
+   */
+  readonly bootstrap?: boolean
 }
 
 export const listAccessTokens = async (
