@@ -34,6 +34,8 @@ describe('local template persistence', () => {
 
     const loaded = await loading
     expect(loaded).toEqual([])
+    await expect(loadTemplates()).resolves.toEqual([])
+    expect(indexedDB.open).toHaveBeenCalledOnce()
     opening.onsuccess?.(new Event('success'))
     expect(database.close).toHaveBeenCalledOnce()
   })
@@ -152,6 +154,30 @@ describe('local template persistence', () => {
 
     await expect(saving).resolves.toEqual({ status: 'conflict' })
     expect(templateStore.put).not.toHaveBeenCalled()
+  })
+
+  it('normalizes a malformed negative revision consistently for CAS deletion', async () => {
+    const templateRequest = {
+      result: stored({ id: 'invalid', revision: -1 }),
+    } as unknown as IDBRequest<unknown>
+    const templateStore = { get: vi.fn(() => templateRequest), delete: vi.fn() }
+    const transaction = { objectStore: vi.fn(() => templateStore) } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { deleteTemplate } = await import('./persist.js')
+
+    const deleting = deleteTemplate('invalid', 0)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    templateRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(deleting).resolves.toEqual({ status: 'saved', revision: 0 })
+    expect(templateStore.delete).toHaveBeenCalledWith('invalid')
   })
 
   it('waits for durable deletes and skips records outside the aggregate pixel cap', async () => {

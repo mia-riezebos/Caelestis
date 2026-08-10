@@ -24,6 +24,7 @@ const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
 const VERSION = 3
+let blockedOpenRequest: IDBOpenDBRequest | null = null
 
 export interface StoredTemplate extends ImportedTemplate {
   readonly visible: boolean
@@ -33,8 +34,11 @@ export interface StoredTemplate extends ImportedTemplate {
   readonly revision: number
 }
 
-const open = (): Promise<IDBDatabase> =>
-  new Promise((resolve, reject) => {
+const open = (): Promise<IDBDatabase> => {
+  if (blockedOpenRequest !== null) {
+    return Promise.reject(new Error('indexedDB.open is still blocked by another connection'))
+  }
+  return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
     let abandoned = false
     request.onupgradeneeded = () => {
@@ -46,10 +50,12 @@ const open = (): Promise<IDBDatabase> =>
     }
     request.onblocked = () => {
       abandoned = true
+      blockedOpenRequest = request
       reject(new Error('indexedDB.open blocked by another connection'))
     }
     request.onsuccess = () => {
       const db = request.result
+      if (blockedOpenRequest === request) blockedOpenRequest = null
       if (abandoned) {
         db.close()
         return
@@ -57,8 +63,15 @@ const open = (): Promise<IDBDatabase> =>
       db.onversionchange = () => db.close()
       resolve(db)
     }
-    request.onerror = () => reject(request.error ?? new Error('indexedDB.open failed'))
+    request.onerror = () => {
+      if (blockedOpenRequest === request) blockedOpenRequest = null
+      reject(request.error ?? new Error('indexedDB.open failed'))
+    }
   })
+}
+
+const normaliseRevision = (value: unknown): number =>
+  Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 
 const writeVersioned = async (
   id: string,
@@ -80,7 +93,7 @@ const writeVersioned = async (
             if (current !== undefined) return
           } else {
             if (current === undefined) return
-            const actual = Number.isSafeInteger(current.revision) ? (current.revision as number) : 0
+            const actual = normaliseRevision(current.revision)
             if (incrementRevision && actual >= Number.MAX_SAFE_INTEGER) return
             if (actual !== expectedRevision) return
           }
@@ -278,8 +291,7 @@ export type LoadTemplateResult =
 
 const storedRevision = (value: unknown): number => {
   if (typeof value !== 'object' || value === null || !('revision' in value)) return 0
-  const revision = (value as { readonly revision?: unknown }).revision
-  return Number.isSafeInteger(revision) && Number(revision) >= 0 ? Number(revision) : 0
+  return normaliseRevision((value as { readonly revision?: unknown }).revision)
 }
 
 const loadFailureIdentity = (
