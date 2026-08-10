@@ -247,6 +247,37 @@ describe('local template persistence', () => {
     expect(templateStore.put).not.toHaveBeenCalled()
   })
 
+  it('reuses durable pixel storage for a metadata-only revision update', async () => {
+    const durablePixels = {
+      size: 1,
+      arrayBuffer: vi.fn(async () => new Uint8Array([0]).buffer),
+    }
+    const templateRequest = {
+      result: stored({ id: 'test', revision: 1, indices: durablePixels }),
+    } as unknown as IDBRequest<unknown>
+    const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
+    const transaction = { objectStore: vi.fn(() => templateStore) } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { saveTemplate } = await import('./persist.js')
+
+    const saving = saveTemplate(stored({ id: 'test', revision: 1, visible: false }) as never, 1)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    templateRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(saving).resolves.toEqual({ status: 'saved', revision: 2 })
+    expect(templateStore.put).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'test', revision: 2, visible: false, indices: durablePixels }),
+    )
+    expect(durablePixels.arrayBuffer).not.toHaveBeenCalled()
+  })
+
   it('normalizes a malformed negative revision consistently for CAS deletion', async () => {
     const templateRequest = {
       result: stored({ id: 'invalid', revision: -1 }),

@@ -98,7 +98,7 @@ const normaliseRevision = (value: unknown): number =>
 const writeVersioned = async (
   id: IDBValidKey,
   expectedRevision: number | null,
-  operation: (templates: IDBObjectStore, nextRevision: number) => void,
+  operation: (templates: IDBObjectStore, nextRevision: number, current: unknown) => void,
   incrementRevision = true,
   creationPixels: number | null = null,
 ): Promise<SaveResult> => {
@@ -124,7 +124,7 @@ const writeVersioned = async (
             ? (expectedRevision ?? 0) + 1
             : (expectedRevision ?? 0)
           const commit = (): void => {
-            operation(templates, nextRevision)
+            operation(templates, nextRevision, current)
             result = { status: 'saved', revision: nextRevision }
           }
           if (expectedRevision !== null || creationPixels === null) {
@@ -194,14 +194,31 @@ export const saveTemplate = async (
   return await writeVersioned(
     template.id,
     expectedRevision,
-    (templates, revision) => {
+    (templates, revision, current) => {
       // IndexedDB can inspect a Blob's size without first allocating an equally large typed array.
       // Legacy Uint8Array records remain readable; all new writes use this bounded representation.
-      const bytes =
-        indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
-          ? (indices.buffer as ArrayBuffer)
-          : indices.slice().buffer
-      templates.put({ ...metadata, revision, indices: new Blob([bytes]) })
+      const currentIndices =
+        expectedRevision !== null &&
+        typeof current === 'object' &&
+        current !== null &&
+        'indices' in current
+          ? current.indices
+          : undefined
+      const reusable =
+        (isUint8Array(currentIndices) || isStoredBlob(currentIndices)) &&
+        candidateIndexPixels(current) === indices.length
+      if (reusable) {
+        // Metadata-only mutations keep the already-cloned durable value. Re-wrapping a multi-MB
+        // ArrayBuffer in a Blob copies it and makes every move/toggle/appearance change rewrite all
+        // pixels even though this PR has no pixel-editing mutation.
+        templates.put({ ...metadata, revision, indices: currentIndices })
+      } else {
+        const bytes =
+          indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
+            ? (indices.buffer as ArrayBuffer)
+            : indices.slice().buffer
+        templates.put({ ...metadata, revision, indices: new Blob([bytes]) })
+      }
     },
     true,
     expectedRevision === null ? indices.length : null,

@@ -1410,6 +1410,29 @@ describe('local template lifecycle', () => {
     expect(replacement.close).toHaveBeenCalledOnce()
   })
 
+  it('releases pre-sliced tiles before hidden-move validation can reject', async () => {
+    const store = await import('./local-store.js')
+    const indices = new Uint8Array([0, 0])
+    const added = await store.addLocalTemplate(
+      template({ width: 2, indices, opaque: indices.length }),
+    )
+    // Imported typed arrays cross an exported API boundary. Simulate an external owner mutating a
+    // byte after admission so the pre-slice can still build from one valid painted pixel while the
+    // stricter hidden-state validation rejects the other.
+    indices[0] = 255
+    const pending = deferOneBitmap()
+    const candidate = bitmap(1_000, 1_000)
+
+    const moving = store.moveLocalTemplate(added.id, 100, 200)
+    await Promise.resolve()
+    await store.setLocalVisible(added.id, false)
+    pending.resolve(candidate)
+
+    await expect(moving).rejects.toThrow(/palette index/i)
+    expect(candidate.close).toHaveBeenCalledOnce()
+    expect(store.localTemplates()[0]).toMatchObject({ visible: false, originX: 10, originY: 20 })
+  })
+
   it('does not let an in-flight move resurrect a deleted template', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
@@ -2033,6 +2056,12 @@ describe('local template lifecycle', () => {
     vi.mocked(createImageBitmap).mockRejectedValueOnce(new Error('GPU allocation failed'))
 
     expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
+
+    // A zoom-bucket change is not evidence that an environmental bitmap allocation failure has
+    // recovered. It must share the same backoff instead of immediately doing the work again.
+    expect(store.stampTile(added, '0/0', appearance, 500)).toBeUndefined()
     await vi.advanceTimersByTimeAsync(0)
     expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
 

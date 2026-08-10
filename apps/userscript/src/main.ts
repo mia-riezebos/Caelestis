@@ -147,15 +147,9 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
   if (visible.length === 0) return
 
   let drawn = 0
+  let smoothing: boolean | null = null
   for (const quad of frame.quads) {
     const key = tileKey(quad.tile)
-    // Match wplace's own texture filtering, measured off their GL calls: LINEAR when minifying,
-    // NEAREST when magnifying. Pixel art must stay crisp past 100%, and must stop shimmering below
-    // it — one setting cannot do both, which is why they switch and so do we.
-    const magnifying = quad.width >= TILE_SIZE
-    context.imageSmoothingEnabled = !magnifying
-    if (!magnifying) context.imageSmoothingQuality = 'high'
-
     for (const template of visible) {
       const appearance = template.appearance ?? DEFAULT_APPEARANCE
       const preview = previewOriginFor(template.id)
@@ -185,6 +179,12 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
             if (right <= left || bottom <= top) continue
             const bitmapScaleX = bitmap.width / TILE_SIZE
             const bitmapScaleY = bitmap.height / TILE_SIZE
+            const minifying = bitmap.width > quad.width || bitmap.height > quad.height
+            if (smoothing !== minifying) {
+              smoothing = minifying
+              context.imageSmoothingEnabled = minifying
+              if (minifying) context.imageSmoothingQuality = 'high'
+            }
             context.globalAlpha = appearance.opacity
             context.drawImage(
               bitmap,
@@ -211,6 +211,15 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
       // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
       // than 2x. One drawImage per tile per template, whatever the template's size.
       const bitmap = levelFor(tile, quad.width)
+      // Match wplace's texture filtering against the actual selected source level. Stamped tiles
+      // need not be TILE_SIZE wide, so comparing only the destination to TILE_SIZE can classify a
+      // real minification as magnification and drop source rows/columns.
+      const minifying = bitmap.width > quad.width || bitmap.height > quad.height
+      if (smoothing !== minifying) {
+        smoothing = minifying
+        context.imageSmoothingEnabled = minifying
+        if (minifying) context.imageSmoothingQuality = 'high'
+      }
       // Use MapLibre's exact fractional quad. Snapping each quad independently changes both origin
       // and scale relative to the underlying WebGL tile, visibly distorting the internal pixel grid.
       context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)

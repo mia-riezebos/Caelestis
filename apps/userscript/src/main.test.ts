@@ -352,6 +352,55 @@ describe('overlay canvas lifecycle', () => {
     expect(context.globalAlpha).toBe(1)
   })
 
+  it('filters against the selected stamp bitmap rather than the native tile width', async () => {
+    const bitmap = { width: 1_182, height: 1_182 }
+    harness.localTemplates.mockReturnValue([
+      {
+        id: 'shaped',
+        visible: true,
+        appearance: { shape: 'circle', size: 1 / 3, anchor: 'c', opacity: 1, hiddenColours: [] },
+      },
+    ])
+    harness.stampTile.mockReturnValue({ levels: [bitmap] })
+    harness.levelFor.mockReturnValue(bitmap)
+    vi.stubGlobal('document', {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => ({
+        dataset: {},
+        style: {},
+        width: 0,
+        height: 0,
+        parentElement: null,
+        getContext: () => ({}),
+      })),
+    })
+    await import('./main.js')
+    const draw = harness.draw
+    if (draw === null) throw new Error('main must register its tile-frame listener')
+    draw({
+      canvas: { width: 1_000, height: 1_000, parentElement: null },
+      quads: [{ tile: { x: 0, y: 0 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
+    })
+    const painters = harness.paintFrame.mock.calls[0]?.[2] as
+      | Array<(context: unknown, frame: unknown) => void>
+      | undefined
+    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
+    const context = {
+      drawImage: vi.fn(),
+      globalAlpha: 1,
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: 'low',
+    }
+
+    painters[0](context, {
+      canvas: { width: 1_000, height: 1_000, parentElement: null },
+      quads: [{ tile: { x: 0, y: 0 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
+    })
+
+    expect(context.imageSmoothingEnabled).toBe(true)
+    expect(context.imageSmoothingQuality).toBe('high')
+  })
+
   it('repaints the idle map when local template state changes', async () => {
     vi.stubGlobal('document', {
       querySelector: vi.fn(() => null),

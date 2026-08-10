@@ -1069,6 +1069,10 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
             ? await slice({ ...latest, originX: target.originX, originY: target.originY })
             : new Map<string, TileLevels>()
         }
+        if (!latest.visible && tiles.size > 0) {
+          releaseCandidateTiles(tiles)
+          tiles = new Map<string, TileLevels>()
+        }
         if (!latest.visible) {
           await validateStoredPixels({
             ...latest,
@@ -1078,10 +1082,6 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
         }
         if (latest.visible && tiles.size === 0) {
           tiles = await slice({ ...latest, originX: target.originX, originY: target.originY })
-        }
-        if (!latest.visible && tiles.size > 0) {
-          releaseCandidateTiles(tiles)
-          tiles = new Map<string, TileLevels>()
         }
         if (!claimSourceReplacement(latest.tiles.size, tiles.size)) return false
         const next = {
@@ -1380,7 +1380,7 @@ const clearStampFailure = (cacheKey: string): void => {
 const noteStampFailure = (cacheKey: string, wanted: string): void => {
   const previous = stampFailures.get(cacheKey)
   if (previous?.retryTimer !== undefined) clearTimeout(previous.retryTimer)
-  const attempts = previous?.wanted === wanted ? previous.attempts + 1 : 1
+  const attempts = (previous?.attempts ?? 0) + 1
   const delay = Math.min(STAMP_RETRY_MAX_MS, STAMP_RETRY_BASE_MS * 2 ** (attempts - 1))
   const failure: StampFailure = { wanted, attempts, retryAt: Date.now() + delay }
   failure.retryTimer = setTimeout(() => {
@@ -1531,8 +1531,10 @@ export const stampTile = (
     return hit.tile
   }
   const failure = stampFailures.get(cacheKey)
-  if (failure !== undefined && failure.wanted !== wanted) clearStampFailure(cacheKey)
-  const retryBlocked = failure?.wanted === wanted && Date.now() < failure.retryAt
+  // Allocation/decoder failures are environmental rather than zoom-bucket-specific. Carry the
+  // backoff across bucket changes so zooming cannot turn one bounded retry into repeated 4–36 MB
+  // raster work. A successful build clears the failure immediately.
+  const retryBlocked = failure !== undefined && Date.now() < failure.retryAt
   if (!retryBlocked && pendingStamps.get(cacheKey) !== wanted) {
     pendingStamps.set(cacheKey, wanted)
     void queueStampBuild(cacheKey, async () =>
