@@ -269,6 +269,93 @@ describe('local template persistence', () => {
     expect(valid.continue).toHaveBeenCalledOnce()
   })
 
+  it('does not let excluded ids consume the bounded inspection window', async () => {
+    const cursor = {
+      value: stored({ id: 'excluded-0' }),
+      continue: vi.fn(),
+    }
+    const mutableRequest = {
+      result: cursor as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+    const excludedIds = new Set(Array.from({ length: 52 }, (_, index) => `excluded-${index}`))
+
+    const loading = loadTemplates(13, 1, excludedIds)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    for (const id of excludedIds) {
+      cursor.value = stored({ id })
+      mutableRequest.onsuccess?.(new Event('success'))
+    }
+    const valid = stored({ id: 'valid' })
+    cursor.value = valid
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = null
+    mutableRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([valid])
+  })
+
+  it('reports batch hydration failures so restore can release their charged budget', async () => {
+    const failedPixels = {
+      size: 1,
+      arrayBuffer: vi.fn(async () => await Promise.reject(new Error('I/O unavailable'))),
+    }
+    const failed = {
+      value: stored({ id: 'failed', indices: failedPixels }),
+      continue: vi.fn(),
+    }
+    const valid = {
+      value: stored({ id: 'valid' }),
+      continue: vi.fn(),
+    }
+    const mutableRequest = {
+      result: failed as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates(64, 2)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = valid as unknown as IDBCursorWithValue
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = null
+    mutableRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([
+      {
+        kind: 'template-hydration-failure',
+        status: 'unavailable',
+        id: 'failed',
+        revision: 0,
+      },
+      valid.value,
+    ])
+  })
+
   it('rejects an oversized Blob from metadata without materialising its bytes', async () => {
     const pixels = { size: 65, arrayBuffer: vi.fn(async () => new ArrayBuffer(65)) }
     const cursor = {

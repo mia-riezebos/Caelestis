@@ -189,6 +189,13 @@ type HydrationResult =
   | { readonly status: 'invalid' }
   | { readonly status: 'unavailable' }
 
+export interface TemplateLoadFailure {
+  readonly kind: 'template-hydration-failure'
+  readonly status: 'invalid' | 'unavailable'
+  readonly id: string
+  readonly revision: number
+}
+
 const hydrateCandidate = async (
   candidate: Record<string, unknown> & { indices: Uint8Array | StoredBlob },
 ): Promise<HydrationResult> => {
@@ -279,10 +286,10 @@ export const loadTemplates = async (
         request.onsuccess = () => {
           const cursor = request.result
           if (cursor === null) return
-          inspected++
           const value: unknown = cursor.value
-          if (inspected > maxInspected) return
           if (!boundedStoredCandidate(value)) {
+            inspected++
+            if (inspected > maxInspected) return
             cursor.continue()
             return
           }
@@ -290,6 +297,8 @@ export const loadTemplates = async (
             cursor.continue()
             return
           }
+          inspected++
+          if (inspected > maxInspected) return
           const pixels = isUint8Array(value.indices) ? value.indices.length : value.indices.size
           // An individually oversized or late non-fitting record must not permanently hide every
           // later valid key. Inspect a bounded number of records, retaining only those that fit.
@@ -312,7 +321,16 @@ export const loadTemplates = async (
       const templates: unknown[] = []
       for (const candidate of candidates) {
         const hydrated = await hydrateCandidate(candidate)
-        if (hydrated.status === 'loaded') templates.push(hydrated.template)
+        if (hydrated.status === 'loaded') {
+          templates.push(hydrated.template)
+        } else {
+          templates.push({
+            kind: 'template-hydration-failure',
+            status: hydrated.status,
+            id: candidate.id as string,
+            revision: Number.isSafeInteger(candidate.revision) ? Number(candidate.revision) : 0,
+          } satisfies TemplateLoadFailure)
+        }
       }
       return templates
     } finally {
