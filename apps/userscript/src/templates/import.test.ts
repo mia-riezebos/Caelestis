@@ -6,6 +6,7 @@ const rgba = (...pixels: Array<[number, number, number, number]>): Uint8ClampedA
 
 const readbacks: Uint8ClampedArray[] = []
 const bitmapSizes: Array<{ width: number; height: number }> = []
+const blobSizes: Array<{ width: number; height: number }> = []
 
 const pngHeader = (width: number, height: number): Uint8Array<ArrayBuffer> => {
   const bytes = new Uint8Array(new ArrayBuffer(24))
@@ -58,12 +59,13 @@ class TestCanvas {
 beforeEach(() => {
   readbacks.length = 0
   bitmapSizes.length = 0
+  blobSizes.length = 0
   vi.stubGlobal('OffscreenCanvas', TestCanvas)
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => ({
       blob: async () => {
-        const dimensions = bitmapSizes[0] ?? { width: 1, height: 1 }
+        const dimensions = blobSizes.shift() ?? bitmapSizes[0] ?? { width: 1, height: 1 }
         return new Blob([pngHeader(dimensions.width, dimensions.height)], { type: 'image/png' })
       },
     })),
@@ -179,10 +181,11 @@ describe('template import', () => {
   })
 
   it('skips a malformed stamped Marble template without rejecting the whole import', async () => {
-    bitmapSizes.push({ width: 2, height: 3 }, { width: 3, height: 3 })
+    blobSizes.push({ width: 2, height: 3 }, { width: 3, height: 3 })
+    bitmapSizes.push({ width: 3, height: 3 })
     const validStamp = new Uint8ClampedArray(3 * 3 * 4)
     validStamp.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
-    readbacks.push(new Uint8ClampedArray(2 * 3 * 4), validStamp)
+    readbacks.push(validStamp)
     const { importFile } = await import('./import.js')
     const marble = JSON.stringify({
       templates: {
@@ -195,7 +198,7 @@ describe('template import', () => {
 
     expect(imported).toHaveLength(1)
     expect(imported[0]).toMatchObject({ name: 'valid', width: 1, height: 1 })
-    expect(createImageBitmap).toHaveBeenCalledTimes(2)
+    expect(createImageBitmap).toHaveBeenCalledOnce()
   })
 
   it('bounds cumulative decoded Marble pixels across individually valid chunks', async () => {
@@ -208,7 +211,7 @@ describe('template import', () => {
     const marble = JSON.stringify({ templates: { example: { coords: '0,0,0,0', tiles } } })
 
     await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
-    expect(createImageBitmap).toHaveBeenCalledTimes(58)
+    expect(createImageBitmap).toHaveBeenCalledTimes(57)
   })
 
   it('bounds retained pixels across all templates in one Marble file', async () => {
@@ -405,6 +408,51 @@ describe('template import', () => {
 
     expect(template).toMatchObject({ width: 3, height: 3, opaque: 1 })
     expect(template?.indices[4]).not.toBe(TRANSPARENT_INDEX)
+  })
+
+  it('counts moved pixels from the final opaque Marble overlap', async () => {
+    bitmapSizes.push({ width: 6, height: 3 }, { width: 6, height: 3 })
+    const first = new Uint8ClampedArray(6 * 3 * 4)
+    const second = new Uint8ClampedArray(6 * 3 * 4)
+    first.set([1, 2, 3, 255], (1 * 6 + 4) * 4)
+    second.set([4, 5, 6, 255], (1 * 6 + 1) * 4)
+    readbacks.push(first, second)
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        overlap: {
+          coords: '1,1,0,0',
+          tiles: { '1,1,0,0': 'AAAA', '1,1,1,0': 'BBBB' },
+        },
+      },
+    })
+
+    const [template] = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(template).toMatchObject({ opaque: 1, moved: 1 })
+  })
+
+  it('charges rejected Marble records against the cumulative decoder-work cap', async () => {
+    const templates = Object.fromEntries(
+      Array.from({ length: 11 }, (_, index) => [
+        `invalid-${index}`,
+        { coords: `${index},0,0,0`, tiles: { [`${index},0,0,0`]: 'AAAA' } },
+      ]),
+    )
+    blobSizes.push(...Array.from({ length: 10 }, () => ({ width: 4_096, height: 4_096 })), {
+      width: 3,
+      height: 3,
+    })
+    bitmapSizes.push({ width: 3, height: 3 })
+    const stamp = new Uint8ClampedArray(3 * 3 * 4)
+    stamp.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    readbacks.push(stamp)
+    const { importFile } = await import('./import.js')
+
+    await expect(
+      importFile(file('template.json', JSON.stringify({ templates })), { x: 0, y: 0 }),
+    ).resolves.toEqual([])
+    expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
   it('rejects a projected wplace image that leaves the native canvas', async () => {

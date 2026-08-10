@@ -53,6 +53,10 @@ const MAX_IMPORT_PIXELS = 16 * 1024 * 1024
 const MAX_MARBLE_TILES = 64
 const MAX_MARBLE_TEMPLATES = 64
 const MARBLE_DRAW_MULT = 3
+// Blue Marble stores each logical pixel in a 3x3 encoded cell. Charge the real decoder work across
+// the entire file, including templates that are later rejected, while still admitting one maximum-
+// size valid logical import.
+const MAX_MARBLE_DECODE_PIXELS = MAX_IMPORT_PIXELS * MARBLE_DRAW_MULT * MARBLE_DRAW_MULT
 const QUANTISE_WORK_PER_YIELD = 1_000_000
 const DENSE_CACHE_THRESHOLD = 65_536
 const RGB_SPACE = 1 << 24
@@ -102,10 +106,11 @@ const pngDimensions = async (blob: Blob): Promise<{ width: number; height: numbe
 /** RGBA for a PNG whose dimensions have already passed the allocation preflight. */
 const decodeToRgba = async (
   blob: Blob,
+  expectedDimensions?: { width: number; height: number },
 ): Promise<{ width: number; height: number; pixels: Uint8Array }> => {
   // PNG dimensions live in the fixed IHDR header. Check them before asking the browser to decode,
   // otherwise a tiny compressed file can force a huge native allocation before bitmap.width exists.
-  const expected = await pngDimensions(blob)
+  const expected = expectedDimensions ?? (await pngDimensions(blob))
   const bitmap = await createImageBitmap(blob, {
     colorSpaceConversion: 'none',
     premultiplyAlpha: 'none',
@@ -142,8 +147,15 @@ const blobFromDataUrl = async (dataUrl: string): Promise<Blob> =>
 
 const quantise = async (
   pixels: Uint8Array,
-): Promise<{ indices: Uint8Array; moved: number; opaque: number }> => {
+  trackMovedPixels = false,
+): Promise<{
+  indices: Uint8Array
+  moved: number
+  opaque: number
+  movedPixels?: Uint8Array
+}> => {
   const indices = new Uint8Array(pixels.length / 4).fill(TRANSPARENT_INDEX)
+  const movedPixels = trackMovedPixels ? new Uint8Array(indices.length) : undefined
   // Start cheap for normal pixel art. If an image has photographic colour cardinality, migrate to
   // one packed 32 MiB RGB lookup instead of allowing millions of object-heavy Map entries.
   const sparse = new Map<number, number>()
@@ -204,13 +216,16 @@ const quantise = async (
     const distance = packed >>> 8
     indices[pixel] = paletteIndex
     opaque++
-    if (distance > 0) moved++
+    if (distance > 0) {
+      moved++
+      if (movedPixels !== undefined) movedPixels[pixel] = 1
+    }
     if (work >= QUANTISE_WORK_PER_YIELD) {
       work = 0
       await yieldToBrowser()
     }
   }
-  return { indices, moved, opaque }
+  return { indices, moved, opaque, ...(movedPixels === undefined ? {} : { movedPixels }) }
 }
 
 const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemplate[]> => {
@@ -279,11 +294,15 @@ interface MarbleFile {
  * representation; this restores the original fixed dimensions and is not image resizing. */
 const decodeMarbleTile = async (
   blob: Blob,
+  encodedDimensions: { width: number; height: number },
 ): Promise<{ width: number; height: number; pixels: Uint8Array }> => {
-  const encoded = await decodeToRgba(blob)
-  if (encoded.width % MARBLE_DRAW_MULT !== 0 || encoded.height % MARBLE_DRAW_MULT !== 0) {
+  if (
+    encodedDimensions.width % MARBLE_DRAW_MULT !== 0 ||
+    encodedDimensions.height % MARBLE_DRAW_MULT !== 0
+  ) {
     throw new Error('Marble tile does not use the expected 3x stamped encoding')
   }
+  const encoded = await decodeToRgba(blob, encodedDimensions)
   const width = encoded.width / MARBLE_DRAW_MULT
   const height = encoded.height / MARBLE_DRAW_MULT
   const pixels = new Uint8Array(width * height * 4)
@@ -310,6 +329,7 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     throw new Error('Marble file contains too many templates')
   }
   let retainedPixels = 0
+  let decodedWorkPixels = 0
   for (const [key, entryValue] of entries) {
     if (!isRecord(entryValue)) {
       warn('install', `skipping Marble template "${key}": unreadable record`)
@@ -374,7 +394,13 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       }
       let image: Awaited<ReturnType<typeof decodeMarbleTile>>
       try {
-        image = await decodeMarbleTile(await blobFromDataUrl(source))
+        const blob = await blobFromDataUrl(source)
+        const dimensions = await pngDimensions(blob)
+        decodedWorkPixels += dimensions.width * dimensions.height
+        if (decodedWorkPixels > MAX_MARBLE_DECODE_PIXELS) {
+          throw new Error('Marble file exceeds the cumulative image decode budget')
+        }
+        image = await decodeMarbleTile(blob, dimensions)
       } catch (error) {
         warn('install', `skipping Marble template "${key}": unreadable tile ${tileKey}`, error)
         malformed = true
@@ -419,18 +445,24 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     }
 
     const indices = new Uint8Array(width * height).fill(TRANSPARENT_INDEX)
+    const movedPixels = new Uint8Array(width * height)
     let moved = 0
     let opaque = 0
     for (const piece of decoded) {
-      const quantised = await quantise(piece.pixels)
-      moved += quantised.moved
+      const quantised = await quantise(piece.pixels, true)
       for (let row = 0; row < piece.height; row++) {
         const target = (piece.y - originY + row) * width + (piece.x - originX)
         for (let column = 0; column < piece.width; column++) {
-          const index = quantised.indices[row * piece.width + column] ?? TRANSPARENT_INDEX
+          const sourceIndex = row * piece.width + column
+          const index = quantised.indices[sourceIndex] ?? TRANSPARENT_INDEX
           if (index === TRANSPARENT_INDEX) continue
-          if (indices[target + column] === TRANSPARENT_INDEX) opaque++
-          indices[target + column] = index
+          const destination = target + column
+          if (indices[destination] === TRANSPARENT_INDEX) opaque++
+          const wasMoved = movedPixels[destination] ?? 0
+          const isMoved = quantised.movedPixels?.[sourceIndex] ?? 0
+          moved += isMoved - wasMoved
+          movedPixels[destination] = isMoved
+          indices[destination] = index
         }
       }
     }

@@ -92,9 +92,12 @@ export const loadTemplates = async (
         const request = transaction.objectStore(STORE).openCursor()
         const templates: unknown[] = []
         let indexPixels = 0
+        let inspected = 0
+        const maxInspected = Math.max(maxTemplates, maxTemplates * 4)
         request.onsuccess = () => {
           const cursor = request.result
           if (cursor === null) return
+          inspected++
           const value: unknown = cursor.value
           const pixels =
             typeof value === 'object' &&
@@ -103,9 +106,13 @@ export const loadTemplates = async (
             value.indices instanceof Uint8Array
               ? value.indices.length
               : 0
-          // Do not continue the cursor once either aggregate cap is reached. The transaction then
-          // completes naturally, while only the bounded prefix has ever been retained in memory.
-          if (templates.length >= maxTemplates || indexPixels + pixels > maxIndexPixels) return
+          // An individually oversized or late non-fitting record must not permanently hide every
+          // later valid key. Inspect a bounded number of records, retaining only those that fit.
+          if (templates.length >= maxTemplates || inspected >= maxInspected) return
+          if (pixels > maxIndexPixels || indexPixels + pixels > maxIndexPixels) {
+            cursor.continue()
+            return
+          }
           templates.push(value)
           indexPixels += pixels
           cursor.continue()

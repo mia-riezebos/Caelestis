@@ -81,6 +81,21 @@ describe('template placement controls', () => {
     expect(window.removeEventListener).toHaveBeenCalledWith('auxclick', auxclick, true)
   })
 
+  it('does not reopen placement when its completion observer throws', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', () => {
+      throw new Error('observer failed')
+    })
+    movebar = { remove: vi.fn() }
+
+    await expect(moves.commit()).resolves.toBeUndefined()
+    await expect(moves.commit()).resolves.toBeUndefined()
+
+    expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
+    expect(movebar.remove).toHaveBeenCalledOnce()
+    expect(window.removeEventListener).toHaveBeenCalled()
+  })
+
   it('suppresses auxclick only after placement handled that middle click', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())

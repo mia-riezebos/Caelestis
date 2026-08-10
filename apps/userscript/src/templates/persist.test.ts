@@ -83,7 +83,7 @@ describe('local template persistence', () => {
     expect(database.close).toHaveBeenCalledOnce()
   })
 
-  it('waits for durable deletes and stops loading before the aggregate pixel cap', async () => {
+  it('waits for durable deletes and skips records outside the aggregate pixel cap', async () => {
     const deleteRequest = {} as IDBRequest<undefined>
     const cursor = {
       value: { id: 'loaded', name: 'Loaded', indices: new Uint8Array([0, 1]) },
@@ -130,6 +130,45 @@ describe('local template persistence', () => {
 
     await expect(loading).resolves.toEqual([])
     expect(loadStore.openCursor).toHaveBeenCalledOnce()
-    expect(cursor.continue).not.toHaveBeenCalled()
+    expect(cursor.continue).toHaveBeenCalledOnce()
+  })
+
+  it('continues past one oversized record to recover a later valid record', async () => {
+    const oversized = {
+      value: { id: 'oversized', indices: new Uint8Array(3) },
+      continue: vi.fn(),
+    }
+    const valid = {
+      value: { id: 'valid', indices: new Uint8Array([0]) },
+      continue: vi.fn(),
+    }
+    const mutableRequest = {
+      result: oversized as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates(64, 1)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = valid as unknown as IDBCursorWithValue
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = null
+    mutableRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([valid.value])
+    expect(oversized.continue).toHaveBeenCalledOnce()
+    expect(valid.continue).toHaveBeenCalledOnce()
   })
 })

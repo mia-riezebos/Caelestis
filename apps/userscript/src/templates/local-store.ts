@@ -341,6 +341,19 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   return normalised
 }
 
+const validateStoredPixels = async (template: StoredTemplate): Promise<void> => {
+  let opaque = 0
+  for (let pixel = 0; pixel < template.indices.length; pixel++) {
+    const index = template.indices[pixel] ?? TRANSPARENT_INDEX
+    if (index !== TRANSPARENT_INDEX) {
+      if (index >= WPLACE_PALETTE.length) throw new RangeError('template palette index is invalid')
+      opaque++
+    }
+    if ((pixel + 1) % 1_000_000 === 0) await yieldToBrowser()
+  }
+  if (opaque !== template.opaque) throw new RangeError('template opaque count is invalid')
+}
+
 const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels>> => {
   validatePlacement(template)
   await yieldToBrowser()
@@ -488,12 +501,20 @@ export const restoreLocalTemplates = async (): Promise<void> => {
   const stored = await loadTemplates(MAX_LOCAL_TEMPLATES, MAX_LOCAL_INDEX_PIXELS)
   let restored = 0
   for (const rawTemplate of stored) {
+    let reserved: StoredTemplate | null = null
+    let validated: StoredTemplate | null = null
     try {
       // Earlier builds could persist 0x0, non-finite, out-of-world, or fully transparent records.
       // Validate each independently so one bad legacy entry cannot prevent every good restore.
       const template = normaliseStoredTemplate(rawTemplate)
+      await validateStoredPixels(template)
       if (template.source === 'image' && !template.everPlaced) {
         throw new RangeError('unfinished image placement')
+      }
+      validated = template
+      if (templates.has(template.id) || pendingAdds.has(template.id)) {
+        warn('install', `could not restore ${template.name}: local template id already exists`)
+        continue
       }
       if (
         templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES ||
@@ -502,6 +523,11 @@ export const restoreLocalTemplates = async (): Promise<void> => {
         warn('install', `could not restore ${template.name}: persisted pixel budget exhausted`)
         continue
       }
+      // Reserve the ID, cardinality, and index bytes before slicing yields. Imports can begin while
+      // startup restore is in flight and must observe the same aggregate limits.
+      pendingAdds.add(template.id)
+      pendingIndexPixels += template.indices.length
+      reserved = template
       const tiles = template.visible ? await slice(template) : new Map<string, TileLevels>()
       if (!claimSourceReplacement(0, tiles.size)) {
         releaseCandidateTiles(tiles)
@@ -521,8 +547,13 @@ export const restoreLocalTemplates = async (): Promise<void> => {
     } catch (error) {
       // Validation failures are permanently bad records. Rendering failures are environmental
       // (unsupported canvas, allocation pressure, decoder rejection) and must never destroy data.
+      if (validated !== null) {
+        warn('install', `could not restore local template ${validated.name}`, String(error))
+        continue
+      }
       try {
         const template = normaliseStoredTemplate(rawTemplate)
+        await validateStoredPixels(template)
         if (template.source === 'image' && !template.everPlaced) {
           throw new RangeError('unfinished image placement')
         }
@@ -536,6 +567,11 @@ export const restoreLocalTemplates = async (): Promise<void> => {
           `discarded invalid local template ${id ?? '(unknown)'}`,
           String(validationError),
         )
+      }
+    } finally {
+      if (reserved !== null) {
+        pendingAdds.delete(reserved.id)
+        pendingIndexPixels -= reserved.indices.length
       }
     }
   }
@@ -712,7 +748,6 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
   // behind this delete and resurrect the record.
   deleting.add(id)
-  previewOrigins.delete(id)
   const removed = await writeInOrder(id, async () => {
     const current = templates.get(id)
     if (current === undefined) return false
@@ -720,6 +755,7 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
     releaseRetainedTiles(current.tiles)
     retainedIndexPixels -= current.indices.length
     clearStamped(id)
+    previewOrigins.delete(id)
     templates.delete(id)
     notify()
     return true
@@ -789,7 +825,7 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
       warn('install', `appearance for ${next.name} was not saved`)
       return false
     }
-    clearStamped(id)
+    if (appearanceKey(existing.appearance) !== appearanceKey(appearance)) clearStamped(id)
     templates.set(id, next)
     notify()
     return true
@@ -817,13 +853,15 @@ interface StampJob {
   readonly reject: (error: unknown) => void
 }
 
-const stampJobs: StampJob[] = []
+const stampJobs = new Map<string, StampJob>()
 let activeStampBuilds = 0
 
 const pumpStampJobs = (): void => {
   while (activeStampBuilds < MAX_CONCURRENT_STAMP_BUILDS) {
-    const job = stampJobs.shift()
-    if (job === undefined) return
+    const queued = stampJobs.entries().next().value as [string, StampJob] | undefined
+    if (queued === undefined) return
+    const [cacheKey, job] = queued
+    stampJobs.delete(cacheKey)
     activeStampBuilds++
     void job
       .build()
@@ -835,9 +873,19 @@ const pumpStampJobs = (): void => {
   }
 }
 
-const queueStampBuild = (build: StampJob['build']): Promise<TileLevels | null> =>
+const queueStampBuild = (cacheKey: string, build: StampJob['build']): Promise<TileLevels | null> =>
   new Promise((resolve, reject) => {
-    stampJobs.push({ build, resolve, reject })
+    const superseded = stampJobs.get(cacheKey)
+    if (superseded !== undefined) superseded.resolve(null)
+    stampJobs.set(cacheKey, { build, resolve, reject })
+    // Real templates retain at most this many source tiles. Keep the queue under the same hard cap
+    // even if callers rapidly replace keys while the sole worker is busy.
+    while (stampJobs.size > MAX_RETAINED_SOURCE_TILES) {
+      const oldest = stampJobs.entries().next().value as [string, StampJob] | undefined
+      if (oldest === undefined) break
+      stampJobs.delete(oldest[0])
+      oldest[1].resolve(null)
+    }
     pumpStampJobs()
   })
 
@@ -866,6 +914,11 @@ const clearStamped = (id: string): void => {
   const prefix = `${id}|`
   for (const key of pendingStamps.keys()) {
     if (key.startsWith(prefix)) pendingStamps.delete(key)
+  }
+  for (const [key, job] of stampJobs) {
+    if (!key.startsWith(prefix)) continue
+    stampJobs.delete(key)
+    job.resolve(null)
   }
   for (const [key, entry] of stamped) {
     if (!key.startsWith(prefix)) continue
@@ -921,9 +974,15 @@ export const stampTile = (
   }
   if (pendingStamps.get(cacheKey) !== wanted) {
     pendingStamps.set(cacheKey, wanted)
-    void queueStampBuild(async () =>
+    void queueStampBuild(cacheKey, async () =>
       pendingStamps.get(cacheKey) === wanted
-        ? await buildStamp(template, tileKey, renderedAppearance, wantedWidth)
+        ? await buildStamp(
+            template,
+            tileKey,
+            renderedAppearance,
+            wantedWidth,
+            () => pendingStamps.get(cacheKey) === wanted,
+          )
         : null,
     )
       .then((built) => {
@@ -979,11 +1038,13 @@ const buildStamp = async (
   tileKey: string,
   appearance: Appearance,
   wantedWidth: number,
+  isCurrent: () => boolean,
 ): Promise<TileLevels | null> => {
   // `async` alone does not defer work before its first await. Yield before allocation and then in
   // bounded row chunks so requesting a new appearance from a frame painter cannot create a long
   // task that freezes MapLibre's next frame.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  if (!isCurrent()) return null
   const [tx, ty] = tileKey.split('/').map(Number)
   if (tx === undefined || ty === undefined) return null
   const scale = scaleFor(appearance)
@@ -1022,11 +1083,17 @@ const buildStamp = async (
     }
     if ((y - startY + 1) % 64 === 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      if (!isCurrent()) return null
     }
   }
+  if (!isCurrent()) return null
   let current: ImageBitmap | null = null
   try {
     current = await createImageBitmap(new ImageData(rgba, size, size))
+    if (!isCurrent()) {
+      current.close()
+      return null
+    }
     let width = size
     while (width > wantedWidth) {
       const nextWidth = Math.max(wantedWidth, Math.floor(width / 2))
@@ -1039,6 +1106,10 @@ const buildStamp = async (
       const next = await createImageBitmap(canvas)
       current.close()
       current = next
+      if (!isCurrent()) {
+        current.close()
+        return null
+      }
       width = nextWidth
     }
     return { levels: [current] }

@@ -269,8 +269,17 @@ const finish = (): void => {
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
   finishing = false
-  onFinish?.()
+  const finished = onFinish
   onFinish = null
+  try {
+    finished?.()
+  } catch (error) {
+    // Completion is an observer notification, not part of the durable placement transaction.
+    // Never let it reopen capture-phase listeners after teardown.
+    try {
+      warn('install', 'placement completion callback failed', String(error))
+    } catch {}
+  }
 }
 
 const resumeAfterFailure = (action: string, error?: unknown): void => {
