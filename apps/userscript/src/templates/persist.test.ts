@@ -298,6 +298,36 @@ describe('local template persistence', () => {
     expect(secondPixels.arrayBuffer).not.toHaveBeenCalled()
   })
 
+  it('reports a transient single-record Blob hydration failure as unavailable', async () => {
+    const pixels = {
+      size: 1,
+      arrayBuffer: vi.fn(async () => await Promise.reject(new Error('I/O unavailable'))),
+    }
+    const request = {
+      result: stored({ indices: pixels }),
+    } as unknown as IDBRequest<unknown>
+    const transaction = {
+      objectStore: vi.fn(() => ({ get: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplate } = await import('./persist.js')
+
+    const loading = loadTemplate('loaded')
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    request.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual({ status: 'unavailable' })
+    expect(pixels.arrayBuffer).toHaveBeenCalledOnce()
+    expect(database.close).toHaveBeenCalledOnce()
+  })
+
   it('refuses to increment an exhausted revision but can still delete it', async () => {
     const maxRecord = stored({ id: 'max', revision: Number.MAX_SAFE_INTEGER })
     const saveRequest = { result: maxRecord } as unknown as IDBRequest<unknown>

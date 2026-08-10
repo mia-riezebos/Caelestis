@@ -999,17 +999,31 @@ interface StampFailure {
   readonly wanted: string
   readonly attempts: number
   readonly retryAt: number
+  retryTimer?: ReturnType<typeof setTimeout>
 }
 const stampFailures = new Map<string, StampFailure>()
 const STAMP_RETRY_BASE_MS = 1_000
 const STAMP_RETRY_MAX_MS = 30_000
 let activeStampBuilds = 0
 
+const clearStampFailure = (cacheKey: string): void => {
+  const failure = stampFailures.get(cacheKey)
+  if (failure?.retryTimer !== undefined) clearTimeout(failure.retryTimer)
+  stampFailures.delete(cacheKey)
+}
+
 const noteStampFailure = (cacheKey: string, wanted: string): void => {
   const previous = stampFailures.get(cacheKey)
+  if (previous?.retryTimer !== undefined) clearTimeout(previous.retryTimer)
   const attempts = previous?.wanted === wanted ? previous.attempts + 1 : 1
   const delay = Math.min(STAMP_RETRY_MAX_MS, STAMP_RETRY_BASE_MS * 2 ** (attempts - 1))
-  stampFailures.set(cacheKey, { wanted, attempts, retryAt: Date.now() + delay })
+  const failure: StampFailure = { wanted, attempts, retryAt: Date.now() + delay }
+  failure.retryTimer = setTimeout(() => {
+    if (stampFailures.get(cacheKey) !== failure) return
+    delete failure.retryTimer
+    notify()
+  }, delay)
+  stampFailures.set(cacheKey, failure)
 }
 
 const pumpStampJobs = (): void => {
@@ -1085,7 +1099,7 @@ const clearStamped = (id: string): void => {
     job.resolve(null)
   }
   for (const key of stampFailures.keys()) {
-    if (key.startsWith(prefix)) stampFailures.delete(key)
+    if (key.startsWith(prefix)) clearStampFailure(key)
   }
   for (const [key, entry] of stamped) {
     if (!key.startsWith(prefix)) continue
@@ -1129,23 +1143,26 @@ export const stampTile = (
   const wantedWidth = desiredLevelWidth(TILE_SIZE * scaleFor(renderedAppearance), targetWidth)
   const identity = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}`
   const wanted = `${identity}|${wantedWidth}`
-  if (renderedAppearance.shape === 'full' && renderedAppearance.hiddenColours.length === 0)
-    return source
-
   const cacheKey = `${template.id}|${tileKey}`
+  if (renderedAppearance.shape === 'full' && renderedAppearance.hiddenColours.length === 0) {
+    cancelPendingStamp(cacheKey)
+    clearStampFailure(cacheKey)
+    return source
+  }
+
   const hit = stamped.get(cacheKey)
   if (hit !== undefined && hit.key === wanted) {
     // Returning to a cached zoom bucket supersedes any replacement for the bucket we just left.
     // Invalidate active work and remove queued work before it can evict this exact match.
     cancelPendingStamp(cacheKey)
-    stampFailures.delete(cacheKey)
+    clearStampFailure(cacheKey)
     // Map insertion order is our LRU order.
     stamped.delete(cacheKey)
     stamped.set(cacheKey, hit)
     return hit.tile
   }
   const failure = stampFailures.get(cacheKey)
-  if (failure !== undefined && failure.wanted !== wanted) stampFailures.delete(cacheKey)
+  if (failure !== undefined && failure.wanted !== wanted) clearStampFailure(cacheKey)
   const retryBlocked = failure?.wanted === wanted && Date.now() < failure.retryAt
   if (!retryBlocked && pendingStamps.get(cacheKey) !== wanted) {
     pendingStamps.set(cacheKey, wanted)
@@ -1171,7 +1188,7 @@ export const stampTile = (
           noteStampFailure(cacheKey, wanted)
           return
         }
-        stampFailures.delete(cacheKey)
+        clearStampFailure(cacheKey)
         cacheStamp(cacheKey, wanted, built)
         notify()
       })

@@ -183,23 +183,34 @@ const boundedStoredCandidate = (
   return true
 }
 
+type HydrationResult =
+  | { readonly status: 'loaded'; readonly template: unknown }
+  | { readonly status: 'invalid' }
+  | { readonly status: 'unavailable' }
+
 const hydrateCandidate = async (
   candidate: Record<string, unknown> & { indices: Uint8Array | StoredBlob },
-): Promise<unknown | null> => {
+): Promise<HydrationResult> => {
   if (isUint8Array(candidate.indices)) {
-    return { ...candidate, revision: candidate.revision ?? 0 }
+    return {
+      status: 'loaded',
+      template: { ...candidate, revision: candidate.revision ?? 0 },
+    }
   }
   try {
     const buffer = await candidate.indices.arrayBuffer()
-    if (buffer.byteLength !== candidate.indices.size) return null
+    if (buffer.byteLength !== candidate.indices.size) return { status: 'invalid' }
     return {
-      ...candidate,
-      revision: candidate.revision ?? 0,
-      indices: new Uint8Array(buffer),
+      status: 'loaded',
+      template: {
+        ...candidate,
+        revision: candidate.revision ?? 0,
+        indices: new Uint8Array(buffer),
+      },
     }
   } catch (error) {
     warn('install', `could not read local template ${String(candidate.id)}`, String(error))
-    return null
+    return { status: 'unavailable' }
   }
 }
 
@@ -233,8 +244,9 @@ export const loadTemplate = async (
       if (!boundedStoredCandidate(value)) return { status: 'missing' }
       const pixels = isUint8Array(value.indices) ? value.indices.length : value.indices.size
       if (pixels > maxIndexPixels) return { status: 'missing' }
-      const template = await hydrateCandidate(value)
-      return template === null ? { status: 'missing' } : { status: 'loaded', template }
+      const hydrated = await hydrateCandidate(value)
+      if (hydrated.status === 'invalid') return { status: 'missing' }
+      return hydrated
     } finally {
       db.close()
     }
@@ -293,8 +305,8 @@ export const loadTemplates = async (
       })
       const templates: unknown[] = []
       for (const candidate of candidates) {
-        const template = await hydrateCandidate(candidate)
-        if (template !== null) templates.push(template)
+        const hydrated = await hydrateCandidate(candidate)
+        if (hydrated.status === 'loaded') templates.push(hydrated.template)
       }
       return templates
     } finally {

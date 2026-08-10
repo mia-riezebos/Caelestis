@@ -813,6 +813,21 @@ describe('local template lifecycle', () => {
     expect(oldLevels.every((level) => level.close.mock.calls.length === 1)).toBe(true)
   })
 
+  it('retains stale local state when a conflict winner is temporarily unavailable', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
+    expect(store.previewLocalTemplate(added.id, 30, 40)).toBe(true)
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    persistence.loadTemplate.mockResolvedValueOnce({ status: 'unavailable' })
+
+    await expect(store.moveLocalTemplate(added.id, 30, 40)).resolves.toBe(false)
+
+    expect(store.localTemplates()[0]).toMatchObject({ id: added.id, originX: 10, originY: 20 })
+    expect(store.previewOriginFor(added.id)).toEqual({ x: 30, y: 40 })
+    expect(oldLevels.every((level) => !level.close.mock.calls.length)).toBe(true)
+  })
+
   it('adopts the durable winner after a non-delete CAS conflict', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
@@ -1135,23 +1150,31 @@ describe('local template lifecycle', () => {
     vi.mocked(createImageBitmap).mockRejectedValueOnce(new Error('GPU allocation failed'))
 
     expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
-    await vi.runAllTimersAsync()
+    await vi.advanceTimersByTimeAsync(0)
     expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
 
     for (let frame = 0; frame < 10; frame++) {
       expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
-      await vi.runAllTimersAsync()
+      await vi.advanceTimersByTimeAsync(0)
     }
     expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
 
     expect(store.stampTile(added, '1/0', appearance, 1_000)).toBeUndefined()
-    await vi.runAllTimersAsync()
+    await vi.advanceTimersByTimeAsync(0)
     expect(store.stampTile(added, '1/0', appearance, 1_000)).toBeDefined()
 
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
+    let retried: TileLevels | undefined
+    const repaint = vi.fn(() => {
+      retried = store.stampTile(added, '0/0', appearance, 1_000)
+    })
+    store.onLocalChange(repaint)
+
+    await vi.advanceTimersByTimeAsync(999)
+    expect(repaint).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
     await vi.runAllTimersAsync()
-    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeDefined()
+    expect(repaint).toHaveBeenCalled()
+    expect(retried).toBeDefined()
   })
 
   it('evicts least-recently-used stamped tiles instead of retaining an unbounded cache', async () => {
