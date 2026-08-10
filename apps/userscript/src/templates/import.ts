@@ -4,6 +4,8 @@ import {
   quantiseToPalette,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  WORLD_PIXELS,
+  WORLD_TILES,
   WPLACE_PALETTE,
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
@@ -42,6 +44,12 @@ export interface ImportedTemplate {
   readonly opaque: number
 }
 
+// Large enough for the observed 11 MB / 1612x2584 `.wplace` fixture, while keeping a malformed or
+// hostile local file from turning one click into an unbounded browser allocation.
+const MAX_FILE_BYTES = 64 * 1024 * 1024
+const MAX_IMPORT_PIXELS = 16 * 1024 * 1024
+const MAX_MARBLE_TILES = 64
+
 const newId = (): string =>
   `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
 
@@ -49,18 +57,34 @@ const newId = (): string =>
 const decodeToRgba = async (
   blob: Blob,
 ): Promise<{ width: number; height: number; pixels: Uint8Array }> => {
-  const bitmap = await createImageBitmap(blob)
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
-  const context = canvas.getContext('2d', { willReadFrequently: true })
-  if (context === null) throw new Error('could not get a 2d context to decode the image')
-  context.drawImage(bitmap, 0, 0)
-  // Read the dimensions *before* closing: an ImageBitmap reports 0x0 once closed, so reading them
-  // afterwards silently produced zero-sized templates whose origin was nonetheless correct.
-  const width = bitmap.width
-  const height = bitmap.height
-  const data = context.getImageData(0, 0, width, height)
-  bitmap.close()
-  return { width, height, pixels: new Uint8Array(data.data.buffer) }
+  if (blob.size > MAX_FILE_BYTES) throw new Error('image is too large to import safely')
+  const bitmap = await createImageBitmap(blob, {
+    colorSpaceConversion: 'none',
+    premultiplyAlpha: 'none',
+  })
+  try {
+    // Read the dimensions *before* closing: an ImageBitmap reports 0x0 once closed, so reading them
+    // afterwards silently produced zero-sized templates whose origin was nonetheless correct.
+    const width = bitmap.width
+    const height = bitmap.height
+    if (
+      !Number.isSafeInteger(width) ||
+      !Number.isSafeInteger(height) ||
+      width <= 0 ||
+      height <= 0 ||
+      width * height > MAX_IMPORT_PIXELS
+    ) {
+      throw new Error('decoded image is too large to import safely')
+    }
+    const canvas = new OffscreenCanvas(width, height)
+    const context = canvas.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' })
+    if (context === null) throw new Error('could not get a 2d context to decode the image')
+    context.drawImage(bitmap, 0, 0)
+    const data = context.getImageData(0, 0, width, height)
+    return { width, height, pixels: new Uint8Array(data.data.buffer) }
+  } finally {
+    bitmap.close()
+  }
 }
 
 const blobFromDataUrl = async (dataUrl: string): Promise<Blob> =>
@@ -83,20 +107,35 @@ const importWplace = async (file: WplaceFile): Promise<ImportedTemplate[]> => {
   const bounds = file.bounds
   if (typeof dataUrl !== 'string' || bounds === undefined) return []
   const { north, west } = bounds
-  if (typeof north !== 'number' || typeof west !== 'number') return []
+  if (
+    typeof north !== 'number' ||
+    typeof west !== 'number' ||
+    !Number.isFinite(north) ||
+    !Number.isFinite(west)
+  )
+    return []
 
   const { width, height, pixels } = await decodeToRgba(await blobFromDataUrl(dataUrl))
   const { indices, moved, opaque } = quantise(pixels)
   // The file places by geography; the canvas thinks in pixels. `28-native-wplace-format` confirmed
   // this projection to the pixel against this exact file.
   const origin = latLngToCanvasPixel({ lat: north, lng: west })
+  const originX = Math.round(origin.x)
+  const originY = Math.round(origin.y)
+  if (
+    originX < 0 ||
+    originY < 0 ||
+    originX + width > WORLD_PIXELS ||
+    originY + height > WORLD_PIXELS
+  )
+    return []
   return [
     {
       id: newId(),
       name: file.name ?? 'Imported template',
       source: 'wplace',
-      originX: Math.round(origin.x),
-      originY: Math.round(origin.y),
+      originX,
+      originY,
       width,
       height,
       indices,
@@ -117,7 +156,7 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
   const out: ImportedTemplate[] = []
   for (const [key, entry] of Object.entries(file.templates ?? {})) {
     const parts = (entry.coords ?? '').split(',').map((part) => Number(part.trim()))
-    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+    if (parts.length !== 4 || !validMarbleCoords(parts)) {
       warn('install', `skipping Marble template "${key}": unreadable coords`, entry.coords)
       continue
     }
@@ -133,8 +172,19 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       height: number
       pixels: Uint8Array
     }> = []
-    for (const [tileKey, base64] of Object.entries(entry.tiles ?? {})) {
+    const pieces = Object.entries(entry.tiles ?? {})
+    if (pieces.length > MAX_MARBLE_TILES) {
+      warn('install', `skipping Marble template "${key}": too many tiles`, pieces.length)
+      continue
+    }
+    let malformed = false
+    for (const [tileKey, base64] of pieces) {
       const coords = tileKey.split(/[,\s]+/).map(Number)
+      if (coords.length !== 4 || !validMarbleCoords(coords)) {
+        warn('install', `skipping Marble template "${key}": unreadable tile coords`, tileKey)
+        malformed = true
+        break
+      }
       const source = base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`
       const image = await decodeToRgba(await blobFromDataUrl(source))
       decoded.push({
@@ -143,14 +193,31 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
         ...image,
       })
     }
-    if (decoded.length === 0) continue
+    if (malformed || decoded.length === 0) continue
 
-    const minX = Math.min(...decoded.map((d) => d.x))
-    const minY = Math.min(...decoded.map((d) => d.y))
-    const maxX = Math.max(...decoded.map((d) => d.x + d.width))
-    const maxY = Math.max(...decoded.map((d) => d.y + d.height))
-    const width = maxX - minX
-    const height = maxY - minY
+    let maxX = originX
+    let maxY = originY
+    for (const piece of decoded) {
+      if (piece.x < originX || piece.y < originY) {
+        malformed = true
+        break
+      }
+      maxX = Math.max(maxX, piece.x + piece.width)
+      maxY = Math.max(maxY, piece.y + piece.height)
+    }
+    const width = maxX - originX
+    const height = maxY - originY
+    if (
+      malformed ||
+      width <= 0 ||
+      height <= 0 ||
+      width * height > MAX_IMPORT_PIXELS ||
+      maxX > WORLD_PIXELS ||
+      maxY > WORLD_PIXELS
+    ) {
+      warn('install', `skipping Marble template "${key}": assembled image is too large or invalid`)
+      continue
+    }
 
     const indices = new Uint8Array(width * height).fill(TRANSPARENT_INDEX)
     let moved = 0
@@ -160,7 +227,7 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       moved += quantised.moved
       opaque += quantised.opaque
       for (let row = 0; row < piece.height; row++) {
-        const target = (piece.y - minY + row) * width + (piece.x - minX)
+        const target = (piece.y - originY + row) * width + (piece.x - originX)
         indices.set(quantised.indices.subarray(row * piece.width, (row + 1) * piece.width), target)
       }
     }
@@ -169,10 +236,10 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       id: newId(),
       name: entry.name ?? key,
       source: 'marble',
-      // The declared coords win over the assembled extent: a Marble file's tiles start at its
-      // origin, and trusting the tiles instead would silently shift anything with an empty edge.
-      originX: decoded.length > 0 ? minX : originX,
-      originY: decoded.length > 0 ? minY : originY,
+      // The declared coords win over the assembled extent. Including the space before the first
+      // decoded tile preserves transparent/native margins instead of shifting the fixed-size art.
+      originX,
+      originY,
       width,
       height,
       indices,
@@ -191,13 +258,16 @@ const importImage = async (
 ): Promise<ImportedTemplate[]> => {
   const { width, height, pixels } = await decodeToRgba(blob)
   const { indices, moved, opaque } = quantise(pixels)
+  if (!Number.isFinite(centre.x) || !Number.isFinite(centre.y)) return []
+  const originX = Math.min(Math.max(0, Math.round(centre.x - width / 2)), WORLD_PIXELS - width)
+  const originY = Math.min(Math.max(0, Math.round(centre.y - height / 2)), WORLD_PIXELS - height)
   return [
     {
       id: newId(),
       name,
       source: 'image',
-      originX: Math.round(centre.x - width / 2),
-      originY: Math.round(centre.y - height / 2),
+      originX,
+      originY,
       width,
       height,
       indices,
@@ -212,6 +282,7 @@ export const importFile = async (
   centre: { x: number; y: number },
 ): Promise<ImportedTemplate[]> => {
   const started = performance.now()
+  if (file.size > MAX_FILE_BYTES) throw new Error('file is too large to import safely')
   const isJson =
     file.name.toLowerCase().endsWith('.wplace') ||
     file.name.toLowerCase().endsWith('.json') ||
@@ -228,6 +299,12 @@ export const importFile = async (
     result = await importImage(file, file.name.replace(/\.[^.]+$/, ''), centre)
   }
 
+  result = result.filter((template) => {
+    if (template.opaque > 0) return true
+    warn('install', `skipping ${template.name}: image has no painted pixels`)
+    return false
+  })
+
   for (const template of result) {
     log('install', `imported ${template.name}`, {
       source: template.source,
@@ -239,6 +316,26 @@ export const importFile = async (
     })
   }
   return result
+}
+
+const validMarbleCoords = (parts: readonly number[]): boolean => {
+  const [tileX, tileY, pixelX, pixelY] = parts
+  return (
+    parts.length === 4 &&
+    [tileX, tileY, pixelX, pixelY].every((value) => Number.isSafeInteger(value)) &&
+    tileX !== undefined &&
+    tileY !== undefined &&
+    pixelX !== undefined &&
+    pixelY !== undefined &&
+    tileX >= 0 &&
+    tileX < WORLD_TILES &&
+    tileY >= 0 &&
+    tileY < WORLD_TILES &&
+    pixelX >= 0 &&
+    pixelX < TILE_SIZE &&
+    pixelY >= 0 &&
+    pixelY < TILE_SIZE
+  )
 }
 
 /** Palette index to RGBA, for painting a preview. */
