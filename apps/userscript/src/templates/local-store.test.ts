@@ -42,6 +42,7 @@ const bitmapInputs: TestImageData[] = []
 const createdBitmaps: TestBitmap[] = []
 const contextOptions: unknown[] = []
 let canvasReadbacks = 0
+let missingContextWidth: number | undefined
 
 const bitmap = (width: number, height: number): TestBitmap => ({ width, height, close: vi.fn() })
 
@@ -66,8 +67,9 @@ class TestCanvas {
     this.height = height
   }
 
-  getContext(_kind?: string, options?: unknown): object {
+  getContext(_kind?: string, options?: unknown): object | null {
     contextOptions.push(options)
+    if (this.width === missingContextWidth) return null
     return {
       beginPath: vi.fn(),
       arc: vi.fn(),
@@ -134,6 +136,7 @@ beforeEach(() => {
   createdBitmaps.length = 0
   contextOptions.length = 0
   canvasReadbacks = 0
+  missingContextWidth = undefined
   deferredBitmap = undefined
   vi.stubGlobal('window', {})
   vi.stubGlobal('ImageData', TestImageData)
@@ -705,6 +708,47 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates()[0]).toMatchObject({ originX: 300, originY: 400 })
   })
 
+  it('lets a return to the installed origin supersede an in-flight move', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const pending = deferOneBitmap()
+
+    const away = store.moveLocalTemplate(added.id, 100, 200)
+    await Promise.resolve()
+    const back = store.moveLocalTemplate(added.id, added.originX, added.originY)
+    pending.resolve(bitmap(1_000, 1_000))
+
+    await expect(Promise.all([away, back])).resolves.toEqual([true, true])
+    expect(store.localTemplates()[0]).toMatchObject({
+      originX: added.originX,
+      originY: added.originY,
+    })
+  })
+
+  it('lets same-origin Apply supersede an in-flight pending-image placement', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template({ source: 'image' }))
+    const pending = deferOneBitmap()
+
+    const away = store.placeLocalTemplate(added.id, 100, 200)
+    await Promise.resolve()
+    const back = store.placeLocalTemplate(added.id, added.originX, added.originY)
+    pending.resolve(bitmap(1_000, 1_000))
+
+    await expect(Promise.all([away, back])).resolves.toEqual([true, true])
+    expect(store.localTemplates()[0]).toMatchObject({
+      originX: added.originX,
+      originY: added.originY,
+      everPlaced: true,
+      revision: 1,
+    })
+    expect(persistence.saveTemplate).toHaveBeenCalledOnce()
+    expect(persistence.saveTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ originX: added.originX, originY: added.originY, everPlaced: true }),
+      null,
+    )
+  })
+
   it('settles every coalesced move with the surviving durable write result', async () => {
     const store = await import('./local-store.js')
     await store.addLocalTemplate(template())
@@ -1193,6 +1237,32 @@ describe('local template lifecycle', () => {
     await vi.runAllTimersAsync()
     expect(repaint).toHaveBeenCalled()
     expect(retried).toBeDefined()
+  })
+
+  it('closes an oversized stamp when a required downsample context is unavailable', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const appearance = {
+      shape: 'circle',
+      size: 1 / 3,
+      anchor: 'c',
+      opacity: 1,
+      hiddenColours: [1],
+    } as const
+    const buildsBeforeFailure = vi.mocked(createImageBitmap).mock.calls.length
+    missingContextWidth = 1_500
+    vi.useFakeTimers()
+
+    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
+    expect(createdBitmaps.at(-1)?.close).toHaveBeenCalledOnce()
+    for (let frame = 0; frame < 5; frame++) {
+      expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
   })
 
   it('evicts least-recently-used stamped tiles instead of retaining an unbounded cache', async () => {

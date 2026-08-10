@@ -836,7 +836,7 @@ export const moveLocalTemplate = async (
   const roundedX = Math.round(originX)
   const roundedY = Math.round(originY)
   validatePlacement(existing, roundedX, roundedY)
-  if (existing.originX === roundedX && existing.originY === roundedY) {
+  if (existing.originX === roundedX && existing.originY === roundedY && !moveQueues.has(id)) {
     clearLocalPreview(id)
     return true
   }
@@ -871,7 +871,7 @@ export const placeLocalTemplate = async (
   const roundedX = Math.round(originX)
   const roundedY = Math.round(originY)
   validatePlacement(existing, roundedX, roundedY)
-  if (existing.originX === roundedX && existing.originY === roundedY) {
+  if (existing.originX === roundedX && existing.originY === roundedY && !moveQueues.has(id)) {
     clearLocalPreview(id)
     return await markPlaced(id)
   }
@@ -1336,7 +1336,10 @@ const buildStamp = async (
       const nextWidth = Math.max(wantedWidth, Math.floor(width / 2))
       const canvas = new OffscreenCanvas(nextWidth, nextWidth)
       const context = canvas.getContext('2d')
-      if (context === null) break
+      if (context === null) {
+        current.close()
+        return null
+      }
       context.imageSmoothingEnabled = true
       context.imageSmoothingQuality = 'high'
       context.drawImage(current, 0, 0, nextWidth, nextWidth)

@@ -397,6 +397,28 @@ describe('template placement controls', () => {
     expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
   })
 
+  it('finishes at a same-revision reconciled winner by object generation', async () => {
+    harness.placeLocalTemplate.mockResolvedValueOnce(false)
+    const active = (harness.localTemplates() as Array<Record<string, unknown>>).map((template) => ({
+      ...template,
+      revision: 0,
+    }))
+    harness.localTemplates.mockClear()
+    harness.localTemplates
+      .mockReturnValueOnce(active)
+      .mockReturnValueOnce(active)
+      .mockReturnValue([{ ...active[0], originX: 90, originY: 80, revision: 0 }])
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+
+    await moves.commit()
+    await moves.commit()
+
+    expect(finished).toHaveBeenCalledOnce()
+    expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
+  })
+
   it('finishes at a reconciled winner instead of retrying stale Cancel', async () => {
     harness.removeLocalTemplate.mockResolvedValueOnce(false)
     const active = (harness.localTemplates() as Array<Record<string, unknown>>).map((template) => ({

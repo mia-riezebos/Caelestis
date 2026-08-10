@@ -295,12 +295,10 @@ export const commit = async (): Promise<void> => {
   finishing = true
   listen(false)
   try {
-    const attemptedRevision = localTemplates().find(
-      (template) => template.id === current.id,
-    )?.revision
+    const attempted = localTemplates().find((template) => template.id === current.id)
     if (!(await placeLocalTemplate(current.id, current.x, current.y))) {
       const durable = localTemplates().find((template) => template.id === current.id)
-      if (durable === undefined || durable.revision !== attemptedRevision) {
+      if (durable === undefined || durable !== attempted) {
         finish()
         return
       }
@@ -328,14 +326,14 @@ export const abort = async (): Promise<void> => {
   listen(false)
   try {
     const template = localTemplates().find((candidate) => candidate.id === current.id)
-    const attemptedRevision = template?.revision
+    const attempted = template
     const saved =
       template !== undefined && template.source === 'image' && !template.everPlaced
         ? await removeLocalTemplate(current.id)
         : clearLocalPreview(current.id)
     if (!saved) {
       const durable = localTemplates().find((candidate) => candidate.id === current.id)
-      if (durable === undefined || durable.revision !== attemptedRevision) {
+      if (durable === undefined || durable !== attempted) {
         finish()
         return
       }
