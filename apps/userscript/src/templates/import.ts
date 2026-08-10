@@ -48,6 +48,7 @@ export interface ImportedTemplate {
 
 export const MAX_TEMPLATE_ID_LENGTH = 128
 export const MAX_TEMPLATE_NAME_LENGTH = 256
+export const MAX_SOURCE_TILES_PER_TEMPLATE = 12
 
 // Large enough for the observed 11 MB / 1612x2584 `.wplace` fixture, while keeping a malformed or
 // hostile local file from turning one click into an unbounded browser allocation.
@@ -64,6 +65,15 @@ const QUANTISE_WORK_PER_YIELD = 1_000_000
 const DENSE_CACHE_THRESHOLD = 65_536
 const RGB_SPACE = 1 << 24
 let importRunning = false
+
+const maximumTilesForRectangle = (width: number, height: number): number =>
+  (Math.ceil((width - 1) / TILE_SIZE) + 1) * (Math.ceil((height - 1) / TILE_SIZE) + 1)
+
+const assertMovableRectangle = (width: number, height: number): void => {
+  if (maximumTilesForRectangle(width, height) > MAX_SOURCE_TILES_PER_TEMPLATE) {
+    throw new Error('image dimensions exceed the movable template tile budget')
+  }
+}
 
 const newId = (): string => `local-${uuidV7()}`
 
@@ -263,7 +273,10 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
     return []
   }
 
-  const { width, height, pixels } = await decodeToRgba(await blobFromDataUrl(dataUrl))
+  const blob = await blobFromDataUrl(dataUrl)
+  const dimensions = await pngDimensions(blob)
+  assertMovableRectangle(dimensions.width, dimensions.height)
+  const { width, height, pixels } = await decodeToRgba(blob, dimensions)
   const { indices, moved, opaque } = await quantise(pixels)
   // The file places by geography; the canvas thinks in pixels. `28-native-wplace-format` confirmed
   // this projection to the pixel against this exact file.
@@ -450,10 +463,19 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     }
     const width = maxX - originX
     const height = maxY - originY
+    // A Marble export can be sparse across a large native extent. The bounding rectangle is the
+    // cheap common-case proof; summing each decoded piece's own worst case preserves sparse exports
+    // when their painted pieces still cannot exceed the renderer's fixed source-tile budget.
+    const pieceTileUpperBound = decoded.reduce(
+      (total, piece) => total + maximumTilesForRectangle(piece.width, piece.height),
+      0,
+    )
     if (
       malformed ||
       width <= 0 ||
       height <= 0 ||
+      Math.min(maximumTilesForRectangle(width, height), pieceTileUpperBound) >
+        MAX_SOURCE_TILES_PER_TEMPLATE ||
       retainedPixels + width * height > MAX_IMPORT_PIXELS ||
       maxX > WORLD_PIXELS ||
       maxY > WORLD_PIXELS
@@ -511,7 +533,9 @@ const importImage = async (
   name: string,
   centre: { x: number; y: number },
 ): Promise<ImportedTemplate[]> => {
-  const { width, height, pixels } = await decodeToRgba(blob)
+  const dimensions = await pngDimensions(blob)
+  assertMovableRectangle(dimensions.width, dimensions.height)
+  const { width, height, pixels } = await decodeToRgba(blob, dimensions)
   const { indices, moved, opaque } = await quantise(pixels)
   if (!Number.isFinite(centre.x) || !Number.isFinite(centre.y)) return []
   const originX = Math.min(Math.max(0, Math.round(centre.x - width / 2)), WORLD_PIXELS - width)

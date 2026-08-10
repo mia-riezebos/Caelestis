@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { isPageInstance } from './page-world.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { isPageInstance, isUint8Array } from './page-world.js'
 
 const originalImageBitmap = Object.getOwnPropertyDescriptor(globalThis, 'ImageBitmap')
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   delete (globalThis as Record<string, unknown>).TestBlob
   if (originalImageBitmap === undefined) delete (globalThis as Record<string, unknown>).ImageBitmap
   else Object.defineProperty(globalThis, 'ImageBitmap', originalImageBitmap)
@@ -29,5 +30,17 @@ describe('isPageInstance', () => {
     expect(isPageInstance(new PageBlob(), 'TestBlob', page)).toBe(true)
     expect(isPageInstance(new SandboxBlob(), 'TestBlob', page)).toBe(false)
     delete (globalThis as Record<string, unknown>).TestBlob
+  })
+})
+
+describe('isUint8Array', () => {
+  it('accepts a typed array created by a different global constructor', () => {
+    const foreign = new Uint8Array([1])
+    class SandboxUint8Array extends Uint8Array {}
+    vi.stubGlobal('Uint8Array', SandboxUint8Array)
+
+    expect(foreign).not.toBeInstanceOf(Uint8Array)
+    expect(isUint8Array(foreign)).toBe(true)
+    expect(isUint8Array(new Uint8ClampedArray([1]))).toBe(false)
   })
 })

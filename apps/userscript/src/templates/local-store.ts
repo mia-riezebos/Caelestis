@@ -6,9 +6,11 @@ import {
   WPLACE_PALETTE,
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
+import { isUint8Array, pageWindow } from '../page-world.js'
 import { type Appearance, anchorOffset, DEFAULT_APPEARANCE, scaleFor } from './appearance.js'
 import {
   type ImportedTemplate,
+  MAX_SOURCE_TILES_PER_TEMPLATE,
   MAX_TEMPLATE_ID_LENGTH,
   MAX_TEMPLATE_NAME_LENGTH,
 } from './import.js'
@@ -76,16 +78,18 @@ const notify = (): void => {
   // Mirror a summary onto the window so the dev harness can assert on placement without reaching
   // into module state. Metadata only — never the pixels.
   try {
-    ;(window as unknown as Record<string, unknown>).__wtsLocal = orderedTemplates().map((t) => ({
-      id: t.id,
-      name: t.name,
-      source: t.source,
-      originX: t.originX,
-      originY: t.originY,
-      width: t.width,
-      height: t.height,
-      tiles: t.tiles.size,
-    }))
+    ;(pageWindow() as unknown as Record<string, unknown>).__wtsLocal = orderedTemplates().map(
+      (t) => ({
+        id: t.id,
+        name: t.name,
+        source: t.source,
+        originX: t.originX,
+        originY: t.originY,
+        width: t.width,
+        height: t.height,
+        tiles: t.tiles.size,
+      }),
+    )
   } catch (error) {
     try {
       warn('install', 'could not update local template diagnostics', String(error))
@@ -136,7 +140,6 @@ const MIN_MIP_SIZE = 125
 // Every retained source tile is a fixed 1000/500/250/125 chain (~5.3 MB). Budget the actual
 // painted tiles across all templates; pixel count alone does not bound a very wide, short image.
 const MAX_RETAINED_SOURCE_TILES = 24
-const MAX_SOURCE_TILES_PER_TEMPLATE = 12
 const MAX_SOURCE_TILES_DURING_REPLACEMENT =
   MAX_RETAINED_SOURCE_TILES + MAX_SOURCE_TILES_PER_TEMPLATE
 let retainedSourceTiles = 0
@@ -255,36 +258,34 @@ const validatePlacement = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-const normaliseAppearance = (value: unknown): Appearance => {
-  if (!isRecord(value)) return DEFAULT_APPEARANCE
+const isAppearance = (value: unknown): value is Appearance => {
+  if (!isRecord(value)) return false
   const { shape, size, anchor, opacity, hiddenColours } = value
-  if (
-    !['full', 'square', 'circle', 'triangle'].includes(String(shape)) ||
-    typeof size !== 'number' ||
-    !Number.isFinite(size) ||
-    size < 0 ||
-    size > 1 ||
-    !['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'].includes(String(anchor)) ||
-    typeof opacity !== 'number' ||
-    !Number.isFinite(opacity) ||
-    opacity < 0 ||
-    opacity > 1 ||
-    !Array.isArray(hiddenColours) ||
-    hiddenColours.length > WPLACE_PALETTE.length ||
-    !hiddenColours.every(
+  return (
+    typeof shape === 'string' &&
+    ['full', 'square', 'circle', 'triangle'].includes(shape) &&
+    typeof size === 'number' &&
+    Number.isFinite(size) &&
+    size >= 0 &&
+    size <= 1 &&
+    typeof anchor === 'string' &&
+    ['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'].includes(anchor) &&
+    typeof opacity === 'number' &&
+    Number.isFinite(opacity) &&
+    opacity >= 0 &&
+    opacity <= 1 &&
+    Array.isArray(hiddenColours) &&
+    hiddenColours.length <= WPLACE_PALETTE.length &&
+    hiddenColours.every(
       (index) => Number.isSafeInteger(index) && index >= 0 && index < WPLACE_PALETTE.length,
-    ) ||
-    new Set(hiddenColours).size !== hiddenColours.length
-  ) {
-    return DEFAULT_APPEARANCE
-  }
-  return {
-    shape: shape as Appearance['shape'],
-    size,
-    anchor: anchor as Appearance['anchor'],
-    opacity,
-    hiddenColours: hiddenColours as number[],
-  }
+    ) &&
+    new Set(hiddenColours).size === hiddenColours.length
+  )
+}
+
+const normaliseAppearance = (value: unknown): Appearance => {
+  if (!isAppearance(value)) return DEFAULT_APPEARANCE
+  return { ...value, hiddenColours: [...value.hiddenColours] }
 }
 
 const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
@@ -317,7 +318,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   if (sortOrder !== undefined && !Number.isSafeInteger(sortOrder)) {
     throw new RangeError('template sort order is invalid')
   }
-  if (!(indices instanceof Uint8Array)) throw new RangeError('template pixels are invalid')
+  if (!isUint8Array(indices)) throw new RangeError('template pixels are invalid')
   if (
     !Number.isSafeInteger(moved) ||
     !Number.isSafeInteger(opaque) ||
@@ -845,12 +846,7 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
 export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
-  if (
-    appearance.hiddenColours.length > WPLACE_PALETTE.length ||
-    new Set(appearance.hiddenColours).size !== appearance.hiddenColours.length
-  ) {
-    return false
-  }
+  if (!isAppearance(appearance)) return false
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false

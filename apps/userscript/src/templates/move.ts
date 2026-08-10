@@ -29,8 +29,6 @@ const MODIFIER_HINT = navigator.platform.toLowerCase().includes('mac') ? '⌘' :
 
 interface MoveSession {
   readonly id: string
-  readonly originalX: number
-  readonly originalY: number
   x: number
   y: number
   dragging: {
@@ -251,14 +249,13 @@ export const beginMove = (id: string, finished: () => void): void => {
   if (template === undefined) return
   session = {
     id,
-    originalX: template.originX,
-    originalY: template.originY,
     x: template.originX,
     y: template.originY,
     dragging: null,
   }
   onFinish = finished
   finishing = false
+  suppressMiddleAuxClick = false
   renderBar(template.name)
   listen(true)
   log('install', `move started for ${template.name}`)
@@ -269,6 +266,7 @@ const finish = (): void => {
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
   finishing = false
+  suppressMiddleAuxClick = false
   const finished = onFinish
   onFinish = null
   try {

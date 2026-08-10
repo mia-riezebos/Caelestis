@@ -1,4 +1,5 @@
 import { warn } from '../debug.js'
+import { isUint8Array } from '../page-world.js'
 import type { Appearance } from './appearance.js'
 import {
   type ImportedTemplate,
@@ -102,7 +103,7 @@ const boundedStoredCandidate = (
     !Number.isSafeInteger(record.originY) ||
     !Number.isSafeInteger(record.width) ||
     !Number.isSafeInteger(record.height) ||
-    !(record.indices instanceof Uint8Array) ||
+    !isUint8Array(record.indices) ||
     !Number.isSafeInteger(record.moved) ||
     !Number.isSafeInteger(record.opaque) ||
     typeof record.visible !== 'boolean' ||

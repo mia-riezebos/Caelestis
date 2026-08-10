@@ -360,6 +360,19 @@ describe('local template lifecycle', () => {
     expect(persistence.saveTemplate).toHaveBeenCalledOnce()
   })
 
+  it('mirrors diagnostics onto the page realm rather than the userscript sandbox', async () => {
+    const pageRealm: Record<string, unknown> = {}
+    vi.stubGlobal('unsafeWindow', pageRealm)
+    const store = await import('./local-store.js')
+
+    await store.addLocalTemplate(template())
+
+    expect(pageRealm.__wtsLocal).toEqual([
+      expect.objectContaining({ id: 'local-test', originX: 10, originY: 20 }),
+    ])
+    expect((window as unknown as Record<string, unknown>).__wtsLocal).toBeUndefined()
+  })
+
   it('persists final origin and first-placement state atomically', async () => {
     const store = await import('./local-store.js')
     await store.addLocalTemplate(template())
@@ -682,6 +695,22 @@ describe('local template lifecycle', () => {
     })
   })
 
+  it('rejects appearance values that restore would discard', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    persistence.saveTemplate.mockClear()
+
+    await expect(
+      store.setAppearance(added.id, {
+        ...added.appearance,
+        hiddenColours: [WPLACE_PALETTE.length],
+      }),
+    ).resolves.toBe(false)
+
+    expect(persistence.saveTemplate).not.toHaveBeenCalled()
+    expect(store.localTemplates()[0]?.appearance).toEqual(added.appearance)
+  })
+
   it('restores hidden templates lazily and discards unfinished image placements', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       { ...template({ id: 'hidden' }), visible: false, everPlaced: true },
@@ -696,6 +725,25 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates()[0]?.tiles.size).toBe(0)
     expect(createImageBitmap).not.toHaveBeenCalled()
     expect(persistence.deleteTemplate).toHaveBeenCalledWith('unfinished')
+  })
+
+  it('restores pixels cloned into a different Uint8Array realm', async () => {
+    const foreignIndices = new Uint8Array([0])
+    class SandboxUint8Array extends Uint8Array {}
+    vi.stubGlobal('Uint8Array', SandboxUint8Array)
+    persistence.loadTemplates.mockResolvedValueOnce([
+      {
+        ...template({ indices: foreignIndices }),
+        visible: true,
+        everPlaced: true,
+      },
+    ])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates()).toHaveLength(1)
+    expect(store.localTemplates()[0]?.indices).toBe(foreignIndices)
   })
 
   it('renders imported source order from lowest to highest', async () => {

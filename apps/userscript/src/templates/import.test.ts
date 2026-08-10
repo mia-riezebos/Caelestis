@@ -118,6 +118,18 @@ describe('template import', () => {
     expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
+  it('rejects native dimensions that cannot be moved within the source-tile budget', async () => {
+    const { importFile } = await import('./import.js')
+
+    await expect(
+      importFile(file('too-wide.png', '', 'image/png', 24, { width: 2_100, height: 2_100 }), {
+        x: 0,
+        y: 0,
+      }),
+    ).rejects.toThrow(/movable template tile budget/i)
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
   it('decodes Blue Marble 3x stamped chunks back to fixed native pixels', async () => {
     bitmapSizes.push({ width: 6, height: 3 })
     const stamped = new Uint8ClampedArray(6 * 3 * 4)
@@ -423,6 +435,28 @@ describe('template import', () => {
       opaque: 1,
     })
     expect(template?.indices[400 * 501 + 500]).not.toBe(TRANSPARENT_INDEX)
+  })
+
+  it('keeps sparse Marble pieces whose large native extent remains safe to move', async () => {
+    bitmapSizes.push({ width: 3, height: 3 }, { width: 3, height: 3 })
+    const first = new Uint8ClampedArray(3 * 3 * 4)
+    const second = new Uint8ClampedArray(3 * 3 * 4)
+    first.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    second.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    readbacks.push(first, second)
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        sparse: {
+          coords: '0,0,0,0',
+          tiles: { '0,0,0,0': 'AAAA', '20,0,0,0': 'BBBB' },
+        },
+      },
+    })
+
+    const [template] = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(template).toMatchObject({ width: 20_001, height: 1, opaque: 2 })
   })
 
   it('does not let transparency in a later overlapping Marble tile erase painted pixels', async () => {

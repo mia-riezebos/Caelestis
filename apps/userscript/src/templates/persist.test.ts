@@ -221,4 +221,35 @@ describe('local template persistence', () => {
 
     await expect(loading).resolves.toEqual([valid])
   })
+
+  it('loads indices cloned into a different Uint8Array realm', async () => {
+    const foreignIndices = new Uint8Array([0])
+    class SandboxUint8Array extends Uint8Array {}
+    vi.stubGlobal('Uint8Array', SandboxUint8Array)
+    const cursor = {
+      value: stored({ indices: foreignIndices }),
+      continue: vi.fn(),
+    }
+    const request = { result: cursor } as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates()
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    request.onsuccess?.(new Event('success'))
+    ;(request as unknown as { result: IDBCursorWithValue | null }).result = null
+    request.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([cursor.value])
+  })
 })

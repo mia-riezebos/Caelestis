@@ -115,6 +115,25 @@ describe('template placement controls', () => {
     expect(unrelated.preventDefault).toHaveBeenCalledOnce()
   })
 
+  it('does not carry middle-click suppression into the next placement session', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    if (pointerdown === undefined) throw new Error('expected pointerdown listener')
+    pointerdown({ button: 1, clientX: 2, clientY: 3, preventDefault: vi.fn() } as unknown as Event)
+    movebar = { remove: vi.fn() }
+    await moves.commit()
+
+    movebar = null
+    moves.beginMove('test', vi.fn())
+    const auxclick = listeners.get('auxclick')
+    if (auxclick === undefined) throw new Error('expected auxclick listener')
+    const nextMiddleClick = { button: 1, preventDefault: vi.fn() }
+    auxclick(nextMiddleClick as unknown as Event)
+
+    expect(nextMiddleClick.preventDefault).not.toHaveBeenCalled()
+  })
+
   it('allows only one commit while an asynchronous placement is finishing', async () => {
     let finishMove = (): void => undefined
     harness.placeLocalTemplate.mockImplementationOnce(async () => {
