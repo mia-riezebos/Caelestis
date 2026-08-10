@@ -265,7 +265,7 @@ describe('template import', () => {
     })
 
     await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
-    expect(createImageBitmap).toHaveBeenCalledTimes(1)
+    expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
   it('rejects blank Marble coordinate components before decoding tiles', async () => {
@@ -311,7 +311,7 @@ describe('template import', () => {
     const marble = JSON.stringify({ templates: { example: { coords: '0,0,0,0', tiles } } })
 
     await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
-    expect(createImageBitmap).toHaveBeenCalledTimes(57)
+    expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
   it('bounds retained pixels across all templates in one Marble file', async () => {
@@ -587,6 +587,20 @@ describe('template import', () => {
     })
 
     await expect(importFile(file('edge.wplace', contents), { x: 0, y: 0 })).resolves.toEqual([])
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
+  it('rejects Marble pieces outside their declared extent before browser decoding', async () => {
+    bitmapSizes.push({ width: 3, height: 3 })
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        outside: { coords: '10,10,0,0', tiles: { '9,10,0,0': 'AAAA' } },
+      },
+    })
+
+    await expect(importFile(file('outside.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
+    expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
   it('rejects latitude outside Web Mercator before decoding image data', async () => {

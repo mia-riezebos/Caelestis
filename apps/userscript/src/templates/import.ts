@@ -276,8 +276,6 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
   const blob = await blobFromDataUrl(dataUrl)
   const dimensions = await pngDimensions(blob)
   assertMovableRectangle(dimensions.width, dimensions.height)
-  const { width, height, pixels } = await decodeToRgba(blob, dimensions)
-  const { indices, moved, opaque } = await quantise(pixels)
   // The file places by geography; the canvas thinks in pixels. `28-native-wplace-format` confirmed
   // this projection to the pixel against this exact file.
   const origin = latLngToCanvasPixel({ lat: north, lng: west })
@@ -286,12 +284,14 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
   if (
     originX < 0 ||
     originY < 0 ||
-    originX + width > WORLD_PIXELS ||
-    originY + height > WORLD_PIXELS
+    originX + dimensions.width > WORLD_PIXELS ||
+    originY + dimensions.height > WORLD_PIXELS
   ) {
     warn('install', 'skipping .wplace template: projected image leaves the canvas')
     return []
   }
+  const { width, height, pixels } = await decodeToRgba(blob, dimensions)
+  const { indices, moved, opaque } = await quantise(pixels)
   return [
     {
       id: newId(),
@@ -396,13 +396,15 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     const originX = tileX * TILE_SIZE + pixelX
     const originY = tileY * TILE_SIZE + pixelY
 
-    // Tiles are keyed by their own coordinates; the extent is whatever they cover together.
-    const decoded: Array<{
+    // Read and validate every fixed PNG header before allocating a decoder bitmap. This makes
+    // placement and aggregate-budget failures cheap even when a later piece invalidates the record.
+    const prepared: Array<{
       x: number
       y: number
       width: number
       height: number
-      pixels: Uint8Array
+      blob: Blob
+      encodedDimensions: { width: number; height: number }
     }> = []
     if (entry.tiles !== undefined && !isRecord(entry.tiles)) {
       warn('install', `skipping Marble template "${key}": unreadable tiles`)
@@ -443,7 +445,6 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
         malformed = true
         break
       }
-      let image: Awaited<ReturnType<typeof decodeMarbleTile>>
       try {
         const blob = await blobFromDataUrl(source)
         const dimensions = await pngDimensions(blob)
@@ -451,29 +452,37 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
         if (decodedWorkPixels > MAX_MARBLE_DECODE_PIXELS) {
           throw new Error('Marble file exceeds the cumulative image decode budget')
         }
-        image = await decodeMarbleTile(blob, dimensions)
+        if (
+          dimensions.width % MARBLE_DRAW_MULT !== 0 ||
+          dimensions.height % MARBLE_DRAW_MULT !== 0
+        ) {
+          throw new Error('Marble tile does not use the expected 3x stamped encoding')
+        }
+        const width = dimensions.width / MARBLE_DRAW_MULT
+        const height = dimensions.height / MARBLE_DRAW_MULT
+        decodedPixels += width * height
+        if (retainedPixels + decodedPixels > MAX_IMPORT_PIXELS) {
+          throw new Error('decoded tiles are too large')
+        }
+        prepared.push({
+          x: (coords[0] ?? 0) * TILE_SIZE + (coords[2] ?? 0),
+          y: (coords[1] ?? 0) * TILE_SIZE + (coords[3] ?? 0),
+          width,
+          height,
+          blob,
+          encodedDimensions: dimensions,
+        })
       } catch (error) {
         warn('install', `skipping Marble template "${key}": unreadable tile ${tileKey}`, error)
         malformed = true
         break
       }
-      decodedPixels += image.width * image.height
-      if (retainedPixels + decodedPixels > MAX_IMPORT_PIXELS) {
-        warn('install', `skipping Marble template "${key}": decoded tiles are too large`)
-        malformed = true
-        break
-      }
-      decoded.push({
-        x: (coords[0] ?? 0) * TILE_SIZE + (coords[2] ?? 0),
-        y: (coords[1] ?? 0) * TILE_SIZE + (coords[3] ?? 0),
-        ...image,
-      })
     }
-    if (malformed || decoded.length === 0) continue
+    if (malformed || prepared.length === 0) continue
 
     let maxX = originX
     let maxY = originY
-    for (const piece of decoded) {
+    for (const piece of prepared) {
       if (piece.x < originX || piece.y < originY) {
         malformed = true
         break
@@ -486,7 +495,7 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     // A Marble export can be sparse across a large native extent. The bounding rectangle is the
     // cheap common-case proof; summing each decoded piece's own worst case preserves sparse exports
     // when their painted pieces still cannot exceed the renderer's fixed source-tile budget.
-    const pieceTileUpperBound = decoded.reduce(
+    const pieceTileUpperBound = prepared.reduce(
       (total, piece) => total + maximumTilesForRectangle(piece.width, piece.height),
       0,
     )
@@ -503,6 +512,28 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       warn('install', `skipping Marble template "${key}": assembled image is too large or invalid`)
       continue
     }
+
+    const decoded: Array<{
+      x: number
+      y: number
+      width: number
+      height: number
+      pixels: Uint8Array
+    }> = []
+    for (const piece of prepared) {
+      try {
+        decoded.push({
+          x: piece.x,
+          y: piece.y,
+          ...(await decodeMarbleTile(piece.blob, piece.encodedDimensions)),
+        })
+      } catch (error) {
+        warn('install', `skipping Marble template "${key}": unreadable tile`, error)
+        malformed = true
+        break
+      }
+    }
+    if (malformed) continue
 
     const indices = new Uint8Array(width * height).fill(TRANSPARENT_INDEX)
     const movedPixels = new Uint8Array(width * height)

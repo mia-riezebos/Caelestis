@@ -995,7 +995,22 @@ interface StampJob {
 }
 
 const stampJobs = new Map<string, StampJob>()
+interface StampFailure {
+  readonly wanted: string
+  readonly attempts: number
+  readonly retryAt: number
+}
+const stampFailures = new Map<string, StampFailure>()
+const STAMP_RETRY_BASE_MS = 1_000
+const STAMP_RETRY_MAX_MS = 30_000
 let activeStampBuilds = 0
+
+const noteStampFailure = (cacheKey: string, wanted: string): void => {
+  const previous = stampFailures.get(cacheKey)
+  const attempts = previous?.wanted === wanted ? previous.attempts + 1 : 1
+  const delay = Math.min(STAMP_RETRY_MAX_MS, STAMP_RETRY_BASE_MS * 2 ** (attempts - 1))
+  stampFailures.set(cacheKey, { wanted, attempts, retryAt: Date.now() + delay })
+}
 
 const pumpStampJobs = (): void => {
   while (activeStampBuilds < MAX_CONCURRENT_STAMP_BUILDS) {
@@ -1069,6 +1084,9 @@ const clearStamped = (id: string): void => {
     stampJobs.delete(key)
     job.resolve(null)
   }
+  for (const key of stampFailures.keys()) {
+    if (key.startsWith(prefix)) stampFailures.delete(key)
+  }
   for (const [key, entry] of stamped) {
     if (!key.startsWith(prefix)) continue
     stampedBytes -= entry.bytes
@@ -1120,12 +1138,16 @@ export const stampTile = (
     // Returning to a cached zoom bucket supersedes any replacement for the bucket we just left.
     // Invalidate active work and remove queued work before it can evict this exact match.
     cancelPendingStamp(cacheKey)
+    stampFailures.delete(cacheKey)
     // Map insertion order is our LRU order.
     stamped.delete(cacheKey)
     stamped.set(cacheKey, hit)
     return hit.tile
   }
-  if (pendingStamps.get(cacheKey) !== wanted) {
+  const failure = stampFailures.get(cacheKey)
+  if (failure !== undefined && failure.wanted !== wanted) stampFailures.delete(cacheKey)
+  const retryBlocked = failure?.wanted === wanted && Date.now() < failure.retryAt
+  if (!retryBlocked && pendingStamps.get(cacheKey) !== wanted) {
     pendingStamps.set(cacheKey, wanted)
     void queueStampBuild(cacheKey, async () =>
       pendingStamps.get(cacheKey) === wanted
@@ -1145,12 +1167,19 @@ export const stampTile = (
           return
         }
         pendingStamps.delete(cacheKey)
-        if (built === null) return
+        if (built === null) {
+          noteStampFailure(cacheKey, wanted)
+          return
+        }
+        stampFailures.delete(cacheKey)
         cacheStamp(cacheKey, wanted, built)
         notify()
       })
       .catch((error: unknown) => {
-        if (pendingStamps.get(cacheKey) === wanted) pendingStamps.delete(cacheKey)
+        if (pendingStamps.get(cacheKey) === wanted) {
+          pendingStamps.delete(cacheKey)
+          noteStampFailure(cacheKey, wanted)
+        }
         warn('draw', `could not build appearance for ${template.name}`, String(error))
       })
   }

@@ -126,6 +126,9 @@ const renderBar = (name: string): void => {
 
 const onPointerDown = (event: PointerEvent): void => {
   if (session === null || finishing) return
+  // One pointer owns a drag until it ends. A second touch, pen, or mouse button must not replace
+  // its origin or recenter the template underneath it.
+  if (session.dragging !== null) return
   // Middle click: jump, do not drag. A long move should not require dragging the whole way.
   if (event.button === 1) {
     suppressMiddleAuxClick = false

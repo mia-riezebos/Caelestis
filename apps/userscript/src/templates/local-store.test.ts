@@ -1111,6 +1111,49 @@ describe('local template lifecycle', () => {
     )
   })
 
+  it('backs off a persistent stamp failure without blocking other tiles', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(
+      template({
+        originX: 999,
+        originY: 0,
+        width: 2,
+        height: 1,
+        indices: new Uint8Array([0, 0]),
+        opaque: 2,
+      }),
+    )
+    const appearance = {
+      shape: 'full',
+      size: 1,
+      anchor: 'c',
+      opacity: 1,
+      hiddenColours: [1],
+    } as const
+    const buildsBeforeFailure = vi.mocked(createImageBitmap).mock.calls.length
+    vi.useFakeTimers()
+    vi.mocked(createImageBitmap).mockRejectedValueOnce(new Error('GPU allocation failed'))
+
+    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
+    await vi.runAllTimersAsync()
+    expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
+
+    for (let frame = 0; frame < 10; frame++) {
+      expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
+      await vi.runAllTimersAsync()
+    }
+    expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeFailure + 1)
+
+    expect(store.stampTile(added, '1/0', appearance, 1_000)).toBeUndefined()
+    await vi.runAllTimersAsync()
+    expect(store.stampTile(added, '1/0', appearance, 1_000)).toBeDefined()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeUndefined()
+    await vi.runAllTimersAsync()
+    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBeDefined()
+  })
+
   it('evicts least-recently-used stamped tiles instead of retaining an unbounded cache', async () => {
     const store = await import('./local-store.js')
     const sourceTiles = new Map<string, TileLevels>()

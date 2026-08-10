@@ -274,6 +274,54 @@ describe('template placement controls', () => {
     expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
   })
 
+  it('does not let a second pointer replace or recenter an active drag', async () => {
+    harness.canvasPixelAt.mockReturnValueOnce({ x: 12, y: 22 }).mockReturnValue({ x: 500, y: 600 })
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    const pointermove = listeners.get('pointermove')
+    if (pointerdown === undefined || pointermove === undefined)
+      throw new Error('expected pointer listeners')
+
+    pointerdown({
+      button: 0,
+      pointerId: 7,
+      clientX: 100,
+      clientY: 100,
+      ctrlKey: true,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    pointerdown({
+      button: 0,
+      pointerId: 8,
+      clientX: 300,
+      clientY: 300,
+      ctrlKey: true,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    pointerdown({
+      button: 1,
+      pointerId: 8,
+      clientX: 500,
+      clientY: 600,
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+    pointermove({
+      pointerId: 7,
+      clientX: 110,
+      clientY: 120,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
+    expect(harness.previewLocalTemplate).toHaveBeenCalledWith('test', 20, 40)
+  })
+
   it('ignores placement shortcuts in editable controls and page dialogs', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())
