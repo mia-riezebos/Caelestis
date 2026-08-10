@@ -1373,9 +1373,7 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
     desiredVisibility.delete(id)
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)
-    const oldFilterKey = appearanceKey(appearanceOf(existing))
-    const newFilterKey = appearanceKey(ownedAppearance ?? getState().appearance)
-    if (oldFilterKey !== newFilterKey) clearStamped(id)
+    clearStamped(id)
     notify()
     return true
   })
@@ -1424,7 +1422,9 @@ export const setAppearance = async (
       }
       revision = committed
     }
-    clearStamped(id)
+    const oldFilterKey = appearanceKey(appearanceOf(existing))
+    const newFilterKey = appearanceKey(ownedAppearance ?? getState().appearance)
+    if (oldFilterKey !== newFilterKey) clearStamped(id)
     templates.set(id, { ...next, revision })
     notify()
     return true
