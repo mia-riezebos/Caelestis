@@ -39,9 +39,9 @@ export {
   type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
+  TemplateIdentityError,
   type TemplatePatch,
   type TemplateRecord,
-  TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from './sql-store.js'

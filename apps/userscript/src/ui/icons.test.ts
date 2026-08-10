@@ -42,7 +42,7 @@ describe('icons', () => {
       'rename',
       'trash',
     ]
-    const expectedPathHashes: Record<IconName, number> = {
+    const expectedPathHashes: Partial<Record<IconName, number>> = {
       extension: 4_053_672_473,
       settings: 2_214_614_144,
       close: 2_893_230_536,

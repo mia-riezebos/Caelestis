@@ -34,14 +34,12 @@ vi.mock('./local-store.js', () => ({
 }))
 
 const listeners = new Map<string, EventListener>()
-let movebar: { remove: ReturnType<typeof vi.fn> } | null
 
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   listeners.clear()
   harness.reconciliationObservers.clear()
-  movebar = null
   harness.canvasPixelAt.mockReturnValue({ x: 2, y: 3 })
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
   harness.isMapInteractionTarget.mockReturnValue(true)
@@ -67,7 +65,7 @@ beforeEach(() => {
   })
   vi.stubGlobal('document', {
     body: { appendChild: vi.fn() },
-    querySelector: vi.fn(() => movebar),
+    querySelector: vi.fn(() => null),
     createElement: vi.fn(() => ({
       style: {},
       setAttribute: vi.fn(),
@@ -89,8 +87,6 @@ describe('template placement controls', () => {
     moves.beginMove('test', vi.fn())
     const auxclick = listeners.get('auxclick')
     if (auxclick === undefined) throw new Error('expected auxclick listener')
-    movebar = { remove: vi.fn() }
-
     await moves.commit()
 
     expect(window.removeEventListener).toHaveBeenCalledWith('auxclick', auxclick, true)
@@ -101,13 +97,10 @@ describe('template placement controls', () => {
     moves.beginMove('test', () => {
       throw new Error('observer failed')
     })
-    movebar = { remove: vi.fn() }
-
     await expect(moves.commit()).resolves.toBeUndefined()
     await expect(moves.commit()).resolves.toBeUndefined()
 
     expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
-    expect(movebar.remove).toHaveBeenCalledOnce()
     expect(window.removeEventListener).toHaveBeenCalled()
   })
 
@@ -122,7 +115,14 @@ describe('template placement controls', () => {
     auxclick(unrelated as unknown as Event)
     expect(unrelated.preventDefault).not.toHaveBeenCalled()
 
-    pointerdown({ button: 1, clientX: 2, clientY: 3, preventDefault: vi.fn() } as unknown as Event)
+    pointerdown({
+      button: 1,
+      pointerId: 1,
+      target: { tagName: 'CANVAS', closest: vi.fn(() => null) },
+      clientX: 2,
+      clientY: 3,
+      preventDefault: vi.fn(),
+    } as unknown as Event)
     auxclick(unrelated as unknown as Event)
     expect(unrelated.preventDefault).toHaveBeenCalledOnce()
   })
@@ -189,11 +189,16 @@ describe('template placement controls', () => {
     moves.beginMove('test', vi.fn())
     const pointerdown = listeners.get('pointerdown')
     if (pointerdown === undefined) throw new Error('expected pointerdown listener')
-    pointerdown({ button: 1, clientX: 2, clientY: 3, preventDefault: vi.fn() } as unknown as Event)
-    movebar = { remove: vi.fn() }
+    pointerdown({
+      button: 1,
+      pointerId: 1,
+      target: { tagName: 'CANVAS', closest: vi.fn(() => null) },
+      clientX: 2,
+      clientY: 3,
+      preventDefault: vi.fn(),
+    } as unknown as Event)
     await moves.commit()
 
-    movebar = null
     moves.beginMove('test', vi.fn())
     const auxclick = listeners.get('auxclick')
     if (auxclick === undefined) throw new Error('expected auxclick listener')
@@ -331,7 +336,13 @@ describe('template placement controls', () => {
       stopPropagation: vi.fn(),
     } as unknown as Event)
     expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
-    pointercancel({ pointerId: 7 } as unknown as Event)
+    pointercancel({
+      pointerId: 7,
+      clientX: 110,
+      clientY: 110,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
     pointermove({
       pointerId: 7,
       clientX: 120,
@@ -435,12 +446,11 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
-    movebar = { remove: vi.fn() }
+    finished.mockClear()
 
     await moves.commit()
 
     expect(finished).toHaveBeenCalledOnce()
-    expect(movebar.remove).toHaveBeenCalledOnce()
   })
 
   it('finishes at a reconciled winner instead of retrying stale Apply coordinates', async () => {
@@ -456,6 +466,7 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
+    finished.mockClear()
 
     await moves.commit()
     await moves.commit()
@@ -480,6 +491,7 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
+    finished.mockClear()
 
     await moves.commit()
     await moves.commit()
@@ -499,6 +511,7 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
+    finished.mockClear()
 
     await moves.commit()
 
@@ -524,6 +537,7 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
+    finished.mockClear()
 
     await moves.abort()
     await moves.abort()
@@ -543,12 +557,11 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
-    movebar = { remove: vi.fn() }
+    finished.mockClear()
 
     await moves.abort()
 
     expect(finished).toHaveBeenCalledOnce()
-    expect(movebar.remove).toHaveBeenCalledOnce()
   })
 
   it('reverts an existing template to its original placement on cancel', async () => {

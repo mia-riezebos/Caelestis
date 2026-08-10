@@ -287,7 +287,9 @@ describe('editing a template', () => {
     const { app } = await harness()
     const template = await create(app)
     const form = new FormData()
-    const png = await encodeIndexedPng(2, 2, new Uint8Array([0, 1, 1, 0]))
+    // A new version may change the pixels and origin, but not the template's dimensions: identity
+    // is also what lets contribution history stay meaningful across revisions.
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([1]))
     form.set('png', new File([png.slice()], 'v2.png', { type: 'image/png' }))
     form.set('originX', '0')
     form.set('originY', '0')

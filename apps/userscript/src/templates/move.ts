@@ -263,8 +263,19 @@ export const beginMove = (id: string, finished: () => void): void => {
   listen(true)
   // Apply and cancel are drawn where the template's own menu button was, by `renderOverlayControls`
   // — the controls for this template stay in the one place they have always been.
-  finished()
+  notify(finished)
   log('install', `move started for ${template.name}`)
+}
+
+const notify = (observer: (() => void) | null): void => {
+  try {
+    observer?.()
+  } catch (error) {
+    // UI refresh is an observer notification, not part of the durable placement transaction.
+    try {
+      warn('install', 'placement observer failed', String(error))
+    } catch {}
+  }
 }
 
 const finish = (): void => {
@@ -275,15 +286,7 @@ const finish = (): void => {
   suppressMiddleAuxClickFor = null
   const finished = onFinish
   onFinish = null
-  try {
-    finished?.()
-  } catch (error) {
-    // Completion is an observer notification, not part of the durable placement transaction.
-    // Never let it reopen capture-phase listeners after teardown.
-    try {
-      warn('install', 'placement completion callback failed', String(error))
-    } catch {}
-  }
+  notify(finished)
 }
 
 const resumeAfterFailure = (action: string, error?: unknown): void => {

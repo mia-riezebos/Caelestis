@@ -7,7 +7,6 @@ import {
   uuidV7,
   WORLD_PIXELS,
   WORLD_TILES,
-  WPLACE_PALETTE,
 } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 
