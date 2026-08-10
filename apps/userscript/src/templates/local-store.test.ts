@@ -1016,6 +1016,35 @@ describe('local template lifecycle', () => {
     expect(stamp?.levels.map((level) => level.width)).toEqual([500])
   })
 
+  it('keeps a colour-filtered stamp visible while rebuilding it for a new zoom bucket', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const source = added.tiles.get('0/0')
+    if (source === undefined) throw new Error('expected source tile')
+    const appearance = {
+      shape: 'full',
+      size: 1,
+      anchor: 'c',
+      opacity: 1,
+      hiddenColours: [0],
+    } as const
+
+    store.stampTile(added, '0/0', appearance, 1_000)
+    await vi.waitFor(() =>
+      expect(store.stampTile(added, '0/0', appearance, 1_000)?.levels[0]?.width).toBe(1_000),
+    )
+    const previous = store.stampTile(added, '0/0', appearance, 1_000)
+    expect(previous).not.toBe(source)
+
+    expect(store.stampTile(added, '0/0', appearance, 250)).toBe(previous)
+    await vi.waitFor(() =>
+      expect(store.stampTile(added, '0/0', appearance, 250)?.levels[0]?.width).toBe(250),
+    )
+    expect(
+      previous?.levels.every((level) => (level as TestBitmap).close.mock.calls.length === 1),
+    ).toBe(true)
+  })
+
   it('evicts least-recently-used stamped tiles instead of retaining an unbounded cache', async () => {
     const store = await import('./local-store.js')
     const sourceTiles = new Map<string, TileLevels>()

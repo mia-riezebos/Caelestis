@@ -1102,7 +1102,8 @@ export const stampTile = (
   // Opacity is applied at draw time, so it is deliberately not part of the cache key — dragging
   // that slider must not rebuild a million pixels per frame.
   const wantedWidth = desiredLevelWidth(TILE_SIZE * scaleFor(renderedAppearance), targetWidth)
-  const wanted = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}|${wantedWidth}`
+  const identity = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}`
+  const wanted = `${identity}|${wantedWidth}`
   if (renderedAppearance.shape === 'full' && renderedAppearance.hiddenColours.length === 0)
     return source
 
@@ -1143,8 +1144,15 @@ export const stampTile = (
         warn('draw', `could not build appearance for ${template.name}`, String(error))
       })
   }
-  // Keep the previous full raster visible while shape-only work is prepared. When colours are
-  // hidden, showing the unfiltered source would be incorrect, so skip this tile for one repaint.
+  // A stamp with the same identity has the right geometry and colour filtering at another mip.
+  // Keep it visible while the requested zoom bucket is built instead of blinking the tile out.
+  if (hit?.key.startsWith(`${identity}|`)) {
+    stamped.delete(cacheKey)
+    stamped.set(cacheKey, hit)
+    return hit.tile
+  }
+  // Keep the source visible while shape-only work is prepared. When colours are hidden, showing
+  // the unfiltered source would be incorrect, so the first filtered build has no safe fallback.
   return renderedAppearance.hiddenColours.length === 0 ? source : undefined
 }
 
