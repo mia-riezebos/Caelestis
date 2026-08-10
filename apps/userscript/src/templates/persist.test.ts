@@ -23,6 +23,21 @@ afterEach(() => {
 })
 
 describe('local template persistence', () => {
+  it('fails a blocked version upgrade instead of hanging and closes any late connection', async () => {
+    const database = { close: vi.fn() } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates()
+    opening.onblocked?.(new Event('blocked') as IDBVersionChangeEvent)
+
+    const loaded = await loading
+    expect(loaded).toEqual([])
+    opening.onsuccess?.(new Event('success'))
+    expect(database.close).toHaveBeenCalledOnce()
+  })
+
   it('resolves a write only after its IndexedDB transaction commits', async () => {
     const templateRequest = { result: undefined } as unknown as IDBRequest<unknown>
     const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
@@ -419,7 +434,15 @@ describe('local template persistence', () => {
     transaction.oncomplete?.(new Event('complete'))
 
     const loaded = await loading
-    expect(loaded).toEqual([])
+    expect(loaded).toEqual([
+      {
+        kind: 'template-hydration-failure',
+        status: 'invalid',
+        id: 'loaded',
+        revision: 0,
+        indexPixels: 1,
+      },
+    ])
     expect(loaded.inspected).toBe(1)
     expect(loaded.indexPixels).toBe(1)
     expect(cursor.continue).toHaveBeenCalledOnce()
@@ -493,6 +516,50 @@ describe('local template persistence', () => {
     expect(database.close).toHaveBeenCalledOnce()
   })
 
+  it('reports a present structurally invalid single record as invalid', async () => {
+    const request = { result: stored({ source: 'unknown', revision: 4 }) } as IDBRequest<unknown>
+    const transaction = {
+      objectStore: vi.fn(() => ({ get: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplate } = await import('./persist.js')
+
+    const loading = loadTemplate('loaded')
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    request.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual({ status: 'invalid', revision: 4 })
+  })
+
+  it('distinguishes an absent single record from an invalid one', async () => {
+    const request = { result: undefined } as IDBRequest<unknown>
+    const transaction = {
+      objectStore: vi.fn(() => ({ get: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplate } = await import('./persist.js')
+
+    const loading = loadTemplate('absent')
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    request.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual({ status: 'missing' })
+  })
+
   it('refuses to increment an exhausted revision but can still delete it', async () => {
     const maxRecord = stored({ id: 'max', revision: Number.MAX_SAFE_INTEGER })
     const saveRequest = { result: maxRecord } as unknown as IDBRequest<unknown>
@@ -533,7 +600,7 @@ describe('local template persistence', () => {
     expect(deleteStore.delete).toHaveBeenCalledWith('max')
   })
 
-  it('does not let invalid leading records consume the restore candidate limit', async () => {
+  it('surfaces invalid leading records so restore can collect them', async () => {
     const cursor = { value: {}, continue: vi.fn() }
     const mutableRequest = {
       result: cursor as unknown as IDBCursorWithValue,
@@ -557,14 +624,19 @@ describe('local template persistence', () => {
       cursor.value = { id: `invalid-${index}` }
       mutableRequest.onsuccess?.(new Event('success'))
     }
-    const valid = stored({ id: 'valid' })
-    cursor.value = valid
-    mutableRequest.onsuccess?.(new Event('success'))
-    mutableRequest.result = null
-    mutableRequest.onsuccess?.(new Event('success'))
     transaction.oncomplete?.(new Event('complete'))
 
-    await expect(loading).resolves.toEqual([valid])
+    const loaded = await loading
+    expect(loaded).toEqual(
+      Array.from({ length: 64 }, (_, index) => ({
+        kind: 'template-hydration-failure',
+        status: 'invalid',
+        id: `invalid-${index}`,
+        revision: 0,
+        indexPixels: 0,
+      })),
+    )
+    expect(loaded.inspected).toBe(64)
   })
 
   it('loads indices cloned into a different Uint8Array realm', async () => {

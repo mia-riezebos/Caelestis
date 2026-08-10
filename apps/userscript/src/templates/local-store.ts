@@ -573,6 +573,16 @@ const reconcileConflict = async (id: string): Promise<void> => {
       removeStaleLocalState(existing)
       return
     }
+    if (loaded.status === 'invalid') {
+      const deleted = await deleteTemplate(id, loaded.revision)
+      if (deleted.status === 'saved') {
+        removeStaleLocalState(existing)
+        return
+      }
+      if (deleted.status === 'conflict') continue
+      warn('install', `could not remove invalid conflict winner for ${existing.name}`)
+      return
+    }
     let winner: StoredTemplate
     try {
       winner = normaliseStoredTemplate(loaded.template)
@@ -782,11 +792,6 @@ const restoreStoredTemplates = async (): Promise<void> => {
         // Earlier builds could persist 0x0, non-finite, out-of-world, or fully transparent records.
         // Validate each independently so one bad legacy entry cannot prevent every good restore.
         const template = normaliseStoredTemplate(rawTemplate)
-        await validateStoredPixels(template)
-        if (template.source === 'image' && !template.everPlaced) {
-          throw new RangeError('unfinished image placement')
-        }
-        validated = template
         if (templates.has(template.id) || pendingAdds.has(template.id)) {
           warn('install', `could not restore ${template.name}: local template id already exists`)
           continue
@@ -799,6 +804,11 @@ const restoreStoredTemplates = async (): Promise<void> => {
           warn('install', `could not restore ${template.name}: persisted pixel budget exhausted`)
           continue
         }
+        await validateStoredPixels(template)
+        if (template.source === 'image' && !template.everPlaced) {
+          throw new RangeError('unfinished image placement')
+        }
+        validated = template
         // Reserve the ID, cardinality, and index bytes before slicing yields. This also keeps
         // repeated restore calls and any already-running mutations inside the aggregate limits.
         pendingAdds.add(template.id)
@@ -1097,7 +1107,10 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
     if (!isPendingImage(current)) {
       const deleted = await deleteTemplate(id, current.revision)
       if (deleted.status !== 'saved') {
-        if (deleted.status === 'conflict') await reconcileConflict(id)
+        if (deleted.status === 'conflict') {
+          await reconcileConflict(id)
+          return !templates.has(id)
+        }
         return false
       }
     }

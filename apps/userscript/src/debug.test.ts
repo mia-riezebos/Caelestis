@@ -139,4 +139,23 @@ describe('warn', () => {
     expect(entry?.data.coords.length).toBeLessThanOrEqual(512)
     expect(consoleWarn).toHaveBeenCalledOnce()
   })
+
+  it('preserves bounded cross-realm Error diagnostics', () => {
+    vi.stubGlobal('window', { Object })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    installDebugApi()
+    const foreign = new (class ForeignError extends Error {})('decode failed')
+
+    warn('install', 'tile failed', foreign)
+
+    const api = (window as unknown as Record<string, unknown>).__wts as {
+      events: () => Array<{ data?: unknown }>
+    }
+    expect(api.events().at(-1)?.data).toBe('Error: decode failed')
+  })
 })

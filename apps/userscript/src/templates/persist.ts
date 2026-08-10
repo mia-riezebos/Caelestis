@@ -36,6 +36,7 @@ export interface StoredTemplate extends ImportedTemplate {
 const open = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
+    let abandoned = false
     request.onupgradeneeded = () => {
       const db = request.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
@@ -43,7 +44,19 @@ const open = (): Promise<IDBDatabase> =>
         db.createObjectStore('server-cache', { keyPath: 'url' })
       }
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onblocked = () => {
+      abandoned = true
+      reject(new Error('indexedDB.open blocked by another connection'))
+    }
+    request.onsuccess = () => {
+      const db = request.result
+      if (abandoned) {
+        db.close()
+        return
+      }
+      db.onversionchange = () => db.close()
+      resolve(db)
+    }
     request.onerror = () => reject(request.error ?? new Error('indexedDB.open failed'))
   })
 
@@ -260,7 +273,23 @@ const hydrateCandidate = async (
 export type LoadTemplateResult =
   | { readonly status: 'loaded'; readonly template: unknown }
   | { readonly status: 'missing' }
+  | { readonly status: 'invalid'; readonly revision: number }
   | { readonly status: 'unavailable' }
+
+const storedRevision = (value: unknown): number => {
+  if (typeof value !== 'object' || value === null || !('revision' in value)) return 0
+  const revision = (value as { readonly revision?: unknown }).revision
+  return Number.isSafeInteger(revision) && Number(revision) >= 0 ? Number(revision) : 0
+}
+
+const loadFailureIdentity = (
+  value: unknown,
+): { readonly id: string; readonly revision: number } | null => {
+  if (typeof value !== 'object' || value === null || !('id' in value)) return null
+  const id = (value as { readonly id?: unknown }).id
+  if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) return null
+  return { id, revision: storedRevision(value) }
+}
 
 /** Read one winning CAS value after a conflict without materialising every other template. */
 export const loadTemplate = async (
@@ -284,11 +313,16 @@ export const loadTemplate = async (
         transaction.onabort = () =>
           reject(transaction.error ?? new Error('indexedDB transaction aborted'))
       })
-      if (!boundedStoredCandidate(value)) return { status: 'missing' }
+      if (value === undefined) return { status: 'missing' }
+      if (!boundedStoredCandidate(value)) {
+        return { status: 'invalid', revision: storedRevision(value) }
+      }
       const pixels = isUint8Array(value.indices) ? value.indices.length : value.indices.size
-      if (pixels > maxIndexPixels) return { status: 'missing' }
+      if (pixels > maxIndexPixels) return { status: 'invalid', revision: storedRevision(value) }
       const hydrated = await hydrateCandidate(value)
-      if (hydrated.status === 'invalid') return { status: 'missing' }
+      if (hydrated.status === 'invalid') {
+        return { status: 'invalid', revision: storedRevision(value) }
+      }
       return hydrated
     } finally {
       db.close()
@@ -308,17 +342,19 @@ export const loadTemplates = async (
     const db = await open()
     try {
       const batch = await new Promise<{
-        readonly candidates: readonly (Record<string, unknown> & {
-          indices: Uint8Array | StoredBlob
-        })[]
+        readonly candidates: readonly (
+          | (Record<string, unknown> & { indices: Uint8Array | StoredBlob })
+          | TemplateLoadFailure
+        )[]
         readonly inspected: number
         readonly indexPixels: number
       }>((resolve, reject) => {
         const transaction = db.transaction(STORE, 'readonly')
         const request = transaction.objectStore(STORE).openCursor()
-        const templates: (Record<string, unknown> & {
-          indices: Uint8Array | StoredBlob
-        })[] = []
+        const templates: (
+          | (Record<string, unknown> & { indices: Uint8Array | StoredBlob })
+          | TemplateLoadFailure
+        )[] = []
         let retainedPixels = 0
         let inspectedPixels = 0
         let inspected = 0
@@ -328,8 +364,23 @@ export const loadTemplates = async (
           if (cursor === null) return
           const value: unknown = cursor.value
           if (!boundedStoredCandidate(value)) {
+            const identity = loadFailureIdentity(value)
+            if (identity !== null && excludedIds.has(identity.id)) {
+              cursor.continue()
+              return
+            }
             inspected++
-            inspectedPixels = boundedPixelSum(inspectedPixels, candidateIndexPixels(value))
+            const pixels = candidateIndexPixels(value)
+            inspectedPixels = boundedPixelSum(inspectedPixels, pixels)
+            if (identity !== null) {
+              templates.push({
+                kind: 'template-hydration-failure',
+                status: 'invalid',
+                ...identity,
+                indexPixels: pixels,
+              })
+            }
+            if (templates.length >= maxTemplates) return
             if (inspected >= maxInspected) return
             cursor.continue()
             return
@@ -364,6 +415,10 @@ export const loadTemplates = async (
       })
       const templates: unknown[] = []
       for (const candidate of batch.candidates) {
+        if (!('indices' in candidate)) {
+          templates.push(candidate)
+          continue
+        }
         const hydrated = await hydrateCandidate(candidate)
         if (hydrated.status === 'loaded') {
           templates.push(hydrated.template)
@@ -372,7 +427,7 @@ export const loadTemplates = async (
             kind: 'template-hydration-failure',
             status: hydrated.status,
             id: candidate.id as string,
-            revision: Number.isSafeInteger(candidate.revision) ? Number(candidate.revision) : 0,
+            revision: storedRevision(candidate),
             indexPixels: isUint8Array(candidate.indices)
               ? candidate.indices.length
               : candidate.indices.size,

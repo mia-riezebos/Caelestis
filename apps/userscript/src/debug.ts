@@ -81,6 +81,14 @@ const snapshot = (value: unknown, depth = 0, seen: WeakSet<object> = new WeakSet
     return value
   }
   if (typeof value !== 'object') return truncate(String(value), MAX_DATA_STRING_LENGTH)
+  try {
+    if (Object.prototype.toString.call(value) === '[object Error]') {
+      const error = value as { readonly name?: unknown; readonly message?: unknown }
+      const name = typeof error.name === 'string' ? error.name : 'Error'
+      const message = typeof error.message === 'string' ? error.message : ''
+      return truncate(message.length > 0 ? `${name}: ${message}` : name, MAX_DATA_STRING_LENGTH)
+    }
+  } catch {}
   if (seen.has(value)) return '[circular]'
   if (depth >= MAX_DATA_DEPTH) return Object.prototype.toString.call(value)
   seen.add(value)

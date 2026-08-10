@@ -11,7 +11,10 @@ const persistence = vi.hoisted(() => ({
   ),
   loadTemplate: vi.fn(
     async (): Promise<
-      { status: 'loaded'; template: unknown } | { status: 'missing' } | { status: 'unavailable' }
+      | { status: 'loaded'; template: unknown }
+      | { status: 'missing' }
+      | { status: 'invalid'; revision: number }
+      | { status: 'unavailable' }
     > => ({ status: 'missing' }),
   ),
   loadTemplates: vi.fn(
@@ -641,6 +644,27 @@ describe('local template lifecycle', () => {
     persistence.loadTemplates.mockResolvedValue([])
   })
 
+  it('rejects duplicate restore records before scanning their pixels', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    vi.stubGlobal('scheduler', undefined)
+    const yieldToBrowser = vi.spyOn(globalThis, 'setTimeout')
+    const indices = new Uint8Array(1_000_000).fill(63)
+    indices[0] = 0
+    persistence.loadTemplates.mockResolvedValueOnce([
+      {
+        ...template({ id: added.id, originX: 0, width: indices.length, indices, opaque: 1 }),
+        visible: false,
+        everPlaced: true,
+      },
+    ])
+
+    await store.restoreLocalTemplates()
+
+    expect(yieldToBrowser).not.toHaveBeenCalled()
+    expect(persistence.deleteTemplate).not.toHaveBeenCalled()
+  })
+
   it('does not rescan invalid persisted pixels to classify a restore failure', async () => {
     vi.stubGlobal('scheduler', undefined)
     const yieldToBrowser = vi.spyOn(globalThis, 'setTimeout')
@@ -908,6 +932,17 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates()).toHaveLength(1)
     expect(store.previewOriginFor(added.id)).toEqual({ x: 30, y: 40 })
     expect(oldLevels.every((level) => !level.close.mock.calls.length)).toBe(true)
+  })
+
+  it('reports a deletion reconciled to durable absence as successful', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    persistence.deleteTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    persistence.loadTemplate.mockResolvedValueOnce({ status: 'missing' })
+
+    await expect(store.removeLocalTemplate(added.id)).resolves.toBe(true)
+
+    expect(store.localTemplates()).toEqual([])
   })
 
   it('releases source levels while hidden and rebuilds them only when shown', async () => {
@@ -1334,6 +1369,20 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates()[0]).toMatchObject({ id: added.id, originX: 10, originY: 20 })
     expect(store.previewOriginFor(added.id)).toEqual({ x: 30, y: 40 })
     expect(oldLevels.every((level) => !level.close.mock.calls.length)).toBe(true)
+  })
+
+  it('CAS-deletes a present structurally invalid conflict winner', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    persistence.loadTemplate.mockResolvedValueOnce({ status: 'invalid', revision: 4 })
+
+    await expect(
+      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
+    ).resolves.toBe(false)
+
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id, 4)
+    expect(store.localTemplates()).toEqual([])
   })
 
   it('adopts the durable winner after a non-delete CAS conflict', async () => {
