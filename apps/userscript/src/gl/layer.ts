@@ -330,8 +330,6 @@ export const overlayLayer = {
       lastTemplateSet = fingerprint
       colourFades.prune(new Set(all.flatMap((t) => paletteKeys.map((i) => `${t.id}:${i}`))))
     }
-    if (visible.length === 0) return
-
     /**
      * MapLibre renders on demand, so a frame nobody asked for is a frame that never happens.
      * Without this a ramp would advance only as far as the next pan.
@@ -343,6 +341,12 @@ export const overlayLayer = {
       if (!animating) return
       const map = getMap() as { triggerRepaint?: () => void } | null
       map?.triggerRepaint?.()
+    }
+    // A newly visible template begins at zero. It therefore has no drawable entry on its first
+    // frame, but the unfinished fade still needs another frame or it remains transparent forever.
+    if (visible.length === 0) {
+      askForAnotherFrame()
+      return
     }
 
     // Everything we are about to disturb, so it can go back exactly as found. MapLibre assumes it
