@@ -156,12 +156,14 @@ export const createNodeRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: Auth
     if (name === undefined && parentId === undefined) {
       return c.json({ error: 'patch must set at least one of name, parentId' }, 400)
     }
+    const requestedSegment = name === undefined ? undefined : slug(name)
+    if (requestedSegment !== undefined && requestedSegment.length === 0) {
+      return c.json({ error: 'name must contain a letter or number' }, 400)
+    }
 
     const node = await sql.readNode(nodeId)
     if (node === null) return c.json({ error: 'not found' }, 404)
-    const nextName = name === undefined ? node.name : name
-    const segment = slug(nextName)
-    if (segment.length === 0) return c.json({ error: 'name must contain a letter or number' }, 400)
+    const segment = requestedSegment ?? slug(node.name)
 
     const nextParentId = parentId === undefined ? node.parentId : parentId
     let parentPath = node.path.slice(0, node.path.lastIndexOf('/'))

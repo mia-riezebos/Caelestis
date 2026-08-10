@@ -440,7 +440,7 @@ const isAppearance = (value: unknown): value is Appearance => {
     typeof size === 'number' &&
     Number.isFinite(size) &&
     size >= 0.05 &&
-    size <= 1 &&
+    size <= 2 &&
     typeof radius === 'number' &&
     Number.isFinite(radius) &&
     radius >= 0 &&
@@ -1434,10 +1434,7 @@ export const placeLocalTemplate = async (
 }
 
 /** Move a template into a Local folder, or to the top level with null. */
-export const setTemplateFolder = async (
-  id: string,
-  folderId: string | null,
-): Promise<boolean> => {
+export const setTemplateFolder = async (id: string, folderId: string | null): Promise<boolean> => {
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
@@ -1591,18 +1588,26 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 /** Pass null to put the overlay back on the global defaults. */
 export const setAppearance = async (
   id: string,
-  appearance: Appearance | null,
+  appearance: Readonly<Partial<Appearance>> | null,
 ): Promise<boolean> => {
-  if (appearance !== null && !isAppearance(appearance)) return false
-  // The write starts in a later microtask. Own the validated data now so the caller cannot mutate
-  // its array after validation and smuggle invalid or unbounded state into IndexedDB.
-  const ownedAppearance: Appearance | null =
+  // Own the request before the ordered write yields, then complete legacy/partial callers from the
+  // appearance the template is currently showing. The completed value still goes through the full
+  // validator before it can reach IndexedDB.
+  const requested: Readonly<Partial<Appearance>> | null =
     appearance === null
       ? null
-      : { ...appearance, hiddenColours: [...appearance.hiddenColours] }
+      : {
+          ...appearance,
+          ...(appearance.hiddenColours === undefined
+            ? {}
+            : { hiddenColours: [...appearance.hiddenColours] }),
+        }
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
+    const ownedAppearance: Appearance | null =
+      requested === null ? null : { ...appearanceOf(existing), ...requested }
+    if (ownedAppearance !== null && !isAppearance(ownedAppearance)) return false
     const next = { ...existing, appearance: ownedAppearance }
     let revision = existing.revision
     if (!isPendingImage(existing)) {
@@ -1656,7 +1661,8 @@ export const setOwnsGroup = async (
       }
       revision = committed
     }
-    if (appearanceKey(appearanceOf(existing)) !== appearanceKey(appearanceOf(next))) clearStamped(id)
+    if (appearanceKey(appearanceOf(existing)) !== appearanceKey(appearanceOf(next)))
+      clearStamped(id)
     templates.set(id, { ...next, revision })
     notify()
     return true
@@ -1815,11 +1821,13 @@ const appearanceKey = (a: Appearance): string => a.hiddenColours.join(',')
 export const stampTile = (
   template: PlacedTemplate,
   tileKey: string,
-  appearance: Appearance,
+  requestedAppearance: Readonly<Partial<Appearance>> | null,
   _targetWidth = TILE_SIZE,
 ): TileLevels | undefined => {
   const source = template.tiles.get(tileKey)
   if (source === undefined) return undefined
+  const appearance = { ...appearanceOf(template), ...(requestedAppearance ?? {}) }
+  if (!isAppearance(appearance)) return source
   const cacheKey = `${template.id}|${tileKey}`
   if (appearance.hiddenColours.length === 0) {
     cancelPendingStamp(cacheKey)
@@ -1931,16 +1939,12 @@ const buildStamp = async (
     }
   }
   if (!isCurrent()) return null
-  try {
-    const bitmap = await createImageBitmap(new ImageData(rgba, TILE_SIZE, TILE_SIZE))
-    if (!isCurrent()) {
-      bitmap.close()
-      return null
-    }
-    return { levels: [bitmap] }
-  } catch (error) {
-    throw error
+  const bitmap = await createImageBitmap(new ImageData(rgba, TILE_SIZE, TILE_SIZE))
+  if (!isCurrent()) {
+    bitmap.close()
+    return null
   }
+  return { levels: [bitmap] }
 }
 
 /**

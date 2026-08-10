@@ -90,7 +90,7 @@ describe('assembleManifest', () => {
     await sql.insertTemplateVersion(
       version('01890f3a-6b7c-7def-8123-4560000000c1', '01890f3a-6b7c-7def-8123-4560000000c2', 0),
     )
-    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000c1', createdAt)
+    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000c1', createdAt, createdAt)
     const torn = {
       listNodes: sql.listNodes.bind(sql),
       listManifestTemplates: sql.listManifestTemplates.bind(sql),
@@ -116,7 +116,7 @@ describe('assembleManifest', () => {
     await sql.insertTemplateVersion(
       version('01890f3a-6b7c-7def-8123-4560000000d1', '01890f3a-6b7c-7def-8123-4560000000d2', 0),
     )
-    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000d1', createdAt)
+    await sql.setTemplatePublishedAt('01890f3a-6b7c-7def-8123-4560000000d1', createdAt, createdAt)
     const torn = {
       listNodes: async () => [],
       listManifestTemplates: sql.listManifestTemplates.bind(sql),
@@ -168,8 +168,8 @@ describe('assembleManifest', () => {
     const templateB = '01890f3a-6b7c-7def-8123-4560000000b1'
     await sql.insertTemplateVersion(overlapping(templateA, '01890f3a-6b7c-7def-8123-4560000000a2'))
     await sql.insertTemplateVersion(overlapping(templateB, '01890f3a-6b7c-7def-8123-4560000000b2'))
-    await sql.setTemplatePublishedAt(templateA, createdAt)
-    await sql.setTemplatePublishedAt(templateB, createdAt)
+    await sql.setTemplatePublishedAt(templateA, createdAt, createdAt)
+    await sql.setTemplatePublishedAt(templateB, createdAt, createdAt)
 
     const manifest = await assembleManifest(
       { sql },

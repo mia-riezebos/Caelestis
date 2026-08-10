@@ -46,9 +46,9 @@ import {
   type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
+  TemplateIdentityError,
   type TemplatePatch,
   type TemplateRecord,
-  TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -336,9 +336,7 @@ export class D1SqlStore implements SqlStore {
       .from(nodes)
       .where(descendants)
     if (Math.max(path.length, (deepest?.length ?? 0) + shift) > MAX_NODE_PATH_LENGTH) {
-      throw new NodePathTooLongError(
-        `move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
-      )
+      throw new NodePathTooLongError(`move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`)
     }
 
     const destination =
@@ -351,10 +349,7 @@ export class D1SqlStore implements SqlStore {
         .update(nodes)
         .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
         .where(and(eq(nodes.season, node.season), startsWithOldPrefix(sql`${oldPath} || '/'`))),
-      this.database
-        .update(nodes)
-        .set({ parentId, path: destination })
-        .where(eq(nodes.id, nodeId)),
+      this.database.update(nodes).set({ parentId, path: destination }).where(eq(nodes.id, nodeId)),
     ] as const
     try {
       await this.database.batch([statements[0], statements[1]])

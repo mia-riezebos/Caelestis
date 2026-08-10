@@ -893,7 +893,9 @@ export const ensureTilePixels = (tile: TileCoord): void => {
       if (realm === null) return
       const response = await realm.fetch.call(realm, url)
       if (!response.ok) return
-      const bitmap = await realm.createImageBitmap.call(realm, await response.blob())
+      const bitmap = (await Reflect.apply(realm.createImageBitmap, realm, [
+        await response.blob(),
+      ])) as ImageBitmap
       capture(tile, bitmap)
       count('pixels:chased a tile we missed')
     } catch (error) {
@@ -1345,7 +1347,7 @@ const installPutImageDataTaps = (
       OffscreenCanvasRenderingContext2D?: { prototype: CanvasRenderingContext2D }
     }
   ).OffscreenCanvasRenderingContext2D?.prototype
-  const prototypes = [realm.CanvasRenderingContext2D.prototype, offscreenPrototype].filter(
+  const prototypes = [realm.CanvasRenderingContext2D?.prototype, offscreenPrototype].filter(
     (prototype): prototype is CanvasRenderingContext2D => prototype !== undefined,
   )
   const hooks: InstalledValueHook[] = []
@@ -1356,7 +1358,7 @@ const installPutImageDataTaps = (
         this: CanvasRenderingContext2D,
         ...args: Parameters<CanvasRenderingContext2D['putImageData']>
       ): void {
-        return runObservedCall(
+        runObservedCall(
           () => Reflect.apply(nativePutImageData, this, args),
           () => {
             const canvas = this.canvas as { width?: number; height?: number }
@@ -1385,7 +1387,7 @@ const installPutImageDataTaps = (
         this: CanvasRenderingContext2D,
         ...args: Parameters<CanvasRenderingContext2D['clearRect']>
       ): void {
-        return runObservedCall(
+        runObservedCall(
           () => Reflect.apply(nativeClearRect, this, args),
           () => {
             const canvas = this.canvas as { width?: number; height?: number }

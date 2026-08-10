@@ -1016,8 +1016,8 @@ describe('D1SqlStore', () => {
     // that template's geometry under its own identity — wrong pixels, wrong progress denominator.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('own-node', 1, NULL, '/own', 'Own', NULL, 1);
-      INSERT INTO templates VALUES ('t-a', 'own-node', 'A', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
-      INSERT INTO templates VALUES ('t-b', 'own-node', 'B', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT INTO templates VALUES ('t-a', 'own-node', 'A', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
+      INSERT INTO templates VALUES ('t-b', 'own-node', 'B', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
       INSERT INTO template_versions VALUES ('v-a', 't-a', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(() =>
@@ -1034,7 +1034,7 @@ describe('D1SqlStore', () => {
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700);
+      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
       INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(
@@ -1064,7 +1064,9 @@ describe('D1SqlStore', () => {
       )
       expect(() =>
         d1.sqlite
-          .prepare("INSERT INTO templates VALUES ('bad-t', 'bad-node', 'T', NULL, NULL, ?, 7, 1)")
+          .prepare(
+            "INSERT INTO templates VALUES ('bad-t', 'bad-node', 'T', NULL, NULL, ?, 7, 1, 1)",
+          )
           .run(createdWithToken),
       ).toThrow(/CHECK constraint failed/)
     },
@@ -1214,7 +1216,7 @@ describe('D1SqlStore', () => {
     // cascade on contributions passing green.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('rev-node', 1, NULL, '/rev', 'Rev', NULL, 1);
-      INSERT INTO templates VALUES ('rev-t', 'rev-node', 'T', NULL, NULL, '${'a'.repeat(64)}', 7, 1);
+      INSERT INTO templates VALUES ('rev-t', 'rev-node', 'T', NULL, NULL, '${'a'.repeat(64)}', 7, 1, 1);
       INSERT INTO tile_history VALUES (9, 9, 0, 0, '7777777777777777777777777777777777777777777777777777777777777777', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7);
       INSERT INTO contributions VALUES (5, 'rev-t', 0, 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 7, 1, 1, 0);
     `)
@@ -1299,7 +1301,7 @@ describe('D1SqlStore', () => {
     await store.insertTemplateVersion(place('pub', 's1', 0, '1'.repeat(64)))
     await store.insertTemplateVersion(place('draft', 's1', 100, '2'.repeat(64)))
     await store.insertTemplateVersion(place('other', 's2', 0, '3'.repeat(64)))
-    await store.setTemplatePublishedAt('pub', millis(2_000))
+    await store.setTemplatePublishedAt('pub', millis(2_000), millis(2_000))
 
     const members = await store.listManifestTemplates(1, false)
     const admins = await store.listManifestTemplates(1, true)

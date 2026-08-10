@@ -21,9 +21,9 @@ import {
   type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
+  TemplateIdentityError,
   type TemplatePatch,
   type TemplateRecord,
-  TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -216,9 +216,7 @@ export class MemorySqlStore implements SqlStore {
       path.length,
     )
     if (longest > MAX_NODE_PATH_LENGTH) {
-      throw new NodePathTooLongError(
-        `move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
-      )
+      throw new NodePathTooLongError(`move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`)
     }
     const rewrittenPaths = new Set([path, ...rewritten.map(({ path: next }) => next)].map(foldPath))
     const taken = [...this.nodes.values()].some(

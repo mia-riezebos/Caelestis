@@ -188,7 +188,14 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     return Math.min(max, Math.max(min, value))
   }
   const hidden = Array.isArray(source.hiddenColours)
-    ? source.hiddenColours.filter((index): index is number => typeof index === 'number')
+    ? [
+        ...new Set(
+          source.hiddenColours.filter(
+            (index): index is number =>
+              Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
+          ),
+        ),
+      ].slice(0, PALETTE_SIZE)
     : []
   return {
     size: number('size', DEFAULT_APPEARANCE.size, 0.05, 2),
