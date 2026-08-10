@@ -4,8 +4,7 @@ const harness = vi.hoisted(() => ({
   canvasPixelAt: vi.fn(() => ({ x: 2, y: 3 })),
   clearLocalPreview: vi.fn(() => true),
   localTemplates: vi.fn(),
-  markPlaced: vi.fn(async () => true),
-  moveLocalTemplate: vi.fn(async () => true),
+  placeLocalTemplate: vi.fn(async () => true),
   previewLocalTemplate: vi.fn(() => true),
   removeLocalTemplate: vi.fn(async () => true),
 }))
@@ -19,8 +18,7 @@ vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
 vi.mock('./local-store.js', () => ({
   clearLocalPreview: harness.clearLocalPreview,
   localTemplates: harness.localTemplates,
-  markPlaced: harness.markPlaced,
-  moveLocalTemplate: harness.moveLocalTemplate,
+  placeLocalTemplate: harness.placeLocalTemplate,
   previewLocalTemplate: harness.previewLocalTemplate,
   removeLocalTemplate: harness.removeLocalTemplate,
 }))
@@ -101,7 +99,7 @@ describe('template placement controls', () => {
 
   it('allows only one commit while an asynchronous placement is finishing', async () => {
     let finishMove = (): void => undefined
-    harness.moveLocalTemplate.mockImplementationOnce(async () => {
+    harness.placeLocalTemplate.mockImplementationOnce(async () => {
       await new Promise<void>((resolve) => {
         finishMove = resolve
       })
@@ -115,8 +113,7 @@ describe('template placement controls', () => {
     finishMove()
     await Promise.all([first, second])
 
-    expect(harness.moveLocalTemplate).toHaveBeenCalledOnce()
-    expect(harness.markPlaced).toHaveBeenCalledOnce()
+    expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
   })
 
   it('clamps middle-click placement to the native canvas bounds', async () => {
@@ -231,20 +228,53 @@ describe('template placement controls', () => {
     } as unknown as Event)
     await Promise.resolve()
 
-    expect(harness.moveLocalTemplate).not.toHaveBeenCalled()
-    expect(harness.markPlaced).not.toHaveBeenCalled()
+    expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
   })
 
   it('recovers placement controls after a final bitmap build rejects', async () => {
-    harness.moveLocalTemplate.mockRejectedValueOnce(new Error('bitmap failed'))
+    harness.placeLocalTemplate.mockRejectedValueOnce(new Error('bitmap failed'))
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())
 
     await expect(moves.commit()).resolves.toBeUndefined()
     await expect(moves.commit()).resolves.toBeUndefined()
 
-    expect(harness.moveLocalTemplate).toHaveBeenCalledTimes(2)
-    expect(harness.markPlaced).toHaveBeenCalledOnce()
+    expect(harness.placeLocalTemplate).toHaveBeenCalledTimes(2)
+  })
+
+  it('finishes a placement whose template was deleted while Apply was pending', async () => {
+    harness.placeLocalTemplate.mockResolvedValueOnce(false)
+    const active = harness.localTemplates()
+    harness.localTemplates.mockClear()
+    harness.localTemplates.mockReturnValueOnce(active).mockReturnValueOnce([])
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+    movebar = { remove: vi.fn() }
+
+    await moves.commit()
+
+    expect(finished).toHaveBeenCalledOnce()
+    expect(movebar.remove).toHaveBeenCalledOnce()
+  })
+
+  it('finishes Cancel when the active template was already deleted', async () => {
+    const active = harness.localTemplates()
+    harness.localTemplates.mockClear()
+    harness.localTemplates
+      .mockReturnValueOnce(active)
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([])
+    harness.clearLocalPreview.mockReturnValueOnce(false)
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+    movebar = { remove: vi.fn() }
+
+    await moves.abort()
+
+    expect(finished).toHaveBeenCalledOnce()
+    expect(movebar.remove).toHaveBeenCalledOnce()
   })
 
   it('reverts an existing template to its original placement on cancel', async () => {
@@ -254,7 +284,7 @@ describe('template placement controls', () => {
     await moves.abort()
 
     expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
-    expect(harness.moveLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
     expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
   })
 
@@ -277,6 +307,6 @@ describe('template placement controls', () => {
     await moves.abort()
 
     expect(harness.removeLocalTemplate).toHaveBeenCalledWith('test')
-    expect(harness.moveLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
   })
 })

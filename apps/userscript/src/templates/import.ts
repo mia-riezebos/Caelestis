@@ -1,5 +1,6 @@
 import {
   latLngToCanvasPixel,
+  MAX_MERCATOR_LATITUDE,
   PALETTE_RGB,
   TILE_SIZE,
   TRANSPARENT_INDEX,
@@ -228,7 +229,9 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
     typeof north !== 'number' ||
     typeof west !== 'number' ||
     !Number.isFinite(north) ||
-    !Number.isFinite(west)
+    !Number.isFinite(west) ||
+    north < -MAX_MERCATOR_LATITUDE ||
+    north > MAX_MERCATOR_LATITUDE
   ) {
     warn('install', 'skipping .wplace template: invalid geographic bounds')
     return []
@@ -313,10 +316,8 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       continue
     }
     const entry = entryValue
-    const parts = (typeof entry.coords === 'string' ? entry.coords : '')
-      .split(',')
-      .map((part) => Number(part.trim()))
-    if (parts.length !== 4 || !validMarbleCoords(parts)) {
+    const parts = parseMarbleCoords(typeof entry.coords === 'string' ? entry.coords : '', ',')
+    if (parts === null) {
       warn('install', `skipping Marble template "${key}": unreadable coords`, entry.coords)
       continue
     }
@@ -345,8 +346,8 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     let decodedPixels = 0
     const seenCoordinates = new Set<string>()
     for (const [tileKey, base64Value] of pieces) {
-      const coords = tileKey.split(/[,\s]+/).map(Number)
-      if (coords.length !== 4 || !validMarbleCoords(coords)) {
+      const coords = parseMarbleCoords(tileKey, /[,\s]+/)
+      if (coords === null) {
         warn('install', `skipping Marble template "${key}": unreadable tile coords`, tileKey)
         malformed = true
         break
@@ -542,6 +543,16 @@ const validMarbleCoords = (parts: readonly number[]): boolean => {
     pixelY >= 0 &&
     pixelY < TILE_SIZE
   )
+}
+
+const parseMarbleCoords = (
+  value: string,
+  separator: string | RegExp,
+): [number, number, number, number] | null => {
+  const raw = value.trim().split(separator)
+  if (raw.length !== 4 || raw.some((part) => !/^-?\d+$/.test(part.trim()))) return null
+  const parts = raw.map((part) => Number(part.trim()))
+  return validMarbleCoords(parts) ? (parts as [number, number, number, number]) : null
 }
 
 const marbleSortOrder = (key: string, fallback: number): number => {

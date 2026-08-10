@@ -83,13 +83,15 @@ describe('local template persistence', () => {
     expect(database.close).toHaveBeenCalledOnce()
   })
 
-  it('waits for durable deletes and returns loaded records', async () => {
+  it('waits for durable deletes and stops loading before the aggregate pixel cap', async () => {
     const deleteRequest = {} as IDBRequest<undefined>
-    const loadRequest = {
-      result: [{ id: 'loaded', name: 'Loaded' }],
-    } as unknown as IDBRequest<unknown[]>
+    const cursor = {
+      value: { id: 'loaded', name: 'Loaded', indices: new Uint8Array([0, 1]) },
+      continue: vi.fn(),
+    }
+    const loadRequest = { result: cursor } as unknown as IDBRequest<IDBCursorWithValue | null>
     const deleteStore = { delete: vi.fn(() => deleteRequest) }
-    const loadStore = { getAll: vi.fn(() => loadRequest) }
+    const loadStore = { openCursor: vi.fn(() => loadRequest) }
     const deleteTransaction = {
       objectStore: vi.fn(() => deleteStore),
     } as unknown as IDBTransaction
@@ -120,13 +122,14 @@ describe('local template persistence', () => {
     await expect(deleting).resolves.toBe(true)
     expect(deleteStore.delete).toHaveBeenCalledWith('gone')
 
-    const loading = loadTemplates()
+    const loading = loadTemplates(64, 1)
     loadOpening.onsuccess?.(new Event('success'))
     await Promise.resolve()
     loadRequest.onsuccess?.(new Event('success'))
     loadTransaction.oncomplete?.(new Event('complete'))
 
-    await expect(loading).resolves.toEqual([{ id: 'loaded', name: 'Loaded' }])
-    expect(loadStore.getAll).toHaveBeenCalledOnce()
+    await expect(loading).resolves.toEqual([])
+    expect(loadStore.openCursor).toHaveBeenCalledOnce()
+    expect(cursor.continue).not.toHaveBeenCalled()
   })
 })

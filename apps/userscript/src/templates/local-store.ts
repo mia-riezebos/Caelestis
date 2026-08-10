@@ -1,8 +1,14 @@
-import { TILE_SIZE, TRANSPARENT_INDEX, WORLD_PIXELS, WPLACE_PALETTE } from '@wts/shared'
+import {
+  encodeIndexedPng,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+  WORLD_PIXELS,
+  WPLACE_PALETTE,
+} from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { type Appearance, anchorOffset, DEFAULT_APPEARANCE, scaleFor } from './appearance.js'
 import type { ImportedTemplate } from './import.js'
-import { deleteTemplate, loadTemplates, saveTemplate } from './persist.js'
+import { deleteTemplate, loadTemplates, type StoredTemplate, saveTemplate } from './persist.js'
 
 /**
  * Local templates, and the per-tile bitmaps the overlay actually draws.
@@ -49,7 +55,12 @@ export interface PlacedTemplate extends ImportedTemplate {
 const templates = new Map<string, PlacedTemplate>()
 const previewOrigins = new Map<string, { x: number; y: number }>()
 const deleting = new Set<string>()
+const pendingAdds = new Set<string>()
 const listeners: Array<() => void> = []
+const MAX_LOCAL_TEMPLATES = 64
+const MAX_LOCAL_INDEX_PIXELS = 64 * 1024 * 1024
+let retainedIndexPixels = 0
+let pendingIndexPixels = 0
 
 const orderedTemplates = (): PlacedTemplate[] =>
   [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
@@ -60,17 +71,31 @@ export const onLocalChange = (listener: () => void): void => {
 const notify = (): void => {
   // Mirror a summary onto the window so the dev harness can assert on placement without reaching
   // into module state. Metadata only — never the pixels.
-  ;(window as unknown as Record<string, unknown>).__wtsLocal = orderedTemplates().map((t) => ({
-    id: t.id,
-    name: t.name,
-    source: t.source,
-    originX: t.originX,
-    originY: t.originY,
-    width: t.width,
-    height: t.height,
-    tiles: t.tiles.size,
-  }))
-  for (const listener of listeners) listener()
+  try {
+    ;(window as unknown as Record<string, unknown>).__wtsLocal = orderedTemplates().map((t) => ({
+      id: t.id,
+      name: t.name,
+      source: t.source,
+      originX: t.originX,
+      originY: t.originY,
+      width: t.width,
+      height: t.height,
+      tiles: t.tiles.size,
+    }))
+  } catch (error) {
+    try {
+      warn('install', 'could not update local template diagnostics', String(error))
+    } catch {}
+  }
+  for (const listener of listeners) {
+    try {
+      listener()
+    } catch (error) {
+      try {
+        warn('install', 'local template listener failed', String(error))
+      } catch {}
+    }
+  }
 }
 
 export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
@@ -108,24 +133,37 @@ const MIN_MIP_SIZE = 125
 // painted tiles across all templates; pixel count alone does not bound a very wide, short image.
 const MAX_RETAINED_SOURCE_TILES = 24
 const MAX_SOURCE_TILES_PER_TEMPLATE = 12
+const MAX_SOURCE_TILES_DURING_REPLACEMENT =
+  MAX_RETAINED_SOURCE_TILES + MAX_SOURCE_TILES_PER_TEMPLATE
 let retainedSourceTiles = 0
+let candidateSourceTiles = 0
+let pendingSourceIncrease = 0
 
-const reserveSourceIncrease = (before: number, after: number): boolean => {
-  const increase = after - before
-  if (increase <= 0) return true
-  if (retainedSourceTiles + increase > MAX_RETAINED_SOURCE_TILES) return false
-  retainedSourceTiles += increase
+const reserveSourceTile = (): boolean => {
+  if (retainedSourceTiles + candidateSourceTiles >= MAX_SOURCE_TILES_DURING_REPLACEMENT) {
+    return false
+  }
+  candidateSourceTiles++
   return true
 }
 
-const cancelSourceIncrease = (before: number, after: number): void => {
-  const increase = after - before
-  if (increase > 0) retainedSourceTiles -= increase
+const claimSourceReplacement = (before: number, after: number): boolean => {
+  const increase = Math.max(0, after - before)
+  if (retainedSourceTiles + pendingSourceIncrease + increase > MAX_RETAINED_SOURCE_TILES) {
+    return false
+  }
+  pendingSourceIncrease += increase
+  return true
 }
 
-const finishSourceReplacement = (before: number, after: number): void => {
-  const decrease = before - after
-  if (decrease > 0) retainedSourceTiles -= decrease
+const cancelSourceClaim = (before: number, after: number): void => {
+  pendingSourceIncrease -= Math.max(0, after - before)
+}
+
+const installSourceReplacement = (before: number, after: number): void => {
+  pendingSourceIncrease -= Math.max(0, after - before)
+  retainedSourceTiles += after - before
+  candidateSourceTiles -= after
 }
 
 const closeLevels = (tile: TileLevels): void => {
@@ -134,6 +172,27 @@ const closeLevels = (tile: TileLevels): void => {
 
 const closeTiles = (tiles: ReadonlyMap<string, TileLevels>): void => {
   for (const tile of tiles.values()) closeLevels(tile)
+}
+
+const releaseCandidateTiles = (tiles: ReadonlyMap<string, TileLevels>): void => {
+  candidateSourceTiles -= tiles.size
+  closeTiles(tiles)
+}
+
+const releaseRetainedTiles = (tiles: ReadonlyMap<string, TileLevels>): void => {
+  retainedSourceTiles -= tiles.size
+  closeTiles(tiles)
+}
+
+const yieldToBrowser = async (): Promise<void> => {
+  const browserScheduler = (
+    globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }
+  ).scheduler
+  if (browserScheduler?.yield !== undefined) {
+    await browserScheduler.yield()
+    return
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
 
 const buildLevels = async (full: ImageData): Promise<ImageBitmap[]> => {
@@ -189,14 +248,109 @@ const validatePlacement = (
     throw new RangeError('template runs past the south edge')
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const normaliseAppearance = (value: unknown): Appearance => {
+  if (!isRecord(value)) return DEFAULT_APPEARANCE
+  const { shape, size, anchor, opacity, hiddenColours } = value
+  if (
+    !['full', 'square', 'circle', 'triangle'].includes(String(shape)) ||
+    typeof size !== 'number' ||
+    !Number.isFinite(size) ||
+    size < 0 ||
+    size > 1 ||
+    !['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'].includes(String(anchor)) ||
+    typeof opacity !== 'number' ||
+    !Number.isFinite(opacity) ||
+    opacity < 0 ||
+    opacity > 1 ||
+    !Array.isArray(hiddenColours) ||
+    !hiddenColours.every(
+      (index) => Number.isSafeInteger(index) && index >= 0 && index < WPLACE_PALETTE.length,
+    )
+  ) {
+    return DEFAULT_APPEARANCE
+  }
+  return {
+    shape: shape as Appearance['shape'],
+    size,
+    anchor: anchor as Appearance['anchor'],
+    opacity,
+    hiddenColours: hiddenColours as number[],
+  }
+}
+
+const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
+  if (!isRecord(value)) throw new RangeError('template record is not an object')
+  const {
+    id,
+    name,
+    source,
+    sortOrder,
+    originX,
+    originY,
+    width,
+    height,
+    indices,
+    moved,
+    opaque,
+    visible,
+    everPlaced,
+    appearance,
+  } = value
+  if (typeof id !== 'string' || id.length === 0) throw new RangeError('template id is invalid')
+  if (typeof name !== 'string') throw new RangeError('template name is invalid')
+  if (!['wplace', 'marble', 'image'].includes(String(source))) {
+    throw new RangeError('template source is invalid')
+  }
+  if (sortOrder !== undefined && !Number.isSafeInteger(sortOrder)) {
+    throw new RangeError('template sort order is invalid')
+  }
+  if (!(indices instanceof Uint8Array)) throw new RangeError('template pixels are invalid')
+  if (
+    !Number.isSafeInteger(moved) ||
+    !Number.isSafeInteger(opaque) ||
+    (moved as number) < 0 ||
+    (opaque as number) <= 0 ||
+    (moved as number) > (opaque as number) ||
+    (opaque as number) > indices.length
+  ) {
+    throw new RangeError('template pixel counts are invalid')
+  }
+  if (typeof visible !== 'boolean' || typeof everPlaced !== 'boolean') {
+    throw new RangeError('template state is invalid')
+  }
+  const normalised: StoredTemplate = {
+    id,
+    name,
+    source: source as StoredTemplate['source'],
+    originX: originX as number,
+    originY: originY as number,
+    width: width as number,
+    height: height as number,
+    indices,
+    moved: moved as number,
+    opaque: opaque as number,
+    visible,
+    everPlaced,
+    appearance: normaliseAppearance(appearance),
+    ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
+  }
+  validatePlacement(normalised)
+  return normalised
+}
+
 const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels>> => {
   validatePlacement(template)
+  await yieldToBrowser()
   const firstTileX = Math.floor(template.originX / TILE_SIZE)
   const firstTileY = Math.floor(template.originY / TILE_SIZE)
   const lastTileX = Math.floor((template.originX + template.width - 1) / TILE_SIZE)
   const lastTileY = Math.floor((template.originY + template.height - 1) / TILE_SIZE)
 
   const out = new Map<string, TileLevels>()
+  let scanWork = 0
   try {
     for (let tileY = firstTileY; tileY <= lastTileY; tileY++) {
       for (let tileX = firstTileX; tileX <= lastTileX; tileX++) {
@@ -226,19 +380,34 @@ const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels
             rgba[target + 2] = colour.rgb[2]
             rgba[target + 3] = 255
           }
+          scanWork += endX - startX
+          if (scanWork >= 250_000) {
+            scanWork = 0
+            await yieldToBrowser()
+          }
         }
         if (rgba === null) continue
         if (out.size >= MAX_SOURCE_TILES_PER_TEMPLATE) {
           throw new RangeError('template covers too many painted tiles to render safely')
         }
-        out.set(`${tileX}/${tileY}`, {
-          levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
-        })
+        // Reserve before allocating the chain. Existing replacement tiles remain counted until
+        // the atomic swap closes them, so the cap covers the actual old-plus-new peak.
+        if (!reserveSourceTile()) {
+          throw new RangeError('local templates exceed the source bitmap memory budget')
+        }
+        try {
+          out.set(`${tileX}/${tileY}`, {
+            levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
+          })
+        } catch (error) {
+          candidateSourceTiles--
+          throw error
+        }
       }
     }
     return out
   } catch (error) {
-    closeTiles(out)
+    releaseCandidateTiles(out)
     throw error
   }
 }
@@ -270,48 +439,76 @@ const savePlaced = async (placed: PlacedTemplate): Promise<boolean> => {
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   validatePlacement(template)
-  const tiles = await slice(template)
-  const placed: PlacedTemplate = {
-    ...template,
-    tiles,
-    visible: true,
-    everPlaced: false,
-    appearance: DEFAULT_APPEARANCE,
+  if (templates.has(template.id) || pendingAdds.has(template.id)) {
+    throw new RangeError('local template id already exists')
   }
-  if (!reserveSourceIncrease(0, tiles.size)) {
-    closeTiles(tiles)
-    throw new RangeError('local templates exceed the source bitmap memory budget')
+  if (templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES) {
+    throw new RangeError('too many local templates')
   }
-  if (!(await persist(placed))) {
-    cancelSourceIncrease(0, tiles.size)
-    closeTiles(tiles)
-    throw new Error('local template could not be saved')
+  if (retainedIndexPixels + pendingIndexPixels + template.indices.length > MAX_LOCAL_INDEX_PIXELS) {
+    throw new RangeError('local templates exceed the persisted pixel budget')
   }
-  templates.set(template.id, placed)
-  log('install', `placed ${template.name}`, { tiles: tiles.size })
-  notify()
-  return placed
+  pendingAdds.add(template.id)
+  pendingIndexPixels += template.indices.length
+  let tiles: Map<string, TileLevels> | null = null
+  try {
+    tiles = await slice(template)
+    const placed: PlacedTemplate = {
+      ...template,
+      tiles,
+      visible: true,
+      everPlaced: false,
+      appearance: DEFAULT_APPEARANCE,
+    }
+    if (!claimSourceReplacement(0, tiles.size)) {
+      releaseCandidateTiles(tiles)
+      tiles = null
+      throw new RangeError('local templates exceed the retained source bitmap budget')
+    }
+    if (!(await persist(placed))) {
+      cancelSourceClaim(0, tiles.size)
+      releaseCandidateTiles(tiles)
+      tiles = null
+      throw new Error('local template could not be saved')
+    }
+    installSourceReplacement(0, tiles.size)
+    templates.set(template.id, placed)
+    retainedIndexPixels += template.indices.length
+    log('install', `placed ${template.name}`, { tiles: tiles.size })
+    notify()
+    return placed
+  } finally {
+    pendingAdds.delete(template.id)
+    pendingIndexPixels -= template.indices.length
+  }
 }
 
 /** Rehydrate on startup, before the first frame if possible. */
 export const restoreLocalTemplates = async (): Promise<void> => {
-  const stored = await loadTemplates()
+  const stored = await loadTemplates(MAX_LOCAL_TEMPLATES, MAX_LOCAL_INDEX_PIXELS)
   let restored = 0
-  for (const template of stored) {
+  for (const rawTemplate of stored) {
     try {
       // Earlier builds could persist 0x0, non-finite, out-of-world, or fully transparent records.
       // Validate each independently so one bad legacy entry cannot prevent every good restore.
-      validatePlacement(template)
-      if (template.opaque <= 0) throw new RangeError('template has no painted pixels')
+      const template = normaliseStoredTemplate(rawTemplate)
       if (template.source === 'image' && !template.everPlaced) {
         throw new RangeError('unfinished image placement')
       }
+      if (
+        templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES ||
+        retainedIndexPixels + pendingIndexPixels + template.indices.length > MAX_LOCAL_INDEX_PIXELS
+      ) {
+        warn('install', `could not restore ${template.name}: persisted pixel budget exhausted`)
+        continue
+      }
       const tiles = template.visible ? await slice(template) : new Map<string, TileLevels>()
-      if (!reserveSourceIncrease(0, tiles.size)) {
-        closeTiles(tiles)
+      if (!claimSourceReplacement(0, tiles.size)) {
+        releaseCandidateTiles(tiles)
         warn('install', `could not restore ${template.name}: source bitmap budget exhausted`)
         continue
       }
+      installSourceReplacement(0, tiles.size)
       templates.set(template.id, {
         appearance: DEFAULT_APPEARANCE,
         ...template,
@@ -319,22 +516,24 @@ export const restoreLocalTemplates = async (): Promise<void> => {
         // tiles atomically if the user makes them visible again.
         tiles,
       })
+      retainedIndexPixels += template.indices.length
       restored++
     } catch (error) {
       // Validation failures are permanently bad records. Rendering failures are environmental
       // (unsupported canvas, allocation pressure, decoder rejection) and must never destroy data.
       try {
-        validatePlacement(template)
-        if (template.opaque <= 0) throw new RangeError('template has no painted pixels')
+        const template = normaliseStoredTemplate(rawTemplate)
         if (template.source === 'image' && !template.everPlaced) {
           throw new RangeError('unfinished image placement')
         }
         warn('install', `could not restore local template ${template.name}`, String(error))
       } catch (validationError) {
-        await deleteTemplate(template.id)
+        const id =
+          isRecord(rawTemplate) && typeof rawTemplate.id === 'string' ? rawTemplate.id : null
+        if (id !== null) await deleteTemplate(id)
         warn(
           'install',
-          `discarded invalid local template ${template.name}`,
+          `discarded invalid local template ${id ?? '(unknown)'}`,
           String(validationError),
         )
       }
@@ -347,6 +546,7 @@ export const restoreLocalTemplates = async (): Promise<void> => {
 interface MoveTarget {
   readonly originX: number
   readonly originY: number
+  readonly everPlaced: boolean
   readonly resolve: (saved: boolean) => void
   readonly reject: (error: unknown) => void
 }
@@ -374,14 +574,18 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       let tiles = existing.visible ? await slice(moved) : new Map<string, TileLevels>()
       // Pointer events can arrive much faster than a tile can be rebuilt. Do not install stale
       // intermediate work; discard it and immediately build only the newest requested position.
-      if (queue.pending !== null) {
-        closeTiles(tiles)
+      const pendingAfterSlice = queue.pending as MoveTarget | null
+      if (pendingAfterSlice !== null) {
+        if (target.everPlaced && !pendingAfterSlice.everPlaced) {
+          queue.pending = { ...pendingAfterSlice, everPlaced: true }
+        }
+        releaseCandidateTiles(tiles)
         target.resolve(true)
         continue
       }
       const current = templates.get(id)
       if (current === undefined || deleting.has(id)) {
-        closeTiles(tiles)
+        releaseCandidateTiles(tiles)
         target.resolve(false)
         continue
       }
@@ -392,25 +596,31 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
           tiles = await slice({ ...latest, originX: target.originX, originY: target.originY })
         }
         if (!latest.visible && tiles.size > 0) {
-          closeTiles(tiles)
+          releaseCandidateTiles(tiles)
           tiles = new Map<string, TileLevels>()
         }
-        if (!reserveSourceIncrease(latest.tiles.size, tiles.size)) return false
-        const next = { ...latest, originX: target.originX, originY: target.originY, tiles }
+        if (!claimSourceReplacement(latest.tiles.size, tiles.size)) return false
+        const next = {
+          ...latest,
+          originX: target.originX,
+          originY: target.originY,
+          everPlaced: latest.everPlaced || target.everPlaced,
+          tiles,
+        }
         if (!(await savePlaced(next))) {
-          cancelSourceIncrease(latest.tiles.size, tiles.size)
+          cancelSourceClaim(latest.tiles.size, tiles.size)
           return false
         }
         clearStamped(id)
         previewOrigins.delete(id)
         templates.set(id, next)
-        finishSourceReplacement(latest.tiles.size, tiles.size)
+        installSourceReplacement(latest.tiles.size, tiles.size)
         closeTiles(latest.tiles)
         notify()
         return true
       })
       if (!saved) {
-        closeTiles(tiles)
+        releaseCandidateTiles(tiles)
         warn('install', `move for ${current.name} was not saved`)
       }
       target.resolve(saved)
@@ -420,6 +630,30 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
   }
   queue.running = false
   if (queue.pending === null) moveQueues.delete(id)
+}
+
+const enqueueMove = async (
+  id: string,
+  originX: number,
+  originY: number,
+  everPlaced: boolean,
+): Promise<boolean> => {
+  const queue = moveQueues.get(id) ?? { pending: null, running: false }
+  moveQueues.set(id, queue)
+  return await new Promise<boolean>((resolve, reject) => {
+    // A not-yet-started intermediate request is superseded. Its caller does not need to wait for
+    // work that deliberately will never be applied.
+    const previous = queue.pending
+    previous?.resolve(true)
+    queue.pending = {
+      originX,
+      originY,
+      everPlaced: everPlaced || previous?.everPlaced === true,
+      resolve,
+      reject,
+    }
+    if (!queue.running) void drainMoves(id, queue)
+  })
 }
 
 /** Move a template and re-slice it, coalescing pointer updates so only the latest one wins. */
@@ -437,15 +671,7 @@ export const moveLocalTemplate = async (
     clearLocalPreview(id)
     return true
   }
-  const queue = moveQueues.get(id) ?? { pending: null, running: false }
-  moveQueues.set(id, queue)
-  return await new Promise<boolean>((resolve, reject) => {
-    // A not-yet-started intermediate request is superseded. Its caller does not need to wait for
-    // work that deliberately will never be applied.
-    queue.pending?.resolve(true)
-    queue.pending = { originX: roundedX, originY: roundedY, resolve, reject }
-    if (!queue.running) void drainMoves(id, queue)
-  })
+  return await enqueueMove(id, roundedX, roundedY, false)
 }
 
 export const markPlaced = async (id: string): Promise<boolean> => {
@@ -462,6 +688,24 @@ export const markPlaced = async (id: string): Promise<boolean> => {
   })
 }
 
+/** Persist the final origin and first-placement marker in one durable state transition. */
+export const placeLocalTemplate = async (
+  id: string,
+  originX: number,
+  originY: number,
+): Promise<boolean> => {
+  const existing = templates.get(id)
+  if (existing === undefined) return false
+  const roundedX = Math.round(originX)
+  const roundedY = Math.round(originY)
+  validatePlacement(existing, roundedX, roundedY)
+  if (existing.originX === roundedX && existing.originY === roundedY) {
+    clearLocalPreview(id)
+    return await markPlaced(id)
+  }
+  return await enqueueMove(id, roundedX, roundedY, true)
+}
+
 export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
   if (existing === undefined || deleting.has(id)) return false
@@ -473,8 +717,8 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
     const current = templates.get(id)
     if (current === undefined) return false
     if (!(await deleteTemplate(id))) return false
-    retainedSourceTiles -= current.tiles.size
-    closeTiles(current.tiles)
+    releaseRetainedTiles(current.tiles)
+    retainedIndexPixels -= current.indices.length
     clearStamped(id)
     templates.delete(id)
     notify()
@@ -497,24 +741,24 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
     const tiles = visible ? await slice(existing) : new Map<string, TileLevels>()
     const next = { ...existing, visible, tiles }
     if (deleting.has(id)) {
-      if (visible) closeTiles(tiles)
+      if (visible) releaseCandidateTiles(tiles)
       return false
     }
-    if (!reserveSourceIncrease(existing.tiles.size, tiles.size)) {
-      if (visible) closeTiles(tiles)
+    if (!claimSourceReplacement(existing.tiles.size, tiles.size)) {
+      if (visible) releaseCandidateTiles(tiles)
       warn('install', `visibility for ${next.name} exceeds the source bitmap budget`)
       return false
     }
     if (!(await savePlaced(next))) {
-      cancelSourceIncrease(existing.tiles.size, tiles.size)
-      if (visible) closeTiles(tiles)
+      cancelSourceClaim(existing.tiles.size, tiles.size)
+      if (visible) releaseCandidateTiles(tiles)
       warn('install', `visibility for ${next.name} was not saved`)
       return false
     }
     templates.set(id, next)
-    finishSourceReplacement(existing.tiles.size, tiles.size)
+    installSourceReplacement(existing.tiles.size, tiles.size)
+    closeTiles(existing.tiles)
     clearStamped(id)
-    if (!visible) closeTiles(existing.tiles)
     notify()
     return true
   })
@@ -812,20 +1056,6 @@ const buildStamp = async (
  * quantiser on the way through.
  */
 export const templateAsPng = async (template: PlacedTemplate): Promise<Blob | null> => {
-  const canvas = new OffscreenCanvas(template.width, template.height)
-  const context = canvas.getContext('2d', { colorSpace: 'srgb' })
-  if (context === null) return null
-  const rgba = new Uint8ClampedArray(template.width * template.height * 4)
-  for (let index = 0; index < template.indices.length; index++) {
-    const palette = template.indices[index] ?? TRANSPARENT_INDEX
-    if (palette === TRANSPARENT_INDEX) continue
-    const colour = WPLACE_PALETTE[palette]
-    if (colour === undefined) continue
-    rgba[index * 4] = colour.rgb[0]
-    rgba[index * 4 + 1] = colour.rgb[1]
-    rgba[index * 4 + 2] = colour.rgb[2]
-    rgba[index * 4 + 3] = 255
-  }
-  context.putImageData(new ImageData(rgba, template.width, template.height), 0, 0)
-  return await canvas.convertToBlob({ type: 'image/png' })
+  const encoded = await encodeIndexedPng(template.width, template.height, template.indices)
+  return new Blob([Uint8Array.from(encoded)], { type: 'image/png' })
 }

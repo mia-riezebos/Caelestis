@@ -80,7 +80,48 @@ export const deleteTemplate = async (id: string): Promise<boolean> => {
   return (await run('readwrite', (store) => store.delete(id))) !== null
 }
 
-export const loadTemplates = async (): Promise<readonly StoredTemplate[]> => {
-  const all = await run<StoredTemplate[]>('readonly', (store) => store.getAll())
-  return all ?? []
+export const loadTemplates = async (
+  maxTemplates = 64,
+  maxIndexPixels = 64 * 1024 * 1024,
+): Promise<readonly unknown[]> => {
+  try {
+    const db = await open()
+    try {
+      return await new Promise<readonly unknown[]>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readonly')
+        const request = transaction.objectStore(STORE).openCursor()
+        const templates: unknown[] = []
+        let indexPixels = 0
+        request.onsuccess = () => {
+          const cursor = request.result
+          if (cursor === null) return
+          const value: unknown = cursor.value
+          const pixels =
+            typeof value === 'object' &&
+            value !== null &&
+            'indices' in value &&
+            value.indices instanceof Uint8Array
+              ? value.indices.length
+              : 0
+          // Do not continue the cursor once either aggregate cap is reached. The transaction then
+          // completes naturally, while only the bounded prefix has ever been retained in memory.
+          if (templates.length >= maxTemplates || indexPixels + pixels > maxIndexPixels) return
+          templates.push(value)
+          indexPixels += pixels
+          cursor.continue()
+        }
+        request.onerror = () => reject(request.error ?? new Error('indexedDB cursor failed'))
+        transaction.oncomplete = () => resolve(templates)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+      })
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    warn('install', 'local template storage unavailable', String(error))
+    return []
+  }
 }

@@ -166,6 +166,18 @@ describe('template import', () => {
     expect(createImageBitmap).toHaveBeenCalledTimes(1)
   })
 
+  it('rejects blank Marble coordinate components before decoding tiles', async () => {
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        malformed: { coords: '10,20,,', tiles: { '10,20,0,0': 'AAAA' } },
+      },
+    })
+
+    await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
   it('skips a malformed stamped Marble template without rejecting the whole import', async () => {
     bitmapSizes.push({ width: 2, height: 3 }, { width: 3, height: 3 })
     const validStamp = new Uint8ClampedArray(3 * 3 * 4)
@@ -405,6 +417,17 @@ describe('template import', () => {
     })
 
     await expect(importFile(file('edge.wplace', contents), { x: 0, y: 0 })).resolves.toEqual([])
+  })
+
+  it('rejects latitude outside Web Mercator before decoding image data', async () => {
+    const { importFile } = await import('./import.js')
+    const contents = JSON.stringify({
+      image: { dataUrl: 'data:image/png;base64,AAAA' },
+      bounds: { north: 90, west: 0 },
+    })
+
+    await expect(importFile(file('invalid.wplace', contents), { x: 0, y: 0 })).resolves.toEqual([])
+    expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
   it('rejects an import before reading a file outside the supported size class', async () => {

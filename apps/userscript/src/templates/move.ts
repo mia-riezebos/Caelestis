@@ -5,8 +5,7 @@ import { icon } from '../ui/icons.js'
 import {
   clearLocalPreview,
   localTemplates,
-  markPlaced,
-  moveLocalTemplate,
+  placeLocalTemplate,
   previewLocalTemplate,
   removeLocalTemplate,
 } from './local-store.js'
@@ -286,11 +285,11 @@ export const commit = async (): Promise<void> => {
   finishing = true
   listen(false)
   try {
-    if (!(await moveLocalTemplate(current.id, current.x, current.y))) {
-      resumeAfterFailure('placement')
-      return
-    }
-    if (!(await markPlaced(current.id))) {
+    if (!(await placeLocalTemplate(current.id, current.x, current.y))) {
+      if (!localTemplates().some((template) => template.id === current.id)) {
+        finish()
+        return
+      }
       resumeAfterFailure('placement')
       return
     }
@@ -320,6 +319,10 @@ export const abort = async (): Promise<void> => {
         ? await removeLocalTemplate(current.id)
         : clearLocalPreview(current.id)
     if (!saved) {
+      if (!localTemplates().some((candidate) => candidate.id === current.id)) {
+        finish()
+        return
+      }
       resumeAfterFailure('revert')
       return
     }

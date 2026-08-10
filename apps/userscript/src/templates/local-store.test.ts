@@ -1,4 +1,4 @@
-import { WORLD_PIXELS } from '@wts/shared'
+import { decodePng, WORLD_PIXELS, WPLACE_PALETTE } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ImportedTemplate } from './import.js'
 import type { PlacedTemplate, TileLevels } from './local-store.js'
@@ -203,6 +203,54 @@ describe('local template lifecycle', () => {
     })
   })
 
+  it('normalises malformed persisted appearance without poisoning rendering', async () => {
+    persistence.loadTemplates.mockResolvedValueOnce([
+      {
+        ...template({ id: 'styled', source: 'marble' }),
+        visible: false,
+        everPlaced: true,
+        appearance: { shape: 'circle', hiddenColours: null },
+      },
+    ])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates()[0]?.appearance).toMatchObject({
+      shape: 'full',
+      hiddenColours: [],
+    })
+    expect(persistence.deleteTemplate).not.toHaveBeenCalled()
+  })
+
+  it('discards irreparable persisted runtime shapes independently', async () => {
+    persistence.loadTemplates.mockResolvedValueOnce([
+      { ...template({ id: 'bad', source: 'unknown' as never }), visible: true, everPlaced: true },
+      { ...template({ id: 'good', source: 'marble' }), visible: false, everPlaced: true },
+    ])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates().map(({ id }) => id)).toEqual(['good'])
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad')
+  })
+
+  it('bounds restored template cardinality even if persistence returns extra records', async () => {
+    persistence.loadTemplates.mockResolvedValueOnce(
+      Array.from({ length: 65 }, (_, id) => ({
+        ...template({ id: `stored-${id}`, source: 'marble' }),
+        visible: false,
+        everPlaced: true,
+      })),
+    )
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates()).toHaveLength(64)
+  })
+
   it('does not resolve an add until its IndexedDB write is durable', async () => {
     let finishSave = (_value: boolean): void => undefined
     persistence.saveTemplate.mockImplementationOnce(
@@ -223,6 +271,44 @@ describe('local template lifecycle', () => {
     finishSave(true)
     await added
     expect(settled).toBe(true)
+  })
+
+  it('isolates page-global and listener failures after a durable mutation', async () => {
+    Object.defineProperty(window, '__wtsLocal', { value: [], writable: false, configurable: true })
+    const store = await import('./local-store.js')
+    store.onLocalChange(() => {
+      throw new Error('observer failed')
+    })
+
+    await expect(store.addLocalTemplate(template())).resolves.toMatchObject({ id: 'local-test' })
+
+    expect(store.localTemplates()).toHaveLength(1)
+    expect(persistence.saveTemplate).toHaveBeenCalledOnce()
+  })
+
+  it('persists final origin and first-placement state atomically', async () => {
+    const store = await import('./local-store.js')
+    await store.addLocalTemplate(template())
+    persistence.saveTemplate.mockClear()
+
+    await expect(store.placeLocalTemplate('local-test', 30, 40)).resolves.toBe(true)
+
+    expect(persistence.saveTemplate).toHaveBeenCalledOnce()
+    expect(persistence.saveTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ originX: 30, originY: 40, everPlaced: true }),
+    )
+  })
+
+  it('yields while scanning a large sparse source tile', async () => {
+    const browserYield = vi.fn(async () => undefined)
+    vi.stubGlobal('scheduler', { yield: browserYield })
+    const indices = new Uint8Array(1_000_000).fill(63)
+    indices[indices.length - 1] = 0
+    const store = await import('./local-store.js')
+
+    await store.addLocalTemplate(template({ width: 1_000, height: 1_000, indices, opaque: 1 }))
+
+    expect(browserYield.mock.calls.length).toBeGreaterThanOrEqual(4)
   })
 
   it('keeps drag previews transient without reslicing or writing', async () => {
@@ -340,6 +426,8 @@ describe('local template lifecycle', () => {
       }),
     )
 
+    await expect(store.moveLocalTemplate('first', 1_000, 0)).resolves.toBe(true)
+
     await expect(
       store.addLocalTemplate(
         template({
@@ -352,8 +440,31 @@ describe('local template lifecycle', () => {
           opaque: 1,
         }),
       ),
-    ).rejects.toThrow(/bitmap memory budget/i)
+    ).rejects.toThrow(/source bitmap budget/i)
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['first', 'second'])
+  })
+
+  it('bounds overlapping source builds before concurrent imports can commit', async () => {
+    const store = await import('./local-store.js')
+    const results = await Promise.allSettled(
+      ['first', 'second', 'third'].map((id, row) =>
+        store.addLocalTemplate(
+          template({
+            id,
+            originX: 0,
+            originY: row * 2,
+            width: 12_000,
+            height: 1,
+            indices: new Uint8Array(12_000),
+            opaque: 12_000,
+          }),
+        ),
+      ),
+    )
+
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(2)
+    expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1)
+    expect(store.localTemplates()).toHaveLength(2)
   })
 
   it('rejects one template before it can retain more than twelve source tiles', async () => {
@@ -623,13 +734,17 @@ describe('local template lifecycle', () => {
     expect(store.stampTile(placed, '0/0', placed.appearance)).toBeUndefined()
   })
 
-  it('exports the quantised pixels through an explicit sRGB canvas', async () => {
+  it('exports the exact quantised indices without a browser canvas allocation', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
 
     const png = await store.templateAsPng(added)
 
     expect(png?.type).toBe('image/png')
-    expect(contextOptions).toContainEqual({ colorSpace: 'srgb' })
+    if (png === null) throw new Error('expected PNG')
+    const decoded = await decodePng(new Uint8Array(await png.arrayBuffer()))
+    expect(decoded).toMatchObject({ width: 1, height: 1 })
+    expect(decoded.pixels).toEqual(new Uint8Array([...(WPLACE_PALETTE[0]?.rgb ?? []), 255]))
+    expect(contextOptions).not.toContainEqual({ colorSpace: 'srgb' })
   })
 })
