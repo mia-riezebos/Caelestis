@@ -618,6 +618,100 @@ describe('transparent browser hooks', () => {
     expect(counters.get('draw:not-raster-program')).toBe(1)
   })
 
+  it('preserves WebGL1 framebuffer state after an invalid undefined target', async () => {
+    let nativeFramebuffer: object | null = null
+    let invalidBindingQueries = 0
+    const nativeFramebuffers = new WeakSet<object>()
+    const fakeGl = {
+      TEXTURE0: 0x84c0,
+      TEXTURE_2D: 0x0de1,
+      TEXTURE_BINDING_2D: 0x8069,
+      FRAMEBUFFER: 0x8d40,
+      FRAMEBUFFER_BINDING: 0x8ca6,
+      COLOR_BUFFER_BIT: 0x4000,
+      DEPTH_BUFFER_BIT: 0x0100,
+      STENCIL_BUFFER_BIT: 0x0400,
+      SCISSOR_TEST: 0x0c11,
+      MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
+      CURRENT_PROGRAM: 0x8b8d,
+      getParameter: vi.fn((parameter: number | undefined) => {
+        if (parameter === undefined) {
+          invalidBindingQueries++
+          return null
+        }
+        if (parameter === 0x8b4d) return 2
+        if (parameter === 0x8ca6) return nativeFramebuffer
+        return null
+      }),
+      getUniformLocation: vi.fn(() => null),
+      useProgram: vi.fn(),
+      uniform1i: vi.fn(),
+      uniformMatrix4fv: vi.fn(),
+      activeTexture: vi.fn(),
+      createTexture: vi.fn(() => ({})),
+      bindTexture: vi.fn(),
+      deleteTexture: vi.fn(),
+      texSubImage2D: vi.fn(),
+      texImage2D: vi.fn(),
+      drawArrays: vi.fn(),
+      drawElements: vi.fn(),
+      createFramebuffer: vi.fn(() => {
+        const framebuffer = {}
+        nativeFramebuffers.add(framebuffer)
+        return framebuffer
+      }),
+      bindFramebuffer: vi.fn((target: number, framebuffer?: object | null) => {
+        if (target !== 0x8d40) return
+        const normalized = framebuffer ?? null
+        if (normalized === null || nativeFramebuffers.has(normalized))
+          nativeFramebuffer = normalized
+      }),
+      deleteFramebuffer: vi.fn(),
+      enable: vi.fn(),
+      disable: vi.fn(),
+      colorMask: vi.fn(),
+      clear: vi.fn(),
+    }
+    class FakeCanvas extends EventTarget {
+      width = 1_000
+      height = 1_000
+      isConnected = true
+      readonly classList = { contains: (name: string) => name === 'maplibregl-canvas' }
+      getContext(_type?: string): typeof fakeGl {
+        return fakeGl
+      }
+    }
+    const realm = {
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: globalThis.fetch,
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+      Float32Array,
+    } as unknown as Window & typeof globalThis
+    const frames: TileFrame[] = []
+    onTileFrame((frame) => frames.push(frame))
+    const nativeBindFramebuffer = fakeGl.bindFramebuffer
+    install(realm, () => null)
+    const gl = new FakeCanvas().getContext('webgl') as unknown as WebGLRenderingContext
+    expect(gl.bindFramebuffer).not.toBe(nativeBindFramebuffer)
+    const framebuffer = gl.createFramebuffer()
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
+
+    counters.clear()
+    Reflect.apply(gl.bindFramebuffer, gl, [undefined, null])
+    gl.drawArrays(0, 0, 1)
+    await Promise.resolve()
+
+    expect(invalidBindingQueries).toBe(0)
+    expect(counters.get('draw:not-raster-program')).toBeUndefined()
+    expect(frames).toEqual([])
+  })
+
   it('preserves receivers for every wrapped WebGL method', () => {
     const receivers: Array<{ method: string; receiver: unknown }> = []
     const native = (method: string, result?: unknown) =>
@@ -638,7 +732,9 @@ describe('transparent browser hooks', () => {
       MAX_COMBINED_TEXTURE_IMAGE_UNITS: 0x8b4d,
       getParameter: vi.fn(() => 2),
       getUniformLocation: native('getUniformLocation', 1),
+      createProgram: native('createProgram', {}),
       useProgram: native('useProgram'),
+      deleteProgram: native('deleteProgram'),
       uniform1i: native('uniform1i'),
       uniformMatrix4fv: native('uniformMatrix4fv'),
       activeTexture: native('activeTexture'),
@@ -700,7 +796,9 @@ describe('transparent browser hooks', () => {
     const other = {} as WebGL2RenderingContext
     const calls: Array<[keyof WebGL2RenderingContext, unknown[]]> = [
       ['getUniformLocation', [{}, 'name']],
+      ['createProgram', []],
       ['useProgram', [null]],
+      ['deleteProgram', [null]],
       ['uniform1i', [null, 0]],
       ['uniformMatrix4fv', [null, false, new Float32Array(16)]],
       ['activeTexture', [gl.TEXTURE0]],
@@ -806,6 +904,7 @@ describe('transparent browser hooks', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const locations = new WeakMap<object, Map<string, object>>()
     let nativeProgram: object | null = null
+    const nativePrograms = new WeakSet<object>()
     let nativeDrawFramebuffer: object | null = null
     let nativeFramebuffers = new WeakSet<object>()
     let nativeActiveTexture = 0x84c0
@@ -841,8 +940,18 @@ describe('transparent browser hooks', () => {
         programLocations.set(name, location)
         return location
       }),
+      createProgram: vi.fn(() => {
+        const program = {}
+        nativePrograms.add(program)
+        return program
+      }),
       useProgram: vi.fn((program: object | null) => {
-        if (program !== rejectedProgram) nativeProgram = program
+        if (program === null || (program !== rejectedProgram && nativePrograms.has(program))) {
+          nativeProgram = program
+        }
+      }),
+      deleteProgram: vi.fn((program: object | null) => {
+        if (program !== null) nativePrograms.delete(program)
       }),
       uniform1i: vi.fn(),
       uniformMatrix4fv: vi.fn(),
@@ -927,12 +1036,20 @@ describe('transparent browser hooks', () => {
     install(realm, () => null)
     canvas.getContext('webgl2')
     const gl = fakeGl as unknown as WebGL2RenderingContext
-    const rasterProgram = {} as WebGLProgram
-    const otherProgram = {} as WebGLProgram
-    gl.useProgram(rasterProgram)
+    const rasterProgram = gl.createProgram()
+    const otherProgram = gl.createProgram()
+    if (rasterProgram === null || otherProgram === null) {
+      throw new Error('fake program creation must succeed')
+    }
     const image0 = gl.getUniformLocation(rasterProgram, 'u_image0')
     const projection = gl.getUniformLocation(rasterProgram, 'u_projection_matrix')
     if (image0 === null || projection === null) throw new Error('fake raster locations must exist')
+    const currentProgramQueries = (): number =>
+      fakeGl.getParameter.mock.calls.filter(([parameter]) => parameter === fakeGl.CURRENT_PROGRAM)
+        .length
+    const queriesBeforeRasterBind = currentProgramQueries()
+    gl.useProgram(rasterProgram)
+    expect(currentProgramQueries()).toBe(queriesBeforeRasterBind)
     gl.uniform1i(image0, 0)
 
     const bitmapFor = async (x: number): Promise<ImageBitmap> => {
@@ -976,9 +1093,11 @@ describe('transparent browser hooks', () => {
     expect(frames).toHaveLength(1)
     expect(frames[0]?.quads[0]?.tile).toEqual({ x: 3, y: 4 })
 
-    gl.useProgram(otherProgram)
     const otherProjection = gl.getUniformLocation(otherProgram, 'u_projection_matrix')
     if (otherProjection === null) throw new Error('fake secondary location must exist')
+    const queriesBeforeOtherBind = currentProgramQueries()
+    gl.useProgram(otherProgram)
+    expect(currentProgramQueries()).toBe(queriesBeforeOtherBind)
     gl.uniformMatrix4fv(otherProjection, false, new Float32Array(tileMatrix(0.5, 0.5, 0.5)))
     gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
@@ -991,6 +1110,11 @@ describe('transparent browser hooks', () => {
 
     expect(frames).toHaveLength(3)
     expect(frames[2]?.quads[0]).toEqual(frames[0]?.quads[0])
+
+    gl.deleteProgram(otherProgram)
+    const queriesBeforeDeletedBind = currentProgramQueries()
+    gl.useProgram(otherProgram)
+    expect(currentProgramQueries()).toBe(queriesBeforeDeletedBind + 1)
 
     // INVALID_ENUM leaves the native active unit unchanged. The mirror must not drift onto an
     // unbounded bogus key and attribute the following valid bind/upload to the wrong unit.
@@ -1061,7 +1185,9 @@ describe('transparent browser hooks', () => {
     expect(frames).toHaveLength(12)
     expect(frames[11]?.quads[0]?.tile).toEqual({ x: 7, y: 4 })
 
+    const queriesBeforeRejectedBind = currentProgramQueries()
     gl.useProgram(rejectedProgram as WebGLProgram)
+    expect(currentProgramQueries()).toBe(queriesBeforeRejectedBind + 1)
     gl.drawElements(0, 1, 0, 0)
     await Promise.resolve()
     expect(frames).toHaveLength(13)

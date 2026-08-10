@@ -956,6 +956,7 @@ export const install = (
       const uniforms = new WeakMap<WebGLUniformLocation, UniformIdentity>()
       const primarySamplerUnits = new WeakMap<WebGLProgram, number>()
       const projectionByProgram = new WeakMap<WebGLProgram, ArrayLike<number>>()
+      let programs = new WeakSet<WebGLProgram>()
       const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
@@ -984,6 +985,9 @@ export const install = (
             },
             () => {
               if (this !== gl || location === null) return
+              // A successful location proves the program belongs to this context. This also covers
+              // programs created before instrumentation without adding a synchronous query later.
+              programs.add(program)
               uniforms.set(location, { program, name })
               // WebGL sampler uniforms default to texture unit zero. Remember that before the first
               // explicit upload too: wrappers such as MapLibre cache uniforms and may not set one again.
@@ -995,6 +999,24 @@ export const install = (
         },
       }.getUniformLocation
 
+      const nativeCreateProgram = gl.createProgram
+      if (typeof nativeCreateProgram === 'function') {
+        hookedGl.createProgram = {
+          createProgram(this: WebGL2RenderingContext): WebGLProgram {
+            let created: WebGLProgram | undefined
+            return runObservedCall(
+              () => {
+                created = nativeCreateProgram.call(this)
+                return created
+              },
+              () => {
+                if (this === gl && created !== undefined) programs.add(created)
+              },
+            )
+          },
+        }.createProgram
+      }
+
       const nativeUseProgram = gl.useProgram
       hookedGl.useProgram = {
         useProgram(this: WebGL2RenderingContext, program: WebGLProgram | null) {
@@ -1002,6 +1024,16 @@ export const install = (
             () => nativeUseProgram.call(this, program),
             () => {
               if (this !== gl) return
+              if (program === null || program === undefined) {
+                activeProgram = null
+                return
+              }
+              if (programs.has(program)) {
+                activeProgram = program
+                return
+              }
+              // Only pre-hook, foreign, or deleted objects need a synchronous state query. Programs
+              // created or successfully inspected on this context stay on the WeakSet fast path.
               const accepted = nativeGetParameter.call(gl, gl.CURRENT_PROGRAM)
               if (accepted === null || typeof accepted === 'object') {
                 activeProgram = accepted as WebGLProgram | null
@@ -1010,6 +1042,20 @@ export const install = (
           )
         },
       }.useProgram
+
+      const nativeDeleteProgram = gl.deleteProgram
+      if (typeof nativeDeleteProgram === 'function') {
+        hookedGl.deleteProgram = {
+          deleteProgram(this: WebGL2RenderingContext, program: WebGLProgram | null) {
+            return runObservedCall(
+              () => nativeDeleteProgram.call(this, program),
+              () => {
+                if (this === gl && program !== null) programs.delete(program)
+              },
+            )
+          },
+        }.deleteProgram
+      }
 
       const nativeUniform1i = gl.uniform1i
       hookedGl.uniform1i = {
@@ -1251,6 +1297,12 @@ export const install = (
       }.createFramebuffer
 
       let drawFramebuffer: WebGLFramebuffer | null = null
+      const drawFramebufferTarget =
+        typeof gl.DRAW_FRAMEBUFFER === 'number' ? gl.DRAW_FRAMEBUFFER : null
+      const drawFramebufferBinding =
+        typeof gl.DRAW_FRAMEBUFFER_BINDING === 'number'
+          ? gl.DRAW_FRAMEBUFFER_BINDING
+          : gl.FRAMEBUFFER_BINDING
       let scissorEnabled = false
       let colorWriteMask: [boolean, boolean, boolean, boolean] = [true, true, true, true]
       const validClearMask = gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT
@@ -1291,7 +1343,10 @@ export const install = (
             () => nativeBindFramebuffer.call(this, target, framebuffer),
             () => {
               if (this !== gl) return
-              if (target === gl.FRAMEBUFFER || target === gl.DRAW_FRAMEBUFFER) {
+              if (
+                target === gl.FRAMEBUFFER ||
+                (drawFramebufferTarget !== null && target === drawFramebufferTarget)
+              ) {
                 // WebIDL treats an explicit undefined as null. Known same-context objects are the
                 // ordinary MapLibre path and need no synchronous state query.
                 if (framebuffer === null || framebuffer === undefined) {
@@ -1302,7 +1357,7 @@ export const install = (
                   // An object created before instrumentation may be valid; a foreign or deleted one
                   // is rejected without throwing. Query only this unusual path so normal frame binds
                   // never pay for a synchronous getParameter call.
-                  const accepted = nativeGetParameter.call(gl, gl.DRAW_FRAMEBUFFER_BINDING)
+                  const accepted = nativeGetParameter.call(gl, drawFramebufferBinding)
                   if (accepted === null || typeof accepted === 'object') {
                     drawFramebuffer = accepted as WebGLFramebuffer | null
                     if (accepted === framebuffer) framebuffers.add(framebuffer)
@@ -1492,6 +1547,7 @@ export const install = (
             frameDraws = 0
             frameTileDraws = 0
             activeProgram = null
+            programs = new WeakSet<WebGLProgram>()
             activeTextureUnit = gl.TEXTURE0
             textures = new WeakSet<WebGLTexture>()
             texture2DByUnit.clear()
