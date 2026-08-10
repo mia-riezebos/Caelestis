@@ -49,9 +49,17 @@ export const navigateTo = (target: NavigateTarget): void => {
   const map = getMap()
 
   if (map !== null) {
-    log('install', 'flying', { lat, lng, zoom })
-    map.flyTo({ center: [lng, lat], zoom })
-    return
+    try {
+      if (map.getCanvas().isConnected) {
+        log('install', 'flying', { lat, lng, zoom })
+        map.flyTo({ center: [lng, lat], zoom })
+        return
+      }
+      log('install', 'captured map is detached, falling back to the URL')
+    } catch (error) {
+      // MapLibre can be torn down between the connectivity check and flyTo during an SPA remount.
+      log('install', 'captured map failed, falling back to the URL', String(error))
+    }
   }
 
   // No map handle: fall back to the URL. This reloads, which is only survivable because local

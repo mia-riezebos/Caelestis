@@ -117,4 +117,26 @@ describe('warn', () => {
     expect(() => log('draw', 'circular payload', circular)).not.toThrow()
     expect(() => warn('install', 'warning sink failed')).not.toThrow()
   })
+
+  it('does not retain attacker-sized messages or nested payloads in the event ring', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    vi.stubGlobal('window', { Object })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    installDebugApi()
+    const huge = 'x'.repeat(1_000_000)
+
+    warn('install', huge, { coords: huge })
+
+    const api = (window as unknown as Record<string, unknown>).__wts as {
+      events: () => Array<{ message: string; data: { coords: string } }>
+    }
+    const entry = api.events().at(-1)
+    expect(entry?.message.length).toBeLessThanOrEqual(512)
+    expect(entry?.data.coords.length).toBeLessThanOrEqual(512)
+    expect(consoleWarn).toHaveBeenCalledOnce()
+  })
 })

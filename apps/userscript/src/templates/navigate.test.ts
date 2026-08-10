@@ -2,7 +2,12 @@ import { WORLD_PIXELS } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { centreOf, navigateTo } from './navigate.js'
 
-const map = vi.hoisted(() => ({ current: null as { flyTo: ReturnType<typeof vi.fn> } | null }))
+const map = vi.hoisted(() => ({
+  current: null as {
+    flyTo: ReturnType<typeof vi.fn>
+    getCanvas: () => { isConnected: boolean }
+  } | null,
+}))
 
 vi.mock('../map-handle.js', () => ({ getMap: () => map.current }))
 vi.mock('../debug.js', () => ({ log: vi.fn() }))
@@ -32,7 +37,7 @@ describe('template navigation', () => {
 
   it('flies in-page and respects the zoom floor for a world-scale target', () => {
     const flyTo = vi.fn()
-    map.current = { flyTo }
+    map.current = { flyTo, getCanvas: () => ({ isConnected: true }) }
 
     navigateTo({
       x: WORLD_PIXELS / 2,
@@ -46,7 +51,7 @@ describe('template navigation', () => {
 
   it('respects the zoom ceiling for a single-pixel target', () => {
     const flyTo = vi.fn()
-    map.current = { flyTo }
+    map.current = { flyTo, getCanvas: () => ({ isConnected: true }) }
 
     navigateTo({ x: WORLD_PIXELS / 2, y: WORLD_PIXELS / 2, width: 1, height: 1 })
 
@@ -60,5 +65,24 @@ describe('template navigation', () => {
     expect(window.location.href).toContain('lat=0.0000000')
     expect(window.location.href).toContain('lng=0.0000000')
     expect(window.location.href).toContain('zoom=13.00')
+  })
+
+  it.each([
+    ['detached', { flyTo: vi.fn(), getCanvas: () => ({ isConnected: false }) }],
+    [
+      'throwing',
+      {
+        flyTo: vi.fn(() => {
+          throw new Error('map removed')
+        }),
+        getCanvas: () => ({ isConnected: true }),
+      },
+    ],
+  ])('falls back to the URL for a %s captured map', (_name, staleMap) => {
+    map.current = staleMap
+
+    navigateTo({ x: WORLD_PIXELS / 2, y: WORLD_PIXELS / 2 })
+
+    expect(window.location.href).toContain('lat=0.0000000')
   })
 })

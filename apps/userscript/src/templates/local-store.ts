@@ -56,6 +56,8 @@ export interface PlacedTemplate extends ImportedTemplate {
   /** How this one is drawn. Per-overlay, because the right opacity for a dense mural and a thin
    *  outline are not the same number. */
   readonly appearance: Appearance
+  /** IndexedDB compare-and-swap token; not part of template identity or rendering. */
+  readonly revision: number
 }
 
 const templates = new Map<string, PlacedTemplate>()
@@ -305,6 +307,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     visible,
     everPlaced,
     appearance,
+    revision,
   } = value
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) {
     throw new RangeError('template id is invalid')
@@ -332,6 +335,9 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   if (typeof visible !== 'boolean' || typeof everPlaced !== 'boolean') {
     throw new RangeError('template state is invalid')
   }
+  if (revision !== undefined && (!Number.isSafeInteger(revision) || (revision as number) < 0)) {
+    throw new RangeError('template revision is invalid')
+  }
   const normalised: StoredTemplate = {
     id,
     name,
@@ -345,6 +351,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     opaque: opaque as number,
     visible,
     everPlaced,
+    revision: revision === undefined ? 0 : (revision as number),
     appearance: normaliseAppearance(appearance),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
@@ -436,10 +443,10 @@ const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels
   }
 }
 
-const writeTails = new Map<string, Promise<boolean>>()
+const writeTails = new Map<string, Promise<unknown>>()
 
-const writeInOrder = (id: string, write: () => Promise<boolean>): Promise<boolean> => {
-  const previous = writeTails.get(id) ?? Promise.resolve(true)
+const writeInOrder = <T>(id: string, write: () => Promise<T>): Promise<T> => {
+  const previous = writeTails.get(id) ?? Promise.resolve()
   const next = previous.then(write, write)
   writeTails.set(id, next)
   const release = (): void => {
@@ -451,14 +458,14 @@ const writeInOrder = (id: string, write: () => Promise<boolean>): Promise<boolea
   return next
 }
 
-const persist = async (placed: PlacedTemplate): Promise<boolean> => {
+const persist = async (placed: PlacedTemplate): Promise<number | null> => {
   const { tiles: _tiles, ...rest } = placed
-  return await writeInOrder(placed.id, async () => await saveTemplate(rest))
+  return await writeInOrder(placed.id, async () => await saveTemplate(rest, null))
 }
 
-const savePlaced = async (placed: PlacedTemplate): Promise<boolean> => {
+const savePlaced = async (placed: PlacedTemplate): Promise<number | null> => {
   const { tiles: _tiles, ...rest } = placed
-  return await saveTemplate(rest)
+  return await saveTemplate(rest, placed.revision)
 }
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
@@ -492,24 +499,27 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       visible: true,
       everPlaced: false,
       appearance: DEFAULT_APPEARANCE,
+      revision: 0,
     }
     if (!claimSourceReplacement(0, tiles.size)) {
       releaseCandidateTiles(tiles)
       tiles = null
       throw new RangeError('local templates exceed the retained source bitmap budget')
     }
-    if (!(await persist(placed))) {
+    const revision = await persist(placed)
+    if (revision === null) {
       cancelSourceClaim(0, tiles.size)
       releaseCandidateTiles(tiles)
       tiles = null
       throw new Error('local template could not be saved')
     }
     installSourceReplacement(0, tiles.size)
-    templates.set(template.id, placed)
+    const saved = { ...placed, revision }
+    templates.set(template.id, saved)
     retainedIndexPixels += template.indices.length
     log('install', `placed ${template.name}`, { tiles: tiles.size })
     notify()
-    return placed
+    return saved
   } finally {
     pendingAdds.delete(template.id)
     pendingIndexPixels -= template.indices.length
@@ -581,7 +591,11 @@ export const restoreLocalTemplates = async (): Promise<void> => {
       } catch (validationError) {
         const id =
           isRecord(rawTemplate) && typeof rawTemplate.id === 'string' ? rawTemplate.id : null
-        if (id !== null) await deleteTemplate(id)
+        const revision =
+          isRecord(rawTemplate) && Number.isSafeInteger(rawTemplate.revision)
+            ? (rawTemplate.revision as number)
+            : 0
+        if (id !== null) await deleteTemplate(id, revision)
         warn(
           'install',
           `discarded invalid local template ${id ?? '(unknown)'}`,
@@ -676,13 +690,14 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
           everPlaced: latest.everPlaced || target.everPlaced,
           tiles,
         }
-        if (!(await savePlaced(next))) {
+        const revision = await savePlaced(next)
+        if (revision === null) {
           cancelSourceClaim(latest.tiles.size, tiles.size)
           return false
         }
         clearStamped(id)
         previewOrigins.delete(id)
-        templates.set(id, next)
+        templates.set(id, { ...next, revision })
         installSourceReplacement(latest.tiles.size, tiles.size)
         closeTiles(latest.tiles)
         notify()
@@ -744,11 +759,12 @@ export const markPlaced = async (id: string): Promise<boolean> => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     const next = { ...existing, everPlaced: true }
-    if (!(await savePlaced(next))) {
+    const revision = await savePlaced(next)
+    if (revision === null) {
       warn('install', `placement for ${next.name} was not saved`)
       return false
     }
-    templates.set(id, next)
+    templates.set(id, { ...next, revision })
     return true
   })
 }
@@ -780,7 +796,7 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const removed = await writeInOrder(id, async () => {
     const current = templates.get(id)
     if (current === undefined) return false
-    if (!(await deleteTemplate(id))) return false
+    if (!(await deleteTemplate(id, current.revision))) return false
     releaseRetainedTiles(current.tiles)
     retainedIndexPixels -= current.indices.length
     clearStamped(id)
@@ -814,13 +830,14 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       warn('install', `visibility for ${next.name} exceeds the source bitmap budget`)
       return false
     }
-    if (!(await savePlaced(next))) {
+    const revision = await savePlaced(next)
+    if (revision === null) {
       cancelSourceClaim(existing.tiles.size, tiles.size)
       if (visible) releaseCandidateTiles(tiles)
       warn('install', `visibility for ${next.name} was not saved`)
       return false
     }
-    templates.set(id, next)
+    templates.set(id, { ...next, revision })
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)
     clearStamped(id)
@@ -851,12 +868,13 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     const next = { ...existing, appearance }
-    if (!(await savePlaced(next))) {
+    const revision = await savePlaced(next)
+    if (revision === null) {
       warn('install', `appearance for ${next.name} was not saved`)
       return false
     }
     if (appearanceKey(existing.appearance) !== appearanceKey(appearance)) clearStamped(id)
-    templates.set(id, next)
+    templates.set(id, { ...next, revision })
     notify()
     return true
   })
@@ -873,7 +891,12 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
 const stamped = new Map<string, { key: string; tile: TileLevels; bytes: number }>()
 const pendingStamps = new Map<string, string>()
 const MAX_STAMPED_BYTES = 128 * 1024 * 1024
-const MAX_RETAINED_STAMP_WIDTH = 1_500
+// Every retained source tile can need a shaped stamp in the same viewport. Size a stamp so the
+// complete legitimate working set fits: otherwise the last build evicts the first, its repaint
+// immediately rebuilds it, and a static view never quiesces.
+const MAX_RETAINED_STAMP_WIDTH = Math.floor(
+  Math.sqrt(MAX_STAMPED_BYTES / (4 * MAX_RETAINED_SOURCE_TILES)),
+)
 const MAX_CONCURRENT_STAMP_BUILDS = 1
 let stampedBytes = 0
 
@@ -968,8 +991,8 @@ const desiredLevelWidth = (fullWidth: number, targetWidth: number): number => {
     if (next < targetWidth) break
     width = next
   }
-  // A 3000px level is 36 MB and a normal viewport needs several. Retaining the 1500px level and
-  // magnifying it with nearest-neighbour preserves crisp shapes without an eviction/rebuild loop.
+  // Magnifying a bounded level with nearest-neighbour preserves crisp shapes while guaranteeing
+  // that the complete retained source-tile working set cannot enter an eviction/rebuild loop.
   return Math.min(width, MAX_RETAINED_STAMP_WIDTH)
 }
 

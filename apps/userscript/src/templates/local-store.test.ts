@@ -6,7 +6,10 @@ import type { PlacedTemplate, TileLevels } from './local-store.js'
 const persistence = vi.hoisted(() => ({
   deleteTemplate: vi.fn(async () => true),
   loadTemplates: vi.fn(async (): Promise<unknown[]> => []),
-  saveTemplate: vi.fn(async () => true),
+  saveTemplate: vi.fn(
+    async (_template: unknown, expectedRevision: number | null): Promise<number | null> =>
+      (expectedRevision ?? 0) + 1,
+  ),
 }))
 
 vi.mock('./persist.js', () => persistence)
@@ -161,7 +164,7 @@ describe('local template lifecycle', () => {
     await store.restoreLocalTemplates()
 
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['valid'])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('invalid')
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('invalid', 0)
   })
 
   it('keeps a valid persisted record when rendering fails transiently', async () => {
@@ -264,7 +267,7 @@ describe('local template lifecycle', () => {
     await store.restoreLocalTemplates()
 
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['good'])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad')
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad', 0)
   })
 
   it('discards persisted palette bytes and opaque counts that cannot render faithfully', async () => {
@@ -290,8 +293,8 @@ describe('local template lifecycle', () => {
     await store.restoreLocalTemplates()
 
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['good'])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad-index')
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad-count')
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad-index', 0)
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad-count', 0)
   })
 
   it('reserves a restoring id before bitmap work yields to a concurrent import', async () => {
@@ -326,10 +329,10 @@ describe('local template lifecycle', () => {
   })
 
   it('does not resolve an add until its IndexedDB write is durable', async () => {
-    let finishSave = (_value: boolean): void => undefined
+    let finishSave = (_value: number | null): void => undefined
     persistence.saveTemplate.mockImplementationOnce(
       async () =>
-        await new Promise<boolean>((resolve) => {
+        await new Promise<number | null>((resolve) => {
           finishSave = resolve
         }),
     )
@@ -342,7 +345,7 @@ describe('local template lifecycle', () => {
     await vi.waitFor(() => expect(persistence.saveTemplate).toHaveBeenCalledOnce())
 
     expect(settled).toBe(false)
-    finishSave(true)
+    finishSave(1)
     await added
     expect(settled).toBe(true)
   })
@@ -383,6 +386,7 @@ describe('local template lifecycle', () => {
     expect(persistence.saveTemplate).toHaveBeenCalledOnce()
     expect(persistence.saveTemplate).toHaveBeenCalledWith(
       expect.objectContaining({ originX: 30, originY: 40, everPlaced: true }),
+      1,
     )
   })
 
@@ -442,7 +446,7 @@ describe('local template lifecycle', () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
     const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
-    persistence.saveTemplate.mockResolvedValueOnce(false)
+    persistence.saveTemplate.mockResolvedValueOnce(null)
 
     await expect(store.moveLocalTemplate(added.id, 30, 40)).resolves.toBe(false)
 
@@ -455,11 +459,11 @@ describe('local template lifecycle', () => {
     const added = await store.addLocalTemplate(template())
     const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
 
-    persistence.saveTemplate.mockResolvedValueOnce(false)
+    persistence.saveTemplate.mockResolvedValueOnce(null)
     await expect(store.setLocalVisible(added.id, false)).resolves.toBe(false)
     expect(store.localTemplates()[0]?.visible).toBe(true)
 
-    persistence.saveTemplate.mockResolvedValueOnce(false)
+    persistence.saveTemplate.mockResolvedValueOnce(null)
     await expect(
       store.setAppearance(added.id, { ...added.appearance, opacity: 0.25 }),
     ).resolves.toBe(false)
@@ -626,7 +630,7 @@ describe('local template lifecycle', () => {
     const store = await import('./local-store.js')
     await store.addLocalTemplate(template())
     const pending = deferOneBitmap()
-    persistence.saveTemplate.mockResolvedValueOnce(false)
+    persistence.saveTemplate.mockResolvedValueOnce(null)
 
     const first = store.moveLocalTemplate('local-test', 100, 200)
     await Promise.resolve()
@@ -667,7 +671,7 @@ describe('local template lifecycle', () => {
 
     await expect(Promise.all([moving, removing])).resolves.toEqual([false, true])
     expect(store.localTemplates()).toEqual([])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id)
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id, added.revision)
     expect(persistence.saveTemplate).toHaveBeenCalledTimes(1)
   })
 
@@ -675,10 +679,10 @@ describe('local template lifecycle', () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
     persistence.saveTemplate.mockClear()
-    let finishVisibility = (_saved: boolean): void => undefined
+    let finishVisibility = (_revision: number | null): void => undefined
     persistence.saveTemplate.mockImplementationOnce(
       async () =>
-        await new Promise<boolean>((resolve) => {
+        await new Promise<number | null>((resolve) => {
           finishVisibility = resolve
         }),
     )
@@ -686,7 +690,7 @@ describe('local template lifecycle', () => {
     const hidden = store.setLocalVisible(added.id, false)
     const appearance = store.setAppearance(added.id, { ...added.appearance, opacity: 0.25 })
     await vi.waitFor(() => expect(persistence.saveTemplate).toHaveBeenCalledOnce())
-    finishVisibility(true)
+    finishVisibility(2)
     await Promise.all([hidden, appearance])
 
     expect(store.localTemplates()[0]).toMatchObject({
@@ -724,7 +728,7 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates()[0]).toMatchObject({ id: 'hidden', visible: false })
     expect(store.localTemplates()[0]?.tiles.size).toBe(0)
     expect(createImageBitmap).not.toHaveBeenCalled()
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('unfinished')
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('unfinished', 0)
   })
 
   it('restores pixels cloned into a different Uint8Array realm', async () => {
@@ -793,7 +797,7 @@ describe('local template lifecycle', () => {
       expect(store.stampTile(added, '0/0', appearance, 1_000)).not.toBe(source),
     )
     const stamp = store.stampTile(added, '0/0', appearance, 1_000)
-    expect(stamp?.levels.map((level) => level.width)).toEqual([1_500])
+    expect(stamp?.levels.map((level) => level.width)).toEqual([1_182])
 
     await store.moveLocalTemplate(added.id, 30, 40)
 
@@ -802,7 +806,7 @@ describe('local template lifecycle', () => {
     ).toBe(true)
   })
 
-  it('caps a high-zoom shaped stamp at the reusable 1500px level', async () => {
+  it('caps a high-zoom shaped stamp so all 24 retained tiles fit the cache', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
     const appearance = {
@@ -815,7 +819,7 @@ describe('local template lifecycle', () => {
 
     store.stampTile(added, '0/0', appearance, 3_000)
     await vi.waitFor(() =>
-      expect(store.stampTile(added, '0/0', appearance, 3_000)?.levels[0]?.width).toBe(1_500),
+      expect(store.stampTile(added, '0/0', appearance, 3_000)?.levels[0]?.width).toBe(1_182),
     )
   })
 
@@ -866,10 +870,11 @@ describe('local template lifecycle', () => {
     store.stampTile(added, '0/0', appearance, 500)
     store.stampTile(added, '0/0', appearance, 1_000)
     await vi.waitFor(() =>
-      expect(store.stampTile(added, '0/0', appearance, 1_000)?.levels[0]?.width).toBe(1_500),
+      expect(store.stampTile(added, '0/0', appearance, 1_000)?.levels[0]?.width).toBe(1_182),
     )
 
-    expect(vi.mocked(createImageBitmap).mock.calls.length - buildsBefore).toBe(2)
+    // One build won the queue. It needs three bitmap stages: 3000 -> 1500 -> cache-safe 1182.
+    expect(vi.mocked(createImageBitmap).mock.calls.length - buildsBefore).toBe(3)
   })
 
   it('uses a native-scale filtered stamp when shaped pixels are too small to read', async () => {

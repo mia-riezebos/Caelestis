@@ -31,6 +31,10 @@ interface Entry {
 }
 
 const RING_SIZE = 400
+const MAX_MESSAGE_LENGTH = 512
+const MAX_DATA_STRING_LENGTH = 512
+const MAX_DATA_ENTRIES = 20
+const MAX_DATA_DEPTH = 3
 
 /** Categories that fire per frame; logged to the ring always, to the console only when they change. */
 const NOISY: ReadonlySet<Category> = new Set(['frame', 'draw', 'quad'])
@@ -61,6 +65,51 @@ const MAX_COUNTERS = 200
 
 const DROPPED = 'debug:counter-keys-dropped'
 
+const truncate = (value: string, limit: number): string =>
+  value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`
+
+/** Copy only a small diagnostic snapshot; never retain page/import-owned objects in the ring. */
+const snapshot = (value: unknown, depth = 0, seen: WeakSet<object> = new WeakSet()): unknown => {
+  if (typeof value === 'string') return truncate(value, MAX_DATA_STRING_LENGTH)
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+  ) {
+    return value
+  }
+  if (typeof value !== 'object') return truncate(String(value), MAX_DATA_STRING_LENGTH)
+  if (seen.has(value)) return '[circular]'
+  if (depth >= MAX_DATA_DEPTH) return Object.prototype.toString.call(value)
+  seen.add(value)
+  if (Array.isArray(value)) {
+    const out = value.slice(0, MAX_DATA_ENTRIES).map((entry) => snapshot(entry, depth + 1, seen))
+    if (value.length > MAX_DATA_ENTRIES) out.push(`… ${value.length - MAX_DATA_ENTRIES} more`)
+    return out
+  }
+  const out: Record<string, unknown> = {}
+  let entries = 0
+  try {
+    for (const key in value as Record<string, unknown>) {
+      if (entries >= MAX_DATA_ENTRIES) {
+        out['…'] = 'more properties omitted'
+        break
+      }
+      out[truncate(key, MAX_DATA_STRING_LENGTH)] = snapshot(
+        (value as Record<string, unknown>)[key],
+        depth + 1,
+        seen,
+      )
+      entries++
+    }
+    return out
+  } catch {
+    return Object.prototype.toString.call(value)
+  }
+}
+
 export const count = (key: string, by = 1): void => {
   if (!counters.has(key) && counters.size >= MAX_COUNTERS) {
     // Set directly rather than recursing: at capacity, counting the drop would count its own drop.
@@ -76,21 +125,28 @@ export const counterKey = (category: Category, message: string): string =>
 
 export const log = (category: Category, message: string, data?: unknown): void => {
   try {
-    count(counterKey(category, message))
+    const boundedMessage = truncate(message, MAX_MESSAGE_LENGTH)
+    count(counterKey(category, boundedMessage))
     if (!enabled) return
+    const boundedData = snapshot(data)
 
-    const entry: Entry = { at: Date.now() - started, category, message, data }
+    const entry: Entry = {
+      at: Date.now() - started,
+      category,
+      message: boundedMessage,
+      data: boundedData,
+    }
     ring.push(entry)
     if (ring.length > RING_SIZE) ring.shift()
 
     // A per-frame category would drown the console, so it only speaks when its story changes.
     if (NOISY.has(category)) {
-      const signature = `${message}:${JSON.stringify(data ?? null)}`
+      const signature = `${boundedMessage}:${JSON.stringify(boundedData ?? null)}`
       if (lastNoisy.get(category) === signature) return
       lastNoisy.set(category, signature)
     }
-    if (data === undefined) console.info(`[wts:${category}] ${message}`)
-    else console.info(`[wts:${category}] ${message}`, data)
+    if (boundedData === undefined) console.info(`[wts:${category}] ${boundedMessage}`)
+    else console.info(`[wts:${category}] ${boundedMessage}`, boundedData)
   } catch {
     // Diagnostics are observers. A hostile/broken page console or unserialisable debug payload must
     // never change the success semantics of the operation being observed.
@@ -103,10 +159,12 @@ export const warn = (category: Category, message: string, data?: unknown): void 
     // Same stable key as `log`. Keyed on the raw message, the two hottest warnings carry tile
     // coordinates and filled the 200-key table with single-use entries — after which every genuinely
     // new counter was refused, and `dump()` stopped showing the ones worth reading.
-    count(counterKey(category, message))
-    ring.push({ at: Date.now() - started, category, message, data })
+    const boundedMessage = truncate(message, MAX_MESSAGE_LENGTH)
+    const boundedData = snapshot(data)
+    count(counterKey(category, boundedMessage))
+    ring.push({ at: Date.now() - started, category, message: boundedMessage, data: boundedData })
     if (ring.length > RING_SIZE) ring.shift()
-    console.warn(`[wts:${category}] ${message}`, data ?? '')
+    console.warn(`[wts:${category}] ${boundedMessage}`, boundedData ?? '')
   } catch {
     // Warnings report failures; they must not create a second failure of their own.
   }
