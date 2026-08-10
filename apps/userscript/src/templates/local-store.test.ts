@@ -618,6 +618,29 @@ describe('local template lifecycle', () => {
     ])
   })
 
+  it('charges cursor rows that persistence skips before returning candidates', async () => {
+    const skipped = [
+      {
+        kind: 'template-hydration-failure',
+        status: 'invalid',
+        id: 'returned-invalid',
+        revision: 0,
+        indexPixels: 1,
+      },
+    ] as unknown[] & { inspected?: number; indexPixels?: number }
+    Object.defineProperties(skipped, {
+      inspected: { value: 256 },
+      indexPixels: { value: 1 },
+    })
+    persistence.loadTemplates.mockImplementation(async () => skipped)
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(persistence.loadTemplates).toHaveBeenCalledOnce()
+    persistence.loadTemplates.mockResolvedValue([])
+  })
+
   it('does not rescan invalid persisted pixels to classify a restore failure', async () => {
     vi.stubGlobal('scheduler', undefined)
     const yieldToBrowser = vi.spyOn(globalThis, 'setTimeout')
@@ -1332,6 +1355,90 @@ describe('local template lifecycle', () => {
     ).resolves.toBe(false)
 
     expect(store.localTemplates()[0]).toMatchObject({ originX: 30, originY: 40, revision: 2 })
+  })
+
+  it('CAS-deletes a semantically invalid conflict winner instead of looping stale writes', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    persistence.loadTemplate.mockResolvedValueOnce({
+      status: 'loaded',
+      template: {
+        ...template({ indices: new Uint8Array([64]) }),
+        visible: true,
+        everPlaced: true,
+        revision: 2,
+      },
+    })
+
+    await expect(
+      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
+    ).resolves.toBe(false)
+
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id, 2)
+    expect(store.localTemplates()).toEqual([])
+    expect(oldLevels.every((level) => level.close.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('retries an invalid-winner delete conflict and adopts the replacement', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    persistence.loadTemplate
+      .mockResolvedValueOnce({
+        status: 'loaded',
+        template: {
+          ...template({ indices: new Uint8Array([64]) }),
+          visible: true,
+          everPlaced: true,
+          revision: 2,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 'loaded',
+        template: {
+          ...template({ originX: 30, originY: 40 }),
+          visible: true,
+          everPlaced: true,
+          revision: 3,
+        },
+      })
+    persistence.deleteTemplate.mockResolvedValueOnce({ status: 'conflict' })
+
+    await expect(
+      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
+    ).resolves.toBe(false)
+
+    expect(persistence.loadTemplate).toHaveBeenCalledTimes(2)
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id, 2)
+    expect(store.localTemplates()[0]).toMatchObject({ originX: 30, originY: 40, revision: 3 })
+  })
+
+  it('bounds repeated delete conflicts for invalid conflict winners', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    for (let attempt = 0; attempt < 4; attempt++) {
+      persistence.loadTemplate.mockResolvedValueOnce({
+        status: 'loaded',
+        template: {
+          ...template({ indices: new Uint8Array([64]) }),
+          visible: true,
+          everPlaced: true,
+          revision: attempt + 2,
+        },
+      })
+      persistence.deleteTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    }
+
+    await expect(
+      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
+    ).resolves.toBe(false)
+
+    expect(persistence.loadTemplate).toHaveBeenCalledTimes(4)
+    expect(persistence.deleteTemplate).toHaveBeenCalledTimes(4)
+    expect(store.localTemplates()[0]).toMatchObject({ id: added.id, revision: added.revision })
   })
 
   it('adopts a valid conflict winner runtime-hidden when its source cannot render', async () => {

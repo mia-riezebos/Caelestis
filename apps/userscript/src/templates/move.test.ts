@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   localTemplates: vi.fn(),
   placeLocalTemplate: vi.fn(async () => true),
   previewLocalTemplate: vi.fn(() => true),
+  reconciliationObservers: new Map<string, Set<() => void>>(),
   removeLocalTemplate: vi.fn(async () => true),
 }))
 
@@ -19,6 +20,12 @@ vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
 vi.mock('./local-store.js', () => ({
   clearLocalPreview: harness.clearLocalPreview,
   localTemplates: harness.localTemplates,
+  onLocalReconciliation: (id: string, observer: () => void) => {
+    const observers = harness.reconciliationObservers.get(id) ?? new Set<() => void>()
+    observers.add(observer)
+    harness.reconciliationObservers.set(id, observers)
+    return () => observers.delete(observer)
+  },
   placeLocalTemplate: harness.placeLocalTemplate,
   previewLocalTemplate: harness.previewLocalTemplate,
   removeLocalTemplate: harness.removeLocalTemplate,
@@ -31,6 +38,7 @@ beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   listeners.clear()
+  harness.reconciliationObservers.clear()
   movebar = null
   harness.canvasPixelAt.mockReturnValue({ x: 2, y: 3 })
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
@@ -363,10 +371,7 @@ describe('template placement controls', () => {
     harness.placeLocalTemplate.mockResolvedValueOnce(false)
     const active = harness.localTemplates()
     harness.localTemplates.mockClear()
-    harness.localTemplates
-      .mockReturnValueOnce(active)
-      .mockReturnValueOnce(active)
-      .mockReturnValueOnce([])
+    harness.localTemplates.mockReturnValueOnce(active).mockReturnValueOnce([])
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
@@ -379,11 +384,13 @@ describe('template placement controls', () => {
   })
 
   it('finishes at a reconciled winner instead of retrying stale Apply coordinates', async () => {
-    harness.placeLocalTemplate.mockResolvedValueOnce(false)
+    harness.placeLocalTemplate.mockImplementationOnce(async () => {
+      for (const observer of harness.reconciliationObservers.get('test') ?? []) observer()
+      return false
+    })
     const active = harness.localTemplates()
     harness.localTemplates.mockClear()
     harness.localTemplates
-      .mockReturnValueOnce(active)
       .mockReturnValueOnce(active)
       .mockReturnValue([{ ...active[0], originX: 90, originY: 80, revision: 2 }])
     const finished = vi.fn()
@@ -397,15 +404,17 @@ describe('template placement controls', () => {
     expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
   })
 
-  it('finishes at a same-revision reconciled winner by object generation', async () => {
-    harness.placeLocalTemplate.mockResolvedValueOnce(false)
+  it('finishes at a same-revision winner after an explicit reconciliation event', async () => {
+    harness.placeLocalTemplate.mockImplementationOnce(async () => {
+      for (const observer of harness.reconciliationObservers.get('test') ?? []) observer()
+      return false
+    })
     const active = (harness.localTemplates() as Array<Record<string, unknown>>).map((template) => ({
       ...template,
       revision: 0,
     }))
     harness.localTemplates.mockClear()
     harness.localTemplates
-      .mockReturnValueOnce(active)
       .mockReturnValueOnce(active)
       .mockReturnValue([{ ...active[0], originX: 90, originY: 80, revision: 0 }])
     const finished = vi.fn()
@@ -419,15 +428,37 @@ describe('template placement controls', () => {
     expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
   })
 
+  it('keeps Apply open when an unrelated mutation replaces the template object', async () => {
+    harness.placeLocalTemplate.mockResolvedValueOnce(false)
+    const active = harness.localTemplates()
+    harness.localTemplates.mockClear()
+    harness.localTemplates
+      .mockReturnValueOnce(active)
+      .mockReturnValueOnce([{ ...active[0], appearance: { opacity: 0.5 } }])
+      .mockReturnValue([{ ...active[0], appearance: { opacity: 0.5 } }])
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+
+    await moves.commit()
+
+    expect(finished).not.toHaveBeenCalled()
+    await moves.commit()
+    expect(finished).toHaveBeenCalledOnce()
+    expect(harness.placeLocalTemplate).toHaveBeenCalledTimes(2)
+  })
+
   it('finishes at a reconciled winner instead of retrying stale Cancel', async () => {
-    harness.removeLocalTemplate.mockResolvedValueOnce(false)
+    harness.removeLocalTemplate.mockImplementationOnce(async () => {
+      for (const observer of harness.reconciliationObservers.get('test') ?? []) observer()
+      return false
+    })
     const active = (harness.localTemplates() as Array<Record<string, unknown>>).map((template) => ({
       ...template,
       everPlaced: false,
     }))
     harness.localTemplates.mockClear()
     harness.localTemplates
-      .mockReturnValueOnce(active)
       .mockReturnValueOnce(active)
       .mockReturnValue([{ ...active[0], originX: 90, originY: 80, revision: 2 }])
     const finished = vi.fn()

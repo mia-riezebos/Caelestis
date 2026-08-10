@@ -21,6 +21,7 @@ import {
   type SaveResult,
   type StoredTemplate,
   saveTemplate,
+  type TemplateLoadBatch,
   type TemplateLoadFailure,
 } from './persist.js'
 
@@ -73,6 +74,7 @@ const templates = new Map<string, PlacedTemplate>()
 // construction is unavailable. Keep that intent out of the public render model, but preserve it
 // across unrelated writes and cross-tab reconciliation.
 const desiredVisibility = new Map<string, boolean>()
+const reconciliationObservers = new Map<string, Set<() => void>>()
 const previewOrigins = new Map<string, { x: number; y: number }>()
 const deleting = new Set<string>()
 const pendingAdds = new Set<string>()
@@ -84,6 +86,26 @@ const MAX_RESTORE_HYDRATED_PIXELS = MAX_LOCAL_INDEX_PIXELS * 2
 let retainedIndexPixels = 0
 let pendingIndexPixels = 0
 let restoreInFlight: Promise<void> | null = null
+
+export const onLocalReconciliation = (id: string, observer: () => void): (() => void) => {
+  const observers = reconciliationObservers.get(id) ?? new Set<() => void>()
+  observers.add(observer)
+  reconciliationObservers.set(id, observers)
+  return () => {
+    observers.delete(observer)
+    if (observers.size === 0) reconciliationObservers.delete(id)
+  }
+}
+
+const noteReconciliation = (id: string): void => {
+  for (const observer of reconciliationObservers.get(id) ?? []) {
+    try {
+      observer()
+    } catch (error) {
+      warn('install', 'local reconciliation observer failed', String(error))
+    }
+  }
+}
 
 const orderedTemplates = (): PlacedTemplate[] =>
   [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
@@ -535,30 +557,52 @@ const removeStaleLocalState = (existing: PlacedTemplate): void => {
   clearStamped(existing.id)
   previewOrigins.delete(existing.id)
   templates.delete(existing.id)
+  noteReconciliation(existing.id)
   notify()
 }
 
 /** Replace stale process-local state with the durable winner after an IndexedDB CAS conflict. */
 const reconcileConflict = async (id: string): Promise<void> => {
-  const existing = templates.get(id)
-  if (existing === undefined) return
-  const loaded = await loadTemplate(id, MAX_LOCAL_INDEX_PIXELS)
-  if (loaded.status === 'unavailable') return
-  if (loaded.status === 'missing') {
-    removeStaleLocalState(existing)
-    return
-  }
-  try {
-    const winner = normaliseStoredTemplate(loaded.template)
-    await validateStoredPixels(winner)
-    if (winner.id !== id || (winner.source === 'image' && !winner.everPlaced)) {
-      throw new RangeError('winning template state is invalid')
+  const MAX_RECONCILIATION_ATTEMPTS = 4
+  for (let attempt = 0; attempt < MAX_RECONCILIATION_ATTEMPTS; attempt++) {
+    const existing = templates.get(id)
+    if (existing === undefined) return
+    const loaded = await loadTemplate(id, MAX_LOCAL_INDEX_PIXELS)
+    if (loaded.status === 'unavailable') return
+    if (loaded.status === 'missing') {
+      removeStaleLocalState(existing)
+      return
+    }
+    let winner: StoredTemplate
+    try {
+      winner = normaliseStoredTemplate(loaded.template)
+      await validateStoredPixels(winner)
+      if (winner.id !== id || (winner.source === 'image' && !winner.everPlaced)) {
+        throw new RangeError('winning template state is invalid')
+      }
+    } catch (error) {
+      const raw = isRecord(loaded.template) ? loaded.template : {}
+      const revision =
+        Number.isSafeInteger(raw.revision) && Number(raw.revision) >= 0 ? Number(raw.revision) : 0
+      const deleted = await deleteTemplate(id, revision)
+      if (deleted.status === 'saved') {
+        removeStaleLocalState(existing)
+        return
+      }
+      if (deleted.status === 'conflict') continue
+      warn(
+        'install',
+        `could not remove invalid conflict winner for ${existing.name}`,
+        String(error),
+      )
+      return
     }
     if (
       retainedIndexPixels - existing.indices.length + winner.indices.length >
       MAX_LOCAL_INDEX_PIXELS
     ) {
-      throw new RangeError('winning template exceeds the local pixel budget')
+      warn('install', `could not reconcile stale local template ${existing.name}: pixel budget`)
+      return
     }
     let visible = winner.visible
     let tiles = new Map<string, TileLevels>()
@@ -584,7 +628,8 @@ const reconcileConflict = async (id: string): Promise<void> => {
       }
     }
     if (!visible && !claimSourceReplacement(existing.tiles.size, 0)) {
-      throw new RangeError('winning template exceeds the source bitmap budget')
+      warn('install', `could not reconcile stale local template ${existing.name}: bitmap budget`)
+      return
     }
     clearStamped(id)
     previewOrigins.delete(id)
@@ -599,10 +644,11 @@ const reconcileConflict = async (id: string): Promise<void> => {
     retainedIndexPixels += winner.indices.length - existing.indices.length
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)
+    noteReconciliation(id)
     notify()
-  } catch (error) {
-    warn('install', `could not reconcile stale local template ${existing.name}`, String(error))
+    return
   }
+  warn('install', `could not reconcile ${id}: conflict retry limit reached`)
 }
 
 const committedRevision = (result: SaveResult): number | null =>
@@ -697,16 +743,27 @@ const restoreStoredTemplates = async (): Promise<void> => {
       Math.min(remainingPixels, remainingHydratedPixels),
       seenIds,
     )
+    const metrics = stored as Partial<TemplateLoadBatch>
+    const batchMetricsAvailable =
+      Number.isSafeInteger(metrics.inspected) &&
+      Number(metrics.inspected) >= 0 &&
+      Number.isSafeInteger(metrics.indexPixels) &&
+      Number(metrics.indexPixels) >= 0
+    if (batchMetricsAvailable) {
+      remainingCandidates = Math.max(0, remainingCandidates - Number(metrics.inspected))
+      remainingHydratedPixels = Math.max(0, remainingHydratedPixels - Number(metrics.indexPixels))
+    }
     for (const rawTemplate of stored) {
-      if (remainingCandidates <= 0) break
       const hydratedPixels = isTemplateLoadFailure(rawTemplate)
         ? rawTemplate.indexPixels
         : isRecord(rawTemplate) && isUint8Array(rawTemplate.indices)
           ? rawTemplate.indices.length
           : 0
-      if (hydratedPixels > remainingHydratedPixels) break
-      remainingCandidates--
-      remainingHydratedPixels -= hydratedPixels
+      if (!batchMetricsAvailable) {
+        if (remainingCandidates <= 0 || hydratedPixels > remainingHydratedPixels) break
+        remainingCandidates--
+        remainingHydratedPixels -= hydratedPixels
+      }
       if (isTemplateLoadFailure(rawTemplate)) {
         seenIds.add(rawTemplate.id)
         if (rawTemplate.status === 'invalid') {

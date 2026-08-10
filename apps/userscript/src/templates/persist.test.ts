@@ -383,7 +383,10 @@ describe('local template persistence', () => {
     request.onsuccess?.(new Event('success'))
     transaction.oncomplete?.(new Event('complete'))
 
-    await expect(loading).resolves.toEqual([])
+    const loaded = await loading
+    expect(loaded).toEqual([])
+    expect(loaded.inspected).toBe(1)
+    expect(loaded.indexPixels).toBe(65)
     expect(pixels.arrayBuffer).not.toHaveBeenCalled()
   })
 
@@ -415,7 +418,10 @@ describe('local template persistence', () => {
     mutableRequest.onsuccess?.(new Event('success'))
     transaction.oncomplete?.(new Event('complete'))
 
-    await expect(loading).resolves.toEqual([])
+    const loaded = await loading
+    expect(loaded).toEqual([])
+    expect(loaded.inspected).toBe(1)
+    expect(loaded.indexPixels).toBe(1)
     expect(cursor.continue).toHaveBeenCalledOnce()
   })
 

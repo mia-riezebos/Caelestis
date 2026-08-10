@@ -198,6 +198,39 @@ export interface TemplateLoadFailure {
   readonly indexPixels: number
 }
 
+export type TemplateLoadBatch = readonly unknown[] & {
+  /** Non-excluded cursor rows inspected, including malformed and oversized records. */
+  readonly inspected: number
+  /** Pixel bytes represented by every inspected row whose size was cheaply knowable. */
+  readonly indexPixels: number
+}
+
+const candidateIndexPixels = (value: unknown): number => {
+  if (typeof value !== 'object' || value === null || !('indices' in value)) return 0
+  const indices = (value as { readonly indices?: unknown }).indices
+  if (isUint8Array(indices)) return indices.length
+  if (isStoredBlob(indices)) return indices.size
+  return 0
+}
+
+const boundedPixelSum = (total: number, pixels: number): number =>
+  pixels > Number.MAX_SAFE_INTEGER - total ? Number.MAX_SAFE_INTEGER : total + pixels
+
+const loadBatch = (
+  templates: unknown[],
+  inspected: number,
+  indexPixels: number,
+): TemplateLoadBatch => {
+  // Keep the metrics out of array iteration and equality: callers that only need the candidates
+  // remain ordinary array consumers, while restore can account for cursor work that produced no
+  // candidate at all.
+  Object.defineProperties(templates, {
+    inspected: { value: inspected, enumerable: false },
+    indexPixels: { value: indexPixels, enumerable: false },
+  })
+  return templates as unknown as TemplateLoadBatch
+}
+
 const hydrateCandidate = async (
   candidate: Record<string, unknown> & { indices: Uint8Array | StoredBlob },
 ): Promise<HydrationResult> => {
@@ -270,19 +303,24 @@ export const loadTemplates = async (
   maxTemplates = 64,
   maxIndexPixels = 64 * 1024 * 1024,
   excludedIds: ReadonlySet<string> = new Set(),
-): Promise<readonly unknown[]> => {
+): Promise<TemplateLoadBatch> => {
   try {
     const db = await open()
     try {
-      const candidates = await new Promise<
-        readonly (Record<string, unknown> & { indices: Uint8Array | StoredBlob })[]
-      >((resolve, reject) => {
+      const batch = await new Promise<{
+        readonly candidates: readonly (Record<string, unknown> & {
+          indices: Uint8Array | StoredBlob
+        })[]
+        readonly inspected: number
+        readonly indexPixels: number
+      }>((resolve, reject) => {
         const transaction = db.transaction(STORE, 'readonly')
         const request = transaction.objectStore(STORE).openCursor()
         const templates: (Record<string, unknown> & {
           indices: Uint8Array | StoredBlob
         })[] = []
-        let indexPixels = 0
+        let retainedPixels = 0
+        let inspectedPixels = 0
         let inspected = 0
         const maxInspected = Math.max(maxTemplates, maxTemplates * 4)
         request.onsuccess = () => {
@@ -291,7 +329,8 @@ export const loadTemplates = async (
           const value: unknown = cursor.value
           if (!boundedStoredCandidate(value)) {
             inspected++
-            if (inspected > maxInspected) return
+            inspectedPixels = boundedPixelSum(inspectedPixels, candidateIndexPixels(value))
+            if (inspected >= maxInspected) return
             cursor.continue()
             return
           }
@@ -300,28 +339,31 @@ export const loadTemplates = async (
             return
           }
           inspected++
-          if (inspected > maxInspected) return
           const pixels = isUint8Array(value.indices) ? value.indices.length : value.indices.size
+          inspectedPixels = boundedPixelSum(inspectedPixels, pixels)
           // An individually oversized or late non-fitting record must not permanently hide every
           // later valid key. Inspect a bounded number of records, retaining only those that fit.
-          if (pixels > maxIndexPixels || indexPixels + pixels > maxIndexPixels) {
+          if (pixels > maxIndexPixels || retainedPixels + pixels > maxIndexPixels) {
+            if (inspected >= maxInspected) return
             cursor.continue()
             return
           }
           templates.push(value)
-          indexPixels += pixels
+          retainedPixels += pixels
           if (templates.length >= maxTemplates) return
+          if (inspected >= maxInspected) return
           cursor.continue()
         }
         request.onerror = () => reject(request.error ?? new Error('indexedDB cursor failed'))
-        transaction.oncomplete = () => resolve(templates)
+        transaction.oncomplete = () =>
+          resolve({ candidates: templates, inspected, indexPixels: inspectedPixels })
         transaction.onerror = () =>
           reject(transaction.error ?? new Error('indexedDB transaction failed'))
         transaction.onabort = () =>
           reject(transaction.error ?? new Error('indexedDB transaction aborted'))
       })
       const templates: unknown[] = []
-      for (const candidate of candidates) {
+      for (const candidate of batch.candidates) {
         const hydrated = await hydrateCandidate(candidate)
         if (hydrated.status === 'loaded') {
           templates.push(hydrated.template)
@@ -337,12 +379,12 @@ export const loadTemplates = async (
           } satisfies TemplateLoadFailure)
         }
       }
-      return templates
+      return loadBatch(templates, batch.inspected, batch.indexPixels)
     } finally {
       db.close()
     }
   } catch (error) {
     warn('install', 'local template storage unavailable', String(error))
-    return []
+    return loadBatch([], 0, 0)
   }
 }

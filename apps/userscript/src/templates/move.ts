@@ -5,6 +5,7 @@ import { icon } from '../ui/icons.js'
 import {
   clearLocalPreview,
   localTemplates,
+  onLocalReconciliation,
   placeLocalTemplate,
   previewLocalTemplate,
   removeLocalTemplate,
@@ -294,11 +295,14 @@ export const commit = async (): Promise<void> => {
   const current = session
   finishing = true
   listen(false)
+  let reconciled = false
+  const stopObserving = onLocalReconciliation(current.id, () => {
+    reconciled = true
+  })
   try {
-    const attempted = localTemplates().find((template) => template.id === current.id)
     if (!(await placeLocalTemplate(current.id, current.x, current.y))) {
       const durable = localTemplates().find((template) => template.id === current.id)
-      if (durable === undefined || durable !== attempted) {
+      if (durable === undefined || reconciled) {
         finish()
         return
       }
@@ -309,6 +313,8 @@ export const commit = async (): Promise<void> => {
     finish()
   } catch (error) {
     resumeAfterFailure('placement', error)
+  } finally {
+    stopObserving()
   }
 }
 
@@ -324,16 +330,19 @@ export const abort = async (): Promise<void> => {
   const current = session
   finishing = true
   listen(false)
+  let reconciled = false
+  const stopObserving = onLocalReconciliation(current.id, () => {
+    reconciled = true
+  })
   try {
     const template = localTemplates().find((candidate) => candidate.id === current.id)
-    const attempted = template
     const saved =
       template !== undefined && template.source === 'image' && !template.everPlaced
         ? await removeLocalTemplate(current.id)
         : clearLocalPreview(current.id)
     if (!saved) {
       const durable = localTemplates().find((candidate) => candidate.id === current.id)
-      if (durable === undefined || durable !== attempted) {
+      if (durable === undefined || reconciled) {
         finish()
         return
       }
@@ -343,6 +352,8 @@ export const abort = async (): Promise<void> => {
     finish()
   } catch (error) {
     resumeAfterFailure('revert', error)
+  } finally {
+    stopObserving()
   }
 }
 
