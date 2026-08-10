@@ -76,6 +76,7 @@ const MAX_LOCAL_TEMPLATES = 64
 const MAX_LOCAL_INDEX_PIXELS = 64 * 1024 * 1024
 let retainedIndexPixels = 0
 let pendingIndexPixels = 0
+let restoreInFlight: Promise<void> | null = null
 
 const orderedTemplates = (): PlacedTemplate[] =>
   [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
@@ -545,6 +546,8 @@ const committedRevision = (result: SaveResult): number | null =>
   result.status === 'saved' ? result.revision : null
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
+  const restoring = restoreInFlight
+  if (restoring !== null) await restoring
   validatePlacement(template)
   if (
     typeof template.id !== 'string' ||
@@ -607,90 +610,122 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
 }
 
 /** Rehydrate on startup, before the first frame if possible. */
-export const restoreLocalTemplates = async (): Promise<void> => {
-  const stored = await loadTemplates(MAX_LOCAL_TEMPLATES, MAX_LOCAL_INDEX_PIXELS)
+const restoreStoredTemplates = async (): Promise<void> => {
   let restored = 0
-  for (const rawTemplate of stored) {
-    let reserved: StoredTemplate | null = null
-    let validated: StoredTemplate | null = null
-    try {
-      // Earlier builds could persist 0x0, non-finite, out-of-world, or fully transparent records.
-      // Validate each independently so one bad legacy entry cannot prevent every good restore.
-      const template = normaliseStoredTemplate(rawTemplate)
-      await validateStoredPixels(template)
-      if (template.source === 'image' && !template.everPlaced) {
-        throw new RangeError('unfinished image placement')
+  const seenIds = new Set<string>()
+  let retryAfterInvalid = false
+  let restorePasses = 0
+  do {
+    restorePasses++
+    retryAfterInvalid = false
+    const remainingTemplates = MAX_LOCAL_TEMPLATES - templates.size - pendingAdds.size
+    const remainingPixels = MAX_LOCAL_INDEX_PIXELS - retainedIndexPixels - pendingIndexPixels
+    if (remainingTemplates <= 0 || remainingPixels <= 0) break
+    const stored = await loadTemplates(remainingTemplates, remainingPixels, seenIds)
+    for (const rawTemplate of stored) {
+      if (isRecord(rawTemplate) && typeof rawTemplate.id === 'string') {
+        seenIds.add(rawTemplate.id)
       }
-      validated = template
-      if (templates.has(template.id) || pendingAdds.has(template.id)) {
-        warn('install', `could not restore ${template.name}: local template id already exists`)
-        continue
-      }
-      if (
-        templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES ||
-        retainedIndexPixels + pendingIndexPixels + template.indices.length > MAX_LOCAL_INDEX_PIXELS
-      ) {
-        warn('install', `could not restore ${template.name}: persisted pixel budget exhausted`)
-        continue
-      }
-      // Reserve the ID, cardinality, and index bytes before slicing yields. Imports can begin while
-      // startup restore is in flight and must observe the same aggregate limits.
-      pendingAdds.add(template.id)
-      pendingIndexPixels += template.indices.length
-      reserved = template
-      const tiles = template.visible ? await slice(template) : new Map<string, TileLevels>()
-      if (!claimSourceReplacement(0, tiles.size)) {
-        releaseCandidateTiles(tiles)
-        warn('install', `could not restore ${template.name}: source bitmap budget exhausted`)
-        continue
-      }
-      installSourceReplacement(0, tiles.size)
-      templates.set(template.id, {
-        appearance: DEFAULT_APPEARANCE,
-        ...template,
-        // Hidden templates cost no bitmap memory. Their palette indices are enough to rebuild the
-        // tiles atomically if the user makes them visible again.
-        tiles,
-      })
-      retainedIndexPixels += template.indices.length
-      restored++
-    } catch (error) {
-      // Validation failures are permanently bad records. Rendering failures are environmental
-      // (unsupported canvas, allocation pressure, decoder rejection) and must never destroy data.
-      if (validated !== null) {
-        warn('install', `could not restore local template ${validated.name}`, String(error))
-        continue
-      }
+      let reserved: StoredTemplate | null = null
+      let validated: StoredTemplate | null = null
       try {
+        // Earlier builds could persist 0x0, non-finite, out-of-world, or fully transparent records.
+        // Validate each independently so one bad legacy entry cannot prevent every good restore.
         const template = normaliseStoredTemplate(rawTemplate)
         await validateStoredPixels(template)
         if (template.source === 'image' && !template.everPlaced) {
           throw new RangeError('unfinished image placement')
         }
-        warn('install', `could not restore local template ${template.name}`, String(error))
-      } catch (validationError) {
-        const id =
-          isRecord(rawTemplate) && typeof rawTemplate.id === 'string' ? rawTemplate.id : null
-        const revision =
-          isRecord(rawTemplate) && Number.isSafeInteger(rawTemplate.revision)
-            ? (rawTemplate.revision as number)
-            : 0
-        if (id !== null) await deleteTemplate(id, revision)
-        warn(
-          'install',
-          `discarded invalid local template ${id ?? '(unknown)'}`,
-          String(validationError),
-        )
-      }
-    } finally {
-      if (reserved !== null) {
-        pendingAdds.delete(reserved.id)
-        pendingIndexPixels -= reserved.indices.length
+        validated = template
+        if (templates.has(template.id) || pendingAdds.has(template.id)) {
+          warn('install', `could not restore ${template.name}: local template id already exists`)
+          continue
+        }
+        if (
+          templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES ||
+          retainedIndexPixels + pendingIndexPixels + template.indices.length >
+            MAX_LOCAL_INDEX_PIXELS
+        ) {
+          warn('install', `could not restore ${template.name}: persisted pixel budget exhausted`)
+          continue
+        }
+        // Reserve the ID, cardinality, and index bytes before slicing yields. This also keeps
+        // repeated restore calls and any already-running mutations inside the aggregate limits.
+        pendingAdds.add(template.id)
+        pendingIndexPixels += template.indices.length
+        reserved = template
+        const tiles = template.visible ? await slice(template) : new Map<string, TileLevels>()
+        if (!claimSourceReplacement(0, tiles.size)) {
+          releaseCandidateTiles(tiles)
+          warn('install', `could not restore ${template.name}: source bitmap budget exhausted`)
+          continue
+        }
+        installSourceReplacement(0, tiles.size)
+        templates.set(template.id, {
+          appearance: DEFAULT_APPEARANCE,
+          ...template,
+          // Hidden templates cost no bitmap memory. Their palette indices are enough to rebuild the
+          // tiles atomically if the user makes them visible again.
+          tiles,
+        })
+        retainedIndexPixels += template.indices.length
+        restored++
+      } catch (error) {
+        // Validation failures are permanently bad records. Rendering failures are environmental
+        // (unsupported canvas, allocation pressure, decoder rejection) and must never destroy data.
+        if (validated !== null) {
+          warn('install', `could not restore local template ${validated.name}`, String(error))
+          continue
+        }
+        try {
+          const template = normaliseStoredTemplate(rawTemplate)
+          await validateStoredPixels(template)
+          if (template.source === 'image' && !template.everPlaced) {
+            throw new RangeError('unfinished image placement')
+          }
+          warn('install', `could not restore local template ${template.name}`, String(error))
+        } catch (validationError) {
+          const id =
+            isRecord(rawTemplate) && typeof rawTemplate.id === 'string' ? rawTemplate.id : null
+          const revision =
+            isRecord(rawTemplate) && Number.isSafeInteger(rawTemplate.revision)
+              ? (rawTemplate.revision as number)
+              : 0
+          if (id !== null) {
+            await deleteTemplate(id, revision)
+            retryAfterInvalid = true
+          }
+          warn(
+            'install',
+            `discarded invalid local template ${id ?? '(unknown)'}`,
+            String(validationError),
+          )
+        }
+      } finally {
+        if (reserved !== null) {
+          pendingAdds.delete(reserved.id)
+          pendingIndexPixels -= reserved.indices.length
+        }
       }
     }
-  }
+  } while (retryAfterInvalid && restorePasses < MAX_LOCAL_TEMPLATES)
   if (restored > 0) log('install', `restored ${restored} local templates`)
   notify()
+}
+
+export const restoreLocalTemplates = (): Promise<void> => {
+  if (restoreInFlight !== null) return restoreInFlight
+  const restoring = restoreStoredTemplates()
+  restoreInFlight = restoring
+  void restoring.then(
+    () => {
+      if (restoreInFlight === restoring) restoreInFlight = null
+    },
+    () => {
+      if (restoreInFlight === restoring) restoreInFlight = null
+    },
+  )
+  return restoring
 }
 
 interface MoveWaiter {

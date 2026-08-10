@@ -260,6 +260,7 @@ export const loadTemplate = async (
 export const loadTemplates = async (
   maxTemplates = 64,
   maxIndexPixels = 64 * 1024 * 1024,
+  excludedIds: ReadonlySet<string> = new Set(),
 ): Promise<readonly unknown[]> => {
   try {
     const db = await open()
@@ -282,6 +283,10 @@ export const loadTemplates = async (
           const value: unknown = cursor.value
           if (inspected > maxInspected) return
           if (!boundedStoredCandidate(value)) {
+            cursor.continue()
+            return
+          }
+          if (excludedIds.has(value.id as string)) {
             cursor.continue()
             return
           }

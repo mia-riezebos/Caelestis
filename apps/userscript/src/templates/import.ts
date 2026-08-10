@@ -461,7 +461,7 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
         const width = dimensions.width / MARBLE_DRAW_MULT
         const height = dimensions.height / MARBLE_DRAW_MULT
         decodedPixels += width * height
-        if (retainedPixels + decodedPixels > MAX_IMPORT_PIXELS) {
+        if (decodedPixels > MAX_IMPORT_PIXELS) {
           throw new Error('decoded tiles are too large')
         }
         prepared.push({
@@ -518,14 +518,22 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       y: number
       width: number
       height: number
-      pixels: Uint8Array
+      indices: Uint8Array
+      movedPixels?: Uint8Array
     }> = []
+    let hasPaintedPixels = false
     for (const piece of prepared) {
       try {
+        const image = await decodeMarbleTile(piece.blob, piece.encodedDimensions)
+        const quantised = await quantise(image.pixels, true)
+        if (quantised.opaque > 0) hasPaintedPixels = true
         decoded.push({
           x: piece.x,
           y: piece.y,
-          ...(await decodeMarbleTile(piece.blob, piece.encodedDimensions)),
+          width: image.width,
+          height: image.height,
+          indices: quantised.indices,
+          ...(quantised.movedPixels === undefined ? {} : { movedPixels: quantised.movedPixels }),
         })
       } catch (error) {
         warn('install', `skipping Marble template "${key}": unreadable tile`, error)
@@ -534,14 +542,16 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       }
     }
     if (malformed) continue
-
+    if (!hasPaintedPixels) {
+      warn('install', `skipping ${name}: image has no painted pixels`)
+      continue
+    }
     const indices = new Uint8Array(width * height).fill(TRANSPARENT_INDEX)
     const movedPixels = new Uint8Array(width * height)
     let moved = 0
     let opaque = 0
     let assembled = 0
     for (const piece of decoded) {
-      const quantised = await quantise(piece.pixels, true)
       for (let row = 0; row < piece.height; row++) {
         const target = (piece.y - originY + row) * width + (piece.x - originX)
         for (let column = 0; column < piece.width; column++) {
@@ -551,22 +561,17 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
             assembled = 0
             await yieldToBrowser()
           }
-          const index = quantised.indices[sourceIndex] ?? TRANSPARENT_INDEX
+          const index = piece.indices[sourceIndex] ?? TRANSPARENT_INDEX
           if (index === TRANSPARENT_INDEX) continue
           const destination = target + column
           if (indices[destination] === TRANSPARENT_INDEX) opaque++
           const wasMoved = movedPixels[destination] ?? 0
-          const isMoved = quantised.movedPixels?.[sourceIndex] ?? 0
+          const isMoved = piece.movedPixels?.[sourceIndex] ?? 0
           moved += isMoved - wasMoved
           movedPixels[destination] = isMoved
           indices[destination] = index
         }
       }
-    }
-
-    if (opaque === 0) {
-      warn('install', `skipping ${name}: image has no painted pixels`)
-      continue
     }
 
     out.push({

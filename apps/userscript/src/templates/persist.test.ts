@@ -230,6 +230,45 @@ describe('local template persistence', () => {
     expect(valid.continue).toHaveBeenCalledOnce()
   })
 
+  it('does not charge excluded restore records against a later load pass', async () => {
+    const excluded = {
+      value: stored({ id: 'excluded' }),
+      continue: vi.fn(),
+    }
+    const valid = {
+      value: stored({ id: 'valid' }),
+      continue: vi.fn(),
+    }
+    const mutableRequest = {
+      result: excluded as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates(64, 1, new Set(['excluded']))
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = valid as unknown as IDBCursorWithValue
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = null
+    mutableRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([valid.value])
+    expect(excluded.continue).toHaveBeenCalledOnce()
+    expect(valid.continue).toHaveBeenCalledOnce()
+  })
+
   it('rejects an oversized Blob from metadata without materialising its bytes', async () => {
     const pixels = { size: 65, arrayBuffer: vi.fn(async () => new ArrayBuffer(65)) }
     const cursor = {

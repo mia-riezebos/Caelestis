@@ -14,7 +14,13 @@ const persistence = vi.hoisted(() => ({
       { status: 'loaded'; template: unknown } | { status: 'missing' } | { status: 'unavailable' }
     > => ({ status: 'missing' }),
   ),
-  loadTemplates: vi.fn(async (): Promise<unknown[]> => []),
+  loadTemplates: vi.fn(
+    async (
+      _maxTemplates?: number,
+      _maxIndexPixels?: number,
+      _excludedIds?: ReadonlySet<string>,
+    ): Promise<unknown[]> => [],
+  ),
   saveTemplate: vi.fn(
     async (
       _template: unknown,
@@ -338,6 +344,48 @@ describe('local template lifecycle', () => {
     expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad-count', 0)
   })
 
+  it('retries later persisted candidates after deleting an invalid admission', async () => {
+    persistence.loadTemplates
+      .mockResolvedValueOnce([
+        {
+          ...template({ id: 'invalid', indices: new Uint8Array([64]) }),
+          visible: false,
+          everPlaced: true,
+        },
+      ])
+      .mockResolvedValueOnce([
+        { ...template({ id: 'valid', source: 'marble' }), visible: false, everPlaced: true },
+      ])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates().map(({ id }) => id)).toEqual(['valid'])
+    expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
+    expect(persistence.loadTemplates.mock.calls[1]?.[2]).toEqual(new Set(['invalid', 'valid']))
+  })
+
+  it('serializes imports behind startup restore so failed adds cannot suppress durable state', async () => {
+    let finishLoad = (_templates: unknown[]): void => undefined
+    persistence.loadTemplates.mockImplementationOnce(
+      async () =>
+        await new Promise<unknown[]>((resolve) => {
+          finishLoad = resolve
+        }),
+    )
+    const store = await import('./local-store.js')
+
+    const restoring = store.restoreLocalTemplates()
+    const adding = store.addLocalTemplate(template())
+    const rejected = expect(adding).rejects.toThrow(/already exists/i)
+    finishLoad([{ ...template(), visible: false, everPlaced: true }])
+
+    await restoring
+    await rejected
+    expect(store.localTemplates().map(({ id }) => id)).toEqual(['local-test'])
+    expect(persistence.saveTemplate).not.toHaveBeenCalled()
+  })
+
   it('reserves a restoring id before bitmap work yields to a concurrent import', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       { ...template(), visible: true, everPlaced: true },
@@ -347,10 +395,10 @@ describe('local template lifecycle', () => {
 
     const restoring = store.restoreLocalTemplates()
     await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
-
-    await expect(store.addLocalTemplate(template())).rejects.toThrow(/already exists/i)
+    const adding = store.addLocalTemplate(template())
     pending.resolve(bitmap(1_000, 1_000))
     await restoring
+    await expect(adding).rejects.toThrow(/already exists/i)
     expect(store.localTemplates()).toHaveLength(1)
   })
 

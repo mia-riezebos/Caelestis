@@ -202,7 +202,9 @@ describe('template import', () => {
     vi.stubGlobal('scheduler', { yield: browserYield })
     blobSizes.push({ width: 1_500, height: 1_500 })
     bitmapSizes.push({ width: 1_500, height: 1_500 })
-    readbacks.push(new Uint8ClampedArray(1_500 * 1_500 * 4))
+    const stamp = new Uint8ClampedArray(1_500 * 1_500 * 4)
+    stamp.set([0, 0, 0, 255], (1 * 1_500 + 1) * 4)
+    readbacks.push(stamp)
     const { importFile } = await import('./import.js')
     const marble = JSON.stringify({
       templates: { large: { coords: '0,0,0,0', tiles: { '0,0,0,0': 'AAAA' } } },
@@ -351,6 +353,68 @@ describe('template import', () => {
 
     expect(imported).toHaveLength(1)
     expect(imported[0]).toMatchObject({ name: 'painted', width: 3_001, height: 3_001 })
+  })
+
+  it('discards a transparent sparse Marble record before allocating its bounding extent', async () => {
+    blobSizes.push({ width: 3, height: 3 })
+    bitmapSizes.push({ width: 3, height: 3 })
+    readbacks.push(new Uint8ClampedArray(3 * 3 * 4))
+    const filledLengths: number[] = []
+    const fill = Uint8Array.prototype.fill
+    vi.spyOn(Uint8Array.prototype, 'fill').mockImplementation(function (
+      this: Uint8Array,
+      value,
+      start,
+      end,
+    ) {
+      filledLengths.push(this.length)
+      return fill.call(this, value, start, end)
+    })
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        empty: { coords: '0,0,0,0', tiles: { '3,3,998,998': 'AAAA' } },
+      },
+    })
+
+    await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
+
+    expect(filledLengths).not.toContain(3_999 * 3_999)
+  })
+
+  it('charges overlapping Marble pieces as decode work, not retained output', async () => {
+    blobSizes.push(
+      { width: 3, height: 3 },
+      { width: 2_100, height: 2_100 },
+      { width: 2_100, height: 2_100 },
+    )
+    bitmapSizes.push(
+      { width: 3, height: 3 },
+      { width: 2_100, height: 2_100 },
+      { width: 2_100, height: 2_100 },
+    )
+    const retainedStamp = new Uint8ClampedArray(3 * 3 * 4)
+    retainedStamp.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    const firstOverlap = new Uint8ClampedArray(2_100 * 2_100 * 4)
+    const secondOverlap = new Uint8ClampedArray(2_100 * 2_100 * 4)
+    firstOverlap.set([0, 0, 0, 255], (1 * 2_100 + 1) * 4)
+    secondOverlap.set([0, 0, 0, 255], (1 * 2_100 + 1) * 4)
+    readbacks.push(retainedStamp, firstOverlap, secondOverlap)
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        retained: { coords: '0,0,0,0', tiles: { '3,3,999,998': 'AAAA' } },
+        overlapping: {
+          coords: '10,10,0,0',
+          tiles: { '10,10,0,0': 'BBBB', '10,10,1,0': 'CCCC' },
+        },
+      },
+    })
+
+    const imported = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(imported.map(({ name }) => name)).toEqual(['retained', 'overlapping'])
+    expect(imported[1]).toMatchObject({ width: 701, height: 700, opaque: 2 })
   })
 
   it('skips structurally malformed Marble records and keeps later valid records', async () => {
