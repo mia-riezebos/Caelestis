@@ -46,11 +46,24 @@ const run = async <T>(
 ): Promise<T | null> => {
   try {
     const db = await open()
-    return await new Promise<T>((resolve, reject) => {
-      const request = body(db.transaction(STORE, mode).objectStore(STORE))
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
-    })
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const transaction = db.transaction(STORE, mode)
+        const request = body(transaction.objectStore(STORE))
+        let result: T
+        request.onsuccess = () => {
+          result = request.result
+        }
+        request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
+        transaction.oncomplete = () => resolve(result)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+      })
+    } finally {
+      db.close()
+    }
   } catch (error) {
     // Private browsing, a blocked origin, or a quota refusal all land here. Templates staying in
     // memory for the session is a real degradation, but it is not a reason to break the panel.
@@ -59,12 +72,12 @@ const run = async <T>(
   }
 }
 
-export const saveTemplate = async (template: StoredTemplate): Promise<void> => {
-  await run('readwrite', (store) => store.put(template))
+export const saveTemplate = async (template: StoredTemplate): Promise<boolean> => {
+  return (await run('readwrite', (store) => store.put(template))) !== null
 }
 
-export const deleteTemplate = async (id: string): Promise<void> => {
-  await run('readwrite', (store) => store.delete(id))
+export const deleteTemplate = async (id: string): Promise<boolean> => {
+  return (await run('readwrite', (store) => store.delete(id))) !== null
 }
 
 export const loadTemplates = async (): Promise<readonly StoredTemplate[]> => {

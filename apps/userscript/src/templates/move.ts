@@ -1,4 +1,4 @@
-import { TILE_SIZE } from '@wts/shared'
+import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
 import { log } from '../debug.js'
 import { canvasPixelAt, pixelsPerCanvasPixel } from '../main.js'
 import { icon } from '../ui/icons.js'
@@ -37,6 +37,7 @@ interface MoveSession {
 
 let session: MoveSession | null = null
 let onFinish: (() => void) | null = null
+let finishing = false
 
 export const isMoving = (): boolean => session !== null
 export const movingId = (): string | null => session?.id ?? null
@@ -58,6 +59,15 @@ const isOverTemplate = (clientX: number, clientY: number): boolean => {
     point.y < session.y + template.height
   )
 }
+
+const boundedOrigin = (
+  template: { width: number; height: number },
+  x: number,
+  y: number,
+): { x: number; y: number } => ({
+  x: Math.min(Math.max(0, Math.round(x)), WORLD_PIXELS - template.width),
+  y: Math.min(Math.max(0, Math.round(y)), WORLD_PIXELS - template.height),
+})
 
 const bar = (): HTMLElement => {
   const existing = document.querySelector<HTMLElement>('[data-wts-movebar]')
@@ -109,15 +119,20 @@ const renderBar = (name: string): void => {
 }
 
 const onPointerDown = (event: PointerEvent): void => {
-  if (session === null) return
+  if (session === null || finishing) return
   // Middle click: jump, do not drag. A long move should not require dragging the whole way.
   if (event.button === 1) {
     const point = canvasPixelAt(event.clientX, event.clientY)
     const template = localTemplates().find((candidate) => candidate.id === session?.id)
     if (point === null || template === undefined) return
     event.preventDefault()
-    session.x = Math.round(point.x - template.width / 2)
-    session.y = Math.round(point.y - template.height / 2)
+    const next = boundedOrigin(
+      template,
+      point.x - template.width / 2,
+      point.y - template.height / 2,
+    )
+    session.x = next.x
+    session.y = next.y
     void moveLocalTemplate(session.id, session.x, session.y)
     log('draw', 'template centred on cursor', { x: session.x, y: session.y })
     return
@@ -138,17 +153,20 @@ const onPointerDown = (event: PointerEvent): void => {
 }
 
 const onPointerMove = (event: PointerEvent): void => {
-  if (session?.dragging == null) return
+  if (session?.dragging == null || finishing) return
   event.preventDefault()
   event.stopPropagation()
   // Screen delta to canvas delta: one canvas pixel is many screen pixels when zoomed in.
   const scale = pixelsPerCanvasPixel()
-  session.x = Math.round(
+  const template = localTemplates().find((candidate) => candidate.id === session?.id)
+  if (template === undefined) return
+  const next = boundedOrigin(
+    template,
     session.dragging.startX + (event.clientX - session.dragging.pointerX) / scale,
-  )
-  session.y = Math.round(
     session.dragging.startY + (event.clientY - session.dragging.pointerY) / scale,
   )
+  session.x = next.x
+  session.y = next.y
   void moveLocalTemplate(session.id, session.x, session.y)
 }
 
@@ -157,10 +175,12 @@ const onPointerUp = (): void => {
 }
 
 const onKeyDown = (event: KeyboardEvent): void => {
-  if (session === null) return
+  if (session === null || finishing) return
   if (event.key === 'Escape') void abort()
   if (event.key === 'Enter') void commit()
 }
+
+const onAuxClick = (event: Event): void => event.preventDefault()
 
 const listen = (on: boolean): void => {
   const method = on ? 'addEventListener' : 'removeEventListener'
@@ -171,10 +191,11 @@ const listen = (on: boolean): void => {
   window[method]('pointerup', onPointerUp as EventListener, true)
   window[method]('keydown', onKeyDown as EventListener, true)
   // Middle click also opens autoscroll on some platforms.
-  window[method]('auxclick', ((event: Event) => event.preventDefault()) as EventListener, true)
+  window[method]('auxclick', onAuxClick as EventListener, true)
 }
 
 export const beginMove = (id: string, finished: () => void): void => {
+  if (session !== null) return
   const template = localTemplates().find((candidate) => candidate.id === id)
   if (template === undefined) return
   session = {
@@ -186,6 +207,7 @@ export const beginMove = (id: string, finished: () => void): void => {
     dragging: null,
   }
   onFinish = finished
+  finishing = false
   renderBar(template.name)
   listen(true)
   log('install', `move started for ${template.name}`)
@@ -195,15 +217,19 @@ const finish = (): void => {
   listen(false)
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
+  finishing = false
   onFinish?.()
   onFinish = null
 }
 
 export const commit = async (): Promise<void> => {
-  if (session === null) return
-  await moveLocalTemplate(session.id, session.x, session.y)
-  markPlaced(session.id)
-  log('install', 'placement applied', { x: session.x, y: session.y })
+  if (session === null || finishing) return
+  const current = session
+  finishing = true
+  listen(false)
+  await moveLocalTemplate(current.id, current.x, current.y)
+  await markPlaced(current.id)
+  log('install', 'placement applied', { x: current.x, y: current.y })
   finish()
 }
 
@@ -215,12 +241,15 @@ export const commit = async (): Promise<void> => {
  * that takes one click to repeat.
  */
 export const abort = async (): Promise<void> => {
-  if (session === null) return
-  const template = localTemplates().find((candidate) => candidate.id === session?.id)
+  if (session === null || finishing) return
+  const current = session
+  finishing = true
+  listen(false)
+  const template = localTemplates().find((candidate) => candidate.id === current.id)
   if (template !== undefined && template.source === 'image' && !template.everPlaced) {
-    removeLocalTemplate(session.id)
+    await removeLocalTemplate(current.id)
   } else {
-    await moveLocalTemplate(session.id, session.originalX, session.originalY)
+    await moveLocalTemplate(current.id, current.originalX, current.originalY)
   }
   finish()
 }

@@ -145,24 +145,15 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
       const appearance = template.appearance ?? DEFAULT_APPEARANCE
       // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
       // per frame; the stamp is rebuilt only when the appearance changes.
-      const tile = stampTile(template, key, appearance)
+      const tile = stampTile(template, key, appearance, quad.width)
       if (tile === undefined) continue
       context.globalAlpha = appearance.opacity
       // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
       // than 2x. One drawImage per tile per template, whatever the template's size.
-      const bitmap = magnifying ? (tile.levels[0] as ImageBitmap) : levelFor(tile, quad.width)
-      // Snap both edges to whole device pixels, and derive width from the snapped edges rather
-      // than rounding the width itself.
-      //
-      // MapLibre hands us fractional quads, and two neighbours that abut exactly in canvas space
-      // land on edges like 511.6 and 511.9 — so one tile stops a fraction before the next starts
-      // and the background shows through as a hairline seam. Rounding each edge with the same rule
-      // makes a shared boundary land on the same integer from both sides, so they meet exactly.
-      const left = Math.round(quad.x)
-      const top = Math.round(quad.y)
-      const right = Math.round(quad.x + quad.width)
-      const bottom = Math.round(quad.y + quad.height)
-      context.drawImage(bitmap, left, top, right - left, bottom - top)
+      const bitmap = levelFor(tile, quad.width)
+      // Use MapLibre's exact fractional quad. Snapping each quad independently changes both origin
+      // and scale relative to the underlying WebGL tile, visibly distorting the internal pixel grid.
+      context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
       context.globalAlpha = 1
       drawn++
     }

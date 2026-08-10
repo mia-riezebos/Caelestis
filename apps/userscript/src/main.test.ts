@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   draw: null as ((frame: unknown) => void) | null,
   debugApi: null as Record<string, unknown> | null,
+  levelFor: vi.fn(),
   localChange: null as (() => void) | null,
+  localTemplates: vi.fn(() => [] as unknown[]),
   paintFrame: vi.fn(),
   restoreLocalTemplates: vi.fn(async () => {}),
+  stampTile: vi.fn(),
 }))
 
 vi.mock('./debug.js', () => ({
@@ -18,13 +21,13 @@ vi.mock('./debug.js', () => ({
 vi.mock('./map-handle.js', () => ({ installMapCapture: vi.fn() }))
 vi.mock('./paint.js', () => ({ paintFrame: harness.paintFrame }))
 vi.mock('./templates/local-store.js', () => ({
-  levelFor: vi.fn(),
-  localTemplates: vi.fn(() => []),
+  levelFor: harness.levelFor,
+  localTemplates: harness.localTemplates,
   onLocalChange: vi.fn((listener: () => void) => {
     harness.localChange = listener
   }),
   restoreLocalTemplates: harness.restoreLocalTemplates,
-  stampTile: vi.fn(),
+  stampTile: harness.stampTile,
 }))
 vi.mock('./tile-transform.js', () => ({
   install: vi.fn(),
@@ -40,6 +43,7 @@ afterEach(() => {
   harness.draw = null
   harness.debugApi = null
   harness.localChange = null
+  harness.localTemplates.mockReturnValue([])
 })
 
 describe('overlay canvas lifecycle', () => {
@@ -171,5 +175,59 @@ describe('overlay canvas lifecycle', () => {
     expect(context.fillStyle).toBe('rgba(0, 0, 0, 0.6)')
     expect(context.fillRect).toHaveBeenCalledOnce()
     expect(context.fillRect).toHaveBeenCalledWith(10, 20, 30, 40)
+  })
+
+  it('draws visible templates on MapLibre fractional quads without distorting their pixel grid', async () => {
+    const bitmap = { width: 1_000, height: 1_000 }
+    const levels = { levels: [bitmap] }
+    harness.localTemplates.mockReturnValue([
+      {
+        id: 'template',
+        visible: true,
+        appearance: { shape: 'full', size: 1 / 3, anchor: 'c', opacity: 0.8, hiddenColours: [] },
+      },
+    ])
+    harness.stampTile.mockReturnValue(levels)
+    harness.levelFor.mockReturnValue(bitmap)
+    vi.stubGlobal('document', {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => ({
+        dataset: {},
+        style: {},
+        width: 0,
+        height: 0,
+        parentElement: null,
+        getContext: () => ({}),
+      })),
+    })
+    await import('./main.js')
+    const frame = {
+      canvas: { width: 1_200, height: 700, parentElement: null },
+      quads: [{ tile: { x: 1, y: 2 }, x: 0.49, y: 0.25, width: 1_000.49, height: 999.6 }],
+    }
+    const draw = harness.draw
+    if (draw === null) throw new Error('main must register its tile-frame listener')
+    draw(frame)
+    const painters = harness.paintFrame.mock.calls[0]?.[2] as
+      | Array<(context: unknown, frame: unknown) => void>
+      | undefined
+    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
+    const context = {
+      drawImage: vi.fn(),
+      globalAlpha: 1,
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: 'low',
+    }
+
+    painters[0](context, frame)
+
+    expect(harness.stampTile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'template' }),
+      '1/2',
+      expect.objectContaining({ opacity: 0.8 }),
+      1_000.49,
+    )
+    expect(harness.levelFor).toHaveBeenCalledWith(levels, 1_000.49)
+    expect(context.drawImage).toHaveBeenCalledWith(bitmap, 0.49, 0.25, 1_000.49, 999.6)
   })
 })
