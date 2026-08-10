@@ -41,6 +41,7 @@ export const canvasPixelAtIn = (
   clientY: number,
 ): { x: number; y: number } | null => {
   const box = frame.canvas.getBoundingClientRect()
+  if (box.width <= 0 || box.height <= 0) return null
   const ratioX = frame.canvas.width / box.width
   const ratioY = frame.canvas.height / box.height
   const px = (clientX - box.left) * ratioX
@@ -65,6 +66,7 @@ export const screenPointForIn = (
   const reference = frame.quads[0]
   if (reference === undefined) return null
   const box = frame.canvas.getBoundingClientRect()
+  if (box.width <= 0 || box.height <= 0) return null
   const ratioX = frame.canvas.width / box.width
   const ratioY = frame.canvas.height / box.height
   const scaleX = reference.width / TILE_SIZE

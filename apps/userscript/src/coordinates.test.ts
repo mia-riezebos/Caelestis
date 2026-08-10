@@ -65,6 +65,24 @@ describe('overlay coordinates', () => {
     expect(screenPointForIn(current, 500, 1_000_500)).toEqual({ x: 650, y: 250 })
   })
 
+  it('declines coordinate conversion while the canvas has no CSS size', () => {
+    const current = frame()
+    current.canvas.getBoundingClientRect = () => ({
+      left: 10,
+      top: 20,
+      width: 0,
+      height: 0,
+      right: 10,
+      bottom: 20,
+      x: 10,
+      y: 20,
+      toJSON: () => undefined,
+    })
+
+    expect(canvasPixelAtIn(current, 10, 20)).toBeNull()
+    expect(screenPointForIn(current, 2_250, 3_250)).toBeNull()
+  })
+
   it('reports the current horizontal pixel scale and the no-frame fallback', () => {
     expect(pixelsPerCanvasPixelIn(frame())).toBe(0.2)
     expect(pixelsPerCanvasPixelIn(null)).toBe(1)
