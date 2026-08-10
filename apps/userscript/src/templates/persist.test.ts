@@ -44,7 +44,12 @@ describe('local template persistence', () => {
 
   it('resolves a write only after its IndexedDB transaction commits', async () => {
     const templateRequest = { result: undefined } as unknown as IDBRequest<unknown>
-    const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
+    const cursorRequest = { result: null } as unknown as IDBRequest<IDBCursorWithValue | null>
+    const templateStore = {
+      get: vi.fn(() => templateRequest),
+      openCursor: vi.fn(() => cursorRequest),
+      put: vi.fn(),
+    }
     const transaction = {
       objectStore: vi.fn(() => templateStore),
     } as unknown as IDBTransaction
@@ -81,6 +86,8 @@ describe('local template persistence', () => {
     await Promise.resolve()
     templateRequest.onsuccess?.(new Event('success'))
     await Promise.resolve()
+    cursorRequest.onsuccess?.(new Event('success'))
+    await Promise.resolve()
 
     expect(settled).toBe(false)
     transaction.oncomplete?.(new Event('complete'))
@@ -91,9 +98,90 @@ describe('local template persistence', () => {
     )
   })
 
+  it('rejects a creation when the same IndexedDB transaction observes 64 durable records', async () => {
+    const templateRequest = { result: undefined } as unknown as IDBRequest<unknown>
+    const cursor = { value: stored(), continue: vi.fn() }
+    const cursorRequest = {
+      result: cursor as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const templateStore = {
+      get: vi.fn(() => templateRequest),
+      openCursor: vi.fn(() => cursorRequest as unknown as IDBRequest<IDBCursorWithValue | null>),
+      put: vi.fn(),
+    }
+    const transaction = { objectStore: vi.fn(() => templateStore) } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { saveTemplate } = await import('./persist.js')
+
+    const saving = saveTemplate(stored({ id: 'new' }) as never, null)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    templateRequest.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    if (templateStore.openCursor.mock.calls.length > 0) {
+      for (let index = 0; index < 64; index++) cursorRequest.onsuccess?.(new Event('success'))
+      cursorRequest.result = null
+      cursorRequest.onsuccess?.(new Event('success'))
+    }
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(saving).resolves.toEqual({ status: 'limit' })
+    expect(templateStore.put).not.toHaveBeenCalled()
+  })
+
+  it('rejects a creation when the same IndexedDB transaction observes the durable pixel cap', async () => {
+    const templateRequest = { result: undefined } as unknown as IDBRequest<unknown>
+    const cursor = {
+      value: stored({
+        id: 'large',
+        width: 64 * 1024 * 1024,
+        indices: { size: 64 * 1024 * 1024, arrayBuffer: vi.fn() },
+        opaque: 1,
+      }),
+      continue: vi.fn(),
+    }
+    const cursorRequest = {
+      result: cursor as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const templateStore = {
+      get: vi.fn(() => templateRequest),
+      openCursor: vi.fn(() => cursorRequest as unknown as IDBRequest<IDBCursorWithValue | null>),
+      put: vi.fn(),
+    }
+    const transaction = { objectStore: vi.fn(() => templateStore) } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { saveTemplate } = await import('./persist.js')
+
+    const saving = saveTemplate(stored({ id: 'new' }) as never, null)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    templateRequest.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    cursorRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(saving).resolves.toEqual({ status: 'limit' })
+    expect(templateStore.put).not.toHaveBeenCalled()
+  })
+
   it('reports a transaction abort as a failed durable write and closes the database', async () => {
     const templateRequest = { result: undefined } as unknown as IDBRequest<unknown>
-    const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
+    const cursorRequest = { result: null } as unknown as IDBRequest<IDBCursorWithValue | null>
+    const templateStore = {
+      get: vi.fn(() => templateRequest),
+      openCursor: vi.fn(() => cursorRequest),
+      put: vi.fn(),
+    }
     const transaction = {
       objectStore: vi.fn(() => templateStore),
     } as unknown as IDBTransaction
@@ -126,6 +214,7 @@ describe('local template persistence', () => {
     opening.onsuccess?.(new Event('success'))
     await Promise.resolve()
     templateRequest.onsuccess?.(new Event('success'))
+    cursorRequest.onsuccess?.(new Event('success'))
     transaction.onabort?.(new Event('abort'))
 
     await expect(saving).resolves.toEqual({ status: 'unavailable' })
@@ -591,6 +680,35 @@ describe('local template persistence', () => {
     transaction.oncomplete?.(new Event('complete'))
 
     await expect(loading).resolves.toEqual({ status: 'invalid', revision: 4 })
+  })
+
+  it('rejects cheaply invalid Blob metadata before materialising pixels', async () => {
+    const pixels = { size: 1, arrayBuffer: vi.fn(async () => new Uint8Array([0]).buffer) }
+    const request = {
+      result: stored({ indices: pixels, revision: Number.MAX_SAFE_INTEGER }),
+    } as unknown as IDBRequest<unknown>
+    const transaction = {
+      objectStore: vi.fn(() => ({ get: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplate } = await import('./persist.js')
+
+    const loading = loadTemplate('loaded')
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    request.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual({
+      status: 'invalid',
+      revision: Number.MAX_SAFE_INTEGER,
+    })
+    expect(pixels.arrayBuffer).not.toHaveBeenCalled()
   })
 
   it('distinguishes an absent single record from an invalid one', async () => {

@@ -1,6 +1,6 @@
 import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
 import { log, warn } from '../debug.js'
-import { canvasPixelAt, cssPixelsPerCanvasPixel } from '../main.js'
+import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget } from '../main.js'
 import { icon } from '../ui/icons.js'
 import {
   clearLocalPreview,
@@ -44,7 +44,7 @@ interface MoveSession {
 let session: MoveSession | null = null
 let onFinish: (() => void) | null = null
 let finishing = false
-let suppressMiddleAuxClick = false
+let suppressMiddleAuxClickFor: number | null = null
 
 export const isMoving = (): boolean => session !== null
 export const movingId = (): string | null => session?.id ?? null
@@ -130,14 +130,15 @@ const onPointerDown = (event: PointerEvent): void => {
   // One pointer owns a drag until it ends. A second touch, pen, or mouse button must not replace
   // its origin or recenter the template underneath it.
   if (session.dragging !== null) return
+  if (isPageControl(event.target) || !isMapInteractionTarget(event.target)) return
+  suppressMiddleAuxClickFor = null
   // Middle click: jump, do not drag. A long move should not require dragging the whole way.
   if (event.button === 1) {
-    suppressMiddleAuxClick = false
     const point = canvasPixelAt(event.clientX, event.clientY)
     const template = localTemplates().find((candidate) => candidate.id === session?.id)
     if (point === null || template === undefined) return
     event.preventDefault()
-    suppressMiddleAuxClick = true
+    suppressMiddleAuxClickFor = event.pointerId
     const next = boundedOrigin(
       template,
       point.x - template.width / 2,
@@ -194,10 +195,22 @@ const previewMove = (id: string, x: number, y: number): void => {
 
 const onPointerUp = (event: PointerEvent): void => {
   if (session?.dragging?.pointerId === event.pointerId) session.dragging = null
+  if (suppressMiddleAuxClickFor === event.pointerId) {
+    const pointerId = event.pointerId
+    setTimeout(() => {
+      if (suppressMiddleAuxClickFor === pointerId) suppressMiddleAuxClickFor = null
+    }, 0)
+  }
+}
+
+const onPointerCancel = (event: PointerEvent): void => {
+  onPointerUp(event)
+  if (suppressMiddleAuxClickFor === event.pointerId) suppressMiddleAuxClickFor = null
 }
 
 const onBlur = (): void => {
   if (session !== null) session.dragging = null
+  suppressMiddleAuxClickFor = null
 }
 
 const isPageControl = (target: EventTarget | null): boolean => {
@@ -210,7 +223,9 @@ const isPageControl = (target: EventTarget | null): boolean => {
   return (
     element.isContentEditable === true ||
     ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
-    (element.closest?.('dialog,[role="dialog"]') ?? null) !== null
+    (element.closest?.(
+      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"]',
+    ) ?? null) !== null
   )
 }
 
@@ -228,8 +243,8 @@ const onKeyDown = (event: KeyboardEvent): void => {
 }
 
 const onAuxClick = (event: MouseEvent): void => {
-  if (event.button !== 1 || !suppressMiddleAuxClick) return
-  suppressMiddleAuxClick = false
+  if (event.button !== 1 || suppressMiddleAuxClickFor === null) return
+  suppressMiddleAuxClickFor = null
   event.preventDefault()
 }
 
@@ -240,7 +255,7 @@ const listen = (on: boolean): void => {
   window[method]('pointerdown', onPointerDown as EventListener, true)
   window[method]('pointermove', onPointerMove as EventListener, true)
   window[method]('pointerup', onPointerUp as EventListener, true)
-  window[method]('pointercancel', onPointerUp as EventListener, true)
+  window[method]('pointercancel', onPointerCancel as EventListener, true)
   window[method]('blur', onBlur as EventListener, true)
   window[method]('keydown', onKeyDown as EventListener, true)
   // Middle click also opens autoscroll on some platforms.
@@ -259,7 +274,7 @@ export const beginMove = (id: string, finished: () => void): void => {
   }
   onFinish = finished
   finishing = false
-  suppressMiddleAuxClick = false
+  suppressMiddleAuxClickFor = null
   renderBar(template.name)
   listen(true)
   log('install', `move started for ${template.name}`)
@@ -270,7 +285,7 @@ const finish = (): void => {
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
   finishing = false
-  suppressMiddleAuxClick = false
+  suppressMiddleAuxClickFor = null
   const finished = onFinish
   onFinish = null
   try {

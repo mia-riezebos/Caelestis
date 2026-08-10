@@ -1,3 +1,4 @@
+import { WORLD_PIXELS } from '@wts/shared'
 import { warn } from '../debug.js'
 import { isUint8Array } from '../page-world.js'
 import type { Appearance } from './appearance.js'
@@ -24,6 +25,8 @@ const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
 const VERSION = 3
+const MAX_PERSISTED_TEMPLATES = 64
+const MAX_PERSISTED_INDEX_PIXELS = 64 * 1024 * 1024
 let blockedOpenRequest: IDBOpenDBRequest | null = null
 let blockedOpenRecovery: Promise<void> | null = null
 let settleBlockedOpen: (() => void) | null = null
@@ -97,6 +100,7 @@ const writeVersioned = async (
   expectedRevision: number | null,
   operation: (templates: IDBObjectStore, nextRevision: number) => void,
   incrementRevision = true,
+  creationPixels: number | null = null,
 ): Promise<SaveResult> => {
   try {
     const db = await open()
@@ -119,8 +123,46 @@ const writeVersioned = async (
           const nextRevision = incrementRevision
             ? (expectedRevision ?? 0) + 1
             : (expectedRevision ?? 0)
-          operation(templates, nextRevision)
-          result = { status: 'saved', revision: nextRevision }
+          const commit = (): void => {
+            operation(templates, nextRevision)
+            result = { status: 'saved', revision: nextRevision }
+          }
+          if (expectedRevision !== null || creationPixels === null) {
+            commit()
+            return
+          }
+          // Read-write transactions on one object store are serialized across every connection.
+          // Scanning and inserting inside this transaction makes the aggregate limits cross-tab
+          // atomic without a second ledger that could drift from the records it accounts for.
+          let records = 0
+          let pixels = 0
+          const cursorRequest = templates.openCursor()
+          cursorRequest.onsuccess = () => {
+            const cursor = cursorRequest.result
+            if (cursor === null) {
+              if (
+                records < MAX_PERSISTED_TEMPLATES &&
+                pixels + creationPixels <= MAX_PERSISTED_INDEX_PIXELS
+              ) {
+                commit()
+              } else {
+                result = { status: 'limit' }
+              }
+              return
+            }
+            records++
+            pixels = boundedPixelSum(pixels, candidateIndexPixels(cursor.value))
+            if (
+              records >= MAX_PERSISTED_TEMPLATES ||
+              pixels + creationPixels > MAX_PERSISTED_INDEX_PIXELS
+            ) {
+              result = { status: 'limit' }
+              return
+            }
+            cursor.continue()
+          }
+          cursorRequest.onerror = () =>
+            reject(cursorRequest.error ?? new Error('indexedDB cursor failed'))
         }
         request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
         transaction.oncomplete = () => resolve(result)
@@ -141,6 +183,7 @@ const writeVersioned = async (
 export type SaveResult =
   | { readonly status: 'saved'; readonly revision: number }
   | { readonly status: 'conflict' }
+  | { readonly status: 'limit' }
   | { readonly status: 'unavailable' }
 
 export const saveTemplate = async (
@@ -148,15 +191,21 @@ export const saveTemplate = async (
   expectedRevision: number | null,
 ): Promise<SaveResult> => {
   const { indices, ...metadata } = template
-  return await writeVersioned(template.id, expectedRevision, (templates, revision) => {
-    // IndexedDB can inspect a Blob's size without first allocating an equally large typed array.
-    // Legacy Uint8Array records remain readable; all new writes use this bounded representation.
-    const bytes =
-      indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
-        ? (indices.buffer as ArrayBuffer)
-        : indices.slice().buffer
-    templates.put({ ...metadata, revision, indices: new Blob([bytes]) })
-  })
+  return await writeVersioned(
+    template.id,
+    expectedRevision,
+    (templates, revision) => {
+      // IndexedDB can inspect a Blob's size without first allocating an equally large typed array.
+      // Legacy Uint8Array records remain readable; all new writes use this bounded representation.
+      const bytes =
+        indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
+          ? (indices.buffer as ArrayBuffer)
+          : indices.slice().buffer
+      templates.put({ ...metadata, revision, indices: new Blob([bytes]) })
+    },
+    true,
+    expectedRevision === null ? indices.length : null,
+  )
 }
 
 export const deleteTemplate = async (
@@ -193,6 +242,12 @@ const boundedStoredCandidate = (
 } => {
   if (typeof value !== 'object' || value === null) return false
   const record = value as Record<string, unknown>
+  const indices = record.indices
+  const indexPixels = isUint8Array(indices)
+    ? indices.length
+    : isStoredBlob(indices)
+      ? indices.size
+      : -1
   if (
     typeof record.id !== 'string' ||
     record.id.length === 0 ||
@@ -202,20 +257,45 @@ const boundedStoredCandidate = (
     typeof record.source !== 'string' ||
     !['wplace', 'marble', 'image'].includes(record.source) ||
     !Number.isSafeInteger(record.originX) ||
+    Number(record.originX) < 0 ||
     !Number.isSafeInteger(record.originY) ||
+    Number(record.originY) < 0 ||
     !Number.isSafeInteger(record.width) ||
+    Number(record.width) <= 0 ||
     !Number.isSafeInteger(record.height) ||
-    (!isUint8Array(record.indices) && !isStoredBlob(record.indices)) ||
+    Number(record.height) <= 0 ||
+    indexPixels < 0 ||
     !Number.isSafeInteger(record.moved) ||
+    Number(record.moved) < 0 ||
     !Number.isSafeInteger(record.opaque) ||
+    Number(record.opaque) <= 0 ||
+    Number(record.moved) > Number(record.opaque) ||
+    Number(record.opaque) > indexPixels ||
     typeof record.visible !== 'boolean' ||
-    typeof record.everPlaced !== 'boolean'
+    typeof record.everPlaced !== 'boolean' ||
+    (record.sortOrder !== undefined && !Number.isSafeInteger(record.sortOrder))
+  ) {
+    return false
+  }
+  const width = Number(record.width)
+  const height = Number(record.height)
+  const originX = Number(record.originX)
+  const originY = Number(record.originY)
+  if (
+    width > WORLD_PIXELS ||
+    height > WORLD_PIXELS ||
+    originX > WORLD_PIXELS - width ||
+    originY > WORLD_PIXELS - height ||
+    indexPixels !== width * height ||
+    (record.source === 'image' && record.everPlaced === false)
   ) {
     return false
   }
   if (
     record.revision !== undefined &&
-    (!Number.isSafeInteger(record.revision) || Number(record.revision) < 0)
+    (!Number.isSafeInteger(record.revision) ||
+      Number(record.revision) < 0 ||
+      Number(record.revision) >= Number.MAX_SAFE_INTEGER)
   ) {
     return false
   }

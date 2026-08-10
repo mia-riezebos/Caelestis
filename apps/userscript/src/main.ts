@@ -105,6 +105,20 @@ export const canvasPixelAt = (
   return lastFrame === null ? null : canvasPixelAtIn(lastFrame, clientX, clientY)
 }
 
+/** Whether a captured page event actually originated inside the active map surface. */
+export const isMapInteractionTarget = (target: EventTarget | null): boolean => {
+  if (lastFrame === null || target === null) return false
+  const mapCanvas = lastFrame.canvas
+  const mapContainer = mapCanvas.parentElement
+  if (target === mapCanvas || target === mapContainer) return true
+  if (mapContainer === null) return false
+  try {
+    return mapContainer.contains(target as Node)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Where a canvas pixel currently sits on screen, in client coordinates.
  *

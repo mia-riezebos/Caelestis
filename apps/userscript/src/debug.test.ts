@@ -36,6 +36,27 @@ describe('installDebugApi', () => {
     expect((descriptor.value as Record<string, unknown>).mark).toBe(mark)
     expect((descriptor.value as Record<string, unknown>).counters).toBeTypeOf('function')
   })
+
+  it('starts noisy console suppression fresh after clear', () => {
+    const pageRealm = { Object }
+    vi.stubGlobal('window', pageRealm)
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => '1'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    const consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    installDebugApi()
+    consoleInfo.mockClear()
+    const api = (pageRealm as Record<string, unknown>).__wts as { clear(): void }
+
+    log('frame', 'same noisy frame', { quads: 1 })
+    log('frame', 'same noisy frame', { quads: 1 })
+    api.clear()
+    log('frame', 'same noisy frame', { quads: 1 })
+
+    expect(consoleInfo).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('counterKey', () => {

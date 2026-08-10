@@ -218,6 +218,7 @@ export const installDebugApi = (extra: Record<string, unknown> = {}): void => {
     clear() {
       ring = []
       counters.clear()
+      lastNoisy.clear()
     },
     ...extra,
   }

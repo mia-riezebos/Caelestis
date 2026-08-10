@@ -4,6 +4,7 @@ const harness = vi.hoisted(() => ({
   canvasPixelAt: vi.fn(() => ({ x: 2, y: 3 })),
   cssPixelsPerCanvasPixel: vi.fn(() => ({ x: 1, y: 1 })),
   clearLocalPreview: vi.fn(() => true),
+  isMapInteractionTarget: vi.fn(() => true),
   localTemplates: vi.fn(),
   placeLocalTemplate: vi.fn(async () => true),
   previewLocalTemplate: vi.fn(() => true),
@@ -14,6 +15,7 @@ const harness = vi.hoisted(() => ({
 vi.mock('../main.js', () => ({
   canvasPixelAt: harness.canvasPixelAt,
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
+  isMapInteractionTarget: harness.isMapInteractionTarget,
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
@@ -42,6 +44,7 @@ beforeEach(() => {
   movebar = null
   harness.canvasPixelAt.mockReturnValue({ x: 2, y: 3 })
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
+  harness.isMapInteractionTarget.mockReturnValue(true)
   harness.localTemplates.mockReturnValue([
     {
       id: 'test',
@@ -122,6 +125,63 @@ describe('template placement controls', () => {
     pointerdown({ button: 1, clientX: 2, clientY: 3, preventDefault: vi.fn() } as unknown as Event)
     auxclick(unrelated as unknown as Event)
     expect(unrelated.preventDefault).toHaveBeenCalledOnce()
+  })
+
+  it('does not capture placement pointers from page controls or outside the active map', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    if (pointerdown === undefined) throw new Error('expected pointerdown listener')
+    const control = { tagName: 'BUTTON', closest: vi.fn(() => null) }
+    const controlEvent = {
+      button: 1,
+      pointerId: 1,
+      target: control,
+      clientX: 2,
+      clientY: 3,
+      preventDefault: vi.fn(),
+    }
+
+    pointerdown(controlEvent as unknown as Event)
+    harness.isMapInteractionTarget.mockReturnValueOnce(false)
+    const outsideEvent = {
+      button: 1,
+      pointerId: 2,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      clientX: 2,
+      clientY: 3,
+      preventDefault: vi.fn(),
+    }
+    pointerdown(outsideEvent as unknown as Event)
+
+    expect(controlEvent.preventDefault).not.toHaveBeenCalled()
+    expect(outsideEvent.preventDefault).not.toHaveBeenCalled()
+    expect(harness.canvasPixelAt).not.toHaveBeenCalled()
+  })
+
+  it('clears middle-click suppression when the handled pointer is cancelled', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    const pointercancel = listeners.get('pointercancel')
+    const auxclick = listeners.get('auxclick')
+    if (pointerdown === undefined || pointercancel === undefined || auxclick === undefined) {
+      throw new Error('expected pointer listeners')
+    }
+    pointerdown({
+      button: 1,
+      pointerId: 7,
+      target: { tagName: 'CANVAS', closest: vi.fn(() => null) },
+      clientX: 2,
+      clientY: 3,
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+    pointercancel({ pointerId: 7 } as unknown as Event)
+    const later = { button: 1, preventDefault: vi.fn() }
+
+    auxclick(later as unknown as Event)
+
+    expect(later.preventDefault).not.toHaveBeenCalled()
   })
 
   it('does not carry middle-click suppression into the next placement session', async () => {

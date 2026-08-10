@@ -29,7 +29,10 @@ const persistence = vi.hoisted(() => ({
       _template: unknown,
       expectedRevision: number | null,
     ): Promise<
-      { status: 'saved'; revision: number } | { status: 'conflict' } | { status: 'unavailable' }
+      | { status: 'saved'; revision: number }
+      | { status: 'conflict' }
+      | { status: 'limit' }
+      | { status: 'unavailable' }
     > => ({ status: 'saved', revision: (expectedRevision ?? 0) + 1 }),
   ),
 }))
@@ -598,19 +601,24 @@ describe('local template lifecycle', () => {
     })
     persistence.loadTemplates
       .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(unavailable)
       .mockResolvedValueOnce([
         { ...template({ id: 'recovered', source: 'marble' }), visible: false, everPlaced: true },
       ])
     const store = await import('./local-store.js')
 
     await store.restoreLocalTemplates()
+    await store.restoreLocalTemplates()
+    expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
     expect(store.localTemplates()).toEqual([])
     recover()
 
-    await vi.waitFor(() => expect(persistence.loadTemplates).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(persistence.loadTemplates).toHaveBeenCalledTimes(3))
     await vi.waitFor(() =>
       expect(store.localTemplates().map(({ id }) => id)).toEqual(['recovered']),
     )
+    await Promise.resolve()
+    expect(persistence.loadTemplates).toHaveBeenCalledTimes(3)
   })
 
   it('deletes malformed records identified only by their IndexedDB primary key', async () => {
@@ -1029,6 +1037,21 @@ describe('local template lifecycle', () => {
     expect(oldLevels.every((level) => !level.close.mock.calls.length)).toBe(true)
   })
 
+  it('keeps a pending image local when the cross-tab durable aggregate limit rejects creation', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template({ source: 'image' }))
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'limit' })
+
+    await expect(store.placeLocalTemplate(added.id, added.originX, added.originY)).resolves.toBe(
+      false,
+    )
+
+    expect(store.localTemplates()).toEqual([
+      expect.objectContaining({ id: added.id, everPlaced: false, revision: 0 }),
+    ])
+    expect(persistence.loadTemplate).not.toHaveBeenCalled()
+  })
+
   it('reports a deletion reconciled to durable absence as successful', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
@@ -1427,6 +1450,34 @@ describe('local template lifecycle', () => {
     })
   })
 
+  it('serializes conflict hydration globally across different template ids', async () => {
+    const store = await import('./local-store.js')
+    const first = await store.addLocalTemplate(template({ id: 'first' }))
+    const second = await store.addLocalTemplate(template({ id: 'second', originX: 30 }))
+    persistence.saveTemplate.mockClear()
+    persistence.saveTemplate
+      .mockResolvedValueOnce({ status: 'conflict' })
+      .mockResolvedValueOnce({ status: 'conflict' })
+    let finishFirstLoad = (_result: { status: 'missing' }): void => undefined
+    persistence.loadTemplate
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<{ status: 'missing' }>((resolve) => {
+            finishFirstLoad = resolve
+          }),
+      )
+      .mockResolvedValue({ status: 'missing' })
+
+    const firstMutation = store.setAppearance(first.id, { ...first.appearance, opacity: 0.5 })
+    const secondMutation = store.setAppearance(second.id, { ...second.appearance, opacity: 0.5 })
+    await vi.waitFor(() => expect(persistence.saveTemplate).toHaveBeenCalledTimes(2))
+
+    expect(persistence.loadTemplate).toHaveBeenCalledOnce()
+    finishFirstLoad({ status: 'missing' })
+    await Promise.all([firstMutation, secondMutation])
+    expect(persistence.loadTemplate).toHaveBeenCalledTimes(2)
+  })
+
   it('rejects appearance values that restore would discard', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
@@ -1676,6 +1727,37 @@ describe('local template lifecycle', () => {
       originX: 2,
       revision: 2,
     })
+  })
+
+  it('rebuilds a pre-sliced move when reconciliation replaces its source pixels', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const pending = deferOneBitmap()
+    const moving = store.moveLocalTemplate(added.id, 30, 40)
+    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalled())
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    persistence.loadTemplate.mockResolvedValueOnce({
+      status: 'loaded',
+      template: {
+        ...template({ width: 2, indices: new Uint8Array([0, 0]), opaque: 2 }),
+        visible: true,
+        everPlaced: true,
+        revision: 2,
+      },
+    })
+
+    await store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 })
+    const staleBitmap = bitmap(1_000, 1_000)
+    pending.resolve(staleBitmap)
+    await moving
+
+    const final = store.localTemplates()[0]
+    expect(final).toMatchObject({ width: 2, originX: 30, originY: 40 })
+    expect(
+      [...(final?.tiles.values() ?? [])]
+        .flatMap(({ levels }) => levels)
+        .includes(staleBitmap as never),
+    ).toBe(false)
   })
 
   it('restores hidden templates lazily and discards unfinished image placements', async () => {

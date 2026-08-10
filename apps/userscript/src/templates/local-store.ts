@@ -86,6 +86,8 @@ const MAX_RESTORE_HYDRATED_PIXELS = MAX_LOCAL_INDEX_PIXELS * 2
 let retainedIndexPixels = 0
 let pendingIndexPixels = 0
 let restoreInFlight: Promise<void> | null = null
+let scheduledRestoreRecovery: Promise<void> | null = null
+let reconciliationTail: Promise<void> = Promise.resolve()
 
 /** @internal Pure arithmetic seam for proving concurrent aggregate-budget reservations. */
 export const indexIncreaseWithinBudget = (
@@ -589,7 +591,7 @@ const removeStaleLocalState = (existing: PlacedTemplate): void => {
 }
 
 /** Replace stale process-local state with the durable winner after an IndexedDB CAS conflict. */
-const reconcileConflict = async (id: string): Promise<void> => {
+const reconcileConflictExclusive = async (id: string): Promise<void> => {
   const MAX_RECONCILIATION_ATTEMPTS = 4
   for (let attempt = 0; attempt < MAX_RECONCILIATION_ATTEMPTS; attempt++) {
     const existing = templates.get(id)
@@ -613,7 +615,6 @@ const reconcileConflict = async (id: string): Promise<void> => {
     let winner: StoredTemplate
     try {
       winner = normaliseStoredTemplate(loaded.template)
-      await validateStoredPixels(winner)
       if (winner.id !== id || (winner.source === 'image' && !winner.everPlaced)) {
         throw new RangeError('winning template state is invalid')
       }
@@ -643,6 +644,22 @@ const reconcileConflict = async (id: string): Promise<void> => {
       return
     }
     try {
+      try {
+        await validateStoredPixels(winner)
+      } catch (error) {
+        const deleted = await deleteTemplate(id, winner.revision)
+        if (deleted.status === 'saved') {
+          removeStaleLocalState(existing)
+          return
+        }
+        if (deleted.status === 'conflict') continue
+        warn(
+          'install',
+          `could not remove invalid conflict winner for ${existing.name}`,
+          String(error),
+        )
+        return
+      }
       let visible = winner.visible
       let tiles = new Map<string, TileLevels>()
       if (visible) {
@@ -691,6 +708,18 @@ const reconcileConflict = async (id: string): Promise<void> => {
     }
   }
   warn('install', `could not reconcile ${id}: conflict retry limit reached`)
+}
+
+const reconcileConflict = async (id: string): Promise<void> => {
+  const running = reconciliationTail.then(
+    async () => await reconcileConflictExclusive(id),
+    async () => await reconcileConflictExclusive(id),
+  )
+  reconciliationTail = running.then(
+    () => undefined,
+    () => undefined,
+  )
+  await running
 }
 
 const committedRevision = (result: SaveResult): number | null =>
@@ -786,8 +815,15 @@ const restoreStoredTemplates = async (): Promise<void> => {
       seenRevisions,
     )
     const retryAfterUnavailable = stored.retryAfterUnavailable
-    if (retryAfterUnavailable !== null && retryAfterUnavailable !== undefined) {
+    if (
+      retryAfterUnavailable !== null &&
+      retryAfterUnavailable !== undefined &&
+      scheduledRestoreRecovery !== retryAfterUnavailable
+    ) {
+      scheduledRestoreRecovery = retryAfterUnavailable
       void retryAfterUnavailable.then(() => {
+        if (scheduledRestoreRecovery !== retryAfterUnavailable) return
+        scheduledRestoreRecovery = null
         const activeRestore = restoreInFlight
         if (activeRestore === null) {
           void restoreLocalTemplates()
@@ -1016,6 +1052,23 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       const saved = await writeInOrder(id, async () => {
         const latest = templates.get(id)
         if (latest === undefined || deleting.has(id)) return false
+        try {
+          validatePlacement(latest, target.originX, target.originY)
+        } catch (error) {
+          releaseCandidateTiles(tiles)
+          tiles = new Map<string, TileLevels>()
+          throw error
+        }
+        const sourceChanged =
+          latest.indices !== existing.indices ||
+          latest.width !== existing.width ||
+          latest.height !== existing.height
+        if (sourceChanged) {
+          releaseCandidateTiles(tiles)
+          tiles = latest.visible
+            ? await slice({ ...latest, originX: target.originX, originY: target.originY })
+            : new Map<string, TileLevels>()
+        }
         if (!latest.visible) {
           await validateStoredPixels({
             ...latest,
