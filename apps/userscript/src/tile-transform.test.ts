@@ -185,6 +185,13 @@ describe('quadFromMatrix', () => {
     expect(quadFromMatrix(tileMatrix(0.002), tile, canvas(1000))).toBeNull()
   })
 
+  it('accepts the 131,072-pixel tile size observed at zoom 19', () => {
+    const quad = quadFromMatrix(tileMatrix(262.144), tile, canvas(1000))
+
+    expect(quad?.width).toBeCloseTo(131_072, 6)
+    expect(quad?.height).toBeCloseTo(131_072, 6)
+  })
+
   it('rejects a quad that is not square', () => {
     const m = tileMatrix(1)
     m[5] = -(m[0] ?? 0) * 0.5

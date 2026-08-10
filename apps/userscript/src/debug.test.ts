@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { count, counterKey, counters, log, warn } from './debug.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { count, counterKey, counters, installDebugApi, log, warn } from './debug.js'
 
 /**
  * The counters are the only diagnostic for a feature whose failure looks like nothing happening at
@@ -9,6 +9,33 @@ import { count, counterKey, counters, log, warn } from './debug.js'
  */
 beforeEach(() => {
   counters.clear()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+describe('installDebugApi', () => {
+  it('defines the diagnostic surface and extensions on the page global', () => {
+    const pageRealm = { Object }
+    vi.stubGlobal('window', pageRealm)
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    const mark = vi.fn()
+
+    installDebugApi({ mark })
+
+    const descriptor = Object.getOwnPropertyDescriptor(pageRealm, '__wts')
+    if (descriptor === undefined) throw new Error('debug API must be defined on the page realm')
+    expect(descriptor).toMatchObject({ writable: true, configurable: true, enumerable: false })
+    expect((descriptor.value as Record<string, unknown>).mark).toBe(mark)
+    expect((descriptor.value as Record<string, unknown>).counters).toBeTypeOf('function')
+  })
 })
 
 describe('counterKey', () => {
