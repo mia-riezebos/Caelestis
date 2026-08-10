@@ -25,6 +25,25 @@ const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
 const VERSION = 3
 let blockedOpenRequest: IDBOpenDBRequest | null = null
+let blockedOpenRecovery: Promise<void> | null = null
+let settleBlockedOpen: (() => void) | null = null
+
+const markOpenBlocked = (request: IDBOpenDBRequest): void => {
+  blockedOpenRequest = request
+  if (blockedOpenRecovery !== null) return
+  blockedOpenRecovery = new Promise<void>((resolve) => {
+    settleBlockedOpen = resolve
+  })
+}
+
+const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
+  if (blockedOpenRequest !== request) return
+  blockedOpenRequest = null
+  const settle = settleBlockedOpen
+  settleBlockedOpen = null
+  blockedOpenRecovery = null
+  settle?.()
+}
 
 export interface StoredTemplate extends ImportedTemplate {
   readonly visible: boolean
@@ -50,12 +69,12 @@ const open = (): Promise<IDBDatabase> => {
     }
     request.onblocked = () => {
       abandoned = true
-      blockedOpenRequest = request
+      markOpenBlocked(request)
       reject(new Error('indexedDB.open blocked by another connection'))
     }
     request.onsuccess = () => {
       const db = request.result
-      if (blockedOpenRequest === request) blockedOpenRequest = null
+      finishBlockedOpen(request)
       if (abandoned) {
         db.close()
         return
@@ -64,7 +83,7 @@ const open = (): Promise<IDBDatabase> => {
       resolve(db)
     }
     request.onerror = () => {
-      if (blockedOpenRequest === request) blockedOpenRequest = null
+      finishBlockedOpen(request)
       reject(request.error ?? new Error('indexedDB.open failed'))
     }
   })
@@ -74,7 +93,7 @@ const normaliseRevision = (value: unknown): number =>
   Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 
 const writeVersioned = async (
-  id: string,
+  id: IDBValidKey,
   expectedRevision: number | null,
   operation: (templates: IDBObjectStore, nextRevision: number) => void,
   incrementRevision = true,
@@ -94,7 +113,7 @@ const writeVersioned = async (
           } else {
             if (current === undefined) return
             const actual = normaliseRevision(current.revision)
-            if (incrementRevision && actual >= Number.MAX_SAFE_INTEGER) return
+            if (incrementRevision && actual >= Number.MAX_SAFE_INTEGER - 1) return
             if (actual !== expectedRevision) return
           }
           const nextRevision = incrementRevision
@@ -140,7 +159,10 @@ export const saveTemplate = async (
   })
 }
 
-export const deleteTemplate = async (id: string, expectedRevision: number): Promise<SaveResult> =>
+export const deleteTemplate = async (
+  id: IDBValidKey,
+  expectedRevision: number,
+): Promise<SaveResult> =>
   await writeVersioned(
     id,
     expectedRevision,
@@ -215,20 +237,24 @@ type HydrationResult =
   | { readonly status: 'invalid' }
   | { readonly status: 'unavailable' }
 
-export interface TemplateLoadFailure {
+interface TemplateLoadFailureBase {
   readonly kind: 'template-hydration-failure'
-  readonly status: 'invalid' | 'unavailable'
-  readonly id: string
+  readonly status: 'invalid' | 'unavailable' | 'skipped'
   readonly revision: number
   /** Bytes materialised/attempted for this candidate, charged to the whole restore operation. */
   readonly indexPixels: number
 }
+
+export type TemplateLoadFailure = TemplateLoadFailureBase &
+  ({ readonly id: string } | { readonly status: 'invalid'; readonly key: IDBValidKey })
 
 export type TemplateLoadBatch = readonly unknown[] & {
   /** Non-excluded cursor rows inspected, including malformed and oversized records. */
   readonly inspected: number
   /** Pixel bytes represented by every inspected row whose size was cheaply knowable. */
   readonly indexPixels: number
+  /** Resolves once a blocked native open has settled and one bounded restore retry may be attempted. */
+  readonly retryAfterUnavailable: Promise<void> | null
 }
 
 const candidateIndexPixels = (value: unknown): number => {
@@ -246,6 +272,7 @@ const loadBatch = (
   templates: unknown[],
   inspected: number,
   indexPixels: number,
+  retryAfterUnavailable: Promise<void> | null = null,
 ): TemplateLoadBatch => {
   // Keep the metrics out of array iteration and equality: callers that only need the candidates
   // remain ordinary array consumers, while restore can account for cursor work that produced no
@@ -253,6 +280,7 @@ const loadBatch = (
   Object.defineProperties(templates, {
     inspected: { value: inspected, enumerable: false },
     indexPixels: { value: indexPixels, enumerable: false },
+    retryAfterUnavailable: { value: retryAfterUnavailable, enumerable: false },
   })
   return templates as unknown as TemplateLoadBatch
 }
@@ -296,11 +324,21 @@ const storedRevision = (value: unknown): number => {
 
 const loadFailureIdentity = (
   value: unknown,
-): { readonly id: string; readonly revision: number } | null => {
-  if (typeof value !== 'object' || value === null || !('id' in value)) return null
-  const id = (value as { readonly id?: unknown }).id
-  if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) return null
-  return { id, revision: storedRevision(value) }
+  primaryKey: IDBValidKey | undefined,
+):
+  | { readonly id: string; readonly revision: number }
+  | {
+      readonly key: IDBValidKey
+      readonly revision: number
+    }
+  | null => {
+  if (typeof value === 'object' && value !== null && 'id' in value) {
+    const id = (value as { readonly id?: unknown }).id
+    if (typeof id === 'string' && id.length > 0 && id.length <= MAX_TEMPLATE_ID_LENGTH) {
+      return { id, revision: storedRevision(value) }
+    }
+  }
+  return primaryKey === undefined ? null : { key: primaryKey, revision: storedRevision(value) }
 }
 
 /** Read one winning CAS value after a conflict without materialising every other template. */
@@ -348,7 +386,7 @@ export const loadTemplate = async (
 export const loadTemplates = async (
   maxTemplates = 64,
   maxIndexPixels = 64 * 1024 * 1024,
-  excludedIds: ReadonlySet<string> = new Set(),
+  excludedRevisions: ReadonlyMap<string, number> = new Map(),
 ): Promise<TemplateLoadBatch> => {
   try {
     const db = await open()
@@ -370,14 +408,19 @@ export const loadTemplates = async (
         let retainedPixels = 0
         let inspectedPixels = 0
         let inspected = 0
+        let retainedTemplates = 0
         const maxInspected = Math.max(maxTemplates, maxTemplates * 4)
         request.onsuccess = () => {
           const cursor = request.result
           if (cursor === null) return
           const value: unknown = cursor.value
           if (!boundedStoredCandidate(value)) {
-            const identity = loadFailureIdentity(value)
-            if (identity !== null && excludedIds.has(identity.id)) {
+            const identity = loadFailureIdentity(value, cursor.primaryKey)
+            if (
+              identity !== null &&
+              'id' in identity &&
+              excludedRevisions.get(identity.id) === identity.revision
+            ) {
               cursor.continue()
               return
             }
@@ -392,12 +435,12 @@ export const loadTemplates = async (
                 indexPixels: pixels,
               })
             }
-            if (templates.length >= maxTemplates) return
             if (inspected >= maxInspected) return
             cursor.continue()
             return
           }
-          if (excludedIds.has(value.id as string)) {
+          const revision = storedRevision(value)
+          if (excludedRevisions.get(value.id as string) === revision) {
             cursor.continue()
             return
           }
@@ -406,14 +449,34 @@ export const loadTemplates = async (
           inspectedPixels = boundedPixelSum(inspectedPixels, pixels)
           // An individually oversized or late non-fitting record must not permanently hide every
           // later valid key. Inspect a bounded number of records, retaining only those that fit.
+          if (pixels > 64 * 1024 * 1024) {
+            templates.push({
+              kind: 'template-hydration-failure',
+              status: 'invalid',
+              id: value.id as string,
+              revision,
+              indexPixels: pixels,
+            })
+            if (inspected >= maxInspected) return
+            cursor.continue()
+            return
+          }
           if (pixels > maxIndexPixels || retainedPixels + pixels > maxIndexPixels) {
+            templates.push({
+              kind: 'template-hydration-failure',
+              status: 'skipped',
+              id: value.id as string,
+              revision,
+              indexPixels: pixels,
+            })
             if (inspected >= maxInspected) return
             cursor.continue()
             return
           }
           templates.push(value)
+          retainedTemplates++
           retainedPixels += pixels
-          if (templates.length >= maxTemplates) return
+          if (retainedTemplates >= maxTemplates) return
           if (inspected >= maxInspected) return
           cursor.continue()
         }
@@ -452,6 +515,6 @@ export const loadTemplates = async (
     }
   } catch (error) {
     warn('install', 'local template storage unavailable', String(error))
-    return loadBatch([], 0, 0)
+    return loadBatch([], 0, 0, blockedOpenRecovery)
   }
 }

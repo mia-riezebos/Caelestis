@@ -87,6 +87,33 @@ let retainedIndexPixels = 0
 let pendingIndexPixels = 0
 let restoreInFlight: Promise<void> | null = null
 
+/** @internal Pure arithmetic seam for proving concurrent aggregate-budget reservations. */
+export const indexIncreaseWithinBudget = (
+  retained: number,
+  pending: number,
+  current: number,
+  next: number,
+  limit: number,
+): number | null => {
+  const increase = Math.max(0, next - current)
+  return retained + pending + increase <= limit ? increase : null
+}
+
+const reserveIndexIncrease = (currentPixels: number, nextPixels: number): (() => void) | null => {
+  const increase = indexIncreaseWithinBudget(
+    retainedIndexPixels,
+    pendingIndexPixels,
+    currentPixels,
+    nextPixels,
+    MAX_LOCAL_INDEX_PIXELS,
+  )
+  if (increase === null) return null
+  pendingIndexPixels += increase
+  return () => {
+    pendingIndexPixels -= increase
+  }
+}
+
 export const onLocalReconciliation = (id: string, observer: () => void): (() => void) => {
   const observers = reconciliationObservers.get(id) ?? new Set<() => void>()
   observers.add(observer)
@@ -301,8 +328,8 @@ const isTemplateLoadFailure = (value: unknown): value is TemplateLoadFailure =>
   isRecord(value) &&
   !('indices' in value) &&
   value.kind === 'template-hydration-failure' &&
-  (value.status === 'invalid' || value.status === 'unavailable') &&
-  typeof value.id === 'string' &&
+  (value.status === 'invalid' || value.status === 'unavailable' || value.status === 'skipped') &&
+  (typeof value.id === 'string' || 'key' in value) &&
   Number.isSafeInteger(value.revision) &&
   Number.isSafeInteger(value.indexPixels) &&
   (value.indexPixels as number) >= 0
@@ -607,56 +634,61 @@ const reconcileConflict = async (id: string): Promise<void> => {
       )
       return
     }
-    if (
-      retainedIndexPixels - existing.indices.length + winner.indices.length >
-      MAX_LOCAL_INDEX_PIXELS
-    ) {
+    const releaseIndexReservation = reserveIndexIncrease(
+      existing.indices.length,
+      winner.indices.length,
+    )
+    if (releaseIndexReservation === null) {
       warn('install', `could not reconcile stale local template ${existing.name}: pixel budget`)
       return
     }
-    let visible = winner.visible
-    let tiles = new Map<string, TileLevels>()
-    if (visible) {
-      if (
-        retainedSourceTiles + pendingSourceIncrease - existing.tiles.size >=
-        MAX_RETAINED_SOURCE_TILES
-      ) {
-        visible = false
-      } else {
-        try {
-          const candidate = await slice(winner)
-          if (claimSourceReplacement(existing.tiles.size, candidate.size)) {
-            tiles = candidate
-          } else {
-            releaseCandidateTiles(candidate)
-            visible = false
-          }
-        } catch (error) {
+    try {
+      let visible = winner.visible
+      let tiles = new Map<string, TileLevels>()
+      if (visible) {
+        if (
+          retainedSourceTiles + pendingSourceIncrease - existing.tiles.size >=
+          MAX_RETAINED_SOURCE_TILES
+        ) {
           visible = false
-          warn('install', `reconciled ${winner.name} hidden: source rendering unavailable`, error)
+        } else {
+          try {
+            const candidate = await slice(winner)
+            if (claimSourceReplacement(existing.tiles.size, candidate.size)) {
+              tiles = candidate
+            } else {
+              releaseCandidateTiles(candidate)
+              visible = false
+            }
+          } catch (error) {
+            visible = false
+            warn('install', `reconciled ${winner.name} hidden: source rendering unavailable`, error)
+          }
         }
       }
-    }
-    if (!visible && !claimSourceReplacement(existing.tiles.size, 0)) {
-      warn('install', `could not reconcile stale local template ${existing.name}: bitmap budget`)
+      if (!visible && !claimSourceReplacement(existing.tiles.size, 0)) {
+        warn('install', `could not reconcile stale local template ${existing.name}: bitmap budget`)
+        return
+      }
+      clearStamped(id)
+      previewOrigins.delete(id)
+      templates.set(id, {
+        appearance: DEFAULT_APPEARANCE,
+        ...winner,
+        visible,
+        tiles,
+      })
+      if (visible === winner.visible) desiredVisibility.delete(id)
+      else desiredVisibility.set(id, winner.visible)
+      retainedIndexPixels += winner.indices.length - existing.indices.length
+      installSourceReplacement(existing.tiles.size, tiles.size)
+      closeTiles(existing.tiles)
+      noteReconciliation(id)
+      notify()
       return
+    } finally {
+      releaseIndexReservation()
     }
-    clearStamped(id)
-    previewOrigins.delete(id)
-    templates.set(id, {
-      appearance: DEFAULT_APPEARANCE,
-      ...winner,
-      visible,
-      tiles,
-    })
-    if (visible === winner.visible) desiredVisibility.delete(id)
-    else desiredVisibility.set(id, winner.visible)
-    retainedIndexPixels += winner.indices.length - existing.indices.length
-    installSourceReplacement(existing.tiles.size, tiles.size)
-    closeTiles(existing.tiles)
-    noteReconciliation(id)
-    notify()
-    return
   }
   warn('install', `could not reconcile ${id}: conflict retry limit reached`)
 }
@@ -731,7 +763,7 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
 /** Rehydrate on startup, before the first frame if possible. */
 const restoreStoredTemplates = async (): Promise<void> => {
   let restored = 0
-  const seenIds = new Set<string>()
+  const seenRevisions = new Map<string, number>()
   let retryAfterGap = false
   let restorePasses = 0
   let remainingCandidates = MAX_RESTORE_CANDIDATES
@@ -751,8 +783,22 @@ const restoreStoredTemplates = async (): Promise<void> => {
     const stored = await loadTemplates(
       Math.min(remainingTemplates, remainingCandidates),
       Math.min(remainingPixels, remainingHydratedPixels),
-      seenIds,
+      seenRevisions,
     )
+    const retryAfterUnavailable = stored.retryAfterUnavailable
+    if (retryAfterUnavailable !== null && retryAfterUnavailable !== undefined) {
+      void retryAfterUnavailable.then(() => {
+        const activeRestore = restoreInFlight
+        if (activeRestore === null) {
+          void restoreLocalTemplates()
+          return
+        }
+        void activeRestore.then(
+          () => void restoreLocalTemplates(),
+          () => void restoreLocalTemplates(),
+        )
+      })
+    }
     const metrics = stored as Partial<TemplateLoadBatch>
     const batchMetricsAvailable =
       Number.isSafeInteger(metrics.inspected) &&
@@ -775,16 +821,23 @@ const restoreStoredTemplates = async (): Promise<void> => {
         remainingHydratedPixels -= hydratedPixels
       }
       if (isTemplateLoadFailure(rawTemplate)) {
-        seenIds.add(rawTemplate.id)
+        if ('id' in rawTemplate) seenRevisions.set(rawTemplate.id, rawTemplate.revision)
         if (rawTemplate.status === 'invalid') {
-          const deleted = await deleteTemplate(rawTemplate.id, rawTemplate.revision)
-          if (deleted.status === 'conflict') seenIds.delete(rawTemplate.id)
+          const key = 'id' in rawTemplate ? rawTemplate.id : rawTemplate.key
+          const deleted = await deleteTemplate(key, rawTemplate.revision)
+          if (deleted.status === 'conflict' && 'id' in rawTemplate) {
+            seenRevisions.delete(rawTemplate.id)
+          }
         }
         retryAfterGap = true
         continue
       }
       if (isRecord(rawTemplate) && typeof rawTemplate.id === 'string') {
-        seenIds.add(rawTemplate.id)
+        const revision =
+          Number.isSafeInteger(rawTemplate.revision) && Number(rawTemplate.revision) >= 0
+            ? Number(rawTemplate.revision)
+            : 0
+        seenRevisions.set(rawTemplate.id, revision)
       }
       let reserved: StoredTemplate | null = null
       let validated: StoredTemplate | null = null
@@ -871,7 +924,7 @@ const restoreStoredTemplates = async (): Promise<void> => {
             : 0
         if (id !== null) {
           const deleted = await deleteTemplate(id, revision)
-          if (deleted.status === 'conflict') seenIds.delete(id)
+          if (deleted.status === 'conflict') seenRevisions.delete(id)
           retryAfterGap = true
         }
         warn('install', `discarded invalid local template ${id ?? '(unknown)'}`, String(error))
@@ -1101,34 +1154,37 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
   // behind this delete and resurrect the record.
   deleting.add(id)
-  const removed = await writeInOrder(id, async () => {
-    const current = templates.get(id)
-    if (current === undefined) return false
-    if (!isPendingImage(current)) {
-      const deleted = await deleteTemplate(id, current.revision)
-      if (deleted.status !== 'saved') {
-        if (deleted.status === 'conflict') {
-          await reconcileConflict(id)
-          return !templates.has(id)
+  let removed = false
+  try {
+    removed = await writeInOrder(id, async () => {
+      const current = templates.get(id)
+      if (current === undefined) return true
+      if (!isPendingImage(current)) {
+        const deleted = await deleteTemplate(id, current.revision)
+        if (deleted.status !== 'saved') {
+          if (deleted.status === 'conflict') {
+            await reconcileConflict(id)
+            return !templates.has(id)
+          }
+          return false
         }
-        return false
       }
-    }
-    releaseRetainedTiles(current.tiles)
-    retainedIndexPixels -= current.indices.length
-    desiredVisibility.delete(id)
-    clearStamped(id)
-    previewOrigins.delete(id)
-    templates.delete(id)
-    notify()
-    return true
-  })
-  if (!removed) {
+      releaseRetainedTiles(current.tiles)
+      retainedIndexPixels -= current.indices.length
+      desiredVisibility.delete(id)
+      clearStamped(id)
+      previewOrigins.delete(id)
+      templates.delete(id)
+      notify()
+      return true
+    })
+  } finally {
     deleting.delete(id)
+  }
+  if (!removed) {
     warn('install', `deletion of ${existing.name} was not saved`)
     return false
   }
-  deleting.delete(id)
   return true
 }
 

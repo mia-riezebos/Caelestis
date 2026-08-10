@@ -34,9 +34,11 @@ describe('local template persistence', () => {
 
     const loaded = await loading
     expect(loaded).toEqual([])
+    expect(loaded.retryAfterUnavailable).toBeInstanceOf(Promise)
     await expect(loadTemplates()).resolves.toEqual([])
     expect(indexedDB.open).toHaveBeenCalledOnce()
     opening.onsuccess?.(new Event('success'))
+    await expect(loaded.retryAfterUnavailable).resolves.toBeUndefined()
     expect(database.close).toHaveBeenCalledOnce()
   })
 
@@ -227,7 +229,15 @@ describe('local template persistence', () => {
     loadRequest.onsuccess?.(new Event('success'))
     loadTransaction.oncomplete?.(new Event('complete'))
 
-    await expect(loading).resolves.toEqual([])
+    await expect(loading).resolves.toEqual([
+      {
+        kind: 'template-hydration-failure',
+        status: 'skipped',
+        id: 'loaded',
+        revision: 0,
+        indexPixels: 2,
+      },
+    ])
     expect(loadStore.openCursor).toHaveBeenCalledOnce()
     expect(cursor.continue).toHaveBeenCalledOnce()
   })
@@ -266,7 +276,16 @@ describe('local template persistence', () => {
     mutableRequest.onsuccess?.(new Event('success'))
     transaction.oncomplete?.(new Event('complete'))
 
-    await expect(loading).resolves.toEqual([valid.value])
+    await expect(loading).resolves.toEqual([
+      {
+        kind: 'template-hydration-failure',
+        status: 'skipped',
+        id: 'oversized',
+        revision: 0,
+        indexPixels: 3,
+      },
+      valid.value,
+    ])
     expect(oversized.continue).toHaveBeenCalledOnce()
     expect(valid.continue).toHaveBeenCalledOnce()
   })
@@ -295,7 +314,7 @@ describe('local template persistence', () => {
     vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
     const { loadTemplates } = await import('./persist.js')
 
-    const loading = loadTemplates(64, 1, new Set(['excluded']))
+    const loading = loadTemplates(64, 1, new Map([['excluded', 0]]))
     opening.onsuccess?.(new Event('success'))
     await Promise.resolve()
     mutableRequest.onsuccess?.(new Event('success'))
@@ -329,7 +348,9 @@ describe('local template persistence', () => {
     const opening = { result: database } as IDBOpenDBRequest
     vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
     const { loadTemplates } = await import('./persist.js')
-    const excludedIds = new Set(Array.from({ length: 52 }, (_, index) => `excluded-${index}`))
+    const excludedIds = new Map(
+      Array.from({ length: 52 }, (_, index) => [`excluded-${index}`, 0] as const),
+    )
 
     const loading = loadTemplates(13, 1, excludedIds)
     opening.onsuccess?.(new Event('success'))
@@ -425,7 +446,15 @@ describe('local template persistence', () => {
     transaction.oncomplete?.(new Event('complete'))
 
     const loaded = await loading
-    expect(loaded).toEqual([])
+    expect(loaded).toEqual([
+      {
+        kind: 'template-hydration-failure',
+        status: 'skipped',
+        id: 'loaded',
+        revision: 0,
+        indexPixels: 65,
+      },
+    ])
     expect(loaded.inspected).toBe(1)
     expect(loaded.indexPixels).toBe(65)
     expect(pixels.arrayBuffer).not.toHaveBeenCalled()
@@ -586,8 +615,8 @@ describe('local template persistence', () => {
     await expect(loading).resolves.toEqual({ status: 'missing' })
   })
 
-  it('refuses to increment an exhausted revision but can still delete it', async () => {
-    const maxRecord = stored({ id: 'max', revision: Number.MAX_SAFE_INTEGER })
+  it('refuses to write the first revision that restore would reject but can still delete it', async () => {
+    const maxRecord = stored({ id: 'max', revision: Number.MAX_SAFE_INTEGER - 1 })
     const saveRequest = { result: maxRecord } as unknown as IDBRequest<unknown>
     const deleteRequest = { result: maxRecord } as unknown as IDBRequest<unknown>
     const saveStore = { get: vi.fn(() => saveRequest), put: vi.fn() }
@@ -606,7 +635,7 @@ describe('local template persistence', () => {
     vi.stubGlobal('indexedDB', { open: vi.fn(() => openings.shift()) })
     const { deleteTemplate, saveTemplate } = await import('./persist.js')
 
-    const saving = saveTemplate(maxRecord as never, Number.MAX_SAFE_INTEGER)
+    const saving = saveTemplate(maxRecord as never, Number.MAX_SAFE_INTEGER - 1)
     saveOpening.onsuccess?.(new Event('success'))
     await Promise.resolve()
     saveRequest.onsuccess?.(new Event('success'))
@@ -614,14 +643,14 @@ describe('local template persistence', () => {
     await expect(saving).resolves.toEqual({ status: 'conflict' })
     expect(saveStore.put).not.toHaveBeenCalled()
 
-    const deleting = deleteTemplate('max', Number.MAX_SAFE_INTEGER)
+    const deleting = deleteTemplate('max', Number.MAX_SAFE_INTEGER - 1)
     deleteOpening.onsuccess?.(new Event('success'))
     await Promise.resolve()
     deleteRequest.onsuccess?.(new Event('success'))
     deleteTransaction.oncomplete?.(new Event('complete'))
     await expect(deleting).resolves.toEqual({
       status: 'saved',
-      revision: Number.MAX_SAFE_INTEGER,
+      revision: Number.MAX_SAFE_INTEGER - 1,
     })
     expect(deleteStore.delete).toHaveBeenCalledWith('max')
   })
@@ -663,6 +692,89 @@ describe('local template persistence', () => {
       })),
     )
     expect(loaded.inspected).toBe(64)
+  })
+
+  it('surfaces a malformed record by its non-string primary key so restore can delete it', async () => {
+    const cursor = {
+      value: { id: 42, revision: 3 },
+      primaryKey: 42,
+      continue: vi.fn(),
+    }
+    const request = { result: cursor } as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates()
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    request.onsuccess?.(new Event('success'))
+    ;(request as unknown as { result: IDBCursorWithValue | null }).result = null
+    request.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([
+      {
+        kind: 'template-hydration-failure',
+        status: 'invalid',
+        key: 42,
+        revision: 3,
+        indexPixels: 0,
+      },
+    ])
+  })
+
+  it('surfaces non-fitting versions so a retry can advance past the inspection window', async () => {
+    const cursor = {
+      value: stored({ id: 'large-0', width: 2, indices: new Uint8Array(2), opaque: 2 }),
+      continue: vi.fn(),
+    }
+    const mutableRequest = {
+      result: cursor as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates(1, 1)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    for (let index = 0; index < 4; index++) {
+      cursor.value = stored({
+        id: `large-${index}`,
+        revision: index,
+        width: 2,
+        indices: new Uint8Array(2),
+        opaque: 2,
+      })
+      mutableRequest.onsuccess?.(new Event('success'))
+    }
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual(
+      Array.from({ length: 4 }, (_, index) => ({
+        kind: 'template-hydration-failure',
+        status: 'skipped',
+        id: `large-${index}`,
+        revision: index,
+        indexPixels: 2,
+      })),
+    )
   })
 
   it('loads indices cloned into a different Uint8Array realm', async () => {

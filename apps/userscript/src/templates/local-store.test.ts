@@ -21,7 +21,7 @@ const persistence = vi.hoisted(() => ({
     async (
       _maxTemplates?: number,
       _maxIndexPixels?: number,
-      _excludedIds?: ReadonlySet<string>,
+      _excludedRevisions?: ReadonlyMap<string, number>,
     ): Promise<unknown[]> => [],
   ),
   saveTemplate: vi.fn(
@@ -172,6 +172,13 @@ afterEach(() => {
 })
 
 describe('local template lifecycle', () => {
+  it('includes concurrent reservations when admitting a larger reconciliation winner', async () => {
+    const { indexIncreaseWithinBudget } = await import('./local-store.js')
+
+    expect(indexIncreaseWithinBudget(40, 20, 1, 20, 64)).toBeNull()
+    expect(indexIncreaseWithinBudget(40, 0, 1, 20, 64)).toBe(19)
+  })
+
   it('drops invalid legacy records while restoring the remaining templates', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       {
@@ -477,11 +484,16 @@ describe('local template lifecycle', () => {
 
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['valid'])
     expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
-    expect(persistence.loadTemplates.mock.calls[1]?.[2]).toEqual(new Set(['invalid', 'valid']))
+    expect(persistence.loadTemplates.mock.calls[1]?.[2]).toEqual(
+      new Map([
+        ['invalid', 0],
+        ['valid', 0],
+      ]),
+    )
   })
 
   it('retries an invalid deletion conflict and restores the valid replacement', async () => {
-    let secondPassExclusions = new Set<string>()
+    let secondPassExclusions = new Map<string, number>()
     persistence.loadTemplates
       .mockResolvedValueOnce([
         {
@@ -492,7 +504,7 @@ describe('local template lifecycle', () => {
         },
       ])
       .mockImplementationOnce(async (_templates, _pixels, exclusions) => {
-        secondPassExclusions = new Set(exclusions)
+        secondPassExclusions = new Map(exclusions)
         return [
           {
             ...template({ id: 'replaced', source: 'marble' }),
@@ -535,7 +547,90 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['valid'])
     expect(persistence.deleteTemplate).not.toHaveBeenCalledWith('unavailable', 2)
     expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
-    expect(persistence.loadTemplates.mock.calls[1]?.[2]).toEqual(new Set(['unavailable', 'valid']))
+    expect(persistence.loadTemplates.mock.calls[1]?.[2]).toEqual(
+      new Map([
+        ['unavailable', 2],
+        ['valid', 0],
+      ]),
+    )
+  })
+
+  it('excludes only the unavailable revision and restores a newer cross-tab replacement', async () => {
+    persistence.loadTemplates
+      .mockResolvedValueOnce([
+        {
+          kind: 'template-hydration-failure',
+          status: 'unavailable',
+          id: 'replaced',
+          revision: 1,
+          indexPixels: 1,
+        },
+      ])
+      .mockImplementationOnce(async (_templates, _pixels, exclusions) => {
+        expect(exclusions).toEqual(new Map([['replaced', 1]]))
+        return [
+          {
+            ...template({ id: 'replaced', source: 'marble' }),
+            visible: false,
+            everPlaced: true,
+            revision: 2,
+          },
+        ]
+      })
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates()).toEqual([
+      expect.objectContaining({ id: 'replaced', revision: 2 }),
+    ])
+  })
+
+  it('retries startup restore once a blocked persistence open becomes retryable', async () => {
+    let recover = (): void => undefined
+    const retryAfterUnavailable = new Promise<void>((resolve) => {
+      recover = resolve
+    })
+    const unavailable = [] as unknown[] & { retryAfterUnavailable?: Promise<void> | null }
+    Object.defineProperty(unavailable, 'retryAfterUnavailable', {
+      value: retryAfterUnavailable,
+      enumerable: false,
+    })
+    persistence.loadTemplates
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce([
+        { ...template({ id: 'recovered', source: 'marble' }), visible: false, everPlaced: true },
+      ])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+    expect(store.localTemplates()).toEqual([])
+    recover()
+
+    await vi.waitFor(() => expect(persistence.loadTemplates).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() =>
+      expect(store.localTemplates().map(({ id }) => id)).toEqual(['recovered']),
+    )
+  })
+
+  it('deletes malformed records identified only by their IndexedDB primary key', async () => {
+    persistence.loadTemplates
+      .mockResolvedValueOnce([
+        {
+          kind: 'template-hydration-failure',
+          status: 'invalid',
+          key: 42,
+          revision: 3,
+          indexPixels: 0,
+        },
+      ])
+      .mockResolvedValueOnce([])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith(42, 3)
+    expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
   })
 
   it('deletes a permanently invalid hydrated Blob before retrying later records', async () => {
@@ -943,6 +1038,30 @@ describe('local template lifecycle', () => {
     await expect(store.removeLocalTemplate(added.id)).resolves.toBe(true)
 
     expect(store.localTemplates()).toEqual([])
+  })
+
+  it('reports success when an earlier queued reconciliation removes the template before deletion runs', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    persistence.saveTemplate.mockClear()
+    let finishMutation = (_result: { status: 'conflict' }): void => undefined
+    persistence.saveTemplate.mockImplementationOnce(
+      async () =>
+        await new Promise<{ status: 'conflict' }>((resolve) => {
+          finishMutation = resolve
+        }),
+    )
+    persistence.loadTemplate.mockResolvedValueOnce({ status: 'missing' })
+
+    const mutating = store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 })
+    await vi.waitFor(() => expect(persistence.saveTemplate).toHaveBeenCalledOnce())
+    const removing = store.removeLocalTemplate(added.id)
+    finishMutation({ status: 'conflict' })
+
+    await expect(mutating).resolves.toBe(false)
+    await expect(removing).resolves.toBe(true)
+    expect(store.localTemplates()).toEqual([])
+    expect(persistence.deleteTemplate).not.toHaveBeenCalled()
   })
 
   it('releases source levels while hidden and rebuilds them only when shown', async () => {
