@@ -383,11 +383,31 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
 
 const validateStoredPixels = async (template: StoredTemplate): Promise<void> => {
   let opaque = 0
+  const paintedTiles = new Set<number>()
+  const worldTilesWide = Math.ceil(WORLD_PIXELS / TILE_SIZE)
+  let sourceX = 0
+  let sourceY = 0
+  let lastPaintedTile = -1
   for (let pixel = 0; pixel < template.indices.length; pixel++) {
     const index = template.indices[pixel] ?? TRANSPARENT_INDEX
     if (index !== TRANSPARENT_INDEX) {
       if (index >= WPLACE_PALETTE.length) throw new RangeError('template palette index is invalid')
       opaque++
+      const tileX = Math.floor((template.originX + sourceX) / TILE_SIZE)
+      const tileY = Math.floor((template.originY + sourceY) / TILE_SIZE)
+      const tile = tileY * worldTilesWide + tileX
+      if (tile !== lastPaintedTile) {
+        lastPaintedTile = tile
+        paintedTiles.add(tile)
+        if (paintedTiles.size > MAX_SOURCE_TILES_PER_TEMPLATE) {
+          throw new RangeError('template covers too many painted tiles to render safely')
+        }
+      }
+    }
+    sourceX++
+    if (sourceX === template.width) {
+      sourceX = 0
+      sourceY++
     }
     if ((pixel + 1) % 1_000_000 === 0) await yieldToBrowser()
   }

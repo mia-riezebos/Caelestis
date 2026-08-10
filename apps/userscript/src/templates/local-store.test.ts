@@ -222,6 +222,37 @@ describe('local template lifecycle', () => {
     expect(persistence.deleteTemplate).not.toHaveBeenCalled()
   })
 
+  it('deletes a persisted record spanning too many painted source tiles before slicing', async () => {
+    const invalidIndices = new Uint8Array(13_000)
+    persistence.loadTemplates.mockResolvedValueOnce([
+      {
+        ...template({
+          id: 'invalid',
+          originX: 0,
+          originY: 0,
+          width: invalidIndices.length,
+          indices: invalidIndices,
+          opaque: invalidIndices.length,
+        }),
+        visible: true,
+        everPlaced: true,
+      },
+      {
+        ...template({ id: 'valid', originX: 20_000 }),
+        visible: true,
+        everPlaced: true,
+      },
+    ])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates().map(({ id }) => id)).toEqual(['valid'])
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('invalid', 0)
+    expect(createImageBitmap).toHaveBeenCalledTimes(4)
+    expect(createdBitmaps.every(({ close }) => !close.mock.calls.length)).toBe(true)
+  })
+
   it('preserves persisted appearance while restoring', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       {
@@ -785,6 +816,20 @@ describe('local template lifecycle', () => {
     ])
     expect(persistence.deleteTemplate).not.toHaveBeenCalled()
     expect(persistence.saveTemplate).not.toHaveBeenCalled()
+
+    await expect(store.setLocalVisible('first', false)).resolves.toBe(true)
+    persistence.saveTemplate.mockClear()
+    await expect(store.setLocalVisible('third', true)).resolves.toBe(true)
+
+    expect(store.localTemplates().find(({ id }) => id === 'third')).toMatchObject({
+      visible: true,
+      revision: 1,
+    })
+    expect(store.localTemplates().find(({ id }) => id === 'third')?.tiles.size).toBe(12)
+    expect(persistence.saveTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'third', visible: true }),
+      0,
+    )
   })
 
   it('returns false when showing a hidden template cannot build source bitmaps', async () => {
