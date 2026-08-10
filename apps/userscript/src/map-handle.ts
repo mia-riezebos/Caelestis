@@ -61,11 +61,12 @@ const looksLikeMap = (value: unknown): value is MapLike =>
  * is waiting for never reaches a setter, `getMap()` stays null for the session, and everything built
  * on the handle — the WebGL context ownership check, any later camera move — is silently inert.
  */
-const pageProto = (): object =>
-  (pageWindow() as unknown as { Object: ObjectConstructor }).Object.prototype
+const pageProto = (realm: Window & typeof globalThis = pageWindow()): object =>
+  (realm as unknown as { Object: ObjectConstructor }).Object.prototype
 
 const installed = new Set<string>()
 const ours = new Map<string, PropertyDescriptor>()
+let installedPrototype: object | null = null
 let releaseTimer: ReturnType<typeof setTimeout> | null = null
 
 const removeTraps = (): void => {
@@ -73,20 +74,28 @@ const removeTraps = (): void => {
     clearTimeout(releaseTimer)
     releaseTimer = null
   }
+  const prototype = installedPrototype
   for (const property of installed) {
-    const current = Object.getOwnPropertyDescriptor(pageProto(), property)
+    if (prototype === null) continue
+    const current = Object.getOwnPropertyDescriptor(prototype, property)
     // Only if it is still ours. Someone else's setter under this name is theirs to remove.
     if (current === undefined || current.set !== ours.get(property)?.set) continue
-    delete (pageProto() as Record<string, unknown>)[property]
+    delete (prototype as Record<string, unknown>)[property]
   }
   installed.clear()
   ours.clear()
+  installedPrototype = null
 }
 
-export const installMapCapture = (): void => {
+export const installMapCapture = (realm: Window & typeof globalThis = pageWindow()): void => {
+  const prototype = pageProto(realm)
+  // One capture window owns one realm. A second install cannot safely move traps that page code may
+  // already be executing through; release first if a caller deliberately wants another realm.
+  if (installedPrototype !== null && installedPrototype !== prototype) return
+  installedPrototype = prototype
   for (const property of WITNESS_PROPERTIES) {
     try {
-      const original = Object.getOwnPropertyDescriptor(pageProto(), property)
+      const original = Object.getOwnPropertyDescriptor(prototype, property)
       // An inherited descriptor already has page-visible assignment semantics. Replacing it, even
       // temporarily, can suppress a setter or turn a rejected write into an own property. The other
       // witness names are enough; an occupied one belongs to whoever installed it first.
@@ -120,7 +129,7 @@ export const installMapCapture = (): void => {
           }
         },
       }
-      Object.defineProperty(pageProto(), property, descriptor)
+      Object.defineProperty(prototype, property, descriptor)
       installed.add(property)
       ours.set(property, descriptor)
     } catch {

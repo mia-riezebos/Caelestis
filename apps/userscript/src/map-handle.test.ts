@@ -33,6 +33,18 @@ afterEach(() => {
 })
 
 describe('installMapCapture', () => {
+  it('installs the witness on an explicitly supplied page realm', () => {
+    const pagePrototype = Object.create(null) as Record<string, unknown>
+    const realm = { Object: { prototype: pagePrototype } } as unknown as Window & typeof globalThis
+    const map = Object.assign(Object.create(pagePrototype), mapLike()) as Record<string, unknown>
+
+    installMapCapture(realm)
+    map[WITNESS] = { nodeName: 'DIV' }
+
+    expect(getMap()).toBe(map)
+    expect(Object.getOwnPropertyDescriptor(pagePrototype, WITNESS)).toBeUndefined()
+  })
+
   it('captures the object the assignment was made on', () => {
     installMapCapture()
     const map = mapLike()
