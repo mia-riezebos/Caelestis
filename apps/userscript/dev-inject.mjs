@@ -114,9 +114,9 @@ class Tab {
       }
       if (message.method === 'Runtime.consoleAPICalled') {
         const text = message.params.args.map(renderArg).join(' ')
-        // Match the prefix, not the exact tag. Every debug line is `[wts:fetch]`, `[wts:texture]`
-        // and so on, and filtering on `[wts]` silently dropped every one of them.
-        if (text.includes('[wts') || verbose) {
+        // Match the prefix, not the exact tag. Every debug line is `[caelestis:fetch]`, `[caelestis:texture]`
+        // and so on, and filtering on `[caelestis]` silently dropped every one of them.
+        if (text.includes('[caelestis') || verbose) {
           const kind = message.params.type
           const mark = kind === 'warning' ? '  page!' : kind === 'error' ? '  page*' : '  page>'
           console.log(`${mark} ${text}`)

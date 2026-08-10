@@ -1,5 +1,5 @@
-import type { Millis, Seconds } from '@wts/shared'
-import { WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import type { Millis, Seconds } from '@caelestis/shared'
+import { WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { sql } from 'drizzle-orm'
 import {
   type AnySQLiteColumn,

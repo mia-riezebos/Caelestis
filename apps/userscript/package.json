@@ -1,5 +1,5 @@
 {
-  "name": "@wts/userscript",
+  "name": "@caelestis/userscript",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "browser:relaunch": "node chromium.mjs --relaunch"
   },
   "dependencies": {
-    "@wts/shared": "workspace:*"
+    "@caelestis/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/greasemonkey": "^4.0.7",

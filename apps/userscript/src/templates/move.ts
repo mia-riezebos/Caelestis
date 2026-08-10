@@ -1,4 +1,4 @@
-import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
+import { TILE_SIZE, WORLD_PIXELS } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget } from '../main.js'
 import {

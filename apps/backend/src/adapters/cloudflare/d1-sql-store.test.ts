@@ -1,4 +1,4 @@
-import { encodeIndexedPng, millis, seconds } from '@wts/shared'
+import { encodeIndexedPng, millis, seconds } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
 import {

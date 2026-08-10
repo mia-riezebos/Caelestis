@@ -1,4 +1,4 @@
-import { TILE_SIZE, type TileCoord } from '@wts/shared'
+import { TILE_SIZE, type TileCoord } from '@caelestis/shared'
 
 /** The only two layers a colour pick is allowed to consult. */
 export interface PickerSources {

@@ -1,4 +1,4 @@
-import { millis, uuidV7 } from '@wts/shared'
+import { millis, uuidV7 } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { NodeRecord, Ports } from '../ports/index.js'

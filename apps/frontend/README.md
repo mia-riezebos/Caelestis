@@ -1,4 +1,4 @@
-# @wts/frontend
+# @caelestis/frontend
 
 SvelteKit dashboard — progress and pace charts, ETA, per-user contribution, timelapse.
 

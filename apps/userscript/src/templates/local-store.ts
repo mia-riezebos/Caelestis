@@ -4,7 +4,7 @@ import {
   TRANSPARENT_INDEX,
   WORLD_PIXELS,
   WPLACE_PALETTE,
-} from '@wts/shared'
+} from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
 import { getState, isScopeVisible, localFolderChainVisible, setScopeVisible } from '../state.js'
@@ -190,7 +190,7 @@ const notify = (): void => {
   // Mirror a summary onto the window so the dev harness can assert on placement without reaching
   // into module state. Metadata only — never the pixels.
   try {
-    ;(pageWindow() as unknown as Record<string, unknown>).__wtsLocal = orderedTemplates().map(
+    ;(pageWindow() as unknown as Record<string, unknown>).__caelestisLocal = orderedTemplates().map(
       (t) => ({
         id: t.id,
         name: t.name,

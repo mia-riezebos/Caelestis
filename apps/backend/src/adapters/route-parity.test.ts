@@ -1,5 +1,5 @@
-import { encodeIndexedPng, millis } from '@wts/shared'
-import { Manifest } from '@wts/wire-schema'
+import { encodeIndexedPng, millis } from '@caelestis/shared'
+import { Manifest } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { createApp } from '../app.js'

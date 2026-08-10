@@ -1,4 +1,4 @@
-import { TILE_SIZE } from '@wts/shared'
+import { TILE_SIZE } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
 

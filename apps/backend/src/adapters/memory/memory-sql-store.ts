@@ -1,4 +1,4 @@
-import { type Millis, WORLD_PIXELS } from '@wts/shared'
+import { type Millis, WORLD_PIXELS } from '@caelestis/shared'
 import {
   type AccessToken,
   assertValidAccessToken,

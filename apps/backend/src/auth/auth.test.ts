@@ -1,4 +1,4 @@
-import { millis } from '@wts/shared'
+import { millis } from '@caelestis/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'

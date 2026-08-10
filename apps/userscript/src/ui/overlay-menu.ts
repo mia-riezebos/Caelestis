@@ -1,4 +1,4 @@
-import { TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
+import { TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log } from '../debug.js'
 import { FADE_TRANSITION } from '../gl/fade.js'
 import { screenPointFor } from '../main.js'
@@ -53,7 +53,7 @@ import { slider } from './slider.js'
  * closes on its own ✕ and nothing else.
  */
 
-const MENU_ID = 'wts-overlay-menu'
+const MENU_ID = 'caelestis-overlay-menu'
 let openFor: string | null = null
 
 /**
@@ -69,8 +69,8 @@ let openFor: string | null = null
  */
 const rightEdge = (): number => {
   let edge = window.innerWidth
-  const rail = document.getElementById('wts-rail-button')?.parentElement ?? null
-  const panel = document.getElementById('wts-panel')
+  const rail = document.getElementById('caelestis-rail-button')?.parentElement ?? null
+  const panel = document.getElementById('caelestis-panel')
   for (const element of [rail, panel]) {
     if (element === null) continue
     const box = element.getBoundingClientRect()
@@ -377,9 +377,9 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   const overrides = coloursGroup.body
 
   const gridWrap = document.createElement('div')
-  gridWrap.className = 'wts-swatches'
+  gridWrap.className = 'caelestis-swatches'
   const grid = document.createElement('div')
-  grid.className = 'wts-swatch-grid'
+  grid.className = 'caelestis-swatch-grid'
 
   /**
    * Repaint every swatch from the appearance as it now stands.
@@ -498,7 +498,7 @@ export const renderOverlayControls = (rerender: () => void): void => {
   const limit = rightEdge()
 
   for (const template of localTemplates()) {
-    const buttonId = `wts-overlay-button-${template.id}`
+    const buttonId = `caelestis-overlay-button-${template.id}`
     // The overlay's whole box on screen, not just one corner. A corner alone cannot say whether the
     // template is still in view, nor how far down the button is allowed to travel.
     const topLeft = screenPointFor(template.originX, template.originY)
@@ -601,7 +601,7 @@ export const renderOverlayControls = (rerender: () => void): void => {
      * template you are in the middle of moving is a question with no good answer.
      */
     const placing = isMoving() && movingId() === template.id
-    const barId = `wts-overlay-move-${template.id}`
+    const barId = `caelestis-overlay-move-${template.id}`
     let bar = document.getElementById(barId)
     if (placing && bar === null) {
       bar = document.createElement('div')

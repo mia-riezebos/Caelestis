@@ -1,4 +1,4 @@
-import { decodePng, WORLD_PIXELS, WPLACE_PALETTE } from '@wts/shared'
+import { decodePng, WORLD_PIXELS, WPLACE_PALETTE } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ImportedTemplate } from './import.js'
 import type { PlacedTemplate, TileLevels } from './local-store.js'
@@ -863,7 +863,11 @@ describe('local template lifecycle', () => {
   })
 
   it('isolates page-global and listener failures after a durable mutation', async () => {
-    Object.defineProperty(window, '__wtsLocal', { value: [], writable: false, configurable: true })
+    Object.defineProperty(window, '__caelestisLocal', {
+      value: [],
+      writable: false,
+      configurable: true,
+    })
     const store = await import('./local-store.js')
     store.onLocalChange(() => {
       throw new Error('observer failed')
@@ -882,10 +886,10 @@ describe('local template lifecycle', () => {
 
     await store.addLocalTemplate(template())
 
-    expect(pageRealm.__wtsLocal).toEqual([
+    expect(pageRealm.__caelestisLocal).toEqual([
       expect.objectContaining({ id: 'local-test', originX: 10, originY: 20 }),
     ])
-    expect((window as unknown as Record<string, unknown>).__wtsLocal).toBeUndefined()
+    expect((window as unknown as Record<string, unknown>).__caelestisLocal).toBeUndefined()
   })
 
   it('persists final origin and first-placement state atomically', async () => {

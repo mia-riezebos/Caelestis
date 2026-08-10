@@ -1,4 +1,10 @@
-import { type Millis, type PixelBounds, type Seconds, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import {
+  type Millis,
+  type PixelBounds,
+  type Seconds,
+  WORLD_PIXELS,
+  WORLD_TILES,
+} from '@caelestis/shared'
 import { SCOPES, type Scope } from '../auth/tokens.js'
 
 /**

@@ -1,4 +1,10 @@
-import { decodePng, encodeIndexedPng, millis, PALETTE_RGB, type PixelBounds } from '@wts/shared'
+import {
+  decodePng,
+  encodeIndexedPng,
+  millis,
+  PALETTE_RGB,
+  type PixelBounds,
+} from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'

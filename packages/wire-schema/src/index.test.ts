@@ -1,4 +1,4 @@
-import { millis, tileKey, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { millis, tileKey, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {

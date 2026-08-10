@@ -30,7 +30,7 @@ describe('installDebugApi', () => {
 
     installDebugApi({ mark })
 
-    const descriptor = Object.getOwnPropertyDescriptor(pageRealm, '__wts')
+    const descriptor = Object.getOwnPropertyDescriptor(pageRealm, '__caelestis')
     if (descriptor === undefined) throw new Error('debug API must be defined on the page realm')
     expect(descriptor).toMatchObject({ writable: true, configurable: true, enumerable: false })
     expect((descriptor.value as Record<string, unknown>).mark).toBe(mark)
@@ -48,7 +48,7 @@ describe('installDebugApi', () => {
     const consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => undefined)
     installDebugApi()
     consoleInfo.mockClear()
-    const api = (pageRealm as Record<string, unknown>).__wts as { clear(): void }
+    const api = (pageRealm as Record<string, unknown>).__caelestis as { clear(): void }
 
     log('frame', 'same noisy frame', { quads: 1 })
     log('frame', 'same noisy frame', { quads: 1 })
@@ -152,7 +152,7 @@ describe('warn', () => {
 
     warn('install', huge, { coords: huge })
 
-    const api = (window as unknown as Record<string, unknown>).__wts as {
+    const api = (window as unknown as Record<string, unknown>).__caelestis as {
       events: () => Array<{ message: string; data: { coords: string } }>
     }
     const entry = api.events().at(-1)
@@ -174,7 +174,7 @@ describe('warn', () => {
 
     warn('install', 'tile failed', foreign)
 
-    const api = (window as unknown as Record<string, unknown>).__wts as {
+    const api = (window as unknown as Record<string, unknown>).__caelestis as {
       events: () => Array<{ data?: unknown }>
     }
     expect(api.events().at(-1)?.data).toBe('Error: decode failed')

@@ -8,8 +8,8 @@ import { pageWindow } from './page-world.js'
  * screenshot, so every link reports what it did and, more importantly, why it declined.
  *
  * Off by default so a shipped script stays quiet. Turn it on from the console with
- * `__wts.debug(true)` and reload, or set `localStorage.wtsDebug = '1'` to have it survive reloads.
- * `__wts.dump()` prints the counters and the recent event ring, which is the thing to send when
+ * `__caelestis.debug(true)` and reload, or set `localStorage.caelestisDebug = '1'` to have it survive reloads.
+ * `__caelestis.dump()` prints the counters and the recent event ring, which is the thing to send when
  * something looks wrong.
  */
 
@@ -48,7 +48,7 @@ const started = Date.now()
 
 const readInitialSetting = (): boolean => {
   try {
-    return localStorage.getItem('wtsDebug') === '1'
+    return localStorage.getItem('caelestisDebug') === '1'
   } catch {
     return false
   }
@@ -153,8 +153,8 @@ export const log = (category: Category, message: string, data?: unknown): void =
       if (lastNoisy.get(category) === signature) return
       lastNoisy.set(category, signature)
     }
-    if (boundedData === undefined) console.info(`[wts:${category}] ${boundedMessage}`)
-    else console.info(`[wts:${category}] ${boundedMessage}`, boundedData)
+    if (boundedData === undefined) console.info(`[caelestis:${category}] ${boundedMessage}`)
+    else console.info(`[caelestis:${category}] ${boundedMessage}`, boundedData)
   } catch {
     // Diagnostics are observers. A hostile/broken page console or unserialisable debug payload must
     // never change the success semantics of the operation being observed.
@@ -172,7 +172,7 @@ export const warn = (category: Category, message: string, data?: unknown): void 
     count(counterKey(category, boundedMessage))
     ring.push({ at: Date.now() - started, category, message: boundedMessage, data: boundedData })
     if (ring.length > RING_SIZE) ring.shift()
-    console.warn(`[wts:${category}] ${boundedMessage}`, boundedData ?? '')
+    console.warn(`[caelestis:${category}] ${boundedMessage}`, boundedData ?? '')
   } catch {
     // Warnings report failures; they must not create a second failure of their own.
   }
@@ -180,12 +180,12 @@ export const warn = (category: Category, message: string, data?: unknown): void 
 
 export const isEnabled = (): boolean => enabled
 
-/** Turn logging on or off and remember it. Shared by `__wts.debug()` and the Diagnostics setting. */
+/** Turn logging on or off and remember it. Shared by `__caelestis.debug()` and the Diagnostics setting. */
 export const setEnabled = (on: boolean): void => {
   enabled = on
   try {
-    if (on) localStorage.setItem('wtsDebug', '1')
-    else localStorage.removeItem('wtsDebug')
+    if (on) localStorage.setItem('caelestisDebug', '1')
+    else localStorage.removeItem('caelestisDebug')
   } catch {
     // Private browsing and the like. The in-memory flag still applies for this session.
   }
@@ -204,11 +204,11 @@ export const installDebugApi = (extra: Record<string, unknown> = {}): void => {
   const api: DebugApi & Record<string, unknown> = {
     debug(on: boolean) {
       setEnabled(on)
-      return `[wts] debug ${on ? 'on' : 'off'} — reload to capture startup, __wts.dump() to print`
+      return `[caelestis] debug ${on ? 'on' : 'off'} — reload to capture startup, __caelestis.dump() to print`
     },
     dump() {
       const sorted = [...counters.entries()].sort((a, b) => b[1] - a[1])
-      console.group('[wts] debug dump')
+      console.group('[caelestis] debug dump')
       console.info('enabled:', enabled, '| uptime:', `${Date.now() - started}ms`)
       console.table(Object.fromEntries(sorted))
       console.info(`last ${ring.length} events:`)
@@ -228,7 +228,7 @@ export const installDebugApi = (extra: Record<string, unknown> = {}): void => {
     ...extra,
   }
   try {
-    Object.defineProperty(pageWindow(), '__wts', {
+    Object.defineProperty(pageWindow(), '__caelestis', {
       value: api,
       writable: true,
       configurable: true,
@@ -239,8 +239,8 @@ export const installDebugApi = (extra: Record<string, unknown> = {}): void => {
   try {
     console.info(
       enabled
-        ? '[wts] debug is ON. __wts.dump() to print, __wts.debug(false) to stop.'
-        : '[wts] debug is off. __wts.debug(true) then reload to capture everything.',
+        ? '[caelestis] debug is ON. __caelestis.dump() to print, __caelestis.debug(false) to stop.'
+        : '[caelestis] debug is off. __caelestis.debug(true) then reload to capture everything.',
     )
   } catch {
     // A replaced console is not part of the render path.

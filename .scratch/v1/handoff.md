@@ -64,7 +64,7 @@ Minimum for "I can see my alliance's template on the canvas":
 1. Fetch the manifest, build the `Set<TileKey>` union of covered tiles.
 2. Install the tile shim at `document-start`, before wplace's bundle captures `fetch`. This is the
    fiddly part and cannot be reasoned out — it needs the real page.
-3. On a tile hit, fetch covering chunks by hash, decode with `decodePng` from `@wts/shared`,
+3. On a tile hit, fetch covering chunks by hash, decode with `decodePng` from `@caelestis/shared`,
    composite. On a miss, pass through untouched.
 
 Read-only: no toggles, no menus, no telemetry. It proves the chain end to end.
@@ -102,9 +102,9 @@ model in `05-rendering-model` is viable at all.
 
 - **`pnpm test` does not typecheck; `pnpm check` does.** A `Tasks: N successful, M total` line where
   `N < M` is a failure — read that line, not the green test count.
-- **`@wts/shared` is consumed as built `dist/`.** Mutating `packages/shared/src` without
-  `pnpm --filter @wts/shared build` tests a stale artefact. Rebuild on restore too.
-- **`npx vitest` does not resolve in this workspace.** Use `pnpm --filter @wts/<pkg> test`. A runner
+- **`@caelestis/shared` is consumed as built `dist/`.** Mutating `packages/shared/src` without
+  `pnpm --filter @caelestis/shared build` tests a stale artefact. Rebuild on restore too.
+- **`npx vitest` does not resolve in this workspace.** Use `pnpm --filter @caelestis/<pkg> test`. A runner
   printing no `Tests` line has failed, not passed.
 - **Assert every string replacement landed** before trusting a mutation run.
 - **`MemorySqlStore` used to not enforce the foreign keys D1 does**, which made a broken upload path

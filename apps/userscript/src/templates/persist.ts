@@ -1,4 +1,4 @@
-import { WORLD_PIXELS } from '@wts/shared'
+import { WORLD_PIXELS } from '@caelestis/shared'
 import { warn } from '../debug.js'
 import { isUint8Array } from '../page-world.js'
 import type { Appearance, AppearanceGroup } from './appearance.js'

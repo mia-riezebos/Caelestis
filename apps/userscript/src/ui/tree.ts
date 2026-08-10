@@ -296,11 +296,11 @@ let dropTarget: {
  * this one that are deeper than it, which is exactly what a depth-first render produces.
  */
 const draggedRows = (row: HTMLElement): HTMLElement[] => {
-  const depth = Number(row.dataset.wtsDepth ?? 0)
+  const depth = Number(row.dataset.caelestisDepth ?? 0)
   const rows = [row]
   let next = row.nextElementSibling
-  while (next instanceof HTMLElement && next.dataset.wtsKey !== undefined) {
-    if (Number(next.dataset.wtsDepth ?? 0) <= depth) break
+  while (next instanceof HTMLElement && next.dataset.caelestisKey !== undefined) {
+    if (Number(next.dataset.caelestisDepth ?? 0) <= depth) break
     rows.push(next)
     next = next.nextElementSibling
   }
@@ -320,8 +320,8 @@ let draggedPixels = 0
 
 const placeholder = (depth: number): HTMLElement => {
   const el = document.createElement('div')
-  el.className = 'wts-placeholder'
-  el.dataset.wtsPlaceholder = ''
+  el.className = 'caelestis-placeholder'
+  el.dataset.caelestisPlaceholder = ''
   // Indented to the level it would land at, so the outline says *where* and not merely *between
   // which two rows* — the two differ exactly when the drop would change a row's parent.
   el.style.marginLeft = `${0.25 + depth * 1.125}rem`
@@ -352,8 +352,8 @@ const placeholder = (depth: number): HTMLElement => {
 
 /** Rows in document order, ignoring the one being dragged and the placeholder. */
 const _visibleRows = (root: ParentNode): HTMLElement[] =>
-  [...root.querySelectorAll<HTMLElement>('[data-wts-key]')].filter(
-    (row) => !row.classList.contains('wts-dragging'),
+  [...root.querySelectorAll<HTMLElement>('[data-caelestis-key]')].filter(
+    (row) => !row.classList.contains('caelestis-dragging'),
   )
 
 /**
@@ -377,18 +377,18 @@ const resolveDrop = (
 } => {
   const box = row.getBoundingClientRect()
   const above = clientY < box.top + box.height / 2
-  const depth = Number(row.dataset.wtsDepth ?? 0)
-  const parentKey = row.dataset.wtsParent ?? null
-  const key = row.dataset.wtsKey ?? null
+  const depth = Number(row.dataset.caelestisDepth ?? 0)
+  const parentKey = row.dataset.caelestisParent ?? null
+  const key = row.dataset.caelestisKey ?? null
 
   if (above) return { parentKey, beforeKey: key, depth, before: row }
 
-  const isContainer = row.dataset.wtsContainer !== undefined
+  const isContainer = row.dataset.caelestisContainer !== undefined
   const expanded = key !== null && isExpanded(key)
   const next = row.nextElementSibling
   if (isContainer && expanded) {
     // Into it, ahead of whatever it already holds.
-    const firstChild = next instanceof HTMLElement ? (next.dataset.wtsKey ?? null) : null
+    const firstChild = next instanceof HTMLElement ? (next.dataset.caelestisKey ?? null) : null
     return {
       parentKey: key,
       beforeKey: firstChild,
@@ -398,15 +398,15 @@ const resolveDrop = (
   }
   // Beside it. Skip over anything nested under this row so "after" means after its whole subtree.
   let cursor: Element | null = next
-  while (cursor instanceof HTMLElement && Number(cursor.dataset.wtsDepth ?? 0) > depth) {
+  while (cursor instanceof HTMLElement && Number(cursor.dataset.caelestisDepth ?? 0) > depth) {
     cursor = cursor.nextElementSibling
   }
-  const beforeKey = cursor instanceof HTMLElement ? (cursor.dataset.wtsKey ?? null) : null
+  const beforeKey = cursor instanceof HTMLElement ? (cursor.dataset.caelestisKey ?? null) : null
   return { parentKey, beforeKey, depth, before: cursor }
 }
 
 const clearDropMarks = (root: ParentNode): void => {
-  for (const el of root.querySelectorAll('[data-wts-placeholder]')) el.remove()
+  for (const el of root.querySelectorAll('[data-caelestis-placeholder]')) el.remove()
 }
 
 interface RowOptions {
@@ -455,13 +455,13 @@ interface RowOptions {
 const treeRow = (options: RowOptions): HTMLElement => {
   const draggable = isReorderable(getState().sort)
   const row = document.createElement('div')
-  row.className = 'wts-row flex items-center gap-1'
-  row.dataset.wtsKey = options.key
+  row.className = 'caelestis-row flex items-center gap-1'
+  row.dataset.caelestisKey = options.key
   if (options.parentKey !== undefined && options.parentKey !== null) {
-    row.dataset.wtsParent = options.parentKey
+    row.dataset.caelestisParent = options.parentKey
   }
-  row.dataset.wtsDepth = String(options.depth)
-  if (options.container) row.dataset.wtsContainer = ''
+  row.dataset.caelestisDepth = String(options.depth)
+  if (options.container) row.dataset.caelestisContainer = ''
   row.style.padding = '0.25rem 0.5rem'
   // One indent step per level, on top of the fixed gutter.
   row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
@@ -507,7 +507,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
       input.select()
     })
   } else {
-    name.className = 'wts-name text-sm'
+    name.className = 'caelestis-name text-sm'
     name.textContent = options.name
     row.appendChild(name)
     // A tooltip that repeats fully visible text is noise; only label what is actually clipped.
@@ -563,7 +563,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
     row.appendChild(group)
   } else if (options.actions !== undefined && options.actions.length > 0) {
     const group = document.createElement('span')
-    group.className = 'wts-actions flex items-center gap-0.5'
+    group.className = 'caelestis-actions flex items-center gap-0.5'
     group.style.flex = '0 0 auto'
     for (const action of options.actions) {
       const button = document.createElement('button')
@@ -606,7 +606,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
     options.rerender()
   })
   const eye = document.createElement('label')
-  eye.className = 'wts-eye'
+  eye.className = 'caelestis-eye'
   eye.addEventListener('click', (event) => event.stopPropagation())
   const box = document.createElement('span')
   box.appendChild(icon('eye', 'size-4'))
@@ -648,13 +648,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     // Deferred by a tick because the browser captures the drag image *after* dragstart returns;
     // hiding it synchronously would drag an invisible ghost.
     setTimeout(() => {
-      for (const moved of moving) moved.classList.add('wts-dragging')
+      for (const moved of moving) moved.classList.add('caelestis-dragging')
     }, 0)
   })
   row.addEventListener('dragend', () => {
     const parent = row.parentElement ?? document
-    for (const moved of parent.querySelectorAll('.wts-dragging')) {
-      moved.classList.remove('wts-dragging')
+    for (const moved of parent.querySelectorAll('.caelestis-dragging')) {
+      moved.classList.remove('caelestis-dragging')
     }
     draggedPixels = 0
     clearDropMarks(parent)

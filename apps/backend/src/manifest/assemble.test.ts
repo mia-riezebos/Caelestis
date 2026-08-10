@@ -1,5 +1,5 @@
-import { millis, type ServerInfo } from '@wts/shared'
-import { Manifest } from '@wts/wire-schema'
+import { millis, type ServerInfo } from '@caelestis/shared'
+import { Manifest } from '@caelestis/wire-schema'
 import { Schema } from 'effect'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -10,7 +10,7 @@ import { assembleManifest } from './assemble.js'
  * The acceptance-critical property nothing could test: does a manifest this server emits actually
  * decode against the schema every client validates it with?
  *
- * `apps/backend` did not depend on `@wts/wire-schema` at all — not even for tests — so the question
+ * `apps/backend` did not depend on `@caelestis/wire-schema` at all — not even for tests — so the question
  * had no way to be asked, and the answer was no. Two templates in one node with intersecting boxes
  * are a normal admin action, and the wire refuses the result.
  */

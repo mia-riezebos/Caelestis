@@ -116,8 +116,8 @@ const findRail = (): { rail: Element; after: Element } | null => {
   }
   return null
 }
-const BUTTON_ID = 'wts-rail-button'
-const PANEL_ID = 'wts-panel'
+const BUTTON_ID = 'caelestis-rail-button'
+const PANEL_ID = 'caelestis-panel'
 
 /**
  * Named for the alliance it was built for. From Latin `caelum` — sky, heavens — so it carries
@@ -182,13 +182,13 @@ const railButton = (): HTMLButtonElement => {
 export const setAlarmBadge = (count: number): void => {
   const button = document.getElementById(BUTTON_ID)
   if (button === null) return
-  const existing = button.querySelector('[data-wts-badge]')
+  const existing = button.querySelector('[data-caelestis-badge]')
   if (count <= 0) {
     existing?.remove()
     return
   }
   const badge = existing ?? document.createElement('span')
-  badge.setAttribute('data-wts-badge', '')
+  badge.setAttribute('data-caelestis-badge', '')
   badge.className = 'badge badge-sm badge-error absolute -top-1 -right-1'
   badge.textContent = String(count)
   if (existing === null) button.appendChild(badge)
@@ -354,7 +354,7 @@ const refreshView = (): void => {
   if (isColourPickerOpen()) return
   const root = document.getElementById(PANEL_ID)
   if (root === null) return
-  if (root.querySelector('.wts-dragging') !== null) return
+  if (root.querySelector('.caelestis-dragging') !== null) return
   const active = document.activeElement
   if (root.contains(active) && active instanceof HTMLInputElement) return
   showView(currentView)
@@ -405,7 +405,7 @@ const select = (
   button.className = 'btn btn-sm btn-outline justify-between font-normal'
   button.style.width = '9rem'
   const label = document.createElement('span')
-  label.className = 'wts-name'
+  label.className = 'caelestis-name'
   label.style.textAlign = 'left'
   label.textContent = options.find(([id]) => id === value)?.[1] ?? ''
   const caret = icon('caret', 'size-4 opacity-60')
@@ -413,18 +413,18 @@ const select = (
   button.append(label, caret)
 
   const close = (): void => {
-    wrap.querySelector('[data-wts-options]')?.remove()
+    wrap.querySelector('[data-caelestis-options]')?.remove()
   }
 
   button.addEventListener('click', () => {
-    if (wrap.querySelector('[data-wts-options]') !== null) {
+    if (wrap.querySelector('[data-caelestis-options]') !== null) {
       close()
       return
     }
     // Only one popout at a time, ours or another row's.
-    for (const el of document.querySelectorAll('[data-wts-options]')) el.remove()
+    for (const el of document.querySelectorAll('[data-caelestis-options]')) el.remove()
     const list = document.createElement('ul')
-    list.setAttribute('data-wts-options', '')
+    list.setAttribute('data-caelestis-options', '')
     list.className = 'menu bg-base-100 shadow-2xl'
     Object.assign(list.style, {
       position: 'absolute',
@@ -902,9 +902,9 @@ const settingsView = (): HTMLElement => {
 const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): void => {
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
-  panel.querySelector('[data-wts-toast]')?.remove()
+  panel.querySelector('[data-caelestis-toast]')?.remove()
   const el = document.createElement('div')
-  el.setAttribute('data-wts-toast', '')
+  el.setAttribute('data-caelestis-toast', '')
   el.className =
     kind === 'error'
       ? 'alert alert-error text-xs'
@@ -1109,9 +1109,9 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
 
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
-  panel.querySelector('[data-wts-move]')?.remove()
+  panel.querySelector('[data-caelestis-move]')?.remove()
   const box = document.createElement('div')
-  box.setAttribute('data-wts-move', '')
+  box.setAttribute('data-caelestis-move', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
   Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
 
@@ -1413,9 +1413,9 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
 
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
-  panel.querySelector('[data-wts-replace]')?.remove()
+  panel.querySelector('[data-caelestis-replace]')?.remove()
   const box = document.createElement('div')
-  box.setAttribute('data-wts-replace', '')
+  box.setAttribute('data-caelestis-replace', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
   Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
 
@@ -1496,9 +1496,9 @@ const setServerTemplatePublished = async (
  * try first.
  */
 const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => void): void => {
-  document.querySelector('[data-wts-menu]')?.remove()
+  document.querySelector('[data-caelestis-menu]')?.remove()
   const menu = document.createElement('ul')
-  menu.setAttribute('data-wts-menu', '')
+  menu.setAttribute('data-caelestis-menu', '')
   menu.className = 'menu bg-base-100 shadow-2xl'
   Object.assign(menu.style, {
     position: 'fixed',
@@ -1668,9 +1668,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
 
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
-  panel.querySelector('[data-wts-copy]')?.remove()
+  panel.querySelector('[data-caelestis-copy]')?.remove()
   const box = document.createElement('div')
-  box.setAttribute('data-wts-copy', '')
+  box.setAttribute('data-caelestis-copy', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
   Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
 
@@ -1801,12 +1801,12 @@ const buildPanel = (): HTMLElement => {
   } satisfies Partial<CSSStyleDeclaration>)
 
   const handle = document.createElement('div')
-  handle.className = 'wts-resize'
+  handle.className = 'caelestis-resize'
   handle.setAttribute('role', 'separator')
   handle.setAttribute('aria-label', 'Resize panel')
   handle.addEventListener('pointerdown', (event) => {
     event.preventDefault()
-    handle.classList.add('wts-resizing')
+    handle.classList.add('caelestis-resizing')
     // Capture is an optimisation, not a requirement — synthetic pointers can lack a capturable id,
     // and throwing here would abort the whole drag before it started.
     try {
@@ -1822,7 +1822,7 @@ const buildPanel = (): HTMLElement => {
       panel.style.width = `${next}px`
     }
     const done = (): void => {
-      handle.classList.remove('wts-resizing')
+      handle.classList.remove('caelestis-resizing')
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', done)
       setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
@@ -1841,7 +1841,7 @@ const buildPanel = (): HTMLElement => {
   // Only present in settings, and it is the primary way back — the gear becomes a state indicator
   // rather than a toggle, because a gear that also means "leave settings" is a gear that lies.
   const backButton = document.createElement('button')
-  backButton.setAttribute('data-wts-back', '')
+  backButton.setAttribute('data-caelestis-back', '')
   backButton.className = 'btn btn-ghost btn-xs btn-circle'
   backButton.title = 'Back to templates'
   backButton.setAttribute('aria-label', 'Back to templates')
@@ -1849,7 +1849,7 @@ const buildPanel = (): HTMLElement => {
   backButton.addEventListener('click', () => showView('tree'))
 
   const appearanceButton = document.createElement('button')
-  appearanceButton.setAttribute('data-wts-appearance', '')
+  appearanceButton.setAttribute('data-caelestis-appearance', '')
   appearanceButton.className = 'btn btn-ghost btn-xs btn-circle'
   appearanceButton.title = 'Appearance'
   appearanceButton.setAttribute('aria-label', 'Appearance')
@@ -1862,7 +1862,7 @@ const buildPanel = (): HTMLElement => {
   )
 
   const settingsButton = document.createElement('button')
-  settingsButton.setAttribute('data-wts-settings', '')
+  settingsButton.setAttribute('data-caelestis-settings', '')
   settingsButton.className = 'btn btn-ghost btn-xs btn-circle'
   settingsButton.title = 'Settings'
   settingsButton.setAttribute('aria-label', 'Settings')
@@ -1882,7 +1882,7 @@ const buildPanel = (): HTMLElement => {
   header.append(backButton, title, appearanceButton, settingsButton, closeButton)
 
   const body = document.createElement('div')
-  body.setAttribute('data-wts-body', '')
+  body.setAttribute('data-caelestis-body', '')
   Object.assign(body.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
   body.appendChild(treeView())
 
@@ -1894,7 +1894,7 @@ const showView = (view: View): void => {
   const staying = currentView === view
   currentView = view
   const panel = document.getElementById(PANEL_ID)
-  const body = panel?.querySelector('[data-wts-body]')
+  const body = panel?.querySelector('[data-caelestis-body]')
   const title = panel?.querySelector('h2')
   if (!body || !title) return
 
@@ -1915,12 +1915,12 @@ const showView = (view: View): void => {
   if (scrollTop > 0) next.scrollTop = scrollTop
   title.textContent = VIEW_TITLE[view] ?? PANEL_TITLE
 
-  const back = panel?.querySelector<HTMLElement>('[data-wts-back]')
+  const back = panel?.querySelector<HTMLElement>('[data-caelestis-back]')
   if (back) back.style.visibility = view === 'tree' ? 'hidden' : 'visible'
 
   for (const [attribute, owns] of [
-    ['data-wts-settings', 'settings'],
-    ['data-wts-appearance', 'appearance'],
+    ['data-caelestis-settings', 'settings'],
+    ['data-caelestis-appearance', 'appearance'],
   ] as const) {
     const button = panel?.querySelector<HTMLElement>(`[${attribute}]`)
     if (!button) continue
@@ -1948,7 +1948,7 @@ const setOpen = (next: boolean): void => {
 /** Open or close the main Caelestis panel through the same path as its rail button. */
 export const togglePanel = (): void => setOpen(!open)
 
-const RAIL_ID = 'wts-rail'
+const RAIL_ID = 'caelestis-rail'
 
 /**
  * Our own rail, beneath wplace's when they have one and in its place when they do not.
@@ -2016,7 +2016,7 @@ const colourModeButton = (): HTMLButtonElement => {
   return button
 }
 
-const COLOUR_MODE_ID = 'wts-colour-mode'
+const COLOUR_MODE_ID = 'caelestis-colour-mode'
 
 export const syncColourModeState = (): void => {
   const button = document.getElementById(COLOUR_MODE_ID)

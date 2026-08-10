@@ -1,4 +1,4 @@
-import { TILE_SIZE } from '@wts/shared'
+import { TILE_SIZE } from '@caelestis/shared'
 import {
   canvasPixelAtIn,
   cssPixelsPerCanvasPixelIn,
@@ -241,7 +241,7 @@ const main = (): void => {
       nudge(x = 0, y = 0) {
         const applied = setNudge(x, y)
         redraw()
-        return `[wts] overlay nudged by ${applied.x}, ${applied.y} canvas px — __wts.nudge() to clear`
+        return `[caelestis] overlay nudged by ${applied.x}, ${applied.y} canvas px — __caelestis.nudge() to clear`
       },
     })
   })
@@ -316,7 +316,7 @@ const main = (): void => {
     }
   })
   try {
-    console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
+    console.info(`[caelestis] loaded — tile size ${TILE_SIZE}`)
   } catch {
     // A replaced console is not part of the render path.
   }

@@ -1,4 +1,4 @@
-import { canvasPixelToLatLng, TILE_SIZE } from '@wts/shared'
+import { canvasPixelToLatLng, TILE_SIZE } from '@caelestis/shared'
 import { log } from '../debug.js'
 import { getMap } from '../map-handle.js'
 

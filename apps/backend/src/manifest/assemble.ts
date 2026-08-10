@@ -1,4 +1,4 @@
-import { type Manifest, type ServerInfo, sha256Hex, tileKey } from '@wts/shared'
+import { type Manifest, type ServerInfo, sha256Hex, tileKey } from '@caelestis/shared'
 import type { Ports } from '../ports/index.js'
 
 export interface AssembleManifestOptions {
@@ -9,7 +9,7 @@ export interface AssembleManifestOptions {
 
 const VERSION_PLACEHOLDER = '0'.repeat(64)
 
-/** Mirror the bounds in `@wts/wire-schema`, which is what refuses the assembled result. */
+/** Mirror the bounds in `@caelestis/wire-schema`, which is what refuses the assembled result. */
 const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000

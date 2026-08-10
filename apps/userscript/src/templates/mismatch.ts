@@ -1,4 +1,4 @@
-import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@wts/shared'
+import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@caelestis/shared'
 import { count } from '../debug.js'
 import {
   draftPixels,

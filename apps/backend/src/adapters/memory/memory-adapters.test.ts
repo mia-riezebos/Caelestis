@@ -1,4 +1,4 @@
-import { MAX_PAINT_COUNT, millis, type Seconds, seconds } from '@wts/shared'
+import { MAX_PAINT_COUNT, millis, type Seconds, seconds } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import {
   type BucketQuery,

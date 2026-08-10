@@ -1,4 +1,4 @@
-import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
+import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
@@ -31,7 +31,7 @@ import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
  * against them is the entire visibility test.
  */
 
-const LAYER_ID = 'wts-overlay'
+const LAYER_ID = 'caelestis-overlay'
 /** Their marker layer. Ours goes immediately before it. */
 const BEFORE_LAYER = 'pixel-hover'
 
@@ -65,7 +65,7 @@ const corners = new Float32Array(4 * 6)
 /**
  * A debug nudge, in canvas pixels, applied to every template's extent.
  *
- * Set from the console with `__wts.nudge(dx, dy)`. It exists to *measure* a suspected offset between
+ * Set from the console with `__caelestis.nudge(dx, dy)`. It exists to *measure* a suspected offset between
  * our pixel grid and wplace's rather than argue about where one might come from: a sub-pixel
  * disagreement is invisible wherever the overlay draws solidly, because our own pixels tile with
  * each other perfectly, and only shows at a hole where their canvas is visible underneath. Nudging

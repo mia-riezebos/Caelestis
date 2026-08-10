@@ -1,4 +1,4 @@
-import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
+import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 
 /**

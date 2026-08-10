@@ -1,5 +1,5 @@
-import type * as Shared from '@wts/shared'
-import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import type * as Shared from '@caelestis/shared'
+import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { Schema } from 'effect'
 
 const MAX_IDENTIFIER_LENGTH = 64

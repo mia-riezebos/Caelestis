@@ -1,4 +1,4 @@
-import { PALETTE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
+import { PALETTE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { getState, setState } from '../state.js'
 import { globalHiddenColours } from '../templates/colour-filter.js'
 import { ownedColours, refreshAccount } from '../wplace-account.js'
@@ -65,7 +65,7 @@ export const paletteSwatch = (
 ): HTMLButtonElement => {
   const swatch = document.createElement('button')
   swatch.type = 'button'
-  swatch.className = 'wts-swatch'
+  swatch.className = 'caelestis-swatch'
   swatch.dataset.index = String(colour.index)
   swatch.dataset.on = String(on)
   swatch.style.backgroundColor = colour.hex
@@ -74,7 +74,7 @@ export const paletteSwatch = (
   swatch.setAttribute('aria-pressed', String(on))
 
   const badge = document.createElement('span')
-  badge.className = 'wts-swatch-badge'
+  badge.className = 'caelestis-swatch-badge'
   const box = document.createElement('span')
   box.appendChild(icon(on ? 'eye' : 'eyeOff', ''))
   badge.appendChild(box)
@@ -93,7 +93,7 @@ export const paletteSwatch = (
 export const setSwatchState = (swatch: HTMLElement, on: boolean): void => {
   swatch.dataset.on = String(on)
   swatch.setAttribute('aria-pressed', String(on))
-  const box = swatch.querySelector('.wts-swatch-badge > span')
+  const box = swatch.querySelector('.caelestis-swatch-badge > span')
   if (box === null) return
   box.replaceChildren(icon(on ? 'eye' : 'eyeOff', ''))
 }
@@ -194,7 +194,7 @@ export const colourPresets = (
     // slightly darker grey in wplace's theme, which reads as a hover state rather than as a setting
     // that is switched on — and a row where one grey button is "on" is a row that has to be studied.
     button.className = id === active ? 'btn btn-xs btn-primary' : 'btn btn-xs'
-    button.dataset.wtsPreset = id
+    button.dataset.caelestisPreset = id
     button.setAttribute('aria-pressed', String(id === active))
     button.textContent = label
     if (id === 'owned' && ownedColours() === null) {
@@ -232,8 +232,8 @@ export const setPresetState = (
   onlySelected: boolean,
 ): void => {
   const active = activePreset(hidden)
-  for (const element of root.querySelectorAll<HTMLElement>('[data-wts-preset]')) {
-    const id = element.dataset.wtsPreset
+  for (const element of root.querySelectorAll<HTMLElement>('[data-caelestis-preset]')) {
+    const id = element.dataset.caelestisPreset
     // Two independent answers, not one choice between five buttons.
     const on = id === ONLY_SELECTED ? onlySelected : id === active
     element.classList.toggle('btn-primary', on)
@@ -259,7 +259,7 @@ export const onlySelectedToggle = (
   // The same blue as the presets it sits beside: it is one more way of answering "which colours",
   // so it has to look switched on the same way they do.
   button.className = on ? 'btn btn-xs btn-primary' : 'btn btn-xs'
-  button.dataset.wtsPreset = ONLY_SELECTED
+  button.dataset.caelestisPreset = ONLY_SELECTED
   // A palette, because that is what wplace puts on the same idea — their own control for this reads
   // "Highlight selected color" behind a palette icon. Borrowing the symbol means someone who has
   // used theirs recognises ours without reading anything.
@@ -319,9 +319,9 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
   )
 
   const gridWrap = document.createElement('div')
-  gridWrap.className = 'wts-swatches px-3 pb-2'
+  gridWrap.className = 'caelestis-swatches px-3 pb-2'
   const grid = document.createElement('div')
-  grid.className = 'wts-swatch-grid'
+  grid.className = 'caelestis-swatch-grid'
 
   // Index 63 is left out on purpose. wplace lets you *paint* it, but inside a template it means
   // "this pixel can be anything" rather than "this pixel must be transparent" — it is a wildcard,

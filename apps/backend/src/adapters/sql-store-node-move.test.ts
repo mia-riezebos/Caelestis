@@ -1,4 +1,4 @@
-import { millis } from '@wts/shared'
+import { millis } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { NodeRecord, SqlStore, TemplateVersionRecord } from '../ports/index.js'
 import { InvalidNodeParentError, NodePathConflictError } from '../ports/index.js'
