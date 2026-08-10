@@ -155,6 +155,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -470,6 +471,41 @@ describe('local template lifecycle', () => {
     pending.resolve(bitmap(1_000, 1_000))
     await moving
     expect(oldLevels.every((level) => level.close.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('keeps installed stamps alive until a moved replacement is installed', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    await store.setAppearance(added.id, { ...added.appearance, hiddenColours: [0] })
+    const styled = store.localTemplates()[0]
+    if (styled === undefined) throw new Error('expected template')
+    store.stampTile(styled, '0/0', styled.appearance, 1_000)
+    await vi.waitFor(() =>
+      expect(store.stampTile(styled, '0/0', styled.appearance, 1_000)).toBeDefined(),
+    )
+    const stamp = store.stampTile(styled, '0/0', styled.appearance, 1_000)
+    const pending = deferOneBitmap()
+    const buildsBeforeMove = vi.mocked(createImageBitmap).mock.calls.length
+
+    expect(store.previewLocalTemplate(styled.id, 30, 40)).toBe(true)
+    const moving = store.placeLocalTemplate(styled.id, 30, 40)
+    await vi.waitFor(() =>
+      expect(vi.mocked(createImageBitmap).mock.calls.length).toBeGreaterThan(buildsBeforeMove),
+    )
+
+    const current = store.localTemplates()[0]
+    if (current === undefined) throw new Error('expected template')
+    expect(store.previewOriginFor(styled.id)).toEqual({ x: 30, y: 40 })
+    expect(store.stampTile(current, '0/0', current.appearance, 1_000)).toBe(stamp)
+    expect(stamp?.levels.every((level) => !(level as TestBitmap).close.mock.calls.length)).toBe(
+      true,
+    )
+
+    pending.resolve(bitmap(1_000, 1_000))
+    await expect(moving).resolves.toBe(true)
+    expect(
+      stamp?.levels.every((level) => (level as TestBitmap).close.mock.calls.length === 1),
+    ).toBe(true)
   })
 
   it('keeps the old placement when a move cannot be saved', async () => {
@@ -1043,6 +1079,36 @@ describe('local template lifecycle', () => {
     expect(
       previous?.levels.every((level) => (level as TestBitmap).close.mock.calls.length === 1),
     ).toBe(true)
+  })
+
+  it('cancels a stale zoom-bucket build when the exact cached bucket is requested again', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const appearance = {
+      shape: 'full',
+      size: 1,
+      anchor: 'c',
+      opacity: 1,
+      hiddenColours: [0],
+    } as const
+
+    store.stampTile(added, '0/0', appearance, 1_000)
+    await vi.waitFor(() =>
+      expect(store.stampTile(added, '0/0', appearance, 1_000)?.levels[0]?.width).toBe(1_000),
+    )
+    const cached = store.stampTile(added, '0/0', appearance, 1_000)
+    const buildsBeforeReversal = vi.mocked(createImageBitmap).mock.calls.length
+    vi.useFakeTimers()
+
+    expect(store.stampTile(added, '0/0', appearance, 250)).toBe(cached)
+    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBe(cached)
+    await vi.runAllTimersAsync()
+
+    expect(store.stampTile(added, '0/0', appearance, 1_000)).toBe(cached)
+    expect(vi.mocked(createImageBitmap).mock.calls.length).toBe(buildsBeforeReversal)
+    expect(cached?.levels.every((level) => !(level as TestBitmap).close.mock.calls.length)).toBe(
+      true,
+    )
   })
 
   it('evicts least-recently-used stamped tiles instead of retaining an unbounded cache', async () => {

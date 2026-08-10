@@ -718,7 +718,6 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       continue
     }
     try {
-      clearStamped(id)
       const moved = { ...existing, originX: target.originX, originY: target.originY }
       let tiles = existing.visible ? await slice(moved) : new Map<string, TileLevels>()
       // Pointer events can arrive much faster than a tile can be rebuilt. Do not install stale
@@ -1031,6 +1030,14 @@ const queueStampBuild = (cacheKey: string, build: StampJob['build']): Promise<Ti
     pumpStampJobs()
   })
 
+const cancelPendingStamp = (cacheKey: string): void => {
+  pendingStamps.delete(cacheKey)
+  const queued = stampJobs.get(cacheKey)
+  if (queued === undefined) return
+  stampJobs.delete(cacheKey)
+  queued.resolve(null)
+}
+
 const cacheStamp = (cacheKey: string, wanted: string, tile: TileLevels): void => {
   const replaced = stamped.get(cacheKey)
   if (replaced !== undefined) {
@@ -1110,6 +1117,9 @@ export const stampTile = (
   const cacheKey = `${template.id}|${tileKey}`
   const hit = stamped.get(cacheKey)
   if (hit !== undefined && hit.key === wanted) {
+    // Returning to a cached zoom bucket supersedes any replacement for the bucket we just left.
+    // Invalidate active work and remove queued work before it can evict this exact match.
+    cancelPendingStamp(cacheKey)
     // Map insertion order is our LRU order.
     stamped.delete(cacheKey)
     stamped.set(cacheKey, hit)
