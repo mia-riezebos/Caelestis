@@ -64,7 +64,7 @@ export const hsvToHex = ({ h, s, v }: Hsv): string => {
 /** The hue on its own, full strength — the colour the saturation square is built out of. */
 const hueHex = (h: number): string => hsvToHex({ h, s: 1, v: 1 })
 
-const POPOVER_ID = 'wts-colour-picker'
+const POPOVER_ID = 'caelestis-colour-picker'
 
 /** Shut whichever picker is open. Exported so anything closing its own surface can take this with it. */
 export const closeColourPicker = (): void => {
@@ -100,7 +100,7 @@ export const colourSwatch = (
 ): HTMLButtonElement => {
   const button = document.createElement('button')
   button.type = 'button'
-  button.className = 'wts-swatch'
+  button.className = 'caelestis-swatch'
   button.style.width = '1.75rem'
   button.style.flex = '0 0 auto'
   button.style.backgroundColor = value
@@ -152,7 +152,7 @@ const openPicker = (
 
   const pop = document.createElement('div')
   pop.id = POPOVER_ID
-  pop.className = 'bg-base-100 shadow-2xl wts-cp'
+  pop.className = 'bg-base-100 shadow-2xl caelestis-cp'
   pop.setAttribute('role', 'dialog')
   pop.setAttribute('aria-label', label)
   Object.assign(pop.style, {
@@ -174,16 +174,16 @@ const openPicker = (
    * colour changes.
    */
   const square = document.createElement('div')
-  square.className = 'wts-cp-sv'
+  square.className = 'caelestis-cp-sv'
   square.tabIndex = 0
   square.setAttribute('role', 'application')
   const handle = document.createElement('span')
-  handle.className = 'wts-cp-handle'
+  handle.className = 'caelestis-cp-handle'
   square.appendChild(handle)
 
   const hue = document.createElement('input')
   hue.type = 'range'
-  hue.className = 'wts-cp-hue'
+  hue.className = 'caelestis-cp-hue'
   hue.min = '0'
   hue.max = '360'
   hue.step = '1'
@@ -199,7 +199,7 @@ const openPicker = (
   hex.setAttribute('aria-label', 'Hex value')
 
   const preview = document.createElement('span')
-  preview.className = 'wts-swatch'
+  preview.className = 'caelestis-swatch'
   preview.style.width = '1.75rem'
   preview.style.flex = '0 0 auto'
 

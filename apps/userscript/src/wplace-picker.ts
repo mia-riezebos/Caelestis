@@ -1,4 +1,4 @@
-import { TRANSPARENT_INDEX } from '@wts/shared'
+import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { log } from './debug.js'
 import { canvasPixelAt } from './main.js'
 import { pickerIndex, pixelArtIndexAt } from './picker-source.js'

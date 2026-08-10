@@ -1,4 +1,4 @@
-import { TILE_SIZE } from '@wts/shared'
+import { TILE_SIZE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { getState } from '../state.js'
@@ -236,7 +236,7 @@ export const drawMarkers = (
   gl.bindVertexArray(null)
 }
 
-export const MARKER_LAYER_ID = 'wts-markers'
+export const MARKER_LAYER_ID = 'caelestis-markers'
 
 /** Their crosshair. It stays on top; the markers go directly below it. */
 const CROSSHAIR_LAYER = 'pixel-hover'

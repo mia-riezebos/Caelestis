@@ -1,4 +1,4 @@
-import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@wts/shared'
+import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@caelestis/shared'
 import { log } from './debug.js'
 
 /**

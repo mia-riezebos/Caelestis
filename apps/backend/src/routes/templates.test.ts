@@ -1,4 +1,4 @@
-import { encodeIndexedPng, millis } from '@wts/shared'
+import { encodeIndexedPng, millis } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'

@@ -1,4 +1,4 @@
-import { PALETTE_RGB, quantiseToPalette, TILE_SIZE, TRANSPARENT_INDEX } from '@wts/shared'
+import { PALETTE_RGB, quantiseToPalette, TILE_SIZE, TRANSPARENT_INDEX } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
 import { type ConnectedServer, getState, listServerContents, onStateChange } from '../state.js'

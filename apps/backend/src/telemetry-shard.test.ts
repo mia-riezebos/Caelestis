@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { type Millis, millis, seconds } from '@wts/shared'
+import { type Millis, millis, seconds } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SqliteD1Database } from './adapters/cloudflare/sqlite-d1.test-helper.js'
 import { MemoryCounterStore } from './adapters/memory/memory-counter-store.js'
@@ -132,12 +132,12 @@ class SqliteDurableObjectStorage {
   transactionSync<T>(closure: () => T): T {
     this.assertUngated()
     const depth = this.transactionDepth
-    const savepoint = `wts_txn_${depth}`
+    const savepoint = `caelestis_txn_${depth}`
     this.database.exec(depth === 0 ? 'BEGIN IMMEDIATE' : `SAVEPOINT ${savepoint}`)
     this.transactionDepth = depth + 1
     // Restore the depth from the value captured on entry rather than decrementing. A decrement runs
     // twice if the closing statement itself throws, leaving the depth at -1 and every later call
-    // emitting `SAVEPOINT wts_txn_-1`, which is a syntax error rather than a transaction.
+    // emitting `SAVEPOINT caelestis_txn_-1`, which is a syntax error rather than a transaction.
     try {
       const result = closure()
       this.transactionDepth = depth
@@ -269,7 +269,7 @@ interface D1BucketRow {
 
 class TelemetryShardHarness {
   readonly d1 = new SqliteD1Database()
-  readonly storageDirectory = mkdtempSync(join(tmpdir(), 'wts-telemetry-shard-'))
+  readonly storageDirectory = mkdtempSync(join(tmpdir(), 'caelestis-telemetry-shard-'))
   readonly storageDatabase = new DatabaseSync(join(this.storageDirectory, 'durable-object.sqlite'))
   readonly storage = new SqliteDurableObjectStorage(this.storageDatabase)
   readonly state = new SqliteDurableObjectState(this.storage)
@@ -516,7 +516,7 @@ describe('the Durable Object fake', () => {
   })
 
   it('leaves the nesting depth usable when a closing statement throws', async () => {
-    // A depth left negative makes every later transactionSync emit `SAVEPOINT wts_txn_-1`, so the
+    // A depth left negative makes every later transactionSync emit `SAVEPOINT caelestis_txn_-1`, so the
     // whole fake stops working several tests after the one that broke it.
     const harness = await makeHarness(millis(150_000))
     const original = harness.storageDatabase.exec.bind(harness.storageDatabase)

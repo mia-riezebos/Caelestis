@@ -1,4 +1,4 @@
-import { millis, PngError, SliceError } from '@wts/shared'
+import { millis, PngError, SliceError } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'

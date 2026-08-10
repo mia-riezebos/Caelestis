@@ -5,11 +5,11 @@ compatibility_flags = ["nodejs_compat"]
 
 [[r2_buckets]]
 binding = "BLOBS"
-bucket_name = "wts-blobs"
+bucket_name = "caelestis-blobs"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "wts"
+database_name = "caelestis"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "./migrations"
 

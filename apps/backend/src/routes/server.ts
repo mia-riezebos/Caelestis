@@ -1,4 +1,4 @@
-import type { ServerInfo } from '@wts/shared'
+import type { ServerInfo } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'

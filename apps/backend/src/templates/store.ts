@@ -10,7 +10,7 @@ import {
   type TileKey,
   tileKey,
   uuidV7,
-} from '@wts/shared'
+} from '@caelestis/shared'
 import type { Ports, TemplateVersionRecord } from '../ports/index.js'
 import { NodeNotFoundError } from '../ports/index.js'
 

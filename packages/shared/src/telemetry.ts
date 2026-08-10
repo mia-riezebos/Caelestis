@@ -5,8 +5,8 @@ import type { Millis, Seconds } from './time.js'
 /**
  * The most pixels one paint report may claim, per tile and in total.
  *
- * This lives in `@wts/shared` because both sides of the boundary have to agree on it and neither
- * may depend on the other: `@wts/wire-schema` decides what a request is allowed to contain, and
+ * This lives in `@caelestis/shared` because both sides of the boundary have to agree on it and neither
+ * may depend on the other: `@caelestis/wire-schema` decides what a request is allowed to contain, and
  * `apps/backend`'s CounterStore decides what a delta is allowed to contain. Restating it in both
  * was a comment claiming a test pinned them together — there was no such test, and there could not
  * be one, since nothing links the two packages. A shared constant needs no pinning.

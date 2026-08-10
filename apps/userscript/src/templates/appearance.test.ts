@@ -1,4 +1,4 @@
-import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@wts/shared'
+import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import {
   anchorOffset,

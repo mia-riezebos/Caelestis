@@ -10,26 +10,26 @@
  * rather than hard-coding a palette beside it.
  */
 
-const STYLE_ID = 'wts-styles'
+const STYLE_ID = 'caelestis-styles'
 
 const CSS = `
-.wts-row {
+.caelestis-row {
   border-radius: 0.375rem;
   transition: background-color 100ms ease-out;
 }
 /* A card only while pointed at: the tree is a list to scan, and a permanent card per row turns
    scanning into reading. */
-.wts-row:hover {
+.caelestis-row:hover {
   background-color: var(--color-base-200, rgba(0, 0, 0, 0.06));
 }
 /* A plain pointer, not grab. The rows are clickable as well as draggable, and a grab cursor
    promises dragging is the primary action when it is the secondary one. */
-.wts-row[draggable='true'] {
+.caelestis-row[draggable='true'] {
   cursor: pointer;
 }
 /* Gone, not faded: the placeholder is where it is going, and the drag image is where it is now.
    A third, half-visible copy in the original slot is one too many. */
-.wts-row.wts-dragging {
+.caelestis-row.caelestis-dragging {
   display: none;
 }
 /* The gap the row would occupy, held open while dragging, rather than a line drawn on a
@@ -39,7 +39,7 @@ const CSS = `
    Its height is set per drag, to the height of everything in flight — a folder carrying nine
    templates leaves a nine-row hole. The min-height below is only the floor for a single row, and
    border-box keeps that measured height honest once the dashed border is added to it. */
-.wts-placeholder {
+.caelestis-placeholder {
   border: 1px dashed var(--color-primary, currentColor);
   border-radius: 0.375rem;
   opacity: 0.7;
@@ -50,7 +50,7 @@ const CSS = `
 /* Inside the panel, not overhanging it: the panel clips its overflow to keep the rounded corner,
    so a handle at a negative offset is invisible and unclickable — which is exactly how it
    behaved. */
-.wts-resize {
+.caelestis-resize {
   position: absolute;
   left: 0;
   top: 0;
@@ -61,8 +61,8 @@ const CSS = `
      whole strip — the handle was present, positioned, and completely unclickable. */
   z-index: 1;
 }
-.wts-resize:hover::after,
-.wts-resize.wts-resizing::after {
+.caelestis-resize:hover::after,
+.caelestis-resize.caelestis-resizing::after {
   content: '';
   position: absolute;
   inset: 0 2px 0 1px;
@@ -70,12 +70,12 @@ const CSS = `
   border-radius: 999px;
   opacity: 0.5;
 }
-.wts-actions {
+.caelestis-actions {
   opacity: 0;
   transition: opacity 100ms ease-out;
 }
-.wts-row:hover .wts-actions,
-.wts-row:focus-within .wts-actions {
+.caelestis-row:hover .caelestis-actions,
+.caelestis-row:focus-within .caelestis-actions {
   opacity: 1;
 }
 /* The swatch grid steps between powers of two rather than flowing with auto-fill.
@@ -83,10 +83,10 @@ const CSS = `
    ragged counts like 13 or 17 and the rows stopped lining up into anything readable. Powers of two
    keep every row a clean subdivision of the one above at any panel width, and the panel is
    user-resizable, so this has to hold continuously. */
-.wts-swatches {
+.caelestis-swatches {
   container-type: inline-size;
 }
-.wts-swatch-grid {
+.caelestis-swatch-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   /* Wider than it looks, because the "on" ring is drawn *outside* the swatch: 2px of outline at 1px
@@ -101,15 +101,15 @@ const CSS = `
    colour you cannot identify and a target you cannot reliably hit. A grid of powers of two is only
    worth having while each cell is still a swatch, so the count waits for the room. */
 @container (min-width: 17.5rem) {
-  .wts-swatch-grid { grid-template-columns: repeat(8, 1fr); }
+  .caelestis-swatch-grid { grid-template-columns: repeat(8, 1fr); }
 }
 @container (min-width: 35.5rem) {
-  .wts-swatch-grid { grid-template-columns: repeat(16, 1fr); }
+  .caelestis-swatch-grid { grid-template-columns: repeat(16, 1fr); }
 }
 @container (min-width: 71.5rem) {
-  .wts-swatch-grid { grid-template-columns: repeat(32, 1fr); }
+  .caelestis-swatch-grid { grid-template-columns: repeat(32, 1fr); }
 }
-.wts-swatch {
+.caelestis-swatch {
   aspect-ratio: 1;
   position: relative;
   /* A floor as well as a step, so a container narrower than the smallest step overflows rather than
@@ -125,16 +125,16 @@ const CSS = `
 /* Off keeps most of its colour rather than draining away: the swatch has to stay identifiable as
    *which* colour it is while it is not drawing, and 63 near-invisible squares are unreadable as a
    palette. The ring carries "on"; opacity is only the supporting signal. */
-.wts-swatch[data-on='false'] {
+.caelestis-swatch[data-on='false'] {
   opacity: 0.7;
 }
-.wts-swatch[data-on='true'] {
+.caelestis-swatch[data-on='true'] {
   outline-color: var(--color-base-content, currentColor);
 }
 /* Hovering says what the swatch *is*, not what a click would do — a filled box with the eye knocked
    out for on, an empty box with a struck eye for off. Nothing decorates the grid at rest, because
    sixty-three badges saying "normal" is what made the old treatment noise. */
-.wts-swatch-badge {
+.caelestis-swatch-badge {
   position: absolute;
   inset: 0;
   display: flex;
@@ -144,11 +144,11 @@ const CSS = `
   transition: opacity 80ms ease-out;
   pointer-events: none;
 }
-.wts-swatch:hover .wts-swatch-badge,
-.wts-swatch:focus-visible .wts-swatch-badge {
+.caelestis-swatch:hover .caelestis-swatch-badge,
+.caelestis-swatch:focus-visible .caelestis-swatch-badge {
   opacity: 1;
 }
-.wts-swatch-badge > span {
+.caelestis-swatch-badge > span {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -157,15 +157,15 @@ const CSS = `
   border-radius: 0.25rem;
   box-sizing: border-box;
 }
-.wts-swatch-badge svg {
+.caelestis-swatch-badge svg {
   width: 78%;
   height: 78%;
 }
-.wts-swatch[data-on='true'] .wts-swatch-badge > span {
+.caelestis-swatch[data-on='true'] .caelestis-swatch-badge > span {
   background-color: var(--color-base-content, #111);
   color: var(--color-base-100, #fff);
 }
-.wts-swatch[data-on='false'] .wts-swatch-badge > span {
+.caelestis-swatch[data-on='false'] .caelestis-swatch-badge > span {
   border: 1.5px solid var(--color-base-content, #111);
   background-color: var(--color-base-100, #fff);
   color: var(--color-base-content, #111);
@@ -173,15 +173,15 @@ const CSS = `
 /* A swatch used as a button — the chosen colour — needs the focus ring the grid's swatches get from
    their own "on" outline. Same shape, same size, same border: a colour you picked and a colour you
    switched on should not read as two kinds of thing. */
-.wts-swatch:focus-visible {
+.caelestis-swatch:focus-visible {
   outline-color: var(--color-primary, currentColor);
 }
 /* The picker. Sized to the square rather than the other way round: 12rem across is enough to place
    a hue to within a couple of degrees, which is the resolution the choice actually needs. */
-.wts-cp {
+.caelestis-cp {
   width: 13.25rem;
 }
-.wts-cp-sv {
+.caelestis-cp-sv {
   position: relative;
   height: 7.5rem;
   border-radius: 0.5rem;
@@ -189,11 +189,11 @@ const CSS = `
   /* Or dragging across it pans wplace's map underneath. */
   touch-action: none;
 }
-.wts-cp-sv:focus-visible {
+.caelestis-cp-sv:focus-visible {
   outline: 2px solid var(--color-primary, currentColor);
   outline-offset: 2px;
 }
-.wts-cp-handle {
+.caelestis-cp-handle {
   position: absolute;
   width: 0.875rem;
   height: 0.875rem;
@@ -205,7 +205,7 @@ const CSS = `
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
-.wts-cp-hue {
+.caelestis-cp-hue {
   appearance: none;
   -webkit-appearance: none;
   display: block;
@@ -218,11 +218,11 @@ const CSS = `
     #f00 0%, #ff0 16.67%, #0f0 33.33%, #0ff 50%, #00f 66.67%, #f0f 83.33%, #f00 100%
   );
 }
-.wts-cp-hue:focus-visible {
+.caelestis-cp-hue:focus-visible {
   outline: 2px solid var(--color-primary, currentColor);
   outline-offset: 2px;
 }
-.wts-cp-hue::-webkit-slider-thumb {
+.caelestis-cp-hue::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
   width: 0.875rem;
@@ -232,7 +232,7 @@ const CSS = `
   border: 1px solid rgba(0, 0, 0, 0.55);
   cursor: pointer;
 }
-.wts-cp-hue::-moz-range-thumb {
+.caelestis-cp-hue::-moz-range-thumb {
   width: 0.875rem;
   height: 0.875rem;
   border-radius: 999px;
@@ -245,21 +245,21 @@ const CSS = `
    The circle never changes. It is what says "hidden" rather than "nothing here" — an absent eye in
    an absent container is a gap, not a state, and it leaves nothing to aim at for the click that
    would bring the row back. */
-.wts-eye {
+.caelestis-eye {
   display: inline-flex;
   flex: 0 0 auto;
   cursor: pointer;
 }
 /* Off-screen rather than display:none, which would take it out of the tab order along with the
    keyboard toggle and the label association — the whole reason this is still a checkbox. */
-.wts-eye > input {
+.caelestis-eye > input {
   position: absolute;
   width: 1px;
   height: 1px;
   opacity: 0;
   pointer-events: none;
 }
-.wts-eye > span {
+.caelestis-eye > span {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -271,18 +271,18 @@ const CSS = `
      the circle is the control, and the eye inside it is the answer. */
   border: 1px solid var(--color-base-300, rgba(0, 0, 0, 0.18));
 }
-.wts-eye > span > svg {
+.caelestis-eye > span > svg {
   opacity: 0;
   transition: opacity 100ms ease-out;
 }
-.wts-eye > input:checked + span > svg {
+.caelestis-eye > input:checked + span > svg {
   opacity: 1;
 }
-.wts-eye > input:focus-visible + span {
+.caelestis-eye > input:focus-visible + span {
   outline: 2px solid var(--color-primary, currentColor);
   outline-offset: 1px;
 }
-.wts-name {
+.caelestis-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;

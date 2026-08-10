@@ -1,4 +1,4 @@
-import type { ServerInfo } from '@wts/shared'
+import type { ServerInfo } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { Ports } from './ports/index.js'

@@ -1,4 +1,4 @@
-import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
+import { TILE_SIZE, WORLD_PIXELS } from '@caelestis/shared'
 import type { TileFrame } from './tile-transform.js'
 
 const wrapWorldX = (x: number): number => ((x % WORLD_PIXELS) + WORLD_PIXELS) % WORLD_PIXELS

@@ -1,4 +1,4 @@
-import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
+import { type Millis, seconds, WORLD_PIXELS } from '@caelestis/shared'
 import {
   and,
   asc,

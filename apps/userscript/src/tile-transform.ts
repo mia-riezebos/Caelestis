@@ -5,7 +5,7 @@ import {
   TRANSPARENT_INDEX,
   tileKey,
   WPLACE_PALETTE,
-} from '@wts/shared'
+} from '@caelestis/shared'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'

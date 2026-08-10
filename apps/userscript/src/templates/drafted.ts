@@ -1,4 +1,4 @@
-import type { TileCoord } from '@wts/shared'
+import type { TileCoord } from '@caelestis/shared'
 import { getMap } from '../map-handle.js'
 
 /**

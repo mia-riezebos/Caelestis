@@ -1,4 +1,4 @@
-import { millis } from '@wts/shared'
+import { millis } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import { hashToken, mintToken, SCOPES, type Scope } from '../auth/tokens.js'

@@ -14,9 +14,9 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "clean": "turbo clean && rm -rf node_modules",
-    "inject": "pnpm --filter @wts/userscript inject",
-    "inject:watch": "pnpm --filter @wts/userscript inject:watch",
-    "browser": "pnpm --filter @wts/userscript browser"
+    "inject": "pnpm --filter @caelestis/userscript inject",
+    "inject:watch": "pnpm --filter @caelestis/userscript inject:watch",
+    "browser": "pnpm --filter @caelestis/userscript browser"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",

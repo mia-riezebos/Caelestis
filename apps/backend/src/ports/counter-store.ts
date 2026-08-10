@@ -1,4 +1,4 @@
-import { MAX_PAINT_COUNT, type Millis, type Seconds, seconds } from '@wts/shared'
+import { MAX_PAINT_COUNT, type Millis, type Seconds, seconds } from '@caelestis/shared'
 
 /**
  * Live contribution counters. Durable Object today, a counters table later.

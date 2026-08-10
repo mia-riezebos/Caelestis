@@ -44,11 +44,11 @@ export const confirmDestructive = ({
   confirmLabel,
 }: ConfirmOptions): Promise<boolean> =>
   new Promise((resolve) => {
-    document.querySelector('dialog[data-wts-confirm]')?.remove()
+    document.querySelector('dialog[data-caelestis-confirm]')?.remove()
 
     const dialog = document.createElement('dialog')
     dialog.className = 'modal'
-    dialog.setAttribute('data-wts-confirm', '')
+    dialog.setAttribute('data-caelestis-confirm', '')
 
     const box = document.createElement('div')
     box.className = DIALOG_BOX_CLASS
