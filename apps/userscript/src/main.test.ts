@@ -230,4 +230,95 @@ describe('overlay canvas lifecycle', () => {
     expect(harness.levelFor).toHaveBeenCalledWith(levels, 1_000.49)
     expect(context.drawImage).toHaveBeenCalledWith(bitmap, 0.49, 0.25, 1_000.49, 999.6)
   })
+
+  it('filters hidden templates and applies opacity and smoothing per visible quad', async () => {
+    const bitmap = { width: 1_000, height: 1_000 }
+    const levels = { levels: [bitmap] }
+    harness.localTemplates.mockReturnValue([
+      { id: 'hidden', visible: false },
+      {
+        id: 'visible',
+        visible: true,
+        appearance: { shape: 'full', size: 1, anchor: 'c', opacity: 0.4, hiddenColours: [] },
+      },
+    ])
+    harness.stampTile.mockReturnValue(levels)
+    harness.levelFor.mockReturnValue(bitmap)
+    vi.stubGlobal('document', {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => ({
+        dataset: {},
+        style: {},
+        width: 0,
+        height: 0,
+        parentElement: null,
+        getContext: () => ({}),
+      })),
+    })
+    await import('./main.js')
+    const frame = {
+      canvas: { width: 1_500, height: 1_000, parentElement: null },
+      quads: [
+        { tile: { x: 1, y: 2 }, x: 0, y: 0, width: 500, height: 500 },
+        { tile: { x: 2, y: 2 }, x: 500, y: 0, width: 1_000, height: 1_000 },
+      ],
+    }
+    const draw = harness.draw
+    if (draw === null) throw new Error('main must register its tile-frame listener')
+    draw(frame)
+    const painters = harness.paintFrame.mock.calls[0]?.[2] as
+      | Array<(context: unknown, frame: unknown) => void>
+      | undefined
+    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
+    const states: Array<{ alpha: number; smoothing: boolean }> = []
+    const context = {
+      globalAlpha: 1,
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: 'low',
+      drawImage: vi.fn(() =>
+        states.push({
+          alpha: context.globalAlpha,
+          smoothing: context.imageSmoothingEnabled,
+        }),
+      ),
+    }
+
+    painters[0](context, frame)
+
+    expect(harness.stampTile).toHaveBeenCalledTimes(2)
+    expect(harness.stampTile).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'hidden' }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    )
+    expect(states).toEqual([
+      { alpha: 0.4, smoothing: true },
+      { alpha: 0.4, smoothing: false },
+    ])
+    expect(context.globalAlpha).toBe(1)
+  })
+
+  it('repaints the idle map when local template state changes', async () => {
+    vi.stubGlobal('document', {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => ({
+        dataset: {},
+        style: {},
+        width: 0,
+        height: 0,
+        parentElement: null,
+        getContext: () => ({}),
+      })),
+    })
+    await import('./main.js')
+    const draw = harness.draw
+    if (draw === null || harness.localChange === null) throw new Error('expected repaint wiring')
+    draw({ canvas: { width: 100, height: 100, parentElement: null }, quads: [] })
+    harness.paintFrame.mockClear()
+
+    harness.localChange()
+
+    expect(harness.paintFrame).toHaveBeenCalledOnce()
+  })
 })

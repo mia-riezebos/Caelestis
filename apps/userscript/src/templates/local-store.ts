@@ -49,13 +49,16 @@ export interface PlacedTemplate extends ImportedTemplate {
 const templates = new Map<string, PlacedTemplate>()
 const listeners: Array<() => void> = []
 
+const orderedTemplates = (): PlacedTemplate[] =>
+  [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+
 export const onLocalChange = (listener: () => void): void => {
   listeners.push(listener)
 }
 const notify = (): void => {
   // Mirror a summary onto the window so the dev harness can assert on placement without reaching
   // into module state. Metadata only — never the pixels.
-  ;(window as unknown as Record<string, unknown>).__wtsLocal = [...templates.values()].map((t) => ({
+  ;(window as unknown as Record<string, unknown>).__wtsLocal = orderedTemplates().map((t) => ({
     id: t.id,
     name: t.name,
     source: t.source,
@@ -68,7 +71,7 @@ const notify = (): void => {
   for (const listener of listeners) listener()
 }
 
-export const localTemplates = (): readonly PlacedTemplate[] => [...templates.values()]
+export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
 
 /**
  * Slice a template into tile-sized bitmaps.
@@ -151,8 +154,10 @@ const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels
   try {
     for (let tileY = firstTileY; tileY <= lastTileY; tileY++) {
       for (let tileX = firstTileX; tileX <= lastTileX; tileX++) {
-        const rgba = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
-        let painted = 0
+        // Allocate a full tile only once a painted source pixel is found. Sparse Marble extents can
+        // cross thousands of empty tile rows; eagerly allocating 4 MB for every empty tile turns a
+        // small valid import into gigabytes of allocation churn.
+        let rgba: Uint8ClampedArray<ArrayBuffer> | null = null
         const tileLeft = tileX * TILE_SIZE
         const tileTop = tileY * TILE_SIZE
         const startX = Math.max(0, tileLeft - template.originX)
@@ -168,15 +173,15 @@ const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels
             if (index === TRANSPARENT_INDEX) continue
             const colour = WPLACE_PALETTE[index]
             if (colour === undefined) continue
+            rgba ??= new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
             const target = (targetRow + (template.originX + x - tileLeft)) * 4
             rgba[target] = colour.rgb[0]
             rgba[target + 1] = colour.rgb[1]
             rgba[target + 2] = colour.rgb[2]
             rgba[target + 3] = 255
-            painted++
           }
         }
-        if (painted === 0) continue
+        if (rgba === null) continue
         out.set(`${tileX}/${tileY}`, {
           levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
         })
@@ -195,9 +200,12 @@ const writeInOrder = (id: string, write: () => Promise<boolean>): Promise<boolea
   const previous = writeTails.get(id) ?? Promise.resolve(true)
   const next = previous.then(write, write)
   writeTails.set(id, next)
-  void next.finally(() => {
+  const release = (): void => {
     if (writeTails.get(id) === next) writeTails.delete(id)
-  })
+  }
+  // Give the cleanup chain both handlers so a failed write cannot create a second, unobserved
+  // rejected promise through `finally`.
+  void next.then(release, release)
   return next
 }
 
@@ -254,7 +262,7 @@ export const restoreLocalTemplates = async (): Promise<void> => {
 interface MoveTarget {
   readonly originX: number
   readonly originY: number
-  readonly resolve: () => void
+  readonly resolve: (saved: boolean) => void
   readonly reject: (error: unknown) => void
 }
 
@@ -272,7 +280,7 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
     queue.pending = null
     const existing = templates.get(id)
     if (existing === undefined) {
-      target.resolve()
+      target.resolve(false)
       continue
     }
     try {
@@ -282,22 +290,34 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       // intermediate work; discard it and immediately build only the newest requested position.
       if (queue.pending !== null) {
         closeTiles(tiles)
-        target.resolve()
+        target.resolve(true)
         continue
       }
       const current = templates.get(id)
       if (current === undefined) {
         closeTiles(tiles)
-        target.resolve()
+        target.resolve(false)
         continue
       }
       const next = { ...current, originX: target.originX, originY: target.originY, tiles }
+      if (!(await persist(next))) {
+        closeTiles(tiles)
+        warn('install', `move for ${next.name} was not saved`)
+        target.resolve(false)
+        continue
+      }
+      // A newer drag may have arrived while IndexedDB was committing this one. Its persisted
+      // placement will be superseded immediately; do not flash stale rendered tiles meanwhile.
+      if (queue.pending !== null) {
+        closeTiles(tiles)
+        target.resolve(true)
+        continue
+      }
       clearStamped(id)
       templates.set(id, next)
       closeTiles(current.tiles)
-      if (!(await persist(next))) warn('install', `move for ${next.name} was not saved`)
       notify()
-      target.resolve()
+      target.resolve(true)
     } catch (error) {
       target.reject(error)
     }
@@ -311,50 +331,61 @@ export const moveLocalTemplate = async (
   id: string,
   originX: number,
   originY: number,
-): Promise<void> => {
+): Promise<boolean> => {
   const existing = templates.get(id)
-  if (existing === undefined) return
+  if (existing === undefined) return false
   const roundedX = Math.round(originX)
   const roundedY = Math.round(originY)
   validatePlacement(existing, roundedX, roundedY)
   const queue = moveQueues.get(id) ?? { pending: null, running: false }
   moveQueues.set(id, queue)
-  await new Promise<void>((resolve, reject) => {
+  return await new Promise<boolean>((resolve, reject) => {
     // A not-yet-started intermediate request is superseded. Its caller does not need to wait for
     // work that deliberately will never be applied.
-    queue.pending?.resolve()
+    queue.pending?.resolve(true)
     queue.pending = { originX: roundedX, originY: roundedY, resolve, reject }
     if (!queue.running) void drainMoves(id, queue)
   })
 }
 
-export const markPlaced = async (id: string): Promise<void> => {
+export const markPlaced = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
-  if (existing === undefined) return
+  if (existing === undefined) return false
   const next = { ...existing, everPlaced: true }
+  if (!(await persist(next))) {
+    warn('install', `placement for ${next.name} was not saved`)
+    return false
+  }
   templates.set(id, next)
-  if (!(await persist(next))) warn('install', `placement for ${next.name} was not saved`)
+  return true
 }
 
-export const removeLocalTemplate = async (id: string): Promise<void> => {
+export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
-  if (existing === undefined) return
+  if (existing === undefined) return false
+  if (!(await writeInOrder(id, async () => await deleteTemplate(id)))) {
+    warn('install', `deletion of ${existing.name} was not saved`)
+    return false
+  }
   closeTiles(existing.tiles)
   clearStamped(id)
   templates.delete(id)
-  if (!(await writeInOrder(id, async () => await deleteTemplate(id))))
-    warn('install', `deletion of ${existing.name} was not saved`)
   notify()
+  return true
 }
 
-export const setLocalVisible = async (id: string, visible: boolean): Promise<void> => {
+export const setLocalVisible = async (id: string, visible: boolean): Promise<boolean> => {
   const existing = templates.get(id)
-  if (existing === undefined) return
+  if (existing === undefined) return false
   const next = { ...existing, visible }
+  if (!(await persist(next))) {
+    warn('install', `visibility for ${next.name} was not saved`)
+    return false
+  }
   templates.set(id, next)
   if (!visible) clearStamped(id)
-  if (!(await persist(next))) warn('install', `visibility for ${next.name} was not saved`)
   notify()
+  return true
 }
 
 /**
@@ -373,14 +404,18 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 }
 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
-export const setAppearance = async (id: string, appearance: Appearance): Promise<void> => {
+export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
   const existing = templates.get(id)
-  if (existing === undefined) return
+  if (existing === undefined) return false
   const next = { ...existing, appearance }
+  if (!(await persist(next))) {
+    warn('install', `appearance for ${next.name} was not saved`)
+    return false
+  }
   clearStamped(id)
   templates.set(id, next)
-  if (!(await persist(next))) warn('install', `appearance for ${next.name} was not saved`)
   notify()
+  return true
 }
 
 /**
@@ -393,6 +428,53 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
  */
 const stamped = new Map<string, { key: string; tile: TileLevels }>()
 const pendingStamps = new Map<string, string>()
+const MAX_STAMPED_TILES = 12
+const MAX_CONCURRENT_STAMP_BUILDS = 2
+
+interface StampJob {
+  readonly build: () => Promise<TileLevels | null>
+  readonly resolve: (tile: TileLevels | null) => void
+  readonly reject: (error: unknown) => void
+}
+
+const stampJobs: StampJob[] = []
+let activeStampBuilds = 0
+
+const pumpStampJobs = (): void => {
+  while (activeStampBuilds < MAX_CONCURRENT_STAMP_BUILDS) {
+    const job = stampJobs.shift()
+    if (job === undefined) return
+    activeStampBuilds++
+    void job
+      .build()
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        activeStampBuilds--
+        pumpStampJobs()
+      })
+  }
+}
+
+const queueStampBuild = (build: StampJob['build']): Promise<TileLevels | null> =>
+  new Promise((resolve, reject) => {
+    stampJobs.push({ build, resolve, reject })
+    pumpStampJobs()
+  })
+
+const cacheStamp = (cacheKey: string, wanted: string, tile: TileLevels): void => {
+  const replaced = stamped.get(cacheKey)
+  if (replaced !== undefined) closeLevels(replaced.tile)
+  stamped.delete(cacheKey)
+  stamped.set(cacheKey, { key: wanted, tile })
+  while (stamped.size > MAX_STAMPED_TILES) {
+    const oldest = stamped.entries().next().value as
+      | [string, { key: string; tile: TileLevels }]
+      | undefined
+    if (oldest === undefined) break
+    stamped.delete(oldest[0])
+    closeLevels(oldest[1].tile)
+  }
+}
 
 const clearStamped = (id: string): void => {
   const prefix = `${id}|`
@@ -431,10 +513,19 @@ export const stampTile = (
 
   const cacheKey = `${template.id}|${tileKey}`
   const hit = stamped.get(cacheKey)
-  if (hit !== undefined && hit.key === wanted) return hit.tile
+  if (hit !== undefined && hit.key === wanted) {
+    // Map insertion order is our LRU order.
+    stamped.delete(cacheKey)
+    stamped.set(cacheKey, hit)
+    return hit.tile
+  }
   if (pendingStamps.get(cacheKey) !== wanted) {
     pendingStamps.set(cacheKey, wanted)
-    void buildStamp(template, tileKey, renderedAppearance)
+    void queueStampBuild(async () =>
+      pendingStamps.get(cacheKey) === wanted
+        ? await buildStamp(template, tileKey, renderedAppearance)
+        : null,
+    )
       .then((built) => {
         // A move, removal, appearance change, or zoom-threshold crossing supersedes this work.
         if (pendingStamps.get(cacheKey) !== wanted) {
@@ -443,9 +534,7 @@ export const stampTile = (
         }
         pendingStamps.delete(cacheKey)
         if (built === null) return
-        const replaced = stamped.get(cacheKey)
-        if (replaced !== undefined) closeLevels(replaced.tile)
-        stamped.set(cacheKey, { key: wanted, tile: built })
+        cacheStamp(cacheKey, wanted, built)
         notify()
       })
       .catch((error: unknown) => {
@@ -490,6 +579,10 @@ const buildStamp = async (
   tileKey: string,
   appearance: Appearance,
 ): Promise<TileLevels | null> => {
+  // `async` alone does not defer work before its first await. Yield before allocation and then in
+  // bounded row chunks so requesting a new appearance from a frame painter cannot create a long
+  // task that freezes MapLibre's next frame.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
   const [tx, ty] = tileKey.split('/').map(Number)
   if (tx === undefined || ty === undefined) return null
   const scale = scaleFor(appearance)
@@ -525,6 +618,9 @@ const buildStamp = async (
           rgba[target + 3] = alpha
         }
       }
+    }
+    if ((y - startY + 1) % 64 === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
   }
   return { levels: await buildLevels(new ImageData(rgba, size, size)) }

@@ -1,6 +1,6 @@
 import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
-import { log } from '../debug.js'
-import { canvasPixelAt, pixelsPerCanvasPixel } from '../main.js'
+import { log, warn } from '../debug.js'
+import { canvasPixelAt, cssPixelsPerCanvasPixel } from '../main.js'
 import { icon } from '../ui/icons.js'
 import {
   localTemplates,
@@ -133,7 +133,7 @@ const onPointerDown = (event: PointerEvent): void => {
     )
     session.x = next.x
     session.y = next.y
-    void moveLocalTemplate(session.id, session.x, session.y)
+    previewMove(session.id, session.x, session.y)
     log('draw', 'template centred on cursor', { x: session.x, y: session.y })
     return
   }
@@ -157,7 +157,7 @@ const onPointerMove = (event: PointerEvent): void => {
   event.preventDefault()
   event.stopPropagation()
   // Screen delta to canvas delta: one canvas pixel is many screen pixels when zoomed in.
-  const scale = pixelsPerCanvasPixel()
+  const scale = cssPixelsPerCanvasPixel()
   const template = localTemplates().find((candidate) => candidate.id === session?.id)
   if (template === undefined) return
   const next = boundedOrigin(
@@ -167,7 +167,15 @@ const onPointerMove = (event: PointerEvent): void => {
   )
   session.x = next.x
   session.y = next.y
-  void moveLocalTemplate(session.id, session.x, session.y)
+  previewMove(session.id, session.x, session.y)
+}
+
+const previewMove = (id: string, x: number, y: number): void => {
+  void moveLocalTemplate(id, x, y)
+    .then((saved) => {
+      if (!saved) warn('install', 'template move was not saved')
+    })
+    .catch((error: unknown) => warn('install', 'template move failed', String(error)))
 }
 
 const onPointerUp = (): void => {
@@ -222,15 +230,31 @@ const finish = (): void => {
   onFinish = null
 }
 
+const resumeAfterFailure = (action: string, error?: unknown): void => {
+  warn('install', `${action} could not be saved; placement is still open`, String(error ?? ''))
+  finishing = false
+  listen(true)
+}
+
 export const commit = async (): Promise<void> => {
   if (session === null || finishing) return
   const current = session
   finishing = true
   listen(false)
-  await moveLocalTemplate(current.id, current.x, current.y)
-  await markPlaced(current.id)
-  log('install', 'placement applied', { x: current.x, y: current.y })
-  finish()
+  try {
+    if (!(await moveLocalTemplate(current.id, current.x, current.y))) {
+      resumeAfterFailure('placement')
+      return
+    }
+    if (!(await markPlaced(current.id))) {
+      resumeAfterFailure('placement')
+      return
+    }
+    log('install', 'placement applied', { x: current.x, y: current.y })
+    finish()
+  } catch (error) {
+    resumeAfterFailure('placement', error)
+  }
 }
 
 /**
@@ -245,13 +269,20 @@ export const abort = async (): Promise<void> => {
   const current = session
   finishing = true
   listen(false)
-  const template = localTemplates().find((candidate) => candidate.id === current.id)
-  if (template !== undefined && template.source === 'image' && !template.everPlaced) {
-    await removeLocalTemplate(current.id)
-  } else {
-    await moveLocalTemplate(current.id, current.originalX, current.originalY)
+  try {
+    const template = localTemplates().find((candidate) => candidate.id === current.id)
+    const saved =
+      template !== undefined && template.source === 'image' && !template.everPlaced
+        ? await removeLocalTemplate(current.id)
+        : await moveLocalTemplate(current.id, current.originalX, current.originalY)
+    if (!saved) {
+      resumeAfterFailure('revert')
+      return
+    }
+    finish()
+  } catch (error) {
+    resumeAfterFailure('revert', error)
   }
-  finish()
 }
 
 /** Tile-aligned bounds of the template being moved, for drawing its outline. */

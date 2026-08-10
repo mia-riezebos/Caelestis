@@ -1,7 +1,7 @@
 import { TILE_SIZE, tileKey } from '@wts/shared'
 import {
   canvasPixelAtIn,
-  pixelsPerCanvasPixelIn,
+  cssPixelsPerCanvasPixelIn,
   screenPointForIn,
   viewportCentreIn,
 } from './coordinates.js'
@@ -114,9 +114,9 @@ export const screenPointFor = (x: number, y: number): { x: number; y: number } |
   return lastFrame === null ? null : screenPointForIn(lastFrame, x, y)
 }
 
-/** Screen scale: how many device pixels one canvas pixel currently occupies. */
-export const pixelsPerCanvasPixel = (): number => {
-  return pixelsPerCanvasPixelIn(lastFrame)
+/** Screen scale: how many CSS pixels one canvas pixel currently occupies. */
+export const cssPixelsPerCanvasPixel = (): number => {
+  return cssPixelsPerCanvasPixelIn(lastFrame)
 }
 
 /**

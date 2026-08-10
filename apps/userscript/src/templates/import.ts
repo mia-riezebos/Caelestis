@@ -32,6 +32,8 @@ export interface ImportedTemplate {
   readonly id: string
   readonly name: string
   readonly source: TemplateSource
+  /** Source z-order, lowest first. Optional only for records written by older builds. */
+  readonly sortOrder?: number
   /** Top-left corner in global canvas pixels. */
   readonly originX: number
   readonly originY: number
@@ -49,6 +51,7 @@ export interface ImportedTemplate {
 const MAX_FILE_BYTES = 64 * 1024 * 1024
 const MAX_IMPORT_PIXELS = 16 * 1024 * 1024
 const MAX_MARBLE_TILES = 64
+const MARBLE_DRAW_MULT = 3
 
 const newId = (): string =>
   `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
@@ -100,12 +103,16 @@ interface WplaceFile {
   readonly name?: string
   readonly image?: { dataUrl?: string; width?: number; height?: number }
   readonly bounds?: { north?: number; south?: number; west?: number; east?: number }
+  readonly order?: number
 }
 
 const importWplace = async (file: WplaceFile): Promise<ImportedTemplate[]> => {
   const dataUrl = file.image?.dataUrl
   const bounds = file.bounds
   if (typeof dataUrl !== 'string' || bounds === undefined) return []
+  if (!/^data:image\/png;base64,/i.test(dataUrl)) {
+    throw new Error('.wplace image must be an embedded PNG data URL')
+  }
   const { north, west } = bounds
   if (
     typeof north !== 'number' ||
@@ -134,6 +141,8 @@ const importWplace = async (file: WplaceFile): Promise<ImportedTemplate[]> => {
       id: newId(),
       name: file.name ?? 'Imported template',
       source: 'wplace',
+      sortOrder:
+        typeof file.order === 'number' && Number.isSafeInteger(file.order) ? file.order : 0,
       originX,
       originY,
       width,
@@ -150,6 +159,33 @@ interface MarbleFile {
     string,
     { name?: string; coords?: string; tiles?: Record<string, string> }
   >
+}
+
+/** Blue Marble stores native pixels as the centre dot of a 3x3 display cell. Decode that storage
+ * representation; this restores the original fixed dimensions and is not image resizing. */
+const decodeMarbleTile = async (
+  blob: Blob,
+): Promise<{ width: number; height: number; pixels: Uint8Array }> => {
+  const encoded = await decodeToRgba(blob)
+  if (encoded.width % MARBLE_DRAW_MULT !== 0 || encoded.height % MARBLE_DRAW_MULT !== 0) {
+    throw new Error('Marble tile does not use the expected 3x stamped encoding')
+  }
+  const width = encoded.width / MARBLE_DRAW_MULT
+  const height = encoded.height / MARBLE_DRAW_MULT
+  const pixels = new Uint8Array(width * height * 4)
+  const centre = Math.floor(MARBLE_DRAW_MULT / 2)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const source =
+        ((y * MARBLE_DRAW_MULT + centre) * encoded.width + x * MARBLE_DRAW_MULT + centre) * 4
+      const target = (y * width + x) * 4
+      pixels[target] = encoded.pixels[source] ?? 0
+      pixels[target + 1] = encoded.pixels[source + 1] ?? 0
+      pixels[target + 2] = encoded.pixels[source + 2] ?? 0
+      pixels[target + 3] = encoded.pixels[source + 3] ?? 0
+    }
+  }
+  return { width, height, pixels }
 }
 
 const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
@@ -178,6 +214,8 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       continue
     }
     let malformed = false
+    let decodedPixels = 0
+    const seenCoordinates = new Set<string>()
     for (const [tileKey, base64] of pieces) {
       const coords = tileKey.split(/[,\s]+/).map(Number)
       if (coords.length !== 4 || !validMarbleCoords(coords)) {
@@ -185,8 +223,33 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
         malformed = true
         break
       }
+      const coordinateKey = coords.join(',')
+      if (seenCoordinates.has(coordinateKey)) {
+        warn('install', `skipping Marble template "${key}": duplicate tile coords`, tileKey)
+        malformed = true
+        break
+      }
+      seenCoordinates.add(coordinateKey)
       const source = base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`
-      const image = await decodeToRgba(await blobFromDataUrl(source))
+      if (!/^data:image\/png;base64,/i.test(source)) {
+        warn('install', `skipping Marble template "${key}": tile is not an embedded PNG`, tileKey)
+        malformed = true
+        break
+      }
+      let image: Awaited<ReturnType<typeof decodeMarbleTile>>
+      try {
+        image = await decodeMarbleTile(await blobFromDataUrl(source))
+      } catch (error) {
+        warn('install', `skipping Marble template "${key}": unreadable tile ${tileKey}`, error)
+        malformed = true
+        break
+      }
+      decodedPixels += image.width * image.height
+      if (decodedPixels > MAX_IMPORT_PIXELS) {
+        warn('install', `skipping Marble template "${key}": decoded tiles are too large`)
+        malformed = true
+        break
+      }
       decoded.push({
         x: (coords[0] ?? 0) * TILE_SIZE + (coords[2] ?? 0),
         y: (coords[1] ?? 0) * TILE_SIZE + (coords[3] ?? 0),
@@ -236,6 +299,7 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       id: newId(),
       name: entry.name ?? key,
       source: 'marble',
+      sortOrder: marbleSortOrder(key, out.length),
       // The declared coords win over the assembled extent. Including the space before the first
       // decoded tile preserves transparent/native margins instead of shifting the fixed-size art.
       originX,
@@ -266,6 +330,7 @@ const importImage = async (
       id: newId(),
       name,
       source: 'image',
+      sortOrder: 0,
       originX,
       originY,
       width,
@@ -336,6 +401,11 @@ const validMarbleCoords = (parts: readonly number[]): boolean => {
     pixelY >= 0 &&
     pixelY < TILE_SIZE
   )
+}
+
+const marbleSortOrder = (key: string, fallback: number): number => {
+  const value = Number(key.trim().split(/\s+/)[0])
+  return Number.isSafeInteger(value) ? value : fallback
 }
 
 /** Palette index to RGBA, for painting a preview. */

@@ -1,6 +1,7 @@
 import { WORLD_PIXELS } from '@wts/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ImportedTemplate } from './import.js'
+import type { PlacedTemplate, TileLevels } from './local-store.js'
 
 const persistence = vi.hoisted(() => ({
   deleteTemplate: vi.fn(async () => true),
@@ -21,6 +22,9 @@ let deferredBitmap:
   | { readonly promise: Promise<TestBitmap>; readonly resolve: (bitmap: TestBitmap) => void }
   | undefined
 const transferred: TestBitmap[] = []
+const bitmapInputs: TestImageData[] = []
+const createdBitmaps: TestBitmap[] = []
+let canvasReadbacks = 0
 
 const bitmap = (width: number, height: number): TestBitmap => ({ width, height, close: vi.fn() })
 
@@ -53,7 +57,10 @@ class TestCanvas {
       drawImage: vi.fn(),
       fill: vi.fn(),
       fillRect: vi.fn(),
-      getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(this.width * this.height * 4) })),
+      getImageData: vi.fn(() => {
+        canvasReadbacks++
+        return { data: new Uint8ClampedArray(this.width * this.height * 4) }
+      }),
       lineTo: vi.fn(),
       moveTo: vi.fn(),
       imageSmoothingEnabled: false,
@@ -80,6 +87,7 @@ const template = (overrides: Partial<ImportedTemplate> = {}): ImportedTemplate =
   indices: new Uint8Array([0]),
   moved: 0,
   opaque: 1,
+  sortOrder: 0,
   ...overrides,
 })
 
@@ -99,6 +107,9 @@ beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   transferred.length = 0
+  bitmapInputs.length = 0
+  createdBitmaps.length = 0
+  canvasReadbacks = 0
   deferredBitmap = undefined
   vi.stubGlobal('window', {})
   vi.stubGlobal('ImageData', TestImageData)
@@ -106,12 +117,15 @@ beforeEach(() => {
   vi.stubGlobal(
     'createImageBitmap',
     vi.fn(async (source: { width: number; height: number }) => {
+      if (source instanceof TestImageData) bitmapInputs.push(source)
       if (deferredBitmap !== undefined) {
         const pending = deferredBitmap
         deferredBitmap = undefined
         return await pending.promise
       }
-      return bitmap(source.width, source.height)
+      const result = bitmap(source.width, source.height)
+      createdBitmaps.push(result)
+      return result
     }),
   )
 })
@@ -191,6 +205,75 @@ describe('local template lifecycle', () => {
     expect(oldLevels.every((level) => level.close.mock.calls.length === 1)).toBe(true)
   })
 
+  it('keeps the old placement when a move cannot be saved', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
+    persistence.saveTemplate.mockResolvedValueOnce(false)
+
+    await expect(store.moveLocalTemplate(added.id, 30, 40)).resolves.toBe(false)
+
+    expect(store.localTemplates()[0]).toMatchObject({ originX: 10, originY: 20 })
+    expect(oldLevels.every((level) => !level.close.mock.calls.length)).toBe(true)
+  })
+
+  it('does not report unsaved delete, visibility, or appearance mutations in memory', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
+
+    persistence.saveTemplate.mockResolvedValueOnce(false)
+    await expect(store.setLocalVisible(added.id, false)).resolves.toBe(false)
+    expect(store.localTemplates()[0]?.visible).toBe(true)
+
+    persistence.saveTemplate.mockResolvedValueOnce(false)
+    await expect(
+      store.setAppearance(added.id, { ...added.appearance, opacity: 0.25 }),
+    ).resolves.toBe(false)
+    expect(store.localTemplates()[0]?.appearance.opacity).toBe(1)
+
+    persistence.deleteTemplate.mockResolvedValueOnce(false)
+    await expect(store.removeLocalTemplate(added.id)).resolves.toBe(false)
+    expect(store.localTemplates()).toHaveLength(1)
+    expect(oldLevels.every((level) => !level.close.mock.calls.length)).toBe(true)
+  })
+
+  it('renders source pixels on both sides of a tile boundary', async () => {
+    const store = await import('./local-store.js')
+
+    await store.addLocalTemplate(
+      template({
+        originX: 999,
+        originY: 0,
+        width: 2,
+        height: 1,
+        indices: new Uint8Array([0, 1]),
+        opaque: 2,
+      }),
+    )
+
+    const fullTiles = bitmapInputs.filter(
+      ({ width, height }) => width === 1_000 && height === 1_000,
+    )
+    expect(fullTiles).toHaveLength(2)
+    expect(fullTiles[0]?.data[999 * 4 + 3]).toBe(255)
+    expect(fullTiles[1]?.data[3]).toBe(255)
+  })
+
+  it('skips sparse empty tile rows without allocating rendered buffers for them', async () => {
+    const store = await import('./local-store.js')
+    const height = 2_047_001
+    const indices = new Uint8Array(height).fill(255)
+    indices[0] = 0
+    indices[height - 1] = 0
+
+    const added = await store.addLocalTemplate(
+      template({ originX: 0, originY: 0, width: 1, height, indices, opaque: 2 }),
+    )
+
+    expect([...added.tiles.keys()]).toEqual(['0/0', '0/2047'])
+  })
+
   it('coalesces overlapping moves so the latest requested origin wins', async () => {
     const store = await import('./local-store.js')
     await store.addLocalTemplate(template())
@@ -203,6 +286,25 @@ describe('local template lifecycle', () => {
     await Promise.all([first, second])
 
     expect(store.localTemplates()[0]).toMatchObject({ originX: 300, originY: 400 })
+  })
+
+  it('renders imported source order from lowest to highest', async () => {
+    const store = await import('./local-store.js')
+    await store.addLocalTemplate(template({ id: 'high', sortOrder: 10 }))
+    await store.addLocalTemplate(template({ id: 'low', sortOrder: 0 }))
+
+    expect(store.localTemplates().map(({ id }) => id)).toEqual(['low', 'high'])
+  })
+
+  it('selects the smallest mip that is not smaller than the target', async () => {
+    const store = await import('./local-store.js')
+    const levels = {
+      levels: [bitmap(1_000, 1_000), bitmap(500, 500), bitmap(250, 250)],
+    } as unknown as TileLevels
+
+    expect(store.levelFor(levels, 600).width).toBe(1_000)
+    expect(store.levelFor(levels, 500).width).toBe(500)
+    expect(store.levelFor(levels, 200).width).toBe(250)
   })
 
   it('builds shaped stamps outside the synchronous frame path and gives them usable mips', async () => {
@@ -219,6 +321,7 @@ describe('local template lifecycle', () => {
     } as const
 
     expect(store.stampTile(added, '0/0', appearance, 1_000)).toBe(source)
+    expect(canvasReadbacks).toBe(0)
     expect(transferred).toHaveLength(0)
     await vi.waitFor(() =>
       expect(store.stampTile(added, '0/0', appearance, 1_000)).not.toBe(source),
@@ -255,5 +358,37 @@ describe('local template lifecycle', () => {
     const stamp = store.stampTile(added, '0/0', appearance, 500)
 
     expect(stamp?.levels.map((level) => level.width)).toEqual([1_000, 500, 250, 125])
+  })
+
+  it('evicts least-recently-used stamped tiles instead of retaining an unbounded cache', async () => {
+    const store = await import('./local-store.js')
+    const sourceTiles = new Map<string, TileLevels>()
+    for (let tileX = 0; tileX < 13; tileX++) {
+      sourceTiles.set(`${tileX}/0`, {
+        levels: [bitmap(1_000, 1_000) as unknown as ImageBitmap],
+      })
+    }
+    const placed = {
+      ...template({
+        width: 13_000,
+        height: 1,
+        indices: new Uint8Array(13_000),
+        opaque: 13_000,
+      }),
+      tiles: sourceTiles,
+      visible: true,
+      everPlaced: true,
+      appearance: { shape: 'full', size: 1, anchor: 'c', opacity: 1, hiddenColours: [1] },
+    } as unknown as PlacedTemplate
+
+    for (let tileX = 0; tileX < 13; tileX++) {
+      store.stampTile(placed, `${tileX}/0`, placed.appearance)
+    }
+    await vi.waitFor(() => expect(store.stampTile(placed, '12/0', placed.appearance)).toBeDefined())
+
+    expect(createdBitmaps.slice(0, 4).every(({ close }) => close.mock.calls.length === 1)).toBe(
+      true,
+    )
+    expect(store.stampTile(placed, '0/0', placed.appearance)).toBeUndefined()
   })
 })
