@@ -475,10 +475,19 @@ const persist = async (placed: PlacedTemplate): Promise<SaveResult> => {
   return await writeInOrder(placed.id, async () => await saveTemplate(rest, null))
 }
 
-const savePlaced = async (placed: PlacedTemplate): Promise<SaveResult> => {
+const savePlaced = async (
+  placed: PlacedTemplate,
+  expectedRevision: number | null = placed.revision,
+): Promise<SaveResult> => {
   const { tiles: _tiles, ...rest } = placed
-  return await saveTemplate(rest, placed.revision)
+  return await saveTemplate(rest, expectedRevision)
 }
+
+// A plain image has no meaningful position until its first placement is applied. Keep it local
+// until then so a second tab restoring IndexedDB cannot mistake an active placement for crash
+// residue and delete it underneath the owner.
+const isPendingImage = (template: PlacedTemplate): boolean =>
+  template.source === 'image' && !template.everPlaced
 
 const removeStaleLocalState = (existing: PlacedTemplate): void => {
   releaseRetainedTiles(existing.tiles)
@@ -573,20 +582,24 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       tiles = null
       throw new RangeError('local templates exceed the retained source bitmap budget')
     }
-    const saved = await persist(placed)
-    if (saved.status !== 'saved') {
-      cancelSourceClaim(0, tiles.size)
-      releaseCandidateTiles(tiles)
-      tiles = null
-      throw new Error('local template could not be saved')
+    let revision = 0
+    if (!isPendingImage(placed)) {
+      const saved = await persist(placed)
+      if (saved.status !== 'saved') {
+        cancelSourceClaim(0, tiles.size)
+        releaseCandidateTiles(tiles)
+        tiles = null
+        throw new Error('local template could not be saved')
+      }
+      revision = saved.revision
     }
     installSourceReplacement(0, tiles.size)
-    const durable = { ...placed, revision: saved.revision }
-    templates.set(template.id, durable)
+    const admitted = { ...placed, revision }
+    templates.set(template.id, admitted)
     retainedIndexPixels += template.indices.length
     log('install', `placed ${template.name}`, { tiles: tiles.size })
     notify()
-    return durable
+    return admitted
   } finally {
     pendingAdds.delete(template.id)
     pendingIndexPixels -= template.indices.length
@@ -756,16 +769,20 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
           everPlaced: latest.everPlaced || target.everPlaced,
           tiles,
         }
-        const result = await savePlaced(next)
-        const revision = committedRevision(result)
-        if (revision === null) {
-          cancelSourceClaim(latest.tiles.size, tiles.size)
-          if (result.status === 'conflict') {
-            releaseCandidateTiles(tiles)
-            tiles = new Map<string, TileLevels>()
-            await reconcileConflict(id)
+        let revision = latest.revision
+        if (!isPendingImage(latest) || target.everPlaced) {
+          const result = await savePlaced(next, isPendingImage(latest) ? null : latest.revision)
+          const committed = committedRevision(result)
+          if (committed === null) {
+            cancelSourceClaim(latest.tiles.size, tiles.size)
+            if (result.status === 'conflict') {
+              releaseCandidateTiles(tiles)
+              tiles = new Map<string, TileLevels>()
+              await reconcileConflict(id)
+            }
+            return false
           }
-          return false
+          revision = committed
         }
         clearStamped(id)
         previewOrigins.delete(id)
@@ -831,7 +848,7 @@ export const markPlaced = async (id: string): Promise<boolean> => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     const next = { ...existing, everPlaced: true }
-    const result = await savePlaced(next)
+    const result = await savePlaced(next, isPendingImage(existing) ? null : existing.revision)
     const revision = committedRevision(result)
     if (revision === null) {
       if (result.status === 'conflict') await reconcileConflict(id)
@@ -870,10 +887,12 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const removed = await writeInOrder(id, async () => {
     const current = templates.get(id)
     if (current === undefined) return false
-    const deleted = await deleteTemplate(id, current.revision)
-    if (deleted.status !== 'saved') {
-      if (deleted.status === 'conflict') await reconcileConflict(id)
-      return false
+    if (!isPendingImage(current)) {
+      const deleted = await deleteTemplate(id, current.revision)
+      if (deleted.status !== 'saved') {
+        if (deleted.status === 'conflict') await reconcileConflict(id)
+        return false
+      }
     }
     releaseRetainedTiles(current.tiles)
     retainedIndexPixels -= current.indices.length
@@ -908,14 +927,18 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       warn('install', `visibility for ${next.name} exceeds the source bitmap budget`)
       return false
     }
-    const result = await savePlaced(next)
-    const revision = committedRevision(result)
-    if (revision === null) {
-      cancelSourceClaim(existing.tiles.size, tiles.size)
-      if (visible) releaseCandidateTiles(tiles)
-      if (result.status === 'conflict') await reconcileConflict(id)
-      warn('install', `visibility for ${next.name} was not saved`)
-      return false
+    let revision = existing.revision
+    if (!isPendingImage(existing)) {
+      const result = await savePlaced(next)
+      const committed = committedRevision(result)
+      if (committed === null) {
+        cancelSourceClaim(existing.tiles.size, tiles.size)
+        if (visible) releaseCandidateTiles(tiles)
+        if (result.status === 'conflict') await reconcileConflict(id)
+        warn('install', `visibility for ${next.name} was not saved`)
+        return false
+      }
+      revision = committed
     }
     templates.set(id, { ...next, revision })
     installSourceReplacement(existing.tiles.size, tiles.size)
@@ -954,12 +977,16 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     const next = { ...existing, appearance: ownedAppearance }
-    const result = await savePlaced(next)
-    const revision = committedRevision(result)
-    if (revision === null) {
-      if (result.status === 'conflict') await reconcileConflict(id)
-      warn('install', `appearance for ${next.name} was not saved`)
-      return false
+    let revision = existing.revision
+    if (!isPendingImage(existing)) {
+      const result = await savePlaced(next)
+      const committed = committedRevision(result)
+      if (committed === null) {
+        if (result.status === 'conflict') await reconcileConflict(id)
+        warn('install', `appearance for ${next.name} was not saved`)
+        return false
+      }
+      revision = committed
     }
     if (appearanceKey(existing.appearance) !== appearanceKey(ownedAppearance)) clearStamped(id)
     templates.set(id, { ...next, revision })
@@ -998,7 +1025,7 @@ const stampJobs = new Map<string, StampJob>()
 interface StampFailure {
   readonly wanted: string
   readonly attempts: number
-  readonly retryAt: number
+  retryAt: number
   retryTimer?: ReturnType<typeof setTimeout>
 }
 const stampFailures = new Map<string, StampFailure>()
@@ -1021,6 +1048,9 @@ const noteStampFailure = (cacheKey: string, wanted: string): void => {
   failure.retryTimer = setTimeout(() => {
     if (stampFailures.get(cacheKey) !== failure) return
     delete failure.retryTimer
+    // setTimeout is monotonic but Date.now can step backwards. Once this timer fires, do not let
+    // the wall clock suppress the repaint's retry without scheduling another wake-up.
+    failure.retryAt = 0
     notify()
   }, delay)
   stampFailures.set(cacheKey, failure)
@@ -1053,6 +1083,7 @@ const queueStampBuild = (cacheKey: string, build: StampJob['build']): Promise<Ti
     while (stampJobs.size > MAX_RETAINED_SOURCE_TILES) {
       const oldest = stampJobs.entries().next().value as [string, StampJob] | undefined
       if (oldest === undefined) break
+      pendingStamps.delete(oldest[0])
       stampJobs.delete(oldest[0])
       oldest[1].resolve(null)
     }

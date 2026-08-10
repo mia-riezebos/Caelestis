@@ -102,7 +102,7 @@ class TestCanvas {
 const template = (overrides: Partial<ImportedTemplate> = {}): ImportedTemplate => ({
   id: 'local-test',
   name: 'Test',
-  source: 'image',
+  source: 'wplace',
   originX: 10,
   originY: 20,
   width: 1,
@@ -409,16 +409,29 @@ describe('local template lifecycle', () => {
 
   it('persists final origin and first-placement state atomically', async () => {
     const store = await import('./local-store.js')
-    await store.addLocalTemplate(template())
-    persistence.saveTemplate.mockClear()
+    await store.addLocalTemplate(template({ source: 'image' }))
+
+    expect(persistence.saveTemplate).not.toHaveBeenCalled()
 
     await expect(store.placeLocalTemplate('local-test', 30, 40)).resolves.toBe(true)
 
     expect(persistence.saveTemplate).toHaveBeenCalledOnce()
     expect(persistence.saveTemplate).toHaveBeenCalledWith(
       expect.objectContaining({ originX: 30, originY: 40, everPlaced: true }),
-      1,
+      null,
     )
+    expect(store.localTemplates()[0]?.revision).toBe(1)
+  })
+
+  it('discards a pending image locally without touching IndexedDB', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template({ source: 'image' }))
+
+    await expect(store.removeLocalTemplate(added.id)).resolves.toBe(true)
+
+    expect(store.localTemplates()).toEqual([])
+    expect(persistence.saveTemplate).not.toHaveBeenCalled()
+    expect(persistence.deleteTemplate).not.toHaveBeenCalled()
   })
 
   it('yields while scanning a large sparse source tile', async () => {
@@ -884,7 +897,11 @@ describe('local template lifecycle', () => {
   it('restores hidden templates lazily and discards unfinished image placements', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       { ...template({ id: 'hidden' }), visible: false, everPlaced: true },
-      { ...template({ id: 'unfinished' }), visible: true, everPlaced: false },
+      {
+        ...template({ id: 'unfinished', source: 'image' }),
+        visible: true,
+        everPlaced: false,
+      },
     ])
     const store = await import('./local-store.js')
 
@@ -1126,7 +1143,7 @@ describe('local template lifecycle', () => {
     )
   })
 
-  it('backs off a persistent stamp failure without blocking other tiles', async () => {
+  it('backs off a persistent stamp failure and wakes after a wall-clock rollback', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(
       template({
@@ -1171,6 +1188,7 @@ describe('local template lifecycle', () => {
 
     await vi.advanceTimersByTimeAsync(999)
     expect(repaint).not.toHaveBeenCalled()
+    vi.setSystemTime(Date.now() - 10_000)
     await vi.advanceTimersByTimeAsync(1)
     await vi.runAllTimersAsync()
     expect(repaint).toHaveBeenCalled()
