@@ -197,6 +197,22 @@ describe('template import', () => {
     expect(template?.indices[1]).not.toBe(TRANSPARENT_INDEX)
   })
 
+  it('yields during large Marble sampling and assembly loops', async () => {
+    const browserYield = vi.fn(async () => undefined)
+    vi.stubGlobal('scheduler', { yield: browserYield })
+    blobSizes.push({ width: 1_500, height: 1_500 })
+    bitmapSizes.push({ width: 1_500, height: 1_500 })
+    readbacks.push(new Uint8ClampedArray(1_500 * 1_500 * 4))
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: { large: { coords: '0,0,0,0', tiles: { '0,0,0,0': 'AAAA' } } },
+    })
+
+    await importFile(file('large.json', marble), { x: 0, y: 0 })
+
+    expect(browserYield.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
   it('imports a valid wplace image contract without fetching arbitrary URLs', async () => {
     readbacks.push(rgba([0, 0, 0, 255]))
     const { importFile } = await import('./import.js')

@@ -180,6 +180,23 @@ describe('local template lifecycle', () => {
     expect(persistence.deleteTemplate).toHaveBeenCalledWith('invalid', 0)
   })
 
+  it('deletes a record whose CAS revision can no longer be incremented', async () => {
+    persistence.loadTemplates.mockResolvedValueOnce([
+      {
+        ...template({ id: 'exhausted' }),
+        visible: true,
+        everPlaced: true,
+        revision: Number.MAX_SAFE_INTEGER,
+      },
+    ])
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates()).toEqual([])
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('exhausted', Number.MAX_SAFE_INTEGER)
+  })
+
   it('keeps a valid persisted record when rendering fails transiently', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       { ...template({ id: 'valid' }), visible: true, everPlaced: true },
@@ -779,6 +796,38 @@ describe('local template lifecycle', () => {
     ).resolves.toBe(false)
 
     expect(store.localTemplates()[0]).toMatchObject({ originX: 30, originY: 40, revision: 2 })
+  })
+
+  it('releases a large losing slice before building the conflict winner', async () => {
+    const store = await import('./local-store.js')
+    const indices = new Uint8Array(11_001).fill(0)
+    const large = await store.addLocalTemplate(
+      template({ id: 'large', originX: 0, width: indices.length, indices, opaque: indices.length }),
+    )
+    await store.addLocalTemplate(template({ id: 'other', originX: 20_000 }))
+    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
+    persistence.loadTemplate.mockResolvedValueOnce({
+      status: 'loaded',
+      template: {
+        ...template({
+          id: 'large',
+          originX: 2,
+          width: indices.length,
+          indices,
+          opaque: indices.length,
+        }),
+        visible: true,
+        everPlaced: true,
+        revision: 2,
+      },
+    })
+
+    await expect(store.moveLocalTemplate(large.id, 1, 0)).resolves.toBe(false)
+
+    expect(store.localTemplates().find(({ id }) => id === large.id)).toMatchObject({
+      originX: 2,
+      revision: 2,
+    })
   })
 
   it('restores hidden templates lazily and discards unfinished image placements', async () => {

@@ -51,6 +51,7 @@ const writeVersioned = async (
   id: string,
   expectedRevision: number | null,
   operation: (templates: IDBObjectStore, nextRevision: number) => void,
+  incrementRevision = true,
 ): Promise<SaveResult> => {
   try {
     const db = await open()
@@ -67,9 +68,12 @@ const writeVersioned = async (
           } else {
             if (current === undefined) return
             const actual = Number.isSafeInteger(current.revision) ? (current.revision as number) : 0
+            if (incrementRevision && actual >= Number.MAX_SAFE_INTEGER) return
             if (actual !== expectedRevision) return
           }
-          const nextRevision = (expectedRevision ?? 0) + 1
+          const nextRevision = incrementRevision
+            ? (expectedRevision ?? 0) + 1
+            : (expectedRevision ?? 0)
           operation(templates, nextRevision)
           result = { status: 'saved', revision: nextRevision }
         }
@@ -111,11 +115,16 @@ export const saveTemplate = async (
 }
 
 export const deleteTemplate = async (id: string, expectedRevision: number): Promise<SaveResult> =>
-  await writeVersioned(id, expectedRevision, (templates) => {
-    templates.delete(id)
-    // Record absence is itself the tombstone: a stale mutation requires an existing record with the
-    // expected revision, so deleted IDs need no permanent side-store entry.
-  })
+  await writeVersioned(
+    id,
+    expectedRevision,
+    (templates) => {
+      templates.delete(id)
+      // Record absence is itself the tombstone: a stale mutation requires an existing record with the
+      // expected revision, so deleted IDs need no permanent side-store entry.
+    },
+    false,
+  )
 
 interface StoredBlob {
   readonly size: number
@@ -272,6 +281,7 @@ export const loadTemplates = async (
           }
           templates.push(value)
           indexPixels += pixels
+          if (templates.length >= maxTemplates) return
           cursor.continue()
         }
         request.onerror = () => reject(request.error ?? new Error('indexedDB cursor failed'))

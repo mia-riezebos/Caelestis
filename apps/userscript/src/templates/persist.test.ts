@@ -177,7 +177,7 @@ describe('local template persistence', () => {
     await Promise.resolve()
     templateRequest.onsuccess?.(new Event('success'))
     deleteTransaction.oncomplete?.(new Event('complete'))
-    await expect(deleting).resolves.toEqual({ status: 'saved', revision: 1 })
+    await expect(deleting).resolves.toEqual({ status: 'saved', revision: 0 })
     expect(deleteStore.delete).toHaveBeenCalledWith('gone')
 
     const loading = loadTemplates(64, 1)
@@ -258,6 +258,84 @@ describe('local template persistence', () => {
 
     await expect(loading).resolves.toEqual([])
     expect(pixels.arrayBuffer).not.toHaveBeenCalled()
+  })
+
+  it('stops at the retained template limit without hydrating the next Blob', async () => {
+    const firstPixels = { size: 1, arrayBuffer: vi.fn(async () => new Uint8Array([0]).buffer) }
+    const secondPixels = { size: 1, arrayBuffer: vi.fn(async () => new Uint8Array([0]).buffer) }
+    const first = { value: stored({ id: 'first', indices: firstPixels }), continue: vi.fn() }
+    const mutableRequest = {
+      result: first as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    first.continue.mockImplementation(() => {
+      mutableRequest.result = {
+        value: stored({ id: 'second', indices: secondPixels }),
+        continue: vi.fn(),
+      } as unknown as IDBCursorWithValue
+      mutableRequest.onsuccess?.(new Event('success'))
+    })
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates(1, 2)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    mutableRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([expect.objectContaining({ id: 'first' })])
+    expect(first.continue).not.toHaveBeenCalled()
+    expect(firstPixels.arrayBuffer).toHaveBeenCalledOnce()
+    expect(secondPixels.arrayBuffer).not.toHaveBeenCalled()
+  })
+
+  it('refuses to increment an exhausted revision but can still delete it', async () => {
+    const maxRecord = stored({ id: 'max', revision: Number.MAX_SAFE_INTEGER })
+    const saveRequest = { result: maxRecord } as unknown as IDBRequest<unknown>
+    const deleteRequest = { result: maxRecord } as unknown as IDBRequest<unknown>
+    const saveStore = { get: vi.fn(() => saveRequest), put: vi.fn() }
+    const deleteStore = { get: vi.fn(() => deleteRequest), delete: vi.fn() }
+    const saveTransaction = { objectStore: vi.fn(() => saveStore) } as unknown as IDBTransaction
+    const deleteTransaction = {
+      objectStore: vi.fn(() => deleteStore),
+    } as unknown as IDBTransaction
+    const databases = [
+      { transaction: vi.fn(() => saveTransaction), close: vi.fn() },
+      { transaction: vi.fn(() => deleteTransaction), close: vi.fn() },
+    ] as unknown as IDBDatabase[]
+    const saveOpening = { result: databases[0] } as IDBOpenDBRequest
+    const deleteOpening = { result: databases[1] } as IDBOpenDBRequest
+    const openings = [saveOpening, deleteOpening]
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => openings.shift()) })
+    const { deleteTemplate, saveTemplate } = await import('./persist.js')
+
+    const saving = saveTemplate(maxRecord as never, Number.MAX_SAFE_INTEGER)
+    saveOpening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    saveRequest.onsuccess?.(new Event('success'))
+    saveTransaction.oncomplete?.(new Event('complete'))
+    await expect(saving).resolves.toEqual({ status: 'conflict' })
+    expect(saveStore.put).not.toHaveBeenCalled()
+
+    const deleting = deleteTemplate('max', Number.MAX_SAFE_INTEGER)
+    deleteOpening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    deleteRequest.onsuccess?.(new Event('success'))
+    deleteTransaction.oncomplete?.(new Event('complete'))
+    await expect(deleting).resolves.toEqual({
+      status: 'saved',
+      revision: Number.MAX_SAFE_INTEGER,
+    })
+    expect(deleteStore.delete).toHaveBeenCalledWith('max')
   })
 
   it('does not let invalid leading records consume the restore candidate limit', async () => {

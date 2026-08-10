@@ -342,7 +342,12 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   if (typeof visible !== 'boolean' || typeof everPlaced !== 'boolean') {
     throw new RangeError('template state is invalid')
   }
-  if (revision !== undefined && (!Number.isSafeInteger(revision) || (revision as number) < 0)) {
+  if (
+    revision !== undefined &&
+    (!Number.isSafeInteger(revision) ||
+      (revision as number) < 0 ||
+      (revision as number) >= Number.MAX_SAFE_INTEGER)
+  ) {
     throw new RangeError('template revision is invalid')
   }
   const normalised: StoredTemplate = {
@@ -527,11 +532,8 @@ const reconcileConflict = async (id: string): Promise<void> => {
   }
 }
 
-const committedRevision = async (id: string, result: SaveResult): Promise<number | null> => {
-  if (result.status === 'saved') return result.revision
-  if (result.status === 'conflict') await reconcileConflict(id)
-  return null
-}
+const committedRevision = (result: SaveResult): number | null =>
+  result.status === 'saved' ? result.revision : null
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   validatePlacement(template)
@@ -755,9 +757,15 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
           everPlaced: latest.everPlaced || target.everPlaced,
           tiles,
         }
-        const revision = await committedRevision(id, await savePlaced(next))
+        const result = await savePlaced(next)
+        const revision = committedRevision(result)
         if (revision === null) {
           cancelSourceClaim(latest.tiles.size, tiles.size)
+          if (result.status === 'conflict') {
+            releaseCandidateTiles(tiles)
+            tiles = new Map<string, TileLevels>()
+            await reconcileConflict(id)
+          }
           return false
         }
         clearStamped(id)
@@ -824,8 +832,10 @@ export const markPlaced = async (id: string): Promise<boolean> => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     const next = { ...existing, everPlaced: true }
-    const revision = await committedRevision(id, await savePlaced(next))
+    const result = await savePlaced(next)
+    const revision = committedRevision(result)
     if (revision === null) {
+      if (result.status === 'conflict') await reconcileConflict(id)
       warn('install', `placement for ${next.name} was not saved`)
       return false
     }
@@ -899,10 +909,12 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       warn('install', `visibility for ${next.name} exceeds the source bitmap budget`)
       return false
     }
-    const revision = await committedRevision(id, await savePlaced(next))
+    const result = await savePlaced(next)
+    const revision = committedRevision(result)
     if (revision === null) {
       cancelSourceClaim(existing.tiles.size, tiles.size)
       if (visible) releaseCandidateTiles(tiles)
+      if (result.status === 'conflict') await reconcileConflict(id)
       warn('install', `visibility for ${next.name} was not saved`)
       return false
     }
@@ -943,8 +955,10 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     const next = { ...existing, appearance: ownedAppearance }
-    const revision = await committedRevision(id, await savePlaced(next))
+    const result = await savePlaced(next)
+    const revision = committedRevision(result)
     if (revision === null) {
+      if (result.status === 'conflict') await reconcileConflict(id)
       warn('install', `appearance for ${next.name} was not saved`)
       return false
     }

@@ -331,6 +331,7 @@ const decodeMarbleTile = async (
   const height = encoded.height / MARBLE_DRAW_MULT
   const pixels = new Uint8Array(width * height * 4)
   const centre = Math.floor(MARBLE_DRAW_MULT / 2)
+  let copied = 0
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const source =
@@ -340,6 +341,11 @@ const decodeMarbleTile = async (
       pixels[target + 1] = encoded.pixels[source + 1] ?? 0
       pixels[target + 2] = encoded.pixels[source + 2] ?? 0
       pixels[target + 3] = encoded.pixels[source + 3] ?? 0
+      copied++
+      if (copied >= 250_000) {
+        copied = 0
+        await yieldToBrowser()
+      }
     }
   }
   return { width, height, pixels }
@@ -502,12 +508,18 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     const movedPixels = new Uint8Array(width * height)
     let moved = 0
     let opaque = 0
+    let assembled = 0
     for (const piece of decoded) {
       const quantised = await quantise(piece.pixels, true)
       for (let row = 0; row < piece.height; row++) {
         const target = (piece.y - originY + row) * width + (piece.x - originX)
         for (let column = 0; column < piece.width; column++) {
           const sourceIndex = row * piece.width + column
+          assembled++
+          if (assembled >= 250_000) {
+            assembled = 0
+            await yieldToBrowser()
+          }
           const index = quantised.indices[sourceIndex] ?? TRANSPARENT_INDEX
           if (index === TRANSPARENT_INDEX) continue
           const destination = target + column

@@ -44,6 +44,7 @@ beforeEach(() => {
       width: 10,
       height: 10,
       everPlaced: true,
+      revision: 1,
     },
   ])
   vi.stubGlobal('navigator', { platform: 'Linux' })
@@ -314,7 +315,10 @@ describe('template placement controls', () => {
     harness.placeLocalTemplate.mockResolvedValueOnce(false)
     const active = harness.localTemplates()
     harness.localTemplates.mockClear()
-    harness.localTemplates.mockReturnValueOnce(active).mockReturnValueOnce([])
+    harness.localTemplates
+      .mockReturnValueOnce(active)
+      .mockReturnValueOnce(active)
+      .mockReturnValueOnce([])
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
@@ -324,6 +328,47 @@ describe('template placement controls', () => {
 
     expect(finished).toHaveBeenCalledOnce()
     expect(movebar.remove).toHaveBeenCalledOnce()
+  })
+
+  it('finishes at a reconciled winner instead of retrying stale Apply coordinates', async () => {
+    harness.placeLocalTemplate.mockResolvedValueOnce(false)
+    const active = harness.localTemplates()
+    harness.localTemplates.mockClear()
+    harness.localTemplates
+      .mockReturnValueOnce(active)
+      .mockReturnValueOnce(active)
+      .mockReturnValue([{ ...active[0], originX: 90, originY: 80, revision: 2 }])
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+
+    await moves.commit()
+    await moves.commit()
+
+    expect(finished).toHaveBeenCalledOnce()
+    expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
+  })
+
+  it('finishes at a reconciled winner instead of retrying stale Cancel', async () => {
+    harness.removeLocalTemplate.mockResolvedValueOnce(false)
+    const active = (harness.localTemplates() as Array<Record<string, unknown>>).map((template) => ({
+      ...template,
+      everPlaced: false,
+    }))
+    harness.localTemplates.mockClear()
+    harness.localTemplates
+      .mockReturnValueOnce(active)
+      .mockReturnValueOnce(active)
+      .mockReturnValue([{ ...active[0], originX: 90, originY: 80, revision: 2 }])
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+
+    await moves.abort()
+    await moves.abort()
+
+    expect(finished).toHaveBeenCalledOnce()
+    expect(harness.removeLocalTemplate).toHaveBeenCalledOnce()
   })
 
   it('finishes Cancel when the active template was already deleted', async () => {
