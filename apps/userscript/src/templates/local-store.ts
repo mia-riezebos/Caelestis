@@ -14,7 +14,14 @@ import {
   MAX_TEMPLATE_ID_LENGTH,
   MAX_TEMPLATE_NAME_LENGTH,
 } from './import.js'
-import { deleteTemplate, loadTemplates, type StoredTemplate, saveTemplate } from './persist.js'
+import {
+  deleteTemplate,
+  loadTemplate,
+  loadTemplates,
+  type SaveResult,
+  type StoredTemplate,
+  saveTemplate,
+} from './persist.js'
 
 /**
  * Local templates, and the per-tile bitmaps the overlay actually draws.
@@ -458,14 +465,72 @@ const writeInOrder = <T>(id: string, write: () => Promise<T>): Promise<T> => {
   return next
 }
 
-const persist = async (placed: PlacedTemplate): Promise<number | null> => {
+const persist = async (placed: PlacedTemplate): Promise<SaveResult> => {
   const { tiles: _tiles, ...rest } = placed
   return await writeInOrder(placed.id, async () => await saveTemplate(rest, null))
 }
 
-const savePlaced = async (placed: PlacedTemplate): Promise<number | null> => {
+const savePlaced = async (placed: PlacedTemplate): Promise<SaveResult> => {
   const { tiles: _tiles, ...rest } = placed
   return await saveTemplate(rest, placed.revision)
+}
+
+const removeStaleLocalState = (existing: PlacedTemplate): void => {
+  releaseRetainedTiles(existing.tiles)
+  retainedIndexPixels -= existing.indices.length
+  clearStamped(existing.id)
+  previewOrigins.delete(existing.id)
+  templates.delete(existing.id)
+  notify()
+}
+
+/** Replace stale process-local state with the durable winner after an IndexedDB CAS conflict. */
+const reconcileConflict = async (id: string): Promise<void> => {
+  const existing = templates.get(id)
+  if (existing === undefined) return
+  const loaded = await loadTemplate(id, MAX_LOCAL_INDEX_PIXELS)
+  if (loaded.status === 'unavailable') return
+  if (loaded.status === 'missing') {
+    removeStaleLocalState(existing)
+    return
+  }
+  try {
+    const winner = normaliseStoredTemplate(loaded.template)
+    await validateStoredPixels(winner)
+    if (winner.id !== id || (winner.source === 'image' && !winner.everPlaced)) {
+      throw new RangeError('winning template state is invalid')
+    }
+    if (
+      retainedIndexPixels - existing.indices.length + winner.indices.length >
+      MAX_LOCAL_INDEX_PIXELS
+    ) {
+      throw new RangeError('winning template exceeds the local pixel budget')
+    }
+    const tiles = winner.visible ? await slice(winner) : new Map<string, TileLevels>()
+    if (!claimSourceReplacement(existing.tiles.size, tiles.size)) {
+      releaseCandidateTiles(tiles)
+      throw new RangeError('winning template exceeds the source bitmap budget')
+    }
+    clearStamped(id)
+    previewOrigins.delete(id)
+    templates.set(id, {
+      appearance: DEFAULT_APPEARANCE,
+      ...winner,
+      tiles,
+    })
+    retainedIndexPixels += winner.indices.length - existing.indices.length
+    installSourceReplacement(existing.tiles.size, tiles.size)
+    closeTiles(existing.tiles)
+    notify()
+  } catch (error) {
+    warn('install', `could not reconcile stale local template ${existing.name}`, String(error))
+  }
+}
+
+const committedRevision = async (id: string, result: SaveResult): Promise<number | null> => {
+  if (result.status === 'saved') return result.revision
+  if (result.status === 'conflict') await reconcileConflict(id)
+  return null
 }
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
@@ -506,20 +571,20 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       tiles = null
       throw new RangeError('local templates exceed the retained source bitmap budget')
     }
-    const revision = await persist(placed)
-    if (revision === null) {
+    const saved = await persist(placed)
+    if (saved.status !== 'saved') {
       cancelSourceClaim(0, tiles.size)
       releaseCandidateTiles(tiles)
       tiles = null
       throw new Error('local template could not be saved')
     }
     installSourceReplacement(0, tiles.size)
-    const saved = { ...placed, revision }
-    templates.set(template.id, saved)
+    const durable = { ...placed, revision: saved.revision }
+    templates.set(template.id, durable)
     retainedIndexPixels += template.indices.length
     log('install', `placed ${template.name}`, { tiles: tiles.size })
     notify()
-    return saved
+    return durable
   } finally {
     pendingAdds.delete(template.id)
     pendingIndexPixels -= template.indices.length
@@ -690,7 +755,7 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
           everPlaced: latest.everPlaced || target.everPlaced,
           tiles,
         }
-        const revision = await savePlaced(next)
+        const revision = await committedRevision(id, await savePlaced(next))
         if (revision === null) {
           cancelSourceClaim(latest.tiles.size, tiles.size)
           return false
@@ -759,7 +824,7 @@ export const markPlaced = async (id: string): Promise<boolean> => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
     const next = { ...existing, everPlaced: true }
-    const revision = await savePlaced(next)
+    const revision = await committedRevision(id, await savePlaced(next))
     if (revision === null) {
       warn('install', `placement for ${next.name} was not saved`)
       return false
@@ -796,7 +861,11 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const removed = await writeInOrder(id, async () => {
     const current = templates.get(id)
     if (current === undefined) return false
-    if (!(await deleteTemplate(id, current.revision))) return false
+    const deleted = await deleteTemplate(id, current.revision)
+    if (deleted.status !== 'saved') {
+      if (deleted.status === 'conflict') await reconcileConflict(id)
+      return false
+    }
     releaseRetainedTiles(current.tiles)
     retainedIndexPixels -= current.indices.length
     clearStamped(id)
@@ -830,7 +899,7 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       warn('install', `visibility for ${next.name} exceeds the source bitmap budget`)
       return false
     }
-    const revision = await savePlaced(next)
+    const revision = await committedRevision(id, await savePlaced(next))
     if (revision === null) {
       cancelSourceClaim(existing.tiles.size, tiles.size)
       if (visible) releaseCandidateTiles(tiles)
@@ -864,16 +933,22 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
 export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
   if (!isAppearance(appearance)) return false
+  // The write starts in a later microtask. Own the validated data now so the caller cannot mutate
+  // its array after validation and smuggle invalid or unbounded state into IndexedDB.
+  const ownedAppearance: Appearance = {
+    ...appearance,
+    hiddenColours: [...appearance.hiddenColours],
+  }
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
-    const next = { ...existing, appearance }
-    const revision = await savePlaced(next)
+    const next = { ...existing, appearance: ownedAppearance }
+    const revision = await committedRevision(id, await savePlaced(next))
     if (revision === null) {
       warn('install', `appearance for ${next.name} was not saved`)
       return false
     }
-    if (appearanceKey(existing.appearance) !== appearanceKey(appearance)) clearStamped(id)
+    if (appearanceKey(existing.appearance) !== appearanceKey(ownedAppearance)) clearStamped(id)
     templates.set(id, { ...next, revision })
     notify()
     return true

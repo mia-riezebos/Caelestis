@@ -22,7 +22,6 @@ import {
 
 const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
-const REVISIONS = 'local-template-revisions'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
 const VERSION = 3
 
@@ -40,9 +39,6 @@ const open = (): Promise<IDBDatabase> =>
     request.onupgradeneeded = () => {
       const db = request.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
-      if (!db.objectStoreNames.contains(REVISIONS)) {
-        db.createObjectStore(REVISIONS, { keyPath: 'id' })
-      }
       if (!db.objectStoreNames.contains('server-cache')) {
         db.createObjectStore('server-cache', { keyPath: 'url' })
       }
@@ -54,29 +50,28 @@ const open = (): Promise<IDBDatabase> =>
 const writeVersioned = async (
   id: string,
   expectedRevision: number | null,
-  operation: (templates: IDBObjectStore, revisions: IDBObjectStore, nextRevision: number) => void,
-): Promise<number | null> => {
+  operation: (templates: IDBObjectStore, nextRevision: number) => void,
+): Promise<SaveResult> => {
   try {
     const db = await open()
     try {
-      return await new Promise<number | null>((resolve, reject) => {
-        const transaction = db.transaction([STORE, REVISIONS], 'readwrite')
+      return await new Promise<SaveResult>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readwrite')
         const templates = transaction.objectStore(STORE)
-        const revisions = transaction.objectStore(REVISIONS)
-        const request = revisions.get(id)
-        let result: number | null = null
+        const request = templates.get(id)
+        let result: SaveResult = { status: 'conflict' }
         request.onsuccess = () => {
-          const stored = request.result as { revision?: unknown } | undefined
-          const actual =
-            stored !== undefined && Number.isSafeInteger(stored.revision)
-              ? (stored.revision as number)
-              : expectedRevision === 0
-                ? 0
-                : null
-          if (actual !== expectedRevision) return
-          const nextRevision = (actual ?? 0) + 1
-          operation(templates, revisions, nextRevision)
-          result = nextRevision
+          const current = request.result as { revision?: unknown } | undefined
+          if (expectedRevision === null) {
+            if (current !== undefined) return
+          } else {
+            if (current === undefined) return
+            const actual = Number.isSafeInteger(current.revision) ? (current.revision as number) : 0
+            if (actual !== expectedRevision) return
+          }
+          const nextRevision = (expectedRevision ?? 0) + 1
+          operation(templates, nextRevision)
+          result = { status: 'saved', revision: nextRevision }
         }
         request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
         transaction.oncomplete = () => resolve(result)
@@ -90,16 +85,21 @@ const writeVersioned = async (
     }
   } catch (error) {
     warn('install', 'local template storage unavailable', String(error))
-    return null
+    return { status: 'unavailable' }
   }
 }
+
+export type SaveResult =
+  | { readonly status: 'saved'; readonly revision: number }
+  | { readonly status: 'conflict' }
+  | { readonly status: 'unavailable' }
 
 export const saveTemplate = async (
   template: StoredTemplate,
   expectedRevision: number | null,
-): Promise<number | null> => {
+): Promise<SaveResult> => {
   const { indices, ...metadata } = template
-  return await writeVersioned(template.id, expectedRevision, (templates, revisions, revision) => {
+  return await writeVersioned(template.id, expectedRevision, (templates, revision) => {
     // IndexedDB can inspect a Blob's size without first allocating an equally large typed array.
     // Legacy Uint8Array records remain readable; all new writes use this bounded representation.
     const bytes =
@@ -107,16 +107,15 @@ export const saveTemplate = async (
         ? (indices.buffer as ArrayBuffer)
         : indices.slice().buffer
     templates.put({ ...metadata, revision, indices: new Blob([bytes]) })
-    revisions.put({ id: template.id, revision })
   })
 }
 
-export const deleteTemplate = async (id: string, expectedRevision: number): Promise<boolean> =>
-  (await writeVersioned(id, expectedRevision, (templates, revisions, revision) => {
+export const deleteTemplate = async (id: string, expectedRevision: number): Promise<SaveResult> =>
+  await writeVersioned(id, expectedRevision, (templates) => {
     templates.delete(id)
-    // Keep only the small revision tombstone. A stale tab can no longer recreate the pixels.
-    revisions.put({ id, revision })
-  })) !== null
+    // Record absence is itself the tombstone: a stale mutation requires an existing record with the
+    // expected revision, so deleted IDs need no permanent side-store entry.
+  })
 
 interface StoredBlob {
   readonly size: number
@@ -175,6 +174,67 @@ const boundedStoredCandidate = (
   return true
 }
 
+const hydrateCandidate = async (
+  candidate: Record<string, unknown> & { indices: Uint8Array | StoredBlob },
+): Promise<unknown | null> => {
+  if (isUint8Array(candidate.indices)) {
+    return { ...candidate, revision: candidate.revision ?? 0 }
+  }
+  try {
+    const buffer = await candidate.indices.arrayBuffer()
+    if (buffer.byteLength !== candidate.indices.size) return null
+    return {
+      ...candidate,
+      revision: candidate.revision ?? 0,
+      indices: new Uint8Array(buffer),
+    }
+  } catch (error) {
+    warn('install', `could not read local template ${String(candidate.id)}`, String(error))
+    return null
+  }
+}
+
+export type LoadTemplateResult =
+  | { readonly status: 'loaded'; readonly template: unknown }
+  | { readonly status: 'missing' }
+  | { readonly status: 'unavailable' }
+
+/** Read one winning CAS value after a conflict without materialising every other template. */
+export const loadTemplate = async (
+  id: string,
+  maxIndexPixels = 64 * 1024 * 1024,
+): Promise<LoadTemplateResult> => {
+  try {
+    const db = await open()
+    try {
+      const value = await new Promise<unknown>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readonly')
+        const request = transaction.objectStore(STORE).get(id)
+        let result: unknown
+        request.onsuccess = () => {
+          result = request.result
+        }
+        request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
+        transaction.oncomplete = () => resolve(result)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+      })
+      if (!boundedStoredCandidate(value)) return { status: 'missing' }
+      const pixels = isUint8Array(value.indices) ? value.indices.length : value.indices.size
+      if (pixels > maxIndexPixels) return { status: 'missing' }
+      const template = await hydrateCandidate(value)
+      return template === null ? { status: 'missing' } : { status: 'loaded', template }
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    warn('install', 'local template storage unavailable', String(error))
+    return { status: 'unavailable' }
+  }
+}
+
 export const loadTemplates = async (
   maxTemplates = 64,
   maxIndexPixels = 64 * 1024 * 1024,
@@ -223,21 +283,8 @@ export const loadTemplates = async (
       })
       const templates: unknown[] = []
       for (const candidate of candidates) {
-        if (isUint8Array(candidate.indices)) {
-          templates.push({ ...candidate, revision: candidate.revision ?? 0 })
-          continue
-        }
-        try {
-          const buffer = await candidate.indices.arrayBuffer()
-          if (buffer.byteLength !== candidate.indices.size) continue
-          templates.push({
-            ...candidate,
-            revision: candidate.revision ?? 0,
-            indices: new Uint8Array(buffer),
-          })
-        } catch (error) {
-          warn('install', `could not read local template ${String(candidate.id)}`, String(error))
-        }
+        const template = await hydrateCandidate(candidate)
+        if (template !== null) templates.push(template)
       }
       return templates
     } finally {

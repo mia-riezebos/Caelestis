@@ -345,11 +345,25 @@ const decodeMarbleTile = async (
   return { width, height, pixels }
 }
 
+/** Enumerate at most `limit` own entries without allocating pairs for the whole parsed object. */
+export const boundedEntries = (
+  record: Record<string, unknown>,
+  limit: number,
+): Array<[string, unknown]> | null => {
+  const entries: Array<[string, unknown]> = []
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue
+    if (entries.length >= limit) return null
+    entries.push([key, record[key]])
+  }
+  return entries
+}
+
 const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
   const out: ImportedTemplate[] = []
   if (!isRecord(file.templates)) return out
-  const entries = Object.entries(file.templates)
-  if (entries.length > MAX_MARBLE_TEMPLATES) {
+  const entries = boundedEntries(file.templates, MAX_MARBLE_TEMPLATES)
+  if (entries === null) {
     throw new Error('Marble file contains too many templates')
   }
   let retainedPixels = 0
@@ -388,9 +402,9 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       warn('install', `skipping Marble template "${key}": unreadable tiles`)
       continue
     }
-    const pieces = Object.entries(isRecord(entry.tiles) ? entry.tiles : {})
-    if (pieces.length > MAX_MARBLE_TILES) {
-      warn('install', `skipping Marble template "${key}": too many tiles`, pieces.length)
+    const pieces = boundedEntries(isRecord(entry.tiles) ? entry.tiles : {}, MAX_MARBLE_TILES)
+    if (pieces === null) {
+      warn('install', `skipping Marble template "${key}": too many tiles`)
       continue
     }
     let malformed = false

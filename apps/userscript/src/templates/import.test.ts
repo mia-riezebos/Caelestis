@@ -82,6 +82,42 @@ afterEach(() => {
 })
 
 describe('template import', () => {
+  it('stops bounded object enumeration before reading a 65th value', async () => {
+    const { boundedEntries } = await import('./import.js')
+    const record: Record<string, unknown> = {}
+    for (let index = 0; index < 64; index++) record[`safe-${index}`] = index
+    Object.defineProperty(record, 'too-many', {
+      enumerable: true,
+      get: () => {
+        throw new Error('must not read the over-limit value')
+      },
+    })
+
+    expect(boundedEntries(record, 64)).toBeNull()
+  })
+
+  it.each([
+    ['templates', Object.fromEntries(Array.from({ length: 65 }, (_, id) => [`t-${id}`, {}]))],
+    [
+      'tiles',
+      {
+        only: {
+          name: 'Only',
+          coords: '0,0,0,0',
+          tiles: Object.fromEntries(Array.from({ length: 65 }, (_, id) => [`${id},0,0,0`, 'x'])),
+        },
+      },
+    ],
+  ])('rejects too many Marble %s before decoding', async (_kind, templates) => {
+    const { importFile } = await import('./import.js')
+
+    const importing = importFile(file('many.json', JSON.stringify({ templates })), { x: 0, y: 0 })
+
+    if (_kind === 'templates') await expect(importing).rejects.toThrow(/too many templates/i)
+    else await expect(importing).resolves.toEqual([])
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
   it('rejects an overlapping import before a second decoder allocation begins', async () => {
     bitmapSizes.push({ width: 1, height: 1 })
     readbacks.push(rgba([0, 0, 0, 255]))

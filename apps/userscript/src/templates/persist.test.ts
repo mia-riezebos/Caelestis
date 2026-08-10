@@ -24,13 +24,10 @@ afterEach(() => {
 
 describe('local template persistence', () => {
   it('resolves a write only after its IndexedDB transaction commits', async () => {
-    const revisionRequest = { result: undefined } as unknown as IDBRequest<unknown>
-    const templateStore = { put: vi.fn() }
-    const revisionStore = { get: vi.fn(() => revisionRequest), put: vi.fn() }
+    const templateRequest = { result: undefined } as unknown as IDBRequest<unknown>
+    const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
     const transaction = {
-      objectStore: vi.fn((name: string) =>
-        name === 'local-templates' ? templateStore : revisionStore,
-      ),
+      objectStore: vi.fn(() => templateStore),
     } as unknown as IDBTransaction
     const database = {
       transaction: vi.fn(() => transaction),
@@ -63,7 +60,7 @@ describe('local template persistence', () => {
     })
     opening.onsuccess?.(new Event('success'))
     await Promise.resolve()
-    revisionRequest.onsuccess?.(new Event('success'))
+    templateRequest.onsuccess?.(new Event('success'))
     await Promise.resolve()
 
     expect(settled).toBe(false)
@@ -76,13 +73,10 @@ describe('local template persistence', () => {
   })
 
   it('reports a transaction abort as a failed durable write and closes the database', async () => {
-    const revisionRequest = { result: undefined } as unknown as IDBRequest<unknown>
-    const templateStore = { put: vi.fn() }
-    const revisionStore = { get: vi.fn(() => revisionRequest), put: vi.fn() }
+    const templateRequest = { result: undefined } as unknown as IDBRequest<unknown>
+    const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
     const transaction = {
-      objectStore: vi.fn((name: string) =>
-        name === 'local-templates' ? templateStore : revisionStore,
-      ),
+      objectStore: vi.fn(() => templateStore),
     } as unknown as IDBTransaction
     const database = {
       transaction: vi.fn(() => transaction),
@@ -112,23 +106,20 @@ describe('local template persistence', () => {
     )
     opening.onsuccess?.(new Event('success'))
     await Promise.resolve()
-    revisionRequest.onsuccess?.(new Event('success'))
+    templateRequest.onsuccess?.(new Event('success'))
     transaction.onabort?.(new Event('abort'))
 
-    await expect(saving).resolves.toBeNull()
+    await expect(saving).resolves.toEqual({ status: 'unavailable' })
     expect(database.close).toHaveBeenCalledOnce()
   })
 
   it('refuses a stale cross-tab write without recreating the template', async () => {
-    const revisionRequest = {
+    const templateRequest = {
       result: { id: 'test', revision: 2 },
     } as unknown as IDBRequest<unknown>
-    const templateStore = { put: vi.fn() }
-    const revisionStore = { get: vi.fn(() => revisionRequest), put: vi.fn() }
+    const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
     const transaction = {
-      objectStore: vi.fn((name: string) =>
-        name === 'local-templates' ? templateStore : revisionStore,
-      ),
+      objectStore: vi.fn(() => templateStore),
     } as unknown as IDBTransaction
     const database = {
       transaction: vi.fn(() => transaction),
@@ -141,28 +132,26 @@ describe('local template persistence', () => {
     const saving = saveTemplate(stored({ id: 'test', revision: 1 }) as never, 1)
     opening.onsuccess?.(new Event('success'))
     await Promise.resolve()
-    revisionRequest.onsuccess?.(new Event('success'))
+    templateRequest.onsuccess?.(new Event('success'))
     transaction.oncomplete?.(new Event('complete'))
 
-    await expect(saving).resolves.toBeNull()
+    await expect(saving).resolves.toEqual({ status: 'conflict' })
     expect(templateStore.put).not.toHaveBeenCalled()
-    expect(revisionStore.put).not.toHaveBeenCalled()
   })
 
   it('waits for durable deletes and skips records outside the aggregate pixel cap', async () => {
-    const revisionRequest = { result: undefined } as unknown as IDBRequest<unknown>
+    const templateRequest = {
+      result: stored({ id: 'gone', revision: 0 }),
+    } as unknown as IDBRequest<unknown>
     const cursor = {
       value: stored({ width: 2, indices: new Uint8Array([0, 1]), opaque: 2 }),
       continue: vi.fn(),
     }
     const loadRequest = { result: cursor } as unknown as IDBRequest<IDBCursorWithValue | null>
-    const deleteStore = { delete: vi.fn() }
-    const revisionStore = { get: vi.fn(() => revisionRequest), put: vi.fn() }
+    const deleteStore = { get: vi.fn(() => templateRequest), delete: vi.fn() }
     const loadStore = { openCursor: vi.fn(() => loadRequest) }
     const deleteTransaction = {
-      objectStore: vi.fn((name: string) =>
-        name === 'local-templates' ? deleteStore : revisionStore,
-      ),
+      objectStore: vi.fn(() => deleteStore),
     } as unknown as IDBTransaction
     const loadTransaction = {
       objectStore: vi.fn(() => loadStore),
@@ -186,11 +175,10 @@ describe('local template persistence', () => {
     const deleting = deleteTemplate('gone', 0)
     deleteOpening.onsuccess?.(new Event('success'))
     await Promise.resolve()
-    revisionRequest.onsuccess?.(new Event('success'))
+    templateRequest.onsuccess?.(new Event('success'))
     deleteTransaction.oncomplete?.(new Event('complete'))
-    await expect(deleting).resolves.toBe(true)
+    await expect(deleting).resolves.toEqual({ status: 'saved', revision: 1 })
     expect(deleteStore.delete).toHaveBeenCalledWith('gone')
-    expect(revisionStore.put).toHaveBeenCalledWith({ id: 'gone', revision: 1 })
 
     const loading = loadTemplates(64, 1)
     loadOpening.onsuccess?.(new Event('success'))
