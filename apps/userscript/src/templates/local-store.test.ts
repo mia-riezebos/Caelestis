@@ -223,6 +223,37 @@ describe('local template lifecycle', () => {
     expect(persistence.deleteTemplate).not.toHaveBeenCalled()
   })
 
+  it('bounds template text and duplicate-heavy persisted colour metadata', async () => {
+    persistence.loadTemplates.mockResolvedValueOnce([
+      {
+        ...template({ id: 'styled', source: 'marble' }),
+        visible: false,
+        everPlaced: true,
+        appearance: {
+          shape: 'circle',
+          size: 1 / 3,
+          anchor: 'c',
+          opacity: 1,
+          hiddenColours: Array.from({ length: 65 }, () => 1),
+        },
+      },
+    ])
+    const store = await import('./local-store.js')
+
+    await expect(store.addLocalTemplate(template({ id: 'x'.repeat(129) }))).rejects.toThrow(
+      /metadata/i,
+    )
+    await expect(store.addLocalTemplate(template({ name: 'x'.repeat(257) }))).rejects.toThrow(
+      /metadata/i,
+    )
+    await store.restoreLocalTemplates()
+
+    expect(store.localTemplates()[0]?.appearance).toMatchObject({
+      hiddenColours: [],
+      shape: 'full',
+    })
+  })
+
   it('discards irreparable persisted runtime shapes independently', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       { ...template({ id: 'bad', source: 'unknown' as never }), visible: true, everPlaced: true },
@@ -576,6 +607,21 @@ describe('local template lifecycle', () => {
     await Promise.all([first, second])
 
     expect(store.localTemplates()[0]).toMatchObject({ originX: 300, originY: 400 })
+  })
+
+  it('settles every coalesced move with the surviving durable write result', async () => {
+    const store = await import('./local-store.js')
+    await store.addLocalTemplate(template())
+    const pending = deferOneBitmap()
+    persistence.saveTemplate.mockResolvedValueOnce(false)
+
+    const first = store.moveLocalTemplate('local-test', 100, 200)
+    await Promise.resolve()
+    const second = store.moveLocalTemplate('local-test', 300, 400)
+    pending.resolve(bitmap(1_000, 1_000))
+
+    await expect(Promise.all([first, second])).resolves.toEqual([false, false])
+    expect(store.localTemplates()[0]).toMatchObject({ originX: 10, originY: 20 })
   })
 
   it('does not retain rebuilt tiles when a concurrent visibility change hides the template', async () => {

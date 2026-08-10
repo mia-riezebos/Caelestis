@@ -174,8 +174,8 @@ const onPointerMove = (event: PointerEvent): void => {
   if (template === undefined) return
   const next = boundedOrigin(
     template,
-    session.dragging.startX + (event.clientX - session.dragging.pointerX) / scale,
-    session.dragging.startY + (event.clientY - session.dragging.pointerY) / scale,
+    session.dragging.startX + (event.clientX - session.dragging.pointerX) / scale.x,
+    session.dragging.startY + (event.clientY - session.dragging.pointerY) / scale.y,
   )
   session.x = next.x
   session.y = next.y

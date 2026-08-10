@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   canvasPixelAt: vi.fn(() => ({ x: 2, y: 3 })),
+  cssPixelsPerCanvasPixel: vi.fn(() => ({ x: 1, y: 1 })),
   clearLocalPreview: vi.fn(() => true),
   localTemplates: vi.fn(),
   placeLocalTemplate: vi.fn(async () => true),
@@ -11,7 +12,7 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('../main.js', () => ({
   canvasPixelAt: harness.canvasPixelAt,
-  cssPixelsPerCanvasPixel: vi.fn(() => 1),
+  cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
@@ -31,6 +32,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   listeners.clear()
   movebar = null
+  harness.canvasPixelAt.mockReturnValue({ x: 2, y: 3 })
+  harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
   harness.localTemplates.mockReturnValue([
     {
       id: 'test',
@@ -169,6 +172,37 @@ describe('template placement controls', () => {
     } as unknown as Event)
 
     expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 110, 70)
+  })
+
+  it('converts drag deltas with independent horizontal and vertical CSS scales', async () => {
+    harness.canvasPixelAt.mockReturnValue({ x: 12, y: 22 })
+    harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 2, y: 4 })
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    const pointermove = listeners.get('pointermove')
+    if (pointerdown === undefined || pointermove === undefined)
+      throw new Error('expected listeners')
+
+    pointerdown({
+      button: 0,
+      pointerId: 1,
+      clientX: 100,
+      clientY: 100,
+      ctrlKey: true,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    pointermove({
+      pointerId: 1,
+      clientX: 200,
+      clientY: 200,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 60, 45)
   })
 
   it('binds a drag to one pointer and ends it on pointer cancellation', async () => {

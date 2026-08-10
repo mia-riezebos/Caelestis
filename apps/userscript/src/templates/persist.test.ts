@@ -1,5 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+const stored = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  id: 'loaded',
+  name: 'Loaded',
+  source: 'image',
+  originX: 0,
+  originY: 0,
+  width: 1,
+  height: 1,
+  indices: new Uint8Array([0]),
+  moved: 0,
+  opaque: 1,
+  visible: true,
+  everPlaced: true,
+  ...overrides,
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.resetModules()
@@ -86,7 +102,7 @@ describe('local template persistence', () => {
   it('waits for durable deletes and skips records outside the aggregate pixel cap', async () => {
     const deleteRequest = {} as IDBRequest<undefined>
     const cursor = {
-      value: { id: 'loaded', name: 'Loaded', indices: new Uint8Array([0, 1]) },
+      value: stored({ width: 2, indices: new Uint8Array([0, 1]), opaque: 2 }),
       continue: vi.fn(),
     }
     const loadRequest = { result: cursor } as unknown as IDBRequest<IDBCursorWithValue | null>
@@ -135,11 +151,11 @@ describe('local template persistence', () => {
 
   it('continues past one oversized record to recover a later valid record', async () => {
     const oversized = {
-      value: { id: 'oversized', indices: new Uint8Array(3) },
+      value: stored({ id: 'oversized', width: 3, indices: new Uint8Array(3), opaque: 3 }),
       continue: vi.fn(),
     }
     const valid = {
-      value: { id: 'valid', indices: new Uint8Array([0]) },
+      value: stored({ id: 'valid' }),
       continue: vi.fn(),
     }
     const mutableRequest = {
@@ -170,5 +186,39 @@ describe('local template persistence', () => {
     await expect(loading).resolves.toEqual([valid.value])
     expect(oversized.continue).toHaveBeenCalledOnce()
     expect(valid.continue).toHaveBeenCalledOnce()
+  })
+
+  it('does not let invalid leading records consume the restore candidate limit', async () => {
+    const cursor = { value: {}, continue: vi.fn() }
+    const mutableRequest = {
+      result: cursor as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates(64, 64)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    for (let index = 0; index < 64; index++) {
+      cursor.value = { id: `invalid-${index}` }
+      mutableRequest.onsuccess?.(new Event('success'))
+    }
+    const valid = stored({ id: 'valid' })
+    cursor.value = valid
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = null
+    mutableRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([valid])
   })
 })

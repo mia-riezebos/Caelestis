@@ -75,32 +75,41 @@ export const counterKey = (category: Category, message: string): string =>
   `${category}:${message.replace(/\s*\S*\d\S*/g, '').trim()}`
 
 export const log = (category: Category, message: string, data?: unknown): void => {
-  count(counterKey(category, message))
-  if (!enabled) return
+  try {
+    count(counterKey(category, message))
+    if (!enabled) return
 
-  const entry: Entry = { at: Date.now() - started, category, message, data }
-  ring.push(entry)
-  if (ring.length > RING_SIZE) ring.shift()
+    const entry: Entry = { at: Date.now() - started, category, message, data }
+    ring.push(entry)
+    if (ring.length > RING_SIZE) ring.shift()
 
-  // A per-frame category would drown the console, so it only speaks when its story changes.
-  if (NOISY.has(category)) {
-    const signature = `${message}:${JSON.stringify(data ?? null)}`
-    if (lastNoisy.get(category) === signature) return
-    lastNoisy.set(category, signature)
+    // A per-frame category would drown the console, so it only speaks when its story changes.
+    if (NOISY.has(category)) {
+      const signature = `${message}:${JSON.stringify(data ?? null)}`
+      if (lastNoisy.get(category) === signature) return
+      lastNoisy.set(category, signature)
+    }
+    if (data === undefined) console.info(`[wts:${category}] ${message}`)
+    else console.info(`[wts:${category}] ${message}`, data)
+  } catch {
+    // Diagnostics are observers. A hostile/broken page console or unserialisable debug payload must
+    // never change the success semantics of the operation being observed.
   }
-  if (data === undefined) console.info(`[wts:${category}] ${message}`)
-  else console.info(`[wts:${category}] ${message}`, data)
 }
 
 /** Always reaches the console, debug on or off: something that should not have happened. */
 export const warn = (category: Category, message: string, data?: unknown): void => {
-  // Same stable key as `log`. Keyed on the raw message, the two hottest warnings carry tile
-  // coordinates and filled the 200-key table with single-use entries — after which every genuinely
-  // new counter was refused, and `dump()` stopped showing the ones worth reading.
-  count(counterKey(category, message))
-  ring.push({ at: Date.now() - started, category, message, data })
-  if (ring.length > RING_SIZE) ring.shift()
-  console.warn(`[wts:${category}] ${message}`, data ?? '')
+  try {
+    // Same stable key as `log`. Keyed on the raw message, the two hottest warnings carry tile
+    // coordinates and filled the 200-key table with single-use entries — after which every genuinely
+    // new counter was refused, and `dump()` stopped showing the ones worth reading.
+    count(counterKey(category, message))
+    ring.push({ at: Date.now() - started, category, message, data })
+    if (ring.length > RING_SIZE) ring.shift()
+    console.warn(`[wts:${category}] ${message}`, data ?? '')
+  } catch {
+    // Warnings report failures; they must not create a second failure of their own.
+  }
 }
 
 export const isEnabled = (): boolean => enabled

@@ -82,6 +82,42 @@ afterEach(() => {
 })
 
 describe('template import', () => {
+  it('rejects an overlapping import before a second decoder allocation begins', async () => {
+    bitmapSizes.push({ width: 1, height: 1 })
+    readbacks.push(rgba([0, 0, 0, 255]))
+    let finishBitmap = (_bitmap: ImageBitmap): void => undefined
+    vi.mocked(createImageBitmap).mockImplementationOnce(
+      async () =>
+        await new Promise<ImageBitmap>((resolve) => {
+          finishBitmap = resolve
+        }),
+    )
+    const { importFile } = await import('./import.js')
+
+    const first = importFile(file('first.png', '', 'image/png'), { x: 0, y: 0 })
+    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
+    await expect(importFile(file('second.png', '', 'image/png'), { x: 0, y: 0 })).rejects.toThrow(
+      /already in progress/i,
+    )
+    finishBitmap({ width: 1, height: 1, close: vi.fn() } as unknown as ImageBitmap)
+    await expect(first).resolves.toHaveLength(1)
+    expect(createImageBitmap).toHaveBeenCalledOnce()
+  })
+
+  it('rejects oversized template names before decoding image data', async () => {
+    const { importFile } = await import('./import.js')
+    const contents = JSON.stringify({
+      name: 'x'.repeat(257),
+      image: { dataUrl: 'data:image/png;base64,AAAA' },
+      bounds: { north: 0, west: 0 },
+    })
+
+    await expect(importFile(file('oversized.wplace', contents), { x: 0, y: 0 })).rejects.toThrow(
+      /name is too long/i,
+    )
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
   it('decodes Blue Marble 3x stamped chunks back to fixed native pixels', async () => {
     bitmapSizes.push({ width: 6, height: 3 })
     const stamped = new Uint8ClampedArray(6 * 3 * 4)

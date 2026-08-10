@@ -84,7 +84,7 @@ describe('overlay coordinates', () => {
   })
 
   it('reports CSS pixels per canvas pixel without double-counting device pixel ratio', () => {
-    expect(cssPixelsPerCanvasPixelIn(frame())).toBe(0.1)
-    expect(cssPixelsPerCanvasPixelIn(null)).toBe(1)
+    expect(cssPixelsPerCanvasPixelIn(frame())).toEqual({ x: 0.1, y: 0.0505 })
+    expect(cssPixelsPerCanvasPixelIn(null)).toEqual({ x: 1, y: 1 })
   })
 })

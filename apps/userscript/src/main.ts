@@ -116,7 +116,7 @@ export const screenPointFor = (x: number, y: number): { x: number; y: number } |
 }
 
 /** Screen scale: how many CSS pixels one canvas pixel currently occupies. */
-export const cssPixelsPerCanvasPixel = (): number => {
+export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
   return cssPixelsPerCanvasPixelIn(lastFrame)
 }
 

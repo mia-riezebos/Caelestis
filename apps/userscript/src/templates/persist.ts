@@ -1,6 +1,10 @@
 import { warn } from '../debug.js'
 import type { Appearance } from './appearance.js'
-import type { ImportedTemplate } from './import.js'
+import {
+  type ImportedTemplate,
+  MAX_TEMPLATE_ID_LENGTH,
+  MAX_TEMPLATE_NAME_LENGTH,
+} from './import.js'
 
 /**
  * Local templates on disk.
@@ -80,6 +84,45 @@ export const deleteTemplate = async (id: string): Promise<boolean> => {
   return (await run('readwrite', (store) => store.delete(id))) !== null
 }
 
+const boundedStoredCandidate = (
+  value: unknown,
+): value is Record<string, unknown> & {
+  indices: Uint8Array
+} => {
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as Record<string, unknown>
+  if (
+    typeof record.id !== 'string' ||
+    record.id.length === 0 ||
+    record.id.length > MAX_TEMPLATE_ID_LENGTH ||
+    typeof record.name !== 'string' ||
+    record.name.length > MAX_TEMPLATE_NAME_LENGTH ||
+    !['wplace', 'marble', 'image'].includes(String(record.source)) ||
+    !Number.isSafeInteger(record.originX) ||
+    !Number.isSafeInteger(record.originY) ||
+    !Number.isSafeInteger(record.width) ||
+    !Number.isSafeInteger(record.height) ||
+    !(record.indices instanceof Uint8Array) ||
+    !Number.isSafeInteger(record.moved) ||
+    !Number.isSafeInteger(record.opaque) ||
+    typeof record.visible !== 'boolean' ||
+    typeof record.everPlaced !== 'boolean'
+  ) {
+    return false
+  }
+  const appearance = record.appearance
+  if (
+    typeof appearance === 'object' &&
+    appearance !== null &&
+    'hiddenColours' in appearance &&
+    Array.isArray(appearance.hiddenColours) &&
+    appearance.hiddenColours.length > 64
+  ) {
+    return false
+  }
+  return true
+}
+
 export const loadTemplates = async (
   maxTemplates = 64,
   maxIndexPixels = 64 * 1024 * 1024,
@@ -99,16 +142,14 @@ export const loadTemplates = async (
           if (cursor === null) return
           inspected++
           const value: unknown = cursor.value
-          const pixels =
-            typeof value === 'object' &&
-            value !== null &&
-            'indices' in value &&
-            value.indices instanceof Uint8Array
-              ? value.indices.length
-              : 0
+          if (inspected > maxInspected) return
+          if (!boundedStoredCandidate(value)) {
+            cursor.continue()
+            return
+          }
+          const pixels = value.indices.length
           // An individually oversized or late non-fitting record must not permanently hide every
           // later valid key. Inspect a bounded number of records, retaining only those that fit.
-          if (templates.length >= maxTemplates || inspected >= maxInspected) return
           if (pixels > maxIndexPixels || indexPixels + pixels > maxIndexPixels) {
             cursor.continue()
             return

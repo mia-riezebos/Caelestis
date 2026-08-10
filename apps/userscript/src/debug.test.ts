@@ -96,4 +96,25 @@ describe('warn', () => {
     count('bitmap:fell-back-to-byte-length')
     expect(counters.get('bitmap:fell-back-to-byte-length')).toBe(1)
   })
+
+  it('never throws through page-controlled console sinks or serialization', () => {
+    vi.stubGlobal('window', { Object })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => '1'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    vi.spyOn(console, 'info').mockImplementation(() => {
+      throw new Error('page console failed')
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {
+      throw new Error('page console failed')
+    })
+    installDebugApi()
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    expect(() => log('draw', 'circular payload', circular)).not.toThrow()
+    expect(() => warn('install', 'warning sink failed')).not.toThrow()
+  })
 })

@@ -46,6 +46,9 @@ export interface ImportedTemplate {
   readonly opaque: number
 }
 
+export const MAX_TEMPLATE_ID_LENGTH = 128
+export const MAX_TEMPLATE_NAME_LENGTH = 256
+
 // Large enough for the observed 11 MB / 1612x2584 `.wplace` fixture, while keeping a malformed or
 // hostile local file from turning one click into an unbounded browser allocation.
 const MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -60,8 +63,15 @@ const MAX_MARBLE_DECODE_PIXELS = MAX_IMPORT_PIXELS * MARBLE_DRAW_MULT * MARBLE_D
 const QUANTISE_WORK_PER_YIELD = 1_000_000
 const DENSE_CACHE_THRESHOLD = 65_536
 const RGB_SPACE = 1 << 24
+let importRunning = false
 
 const newId = (): string => `local-${uuidV7()}`
+
+const checkedName = (value: unknown, fallback: string): string => {
+  const name = typeof value === 'string' ? value : fallback
+  if (name.length > MAX_TEMPLATE_NAME_LENGTH) throw new Error('template name is too long')
+  return name
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -236,6 +246,7 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
     warn('install', 'skipping .wplace template: missing embedded image or bounds')
     return []
   }
+  const name = checkedName(file.name, 'Imported template')
   if (!/^data:image\/png;base64,/i.test(dataUrl)) {
     throw new Error('.wplace image must be an embedded PNG data URL')
   }
@@ -271,7 +282,7 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
   return [
     {
       id: newId(),
-      name: typeof file.name === 'string' ? file.name : 'Imported template',
+      name,
       source: 'wplace',
       sortOrder:
         typeof file.order === 'number' && Number.isSafeInteger(file.order) ? file.order : 0,
@@ -336,6 +347,13 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       continue
     }
     const entry = entryValue
+    let name: string
+    try {
+      name = checkedName(entry.name, key)
+    } catch (error) {
+      warn('install', 'skipping Marble template with oversized metadata', String(error))
+      continue
+    }
     const parts = parseMarbleCoords(typeof entry.coords === 'string' ? entry.coords : '', ',')
     if (parts === null) {
       warn('install', `skipping Marble template "${key}": unreadable coords`, entry.coords)
@@ -469,7 +487,7 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
 
     out.push({
       id: newId(),
-      name: typeof entry.name === 'string' ? entry.name : key,
+      name,
       source: 'marble',
       sortOrder: marbleSortOrder(key, out.length),
       // The declared coords win over the assembled extent. Including the space before the first
@@ -519,42 +537,52 @@ export const importFile = async (
   file: File,
   centre: { x: number; y: number },
 ): Promise<ImportedTemplate[]> => {
-  const started = performance.now()
-  if (file.size > MAX_FILE_BYTES) throw new Error('file is too large to import safely')
-  const isJson =
-    file.name.toLowerCase().endsWith('.wplace') ||
-    file.name.toLowerCase().endsWith('.json') ||
-    file.type === 'application/json'
+  if (importRunning) throw new Error('another template import is already in progress')
+  importRunning = true
+  try {
+    const started = performance.now()
+    if (file.size > MAX_FILE_BYTES) throw new Error('file is too large to import safely')
+    const isJson =
+      file.name.toLowerCase().endsWith('.wplace') ||
+      file.name.toLowerCase().endsWith('.json') ||
+      file.type === 'application/json'
 
-  let result: ImportedTemplate[]
-  if (isJson) {
-    const parsed: unknown = JSON.parse(await file.text())
-    if (!isRecord(parsed)) return []
-    // Tell them apart by shape rather than by extension: both ship as .json, and Marble's export
-    // has no version marker to check.
-    result =
-      parsed.templates !== undefined ? await importMarble(parsed) : await importWplace(parsed)
-  } else {
-    result = await importImage(file, file.name.replace(/\.[^.]+$/, ''), centre)
-  }
+    let result: ImportedTemplate[]
+    if (isJson) {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!isRecord(parsed)) return []
+      // Tell them apart by shape rather than by extension: both ship as .json, and Marble's export
+      // has no version marker to check.
+      result =
+        parsed.templates !== undefined ? await importMarble(parsed) : await importWplace(parsed)
+    } else {
+      result = await importImage(
+        file,
+        checkedName(file.name.replace(/\.[^.]+$/, ''), 'Image'),
+        centre,
+      )
+    }
 
-  result = result.filter((template) => {
-    if (template.opaque > 0) return true
-    warn('install', `skipping ${template.name}: image has no painted pixels`)
-    return false
-  })
-
-  for (const template of result) {
-    log('install', `imported ${template.name}`, {
-      source: template.source,
-      size: `${template.width}x${template.height}`,
-      origin: `${template.originX},${template.originY}`,
-      opaque: template.opaque,
-      moved: template.moved,
-      ms: Math.round(performance.now() - started),
+    result = result.filter((template) => {
+      if (template.opaque > 0) return true
+      warn('install', `skipping ${template.name}: image has no painted pixels`)
+      return false
     })
+
+    for (const template of result) {
+      log('install', `imported ${template.name}`, {
+        source: template.source,
+        size: `${template.width}x${template.height}`,
+        origin: `${template.originX},${template.originY}`,
+        opaque: template.opaque,
+        moved: template.moved,
+        ms: Math.round(performance.now() - started),
+      })
+    }
+    return result
+  } finally {
+    importRunning = false
   }
-  return result
 }
 
 const validMarbleCoords = (parts: readonly number[]): boolean => {

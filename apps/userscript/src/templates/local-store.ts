@@ -7,7 +7,11 @@ import {
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { type Appearance, anchorOffset, DEFAULT_APPEARANCE, scaleFor } from './appearance.js'
-import type { ImportedTemplate } from './import.js'
+import {
+  type ImportedTemplate,
+  MAX_TEMPLATE_ID_LENGTH,
+  MAX_TEMPLATE_NAME_LENGTH,
+} from './import.js'
 import { deleteTemplate, loadTemplates, type StoredTemplate, saveTemplate } from './persist.js'
 
 /**
@@ -266,9 +270,11 @@ const normaliseAppearance = (value: unknown): Appearance => {
     opacity < 0 ||
     opacity > 1 ||
     !Array.isArray(hiddenColours) ||
+    hiddenColours.length > WPLACE_PALETTE.length ||
     !hiddenColours.every(
       (index) => Number.isSafeInteger(index) && index >= 0 && index < WPLACE_PALETTE.length,
-    )
+    ) ||
+    new Set(hiddenColours).size !== hiddenColours.length
   ) {
     return DEFAULT_APPEARANCE
   }
@@ -299,8 +305,12 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     everPlaced,
     appearance,
   } = value
-  if (typeof id !== 'string' || id.length === 0) throw new RangeError('template id is invalid')
-  if (typeof name !== 'string') throw new RangeError('template name is invalid')
+  if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) {
+    throw new RangeError('template id is invalid')
+  }
+  if (typeof name !== 'string' || name.length > MAX_TEMPLATE_NAME_LENGTH) {
+    throw new RangeError('template name is invalid')
+  }
   if (!['wplace', 'marble', 'image'].includes(String(source))) {
     throw new RangeError('template source is invalid')
   }
@@ -452,6 +462,15 @@ const savePlaced = async (placed: PlacedTemplate): Promise<boolean> => {
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   validatePlacement(template)
+  if (
+    typeof template.id !== 'string' ||
+    typeof template.name !== 'string' ||
+    template.id.length === 0 ||
+    template.id.length > MAX_TEMPLATE_ID_LENGTH ||
+    template.name.length > MAX_TEMPLATE_NAME_LENGTH
+  ) {
+    throw new RangeError('local template metadata is too large')
+  }
   if (templates.has(template.id) || pendingAdds.has(template.id)) {
     throw new RangeError('local template id already exists')
   }
@@ -579,12 +598,16 @@ export const restoreLocalTemplates = async (): Promise<void> => {
   notify()
 }
 
+interface MoveWaiter {
+  readonly resolve: (saved: boolean) => void
+  readonly reject: (error: unknown) => void
+}
+
 interface MoveTarget {
   readonly originX: number
   readonly originY: number
   readonly everPlaced: boolean
-  readonly resolve: (saved: boolean) => void
-  readonly reject: (error: unknown) => void
+  readonly waiters: readonly MoveWaiter[]
 }
 
 interface MoveQueue {
@@ -594,6 +617,14 @@ interface MoveQueue {
 
 const moveQueues = new Map<string, MoveQueue>()
 
+const resolveMove = (target: MoveTarget, saved: boolean): void => {
+  for (const waiter of target.waiters) waiter.resolve(saved)
+}
+
+const rejectMove = (target: MoveTarget, error: unknown): void => {
+  for (const waiter of target.waiters) waiter.reject(error)
+}
+
 const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
   queue.running = true
   while (queue.pending !== null) {
@@ -601,7 +632,7 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
     queue.pending = null
     const existing = templates.get(id)
     if (existing === undefined) {
-      target.resolve(false)
+      resolveMove(target, false)
       continue
     }
     try {
@@ -612,17 +643,18 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       // intermediate work; discard it and immediately build only the newest requested position.
       const pendingAfterSlice = queue.pending as MoveTarget | null
       if (pendingAfterSlice !== null) {
-        if (target.everPlaced && !pendingAfterSlice.everPlaced) {
-          queue.pending = { ...pendingAfterSlice, everPlaced: true }
+        queue.pending = {
+          ...pendingAfterSlice,
+          everPlaced: target.everPlaced || pendingAfterSlice.everPlaced,
+          waiters: [...target.waiters, ...pendingAfterSlice.waiters],
         }
         releaseCandidateTiles(tiles)
-        target.resolve(true)
         continue
       }
       const current = templates.get(id)
       if (current === undefined || deleting.has(id)) {
         releaseCandidateTiles(tiles)
-        target.resolve(false)
+        resolveMove(target, false)
         continue
       }
       const saved = await writeInOrder(id, async () => {
@@ -659,9 +691,9 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
         releaseCandidateTiles(tiles)
         warn('install', `move for ${current.name} was not saved`)
       }
-      target.resolve(saved)
+      resolveMove(target, saved)
     } catch (error) {
-      target.reject(error)
+      rejectMove(target, error)
     }
   }
   queue.running = false
@@ -677,16 +709,12 @@ const enqueueMove = async (
   const queue = moveQueues.get(id) ?? { pending: null, running: false }
   moveQueues.set(id, queue)
   return await new Promise<boolean>((resolve, reject) => {
-    // A not-yet-started intermediate request is superseded. Its caller does not need to wait for
-    // work that deliberately will never be applied.
     const previous = queue.pending
-    previous?.resolve(true)
     queue.pending = {
       originX,
       originY,
       everPlaced: everPlaced || previous?.everPlaced === true,
-      resolve,
-      reject,
+      waiters: [...(previous?.waiters ?? []), { resolve, reject }],
     }
     if (!queue.running) void drainMoves(id, queue)
   })
@@ -817,6 +845,12 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
 export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
+  if (
+    appearance.hiddenColours.length > WPLACE_PALETTE.length ||
+    new Set(appearance.hiddenColours).size !== appearance.hiddenColours.length
+  ) {
+    return false
+  }
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
