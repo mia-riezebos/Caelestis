@@ -44,6 +44,15 @@ describe('template navigation', () => {
     expect(flyTo).toHaveBeenCalledWith(expect.objectContaining({ center: [0, 0], zoom: 11 }))
   })
 
+  it('respects the zoom ceiling for a single-pixel target', () => {
+    const flyTo = vi.fn()
+    map.current = { flyTo }
+
+    navigateTo({ x: WORLD_PIXELS / 2, y: WORLD_PIXELS / 2, width: 1, height: 1 })
+
+    expect(flyTo).toHaveBeenCalledWith(expect.objectContaining({ zoom: 20 }))
+  })
+
   it('falls back to a same-origin URL with projected coordinates when no map was captured', () => {
     navigateTo({ x: WORLD_PIXELS / 2, y: WORLD_PIXELS / 2 })
 

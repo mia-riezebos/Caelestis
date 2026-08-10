@@ -104,6 +104,29 @@ export const clearLocalPreview = (id: string): boolean => {
  */
 /** Halve until small, so any on-screen size has a source within 2x of it. */
 const MIN_MIP_SIZE = 125
+// Every retained source tile is a fixed 1000/500/250/125 chain (~5.3 MB). Budget the actual
+// painted tiles across all templates; pixel count alone does not bound a very wide, short image.
+const MAX_RETAINED_SOURCE_TILES = 24
+const MAX_SOURCE_TILES_PER_TEMPLATE = 12
+let retainedSourceTiles = 0
+
+const reserveSourceIncrease = (before: number, after: number): boolean => {
+  const increase = after - before
+  if (increase <= 0) return true
+  if (retainedSourceTiles + increase > MAX_RETAINED_SOURCE_TILES) return false
+  retainedSourceTiles += increase
+  return true
+}
+
+const cancelSourceIncrease = (before: number, after: number): void => {
+  const increase = after - before
+  if (increase > 0) retainedSourceTiles -= increase
+}
+
+const finishSourceReplacement = (before: number, after: number): void => {
+  const decrease = before - after
+  if (decrease > 0) retainedSourceTiles -= decrease
+}
 
 const closeLevels = (tile: TileLevels): void => {
   for (const level of tile.levels) level.close()
@@ -205,6 +228,9 @@ const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels
           }
         }
         if (rgba === null) continue
+        if (out.size >= MAX_SOURCE_TILES_PER_TEMPLATE) {
+          throw new RangeError('template covers too many painted tiles to render safely')
+        }
         out.set(`${tileX}/${tileY}`, {
           levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
         })
@@ -252,7 +278,12 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
     everPlaced: false,
     appearance: DEFAULT_APPEARANCE,
   }
+  if (!reserveSourceIncrease(0, tiles.size)) {
+    closeTiles(tiles)
+    throw new RangeError('local templates exceed the source bitmap memory budget')
+  }
   if (!(await persist(placed))) {
+    cancelSourceIncrease(0, tiles.size)
     closeTiles(tiles)
     throw new Error('local template could not be saved')
   }
@@ -275,17 +306,38 @@ export const restoreLocalTemplates = async (): Promise<void> => {
       if (template.source === 'image' && !template.everPlaced) {
         throw new RangeError('unfinished image placement')
       }
+      const tiles = template.visible ? await slice(template) : new Map<string, TileLevels>()
+      if (!reserveSourceIncrease(0, tiles.size)) {
+        closeTiles(tiles)
+        warn('install', `could not restore ${template.name}: source bitmap budget exhausted`)
+        continue
+      }
       templates.set(template.id, {
         appearance: DEFAULT_APPEARANCE,
         ...template,
         // Hidden templates cost no bitmap memory. Their palette indices are enough to rebuild the
         // tiles atomically if the user makes them visible again.
-        tiles: template.visible ? await slice(template) : new Map<string, TileLevels>(),
+        tiles,
       })
       restored++
     } catch (error) {
-      await deleteTemplate(template.id)
-      warn('install', `discarded invalid local template ${template.name}`, String(error))
+      // Validation failures are permanently bad records. Rendering failures are environmental
+      // (unsupported canvas, allocation pressure, decoder rejection) and must never destroy data.
+      try {
+        validatePlacement(template)
+        if (template.opaque <= 0) throw new RangeError('template has no painted pixels')
+        if (template.source === 'image' && !template.everPlaced) {
+          throw new RangeError('unfinished image placement')
+        }
+        warn('install', `could not restore local template ${template.name}`, String(error))
+      } catch (validationError) {
+        await deleteTemplate(template.id)
+        warn(
+          'install',
+          `discarded invalid local template ${template.name}`,
+          String(validationError),
+        )
+      }
     }
   }
   if (restored > 0) log('install', `restored ${restored} local templates`)
@@ -317,8 +369,9 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       continue
     }
     try {
+      clearStamped(id)
       const moved = { ...existing, originX: target.originX, originY: target.originY }
-      const tiles = await slice(moved)
+      let tiles = existing.visible ? await slice(moved) : new Map<string, TileLevels>()
       // Pointer events can arrive much faster than a tile can be rebuilt. Do not install stale
       // intermediate work; discard it and immediately build only the newest requested position.
       if (queue.pending !== null) {
@@ -335,11 +388,23 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       const saved = await writeInOrder(id, async () => {
         const latest = templates.get(id)
         if (latest === undefined || deleting.has(id)) return false
+        if (latest.visible && tiles.size === 0) {
+          tiles = await slice({ ...latest, originX: target.originX, originY: target.originY })
+        }
+        if (!latest.visible && tiles.size > 0) {
+          closeTiles(tiles)
+          tiles = new Map<string, TileLevels>()
+        }
+        if (!reserveSourceIncrease(latest.tiles.size, tiles.size)) return false
         const next = { ...latest, originX: target.originX, originY: target.originY, tiles }
-        if (!(await savePlaced(next))) return false
+        if (!(await savePlaced(next))) {
+          cancelSourceIncrease(latest.tiles.size, tiles.size)
+          return false
+        }
         clearStamped(id)
         previewOrigins.delete(id)
         templates.set(id, next)
+        finishSourceReplacement(latest.tiles.size, tiles.size)
         closeTiles(latest.tiles)
         notify()
         return true
@@ -408,6 +473,7 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
     const current = templates.get(id)
     if (current === undefined) return false
     if (!(await deleteTemplate(id))) return false
+    retainedSourceTiles -= current.tiles.size
     closeTiles(current.tiles)
     clearStamped(id)
     templates.delete(id)
@@ -434,12 +500,19 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       if (visible) closeTiles(tiles)
       return false
     }
+    if (!reserveSourceIncrease(existing.tiles.size, tiles.size)) {
+      if (visible) closeTiles(tiles)
+      warn('install', `visibility for ${next.name} exceeds the source bitmap budget`)
+      return false
+    }
     if (!(await savePlaced(next))) {
+      cancelSourceIncrease(existing.tiles.size, tiles.size)
       if (visible) closeTiles(tiles)
       warn('install', `visibility for ${next.name} was not saved`)
       return false
     }
     templates.set(id, next)
+    finishSourceReplacement(existing.tiles.size, tiles.size)
     clearStamped(id)
     if (!visible) closeTiles(existing.tiles)
     notify()
@@ -490,6 +563,7 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
 const stamped = new Map<string, { key: string; tile: TileLevels; bytes: number }>()
 const pendingStamps = new Map<string, string>()
 const MAX_STAMPED_BYTES = 128 * 1024 * 1024
+const MAX_RETAINED_STAMP_WIDTH = 1_500
 const MAX_CONCURRENT_STAMP_BUILDS = 1
 let stampedBytes = 0
 
@@ -567,7 +641,9 @@ const desiredLevelWidth = (fullWidth: number, targetWidth: number): number => {
     if (next < targetWidth) break
     width = next
   }
-  return width
+  // A 3000px level is 36 MB and a normal viewport needs several. Retaining the 1500px level and
+  // magnifying it with nearest-neighbour preserves crisp shapes without an eviction/rebuild loop.
+  return Math.min(width, MAX_RETAINED_STAMP_WIDTH)
 }
 
 export const stampTile = (
@@ -737,7 +813,7 @@ const buildStamp = async (
  */
 export const templateAsPng = async (template: PlacedTemplate): Promise<Blob | null> => {
   const canvas = new OffscreenCanvas(template.width, template.height)
-  const context = canvas.getContext('2d')
+  const context = canvas.getContext('2d', { colorSpace: 'srgb' })
   if (context === null) return null
   const rgba = new Uint8ClampedArray(template.width * template.height * 4)
   for (let index = 0; index < template.indices.length; index++) {

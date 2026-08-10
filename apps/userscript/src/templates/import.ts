@@ -6,7 +6,6 @@ import {
   uuidV7,
   WORLD_PIXELS,
   WORLD_TILES,
-  WPLACE_PALETTE,
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
 
@@ -19,7 +18,7 @@ import { log, warn } from '../debug.js'
  * - **`.wplace`** — a single image as a data URL, placed by lat/lng `bounds`. Needs projecting.
  * - **Blue Marble / Skirk** — already sliced into per-tile PNGs, placed by `"tileX, tileY, pxX, pxY"`.
  *   Counterintuitively the easier import, because its coordinates never left our system.
- * - **A plain image** — no placement at all, so the caller supplies one.
+ * - **A plain PNG** — no placement at all, so the caller supplies one.
  *
  * Decoding uses the browser's own PNG support via `createImageBitmap` rather than a bundled decoder.
  * The userscript is the one place where bundle size actually matters, and the platform already has
@@ -82,18 +81,24 @@ const pngDimensions = async (blob: Blob): Promise<{ width: number; height: numbe
     signature.some((value, index) => bytes[index] !== value) ||
     String.fromCharCode(...bytes.subarray(12, 16)) !== 'IHDR'
   ) {
-    throw new Error('template image must be a PNG')
+    throw new Error('only PNG images can be imported')
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const width = view.getUint32(16)
   const height = view.getUint32(20)
-  if (width <= 0 || height <= 0 || width * height > MAX_IMPORT_PIXELS) {
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    width > WORLD_PIXELS ||
+    height > WORLD_PIXELS ||
+    width * height > MAX_IMPORT_PIXELS
+  ) {
     throw new Error('decoded image is too large to import safely')
   }
   return { width, height }
 }
 
-/** RGBA for an image the browser can decode, which is every format it natively supports. */
+/** RGBA for a PNG whose dimensions have already passed the allocation preflight. */
 const decodeToRgba = async (
   blob: Blob,
 ): Promise<{ width: number; height: number; pixels: Uint8Array }> => {
@@ -211,7 +216,10 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
   const image = isRecord(file.image) ? file.image : null
   const bounds = isRecord(file.bounds) ? file.bounds : null
   const dataUrl = image?.dataUrl
-  if (typeof dataUrl !== 'string' || bounds === null) return []
+  if (typeof dataUrl !== 'string' || bounds === null) {
+    warn('install', 'skipping .wplace template: missing embedded image or bounds')
+    return []
+  }
   if (!/^data:image\/png;base64,/i.test(dataUrl)) {
     throw new Error('.wplace image must be an embedded PNG data URL')
   }
@@ -221,8 +229,10 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
     typeof west !== 'number' ||
     !Number.isFinite(north) ||
     !Number.isFinite(west)
-  )
+  ) {
+    warn('install', 'skipping .wplace template: invalid geographic bounds')
     return []
+  }
 
   const { width, height, pixels } = await decodeToRgba(await blobFromDataUrl(dataUrl))
   const { indices, moved, opaque } = await quantise(pixels)
@@ -236,8 +246,10 @@ const importWplace = async (file: Record<string, unknown>): Promise<ImportedTemp
     originY < 0 ||
     originX + width > WORLD_PIXELS ||
     originY + height > WORLD_PIXELS
-  )
+  ) {
+    warn('install', 'skipping .wplace template: projected image leaves the canvas')
     return []
+  }
   return [
     {
       id: newId(),
@@ -411,10 +423,14 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
     for (const piece of decoded) {
       const quantised = await quantise(piece.pixels)
       moved += quantised.moved
-      opaque += quantised.opaque
       for (let row = 0; row < piece.height; row++) {
         const target = (piece.y - originY + row) * width + (piece.x - originX)
-        indices.set(quantised.indices.subarray(row * piece.width, (row + 1) * piece.width), target)
+        for (let column = 0; column < piece.width; column++) {
+          const index = quantised.indices[row * piece.width + column] ?? TRANSPARENT_INDEX
+          if (index === TRANSPARENT_INDEX) continue
+          if (indices[target + column] === TRANSPARENT_INDEX) opaque++
+          indices[target + column] = index
+        }
       }
     }
 
@@ -532,6 +548,3 @@ const marbleSortOrder = (key: string, fallback: number): number => {
   const value = Number(key.trim().split(/\s+/)[0])
   return Number.isSafeInteger(value) ? value : fallback
 }
-
-/** Palette index to RGBA, for painting a preview. */
-export const PALETTE_RGBA = WPLACE_PALETTE.map((colour) => colour.rgb)

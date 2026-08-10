@@ -199,18 +199,23 @@ const onBlur = (): void => {
   if (session !== null) session.dragging = null
 }
 
-const isEditable = (target: EventTarget | null): boolean => {
+const isPageControl = (target: EventTarget | null): boolean => {
   if (target === null || typeof target !== 'object') return false
-  const element = target as { isContentEditable?: boolean; tagName?: string }
+  const element = target as {
+    isContentEditable?: boolean
+    tagName?: string
+    closest?: (selector: string) => Element | null
+  }
   return (
     element.isContentEditable === true ||
-    ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName?.toUpperCase() ?? '')
+    ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
+    (element.closest?.('dialog,[role="dialog"]') ?? null) !== null
   )
 }
 
 const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
-  if (isEditable(event.target)) return
+  if (isPageControl(event.target)) return
   if (event.key === 'Escape') {
     event.preventDefault()
     void abort()

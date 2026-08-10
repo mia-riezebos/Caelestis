@@ -208,7 +208,7 @@ describe('template placement controls', () => {
     expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
   })
 
-  it('ignores placement shortcuts while the user is editing a field', async () => {
+  it('ignores placement shortcuts in editable controls and page dialogs', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())
     const keydown = listeners.get('keydown')
@@ -217,6 +217,16 @@ describe('template placement controls', () => {
     keydown({
       key: 'Enter',
       target: { tagName: 'INPUT' },
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+    keydown({
+      key: 'Enter',
+      target: { tagName: 'BUTTON' },
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+    keydown({
+      key: 'Escape',
+      target: { tagName: 'DIV', closest: vi.fn(() => ({})) },
       preventDefault: vi.fn(),
     } as unknown as Event)
     await Promise.resolve()

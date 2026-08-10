@@ -264,6 +264,30 @@ describe('template import', () => {
     expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
+  it('rejects a PNG dimension that is wider than the native world before decoding', async () => {
+    const { importFile } = await import('./import.js')
+    const tooWide = file('wide.png', '', 'image/png', 24, {
+      width: 2_048_001,
+      height: 1,
+    })
+
+    await expect(importFile(tooWide, { x: 0, y: 0 })).rejects.toThrow(/too large/i)
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
+  it('rejects non-PNG plain images with an import-level diagnostic', async () => {
+    const { importFile } = await import('./import.js')
+    const jpeg = {
+      ...file('photo.jpg', '', 'image/jpeg', 4),
+      slice: () => new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: 'image/jpeg' }),
+    } as File
+
+    await expect(importFile(jpeg, { x: 0, y: 0 })).rejects.toThrow(
+      /only PNG images can be imported/i,
+    )
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
   it('bounds high-cardinality quantisation and yields during the work', async () => {
     const width = 257
     const height = 256
@@ -313,6 +337,16 @@ describe('template import', () => {
     expect(template?.indices).toHaveLength(1)
   })
 
+  it('clamps a multi-pixel plain PNG to the native world edge', async () => {
+    bitmapSizes.push({ width: 2, height: 2 })
+    readbacks.push(rgba([0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255]))
+    const { importFile } = await import('./import.js')
+
+    const [template] = await importFile(file('pixel.png', '', 'image/png'), { x: 0, y: 0 })
+
+    expect(template).toMatchObject({ originX: 0, originY: 0, width: 2, height: 2 })
+  })
+
   it('preserves Marble declared-origin space before its first decoded tile', async () => {
     bitmapSizes.push({ width: 3, height: 3 })
     const stamped = new Uint8ClampedArray(3 * 3 * 4)
@@ -338,6 +372,39 @@ describe('template import', () => {
       opaque: 1,
     })
     expect(template?.indices[400 * 501 + 500]).not.toBe(TRANSPARENT_INDEX)
+  })
+
+  it('does not let transparency in a later overlapping Marble tile erase painted pixels', async () => {
+    bitmapSizes.push({ width: 6, height: 6 }, { width: 6, height: 6 })
+    const painted = new Uint8ClampedArray(6 * 6 * 4)
+    painted.set([0, 0, 0, 255], (4 * 6 + 4) * 4)
+    readbacks.push(painted, new Uint8ClampedArray(6 * 6 * 4))
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        overlap: {
+          coords: '1,1,0,0',
+          tiles: { '1,1,0,0': 'AAAA', '1,1,1,1': 'BBBB' },
+        },
+      },
+    })
+
+    const [template] = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(template).toMatchObject({ width: 3, height: 3, opaque: 1 })
+    expect(template?.indices[4]).not.toBe(TRANSPARENT_INDEX)
+  })
+
+  it('rejects a projected wplace image that leaves the native canvas', async () => {
+    bitmapSizes.push({ width: 2, height: 1 })
+    readbacks.push(rgba([0, 0, 0, 255], [0, 0, 0, 255]))
+    const { importFile } = await import('./import.js')
+    const contents = JSON.stringify({
+      image: { dataUrl: 'data:image/png;base64,AAAA' },
+      bounds: { north: 0, west: 179.9999 },
+    })
+
+    await expect(importFile(file('edge.wplace', contents), { x: 0, y: 0 })).resolves.toEqual([])
   })
 
   it('rejects an import before reading a file outside the supported size class', async () => {
