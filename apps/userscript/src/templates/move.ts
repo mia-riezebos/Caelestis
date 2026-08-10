@@ -3,9 +3,11 @@ import { log, warn } from '../debug.js'
 import { canvasPixelAt, cssPixelsPerCanvasPixel } from '../main.js'
 import { icon } from '../ui/icons.js'
 import {
+  clearLocalPreview,
   localTemplates,
   markPlaced,
   moveLocalTemplate,
+  previewLocalTemplate,
   removeLocalTemplate,
 } from './local-store.js'
 
@@ -32,12 +34,19 @@ interface MoveSession {
   readonly originalY: number
   x: number
   y: number
-  dragging: { pointerX: number; pointerY: number; startX: number; startY: number } | null
+  dragging: {
+    pointerId: number
+    pointerX: number
+    pointerY: number
+    startX: number
+    startY: number
+  } | null
 }
 
 let session: MoveSession | null = null
 let onFinish: (() => void) | null = null
 let finishing = false
+let suppressMiddleAuxClick = false
 
 export const isMoving = (): boolean => session !== null
 export const movingId = (): string | null => session?.id ?? null
@@ -122,10 +131,12 @@ const onPointerDown = (event: PointerEvent): void => {
   if (session === null || finishing) return
   // Middle click: jump, do not drag. A long move should not require dragging the whole way.
   if (event.button === 1) {
+    suppressMiddleAuxClick = false
     const point = canvasPixelAt(event.clientX, event.clientY)
     const template = localTemplates().find((candidate) => candidate.id === session?.id)
     if (point === null || template === undefined) return
     event.preventDefault()
+    suppressMiddleAuxClick = true
     const next = boundedOrigin(
       template,
       point.x - template.width / 2,
@@ -145,6 +156,7 @@ const onPointerDown = (event: PointerEvent): void => {
   event.preventDefault()
   event.stopPropagation()
   session.dragging = {
+    pointerId: event.pointerId,
     pointerX: event.clientX,
     pointerY: event.clientY,
     startX: session.x,
@@ -154,6 +166,7 @@ const onPointerDown = (event: PointerEvent): void => {
 
 const onPointerMove = (event: PointerEvent): void => {
   if (session?.dragging == null || finishing) return
+  if (event.pointerId !== session.dragging.pointerId) return
   event.preventDefault()
   event.stopPropagation()
   // Screen delta to canvas delta: one canvas pixel is many screen pixels when zoomed in.
@@ -171,24 +184,48 @@ const onPointerMove = (event: PointerEvent): void => {
 }
 
 const previewMove = (id: string, x: number, y: number): void => {
-  void moveLocalTemplate(id, x, y)
-    .then((saved) => {
-      if (!saved) warn('install', 'template move was not saved')
-    })
-    .catch((error: unknown) => warn('install', 'template move failed', String(error)))
+  try {
+    if (!previewLocalTemplate(id, x, y)) warn('install', 'template move could not be previewed')
+  } catch (error) {
+    warn('install', 'template move failed', String(error))
+  }
 }
 
-const onPointerUp = (): void => {
+const onPointerUp = (event: PointerEvent): void => {
+  if (session?.dragging?.pointerId === event.pointerId) session.dragging = null
+}
+
+const onBlur = (): void => {
   if (session !== null) session.dragging = null
+}
+
+const isEditable = (target: EventTarget | null): boolean => {
+  if (target === null || typeof target !== 'object') return false
+  const element = target as { isContentEditable?: boolean; tagName?: string }
+  return (
+    element.isContentEditable === true ||
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName?.toUpperCase() ?? '')
+  )
 }
 
 const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
-  if (event.key === 'Escape') void abort()
-  if (event.key === 'Enter') void commit()
+  if (isEditable(event.target)) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    void abort()
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    void commit()
+  }
 }
 
-const onAuxClick = (event: Event): void => event.preventDefault()
+const onAuxClick = (event: MouseEvent): void => {
+  if (event.button !== 1 || !suppressMiddleAuxClick) return
+  suppressMiddleAuxClick = false
+  event.preventDefault()
+}
 
 const listen = (on: boolean): void => {
   const method = on ? 'addEventListener' : 'removeEventListener'
@@ -197,6 +234,8 @@ const listen = (on: boolean): void => {
   window[method]('pointerdown', onPointerDown as EventListener, true)
   window[method]('pointermove', onPointerMove as EventListener, true)
   window[method]('pointerup', onPointerUp as EventListener, true)
+  window[method]('pointercancel', onPointerUp as EventListener, true)
+  window[method]('blur', onBlur as EventListener, true)
   window[method]('keydown', onKeyDown as EventListener, true)
   // Middle click also opens autoscroll on some platforms.
   window[method]('auxclick', onAuxClick as EventListener, true)
@@ -274,7 +313,7 @@ export const abort = async (): Promise<void> => {
     const saved =
       template !== undefined && template.source === 'image' && !template.everPlaced
         ? await removeLocalTemplate(current.id)
-        : await moveLocalTemplate(current.id, current.originalX, current.originalY)
+        : clearLocalPreview(current.id)
     if (!saved) {
       resumeAfterFailure('revert')
       return

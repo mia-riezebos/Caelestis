@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   localChange: null as (() => void) | null,
   localTemplates: vi.fn(() => [] as unknown[]),
   paintFrame: vi.fn(),
+  previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
   restoreLocalTemplates: vi.fn(async () => {}),
   stampTile: vi.fn(),
 }))
@@ -26,6 +27,7 @@ vi.mock('./templates/local-store.js', () => ({
   onLocalChange: vi.fn((listener: () => void) => {
     harness.localChange = listener
   }),
+  previewOriginFor: harness.previewOriginFor,
   restoreLocalTemplates: harness.restoreLocalTemplates,
   stampTile: harness.stampTile,
 }))
@@ -44,6 +46,7 @@ afterEach(() => {
   harness.debugApi = null
   harness.localChange = null
   harness.localTemplates.mockReturnValue([])
+  harness.previewOriginFor.mockReturnValue(null)
 })
 
 describe('overlay canvas lifecycle', () => {
@@ -229,6 +232,56 @@ describe('overlay canvas lifecycle', () => {
     )
     expect(harness.levelFor).toHaveBeenCalledWith(levels, 1_000.49)
     expect(context.drawImage).toHaveBeenCalledWith(bitmap, 0.49, 0.25, 1_000.49, 999.6)
+  })
+
+  it('draws a transient move by translating existing source tiles', async () => {
+    const bitmap = { width: 1_000, height: 1_000 }
+    const levels = { levels: [bitmap] }
+    harness.localTemplates.mockReturnValue([
+      {
+        id: 'template',
+        originX: 1_000,
+        originY: 2_000,
+        visible: true,
+        appearance: { shape: 'full', size: 1, anchor: 'c', opacity: 1, hiddenColours: [] },
+      },
+    ])
+    harness.previewOriginFor.mockReturnValue({ x: 1_100, y: 2_000 })
+    harness.stampTile.mockImplementation((_template, key) => (key === '1/2' ? levels : undefined))
+    harness.levelFor.mockReturnValue(bitmap)
+    vi.stubGlobal('document', {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => ({
+        dataset: {},
+        style: {},
+        width: 0,
+        height: 0,
+        parentElement: null,
+        getContext: () => ({}),
+      })),
+    })
+    await import('./main.js')
+    const frame = {
+      canvas: { width: 1_000, height: 1_000, parentElement: null },
+      quads: [{ tile: { x: 1, y: 2 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
+    }
+    const draw = harness.draw
+    if (draw === null) throw new Error('main must register its tile-frame listener')
+    draw(frame)
+    const painters = harness.paintFrame.mock.calls[0]?.[2] as
+      | Array<(context: unknown, frame: unknown) => void>
+      | undefined
+    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
+    const context = {
+      drawImage: vi.fn(),
+      globalAlpha: 1,
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: 'low',
+    }
+
+    painters[0](context, frame)
+
+    expect(context.drawImage).toHaveBeenCalledWith(bitmap, 0, 0, 900, 1_000, 100, 0, 900, 1_000)
   })
 
   it('filters hidden templates and applies opacity and smoothing per visible quad', async () => {

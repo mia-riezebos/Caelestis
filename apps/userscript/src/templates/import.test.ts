@@ -4,11 +4,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const rgba = (...pixels: Array<[number, number, number, number]>): Uint8ClampedArray =>
   new Uint8ClampedArray(pixels.flat())
 
-const file = (name: string, text: string, type = 'application/json', size = text.length): File =>
-  ({ name, type, size, text: async () => text }) as File
-
 const readbacks: Uint8ClampedArray[] = []
 const bitmapSizes: Array<{ width: number; height: number }> = []
+
+const pngHeader = (width: number, height: number): Uint8Array<ArrayBuffer> => {
+  const bytes = new Uint8Array(new ArrayBuffer(24))
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 0)
+  bytes.set([73, 72, 68, 82], 12)
+  const view = new DataView(bytes.buffer)
+  view.setUint32(16, width)
+  view.setUint32(20, height)
+  return bytes
+}
+
+const file = (
+  name: string,
+  text: string,
+  type = 'application/json',
+  size = text.length,
+  header?: { width: number; height: number },
+): File =>
+  ({
+    name,
+    type,
+    size,
+    text: async () => text,
+    slice: () => {
+      const dimensions = header ?? bitmapSizes[0] ?? { width: 1, height: 1 }
+      return new Blob([pngHeader(dimensions.width, dimensions.height)], { type: 'image/png' })
+    },
+  }) as File
 
 class TestCanvas {
   readonly width: number
@@ -36,7 +61,12 @@ beforeEach(() => {
   vi.stubGlobal('OffscreenCanvas', TestCanvas)
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => ({ blob: async () => new Blob(['png']) })),
+    vi.fn(async () => ({
+      blob: async () => {
+        const dimensions = bitmapSizes[0] ?? { width: 1, height: 1 }
+        return new Blob([pngHeader(dimensions.width, dimensions.height)], { type: 'image/png' })
+      },
+    })),
   )
   vi.stubGlobal(
     'createImageBitmap',
@@ -167,6 +197,96 @@ describe('template import', () => {
 
     await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
     expect(createImageBitmap).toHaveBeenCalledTimes(58)
+  })
+
+  it('bounds retained pixels across all templates in one Marble file', async () => {
+    bitmapSizes.push({ width: 3, height: 3 }, { width: 3, height: 3 })
+    const stamp = new Uint8ClampedArray(3 * 3 * 4)
+    stamp.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    readbacks.push(stamp, stamp)
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        first: { coords: '0,0,0,0', tiles: { '3,3,0,0': 'AAAA' } },
+        second: { coords: '0,0,0,0', tiles: { '3,3,0,0': 'BBBB' } },
+      },
+    })
+
+    const imported = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(imported).toHaveLength(1)
+    expect(imported[0]).toMatchObject({ name: 'first', width: 3_001, height: 3_001 })
+  })
+
+  it('skips structurally malformed Marble records and keeps later valid records', async () => {
+    bitmapSizes.push({ width: 3, height: 3 })
+    const stamp = new Uint8ClampedArray(3 * 3 * 4)
+    stamp.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    readbacks.push(stamp)
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        nullRecord: null,
+        numericTile: { coords: '10,20,0,0', tiles: { '10,20,0,0': 42 } },
+        valid: { coords: '11,21,0,0', tiles: { '11,21,0,0': 'AAAA' } },
+      },
+    })
+
+    const imported = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(imported.map(({ name }) => name)).toEqual(['valid'])
+  })
+
+  it('assigns collision-resistant IDs to records imported together', async () => {
+    bitmapSizes.push({ width: 3, height: 3 }, { width: 3, height: 3 })
+    const stamp = new Uint8ClampedArray(3 * 3 * 4)
+    stamp.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    readbacks.push(stamp, stamp)
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        first: { coords: '10,20,0,0', tiles: { '10,20,0,0': 'AAAA' } },
+        second: { coords: '11,21,0,0', tiles: { '11,21,0,0': 'BBBB' } },
+      },
+    })
+
+    const imported = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(new Set(imported.map(({ id }) => id)).size).toBe(2)
+    expect(imported.every(({ id }) => /^local-[0-9a-f-]{36}$/.test(id))).toBe(true)
+  })
+
+  it('rejects oversized PNG dimensions before browser decoding', async () => {
+    const { importFile } = await import('./import.js')
+    const bomb = file('bomb.png', '', 'image/png', 24, { width: 100_000, height: 100_000 })
+
+    await expect(importFile(bomb, { x: 0, y: 0 })).rejects.toThrow(/too large/i)
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
+  it('bounds high-cardinality quantisation and yields during the work', async () => {
+    const width = 257
+    const height = 256
+    bitmapSizes.push({ width, height })
+    const pixels = new Uint8ClampedArray(width * height * 4)
+    for (let index = 0; index < width * height; index++) {
+      pixels[index * 4] = (index >> 16) & 0xff
+      pixels[index * 4 + 1] = (index >> 8) & 0xff
+      pixels[index * 4 + 2] = index & 0xff
+      pixels[index * 4 + 3] = 255
+    }
+    readbacks.push(pixels)
+    const schedulerYield = vi.fn(async () => {})
+    vi.stubGlobal('scheduler', { yield: schedulerYield })
+    const { importFile } = await import('./import.js')
+
+    const [template] = await importFile(file('noise.png', '', 'image/png'), {
+      x: 1_000,
+      y: 1_000,
+    })
+
+    expect(template?.indices).toHaveLength(width * height)
+    expect(schedulerYield).toHaveBeenCalled()
   })
 
   it('decodes without browser colour conversion or alpha premultiplication', async () => {

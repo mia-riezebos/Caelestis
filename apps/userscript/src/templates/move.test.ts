@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   canvasPixelAt: vi.fn(() => ({ x: 2, y: 3 })),
+  clearLocalPreview: vi.fn(() => true),
   localTemplates: vi.fn(),
   markPlaced: vi.fn(async () => true),
   moveLocalTemplate: vi.fn(async () => true),
+  previewLocalTemplate: vi.fn(() => true),
   removeLocalTemplate: vi.fn(async () => true),
 }))
 
@@ -15,9 +17,11 @@ vi.mock('../main.js', () => ({
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
 vi.mock('./local-store.js', () => ({
+  clearLocalPreview: harness.clearLocalPreview,
   localTemplates: harness.localTemplates,
   markPlaced: harness.markPlaced,
   moveLocalTemplate: harness.moveLocalTemplate,
+  previewLocalTemplate: harness.previewLocalTemplate,
   removeLocalTemplate: harness.removeLocalTemplate,
 }))
 
@@ -79,6 +83,22 @@ describe('template placement controls', () => {
     expect(window.removeEventListener).toHaveBeenCalledWith('auxclick', auxclick, true)
   })
 
+  it('suppresses auxclick only after placement handled that middle click', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    const auxclick = listeners.get('auxclick')
+    if (pointerdown === undefined || auxclick === undefined) throw new Error('expected listeners')
+    const unrelated = { button: 1, preventDefault: vi.fn() }
+
+    auxclick(unrelated as unknown as Event)
+    expect(unrelated.preventDefault).not.toHaveBeenCalled()
+
+    pointerdown({ button: 1, clientX: 2, clientY: 3, preventDefault: vi.fn() } as unknown as Event)
+    auxclick(unrelated as unknown as Event)
+    expect(unrelated.preventDefault).toHaveBeenCalledOnce()
+  })
+
   it('allows only one commit while an asynchronous placement is finishing', async () => {
     let finishMove = (): void => undefined
     harness.moveLocalTemplate.mockImplementationOnce(async () => {
@@ -106,9 +126,9 @@ describe('template placement controls', () => {
     if (pointerdown === undefined) throw new Error('expected pointerdown listener')
 
     pointerdown({ button: 1, clientX: 2, clientY: 3, preventDefault: vi.fn() } as unknown as Event)
-    await vi.waitFor(() => expect(harness.moveLocalTemplate).toHaveBeenCalled())
+    await vi.waitFor(() => expect(harness.previewLocalTemplate).toHaveBeenCalled())
 
-    expect(harness.moveLocalTemplate).toHaveBeenCalledWith('test', 0, 0)
+    expect(harness.previewLocalTemplate).toHaveBeenCalledWith('test', 0, 0)
   })
 
   it('uses CSS pixel scale for modifier drags on high-DPI canvases', async () => {
@@ -136,7 +156,73 @@ describe('template placement controls', () => {
       stopPropagation: vi.fn(),
     } as unknown as Event)
 
-    expect(harness.moveLocalTemplate).toHaveBeenLastCalledWith('test', 110, 70)
+    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 110, 70)
+  })
+
+  it('binds a drag to one pointer and ends it on pointer cancellation', async () => {
+    harness.canvasPixelAt.mockReturnValue({ x: 12, y: 22 })
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    const pointermove = listeners.get('pointermove')
+    const pointercancel = listeners.get('pointercancel')
+    if (pointerdown === undefined || pointermove === undefined || pointercancel === undefined) {
+      throw new Error('expected pointer listeners')
+    }
+    pointerdown({
+      button: 0,
+      pointerId: 7,
+      clientX: 100,
+      clientY: 100,
+      ctrlKey: true,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+
+    pointermove({
+      pointerId: 8,
+      clientX: 200,
+      clientY: 200,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    expect(harness.previewLocalTemplate).not.toHaveBeenCalled()
+
+    pointermove({
+      pointerId: 7,
+      clientX: 110,
+      clientY: 110,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
+    pointercancel({ pointerId: 7 } as unknown as Event)
+    pointermove({
+      pointerId: 7,
+      clientX: 120,
+      clientY: 120,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
+  })
+
+  it('ignores placement shortcuts while the user is editing a field', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const keydown = listeners.get('keydown')
+    if (keydown === undefined) throw new Error('expected keyboard listener')
+
+    keydown({
+      key: 'Enter',
+      target: { tagName: 'INPUT' },
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+    await Promise.resolve()
+
+    expect(harness.moveLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.markPlaced).not.toHaveBeenCalled()
   })
 
   it('recovers placement controls after a final bitmap build rejects', async () => {
@@ -157,7 +243,8 @@ describe('template placement controls', () => {
 
     await moves.abort()
 
-    expect(harness.moveLocalTemplate).toHaveBeenCalledWith('test', 10, 20)
+    expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
+    expect(harness.moveLocalTemplate).not.toHaveBeenCalled()
     expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
   })
 

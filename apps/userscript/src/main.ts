@@ -13,6 +13,7 @@ import {
   levelFor,
   localTemplates,
   onLocalChange,
+  previewOriginFor,
   restoreLocalTemplates,
   stampTile,
 } from './templates/local-store.js'
@@ -143,6 +144,51 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
 
     for (const template of visible) {
       const appearance = template.appearance ?? DEFAULT_APPEARANCE
+      const preview = previewOriginFor(template.id)
+      if (preview !== null && (preview.x !== template.originX || preview.y !== template.originY)) {
+        const offsetX = preview.x - template.originX
+        const offsetY = preview.y - template.originY
+        const destinationLeft = quad.tile.x * TILE_SIZE
+        const destinationTop = quad.tile.y * TILE_SIZE
+        const sourceLeft = destinationLeft - offsetX
+        const sourceTop = destinationTop - offsetY
+        const firstSourceX = Math.floor(sourceLeft / TILE_SIZE)
+        const lastSourceX = Math.floor((sourceLeft + TILE_SIZE - 1) / TILE_SIZE)
+        const firstSourceY = Math.floor(sourceTop / TILE_SIZE)
+        const lastSourceY = Math.floor((sourceTop + TILE_SIZE - 1) / TILE_SIZE)
+        for (let sourceY = firstSourceY; sourceY <= lastSourceY; sourceY++) {
+          for (let sourceX = firstSourceX; sourceX <= lastSourceX; sourceX++) {
+            const sourceKey = `${sourceX}/${sourceY}`
+            const tile = stampTile(template, sourceKey, appearance, quad.width)
+            if (tile === undefined) continue
+            const bitmap = levelFor(tile, quad.width)
+            const targetLeft = sourceX * TILE_SIZE + offsetX
+            const targetTop = sourceY * TILE_SIZE + offsetY
+            const left = Math.max(destinationLeft, targetLeft)
+            const top = Math.max(destinationTop, targetTop)
+            const right = Math.min(destinationLeft + TILE_SIZE, targetLeft + TILE_SIZE)
+            const bottom = Math.min(destinationTop + TILE_SIZE, targetTop + TILE_SIZE)
+            if (right <= left || bottom <= top) continue
+            const bitmapScaleX = bitmap.width / TILE_SIZE
+            const bitmapScaleY = bitmap.height / TILE_SIZE
+            context.globalAlpha = appearance.opacity
+            context.drawImage(
+              bitmap,
+              (left - targetLeft) * bitmapScaleX,
+              (top - targetTop) * bitmapScaleY,
+              (right - left) * bitmapScaleX,
+              (bottom - top) * bitmapScaleY,
+              quad.x + ((left - destinationLeft) / TILE_SIZE) * quad.width,
+              quad.y + ((top - destinationTop) / TILE_SIZE) * quad.height,
+              ((right - left) / TILE_SIZE) * quad.width,
+              ((bottom - top) / TILE_SIZE) * quad.height,
+            )
+            context.globalAlpha = 1
+            drawn++
+          }
+        }
+        continue
+      }
       // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
       // per frame; the stamp is rebuilt only when the appearance changes.
       const tile = stampTile(template, key, appearance, quad.width)

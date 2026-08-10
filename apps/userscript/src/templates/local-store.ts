@@ -47,6 +47,8 @@ export interface PlacedTemplate extends ImportedTemplate {
 }
 
 const templates = new Map<string, PlacedTemplate>()
+const previewOrigins = new Map<string, { x: number; y: number }>()
+const deleting = new Set<string>()
 const listeners: Array<() => void> = []
 
 const orderedTemplates = (): PlacedTemplate[] =>
@@ -72,6 +74,27 @@ const notify = (): void => {
 }
 
 export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
+
+/** Transient placement never touches IndexedDB or rebuilds tiles; the renderer translates them. */
+export const previewLocalTemplate = (id: string, originX: number, originY: number): boolean => {
+  const existing = templates.get(id)
+  if (existing === undefined || deleting.has(id)) return false
+  const x = Math.round(originX)
+  const y = Math.round(originY)
+  validatePlacement(existing, x, y)
+  previewOrigins.set(id, { x, y })
+  notify()
+  return true
+}
+
+export const previewOriginFor = (id: string): { x: number; y: number } | null =>
+  previewOrigins.get(id) ?? null
+
+export const clearLocalPreview = (id: string): boolean => {
+  if (!previewOrigins.delete(id)) return templates.has(id)
+  notify()
+  return true
+}
 
 /**
  * Slice a template into tile-sized bitmaps.
@@ -214,6 +237,11 @@ const persist = async (placed: PlacedTemplate): Promise<boolean> => {
   return await writeInOrder(placed.id, async () => await saveTemplate(rest))
 }
 
+const savePlaced = async (placed: PlacedTemplate): Promise<boolean> => {
+  const { tiles: _tiles, ...rest } = placed
+  return await saveTemplate(rest)
+}
+
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   validatePlacement(template)
   const tiles = await slice(template)
@@ -244,10 +272,15 @@ export const restoreLocalTemplates = async (): Promise<void> => {
       // Validate each independently so one bad legacy entry cannot prevent every good restore.
       validatePlacement(template)
       if (template.opaque <= 0) throw new RangeError('template has no painted pixels')
+      if (template.source === 'image' && !template.everPlaced) {
+        throw new RangeError('unfinished image placement')
+      }
       templates.set(template.id, {
         appearance: DEFAULT_APPEARANCE,
         ...template,
-        tiles: await slice(template),
+        // Hidden templates cost no bitmap memory. Their palette indices are enough to rebuild the
+        // tiles atomically if the user makes them visible again.
+        tiles: template.visible ? await slice(template) : new Map<string, TileLevels>(),
       })
       restored++
     } catch (error) {
@@ -294,30 +327,28 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
         continue
       }
       const current = templates.get(id)
-      if (current === undefined) {
+      if (current === undefined || deleting.has(id)) {
         closeTiles(tiles)
         target.resolve(false)
         continue
       }
-      const next = { ...current, originX: target.originX, originY: target.originY, tiles }
-      if (!(await persist(next))) {
+      const saved = await writeInOrder(id, async () => {
+        const latest = templates.get(id)
+        if (latest === undefined || deleting.has(id)) return false
+        const next = { ...latest, originX: target.originX, originY: target.originY, tiles }
+        if (!(await savePlaced(next))) return false
+        clearStamped(id)
+        previewOrigins.delete(id)
+        templates.set(id, next)
+        closeTiles(latest.tiles)
+        notify()
+        return true
+      })
+      if (!saved) {
         closeTiles(tiles)
-        warn('install', `move for ${next.name} was not saved`)
-        target.resolve(false)
-        continue
+        warn('install', `move for ${current.name} was not saved`)
       }
-      // A newer drag may have arrived while IndexedDB was committing this one. Its persisted
-      // placement will be superseded immediately; do not flash stale rendered tiles meanwhile.
-      if (queue.pending !== null) {
-        closeTiles(tiles)
-        target.resolve(true)
-        continue
-      }
-      clearStamped(id)
-      templates.set(id, next)
-      closeTiles(current.tiles)
-      notify()
-      target.resolve(true)
+      target.resolve(saved)
     } catch (error) {
       target.reject(error)
     }
@@ -337,6 +368,10 @@ export const moveLocalTemplate = async (
   const roundedX = Math.round(originX)
   const roundedY = Math.round(originY)
   validatePlacement(existing, roundedX, roundedY)
+  if (existing.originX === roundedX && existing.originY === roundedY) {
+    clearLocalPreview(id)
+    return true
+  }
   const queue = moveQueues.get(id) ?? { pending: null, running: false }
   moveQueues.set(id, queue)
   return await new Promise<boolean>((resolve, reject) => {
@@ -349,43 +384,67 @@ export const moveLocalTemplate = async (
 }
 
 export const markPlaced = async (id: string): Promise<boolean> => {
-  const existing = templates.get(id)
-  if (existing === undefined) return false
-  const next = { ...existing, everPlaced: true }
-  if (!(await persist(next))) {
-    warn('install', `placement for ${next.name} was not saved`)
-    return false
-  }
-  templates.set(id, next)
-  return true
+  return await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    const next = { ...existing, everPlaced: true }
+    if (!(await savePlaced(next))) {
+      warn('install', `placement for ${next.name} was not saved`)
+      return false
+    }
+    templates.set(id, next)
+    return true
+  })
 }
 
 export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
-  if (existing === undefined) return false
-  if (!(await writeInOrder(id, async () => await deleteTemplate(id)))) {
+  if (existing === undefined || deleting.has(id)) return false
+  // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
+  // behind this delete and resurrect the record.
+  deleting.add(id)
+  previewOrigins.delete(id)
+  const removed = await writeInOrder(id, async () => {
+    const current = templates.get(id)
+    if (current === undefined) return false
+    if (!(await deleteTemplate(id))) return false
+    closeTiles(current.tiles)
+    clearStamped(id)
+    templates.delete(id)
+    notify()
+    return true
+  })
+  if (!removed) {
+    deleting.delete(id)
     warn('install', `deletion of ${existing.name} was not saved`)
     return false
   }
-  closeTiles(existing.tiles)
-  clearStamped(id)
-  templates.delete(id)
-  notify()
+  deleting.delete(id)
   return true
 }
 
 export const setLocalVisible = async (id: string, visible: boolean): Promise<boolean> => {
-  const existing = templates.get(id)
-  if (existing === undefined) return false
-  const next = { ...existing, visible }
-  if (!(await persist(next))) {
-    warn('install', `visibility for ${next.name} was not saved`)
-    return false
-  }
-  templates.set(id, next)
-  if (!visible) clearStamped(id)
-  notify()
-  return true
+  return await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    if (existing.visible === visible) return true
+    const tiles = visible ? await slice(existing) : new Map<string, TileLevels>()
+    const next = { ...existing, visible, tiles }
+    if (deleting.has(id)) {
+      if (visible) closeTiles(tiles)
+      return false
+    }
+    if (!(await savePlaced(next))) {
+      if (visible) closeTiles(tiles)
+      warn('install', `visibility for ${next.name} was not saved`)
+      return false
+    }
+    templates.set(id, next)
+    clearStamped(id)
+    if (!visible) closeTiles(existing.tiles)
+    notify()
+    return true
+  })
 }
 
 /**
@@ -405,17 +464,19 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
 export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
-  const existing = templates.get(id)
-  if (existing === undefined) return false
-  const next = { ...existing, appearance }
-  if (!(await persist(next))) {
-    warn('install', `appearance for ${next.name} was not saved`)
-    return false
-  }
-  clearStamped(id)
-  templates.set(id, next)
-  notify()
-  return true
+  return await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    const next = { ...existing, appearance }
+    if (!(await savePlaced(next))) {
+      warn('install', `appearance for ${next.name} was not saved`)
+      return false
+    }
+    clearStamped(id)
+    templates.set(id, next)
+    notify()
+    return true
+  })
 }
 
 /**
@@ -426,10 +487,11 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
  * and the frame budget is 16ms. `full` needs no stamping at all and returns the mip chain
  * untouched, which is why it costs nothing.
  */
-const stamped = new Map<string, { key: string; tile: TileLevels }>()
+const stamped = new Map<string, { key: string; tile: TileLevels; bytes: number }>()
 const pendingStamps = new Map<string, string>()
-const MAX_STAMPED_TILES = 12
-const MAX_CONCURRENT_STAMP_BUILDS = 2
+const MAX_STAMPED_BYTES = 128 * 1024 * 1024
+const MAX_CONCURRENT_STAMP_BUILDS = 1
+let stampedBytes = 0
 
 interface StampJob {
   readonly build: () => Promise<TileLevels | null>
@@ -463,15 +525,21 @@ const queueStampBuild = (build: StampJob['build']): Promise<TileLevels | null> =
 
 const cacheStamp = (cacheKey: string, wanted: string, tile: TileLevels): void => {
   const replaced = stamped.get(cacheKey)
-  if (replaced !== undefined) closeLevels(replaced.tile)
+  if (replaced !== undefined) {
+    stampedBytes -= replaced.bytes
+    closeLevels(replaced.tile)
+  }
   stamped.delete(cacheKey)
-  stamped.set(cacheKey, { key: wanted, tile })
-  while (stamped.size > MAX_STAMPED_TILES) {
+  const bytes = tile.levels.reduce((total, level) => total + level.width * level.height * 4, 0)
+  stamped.set(cacheKey, { key: wanted, tile, bytes })
+  stampedBytes += bytes
+  while (stampedBytes > MAX_STAMPED_BYTES) {
     const oldest = stamped.entries().next().value as
-      | [string, { key: string; tile: TileLevels }]
+      | [string, { key: string; tile: TileLevels; bytes: number }]
       | undefined
     if (oldest === undefined) break
     stamped.delete(oldest[0])
+    stampedBytes -= oldest[1].bytes
     closeLevels(oldest[1].tile)
   }
 }
@@ -483,6 +551,7 @@ const clearStamped = (id: string): void => {
   }
   for (const [key, entry] of stamped) {
     if (!key.startsWith(prefix)) continue
+    stampedBytes -= entry.bytes
     closeLevels(entry.tile)
     stamped.delete(key)
   }
@@ -490,6 +559,16 @@ const clearStamped = (id: string): void => {
 
 const appearanceKey = (a: Appearance): string =>
   `${a.shape}|${a.size}|${a.anchor}|${a.hiddenColours.join(',')}`
+
+const desiredLevelWidth = (fullWidth: number, targetWidth: number): number => {
+  let width = fullWidth
+  while (width > MIN_MIP_SIZE) {
+    const next = Math.max(1, Math.floor(width / 2))
+    if (next < targetWidth) break
+    width = next
+  }
+  return width
+}
 
 export const stampTile = (
   template: PlacedTemplate,
@@ -507,7 +586,8 @@ export const stampTile = (
       : appearance
   // Opacity is applied at draw time, so it is deliberately not part of the cache key — dragging
   // that slider must not rebuild a million pixels per frame.
-  const wanted = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}`
+  const wantedWidth = desiredLevelWidth(TILE_SIZE * scaleFor(renderedAppearance), targetWidth)
+  const wanted = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}|${wantedWidth}`
   if (renderedAppearance.shape === 'full' && renderedAppearance.hiddenColours.length === 0)
     return source
 
@@ -523,7 +603,7 @@ export const stampTile = (
     pendingStamps.set(cacheKey, wanted)
     void queueStampBuild(async () =>
       pendingStamps.get(cacheKey) === wanted
-        ? await buildStamp(template, tileKey, renderedAppearance)
+        ? await buildStamp(template, tileKey, renderedAppearance, wantedWidth)
         : null,
     )
       .then((built) => {
@@ -578,6 +658,7 @@ const buildStamp = async (
   template: PlacedTemplate,
   tileKey: string,
   appearance: Appearance,
+  wantedWidth: number,
 ): Promise<TileLevels | null> => {
   // `async` alone does not defer work before its first await. Yield before allocation and then in
   // bounded row chunks so requesting a new appearance from a frame painter cannot create a long
@@ -623,7 +704,28 @@ const buildStamp = async (
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
   }
-  return { levels: await buildLevels(new ImageData(rgba, size, size)) }
+  let current: ImageBitmap | null = null
+  try {
+    current = await createImageBitmap(new ImageData(rgba, size, size))
+    let width = size
+    while (width > wantedWidth) {
+      const nextWidth = Math.max(wantedWidth, Math.floor(width / 2))
+      const canvas = new OffscreenCanvas(nextWidth, nextWidth)
+      const context = canvas.getContext('2d')
+      if (context === null) break
+      context.imageSmoothingEnabled = true
+      context.imageSmoothingQuality = 'high'
+      context.drawImage(current, 0, 0, nextWidth, nextWidth)
+      const next = await createImageBitmap(canvas)
+      current.close()
+      current = next
+      width = nextWidth
+    }
+    return { levels: [current] }
+  } catch (error) {
+    current?.close()
+    throw error
+  }
 }
 
 /**
