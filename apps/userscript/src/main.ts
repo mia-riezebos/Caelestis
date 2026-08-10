@@ -22,9 +22,15 @@ import { install, onTileFrame, type TileFrame } from './tile-transform.js'
  * gets drawn on it.
  */
 
+let retainedOverlayCanvas: HTMLCanvasElement | null = null
+
 const overlayCanvas = (): HTMLCanvasElement => {
+  if (retainedOverlayCanvas !== null) return retainedOverlayCanvas
   const existing = document.querySelector<HTMLCanvasElement>('canvas[data-wts-overlay]')
-  if (existing !== null) return existing
+  if (existing !== null) {
+    retainedOverlayCanvas = existing
+    return existing
+  }
   const canvas = document.createElement('canvas')
   canvas.dataset.wtsOverlay = ''
   canvas.style.position = 'absolute'
@@ -33,6 +39,7 @@ const overlayCanvas = (): HTMLCanvasElement => {
   canvas.style.height = '100%'
   // The map has to stay draggable through us.
   canvas.style.pointerEvents = 'none'
+  retainedOverlayCanvas = canvas
   return canvas
 }
 
