@@ -333,6 +333,26 @@ describe('template import', () => {
     expect(imported[0]).toMatchObject({ name: 'first', width: 3_001, height: 3_001 })
   })
 
+  it('does not charge empty Marble extents against later retained templates', async () => {
+    bitmapSizes.push({ width: 3, height: 3 }, { width: 3, height: 3 })
+    const empty = new Uint8ClampedArray(3 * 3 * 4)
+    const painted = new Uint8ClampedArray(3 * 3 * 4)
+    painted.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
+    readbacks.push(empty, painted)
+    const { importFile } = await import('./import.js')
+    const marble = JSON.stringify({
+      templates: {
+        empty: { coords: '0,0,0,0', tiles: { '3,3,0,0': 'AAAA' } },
+        painted: { coords: '0,0,0,0', tiles: { '3,3,0,0': 'BBBB' } },
+      },
+    })
+
+    const imported = await importFile(file('template.json', marble), { x: 0, y: 0 })
+
+    expect(imported).toHaveLength(1)
+    expect(imported[0]).toMatchObject({ name: 'painted', width: 3_001, height: 3_001 })
+  })
+
   it('skips structurally malformed Marble records and keeps later valid records', async () => {
     bitmapSizes.push({ width: 3, height: 3 })
     const stamp = new Uint8ClampedArray(3 * 3 * 4)

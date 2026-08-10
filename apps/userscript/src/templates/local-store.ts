@@ -322,7 +322,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   if (typeof name !== 'string' || name.length > MAX_TEMPLATE_NAME_LENGTH) {
     throw new RangeError('template name is invalid')
   }
-  if (!['wplace', 'marble', 'image'].includes(String(source))) {
+  if (typeof source !== 'string' || !['wplace', 'marble', 'image'].includes(source)) {
     throw new RangeError('template source is invalid')
   }
   if (sortOrder !== undefined && !Number.isSafeInteger(sortOrder)) {

@@ -260,6 +260,38 @@ describe('local template persistence', () => {
     expect(pixels.arrayBuffer).not.toHaveBeenCalled()
   })
 
+  it('rejects boxed source strings before admitting a persisted record', async () => {
+    const cursor = {
+      value: stored({ source: new String('image') }),
+      continue: vi.fn(),
+    }
+    const mutableRequest = {
+      result: cursor as unknown as IDBCursorWithValue,
+    } as { result: IDBCursorWithValue | null; onsuccess?: (event: Event) => void }
+    const request = mutableRequest as unknown as IDBRequest<IDBCursorWithValue | null>
+    const transaction = {
+      objectStore: vi.fn(() => ({ openCursor: vi.fn(() => request) })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loading = loadTemplates()
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    mutableRequest.onsuccess?.(new Event('success'))
+    mutableRequest.result = null
+    mutableRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(loading).resolves.toEqual([])
+    expect(cursor.continue).toHaveBeenCalledOnce()
+  })
+
   it('stops at the retained template limit without hydrating the next Blob', async () => {
     const firstPixels = { size: 1, arrayBuffer: vi.fn(async () => new Uint8Array([0]).buffer) }
     const secondPixels = { size: 1, arrayBuffer: vi.fn(async () => new Uint8Array([0]).buffer) }

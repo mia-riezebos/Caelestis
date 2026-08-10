@@ -151,7 +151,8 @@ const boundedStoredCandidate = (
     record.id.length > MAX_TEMPLATE_ID_LENGTH ||
     typeof record.name !== 'string' ||
     record.name.length > MAX_TEMPLATE_NAME_LENGTH ||
-    !['wplace', 'marble', 'image'].includes(String(record.source)) ||
+    typeof record.source !== 'string' ||
+    !['wplace', 'marble', 'image'].includes(record.source) ||
     !Number.isSafeInteger(record.originX) ||
     !Number.isSafeInteger(record.originY) ||
     !Number.isSafeInteger(record.width) ||

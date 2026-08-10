@@ -564,6 +564,11 @@ const importMarble = async (file: MarbleFile): Promise<ImportedTemplate[]> => {
       }
     }
 
+    if (opaque === 0) {
+      warn('install', `skipping ${name}: image has no painted pixels`)
+      continue
+    }
+
     out.push({
       id: newId(),
       name,

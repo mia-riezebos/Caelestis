@@ -294,6 +294,12 @@ describe('local template lifecycle', () => {
   it('discards irreparable persisted runtime shapes independently', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       { ...template({ id: 'bad', source: 'unknown' as never }), visible: true, everPlaced: true },
+      {
+        ...template({ id: 'boxed' }),
+        source: new String('image'),
+        visible: true,
+        everPlaced: true,
+      },
       { ...template({ id: 'good', source: 'marble' }), visible: false, everPlaced: true },
     ])
     const store = await import('./local-store.js')
@@ -302,6 +308,7 @@ describe('local template lifecycle', () => {
 
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['good'])
     expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad', 0)
+    expect(persistence.deleteTemplate).toHaveBeenCalledWith('boxed', 0)
   })
 
   it('discards persisted palette bytes and opaque counts that cannot render faithfully', async () => {
