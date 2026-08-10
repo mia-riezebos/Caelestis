@@ -69,12 +69,18 @@ export interface PlacedTemplate extends ImportedTemplate {
 }
 
 const templates = new Map<string, PlacedTemplate>()
+// Effective visibility can temporarily differ from durable user intent when source bitmap
+// construction is unavailable. Keep that intent out of the public render model, but preserve it
+// across unrelated writes and cross-tab reconciliation.
+const desiredVisibility = new Map<string, boolean>()
 const previewOrigins = new Map<string, { x: number; y: number }>()
 const deleting = new Set<string>()
 const pendingAdds = new Set<string>()
 const listeners: Array<() => void> = []
 const MAX_LOCAL_TEMPLATES = 64
 const MAX_LOCAL_INDEX_PIXELS = 64 * 1024 * 1024
+const MAX_RESTORE_CANDIDATES = MAX_LOCAL_TEMPLATES * 4
+const MAX_RESTORE_HYDRATED_PIXELS = MAX_LOCAL_INDEX_PIXELS * 2
 let retainedIndexPixels = 0
 let pendingIndexPixels = 0
 let restoreInFlight: Promise<void> | null = null
@@ -275,7 +281,9 @@ const isTemplateLoadFailure = (value: unknown): value is TemplateLoadFailure =>
   value.kind === 'template-hydration-failure' &&
   (value.status === 'invalid' || value.status === 'unavailable') &&
   typeof value.id === 'string' &&
-  Number.isSafeInteger(value.revision)
+  Number.isSafeInteger(value.revision) &&
+  Number.isSafeInteger(value.indexPixels) &&
+  (value.indexPixels as number) >= 0
 
 const isAppearance = (value: unknown): value is Appearance => {
   if (!isRecord(value)) return false
@@ -508,9 +516,10 @@ const persist = async (placed: PlacedTemplate): Promise<SaveResult> => {
 const savePlaced = async (
   placed: PlacedTemplate,
   expectedRevision: number | null = placed.revision,
+  visible: boolean = desiredVisibility.get(placed.id) ?? placed.visible,
 ): Promise<SaveResult> => {
   const { tiles: _tiles, ...rest } = placed
-  return await saveTemplate(rest, expectedRevision)
+  return await saveTemplate({ ...rest, visible }, expectedRevision)
 }
 
 // A plain image has no meaningful position until its first placement is applied. Keep it local
@@ -522,6 +531,7 @@ const isPendingImage = (template: PlacedTemplate): boolean =>
 const removeStaleLocalState = (existing: PlacedTemplate): void => {
   releaseRetainedTiles(existing.tiles)
   retainedIndexPixels -= existing.indices.length
+  desiredVisibility.delete(existing.id)
   clearStamped(existing.id)
   previewOrigins.delete(existing.id)
   templates.delete(existing.id)
@@ -550,9 +560,30 @@ const reconcileConflict = async (id: string): Promise<void> => {
     ) {
       throw new RangeError('winning template exceeds the local pixel budget')
     }
-    const tiles = winner.visible ? await slice(winner) : new Map<string, TileLevels>()
-    if (!claimSourceReplacement(existing.tiles.size, tiles.size)) {
-      releaseCandidateTiles(tiles)
+    let visible = winner.visible
+    let tiles = new Map<string, TileLevels>()
+    if (visible) {
+      if (
+        retainedSourceTiles + pendingSourceIncrease - existing.tiles.size >=
+        MAX_RETAINED_SOURCE_TILES
+      ) {
+        visible = false
+      } else {
+        try {
+          const candidate = await slice(winner)
+          if (claimSourceReplacement(existing.tiles.size, candidate.size)) {
+            tiles = candidate
+          } else {
+            releaseCandidateTiles(candidate)
+            visible = false
+          }
+        } catch (error) {
+          visible = false
+          warn('install', `reconciled ${winner.name} hidden: source rendering unavailable`, error)
+        }
+      }
+    }
+    if (!visible && !claimSourceReplacement(existing.tiles.size, 0)) {
       throw new RangeError('winning template exceeds the source bitmap budget')
     }
     clearStamped(id)
@@ -560,8 +591,11 @@ const reconcileConflict = async (id: string): Promise<void> => {
     templates.set(id, {
       appearance: DEFAULT_APPEARANCE,
       ...winner,
+      visible,
       tiles,
     })
+    if (visible === winner.visible) desiredVisibility.delete(id)
+    else desiredVisibility.set(id, winner.visible)
     retainedIndexPixels += winner.indices.length - existing.indices.length
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)
@@ -644,18 +678,40 @@ const restoreStoredTemplates = async (): Promise<void> => {
   const seenIds = new Set<string>()
   let retryAfterGap = false
   let restorePasses = 0
+  let remainingCandidates = MAX_RESTORE_CANDIDATES
+  let remainingHydratedPixels = MAX_RESTORE_HYDRATED_PIXELS
   do {
     restorePasses++
     retryAfterGap = false
     const remainingTemplates = MAX_LOCAL_TEMPLATES - templates.size - pendingAdds.size
     const remainingPixels = MAX_LOCAL_INDEX_PIXELS - retainedIndexPixels - pendingIndexPixels
-    if (remainingTemplates <= 0 || remainingPixels <= 0) break
-    const stored = await loadTemplates(remainingTemplates, remainingPixels, seenIds)
+    if (
+      remainingTemplates <= 0 ||
+      remainingPixels <= 0 ||
+      remainingCandidates <= 0 ||
+      remainingHydratedPixels <= 0
+    )
+      break
+    const stored = await loadTemplates(
+      Math.min(remainingTemplates, remainingCandidates),
+      Math.min(remainingPixels, remainingHydratedPixels),
+      seenIds,
+    )
     for (const rawTemplate of stored) {
+      if (remainingCandidates <= 0) break
+      const hydratedPixels = isTemplateLoadFailure(rawTemplate)
+        ? rawTemplate.indexPixels
+        : isRecord(rawTemplate) && isUint8Array(rawTemplate.indices)
+          ? rawTemplate.indices.length
+          : 0
+      if (hydratedPixels > remainingHydratedPixels) break
+      remainingCandidates--
+      remainingHydratedPixels -= hydratedPixels
       if (isTemplateLoadFailure(rawTemplate)) {
         seenIds.add(rawTemplate.id)
         if (rawTemplate.status === 'invalid') {
-          await deleteTemplate(rawTemplate.id, rawTemplate.revision)
+          const deleted = await deleteTemplate(rawTemplate.id, rawTemplate.revision)
+          if (deleted.status === 'conflict') seenIds.delete(rawTemplate.id)
         }
         retryAfterGap = true
         continue
@@ -729,6 +785,8 @@ const restoreStoredTemplates = async (): Promise<void> => {
           // tiles atomically if the user makes them visible again.
           tiles,
         })
+        if (visible === template.visible) desiredVisibility.delete(template.id)
+        else desiredVisibility.set(template.id, template.visible)
         retainedIndexPixels += template.indices.length
         restored++
       } catch (error) {
@@ -738,30 +796,18 @@ const restoreStoredTemplates = async (): Promise<void> => {
           warn('install', `could not restore local template ${validated.name}`, String(error))
           continue
         }
-        try {
-          const template = normaliseStoredTemplate(rawTemplate)
-          await validateStoredPixels(template)
-          if (template.source === 'image' && !template.everPlaced) {
-            throw new RangeError('unfinished image placement')
-          }
-          warn('install', `could not restore local template ${template.name}`, String(error))
-        } catch (validationError) {
-          const id =
-            isRecord(rawTemplate) && typeof rawTemplate.id === 'string' ? rawTemplate.id : null
-          const revision =
-            isRecord(rawTemplate) && Number.isSafeInteger(rawTemplate.revision)
-              ? (rawTemplate.revision as number)
-              : 0
-          if (id !== null) {
-            await deleteTemplate(id, revision)
-            retryAfterGap = true
-          }
-          warn(
-            'install',
-            `discarded invalid local template ${id ?? '(unknown)'}`,
-            String(validationError),
-          )
+        const id =
+          isRecord(rawTemplate) && typeof rawTemplate.id === 'string' ? rawTemplate.id : null
+        const revision =
+          isRecord(rawTemplate) && Number.isSafeInteger(rawTemplate.revision)
+            ? (rawTemplate.revision as number)
+            : 0
+        if (id !== null) {
+          const deleted = await deleteTemplate(id, revision)
+          if (deleted.status === 'conflict') seenIds.delete(id)
+          retryAfterGap = true
         }
+        warn('install', `discarded invalid local template ${id ?? '(unknown)'}`, String(error))
       } finally {
         if (reserved !== null) {
           pendingAdds.delete(reserved.id)
@@ -850,6 +896,13 @@ const drainMoves = async (id: string, queue: MoveQueue): Promise<void> => {
       const saved = await writeInOrder(id, async () => {
         const latest = templates.get(id)
         if (latest === undefined || deleting.has(id)) return false
+        if (!latest.visible) {
+          await validateStoredPixels({
+            ...latest,
+            originX: target.originX,
+            originY: target.originY,
+          })
+        }
         if (latest.visible && tiles.size === 0) {
           tiles = await slice({ ...latest, originX: target.originX, originY: target.originY })
         }
@@ -993,6 +1046,7 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
     }
     releaseRetainedTiles(current.tiles)
     retainedIndexPixels -= current.indices.length
+    desiredVisibility.delete(id)
     clearStamped(id)
     previewOrigins.delete(id)
     templates.delete(id)
@@ -1012,7 +1066,8 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
-    if (existing.visible === visible) return true
+    const desired = desiredVisibility.get(id) ?? existing.visible
+    if (existing.visible === visible && desired === visible) return true
     let tiles: ReadonlyMap<string, TileLevels>
     try {
       tiles = visible ? await slice(existing) : new Map<string, TileLevels>()
@@ -1032,7 +1087,7 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
     }
     let revision = existing.revision
     if (!isPendingImage(existing)) {
-      const result = await savePlaced(next)
+      const result = await savePlaced(next, existing.revision, visible)
       const committed = committedRevision(result)
       if (committed === null) {
         cancelSourceClaim(existing.tiles.size, tiles.size)
@@ -1044,6 +1099,7 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       revision = committed
     }
     templates.set(id, { ...next, revision })
+    desiredVisibility.delete(id)
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)
     clearStamped(id)

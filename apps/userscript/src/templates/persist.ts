@@ -194,6 +194,8 @@ export interface TemplateLoadFailure {
   readonly status: 'invalid' | 'unavailable'
   readonly id: string
   readonly revision: number
+  /** Bytes materialised/attempted for this candidate, charged to the whole restore operation. */
+  readonly indexPixels: number
 }
 
 const hydrateCandidate = async (
@@ -329,6 +331,9 @@ export const loadTemplates = async (
             status: hydrated.status,
             id: candidate.id as string,
             revision: Number.isSafeInteger(candidate.revision) ? Number(candidate.revision) : 0,
+            indexPixels: isUint8Array(candidate.indices)
+              ? candidate.indices.length
+              : candidate.indices.size,
           } satisfies TemplateLoadFailure)
         }
       }

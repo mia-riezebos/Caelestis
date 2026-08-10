@@ -351,6 +351,7 @@ describe('local template persistence', () => {
         status: 'unavailable',
         id: 'failed',
         revision: 0,
+        indexPixels: 1,
       },
       valid.value,
     ])
