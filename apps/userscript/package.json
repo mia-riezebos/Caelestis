@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "dev": "node build.mjs --watch",
+    "dev": "node dev-inject.mjs --watch",
+    "build:watch": "node build.mjs --watch",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist .turbo",
     "test": "vitest run",

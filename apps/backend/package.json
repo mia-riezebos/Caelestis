@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.check.json",
     "db:generate": "drizzle-kit generate",
-    "dev": "wrangler dev",
+    "dev": "node dev.mjs",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo"
   },
