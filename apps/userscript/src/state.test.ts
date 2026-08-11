@@ -72,6 +72,15 @@ describe('server state boundaries', () => {
     ).toBeNull()
   })
 
+  it('rejects malformed root paths regardless of node order', async () => {
+    const { validateTreeNodes } = await import('./state.js')
+    const parent = { id: NODE_A, parentId: null, path: '/a/b', name: 'Parent' }
+    const child = { id: NODE_B, parentId: NODE_A, path: '/a/b/c', name: 'Child' }
+
+    expect(validateTreeNodes([parent, child])).toBeNull()
+    expect(validateTreeNodes([child, parent])).toBeNull()
+  })
+
   it('accepts season zero and uses the validated manifest season for admin probes', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -90,6 +99,29 @@ describe('server state boundaries', () => {
       }),
     )
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
+  })
+
+  it('rejects an invalid folder returned by a successful create request', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('{}', { status: 201 }))),
+    )
+    const { createNode } = await import('./state.js')
+
+    await expect(
+      createNode(
+        {
+          url: 'https://example.com',
+          info: serverInfo,
+          token: null,
+          status: 'connected',
+          isAdmin: true,
+          season: 0,
+        },
+        'Folder',
+        null,
+      ),
+    ).resolves.toEqual({ ok: false, message: 'Server returned an invalid folder.' })
   })
 
   it('does not resurrect a server removed while its refresh is in flight', async () => {

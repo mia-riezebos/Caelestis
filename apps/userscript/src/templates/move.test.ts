@@ -84,6 +84,15 @@ afterEach(() => {
 })
 
 describe('template placement controls', () => {
+  it('reports when another placement prevents a new one from starting', async () => {
+    const moves = await import('./move.js')
+
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+    expect(moves.beginMove('test', vi.fn())).toBe(false)
+    movebar = { remove: vi.fn() }
+    await moves.commit()
+  })
+
   it('removes the exact auxclick listener it installed', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())

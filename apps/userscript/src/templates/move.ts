@@ -266,10 +266,10 @@ const listen = (on: boolean): void => {
   window[method]('auxclick', onAuxClick as EventListener, true)
 }
 
-export const beginMove = (id: string, finished: () => void): void => {
-  if (session !== null) return
+export const beginMove = (id: string, finished: () => void): boolean => {
+  if (session !== null) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
-  if (template === undefined) return
+  if (template === undefined) return false
   session = {
     id,
     x: template.originX,
@@ -282,6 +282,7 @@ export const beginMove = (id: string, finished: () => void): void => {
   renderBar(template.name)
   listen(true)
   log('install', `move started for ${template.name}`)
+  return true
 }
 
 const finish = (): void => {

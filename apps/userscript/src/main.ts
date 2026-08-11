@@ -8,12 +8,13 @@ import {
 import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
-import { getState } from './state.js'
+import { getState, onStateChange } from './state.js'
 import { DEFAULT_APPEARANCE } from './templates/appearance.js'
 import {
   levelFor,
   localTemplates,
   onLocalChange,
+  type PlacedTemplate,
   previewOriginFor,
   restoreLocalTemplates,
   stampTile,
@@ -144,16 +145,29 @@ export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
  * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
  * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
  */
-/** Draws every visible template over the tiles wplace is currently showing. */
-const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
-  const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
-  const visible = localTemplates()
+let cachedVisibleTemplates: readonly PlacedTemplate[] | null = null
+let cachedCustomOrder: readonly string[] | null = null
+
+const visibleTemplatesInPaintOrder = (): readonly PlacedTemplate[] => {
+  const customOrder = getState().customOrder
+  if (cachedVisibleTemplates !== null && cachedCustomOrder === customOrder) {
+    return cachedVisibleTemplates
+  }
+  const rank = new Map(customOrder.map((key, index) => [key, index]))
+  cachedVisibleTemplates = localTemplates()
     .filter((template) => template.visible)
     .sort(
       (a, b) =>
         (rank.get(`local:${a.id}`) ?? Number.MAX_SAFE_INTEGER) -
         (rank.get(`local:${b.id}`) ?? Number.MAX_SAFE_INTEGER),
     )
+  cachedCustomOrder = customOrder
+  return cachedVisibleTemplates
+}
+
+/** Draws every visible template over the tiles wplace is currently showing. */
+const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
+  const visible = visibleTemplatesInPaintOrder()
   if (visible.length === 0) return
 
   let drawn = 0
@@ -282,7 +296,17 @@ const main = (): void => {
   onPaint(paintMark)
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
-  onLocalChange(repaint)
+  onLocalChange(() => {
+    cachedVisibleTemplates = null
+    repaint()
+  })
+  let observedOrder = getState().customOrder
+  onStateChange((next) => {
+    if (next.customOrder === observedOrder) return
+    observedOrder = next.customOrder
+    cachedVisibleTemplates = null
+    repaint()
+  })
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', installPanel, { once: true })
   } else {

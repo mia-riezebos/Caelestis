@@ -122,29 +122,32 @@ export const canonicalServerUrl = (value: string): string => {
   return `${parsed.origin}${path}`
 }
 
+const treeNodeFrom = (raw: unknown): TreeNode | null => {
+  if (!isRecord(raw)) return null
+  if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id)) return null
+  if (raw.parentId !== null && (typeof raw.parentId !== 'string' || !UUID_V7.test(raw.parentId))) {
+    return null
+  }
+  if (
+    typeof raw.path !== 'string' ||
+    raw.path.length < 1 ||
+    raw.path.length > 256 ||
+    !NODE_PATH.test(raw.path)
+  )
+    return null
+  if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return null
+  return { id: raw.id, parentId: raw.parentId, path: raw.path, name: raw.name }
+}
+
 const treeNodesFrom = (value: unknown): readonly TreeNode[] | null => {
   if (!Array.isArray(value) || value.length > MAX_TREE_NODES) return null
   const nodes: TreeNode[] = []
   const ids = new Set<string>()
   for (const raw of value) {
-    if (!isRecord(raw)) return null
-    if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id) || ids.has(raw.id)) return null
-    if (
-      raw.parentId !== null &&
-      (typeof raw.parentId !== 'string' || !UUID_V7.test(raw.parentId))
-    ) {
-      return null
-    }
-    if (
-      typeof raw.path !== 'string' ||
-      raw.path.length < 1 ||
-      raw.path.length > 256 ||
-      !NODE_PATH.test(raw.path)
-    )
-      return null
-    if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return null
-    ids.add(raw.id)
-    nodes.push({ id: raw.id, parentId: raw.parentId, path: raw.path, name: raw.name })
+    const node = treeNodeFrom(raw)
+    if (node === null || ids.has(node.id)) return null
+    ids.add(node.id)
+    nodes.push(node)
   }
   const byId = new Map(nodes.map((node) => [node.id, node]))
   const foldPath = (path: string): string =>
@@ -153,7 +156,6 @@ const treeNodesFrom = (value: unknown): readonly TreeNode[] | null => {
   if (new Set(foldedPaths).size !== foldedPaths.length) return null
   const validated = new Set<string>()
   for (const node of nodes) {
-    if (validated.has(node.id)) continue
     if (node.parentId === null) {
       if (node.path.indexOf('/', 1) !== -1) return null
     } else {
@@ -165,6 +167,7 @@ const treeNodesFrom = (value: unknown): readonly TreeNode[] | null => {
       const suffix = path.slice(parentPath.length)
       if (!suffix.startsWith('/') || suffix.indexOf('/', 1) !== -1) return null
     }
+    if (validated.has(node.id)) continue
     const path = new Set<string>()
     let cursor: TreeNode | undefined = node
     while (cursor !== undefined && !validated.has(cursor.id)) {
@@ -496,7 +499,13 @@ export const createNode = async (
       },
       body: JSON.stringify({ season: server.season, parentId, name }),
     })
-    if (response.ok) return { ok: true, node: (await response.json()) as TreeNode }
+    if (response.ok) {
+      const node = treeNodeFrom(await response.json())
+      if (node === null || node.parentId !== parentId) {
+        return { ok: false, message: 'Server returned an invalid folder.' }
+      }
+      return { ok: true, node }
+    }
     if (response.status === 401 || response.status === 403) {
       noteAuthFailure(server)
       return { ok: false, message: 'That code cannot create folders — it needs admin access.' }

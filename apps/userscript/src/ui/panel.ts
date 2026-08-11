@@ -34,6 +34,7 @@ import { icon } from './icons.js'
 import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import {
+  cancelRenaming,
   forgetNodeOrder,
   forgetServerTree,
   primeFromCache,
@@ -109,6 +110,26 @@ let currentView: View = 'tree'
 let open = false
 let searchQuery = ''
 let activeResizeCleanup: (() => void) | null = null
+let cancelActiveConfirm: (() => void) | null = null
+let viewportResizeInstalled = false
+
+const panelWidthForViewport = (wanted: number): number =>
+  Math.min(Math.max(0, window.innerWidth - 96), Math.max(260, Math.min(720, wanted)))
+
+const rerenderWhenIdle = (): void => {
+  const panel = document.getElementById(PANEL_ID)
+  if (panel === null) return
+  const focused = document.activeElement
+  if (
+    focused !== null &&
+    panel.contains(focused) &&
+    focused.matches('input,textarea,select,[contenteditable="true"]')
+  ) {
+    panel.addEventListener('focusout', () => queueMicrotask(rerenderWhenIdle), { once: true })
+    return
+  }
+  showView(currentView)
+}
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -349,7 +370,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     const next = await probeServer(server.url, value)
     checking = false
     submit.disabled = false
-    if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+    if (!getState().servers.some((candidate) => candidate.url === server.url)) return
     if (next.status === 'connected') {
       upsertServer(next)
       showView('settings')
@@ -431,7 +452,7 @@ const settingsView = (): HTMLElement => {
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
   view.appendChild(sectionHeader('Colours'))
-  view.appendChild(coloursSection(() => showView('settings')))
+  view.appendChild(coloursSection())
 
   view.appendChild(sectionHeader('Diagnostics'))
   const debugRow = settingRow('Debug logging', 'Verbose console output for bug reports', checkbox())
@@ -497,7 +518,11 @@ const applyRename = async (
     return
   }
   const result = await renameNodeOnServer(target.server, target.nodeId, name)
-  if (!result.ok) toast(result.message, 'error')
+  if (!result.ok) {
+    toast(result.message, 'error')
+    rerender()
+    return
+  }
   await refreshNodes(target.server, rerender)
 }
 
@@ -510,6 +535,7 @@ const applyRename = async (
  */
 const confirmDestructive = (message: string): Promise<boolean> =>
   new Promise((resolve) => {
+    cancelActiveConfirm?.()
     const panel = document.getElementById(PANEL_ID)
     if (panel === null) {
       resolve(false)
@@ -530,10 +556,16 @@ const confirmDestructive = (message: string): Promise<boolean> =>
     const confirm = document.createElement('button')
     confirm.className = 'btn btn-xs btn-error'
     confirm.textContent = 'Delete'
+    let settled = false
     const finish = (answer: boolean): void => {
+      if (settled) return
+      settled = true
+      if (cancelActiveConfirm === cancelPending) cancelActiveConfirm = null
       box.remove()
       resolve(answer)
     }
+    const cancelPending = (): void => finish(false)
+    cancelActiveConfirm = cancelPending
     cancel.addEventListener('click', () => finish(false))
     confirm.addEventListener('click', () => finish(true))
     buttons.append(cancel, confirm)
@@ -560,8 +592,12 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   }
   if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
   const result = await deleteNodeOnServer(target.server, target.nodeId)
-  if (!result.ok) toast(result.message, 'error')
-  else forgetNodeOrder(target.server.url, target.nodeId)
+  if (!result.ok) {
+    toast(result.message, 'error')
+    rerender()
+    return
+  }
+  forgetNodeOrder(target.server.url, target.nodeId)
   await refreshNodes(target.server, rerender)
 }
 
@@ -713,7 +749,9 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
         if (first.source === 'image') {
           // An image arrives with no placement of its own, so placing it is not an extra step —
           // it is the rest of the import.
-          beginMove(first.id, rerender)
+          if (!beginMove(first.id, rerender)) {
+            toast('Finish the placement already in progress, then place this import.', 'warning')
+          }
         } else {
           // It already knows where it belongs, so go and look at it — centred on the template and
           // zoomed to fit it, in-game. Changing the URL would reload and throw the import away.
@@ -845,7 +883,11 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
   const existing = await listNodes(server)
-  const name = freeFolderName(new Set(existing.map((node) => node.name.toLowerCase())))
+  const name = freeFolderName(
+    new Set(
+      existing.filter((node) => node.parentId === nodeId).map((node) => node.name.toLowerCase()),
+    ),
+  )
   const result = await createNode(server, name, nodeId)
   if (!result.ok) {
     toast(result.message, 'error')
@@ -876,7 +918,7 @@ const buildPanel = (): HTMLElement => {
     // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
     // their rail and menus open over our panel rather than being trapped behind it.
     zIndex: '30',
-    width: `${Math.min(getState().panelWidth, window.innerWidth - 96)}px`,
+    width: `${panelWidthForViewport(getState().panelWidth)}px`,
     display: 'flex',
     flexDirection: 'column',
     minHeight: '0',
@@ -903,7 +945,7 @@ const buildPanel = (): HTMLElement => {
     const startWidth = panel.getBoundingClientRect().width
     const move = (moved: PointerEvent): void => {
       // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
-      const next = Math.min(720, Math.max(260, startWidth - (moved.clientX - startX)))
+      const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
       panel.style.width = `${next}px`
     }
     activeResizeCleanup?.()
@@ -971,7 +1013,6 @@ const buildPanel = (): HTMLElement => {
   const body = document.createElement('div')
   body.setAttribute('data-wts-body', '')
   Object.assign(body.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
-  body.appendChild(treeView())
 
   panel.append(header, body)
   return panel
@@ -1005,6 +1046,8 @@ const setOpen = (next: boolean): void => {
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
     activeResizeCleanup?.()
+    cancelActiveConfirm?.()
+    cancelRenaming()
     existing?.remove()
     return
   }
@@ -1023,12 +1066,23 @@ const setOpen = (next: boolean): void => {
 export const installPanel = (): void => {
   loadState()
   void refreshStoredServers().then(() => {
-    if (document.getElementById(PANEL_ID) !== null) showView(currentView)
+    rerenderWhenIdle()
   })
   installStyles()
+  if (!viewportResizeInstalled) {
+    viewportResizeInstalled = true
+    window.addEventListener('resize', () => {
+      activeResizeCleanup?.()
+      const panel = document.getElementById(PANEL_ID)
+      if (panel !== null) panel.style.width = `${panelWidthForViewport(getState().panelWidth)}px`
+    })
+  }
   let warned = false
   const attach = (): void => {
     const existing = document.getElementById(BUTTON_ID)
+    const previous = existing?.previousElementSibling
+    const previousLabel = previous?.getAttribute('title') ?? previous?.getAttribute('aria-label')
+    if (previousLabel?.trim() === ANCHOR_LABEL) return
     const found = findRail()
     if (found === null) {
       if (!warned) {
@@ -1037,8 +1091,6 @@ export const installPanel = (): void => {
       }
       return
     }
-    // Already in the right place, directly after the anchor.
-    if (existing !== null && existing.previousElementSibling === found.after) return
     existing?.remove()
     found.after.insertAdjacentElement('afterend', railButton())
     syncRailButtonState()

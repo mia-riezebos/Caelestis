@@ -47,6 +47,7 @@ export interface TreeCallbacks {
 const collapsed = new Set<string>()
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
+const TREE_DRAG_TYPE = 'application/x-caelestis-tree-key'
 
 /**
  * Nodes per server, fetched once and refreshed on demand.
@@ -89,7 +90,10 @@ export const refreshNodes = async (
 ): Promise<void> => {
   if (!server.isAdmin) return
   const nodes = await listNodes(server)
-  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+    rerender()
+    return
+  }
   nodesByServer.set(server.url, nodes)
   void cacheServer({ url: server.url, nodes, fetchedAt: Date.now() })
   rerender()
@@ -112,6 +116,9 @@ export const primeFromCache = async (rerender: () => void): Promise<void> => {
 export const startRenaming = (key: string): void => {
   renaming = key
 }
+export const cancelRenaming = (): void => {
+  renaming = null
+}
 const disabled = new Set<string>()
 
 const isExpanded = (key: string): boolean => !collapsed.has(key)
@@ -126,21 +133,30 @@ interface OrderedItem {
   readonly name: string
 }
 
-const orderedKeys = (items: readonly OrderedItem[]): readonly string[] => {
+const orderedItems = <T extends OrderedItem>(
+  items: readonly T[],
+  rank: ReadonlyMap<string, number>,
+): readonly T[] => {
   if (getState().sort.field === 'name') {
     const direction = getState().sort.direction === 'desc' ? -1 : 1
-    return [...items]
-      .sort((a, b) => direction * a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-      .map((item) => item.key)
-  }
-  const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
-  return [...items]
-    .sort(
-      (a, b) =>
-        (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
+    return [...items].sort(
+      (a, b) => direction * a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
     )
-    .map((item) => item.key)
+  }
+  return [...items].sort(
+    (a, b) =>
+      (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
+  )
 }
+
+const isTreeDrag = (transfer: DataTransfer | null): boolean =>
+  transfer?.types.includes(TREE_DRAG_TYPE) === true
+
+const isTreeKey = (key: string): boolean =>
+  key === 'local' ||
+  key.startsWith('local:') ||
+  key.startsWith('node:') ||
+  key.startsWith('server:')
 
 const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
   const next = keys.filter((key) => key !== from)
@@ -226,6 +242,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
   const name = document.createElement('span')
   if (editing) {
     input.type = 'text'
+    input.dataset.wtsRename = ''
     input.className = 'input input-xs input-bordered'
     input.value = options.name
     input.style.flex = '1'
@@ -351,7 +368,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
   let hideTimer: ReturnType<typeof setTimeout> | null = null
   row.addEventListener('dragstart', (event) => {
+    event.dataTransfer?.setData(TREE_DRAG_TYPE, options.key)
     event.dataTransfer?.setData('text/plain', options.key)
+    if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = 'move'
     // Take the row out of the flow, so what is on screen is the drag image plus the hole it will
     // land in — nothing else. Leaving it in place at reduced opacity reads as a duplicate, and
     // every row below shifts as the placeholder is inserted.
@@ -370,7 +389,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
     clearDropMarks(row.parentElement ?? document)
   })
   row.addEventListener('dragover', (event) => {
+    if (!isTreeDrag(event.dataTransfer)) return
     event.preventDefault()
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'move'
     const parent = row.parentElement
     if (parent === null) return
     const box = row.getBoundingClientRect()
@@ -386,12 +407,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     parent.insertBefore(placeholder(), offset < 0.5 ? row : row.nextSibling)
   })
   row.addEventListener('drop', (event) => {
+    if (!isTreeDrag(event.dataTransfer)) return
     event.preventDefault()
     const parent = row.parentElement
-    const from = event.dataTransfer?.getData('text/plain')
+    const from = event.dataTransfer?.getData(TREE_DRAG_TYPE)
     const into = row.classList.contains('wts-drop-into')
     if (parent !== null) clearDropMarks(parent)
-    if (from === undefined || from === '' || from === options.key) return
+    if (from === undefined || !isTreeKey(from) || from === options.key) return
     if (into) {
       options.onDropInto?.(from)
       return
@@ -427,13 +449,17 @@ export const treeContents = (
   wrap.style.paddingBottom = '0.5rem'
 
   const servers = getState().servers
-  const ordered = orderedKeys([
-    { key: 'local', name: 'Local' },
-    ...servers.map((server) => ({
-      key: `server:${server.url}`,
-      name: server.info?.name ?? server.url,
-    })),
-  ])
+  const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
+  const ordered = orderedItems(
+    [
+      { key: 'local', name: 'Local' },
+      ...servers.map((server) => ({
+        key: `server:${server.url}`,
+        name: server.info?.name ?? server.url,
+      })),
+    ],
+    rank,
+  ).map((item) => item.key)
   const needle = query.trim().toLocaleLowerCase()
 
   for (const key of ordered) {
@@ -510,12 +536,14 @@ export const treeContents = (
         }
         const renderChildren = (parentId: string | null, depth: number): void => {
           const siblings = byParent.get(parentId) ?? []
-          const siblingKeys = orderedKeys(
-            siblings.map((node) => ({ key: `node:${node.id}`, name: node.name })),
+          const orderedSiblings = orderedItems(
+            siblings.map((node) => ({ key: `node:${node.id}`, name: node.name, node })),
+            rank,
           )
-          for (const candidateKey of siblingKeys) {
-            const node = siblings.find((candidate) => `node:${candidate.id}` === candidateKey)
-            if (node === undefined || !nodeMatches(node)) continue
+          const siblingKeys = orderedSiblings.map((item) => item.key)
+          for (const item of orderedSiblings) {
+            const node = item.node
+            if (!nodeMatches(node)) continue
             const nodeKey = `node:${node.id}`
             const nodeTarget: TreeTarget = {
               server,
@@ -561,16 +589,18 @@ export const treeContents = (
       const mine = allMine.filter(
         (template) => needle === '' || template.name.toLocaleLowerCase().includes(needle),
       )
-      const localKeys = orderedKeys(
-        allMine.map((template) => ({ key: `local:${template.id}`, name: template.name })),
+      const orderedMine = orderedItems(
+        allMine.map((template) => ({
+          key: `local:${template.id}`,
+          name: template.name,
+          template,
+        })),
+        rank,
       )
-      for (const key of localKeys) {
-        const template = allMine.find((candidate) => `local:${candidate.id}` === key)
-        if (
-          template === undefined ||
-          (needle !== '' && !template.name.toLocaleLowerCase().includes(needle))
-        )
-          continue
+      const localKeys = orderedMine.map((item) => item.key)
+      for (const item of orderedMine) {
+        const { key, template } = item
+        if (needle !== '' && !template.name.toLocaleLowerCase().includes(needle)) continue
         const templateTarget: TreeTarget = {
           server: null,
           nodeId: null,
@@ -649,6 +679,8 @@ export const treeContents = (
   add.addEventListener('click', callbacks.onAddServer)
   addWrap.appendChild(add)
   wrap.appendChild(addWrap)
+
+  if (renaming !== null && wrap.querySelector('[data-wts-rename]') === null) renaming = null
 
   return wrap
 }
