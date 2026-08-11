@@ -10,6 +10,8 @@ export interface ImportNotice {
   readonly tone: 'info' | 'error'
 }
 
+export const IMPORT_ACCEPT = '.wplace,.json,.png,image/png'
+
 /** One terminal notice per import, so a success cannot erase a partial-failure warning. */
 export const finalImportNotice = (
   first: ImportedTemplateSummary,
@@ -19,8 +21,14 @@ export const finalImportNotice = (
 ): ImportNotice => {
   if (failure !== null) {
     return {
-      message: `Imported ${added} of ${total}; the rest could not be added: ${String(failure)}`,
+      message: `Imported ${added} of ${total}; ${total - added} could not be added: ${String(failure)}`,
       tone: 'error',
+    }
+  }
+  if (total > 1) {
+    return {
+      message: `Imported ${total} templates — first: ${first.name} (${first.width}x${first.height})`,
+      tone: 'info',
     }
   }
   return {
@@ -35,7 +43,51 @@ export const finalImportNotice = (
 export const importedImageNextStep = (
   stillOwned: boolean,
   hasReservation: boolean,
-): 'place' | 'keep' => (stillOwned && hasReservation ? 'place' : 'keep')
+): 'place' | 'persist' => (stillOwned && hasReservation ? 'place' : 'persist')
+
+/** Admit independent templates independently; one large record must not hide a later small one. */
+export const admitTemplates = async <T>(
+  templates: readonly T[],
+  admit: (template: T) => Promise<unknown>,
+): Promise<{ added: T[]; failures: unknown[] }> => {
+  const added: T[] = []
+  const failures: unknown[] = []
+  for (const template of templates) {
+    try {
+      await admit(template)
+      added.push(template)
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  return { added, failures }
+}
+
+export const createKeyedOperationGate = (): {
+  begin: (key: string) => (() => void) | null
+  isActive: (key: string) => boolean
+} => {
+  const active = new Set<string>()
+  return {
+    begin: (key) => {
+      if (active.has(key)) return null
+      active.add(key)
+      let held = true
+      return () => {
+        if (!held) return
+        held = false
+        active.delete(key)
+      }
+    },
+    isActive: (key) => active.has(key),
+  }
+}
+
+export const shouldDeferPanelRerender = (activeViewRequests: number): boolean =>
+  activeViewRequests > 0
+
+export const shouldNavigateAfterImport = (stillOwned: boolean, moving: boolean): boolean =>
+  stillOwned && !moving
 
 /** Everything appended to or acting on one panel view ends when that view does. */
 export const cancelViewOwnedWork = (

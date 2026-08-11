@@ -24,6 +24,7 @@ import {
   addLocalTemplate,
   localTemplates as allLocal,
   localTemplates,
+  placeLocalTemplate,
   removeLocalTemplate,
   renameLocalTemplate,
   templateAsPng,
@@ -41,10 +42,15 @@ import { coloursSection } from './colours.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import {
+  admitTemplates,
   cancelViewOwnedWork,
+  createKeyedOperationGate,
   createResizeCommitter,
   finalImportNotice,
+  IMPORT_ACCEPT,
   importedImageNextStep,
+  shouldDeferPanelRerender,
+  shouldNavigateAfterImport,
 } from './panel-workflow.js'
 import { type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
@@ -137,6 +143,7 @@ let panelOwnerGeneration = 0
 let controlLabelSerial = 0
 const connectionAttempts = new Map<string, number>()
 const activePanelRequests = new Set<AbortController>()
+const copyOperations = createKeyedOperationGate()
 
 type PanelRequestScope = 'view' | 'mutation'
 
@@ -154,7 +161,8 @@ const panelRequest = (
   return {
     controller,
     finish: () => {
-      if (scope === 'view') activePanelRequests.delete(controller)
+      if (scope !== 'view') return
+      activePanelRequests.delete(controller)
     },
   }
 }
@@ -176,6 +184,7 @@ const updateResizeValue = (handle: HTMLElement, width: number): void => {
 }
 
 const rerenderWhenIdle = (): void => {
+  if (shouldDeferPanelRerender(activePanelRequests.size)) return
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
   const focused = document.activeElement
@@ -1088,7 +1097,7 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
     open && currentView === 'tree' && panelOwnerGeneration === ownerGeneration
   const picker = document.createElement('input')
   picker.type = 'file'
-  picker.accept = '.wplace,.json,image/png,image/*'
+  picker.accept = IMPORT_ACCEPT
   picker.addEventListener('change', () => {
     void (async () => {
       const file = picker.files?.[0]
@@ -1112,9 +1121,25 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           try {
             await addLocalTemplate(first)
             rerender()
-            if (importedImageNextStep(stillOwned(), reservation !== null) === 'keep') {
+            if (importedImageNextStep(stillOwned(), reservation !== null) === 'persist') {
+              let persisted = false
+              try {
+                persisted = await placeLocalTemplate(first.id, first.originX, first.originY)
+              } catch (error) {
+                await removeLocalTemplate(first.id).catch(() => false)
+                rerender()
+                toast(`Could not keep imported image: ${String(error)}`, 'error')
+                return
+              }
+              if (!persisted) {
+                await removeLocalTemplate(first.id).catch(() => false)
+                rerender()
+                toast('Could not keep imported image in local storage.', 'error')
+                return
+              }
+              rerender()
               const notice = finalImportNotice(first, 1, 1, null)
-              toast(`${notice.message} — open Templates to place it`)
+              toast(`${notice.message} — placed at the map centre; use Move to adjust it`)
               return
             }
             if (reservation === null || !reservation.start(first.id, rerender)) {
@@ -1135,32 +1160,29 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           }
           return
         }
-        let added = 0
-        let failure: unknown = null
-        for (const template of imported) {
-          try {
-            await addLocalTemplate(template)
-            added++
-          } catch (error) {
-            failure = error
-            break
-          }
-        }
-        if (stillOwned()) rerender()
+        const admitted = await admitTemplates(imported, addLocalTemplate)
+        const added = admitted.added.length
+        const failure = admitted.failures[0] ?? null
+        rerender()
 
         if (failure !== null) {
-          if (added === 0 && stillOwned()) toast(`Could not import: ${String(failure)}`, 'error')
+          if (added === 0) toast(`Could not import: ${String(failure)}`, 'error')
           if (added === 0) return
         }
 
-        const firstPlaced = imported[0]
-        if (firstPlaced === undefined || !stillOwned()) return
+        const firstPlaced = admitted.added[0]
+        if (firstPlaced === undefined) return
         const notice = finalImportNotice(firstPlaced, added, imported.length, failure)
-        toast(notice.message, notice.tone)
+        const navigate = shouldNavigateAfterImport(stillOwned(), isMoving())
+        if (!navigate && stillOwned() && isMoving()) {
+          toast(`${notice.message} — finish the active placement before navigating`, 'warning')
+        } else {
+          toast(notice.message, notice.tone)
+        }
         // Non-image formats already know where they belong, so go and look at the first one —
         // centred on the template and zoomed to fit it, in-game. Changing the URL would reload and
         // throw the import away.
-        navigateTo(centreOf(firstPlaced))
+        if (navigate) navigateTo(centreOf(firstPlaced))
       } catch (error) {
         if (stillOwned()) toast(`Could not import: ${String(error)}`, 'error')
       }
@@ -1186,6 +1208,10 @@ const copyToServer = async (
 ): Promise<void> => {
   const template = allLocal().find((candidate) => candidate.id === templateId)
   if (template === undefined) return
+  if (copyOperations.isActive(templateId)) {
+    toast(`A copy of “${template.name}” is already in progress.`, 'warning')
+    return
+  }
   if (!template.everPlaced || movePreviewOrigin(template.id) !== null) {
     toast('Finish placing this template before copying it to a server.', 'warning')
     return
@@ -1358,11 +1384,18 @@ const copyToServer = async (
         toast('That server connection changed. Open Copy again.', 'warning')
         return
       }
+      const releaseCopy = copyOperations.begin(templateId)
+      if (releaseCopy === null) {
+        closeCopy()
+        toast(`A copy of “${template.name}” is already in progress.`, 'warning')
+        return
+      }
       uploading = true
       go.disabled = true
       serverChooser.disabled = true
       filter.disabled = true
       chooser.disabled = true
+      let uploadStarted = false
       try {
         const source = allLocal().find((candidate) => candidate.id === templateId)
         if (
@@ -1376,7 +1409,9 @@ const copyToServer = async (
           return
         }
         label.textContent = 'Encoding…'
-        const png = await templateAsPng(source)
+        const encodeController = new AbortController()
+        controllers.push(encodeController)
+        const png = await templateAsPng(source, encodeController.signal)
         if (closed) return
         if (png === null) throw new Error('encoder returned no image')
         const ready = allLocal().find((candidate) => candidate.id === templateId)
@@ -1394,20 +1429,14 @@ const copyToServer = async (
           throw new Error('server connection changed while encoding')
         }
         label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-        const uploadController = new AbortController()
-        controllers.push(uploadController)
-        const result = await uploadTemplate(
-          server,
-          {
-            nodeId,
-            name: ready.name,
-            originX: ready.originX,
-            originY: ready.originY,
-            png,
-          },
-          uploadController.signal,
-        )
-        if (uploadController.signal.aborted) return
+        uploadStarted = true
+        const result = await uploadTemplate(server, {
+          nodeId,
+          name: ready.name,
+          originX: ready.originX,
+          originY: ready.originY,
+          png,
+        })
         if (!result.ok) throw new Error(result.message)
         if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
           closeCopy()
@@ -1421,7 +1450,7 @@ const copyToServer = async (
         toast(`Copied “${ready.name}” to ${server.info?.name ?? server.url}.`)
         await refreshAfterMutation(server, rerender)
       } catch (error) {
-        if (closed) return
+        if (closed && !uploadStarted) return
         toast(`Could not copy: ${String(error)}`, 'error')
         label.textContent = `Copy “${template.name}” to:`
         uploading = false
@@ -1431,6 +1460,8 @@ const copyToServer = async (
           chooser.disabled = chooser.options.length === 0
           go.disabled = chooser.options.length === 0
         }
+      } finally {
+        releaseCopy()
       }
     })()
   })
