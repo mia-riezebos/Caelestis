@@ -1,5 +1,6 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { log, warn } from './debug.js'
+import { discardResponseBody } from './response.js'
 
 /**
  * What wplace knows about the signed-in user.
@@ -22,7 +23,7 @@ const ACCOUNT_JSON_BYTES = 16 * 1024
 const readBoundedJson = async (response: Response): Promise<unknown> => {
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > ACCOUNT_JSON_BYTES) {
-    void response.body?.cancel()
+    await discardResponseBody(response)
     throw new RangeError(`response exceeds ${ACCOUNT_JSON_BYTES} bytes`)
   }
   if (response.body === null) return null

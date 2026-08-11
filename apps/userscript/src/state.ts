@@ -1,5 +1,6 @@
 import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { log, warn } from './debug.js'
+import { discardResponseBody } from './response.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
 /**
@@ -118,7 +119,7 @@ const plausibleMillis = (value: unknown): value is number =>
 const readBoundedJson = async (response: Response, maxBytes: number): Promise<unknown> => {
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maxBytes) {
-    void response.body?.cancel()
+    await discardResponseBody(response)
     throw new RangeError(`response exceeds ${maxBytes} bytes`)
   }
   if (response.body === null) return null
@@ -686,7 +687,7 @@ const probeAdminScope = async (
       headers: token === null ? {} : { authorization: `Bearer ${token}` },
       signal: controller.signal,
     })
-    void response.body?.cancel()
+    await discardResponseBody(response)
     return response.ok
   } catch {
     return false
