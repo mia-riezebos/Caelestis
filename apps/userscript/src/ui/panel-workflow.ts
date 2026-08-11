@@ -192,6 +192,11 @@ export const restoreTransientStatus = (
   element.setAttribute('aria-live', status.live)
 }
 
+export const liveStatusTarget = <T extends { readonly isConnected: boolean }>(
+  original: T,
+  replacement: () => T | null,
+): T | null => (original.isConnected ? original : replacement())
+
 export const once = (run: () => void): (() => void) => {
   let pending = true
   return () => {

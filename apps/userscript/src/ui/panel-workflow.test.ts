@@ -9,6 +9,7 @@ import {
   finalImportNotice,
   IMPORT_ACCEPT,
   importedImageNextStep,
+  liveStatusTarget,
   once,
   PAGE_TOAST_STYLE,
   readTransientStatus,
@@ -154,6 +155,13 @@ describe('panel workflow ownership', () => {
     }
 
     expect(readTransientStatus(pending)).toBeNull()
+  })
+
+  it('routes a detached request result to the live replacement status', () => {
+    const original = { isConnected: false }
+    const replacement = { isConnected: true }
+
+    expect(liveStatusTarget(original, () => replacement)).toBe(replacement)
   })
 
   it('keeps page-level notices bounded below the panel and host chrome', () => {

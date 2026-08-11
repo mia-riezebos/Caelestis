@@ -51,6 +51,7 @@ import {
   finalImportNotice,
   IMPORT_ACCEPT,
   importedImageNextStep,
+  liveStatusTarget,
   once,
   PAGE_TOAST_STYLE,
   readTransientStatus,
@@ -442,6 +443,18 @@ const announce = (element: HTMLElement, message: string, error = false): void =>
   element.textContent = message
 }
 
+const currentDraftStatus = (key: string, original: HTMLElement): HTMLElement | null =>
+  liveStatusTarget(original, () => {
+    if (currentView !== 'settings') return null
+    const panel = document.getElementById(PANEL_ID)
+    if (panel === null) return null
+    return (
+      [...panel.querySelectorAll<HTMLElement>('[data-wts-draft-status]')].find(
+        (candidate) => candidate.dataset.wtsDraftStatus === key,
+      ) ?? null
+    )
+  })
+
 const checkbox = (): HTMLInputElement => {
   const el = document.createElement('input')
   el.type = 'checkbox'
@@ -596,11 +609,13 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
       showView('settings', true)
       return
     }
+    const resultStatus = currentDraftStatus(`server:${server.url}`, status)
+    if (resultStatus === null) return
     // A wrong code and an unreachable server are different problems with different fixes, so they
     // must not share a message.
-    status.className = 'text-xs text-error'
+    resultStatus.className = 'text-xs text-error'
     announce(
-      status,
+      resultStatus,
       next.status === 'needs-token'
         ? 'That code was not accepted. Ask whoever runs the server for a current one.'
         : `Could not reach the server. ${next.error ?? ''}`.trim(),
@@ -686,17 +701,23 @@ const settingsView = (): HTMLElement => {
     if (request.controller.signal.aborted) return
     if (!ownsAttempt()) return
     if (server.status === 'unreachable') {
-      status.className = 'text-xs px-3 pb-2 text-error'
+      const resultStatus = currentDraftStatus('connect', status)
+      if (resultStatus === null) return
+      resultStatus.style.display = ''
+      resultStatus.className = 'text-xs px-3 pb-2 text-error'
       announce(
-        status,
+        resultStatus,
         `Could not reach ${server.url}. Check the address and that the server allows this origin.`,
         true,
       )
       return
     }
     if (!upsertServer(server)) {
-      status.className = 'text-xs px-3 pb-2 text-error'
-      announce(status, `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`, true)
+      const resultStatus = currentDraftStatus('connect', status)
+      if (resultStatus === null) return
+      resultStatus.style.display = ''
+      resultStatus.className = 'text-xs px-3 pb-2 text-error'
+      announce(resultStatus, `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`, true)
       return
     }
     url.value = ''
