@@ -1,15 +1,23 @@
 import { TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { log } from '../debug.js'
 import { screenPointFor } from '../main.js'
-import { ANCHORS, type Appearance, DEFAULT_APPEARANCE, SHAPES } from '../templates/appearance.js'
 import {
+  APPEARANCE_CONTROLS,
+  type Appearance,
+  DEFAULT_APPEARANCE,
+} from '../templates/appearance.js'
+import {
+  appearanceOf,
   localTemplates,
   removeLocalTemplate,
   setAppearance,
   setLocalVisible,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
+import { colourPresets, paletteSwatch, setSwatchState } from './colours.js'
+import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
+import { RAIL_BUTTON_CLASS } from './panel.js'
 
 /**
  * The per-overlay menu, anchored to the overlay it configures.
@@ -32,39 +40,69 @@ import { icon } from './icons.js'
 const MENU_ID = 'wts-overlay-menu'
 let openFor: string | null = null
 
+/** Breathing room between these controls and whatever they are being kept clear of. */
+const GAP = 12
+/** Matches the panel's own `top: 1rem`, so our two floating surfaces start on the same line. */
+const TOP_MARGIN = 16
+
+/**
+ * The leftmost edge of the chrome stacked against the right of the window.
+ *
+ * Clamping to `innerWidth` was not enough: it keeps these controls *in the window*, which is where
+ * wplace's rail and our own panel already are. The menu ended up underneath both, with its colour
+ * grid and its close button sitting behind their buttons.
+ *
+ * Measured rather than assumed, because neither width is ours to hardcode — the panel is resizable
+ * by the user, and the rail is wplace's markup and can change. Our own rail button is *in* their
+ * rail, which is the cheapest reliable handle on it.
+ */
+const rightEdge = (): number => {
+  let edge = window.innerWidth
+  const rail = document.getElementById('wts-rail-button')?.parentElement ?? null
+  const panel = document.getElementById('wts-panel')
+  for (const element of [rail, panel]) {
+    if (element === null) continue
+    const box = element.getBoundingClientRect()
+    // A closed panel is still in the document in some states; zero-sized things occupy nothing.
+    if (box.width === 0 || box.height === 0) continue
+    edge = Math.min(edge, box.left)
+  }
+  return edge - GAP
+}
+
 export const isOverlayMenuOpen = (id: string): boolean => openFor === id
 
 const slider = (
-  label: string,
+  control: (typeof APPEARANCE_CONTROLS)[number],
   value: number,
-  min: number,
-  max: number,
-  step: number,
   onChange: (next: number) => void,
 ): HTMLElement => {
   const wrap = document.createElement('label')
   wrap.className = 'flex items-center gap-2'
-  wrap.style.padding = '0.25rem 0'
+  wrap.style.padding = '0.125rem 0'
   const name = document.createElement('span')
   name.className = 'text-xs opacity-70'
-  name.style.width = '3.5rem'
-  name.textContent = label
+  name.style.width = '4rem'
+  name.style.flex = '0 0 auto'
+  name.textContent = control.label
   const input = document.createElement('input')
   input.type = 'range'
   input.className = 'range range-xs'
-  input.min = String(min)
-  input.max = String(max)
-  input.step = String(step)
+  input.min = String(control.min)
+  input.max = String(control.max)
+  input.step = String(control.step)
   input.value = String(value)
   input.style.flex = '1'
+  input.style.minWidth = '0'
   const readout = document.createElement('span')
   readout.className = 'text-xs opacity-50'
   readout.style.width = '2.5rem'
+  readout.style.flex = '0 0 auto'
   readout.style.textAlign = 'right'
-  readout.textContent = `${Math.round(value * 100)}%`
+  readout.textContent = control.format(value)
   input.addEventListener('input', () => {
     const next = Number(input.value)
-    readout.textContent = `${Math.round(next * 100)}%`
+    readout.textContent = control.format(next)
     onChange(next)
   })
   wrap.append(name, input, readout)
@@ -90,10 +128,13 @@ const buildMenu = (
   menu.className = 'bg-base-100 shadow-2xl'
   Object.assign(menu.style, {
     position: 'fixed',
-    zIndex: '32',
+    // Below the panel's 30. When the window is too narrow for the clamp to keep this clear of the
+    // panel, something has to give, and the panel is the surface being deliberately worked in.
+    zIndex: '29',
     width: '15rem',
-    borderRadius: '0.5rem',
-    padding: '0.5rem 0.625rem 0.625rem',
+    // 12px, the same as the panel and every other popout here.
+    borderRadius: '0.75rem',
+    padding: '0.75rem',
     color: 'var(--color-base-content, inherit)',
     maxHeight: '70vh',
     overflowY: 'auto',
@@ -102,6 +143,47 @@ const buildMenu = (
   menu.addEventListener('pointerdown', (event) => event.stopPropagation())
 
   const template = localTemplates().find((candidate) => candidate.id === id)
+
+  /**
+   * Throw the menu away so the next frame builds a fresh one.
+   *
+   * Only for changes that alter what the controls should *say*, not merely what they do — switching
+   * to the global defaults has to move every slider at once. Normal edits must never call this: this
+   * menu is rebuilt-on-demand precisely so a redraw cannot tear a slider out from under the pointer.
+   */
+  const rebuildMenu = (): void => {
+    document.getElementById(MENU_ID)?.remove()
+  }
+
+  /**
+   * Read the appearance at the moment a control is used, never the one captured when the menu was
+   * built.
+   *
+   * This menu is deliberately not rebuilt on a redraw — doing so would tear the slider out from
+   * under the pointer every frame the map moves. The cost is that the closure's `appearance` goes
+   * stale the instant any control writes a new one, and a spread of a stale object silently reverts
+   * every field the user changed in between. That is precisely what happened: adjusting opacity
+   * after picking a shape put the old shape back, because the opacity handler was still spreading
+   * the appearance from before the shape changed.
+   *
+   * Patching against a fresh read makes each control write only its own field.
+   */
+  const current = (): Appearance => {
+    const found = localTemplates().find((candidate) => candidate.id === id)
+    return found === undefined ? DEFAULT_APPEARANCE : appearanceOf(found)
+  }
+  /**
+   * Set here, not in settings — so the "use defaults" tick has to come off as the slider moves.
+   *
+   * Only the tick is touched, never the menu: a rebuild mid-drag would take the slider out from
+   * under the pointer. Leaving it ticked was worse than cosmetic, because the next click on it then
+   * did the opposite of what it looked like it would do.
+   */
+  let defaultsBox: HTMLInputElement | null = null
+  const update = (patch: Partial<Appearance>): void => {
+    void setAppearance(id, { ...current(), ...patch })
+    if (defaultsBox !== null) defaultsBox.checked = false
+  }
 
   const header = document.createElement('div')
   header.className = 'flex items-center gap-1'
@@ -135,45 +217,23 @@ const buildMenu = (
 
   // Deleting from here rather than from a panel row, for the same reason Move is here: this menu is
   // already about one specific template, so there is no doubt which one goes.
-  //
-  // The confirm is built into this menu rather than borrowed from the panel. The panel's version
-  // mounts inside the panel and answers "no" when it is closed — and this menu is reachable with
-  // the panel shut, which is exactly when the delete would silently do nothing.
   const remove = document.createElement('button')
   remove.className = 'btn btn-ghost btn-xs btn-circle text-error'
   remove.title = 'Delete this template'
   remove.setAttribute('aria-label', 'Delete this template')
   remove.appendChild(icon('trash', 'size-4'))
   remove.addEventListener('click', () => {
-    menu.querySelector('[data-wts-confirm]')?.remove()
-    const box = document.createElement('div')
-    box.setAttribute('data-wts-confirm', '')
-    box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
-    Object.assign(box.style, { padding: '0.5rem 0.625rem' })
-    const text = document.createElement('span')
-    // Name the thing rather than asking "are you sure", so the answer does not depend on
-    // remembering which template's menu this is.
-    text.textContent = `Delete “${template?.name ?? 'this template'}”? This cannot be undone.`
-    const buttons = document.createElement('div')
-    buttons.className = 'flex gap-2 justify-end'
-    const cancel = document.createElement('button')
-    cancel.className = 'btn btn-xs btn-ghost'
-    cancel.textContent = 'Cancel'
-    cancel.addEventListener('click', () => box.remove())
-    const confirm = document.createElement('button')
-    confirm.className = 'btn btn-xs btn-error'
-    confirm.textContent = 'Delete'
-    confirm.addEventListener('click', () => {
+    void confirmDestructive({
+      title: 'Delete template?',
+      body: `${template?.name ?? 'This template'} will be permanently removed.`,
+      note: 'It is stored in this browser only.',
+      confirmLabel: 'Delete',
+    }).then((yes) => {
+      if (!yes) return
       closeOverlayMenu()
-      removeLocalTemplate(id)
+      void removeLocalTemplate(id)
       rerender()
     })
-    buttons.append(cancel, confirm)
-    box.append(text, buttons)
-    // Directly under the header, next to the button that raised it. Appending to the end of a menu
-    // that scrolls past 70vh can put the question off-screen from the answer.
-    header.after(box)
-    confirm.focus()
   })
 
   const close = document.createElement('button')
@@ -189,84 +249,99 @@ const buildMenu = (
   header.append(title, hide, move, remove, close)
   menu.appendChild(header)
 
-  menu.appendChild(section('Shape'))
-  const shapes = document.createElement('div')
-  shapes.className = 'join'
-  for (const shape of SHAPES) {
-    const button = document.createElement('button')
-    button.className =
-      shape.id === appearance.shape ? 'btn btn-xs join-item btn-active' : 'btn btn-xs join-item'
-    button.textContent = shape.label
-    button.title = shape.hint
-    button.addEventListener('click', () => {
-      setAppearance(id, { ...appearance, shape: shape.id })
-      rerender()
-    })
-    shapes.appendChild(button)
-  }
-  menu.appendChild(shapes)
+  const pixels = section('Pixels')
+  pixels.className = `${pixels.className} flex items-center justify-between gap-2`
+  menu.appendChild(pixels)
 
-  if (appearance.shape !== 'full') {
+  /**
+   * Whether this overlay is following the global appearance rather than carrying its own.
+   *
+   * Every overlay starts this way, so the sliders in settings actually reach something. Touching any
+   * control here writes an explicit appearance and switches this off on its own — because `update`
+   * patches the *effective* values, the first change keeps everything else exactly as it looked and
+   * only the moved slider differs.
+   */
+  const usingDefaults = template?.appearance == null
+  const defaults = document.createElement('label')
+  defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal'
+  // Inline, not `normal-case`: it inherits the section heading's uppercase, and wplace's Tailwind
+  // build is purged — a utility they never use is simply absent from their CSS, so the class did
+  // nothing and the label read "USE DEFAULTS".
+  defaults.style.textTransform = 'none'
+  defaults.style.letterSpacing = 'normal'
+  defaults.title = 'Follow the appearance set in settings'
+  defaultsBox = document.createElement('input')
+  defaultsBox.type = 'checkbox'
+  defaultsBox.className = 'checkbox checkbox-xs'
+  defaultsBox.checked = usingDefaults
+  defaultsBox.addEventListener('change', () => {
+    // Null puts it back on the global values; a copy of them is what it already shows, so the only
+    // thing that changes when switching *off* is that it stops following.
+    void setAppearance(id, defaultsBox?.checked === true ? null : { ...current() })
+    // Rebuild rather than reposition: the sliders have to show the values they now follow, and this
+    // menu deliberately never rebuilds itself on a redraw.
+    rebuildMenu()
+    rerender()
+  })
+  const defaultsText = document.createElement('span')
+  defaultsText.textContent = 'Use defaults'
+  defaults.append(defaultsBox, defaultsText)
+  pixels.appendChild(defaults)
+
+  for (const control of APPEARANCE_CONTROLS) {
     menu.appendChild(
-      slider('Size', appearance.size, 0.1, 1, 0.05, (size) => {
-        setAppearance(id, { ...appearance, size })
-      }),
+      slider(control, current()[control.key], (value) => update({ [control.key]: value })),
     )
-    const anchors = document.createElement('div')
-    anchors.style.display = 'grid'
-    anchors.style.gridTemplateColumns = 'repeat(3, 1fr)'
-    anchors.style.gap = '2px'
-    anchors.style.marginTop = '0.25rem'
-    for (const anchor of ANCHORS) {
-      const cell = document.createElement('button')
-      cell.className =
-        anchor.id === appearance.anchor ? 'btn btn-xs btn-active' : 'btn btn-xs btn-ghost'
-      cell.style.minHeight = '1.25rem'
-      cell.style.height = '1.25rem'
-      cell.title = anchor.label
-      cell.setAttribute('aria-label', anchor.label)
-      cell.addEventListener('click', () => {
-        setAppearance(id, { ...appearance, anchor: anchor.id })
-        rerender()
-      })
-      anchors.appendChild(cell)
-    }
-    menu.appendChild(anchors)
   }
-
-  menu.appendChild(
-    slider('Opacity', appearance.opacity, 0.1, 1, 0.05, (opacity) => {
-      setAppearance(id, { ...appearance, opacity })
-    }),
-  )
 
   menu.appendChild(section('Colours'))
-  const hidden = new Set(appearance.hiddenColours)
+
+  const gridWrap = document.createElement('div')
+  gridWrap.className = 'wts-swatches'
   const grid = document.createElement('div')
-  Object.assign(grid.style, {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(1.1rem, 1fr))',
-    gap: '2px',
-  })
+  grid.className = 'wts-swatch-grid'
+
+  /**
+   * Repaint every swatch from the appearance as it now stands.
+   *
+   * The settings pane gets this for free because it rebuilds itself; this menu deliberately does
+   * not, so a swatch clicked here changed the canvas and then sat there looking exactly as it had.
+   * A preset moves dozens at once, so this walks all of them rather than the one that was clicked.
+   */
+  const refreshSwatches = (): void => {
+    const off = new Set(current().hiddenColours)
+    for (const element of grid.children) {
+      if (!(element instanceof HTMLElement)) continue
+      setSwatchState(element, !off.has(Number(element.dataset.index)))
+    }
+  }
+
+  // The same presets as settings, applied to this overlay's own filter. Reaching them should not
+  // mean opening the panel when this menu is already the thing being looked at.
+  menu.appendChild(
+    colourPresets((next) => {
+      update({ hiddenColours: next })
+      refreshSwatches()
+    }, rerender),
+  )
+
+  const hidden = new Set(appearance.hiddenColours)
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
-    const swatch = document.createElement('button')
-    const on = !hidden.has(colour.index)
-    swatch.className = 'wts-swatch'
-    swatch.dataset.on = String(on)
-    swatch.style.backgroundColor = colour.hex
-    swatch.title = `${colour.name} · ${colour.kind}`
-    swatch.setAttribute('aria-pressed', String(on))
-    swatch.addEventListener('click', () => {
-      const next = new Set(appearance.hiddenColours)
-      if (next.has(colour.index)) next.delete(colour.index)
-      else next.add(colour.index)
-      setAppearance(id, { ...appearance, hiddenColours: [...next] })
-      rerender()
-    })
-    grid.appendChild(swatch)
+    grid.appendChild(
+      paletteSwatch(colour, !hidden.has(colour.index), () => {
+        // Current, not captured — same reason as every other control here.
+        const next = new Set(current().hiddenColours)
+        if (next.has(colour.index)) next.delete(colour.index)
+        else next.add(colour.index)
+        update({ hiddenColours: [...next] })
+        refreshSwatches()
+        rerender()
+      }),
+    )
   }
-  menu.appendChild(grid)
+  gridWrap.appendChild(grid)
+  menu.appendChild(gridWrap)
   return menu
 }
 
@@ -291,13 +366,20 @@ export const renderOverlayControls = (rerender: () => void): void => {
   const host = document.querySelector('canvas.maplibregl-canvas')?.parentElement
   if (host == null) return
 
+  const limit = rightEdge()
+
   for (const template of localTemplates()) {
     const buttonId = `wts-overlay-button-${template.id}`
-    // Top-right of the overlay, just outside it, so template pixels are never covered.
-    const corner = screenPointFor(template.originX + template.width, template.originY)
+    // The overlay's whole box on screen, not just one corner. A corner alone cannot say whether the
+    // template is still in view, nor how far down the button is allowed to travel.
+    const topLeft = screenPointFor(template.originX, template.originY)
+    const bottomRight = screenPointFor(
+      template.originX + template.width,
+      template.originY + template.height,
+    )
     let button = document.getElementById(buttonId)
 
-    if (corner === null) {
+    if (topLeft === null || bottomRight === null) {
       button?.remove()
       if (openFor === template.id) document.getElementById(MENU_ID)?.remove()
       continue
@@ -305,12 +387,17 @@ export const renderOverlayControls = (rerender: () => void): void => {
     if (button === null) {
       button = document.createElement('button')
       button.id = buttonId
-      button.className = 'btn btn-xs btn-circle shadow-md'
-      button.title = `${template.name} — display options`
-      button.setAttribute('aria-label', `${template.name} display options`)
-      button.appendChild(icon('settings', 'size-3'))
+      // The same class as wplace's rail buttons, so it is the same size as them rather than a
+      // fiddly `btn-xs` target floating over the canvas.
+      button.className = RAIL_BUTTON_CLASS
+      button.title = `${template.name} — overlay menu`
+      button.setAttribute('aria-label', `${template.name} overlay menu`)
+      // Three dots, not a gear. This opens a menu of actions on one overlay — which is what wplace
+      // themselves put on each row of their Overlays list — rather than a settings surface.
+      button.appendChild(icon('kebab'))
       button.style.position = 'fixed'
-      button.style.zIndex = '31'
+      // Behind the panel too, for the same reason, and below the menu it opens.
+      button.style.zIndex = '28'
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         if (openFor === template.id) closeOverlayMenu()
@@ -319,26 +406,64 @@ export const renderOverlayControls = (rerender: () => void): void => {
       })
       document.body.appendChild(button)
     }
-    // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
-    // rather than losing its controls exactly when you want to bring it back.
-    button.style.left = `${Math.min(Math.max(corner.x + 6, 4), window.innerWidth - 32)}px`
-    button.style.top = `${Math.min(Math.max(corner.y, 4), window.innerHeight - 32)}px`
+    const size = button.getBoundingClientRect().width || 40
 
-    if (openFor !== template.id) continue
+    /**
+     * Anchored just outside the overlay's top-right corner, then made sticky to the viewport, then
+     * released again once the overlay has left entirely.
+     *
+     * Read the two clamps in order. `min` keeps it on screen while the template runs off to the
+     * right, which is what makes it *stay* right-aligned and reachable instead of sailing away with
+     * a template you can still see. `max` is the release: it may never sit further left than just
+     * outside the template's own left edge, so once the template is fully past the right of the
+     * viewport that floor overtakes the viewport clamp and it leaves with the template.
+     *
+     * Without the release, every distant template parks a control against the same edge and you get
+     * a stack of them pointing at nothing on screen. Without the sticky clamp, a template wider than
+     * the window has no reachable control at all.
+     */
+    const leftFor = (length: number): number =>
+      Math.max(
+        Math.min(bottomRight.x + GAP, limit - length),
+        topLeft.x - length - GAP, // outside the left edge, never over the artwork
+      )
+
+    /**
+     * Vertically the same idea, plus: never hanging below the overlay's own bottom edge.
+     *
+     * That last rule only applies when the control actually fits inside the overlay's height. The
+     * menu is far taller than the button and routinely taller than a small template, and forcing it
+     * to end above such a template's bottom would drag it up off the top of the screen.
+     */
+    const topFor = (length: number): number => {
+      const sticky = Math.min(
+        Math.max(topLeft.y, TOP_MARGIN),
+        window.innerHeight - length - TOP_MARGIN,
+      )
+      const fitsWithin = bottomRight.y - topLeft.y >= length
+      return fitsWithin ? Math.min(sticky, bottomRight.y - length) : sticky
+    }
+
+    button.style.left = `${leftFor(size)}px`
+    button.style.top = `${topFor(size)}px`
+    // The menu takes the button's place rather than appearing beside it — one control in one spot,
+    // opened and closed, instead of a button sitting redundantly next to the thing it opened.
+    const isOpen = openFor === template.id
+    button.style.display = isOpen ? 'none' : ''
+
+    if (!isOpen) continue
     let menu = document.getElementById(MENU_ID)
     if (menu === null) {
-      menu = buildMenu(
-        template.id,
-        template.appearance ?? DEFAULT_APPEARANCE,
-        template.visible,
-        rerender,
-      )
+      menu = buildMenu(template.id, appearanceOf(template), template.visible, rerender)
       document.body.appendChild(menu)
     }
-    // Keep it on screen when the overlay is near an edge.
+    // The same anchoring as the button, measured against the menu's own size rather than reusing
+    // the button's position. It replaces the button, so it has to behave like it: right-aligned and
+    // sticky while the overlay is in view, and released once the overlay has gone — otherwise an
+    // open menu stays pinned to the edge long after its template has left the screen.
     const box = menu.getBoundingClientRect()
-    menu.style.left = `${Math.min(corner.x + 6, window.innerWidth - box.width - 8)}px`
-    menu.style.top = `${Math.min(Math.max(8, corner.y + 28), window.innerHeight - box.height - 8)}px`
+    menu.style.left = `${leftFor(box.width)}px`
+    menu.style.top = `${topFor(box.height)}px`
   }
 }
 

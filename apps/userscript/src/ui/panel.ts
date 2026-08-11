@@ -1,21 +1,27 @@
 import { canvasPixelToLatLng } from '@wts/shared'
-import { log, warn } from '../debug.js'
+import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
   type ConnectedServer,
+  createLocalFolder,
   createNode,
   deleteNode as deleteNodeOnServer,
   getState,
   listNodes,
   loadState,
+  moveLocalFolder,
+  type ProgressPlacement,
   probeServer,
+  removeLocalFolder,
   removeServer,
+  renameLocalFolder,
   renameNode as renameNodeOnServer,
   setState,
   uploadTemplate,
   upsertServer,
 } from '../state.js'
+import { APPEARANCE_CONTROLS } from '../templates/appearance.js'
 import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
@@ -23,16 +29,19 @@ import {
   localTemplates,
   removeLocalTemplate,
   renameLocalTemplate,
+  setTemplateFolder,
   templateAsPng,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { coloursSection } from './colours.js'
+import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import {
+  placeKey,
   primeFromCache,
   refreshNodes,
   startRenaming,
@@ -111,7 +120,7 @@ let sortOrder: SortOrder = DEFAULT_SORT
  * the class list. Using the same class rather than a colour of our own means our button lights up
  * in whatever their theme calls primary, now and after any theme change.
  */
-const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
+export const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
 
 const syncRailButtonState = (): void => {
   const button = document.getElementById(BUTTON_ID)
@@ -156,11 +165,30 @@ export const setAlarmBadge = (count: number): void => {
   if (existing === null) button.appendChild(badge)
 }
 
-const sectionHeader = (title: string): HTMLElement => {
+/**
+ * A section heading: an icon in a tinted chip, then the name at normal weight and full contrast.
+ *
+ * Not faded all-caps. A settings pane is scanned for the section you want, and the previous
+ * treatment made every heading — the one thing you are actually looking for — the least legible
+ * text on the screen.
+ */
+const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
+  const row = document.createElement('div')
+  row.className = 'flex items-center gap-2 px-3 pt-5 pb-2'
+  const chip = document.createElement('span')
+  chip.className = 'bg-base-200 flex items-center justify-center'
+  Object.assign(chip.style, {
+    borderRadius: '0.5rem',
+    width: '1.75rem',
+    height: '1.75rem',
+    flex: '0 0 auto',
+  })
+  chip.appendChild(icon(glyph, 'size-4'))
   const h = document.createElement('h3')
-  h.className = 'text-xs font-semibold opacity-60 uppercase tracking-wide px-3 pt-4 pb-1'
+  h.className = 'text-sm font-semibold'
   h.textContent = title
-  return h
+  row.append(chip, h)
+  return row
 }
 
 const emptyState = (): HTMLElement => {
@@ -231,6 +259,19 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
+          onMoveLocal: (draggedKey, parentKey, beforeKey) => {
+            // `local` is the root of the category; `lf:<id>` is a folder within it.
+            const parentFolderId =
+              parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null
+            // Reparent first, then place. One drop target, two kinds of passenger — which it is
+            // comes from the dragged row's own key, so nothing else has to care.
+            if (draggedKey.startsWith('local:')) {
+              void setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId)
+            } else if (draggedKey.startsWith('lf:')) {
+              moveLocalFolder(draggedKey.slice('lf:'.length), parentFolderId)
+            }
+            placeKey(draggedKey, beforeKey)
+          },
         },
         renderTree,
       ),
@@ -264,26 +305,104 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
   return row
 }
 
-const select = (options: readonly (readonly [string, string])[]): HTMLSelectElement => {
-  const el = document.createElement('select')
-  el.className = 'select select-sm select-bordered'
-  // Sized once rather than by content: three selects of three widths in one column reads as
-  // ragged even though their right edges agree.
-  el.style.width = '11.5rem'
-  el.style.flex = '0 0 auto'
-  for (const [value, label] of options) {
-    const option = document.createElement('option')
-    option.value = value
-    option.textContent = label
-    el.appendChild(option)
+/**
+ * A dropdown built from our own elements rather than a `<select>`.
+ *
+ * A native select's popup is drawn by the browser, so its corners cannot be given the `rounded-xl`
+ * every other popout here uses — it rendered as a square-cornered list against rounded everything
+ * else. Owning the list is the only way to make it match.
+ *
+ * Width is fixed rather than fitted to content, so a column of these lines up on both edges instead
+ * of only the right; but narrower than it was, since sizing for the longest label in the app made
+ * every short one look padded.
+ */
+const select = (
+  options: readonly (readonly [string, string])[],
+  value: string,
+  onChange: (next: string) => void,
+): HTMLElement => {
+  const wrap = document.createElement('div')
+  wrap.style.position = 'relative'
+  wrap.style.flex = '0 0 auto'
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'btn btn-sm btn-outline justify-between font-normal'
+  button.style.width = '9rem'
+  const label = document.createElement('span')
+  label.className = 'wts-name'
+  label.style.textAlign = 'left'
+  label.textContent = options.find(([id]) => id === value)?.[1] ?? ''
+  const caret = icon('caret', 'size-4 opacity-60')
+  caret.style.transform = 'rotate(90deg)'
+  button.append(label, caret)
+
+  const close = (): void => {
+    wrap.querySelector('[data-wts-options]')?.remove()
   }
-  return el
+
+  button.addEventListener('click', () => {
+    if (wrap.querySelector('[data-wts-options]') !== null) {
+      close()
+      return
+    }
+    // Only one popout at a time, ours or another row's.
+    for (const el of document.querySelectorAll('[data-wts-options]')) el.remove()
+    const list = document.createElement('ul')
+    list.setAttribute('data-wts-options', '')
+    list.className = 'menu bg-base-100 shadow-2xl'
+    Object.assign(list.style, {
+      position: 'absolute',
+      right: '0',
+      top: 'calc(100% + 0.25rem)',
+      zIndex: '40',
+      // The same radius as the panel and every other popout. This is the whole reason it is not a
+      // native select.
+      borderRadius: '0.75rem',
+      padding: '0.25rem',
+      width: '11rem',
+      display: 'block',
+    })
+    for (const [id, text] of options) {
+      const item = document.createElement('li')
+      const choice = document.createElement('button')
+      choice.type = 'button'
+      choice.className = 'flex items-center gap-2'
+      const tick = icon('check', 'size-4')
+      // Reserved rather than conditional, so the labels do not shift as the selection moves.
+      tick.style.visibility = id === value ? 'visible' : 'hidden'
+      const name = document.createElement('span')
+      name.textContent = text
+      choice.append(tick, name)
+      choice.addEventListener('click', () => {
+        close()
+        onChange(id)
+      })
+      item.appendChild(choice)
+      list.appendChild(item)
+    }
+    wrap.appendChild(list)
+    // Dismiss on a pointerdown outside, on the next tick so the opening click does not close it.
+    setTimeout(() => {
+      const dismiss = (event: PointerEvent): void => {
+        if (event.target instanceof Node && wrap.contains(event.target)) return
+        close()
+        window.removeEventListener('pointerdown', dismiss)
+      }
+      window.addEventListener('pointerdown', dismiss)
+    }, 0)
+  })
+
+  wrap.appendChild(button)
+  return wrap
 }
 
-const checkbox = (): HTMLInputElement => {
+const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
   const el = document.createElement('input')
   el.type = 'checkbox'
   el.className = 'checkbox checkbox-sm'
+  el.checked = value
+  el.addEventListener('change', () => onChange(el.checked))
   return el
 }
 
@@ -401,7 +520,7 @@ const settingsView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
 
-  view.appendChild(sectionHeader('Servers'))
+  view.appendChild(sectionHeader('Servers', 'server'))
   const addRow = document.createElement('div')
   addRow.className = 'px-3 pb-2 flex gap-2'
   const url = document.createElement('input')
@@ -449,37 +568,99 @@ const settingsView = (): HTMLElement => {
 
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
-  view.appendChild(sectionHeader('Appearance'))
-  view.appendChild(
-    settingRow(
-      'Display progress bars',
-      null,
-      select([
-        ['inline', 'Inline'],
-        ['expanded', 'When expanded'],
-        ['hidden', 'Never'],
-      ]),
-    ),
-  )
+  const rerender = (): void => showView('settings')
+  const state = getState()
 
-  view.appendChild(sectionHeader('Colours'))
-  view.appendChild(coloursSection(() => showView('settings')))
-
-  view.appendChild(sectionHeader('Contributing'))
+  // Contribution before appearance: what you send to other people is a bigger decision than how
+  // your own overlays look, and it should not sit below a colour grid.
+  view.appendChild(sectionHeader('Contribution', 'share'))
   view.appendChild(
     settingRow(
       'Report my activity',
       'Sends your paint activity on templates to the respective servers.',
-      checkbox(),
+      checkbox(state.reportPaints, (next) => setState({ reportPaints: next })),
     ),
   )
   view.appendChild(
-    settingRow('Share tiles', 'Forwards tiles with templates to respective servers.', checkbox()),
+    settingRow(
+      'Share tiles',
+      'Forwards tiles with templates to respective servers.',
+      checkbox(state.shareTiles, (next) => setState({ shareTiles: next })),
+    ),
   )
 
-  view.appendChild(sectionHeader('Diagnostics'))
-  const debugRow = settingRow('Debug logging', 'Verbose console output for bug reports', checkbox())
-  view.appendChild(debugRow)
+  view.appendChild(sectionHeader('Appearance', 'tune'))
+  view.appendChild(
+    settingRow(
+      'Display progress bars',
+      null,
+      select(
+        [
+          ['inline', 'Inline'],
+          ['expanded', 'When expanded'],
+          ['hidden', 'Never'],
+        ],
+        state.progress,
+        (next) => {
+          setState({ progress: next as ProgressPlacement })
+          rerender()
+        },
+      ),
+    ),
+  )
+
+  // The defaults every overlay follows until its own controls are touched. Same sliders as the
+  // per-overlay menu, deliberately — one vocabulary, learned once.
+  const sliders = document.createElement('div')
+  sliders.className = 'px-3 pb-2'
+  for (const control of APPEARANCE_CONTROLS) {
+    const row = document.createElement('label')
+    row.className = 'flex items-center gap-3 py-1'
+    const name = document.createElement('span')
+    name.className = 'text-sm'
+    name.style.width = '5rem'
+    name.style.flex = '0 0 auto'
+    name.textContent = control.label
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.className = 'range range-xs'
+    input.min = String(control.min)
+    input.max = String(control.max)
+    input.step = String(control.step)
+    input.value = String(state.appearance[control.key])
+    input.style.flex = '1'
+    input.style.minWidth = '0'
+    const readout = document.createElement('span')
+    readout.className = 'text-xs opacity-60'
+    readout.style.width = '2.75rem'
+    readout.style.flex = '0 0 auto'
+    readout.style.textAlign = 'right'
+    readout.textContent = control.format(state.appearance[control.key])
+    input.addEventListener('input', () => {
+      const next = Number(input.value)
+      readout.textContent = control.format(next)
+      // Read the live value rather than the one captured when this row was built, so dragging one
+      // slider cannot revert another.
+      setState({ appearance: { ...getState().appearance, [control.key]: next } })
+    })
+    row.append(name, input, readout)
+    sliders.appendChild(row)
+  }
+  view.appendChild(sliders)
+
+  view.appendChild(sectionHeader('Colours', 'palette'))
+  view.appendChild(coloursSection(rerender))
+
+  view.appendChild(sectionHeader('Diagnostics', 'bug'))
+  view.appendChild(
+    settingRow(
+      'Debug logging',
+      'Verbose console output for bug reports',
+      checkbox(isDebugEnabled(), (next) => {
+        setDebugEnabled(next)
+      }),
+    ),
+  )
   return view
 }
 
@@ -533,8 +714,14 @@ const applyRename = async (
     rerender()
     return
   }
+  const folderId = localFolderIdOf(target)
+  if (folderId !== null) {
+    renameLocalFolder(folderId, name)
+    rerender()
+    return
+  }
   if (target.server === null || target.nodeId === null) {
-    toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
+    toast('There is nothing to rename here.', 'warning')
     rerender()
     return
   }
@@ -544,51 +731,47 @@ const applyRename = async (
 }
 
 /**
- * Ask before destroying something.
- *
  * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
- * client. The confirm names the thing rather than saying "are you sure", so the answer does not
- * depend on remembering what was right-clicked.
+ * client, so it always asks first.
  */
-const confirmDestructive = (message: string): Promise<boolean> =>
-  new Promise((resolve) => {
-    const panel = document.getElementById(PANEL_ID)
-    if (panel === null) {
-      resolve(false)
-      return
-    }
-    panel.querySelector('[data-wts-confirm]')?.remove()
-    const box = document.createElement('div')
-    box.setAttribute('data-wts-confirm', '')
-    box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
-    Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
-    const text = document.createElement('span')
-    text.textContent = message
-    const buttons = document.createElement('div')
-    buttons.className = 'flex gap-2 justify-end'
-    const cancel = document.createElement('button')
-    cancel.className = 'btn btn-xs btn-ghost'
-    cancel.textContent = 'Cancel'
-    const confirm = document.createElement('button')
-    confirm.className = 'btn btn-xs btn-error'
-    confirm.textContent = 'Delete'
-    const finish = (answer: boolean): void => {
-      box.remove()
-      resolve(answer)
-    }
-    cancel.addEventListener('click', () => finish(false))
-    confirm.addEventListener('click', () => finish(true))
-    buttons.append(cancel, confirm)
-    box.append(text, buttons)
-    panel.appendChild(box)
-    confirm.focus()
+const askToDelete = (kind: string, name: string, note?: string): Promise<boolean> =>
+  confirmDestructive({
+    // Their shape: the heading asks, the body names the thing and says what happens to it.
+    title: `Delete ${kind}?`,
+    body: `${name} will be permanently removed.`,
+    ...(note === undefined ? {} : { note }),
+    confirmLabel: 'Delete',
   })
 
 const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
-    removeLocalTemplate(templateId)
+    if (!(await askToDelete('template', target.name, 'It is stored in this browser only.'))) {
+      return
+    }
+    await removeLocalTemplate(templateId)
+    rerender()
+    return
+  }
+  const folderId = localFolderIdOf(target)
+  if (folderId !== null) {
+    const confirmed = await confirmDestructive({
+      title: `Delete “${target.name}”?`,
+      body: 'The folder will be removed.',
+      // Say where things go, because "delete" on a container reads as "delete what is inside it".
+      note: 'Anything inside it moves up one level rather than being deleted.',
+      confirmLabel: 'Delete',
+    })
+    if (!confirmed) return
+    for (const template of localTemplates()) {
+      if (template.folderId === folderId) {
+        await setTemplateFolder(
+          template.id,
+          getState().localFolders.find((f) => f.id === folderId)?.parentId ?? null,
+        )
+      }
+    }
+    removeLocalFolder(folderId)
     rerender()
     return
   }
@@ -596,7 +779,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     toast('Nothing to delete here yet.', 'warning')
     return
   }
-  if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
+  if (!(await askToDelete('folder', target.name))) return
   const result = await deleteNodeOnServer(target.server, target.nodeId)
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)
@@ -714,7 +897,13 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           toast('Nothing importable in that file.', 'error')
           return
         }
-        for (const template of imported) await addLocalTemplate(template)
+        // Straight into whichever Local folder was clicked. Importing from a folder's own button
+        // and then finding the result at the top level would make the button a lie.
+        const folderId = localFolderIdOf(target)
+        for (const template of imported) {
+          await addLocalTemplate(template)
+          if (folderId !== null) await setTemplateFolder(template.id, folderId)
+        }
         rerender()
 
         const first = imported[0]
@@ -829,10 +1018,26 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   panel.appendChild(box)
 }
 
+/** `lf:<id>` is a Local folder; `local` is the Local root. */
+const localFolderIdOf = (target: TreeTarget): string | null =>
+  target.key.startsWith('lf:') ? target.key.slice('lf:'.length) : null
+
+const isLocalTarget = (target: TreeTarget): boolean =>
+  target.server === null && (target.key === 'local' || target.key.startsWith('lf:'))
+
 const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, nodeId } = target
+  if (isLocalTarget(target)) {
+    // Nested under whichever Local folder was clicked, or at the top when it was Local itself.
+    const parentId = localFolderIdOf(target)
+    const taken = new Set(getState().localFolders.map((folder) => folder.name.toLowerCase()))
+    const folder = createLocalFolder(parentId, freeFolderName(taken))
+    startRenaming(`lf:${folder.id}`)
+    rerender()
+    return
+  }
   if (server === null) {
-    toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
+    toast('Nothing to create a folder in here.', 'warning')
     return
   }
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
@@ -956,13 +1161,28 @@ const buildPanel = (): HTMLElement => {
 }
 
 const showView = (view: View): void => {
+  const staying = currentView === view
   currentView = view
   const panel = document.getElementById(PANEL_ID)
   const body = panel?.querySelector('[data-wts-body]')
   const title = panel?.querySelector('h2')
   if (!body || !title) return
   const inSettings = view === 'settings'
-  body.replaceChildren(inSettings ? settingsView() : treeView())
+
+  /**
+   * Keep the scroll position when re-rendering the view you are already on.
+   *
+   * Every control here re-renders by rebuilding the whole view, which throws away the scroller with
+   * it — so toggling a colour near the bottom of settings jumped back to the top, and toggling the
+   * next one meant scrolling down again. Switching *between* views still starts at the top, which is
+   * right: that is a new thing to read, not the same one redrawn.
+   */
+  const previous = body.firstElementChild
+  const scrollTop = staying && previous instanceof HTMLElement ? previous.scrollTop : 0
+
+  const next = inSettings ? settingsView() : treeView()
+  body.replaceChildren(next)
+  if (scrollTop > 0) next.scrollTop = scrollTop
   title.textContent = inSettings ? 'Settings' : PANEL_TITLE
 
   const back = panel?.querySelector<HTMLElement>('[data-wts-back]')

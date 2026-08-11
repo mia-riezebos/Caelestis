@@ -1,4 +1,5 @@
 import { log, warn } from './debug.js'
+import { type Appearance, DEFAULT_APPEARANCE, normaliseAppearance } from './templates/appearance.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
 /**
@@ -41,6 +42,29 @@ export interface ConnectedServer {
   readonly isAdmin: boolean
 }
 
+/**
+ * A folder inside the Local category.
+ *
+ * Kept in state rather than IndexedDB, unlike the templates themselves: a folder is a name and a
+ * parent, which is exactly the kind of small metadata the rest of state holds, and it has to be
+ * readable synchronously while the tree renders. The templates are in IndexedDB because they are
+ * megabytes of pixels; this is not.
+ */
+export interface LocalFolder {
+  readonly id: string
+  /** Null means directly under Local. */
+  readonly parentId: string | null
+  readonly name: string
+  /**
+   * Whether this folder draws, like a group in an image editor.
+   *
+   * Hiding it hides everything beneath it — templates and nested folders alike — without touching
+   * what any of them say about themselves. Turning it back on restores exactly the arrangement that
+   * was there before, which is the whole point of a group toggle over switching each layer off.
+   */
+  readonly visible: boolean
+}
+
 export interface TreeNode {
   readonly id: string
   readonly parentId: string | null
@@ -61,6 +85,33 @@ export interface State {
   readonly progress: ProgressPlacement
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
+  /**
+   * Show only the colour wplace has selected, while its paint drawer is open.
+   *
+   * A mode rather than a preset: it is held separately from `hiddenColours` so that turning it off
+   * gives back whatever was switched off by hand, instead of leaving the palette however the mode
+   * left it.
+   */
+  readonly onlySelectedColour: boolean
+  readonly localFolders: readonly LocalFolder[]
+  /**
+   * Categories switched off wholesale, by tree key: `local`, or `server:<url>`.
+   *
+   * The same rule as a folder, one level up. A category is the outermost group, so turning it off
+   * takes everything under it off the canvas without editing any of it — and turning it back on
+   * restores exactly what was there. Kept as the hidden set rather than a flag per server so a
+   * server that is added later starts visible without needing a migration.
+   */
+  readonly hiddenScopes: readonly string[]
+  /**
+   * How overlays are drawn unless they say otherwise.
+   *
+   * A default rather than an override: a template that has never had its own appearance touched
+   * follows this, and one that has keeps what was set on it. Making it an override would mean
+   * changing a global slider silently discarded per-overlay work, which is the one thing a default
+   * must never do.
+   */
+  readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
 }
@@ -72,6 +123,10 @@ const DEFAULT_STATE: State = {
   sort: DEFAULT_SORT,
   progress: 'inline',
   hiddenColours: [],
+  onlySelectedColour: false,
+  localFolders: [],
+  hiddenScopes: [],
+  appearance: DEFAULT_APPEARANCE,
   reportPaints: false,
   shareTiles: false,
 }
@@ -107,7 +162,22 @@ export const loadState = (): State => {
   try {
     // Spread over the defaults rather than trusting the stored shape: a build that adds a field
     // must not be broken by state written before it existed.
-    state = { ...DEFAULT_STATE, ...(JSON.parse(raw) as Partial<State>) }
+    const stored = JSON.parse(raw) as Partial<State>
+    // The spread only rescues *top-level* fields. `appearance` is an object, so a stored one
+    // replaces the default whole, missing fields and all — which is how `undefined` reaches the
+    // renderer and comes back out as NaN.
+    state = {
+      ...DEFAULT_STATE,
+      ...stored,
+      appearance: normaliseAppearance(stored.appearance ?? null) ?? DEFAULT_APPEARANCE,
+      // Same trap as `appearance`, one level down: a folder stored before `visible` existed has no
+      // such field, and `!undefined` is true — so every folder made before this shipped would have
+      // been treated as hidden, taking its whole subtree off the canvas.
+      localFolders: (stored.localFolders ?? []).map((folder) => ({
+        ...folder,
+        visible: folder.visible !== false,
+      })),
+    }
     log('install', 'state loaded', { servers: state.servers.length })
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
@@ -126,6 +196,104 @@ export const setState = (patch: Partial<State>): State => {
 
 export const onStateChange = (listener: (next: State) => void): void => {
   listeners.push(listener)
+}
+
+const localFolderId = (): string =>
+  `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
+
+export const createLocalFolder = (parentId: string | null, name: string): LocalFolder => {
+  const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
+  setState({ localFolders: [...getState().localFolders, folder] })
+  return folder
+}
+
+/** Whether a whole category draws. Unknown keys are visible, so anything new starts on. */
+export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)
+
+export const setScopeVisible = (key: string, visible: boolean): void => {
+  const hidden = getState().hiddenScopes
+  if (visible === !hidden.includes(key)) return
+  setState({
+    hiddenScopes: visible ? hidden.filter((candidate) => candidate !== key) : [...hidden, key],
+  })
+}
+
+export const setLocalFolderVisible = (id: string, visible: boolean): void => {
+  setState({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, visible } : folder,
+    ),
+  })
+}
+
+/**
+ * Whether a folder and every folder above it are showing.
+ *
+ * Recursive rather than a single flag, because hiding a group must hide what is nested inside it
+ * even though those rows still say they are visible — they are, within a group that is not.
+ */
+export const localFolderChainVisible = (folderId: string | null): boolean => {
+  // The Local category itself is the outermost group in the chain.
+  if (!isScopeVisible('local')) return false
+  const folders = getState().localFolders
+  let walk = folderId
+  const seen = new Set<string>()
+  while (walk !== null) {
+    // A cycle should be impossible, but a render loop is a bad place to find out otherwise.
+    if (seen.has(walk)) return true
+    seen.add(walk)
+    const folder = folders.find((candidate) => candidate.id === walk)
+    if (folder === undefined) return true
+    // Explicitly against false: anything stored before this field existed is showing, not hidden.
+    if (folder.visible === false) return false
+    walk = folder.parentId
+  }
+  return true
+}
+
+export const renameLocalFolder = (id: string, name: string): void => {
+  const trimmed = name.trim()
+  if (trimmed === '') return
+  setState({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, name: trimmed } : folder,
+    ),
+  })
+}
+
+/**
+ * Remove a folder, lifting whatever was inside it to where the folder was.
+ *
+ * Deleting a container must not destroy what it holds. A template is someone's imported artwork and
+ * a folder is only a label on it, so the label goes and the contents move up one level — which is
+ * also recoverable by simply making the folder again.
+ */
+export const removeLocalFolder = (id: string): void => {
+  const folders = getState().localFolders
+  const folder = folders.find((candidate) => candidate.id === id)
+  if (folder === undefined) return
+  setState({
+    localFolders: folders
+      .filter((candidate) => candidate.id !== id)
+      .map((candidate) =>
+        candidate.parentId === id ? { ...candidate, parentId: folder.parentId } : candidate,
+      ),
+  })
+}
+
+export const moveLocalFolder = (id: string, parentId: string | null): void => {
+  // A folder cannot be moved inside itself or its own descendants, which would detach the branch
+  // from the tree and make it unreachable.
+  if (id === parentId) return
+  let walk = parentId
+  const folders = getState().localFolders
+  while (walk !== null) {
+    if (walk === id) return
+    walk = folders.find((candidate) => candidate.id === walk)?.parentId ?? null
+  }
+  setState({
+    localFolders: folders.map((folder) => (folder.id === id ? { ...folder, parentId } : folder)),
+  })
 }
 
 /** Replace one server in place, keyed by url, preserving the order of the rest. */

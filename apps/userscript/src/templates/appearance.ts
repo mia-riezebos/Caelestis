@@ -3,79 +3,252 @@ import { PALETTE_SIZE, TRANSPARENT_INDEX } from '@wts/shared'
 /**
  * How one overlay is drawn.
  *
- * The parameterisation is `05-rendering-model`'s, unchanged: `{ scale S, shape, size k, anchor,
- * opacity }`. One code path covers every mode — a pixel-size slider is `k` with a centre anchor,
- * wplace's own look is a top-left triangle, a dot is a small centred circle — so there are no
- * special cases to keep in step.
+ * Every pixel is a square, and the controls deform it. There is no shape *mode*, because a mode list
+ * is just a handful of frozen points in this space with worse names — "Dot" is a full-radius stamp
+ * at a small size, "Corner" is a rotated stamp translated into a corner and clipped, and "Full" and
+ * "Square" were the same shape at two sizes, split only because one had a cheaper render path.
  *
- * **`scale` is the entire performance story.** Drawing anything smaller than a whole pixel means
- * rendering each source pixel as an SxS block, and cost is quadratic: S=1 is free, S=3 costs 36 MB
- * per tile, S=5 costs 100 MB. So `scale` is derived from the shape rather than offered as a
- * control: full-pixel modes stay at 1 and pay nothing, and only a sub-pixel shape opts into the
- * bill.
+ * Each stamp is clipped to its own cell, so translating or rotating past the edge cuts the stamp off
+ * rather than bleeding into the neighbouring pixel. That clipping is what makes partial corners and
+ * wedges reachable at all.
+ *
+ * Order matters: **translate, then rotate**, both about the cell's centre. The offset is therefore
+ * measured along the stamp's own axes, so rotating a translated stamp swings it around rather than
+ * sliding it sideways.
+ *
+ * None of this costs per-pixel work. The stamp is rasterised once into a small mask and tiled over
+ * the template at draw time, so the shape is independent of the pixel grid it sits on — which is
+ * what an earlier version got wrong by expanding every source pixel into a 3x3 block and drawing
+ * inside it.
  */
 
-export type Shape = 'full' | 'square' | 'circle' | 'triangle'
-export type Anchor = 'tl' | 't' | 'tr' | 'l' | 'c' | 'r' | 'bl' | 'b' | 'br'
-
 export interface Appearance {
-  readonly shape: Shape
-  /** Fraction of the pixel the stamp covers, 0..1. Ignored by `full`. */
+  /**
+   * Stamp size as a fraction of the cell, 0..2.
+   *
+   * Above 1 is deliberate and useful rather than a mistake to clamp away. The stamp is clipped to
+   * its cell, so an oversized one is not bigger — it is *cropped*, and the crop is the shape. A
+   * square rotated 45 degrees only reaches the cell's corners once its side passes √2, so filling a
+   * corner cleanly is impossible at 100% no matter where it is translated: the diagonal always cuts
+   * short and leaves a notch. 2 covers the cell from any angle, which makes clean half-cell
+   * triangles and corner wedges reachable.
+   */
   readonly size: number
-  readonly anchor: Anchor
+  /** Corner rounding as a fraction of half the stamp: 0 is a square, 1 is a circle. */
+  readonly radius: number
+  /** Offset in cell widths, -1..1, applied before rotation. */
+  readonly translateX: number
+  readonly translateY: number
+  /** Rotation of each stamp in degrees. 45 turns squares into diamonds. */
+  readonly rotation: number
   readonly opacity: number
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
-  shape: 'full',
-  size: 1 / 3,
-  anchor: 'c',
+  size: 1,
+  radius: 0,
+  translateX: 0,
+  translateY: 0,
+  rotation: 0,
   opacity: 1,
   hiddenColours: [],
 }
 
 /**
- * Render scale for an appearance.
+ * A stored appearance, made safe to use.
  *
- * A full pixel needs no upscaling. Anything sub-pixel needs enough resolution for the shape to read
- * — 3 is what Blue Marble uses and is the smallest that produces a recognisable triangle.
+ * Anything persisted before a field existed simply lacks it, and `undefined` propagates straight
+ * through the arithmetic into `NaN` — which reads back as `NaN%` in the UI and silently poisons
+ * every transform in the renderer. Numbers are also clamped, because a stored value from an older
+ * range is worse than no value at all.
+ *
+ * Returns null for an appearance that says nothing, so the overlay falls back to the global default
+ * rather than to a half-populated object.
  */
-export const scaleFor = (appearance: Appearance): number => (appearance.shape === 'full' ? 1 : 3)
+export const normaliseAppearance = (raw: unknown): Appearance | null => {
+  if (raw === null || typeof raw !== 'object') return null
+  const source = raw as Record<string, unknown>
+  const number = (key: string, fallback: number, min: number, max: number): number => {
+    const value = source[key]
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+    return Math.min(max, Math.max(min, value))
+  }
+  const hidden = Array.isArray(source.hiddenColours)
+    ? source.hiddenColours.filter((index): index is number => typeof index === 'number')
+    : []
+  return {
+    size: number('size', DEFAULT_APPEARANCE.size, 0.05, 2),
+    radius: number('radius', DEFAULT_APPEARANCE.radius, 0, 1),
+    translateX: number('translateX', DEFAULT_APPEARANCE.translateX, -1, 1),
+    translateY: number('translateY', DEFAULT_APPEARANCE.translateY, -1, 1),
+    rotation: number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),
+    opacity: number('opacity', DEFAULT_APPEARANCE.opacity, 0.05, 1),
+    hiddenColours: hidden,
+  }
+}
 
+/**
+ * Whether this appearance is just the source pixels, untouched.
+ *
+ * Opacity is excluded on purpose: it is applied at draw time with `globalAlpha`, so it never costs a
+ * re-stamp and never forces the expensive path.
+ */
+export const isPlain = (appearance: Appearance): boolean =>
+  appearance.size >= 1 &&
+  appearance.radius === 0 &&
+  appearance.translateX === 0 &&
+  appearance.translateY === 0 &&
+  appearance.rotation === 0
+
+/**
+ * One cell's stamp, drawn once at high resolution and reused as a tiling mask.
+ *
+ * This is the whole shape system. The stamp is identical for every pixel — only the colour differs —
+ * so rasterising it per pixel was doing the same drawing a million times per tile and then throwing
+ * the resolution away.
+ *
+ * What it replaces: each source pixel was expanded into a 3x3 block and the shape was drawn inside
+ * *that*. A "33% size" stamp was therefore one device pixel, and rounding it did nothing except
+ * blur that pixel — which is exactly what it looked like. Resolution came from the pixel grid, so
+ * the shape could never be finer than the grid it lived on.
+ *
+ * Here the mask is `MASK_RESOLUTION` square regardless, and is scaled to whatever a cell measures on
+ * screen at draw time. Zoom in and the same mask gives a crisp, correctly-rounded stamp, because the
+ * shape is resolution-independent in exactly the way a vector is.
+ */
+const MASK_RESOLUTION = 64
+
+let cachedMask: { key: string; canvas: OffscreenCanvas } | null = null
+
+/** Everything that changes the stamp's silhouette. Opacity and colour are not part of it. */
+const maskKey = (a: Appearance): string =>
+  `${a.size}|${a.radius}|${a.translateX}|${a.translateY}|${a.rotation}`
+
+export const stampMask = (appearance: Appearance): OffscreenCanvas | null => {
+  if (isPlain(appearance)) return null
+  const key = maskKey(appearance)
+  if (cachedMask !== null && cachedMask.key === key) return cachedMask.canvas
+
+  const canvas = new OffscreenCanvas(MASK_RESOLUTION, MASK_RESOLUTION)
+  const context = canvas.getContext('2d')
+  if (context === null) return null
+
+  const cell = MASK_RESOLUTION
+  const side = appearance.size * cell
+  const radius = (appearance.radius * side) / 2
+
+  // Opaque white: the mask is used with `destination-in`, so only its alpha matters.
+  context.fillStyle = '#ffffff'
+  context.translate(cell / 2, cell / 2)
+  context.rotate((appearance.rotation * Math.PI) / 180)
+  context.translate(appearance.translateX * cell, appearance.translateY * cell)
+  context.beginPath()
+  if (radius <= 0) context.rect(-side / 2, -side / 2, side, side)
+  else context.roundRect(-side / 2, -side / 2, side, side, radius)
+  context.fill()
+
+  cachedMask = { key, canvas }
+  return canvas
+}
+
+/**
+ * Below this many device pixels per cell, the stamp is not worth drawing.
+ *
+ * A shape carved out of two screen pixels is indistinguishable from a dimmer full pixel, and paying
+ * a masking pass per tile to produce that is pure waste. Zoomed out far enough, overlays simply
+ * render as solid pixels — which is also the only thing that reads at that size.
+ */
+export const MIN_CELL_FOR_SHAPE = 3
+
+/**
+ * Whether a template pixel of this index should be left unpainted by the overlay.
+ *
+ * Index 63 is not "transparent" in a template — it is **wildcard**: this pixel may be anything.
+ * wplace does let you paint 63, so it is a real colour on their palette, but a template that stored
+ * it as a requirement would be demanding the canvas be *erased* there, which is a different and much
+ * stronger claim than the one templates make. So the overlay draws nothing over a wildcard, leaving
+ * whatever is underneath visible and correct.
+ *
+ * Progress must read it the same way when it is built: a wildcard matches whatever is already on
+ * the canvas and can never be counted wrong.
+ */
 export const isColourHidden = (appearance: Appearance, index: number): boolean =>
   index === TRANSPARENT_INDEX || appearance.hiddenColours.includes(index)
 
-/** Every drawable palette index, in palette order. */
+/**
+ * Every index a template can *require*, in palette order.
+ *
+ * Excludes the wildcard, which is why this is not simply the palette: a wildcard is a statement
+ * about not caring, so it is never something to filter, count, or offer a switch for.
+ */
 export const drawableIndices = (): readonly number[] =>
   Array.from({ length: PALETTE_SIZE }, (_, index) => index).filter(
     (index) => index !== TRANSPARENT_INDEX,
   )
 
-export const SHAPES: ReadonlyArray<{ id: Shape; label: string; hint: string }> = [
-  { id: 'full', label: 'Full', hint: 'Solid pixels — cheapest, and what you paint' },
-  { id: 'square', label: 'Square', hint: 'A smaller square inside each pixel' },
-  { id: 'circle', label: 'Dot', hint: 'A dot, so the canvas shows around it' },
-  { id: 'triangle', label: 'Corner', hint: "wplace's own look" },
+/** The controls, in the order they are shown. One row each, all the same shape. */
+export const APPEARANCE_CONTROLS: ReadonlyArray<{
+  key: 'size' | 'radius' | 'translateX' | 'translateY' | 'rotation' | 'opacity'
+  label: string
+  min: number
+  max: number
+  step: number
+  /** How to read the value back to the user. */
+  format: (value: number) => string
+}> = [
+  {
+    key: 'size',
+    label: 'Size',
+    min: 0.1,
+    // Past 1 the stamp is cropped by its own cell rather than drawn larger, which is what makes a
+    // filled corner or a clean half-cell triangle possible at all.
+    max: 2,
+    step: 0.05,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'radius',
+    label: 'Rounding',
+    min: 0,
+    max: 1,
+    step: 0.05,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'translateX',
+    // A full cell each way, not half. Half only reaches the cell's edge, which with an oversized
+    // stamp is nowhere near the end of the useful range — sliding a 200% stamp a whole cell is what
+    // leaves a thin band or clears the cell entirely, and both are shapes worth having.
+    label: 'Offset X',
+    min: -1,
+    max: 1,
+    step: 0.05,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'translateY',
+    label: 'Offset Y',
+    min: -1,
+    max: 1,
+    step: 0.05,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'rotation',
+    label: 'Rotation',
+    min: 0,
+    max: 90,
+    step: 1,
+    format: (v) => `${Math.round(v)}°`,
+  },
+  {
+    key: 'opacity',
+    label: 'Opacity',
+    min: 0.05,
+    max: 1,
+    step: 0.05,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
 ]
-
-export const ANCHORS: ReadonlyArray<{ id: Anchor; label: string }> = [
-  { id: 'tl', label: 'Top left' },
-  { id: 't', label: 'Top' },
-  { id: 'tr', label: 'Top right' },
-  { id: 'l', label: 'Left' },
-  { id: 'c', label: 'Centre' },
-  { id: 'r', label: 'Right' },
-  { id: 'bl', label: 'Bottom left' },
-  { id: 'b', label: 'Bottom' },
-  { id: 'br', label: 'Bottom right' },
-]
-
-/** Where a stamp of fractional `size` sits inside a cell, as a 0..1 offset. */
-export const anchorOffset = (anchor: Anchor, size: number): { x: number; y: number } => {
-  const free = 1 - size
-  const x = anchor.includes('l') ? 0 : anchor.includes('r') ? free : free / 2
-  const y = anchor.startsWith('t') ? 0 : anchor.startsWith('b') ? free : free / 2
-  return { x, y }
-}

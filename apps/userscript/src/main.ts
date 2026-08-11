@@ -6,10 +6,14 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, log, warn } from './debug.js'
-import { installMapCapture } from './map-handle.js'
+import { getMap, installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
-import { DEFAULT_APPEARANCE } from './templates/appearance.js'
+import { onStateChange } from './state.js'
+import { type Appearance, MIN_CELL_FOR_SHAPE, stampMask } from './templates/appearance.js'
+import { effectiveHiddenColours } from './templates/colour-filter.js'
 import {
+  appearanceOf,
+  isTemplateVisible,
   levelFor,
   localTemplates,
   onLocalChange,
@@ -21,6 +25,7 @@ import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
+import { onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 
 /**
  * Entry point.
@@ -138,15 +143,88 @@ export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
 }
 
 /**
- * Fill one tile, to check alignment by eye.
+ * One reusable scratch surface for the masking pass.
  *
- * `__wts.mark(1082, 1673)` paints that tile solid and it should sit exactly on the tile wplace
- * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
- * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
+ * Allocated once and grown as needed rather than per tile per frame, because a canvas allocation is
+ * a GPU surface allocation and doing six of those every frame is its own performance problem.
  */
+let scratch: OffscreenCanvas | null = null
+
+/**
+ * The tile with the pixel shape cut out of it, or null if it should be drawn as-is.
+ *
+ * Two `drawImage`s and one `fillRect` per tile, at screen resolution — replacing a per-pixel path
+ * loop over a million pixels. The mask is a repeating pattern of a single cell, scaled to whatever a
+ * cell measures on screen, so the shape stays smooth at any zoom instead of being quantised to a 3x3
+ * block. `destination-in` keeps the tile's colour only where the stamp is opaque.
+ *
+ * The pattern's origin is the tile's top-left corner, which is also cell (0,0) of that tile, so the
+ * repeat lines up with the pixel grid without any phase correction.
+ */
+const drawMasked = (
+  destination: CanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  appearance: Appearance,
+  tile: { left: number; top: number; width: number; height: number },
+): boolean => {
+  const cellPixels = tile.width / TILE_SIZE
+  // Too small for a shape to read, so skip the whole pass — this is also the common case while
+  // zoomed out, and it is the difference between panning smoothly and not.
+  if (cellPixels < MIN_CELL_FOR_SHAPE) return false
+  const mask = stampMask(appearance)
+  if (mask === null) return false
+
+  // Only the part of the tile that is actually on screen.
+  //
+  // Sizing the scratch to the whole tile is wrong by orders of magnitude once zoomed in: at z17 a
+  // tile spans about 90,000 device pixels, so the allocation failed, `getContext` returned null and
+  // the overlay silently fell back to drawing unmasked — shapes just stopped appearing past a
+  // certain zoom. Clipping to the viewport bounds the work by what can be seen instead.
+  const left = Math.max(tile.left, 0)
+  const top = Math.max(tile.top, 0)
+  const right = Math.min(tile.left + tile.width, destination.canvas.width)
+  const bottom = Math.min(tile.top + tile.height, destination.canvas.height)
+  const width = Math.ceil(right - left)
+  const height = Math.ceil(bottom - top)
+  if (width <= 0 || height <= 0) return true
+
+  if (scratch === null || scratch.width < width || scratch.height < height) {
+    scratch = new OffscreenCanvas(
+      Math.max(width, scratch?.width ?? 0),
+      Math.max(height, scratch?.height ?? 0),
+    )
+  }
+  const context = scratch.getContext('2d')
+  if (context === null) return false
+
+  // The scratch origin is the visible corner, so everything below is offset by how much of the tile
+  // is off-screen above and to the left.
+  const offsetX = tile.left - left
+  const offsetY = tile.top - top
+
+  context.clearRect(0, 0, width, height)
+  context.globalCompositeOperation = 'source-over'
+  // Nearest: we are magnifying, and a template pixel must stay a crisp square before it is carved.
+  context.imageSmoothingEnabled = false
+  context.drawImage(bitmap, offsetX, offsetY, tile.width, tile.height)
+
+  const pattern = context.createPattern(mask, 'repeat')
+  if (pattern === null) return false
+  // Scale one mask to one cell, then shift by the same off-screen offset, so the repeat stays keyed
+  // to the tile's own pixel grid rather than to whatever corner happens to be visible.
+  pattern.setTransform(new DOMMatrix().translate(offsetX, offsetY).scale(cellPixels / mask.width))
+  context.globalCompositeOperation = 'destination-in'
+  context.fillStyle = pattern
+  context.fillRect(0, 0, width, height)
+  context.globalCompositeOperation = 'source-over'
+
+  destination.drawImage(scratch, 0, 0, width, height, left, top, width, height)
+  return true
+}
+
 /** Draws every visible template over the tiles wplace is currently showing. */
 const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
-  const visible = localTemplates().filter((template) => template.visible)
+  const visible = localTemplates().filter(isTemplateVisible)
   if (visible.length === 0) return
 
   let drawn = 0
@@ -154,7 +232,11 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
   for (const quad of frame.quads) {
     const key = tileKey(quad.tile)
     for (const template of visible) {
-      const appearance = template.appearance ?? DEFAULT_APPEARANCE
+      const own = appearanceOf(template)
+      // The global colour switches and this overlay's own switches, joined. Without this the
+      // settings grid wrote a value nothing ever read.
+      const hiddenColours = effectiveHiddenColours(own.hiddenColours)
+      const appearance = hiddenColours === own.hiddenColours ? own : { ...own, hiddenColours }
       const preview = previewOriginFor(template.id)
       if (preview !== null && (preview.x !== template.originX || preview.y !== template.originY)) {
         const offsetX = preview.x - template.originX
@@ -180,8 +262,6 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
             const right = Math.min(destinationLeft + TILE_SIZE, targetLeft + TILE_SIZE)
             const bottom = Math.min(destinationTop + TILE_SIZE, targetTop + TILE_SIZE)
             if (right <= left || bottom <= top) continue
-            const bitmapScaleX = bitmap.width / TILE_SIZE
-            const bitmapScaleY = bitmap.height / TILE_SIZE
             const minifying = bitmap.width > quad.width || bitmap.height > quad.height
             if (smoothing !== minifying) {
               smoothing = minifying
@@ -189,26 +269,32 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
               if (minifying) context.imageSmoothingQuality = 'high'
             }
             context.globalAlpha = appearance.opacity
-            context.drawImage(
-              bitmap,
-              (left - targetLeft) * bitmapScaleX,
-              (top - targetTop) * bitmapScaleY,
-              (right - left) * bitmapScaleX,
-              (bottom - top) * bitmapScaleY,
-              quad.x + ((left - destinationLeft) / TILE_SIZE) * quad.width,
-              quad.y + ((top - destinationTop) / TILE_SIZE) * quad.height,
-              ((right - left) / TILE_SIZE) * quad.width,
-              ((bottom - top) / TILE_SIZE) * quad.height,
-            )
+            const canvasLeft =
+              quad.x + ((targetLeft - destinationLeft) / TILE_SIZE) * quad.width
+            const canvasTop = quad.y + ((targetTop - destinationTop) / TILE_SIZE) * quad.height
+            context.save()
+            context.beginPath()
+            context.rect(quad.x, quad.y, quad.width, quad.height)
+            context.clip()
+            if (
+              !drawMasked(context, bitmap, appearance, {
+                left: canvasLeft,
+                top: canvasTop,
+                width: quad.width,
+                height: quad.height,
+              })
+            ) {
+              context.drawImage(bitmap, canvasLeft, canvasTop, quad.width, quad.height)
+            }
+            context.restore()
             context.globalAlpha = 1
             drawn++
           }
         }
         continue
       }
-      // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
-      // per frame; the stamp is rebuilt only when the appearance changes.
-      const tile = stampTile(template, key, appearance, quad.width)
+      // Only the colour filter is baked. Shape is applied below, as a mask at screen resolution.
+      const tile = stampTile(template, key, appearance)
       if (tile === undefined) continue
       context.globalAlpha = appearance.opacity
       // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
@@ -225,7 +311,16 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
       }
       // Use MapLibre's exact fractional quad. Snapping each quad independently changes both origin
       // and scale relative to the underlying WebGL tile, visibly distorting the internal pixel grid.
-      context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
+      if (
+        !drawMasked(context, bitmap, appearance, {
+          left: quad.x,
+          top: quad.y,
+          width: quad.width,
+          height: quad.height,
+        })
+      ) {
+        context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
+      }
       context.globalAlpha = 1
       drawn++
     }
@@ -233,6 +328,13 @@ const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): vo
   if (drawn > 0) log('draw', `painted ${drawn} template tiles`, { quads: frame.quads.length })
 }
 
+/**
+ * Fill one tile, to check alignment by eye.
+ *
+ * `__wts.mark(1082, 1673)` paints that tile solid and it should sit exactly on the tile wplace
+ * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
+ * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
+ */
 let marked: { x: number; y: number } | null = null
 
 const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
@@ -244,15 +346,42 @@ const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void =>
   }
 }
 
+/**
+ * Run one piece of start-up, and let the rest start even if it fails.
+ *
+ * `main` is a straight sequence of installs, so a throw in any one of them silently cancels every
+ * install after it. That is how a null-argument `MutationObserver` in the paint watcher removed the
+ * rail button: an unrelated subsystem three lines earlier, no error visible in the UI, and nothing
+ * to suggest where to look.
+ *
+ * Failing loudly and continuing is strictly better here. Every one of these is independent, and a
+ * page missing one feature beats a page missing all of them.
+ */
+const step = (what: string, run: () => void): void => {
+  try {
+    run()
+  } catch (error) {
+    warn('install', `${what} failed to start`, String(error))
+  }
+}
+
 const main = (): void => {
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
-  try {
-    installMapCapture()
-  } catch {
-    // Map capture is optional; URL-based navigation remains available without it.
-  }
-  try {
+  step('map capture', installMapCapture)
+  step('debug API', () => {
     installDebugApi({
+      /** The captured MapLibre Map, for poking at its style and layers from the console. */
+      map: () => getMap(),
+      /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
+      quads: () =>
+        lastFrame === null
+          ? null
+          : {
+              count: lastFrame.quads.length,
+              canvas: `${lastFrame.canvas.width}x${lastFrame.canvas.height}`,
+              cellPixels: (lastFrame.quads[0]?.width ?? 0) / TILE_SIZE,
+              tiles: lastFrame.quads.map((quad) => `${quad.tile.x}/${quad.tile.y}`),
+            },
       mark(x?: number, y?: number) {
         marked = x === undefined || y === undefined ? null : { x, y }
         repaint()
@@ -260,17 +389,16 @@ const main = (): void => {
         return `[wts] marking tile ${x},${y} — __wts.mark() with no arguments to clear`
       },
     })
-  } catch {
-    // Diagnostics are optional and must not prevent the render hooks from installing.
-  }
-  try {
-    install()
-  } catch {
-    // Browser hooks are best-effort around page-owned surfaces.
-  }
+  })
+  step('tile capture', install)
   // Templates outlive a page load, which is what makes navigating to one survivable at all.
-  void restoreLocalTemplates()
-  void loadAccount()
+  step('local templates', () => void restoreLocalTemplates())
+  step('wplace account', () => void loadAccount())
+  // "Only the selected colour" needs to know when wplace's drawer opens and what is picked in it.
+  step('paint watcher', () => {
+    watchPaintSelection()
+    onPaintSelectionChange(repaint)
+  })
   onPaint(paintTemplates)
   // The buttons ride with the overlay, so they are repositioned on the same frame the map moved.
   onPaint(() => renderOverlayControls(repaint))
@@ -278,11 +406,17 @@ const main = (): void => {
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
   onLocalChange(repaint)
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', installPanel, { once: true })
-  } else {
-    installPanel()
-  }
+  // So does anything in settings that changes what is drawn: the global colour filter, the global
+  // appearance, and a folder being hidden. Without this the canvas only caught up on the next frame
+  // MapLibre happened to produce, so toggling something and not touching the map looked broken.
+  onStateChange(repaint)
+  step('panel', () => {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', installPanel, { once: true })
+    } else {
+      installPanel()
+    }
+  })
   try {
     console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
   } catch {

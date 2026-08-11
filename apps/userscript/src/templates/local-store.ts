@@ -7,7 +7,8 @@ import {
 } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
-import { type Appearance, anchorOffset, DEFAULT_APPEARANCE, scaleFor } from './appearance.js'
+import { getState, localFolderChainVisible } from '../state.js'
+import { type Appearance, normaliseAppearance } from './appearance.js'
 import {
   type ImportedTemplate,
   MAX_SOURCE_TILES_PER_TEMPLATE,
@@ -62,11 +63,19 @@ export interface PlacedTemplate extends ImportedTemplate {
    * remove it rather than leave it stranded at a position nobody chose.
    */
   readonly everPlaced: boolean
-  /** How this one is drawn. Per-overlay, because the right opacity for a dense mural and a thin
-   *  outline are not the same number. */
-  readonly appearance: Appearance
+  /**
+   * How this one is drawn, or null to follow the global default.
+   *
+   * Null is not the same as a copy of the default. A template that has never been adjusted should
+   * track the global sliders as they move; one that has been adjusted must keep what was set on it.
+   * Storing a copy at creation would freeze every new template at whatever the global happened to be
+   * that day and quietly stop it following anything.
+   */
+  readonly appearance: Appearance | null
   /** IndexedDB compare-and-swap token; not part of template identity or rendering. */
   readonly revision: number
+  /** Which Local folder this sits in, or null for the top level of Local. */
+  readonly folderId: string | null
 }
 
 const templates = new Map<string, PlacedTemplate>()
@@ -156,6 +165,7 @@ const notify = (): void => {
         width: t.width,
         height: t.height,
         tiles: t.tiles.size,
+        folderId: t.folderId,
       }),
     )
   } catch (error) {
@@ -196,6 +206,20 @@ export const clearLocalPreview = (id: string): boolean => {
   notify()
   return true
 }
+
+/**
+ * Whether this template actually draws.
+ *
+ * Its own switch *and* every folder above it. A template inside a hidden folder keeps saying it is
+ * visible, because it is — within a group that is not — and that is what makes turning the group
+ * back on restore the arrangement instead of flattening it.
+ */
+export const isTemplateVisible = (template: PlacedTemplate): boolean =>
+  template.visible && localFolderChainVisible(template.folderId)
+
+/** How this template is actually drawn: its own appearance, or the global default it inherits. */
+export const appearanceOf = (template: PlacedTemplate): Appearance =>
+  template.appearance ?? getState().appearance
 
 /**
  * Slice a template into tile-sized bitmaps.
@@ -338,19 +362,31 @@ const isTemplateLoadFailure = (value: unknown): value is TemplateLoadFailure =>
 
 const isAppearance = (value: unknown): value is Appearance => {
   if (!isRecord(value)) return false
-  const { shape, size, anchor, opacity, hiddenColours } = value
+  const { size, radius, translateX, translateY, rotation, opacity, hiddenColours } = value
   return (
-    typeof shape === 'string' &&
-    ['full', 'square', 'circle', 'triangle'].includes(shape) &&
     typeof size === 'number' &&
     Number.isFinite(size) &&
-    size >= 0 &&
+    size >= 0.05 &&
     size <= 1 &&
-    typeof anchor === 'string' &&
-    ['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'].includes(anchor) &&
+    typeof radius === 'number' &&
+    Number.isFinite(radius) &&
+    radius >= 0 &&
+    radius <= 1 &&
+    typeof translateX === 'number' &&
+    Number.isFinite(translateX) &&
+    translateX >= -1 &&
+    translateX <= 1 &&
+    typeof translateY === 'number' &&
+    Number.isFinite(translateY) &&
+    translateY >= -1 &&
+    translateY <= 1 &&
+    typeof rotation === 'number' &&
+    Number.isFinite(rotation) &&
+    rotation >= 0 &&
+    rotation <= 360 &&
     typeof opacity === 'number' &&
     Number.isFinite(opacity) &&
-    opacity >= 0 &&
+    opacity >= 0.05 &&
     opacity <= 1 &&
     Array.isArray(hiddenColours) &&
     hiddenColours.length <= WPLACE_PALETTE.length &&
@@ -359,11 +395,6 @@ const isAppearance = (value: unknown): value is Appearance => {
     ) &&
     new Set(hiddenColours).size === hiddenColours.length
   )
-}
-
-const normaliseAppearance = (value: unknown): Appearance => {
-  if (!isAppearance(value)) return DEFAULT_APPEARANCE
-  return { ...value, hiddenColours: [...value.hiddenColours] }
 }
 
 const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
@@ -384,6 +415,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     everPlaced,
     appearance,
     revision,
+    folderId,
   } = value
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) {
     throw new RangeError('template id is invalid')
@@ -419,6 +451,9 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   ) {
     throw new RangeError('template revision is invalid')
   }
+  if (folderId !== undefined && folderId !== null && typeof folderId !== 'string') {
+    throw new RangeError('template folder is invalid')
+  }
   const normalised: StoredTemplate = {
     id,
     name,
@@ -433,6 +468,7 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     visible,
     everPlaced,
     revision: revision === undefined ? 0 : (revision as number),
+    folderId: typeof folderId === 'string' ? folderId : null,
     appearance: normaliseAppearance(appearance),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
@@ -690,8 +726,9 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       clearStamped(id)
       previewOrigins.delete(id)
       templates.set(id, {
-        appearance: DEFAULT_APPEARANCE,
         ...winner,
+        appearance: winner.appearance ?? null,
+        folderId: winner.folderId ?? null,
         visible,
         tiles,
       })
@@ -757,8 +794,10 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       tiles,
       visible: true,
       everPlaced: false,
-      appearance: DEFAULT_APPEARANCE,
+      // Follows the global appearance until someone touches this one's own controls.
+      appearance: null,
       revision: 0,
+      folderId: null,
     }
     if (!claimSourceReplacement(0, tiles.size)) {
       releaseCandidateTiles(tiles)
@@ -931,8 +970,9 @@ const restoreStoredTemplates = async (): Promise<void> => {
           }
         }
         templates.set(template.id, {
-          appearance: DEFAULT_APPEARANCE,
           ...template,
+          appearance: template.appearance ?? null,
+          folderId: template.folderId ?? null,
           // Keep valid durable records manageable even when this session cannot afford/render their
           // source bitmaps. The durable visibility value remains untouched; an explicit toggle will
           // retry construction and reconcile it.
@@ -1201,6 +1241,33 @@ export const placeLocalTemplate = async (
   return await enqueueMove(id, roundedX, roundedY, true)
 }
 
+/** Move a template into a Local folder, or to the top level with null. */
+export const setTemplateFolder = async (
+  id: string,
+  folderId: string | null,
+): Promise<boolean> => {
+  return await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    if (existing.folderId === folderId) return true
+    const next = { ...existing, folderId }
+    let revision = existing.revision
+    if (!isPendingImage(existing)) {
+      const result = await savePlaced(next)
+      const committed = committedRevision(result)
+      if (committed === null) {
+        if (result.status === 'conflict') await reconcileConflict(id)
+        warn('install', `folder change for ${next.name} was not saved`)
+        return false
+      }
+      revision = committed
+    }
+    templates.set(id, { ...next, revision })
+    notify()
+    return true
+  })
+}
+
 export const renameLocalTemplate = async (id: string, name: string): Promise<boolean> => {
   const trimmed = name.trim()
   if (trimmed === '' || trimmed.length > MAX_TEMPLATE_NAME_LENGTH) return false
@@ -1328,14 +1395,18 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 }
 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
-export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
-  if (!isAppearance(appearance)) return false
+/** Pass null to put the overlay back on the global defaults. */
+export const setAppearance = async (
+  id: string,
+  appearance: Appearance | null,
+): Promise<boolean> => {
+  if (appearance !== null && !isAppearance(appearance)) return false
   // The write starts in a later microtask. Own the validated data now so the caller cannot mutate
   // its array after validation and smuggle invalid or unbounded state into IndexedDB.
-  const ownedAppearance: Appearance = {
-    ...appearance,
-    hiddenColours: [...appearance.hiddenColours],
-  }
+  const ownedAppearance: Appearance | null =
+    appearance === null
+      ? null
+      : { ...appearance, hiddenColours: [...appearance.hiddenColours] }
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
@@ -1351,7 +1422,9 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
       }
       revision = committed
     }
-    if (appearanceKey(existing.appearance) !== appearanceKey(ownedAppearance)) clearStamped(id)
+    const oldFilterKey = appearanceKey(appearanceOf(existing))
+    const newFilterKey = appearanceKey(ownedAppearance ?? getState().appearance)
+    if (oldFilterKey !== newFilterKey) clearStamped(id)
     templates.set(id, { ...next, revision })
     notify()
     return true
@@ -1361,7 +1434,7 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
 /**
  * A tile stamped for one appearance, cached until that appearance changes.
  *
- * Shape, size, anchor and per-overlay colour filtering all decide *what each pixel looks like*, so
+ * Geometry and per-overlay colour filtering decide *what each pixel looks like*, so
  * they belong in the bitmap rather than in a per-frame loop — a 1000x1000 tile is a million pixels
  * and the frame budget is 16ms. `full` needs no stamping at all and returns the mip chain
  * untouched, which is why it costs nothing.
@@ -1369,12 +1442,6 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
 const stamped = new Map<string, { key: string; tile: TileLevels; bytes: number }>()
 const pendingStamps = new Map<string, string>()
 const MAX_STAMPED_BYTES = 128 * 1024 * 1024
-// Every retained source tile can need a shaped stamp in the same viewport. Size a stamp so the
-// complete legitimate working set fits: otherwise the last build evicts the first, its repaint
-// immediately rebuilds it, and a static view never quiesces.
-const MAX_RETAINED_STAMP_WIDTH = Math.floor(
-  Math.sqrt(MAX_STAMPED_BYTES / (4 * MAX_RETAINED_SOURCE_TILES)),
-)
 const MAX_CONCURRENT_STAMP_BUILDS = 1
 let stampedBytes = 0
 
@@ -1503,46 +1570,33 @@ const clearStamped = (id: string): void => {
   }
 }
 
-const appearanceKey = (a: Appearance): string =>
-  `${a.shape}|${a.size}|${a.anchor}|${a.hiddenColours.join(',')}`
-
-const desiredLevelWidth = (fullWidth: number, targetWidth: number): number => {
-  let width = fullWidth
-  while (width > MIN_MIP_SIZE) {
-    const next = Math.max(1, Math.floor(width / 2))
-    if (next < targetWidth) break
-    width = next
-  }
-  // Magnifying a bounded level with nearest-neighbour preserves crisp shapes while guaranteeing
-  // that the complete retained source-tile working set cannot enter an eviction/rebuild loop.
-  return Math.min(width, MAX_RETAINED_STAMP_WIDTH)
-}
+/**
+ * Only the colour filter. Shape is a mask applied at draw time and never re-bakes a tile.
+ *
+ * This used to include size, rounding, offset and rotation, which meant every drag of every slider
+ * rebuilt a million-pixel bitmap per visible tile — with a canvas path per pixel. That is why moving
+ * a slider crawled. Colour filtering genuinely does have to be baked, because it changes *which*
+ * pixels exist rather than what shape they are, but it changes when someone clicks a swatch and not
+ * while they drag.
+ */
+const appearanceKey = (a: Appearance): string => a.hiddenColours.join(',')
 
 export const stampTile = (
   template: PlacedTemplate,
   tileKey: string,
   appearance: Appearance,
-  targetWidth = TILE_SIZE,
+  _targetWidth = TILE_SIZE,
 ): TileLevels | undefined => {
   const source = template.tiles.get(tileKey)
   if (source === undefined) return undefined
-  // Sub-pixel geometry conveys nothing below one screen pixel per source pixel. At that scale use a
-  // native-size filtered raster: colour toggles still apply, without paying 36 MB for a 3x tile.
-  const renderedAppearance =
-    targetWidth < TILE_SIZE && appearance.shape !== 'full'
-      ? { ...appearance, shape: 'full' as const }
-      : appearance
-  // Opacity is applied at draw time, so it is deliberately not part of the cache key — dragging
-  // that slider must not rebuild a million pixels per frame.
-  const wantedWidth = desiredLevelWidth(TILE_SIZE * scaleFor(renderedAppearance), targetWidth)
-  const identity = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}`
-  const wanted = `${identity}|${wantedWidth}`
   const cacheKey = `${template.id}|${tileKey}`
-  if (renderedAppearance.shape === 'full' && renderedAppearance.hiddenColours.length === 0) {
+  if (appearance.hiddenColours.length === 0) {
     cancelPendingStamp(cacheKey)
     clearStampFailure(cacheKey)
     return source
   }
+  // Geometry is a draw-time mask. Only the colour filter is baked into this native-size bitmap.
+  const wanted = `${template.originX},${template.originY}|${appearanceKey(appearance)}`
 
   const hit = stamped.get(cacheKey)
   if (hit !== undefined && hit.key === wanted) {
@@ -1567,8 +1621,7 @@ export const stampTile = (
         ? await buildStamp(
             template,
             tileKey,
-            renderedAppearance,
-            wantedWidth,
+            appearance,
             () => pendingStamps.get(cacheKey) === wanted,
           )
         : null,
@@ -1596,50 +1649,20 @@ export const stampTile = (
         warn('draw', `could not build appearance for ${template.name}`, String(error))
       })
   }
-  // A stamp with the same identity has the right geometry and colour filtering at another mip.
-  // Keep it visible while the requested zoom bucket is built instead of blinking the tile out.
-  if (hit?.key.startsWith(`${identity}|`)) {
-    stamped.delete(cacheKey)
-    stamped.set(cacheKey, hit)
-    return hit.tile
-  }
-  // Keep the source visible while shape-only work is prepared. When colours are hidden, showing
-  // the unfiltered source would be incorrect, so the first filtered build has no safe fallback.
-  return renderedAppearance.hiddenColours.length === 0 ? source : undefined
+  // Showing the unfiltered source while colours are hidden would be incorrect.
+  return undefined
 }
 
-const stampMask = (appearance: Appearance, scale: number): Uint8ClampedArray | null => {
-  if (appearance.shape === 'full') return new Uint8ClampedArray([0, 0, 0, 255])
-  const canvas = new OffscreenCanvas(scale, scale)
-  const context = canvas.getContext('2d', { willReadFrequently: true })
-  if (context === null) return null
-  const side = appearance.size * scale
-  const offset = anchorOffset(appearance.anchor, appearance.size)
-  const px = offset.x * scale
-  const py = offset.y * scale
-  context.fillStyle = '#ffffff'
-  if (appearance.shape === 'circle') {
-    context.beginPath()
-    context.arc(px + side / 2, py + side / 2, side / 2, 0, Math.PI * 2)
-    context.fill()
-  } else if (appearance.shape === 'triangle') {
-    context.beginPath()
-    context.moveTo(px, py)
-    context.lineTo(px + side, py)
-    context.lineTo(px, py + side)
-    context.closePath()
-    context.fill()
-  } else {
-    context.fillRect(px, py, side, side)
-  }
-  return context.getImageData(0, 0, scale, scale).data
-}
-
+/**
+ * The tile again with hidden colours dropped, written straight into an ImageData.
+ *
+ * No canvas paths and no upscaling — one pass over the pixels that are actually in this tile. The
+ * shape is not this function's business any more.
+ */
 const buildStamp = async (
   template: PlacedTemplate,
   tileKey: string,
   appearance: Appearance,
-  wantedWidth: number,
   isCurrent: () => boolean,
 ): Promise<TileLevels | null> => {
   // `async` alone does not defer work before its first await. Yield before allocation and then in
@@ -1649,39 +1672,27 @@ const buildStamp = async (
   if (!isCurrent()) return null
   const [tx, ty] = tileKey.split('/').map(Number)
   if (tx === undefined || ty === undefined) return null
-  const scale = scaleFor(appearance)
-  const size = TILE_SIZE * scale
-  const mask = stampMask(appearance, scale)
-  if (mask === null) return null
-  const rgba = new Uint8ClampedArray(size * size * 4)
-
   const hidden = new Set(appearance.hiddenColours)
+  const rgba = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
   const tileLeft = tx * TILE_SIZE
   const tileTop = ty * TILE_SIZE
   const startX = Math.max(0, tileLeft - template.originX)
   const startY = Math.max(0, tileTop - template.originY)
   const endX = Math.min(template.width, tileLeft + TILE_SIZE - template.originX)
   const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
-
   for (let y = startY; y < endY; y++) {
+    const rowOffset = y * template.width
+    const targetRow = (template.originY + y - tileTop) * TILE_SIZE
     for (let x = startX; x < endX; x++) {
-      const index = template.indices[y * template.width + x] ?? TRANSPARENT_INDEX
+      const index = template.indices[rowOffset + x] ?? TRANSPARENT_INDEX
       if (index === TRANSPARENT_INDEX || hidden.has(index)) continue
       const colour = WPLACE_PALETTE[index]
       if (colour === undefined) continue
-      const cellX = (template.originX + x - tileLeft) * scale
-      const cellY = (template.originY + y - tileTop) * scale
-      for (let maskY = 0; maskY < scale; maskY++) {
-        for (let maskX = 0; maskX < scale; maskX++) {
-          const alpha = mask[(maskY * scale + maskX) * 4 + 3] ?? 0
-          if (alpha === 0) continue
-          const target = ((cellY + maskY) * size + cellX + maskX) * 4
-          rgba[target] = colour.rgb[0]
-          rgba[target + 1] = colour.rgb[1]
-          rgba[target + 2] = colour.rgb[2]
-          rgba[target + 3] = alpha
-        }
-      }
+      const target = (targetRow + (template.originX + x - tileLeft)) * 4
+      rgba[target] = colour.rgb[0]
+      rgba[target + 1] = colour.rgb[1]
+      rgba[target + 2] = colour.rgb[2]
+      rgba[target + 3] = 255
     }
     if ((y - startY + 1) % 64 === 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -1689,37 +1700,14 @@ const buildStamp = async (
     }
   }
   if (!isCurrent()) return null
-  let current: ImageBitmap | null = null
   try {
-    current = await createImageBitmap(new ImageData(rgba, size, size))
+    const bitmap = await createImageBitmap(new ImageData(rgba, TILE_SIZE, TILE_SIZE))
     if (!isCurrent()) {
-      current.close()
+      bitmap.close()
       return null
     }
-    let width = size
-    while (width > wantedWidth) {
-      const nextWidth = Math.max(wantedWidth, Math.floor(width / 2))
-      const canvas = new OffscreenCanvas(nextWidth, nextWidth)
-      const context = canvas.getContext('2d')
-      if (context === null) {
-        current.close()
-        return null
-      }
-      context.imageSmoothingEnabled = true
-      context.imageSmoothingQuality = 'high'
-      context.drawImage(current, 0, 0, nextWidth, nextWidth)
-      const next = await createImageBitmap(canvas)
-      current.close()
-      current = next
-      if (!isCurrent()) {
-        current.close()
-        return null
-      }
-      width = nextWidth
-    }
-    return { levels: [current] }
+    return { levels: [bitmap] }
   } catch (error) {
-    current?.close()
     throw error
   }
 }
