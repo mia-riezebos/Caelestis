@@ -904,6 +904,22 @@ export const putServerTemplate = async (
   notify()
 }
 
+/** Refresh server-owned metadata without rebuilding unchanged pixels. */
+export const updateServerTemplateMetadata = (
+  id: string,
+  name: string,
+  serverNodeId: string,
+): boolean => {
+  const existing = templates.get(id)
+  if (existing === undefined || !isServerTemplate(existing)) return false
+  const trimmed = name.trim()
+  if (trimmed === '' || trimmed.length > MAX_TEMPLATE_NAME_LENGTH) return false
+  if (existing.name === trimmed && existing.serverNodeId === serverNodeId) return true
+  templates.set(id, { ...existing, name: trimmed, serverNodeId })
+  notify()
+  return true
+}
+
 /** Drop a server template we hold, because the server has stopped publishing it. */
 export const forgetServerTemplate = (id: string): void => {
   const existing = templates.get(id)
