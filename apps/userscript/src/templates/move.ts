@@ -228,7 +228,7 @@ const isPageControl = (target: EventTarget | null): boolean => {
     element.isContentEditable === true ||
     ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
     (element.closest?.(
-      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"]',
+      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"],#wts-panel,[data-wts-movebar]',
     ) ?? null) !== null
   )
 }

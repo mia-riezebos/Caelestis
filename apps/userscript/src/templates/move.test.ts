@@ -431,7 +431,7 @@ describe('template placement controls', () => {
     expect(harness.previewLocalTemplate).toHaveBeenCalledWith('test', 20, 40)
   })
 
-  it('ignores placement shortcuts in editable controls and page dialogs', async () => {
+  it('ignores placement shortcuts in controls, dialogs and the panel tree', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())
     const keydown = listeners.get('keydown')
@@ -452,9 +452,33 @@ describe('template placement controls', () => {
       target: { tagName: 'DIV', closest: vi.fn(() => ({})) },
       preventDefault: vi.fn(),
     } as unknown as Event)
+    const panelTarget = {
+      tagName: 'DIV',
+      closest: vi.fn((selector: string) => (selector.includes('#wts-panel') ? {} : null)),
+    }
+    const panelPreventDefault = vi.fn()
+    keydown({
+      key: 'ArrowDown',
+      target: panelTarget,
+      preventDefault: panelPreventDefault,
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    keydown({
+      key: 'Enter',
+      target: panelTarget,
+      preventDefault: panelPreventDefault,
+    } as unknown as Event)
+    keydown({
+      key: 'Escape',
+      target: panelTarget,
+      preventDefault: panelPreventDefault,
+    } as unknown as Event)
     await Promise.resolve()
 
     expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.previewLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.clearLocalPreview).not.toHaveBeenCalled()
+    expect(panelPreventDefault).not.toHaveBeenCalled()
   })
 
   it('moves placement by keyboard with a larger Shift step', async () => {
