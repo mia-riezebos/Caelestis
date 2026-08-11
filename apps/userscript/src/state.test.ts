@@ -184,6 +184,47 @@ describe('server state boundaries', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 
+  it('does not retain cached identity after a different server answers at the same URL', async () => {
+    const replacementInfo = {
+      id: '019fed50-87a1-7523-a88c-bdeafad49699',
+      name: 'Replacement',
+      auth: 'none' as const,
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(replacementInfo), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...manifest, server: replacementInfo, nodes: [null] }), {
+            status: 200,
+          }),
+        ),
+    )
+    const { getState, probeServer, setState, upsertServer } = await import('./state.js')
+    setState({
+      servers: [
+        {
+          url: 'https://example.com',
+          info: serverInfo,
+          token: null,
+          status: 'unreachable',
+          isAdmin: false,
+          season: null,
+          lastVerified: { serverId: SERVER_ID, season: 0 },
+        },
+      ],
+    })
+
+    const replacement = await probeServer('https://example.com', null)
+    upsertServer(replacement)
+
+    expect(getState().servers[0]).toEqual(
+      expect.objectContaining({ info: replacementInfo, status: 'unreachable' }),
+    )
+    expect(getState().servers[0]).not.toHaveProperty('lastVerified')
+  })
+
   it.each([
     {
       name: 'a chunk outside its template bounds',

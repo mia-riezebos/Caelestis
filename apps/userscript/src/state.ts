@@ -732,6 +732,7 @@ export const probeServer = async (
       season: null,
     }
   }
+  let observedInfo: ServerInfo | null = null
   try {
     const { response, body } = await remoteJson(
       `${base}/server`,
@@ -754,6 +755,7 @@ export const probeServer = async (
     }
     const info = serverInfoFrom(body)
     if (info === null) throw new TypeError('server returned invalid metadata')
+    observedInfo = info
     log('install', `probed ${base}`, { name: info.name, auth: info.auth })
 
     if (info.auth === 'access_token' && token === null) {
@@ -835,7 +837,7 @@ export const probeServer = async (
     // distinction is not visible to us — the browser withholds it deliberately.
     return {
       url: base,
-      info: null,
+      info: observedInfo,
       token,
       status: 'unreachable',
       error: String(error),
