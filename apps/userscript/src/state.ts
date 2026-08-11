@@ -86,6 +86,7 @@ const MAX_CUSTOM_ORDER = 200_000
 export const MAX_CONNECTED_SERVERS = 32
 const SERVER_REFRESH_CONCURRENCY = 4
 const REMOTE_TIMEOUT_MS = 10_000
+const LARGE_TRANSFER_TIMEOUT_MS = 120_000
 const SERVER_JSON_BYTES = 16 * 1024
 const TREE_JSON_BYTES = 64 * 1024 * 1024
 const MUTATION_JSON_BYTES = 64 * 1024
@@ -126,16 +127,14 @@ const remoteJson = async (
   input: string,
   init: RequestInit = {},
   maxBytes = MUTATION_JSON_BYTES,
+  timeoutMs = REMOTE_TIMEOUT_MS,
 ): Promise<{ response: Response; body: unknown }> => {
   const controller = new AbortController()
   const external = init.signal
   const forwardAbort = (): void => controller.abort(external?.reason)
   if (external?.aborted) forwardAbort()
   else external?.addEventListener('abort', forwardAbort, { once: true })
-  const timeout = setTimeout(
-    () => controller.abort(new Error('request timed out')),
-    REMOTE_TIMEOUT_MS,
-  )
+  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
   try {
     const response = await fetch(input, { ...init, signal: controller.signal })
     return { response, body: await readBoundedJson(response, maxBytes) }
@@ -367,6 +366,7 @@ export const loadState = (): State => {
       shareTiles: stored.shareTiles === true,
     }
     log('install', 'state loaded', { servers: state.servers.length })
+    for (const listener of listeners) listener(state)
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
   }
@@ -435,6 +435,7 @@ const fetchNodes = async (
         ...(signal === undefined ? {} : { signal }),
       },
       TREE_JSON_BYTES,
+      LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (!response.ok)
       return { ok: false, status: response.status, message: `Server said ${response.status}.` }
@@ -527,13 +528,14 @@ export const probeServer = async (
         ...(signal === undefined ? {} : { signal }),
       },
       TREE_JSON_BYTES,
+      LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (authed.status === 401 || authed.status === 403) {
       log('install', `${base} rejected the code`, { status: authed.status })
       return {
         url: base,
         info,
-        token: null,
+        token,
         status: 'needs-token',
         error: 'rejected',
         isAdmin: false,
@@ -745,12 +747,17 @@ export const uploadTemplate = async (
     form.set('name', input.name)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
-    const { response, body } = await remoteJson(`${server.url}/admin/templates`, {
-      method: 'POST',
-      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
-      body: form,
-      ...(signal === undefined ? {} : { signal }),
-    })
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/templates`,
+      {
+        method: 'POST',
+        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        body: form,
+        ...(signal === undefined ? {} : { signal }),
+      },
+      MUTATION_JSON_BYTES,
+      LARGE_TRANSFER_TIMEOUT_MS,
+    )
     if (response.ok) {
       return { ok: true, id: isRecord(body) && typeof body.id === 'string' ? body.id : '' }
     }

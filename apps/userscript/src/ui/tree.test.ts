@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type ConnectedServer, probeServer, setState } from '../state.js'
-import { nodeSiblingItems, nodeTreeKey, refreshNodes, reorderedSiblings } from './tree.js'
+import {
+  nodeSiblingItems,
+  nodeTreeKey,
+  refreshNodes,
+  reorderedSiblings,
+  replaceSiblingOrder,
+} from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
@@ -23,6 +29,20 @@ describe('tree identity and ordering', () => {
   it('does not admit a key from another sibling group', () => {
     expect(reorderedSiblings(['a', 'b'], 'foreign', 'b', false)).toBeNull()
     expect(reorderedSiblings(['a', 'b'], 'a', 'b', true)).toEqual(['b', 'a'])
+  })
+
+  it('replaces a very large sibling order without spreading function arguments', () => {
+    const siblings = Array.from({ length: 70_000 }, (_, index) => `node:${index}`)
+    const first = siblings[0]
+    const second = siblings[1]
+    if (first === undefined || second === undefined) throw new Error('expected sibling fixtures')
+    const next = [second, first, ...siblings.slice(2)]
+
+    const replaced = replaceSiblingOrder(['before', ...siblings, 'after'], siblings, next)
+
+    expect(replaced).toHaveLength(70_002)
+    expect(replaced.slice(0, 4)).toEqual(['before', 'node:1', 'node:0', 'node:2'])
+    expect(replaced.at(-1)).toBe('after')
   })
 
   it('namespaces node UI state by verified server identity and season', () => {

@@ -68,6 +68,7 @@ interface ServerTree {
 const nodesByServer = new Map<string, ServerTree>()
 const refreshGeneration = new Map<string, number>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
+const nodeErrors = new WeakMap<ConnectedServer, string>()
 export type NodeRefreshResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string }
@@ -142,28 +143,36 @@ export const refreshNodes = async (
     const probed = takeProbedNodes(server)
     const result =
       probed === undefined ? await listNodes(server) : { ok: true as const, nodes: probed }
-    refreshedConnections.add(server)
     if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
       return { ok: false, message: 'The server connection changed during refresh.' }
     }
     if (refreshGeneration.get(server.url) !== generation) {
       return { ok: false, message: 'A newer folder refresh replaced this one.' }
     }
-    if (!result.ok) return result
+    refreshedConnections.add(server)
+    if (!result.ok) {
+      nodeErrors.set(server, result.message)
+      return result
+    }
     const identity = serverIdentity(server)
     if (identity === null || server.info === null || server.season === null) {
-      return { ok: false, message: 'The server identity is unavailable.' }
+      const failure = { ok: false as const, message: 'The server identity is unavailable.' }
+      nodeErrors.set(server, failure.message)
+      return failure
     }
     let retainedNodes = 0
     for (const [url, entry] of nodesByServer) {
       if (url !== server.url) retainedNodes += entry.nodes.length
     }
     if (retainedNodes + result.nodes.length > MAX_TOTAL_SERVER_NODES) {
-      return {
-        ok: false,
+      const failure = {
+        ok: false as const,
         message: `Connected server folders exceed the ${MAX_TOTAL_SERVER_NODES.toLocaleString()}-node client limit.`,
       }
+      nodeErrors.set(server, failure.message)
+      return failure
     }
+    nodeErrors.delete(server)
     nodesByServer.set(server.url, {
       serverId: server.info.id,
       season: server.season,
@@ -284,15 +293,24 @@ export const reorderedSiblings = (
   return next
 }
 
+export const replaceSiblingOrder = (
+  current: readonly string[],
+  siblings: readonly string[],
+  next: readonly string[],
+): readonly string[] => {
+  const siblingSet = new Set(siblings)
+  const firstSibling = current.findIndex((key) => siblingSet.has(key))
+  const retained = current.filter((key) => !siblingSet.has(key))
+  const insertion = firstSibling === -1 ? retained.length : firstSibling
+  return [...retained.slice(0, insertion), ...next, ...retained.slice(insertion)]
+}
+
 const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
   const next = reorderedSiblings(keys, from, to, after)
   if (next === null) return
-  const siblings = new Set(keys)
+  if (next.every((key, index) => key === keys[index])) return
   const current = getState().customOrder
-  const firstSibling = current.findIndex((key) => siblings.has(key))
-  const retained = current.filter((key) => !siblings.has(key))
-  retained.splice(firstSibling === -1 ? retained.length : firstSibling, 0, ...next)
-  setState({ customOrder: retained })
+  setState({ customOrder: replaceSiblingOrder(current, keys, next) })
 }
 
 /** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
@@ -362,6 +380,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.appendChild(kind)
 
   const editing = renaming === options.key && options.onRename !== undefined
+  if (editing) row.dataset.wtsRenaming = ''
   const input = document.createElement('input')
   const name = document.createElement('span')
   if (editing) {
@@ -659,6 +678,7 @@ export const treeContents = (
 
     if (server !== undefined && server.status === 'connected') {
       const known = treeFor(server)
+      const nodeError = nodeErrors.get(server)
       if (known === undefined) {
         // First sight of this server: kick off the fetch, draw nothing extra this pass.
         if (!refreshedConnections.has(server)) {
@@ -731,7 +751,9 @@ export const treeContents = (
           }
         }
         renderChildren(null, 1)
-        if (known.length === 0) {
+        if (nodeError !== undefined) {
+          wrap.appendChild(childText(`Could not refresh folders. ${nodeError}`, 0))
+        } else if (known.length === 0) {
           wrap.appendChild(
             childText(needle === '' ? 'No templates published yet.' : 'No matches.', 0),
           )
@@ -823,7 +845,15 @@ export const treeContents = (
     // No badge for a healthy server: if it is in the list at all, it is connected. Only trouble
     // needs saying, and it says it in words where there is room for them.
     if (server.status === 'connected') {
-      wrap.appendChild(childText('No templates published yet.', 0))
+      const nodeError = nodeErrors.get(server)
+      wrap.appendChild(
+        childText(
+          nodeError === undefined
+            ? 'No templates published yet.'
+            : `Could not load folders. ${nodeError}`,
+          0,
+        ),
+      )
     } else if (server.status === 'needs-token') {
       wrap.appendChild(childText('Needs an access code — add it in settings.', 0))
     } else {

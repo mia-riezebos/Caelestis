@@ -64,6 +64,23 @@ describe('server state boundaries', () => {
     expect(loadState().customOrder).toEqual(['local:kept'])
   })
 
+  it('notifies paint subscribers after restoring persisted order', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({ customOrder: ['local:second', 'local:first'] })),
+    )
+    const { loadState, onStateChange } = await import('./state.js')
+    const changed = vi.fn()
+    onStateChange(changed)
+
+    loadState()
+
+    expect(changed).toHaveBeenCalledOnce()
+    expect(changed).toHaveBeenCalledWith(
+      expect.objectContaining({ customOrder: ['local:second', 'local:first'] }),
+    )
+  })
+
   it('bounds persisted and newly connected servers', async () => {
     vi.stubGlobal(
       'GM_getValue',
@@ -196,6 +213,37 @@ describe('server state boundaries', () => {
     await refreshing
 
     expect(getState().servers).toEqual([])
+  })
+
+  it('retains a stored access code when automatic refresh receives 401', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...serverInfo, auth: 'access_token' }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 401 })),
+    )
+    const { getState, refreshStoredServers, setState } = await import('./state.js')
+    setState({
+      servers: [
+        {
+          url: 'https://example.com',
+          info: { ...serverInfo, auth: 'access_token' },
+          token: 'keep-me',
+          status: 'connected',
+          isAdmin: true,
+          season: 0,
+        },
+      ],
+    })
+
+    await refreshStoredServers()
+
+    expect(getState().servers[0]).toEqual(
+      expect.objectContaining({ token: 'keep-me', status: 'needs-token' }),
+    )
   })
 
   it('refreshes at most four stored servers concurrently', async () => {
@@ -344,5 +392,48 @@ describe('server state boundaries', () => {
         error: 'Error: request timed out',
       }),
     )
+  })
+
+  it('allows a large upload longer than the metadata deadline but still times it out', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            })
+          }),
+      ),
+    )
+    const { uploadTemplate } = await import('./state.js')
+    let settled = false
+    const uploading = uploadTemplate(
+      {
+        url: 'https://example.com',
+        info: serverInfo,
+        token: null,
+        status: 'connected',
+        isAdmin: true,
+        season: 0,
+      },
+      {
+        nodeId: NODE_A,
+        name: 'Large template',
+        originX: 0,
+        originY: 0,
+        png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+      },
+    ).then((result) => {
+      settled = true
+      return result
+    })
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(110_000)
+
+    await expect(uploading).resolves.toEqual({ ok: false, message: 'Error: request timed out' })
   })
 })

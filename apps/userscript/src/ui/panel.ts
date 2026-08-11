@@ -107,6 +107,7 @@ const PANEL_ID = 'wts-panel'
 const APP_NAME = 'Caelestis'
 const PANEL_TITLE = APP_NAME
 const BUTTON_TOOLTIP = `${APP_NAME} — shared templates`
+const MAX_COPY_DESTINATIONS = 2_000
 
 type View = 'tree' | 'settings'
 
@@ -114,6 +115,7 @@ let currentView: View = 'tree'
 let open = false
 let searchQuery = ''
 let activeResizeCleanup: (() => void) | null = null
+let activeTreeRender: (() => void) | null = null
 let cancelActiveConfirm: (() => void) | null = null
 let cancelActiveCopy: (() => void) | null = null
 let viewportResizeInstalled = false
@@ -150,7 +152,7 @@ const rerenderWhenIdle = (): void => {
     panel.contains(focused) &&
     focused.matches('input,textarea,select,[contenteditable="true"]')
   ) {
-    panel.addEventListener('focusout', () => queueMicrotask(rerenderWhenIdle), { once: true })
+    panel.addEventListener('focusout', () => setTimeout(rerenderWhenIdle, 0), { once: true })
     return
   }
   showView(currentView)
@@ -245,30 +247,43 @@ const treeView = (): HTMLElement => {
 
   const body = document.createElement('div')
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
+  let renderTree: () => void
+  const rerenderTree = (): void => activeTreeRender?.()
   const backgroundRenderTree = (): void => {
-    if (!body.isConnected) return
+    if (activeTreeRender !== renderTree) {
+      rerenderTree()
+      return
+    }
     const focused = document.activeElement
-    if (focused !== null && body.contains(focused) && focused.matches('[data-wts-rename]')) {
-      body.addEventListener('focusout', () => queueMicrotask(backgroundRenderTree), { once: true })
+    if (
+      focused !== null &&
+      body.contains(focused) &&
+      focused.closest('[data-wts-renaming]') !== null
+    ) {
+      body.addEventListener('focusout', () => setTimeout(backgroundRenderTree, 0), { once: true })
       return
     }
     renderTree()
   }
-  const renderTree = (): void => {
+  renderTree = (): void => {
+    if (activeTreeRender !== renderTree) {
+      rerenderTree()
+      return
+    }
     body.replaceChildren(
       treeContents(
         {
           onAddServer: () => showView('settings'),
-          onCreateFolder: (target) => void createFolder(target, renderTree),
-          onImportTemplate: (target) => void importTemplate(target, renderTree),
-          onRename: (target, name) => void applyRename(target, name, renderTree),
-          onDelete: (target) => void applyDelete(target, renderTree),
-          onContextMenu: (target, event) => openContextMenu(target, event, renderTree),
+          onCreateFolder: (target) => void createFolder(target, rerenderTree),
+          onImportTemplate: (target) => void importTemplate(target, rerenderTree),
+          onRename: (target, name) => void applyRename(target, name, rerenderTree),
+          onDelete: (target) => void applyDelete(target, rerenderTree),
+          onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
           onGoTo: goTo,
-          onCopyToServer: (id) => void copyToServer(id, renderTree),
+          onCopyToServer: (id) => void copyToServer(id, rerenderTree),
           onError: (message) => toast(message, 'error'),
         },
-        renderTree,
+        rerenderTree,
         searchQuery,
         backgroundRenderTree,
       ),
@@ -280,12 +295,13 @@ const treeView = (): HTMLElement => {
     if (searchTimer !== null) clearTimeout(searchTimer)
     searchTimer = setTimeout(() => {
       searchTimer = null
-      renderTree()
+      rerenderTree()
     }, 100)
   })
+  activeTreeRender = renderTree
   renderTree()
   // Paint what the servers said last time, then let a live fetch replace it.
-  void primeFromCache(renderTree)
+  void primeFromCache(rerenderTree)
 
   view.append(toolbar, body)
   return view
@@ -948,12 +964,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     targets.map(async (server) => {
       const controller = new AbortController()
       controllers.push(controller)
-      const timeout = setTimeout(() => controller.abort(), 10_000)
-      try {
-        return { server, result: await listNodes(server, controller.signal) }
-      } finally {
-        clearTimeout(timeout)
-      }
+      return { server, result: await listNodes(server, controller.signal) }
     }),
   )
   if (!box.isConnected) {
@@ -961,6 +972,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     return
   }
   let failedLoads = 0
+  let availableDestinations = 0
   const destinations: Array<{ readonly server: ConnectedServer; readonly nodeId: string }> = []
   for (const { server, result } of loaded) {
     if (!result.ok) {
@@ -968,7 +980,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
       continue
     }
     const nodes = result.nodes
-    for (const node of nodes) {
+    availableDestinations += nodes.length
+    const remaining = MAX_COPY_DESTINATIONS - destinations.length
+    for (const node of nodes.slice(0, Math.max(0, remaining))) {
       const option = document.createElement('option')
       option.value = String(destinations.length)
       option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
@@ -986,7 +1000,10 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     closeCopy()
     return
   }
-  label.textContent = `Copy “${template.name}” to:`
+  label.textContent =
+    availableDestinations > destinations.length
+      ? `Copy “${template.name}” to (showing the first ${destinations.length.toLocaleString()} of ${availableDestinations.toLocaleString()} folders):`
+      : `Copy “${template.name}” to:`
   chooser.disabled = false
   go.disabled = false
   let uploading = false
@@ -1229,6 +1246,7 @@ const buildPanel = (): HTMLElement => {
 const showView = (view: View): void => {
   if (view !== currentView) {
     cancelPanelRequests()
+    cancelActiveConfirm?.()
     cancelActiveCopy?.()
   }
   currentView = view
@@ -1238,6 +1256,7 @@ const showView = (view: View): void => {
   if (!body || !title) return
   const inSettings = view === 'settings'
   if (inSettings) void loadAccount()
+  activeTreeRender = null
   body.replaceChildren(inSettings ? settingsView() : treeView())
   title.textContent = inSettings ? 'Settings' : PANEL_TITLE
 
@@ -1259,6 +1278,7 @@ const setOpen = (next: boolean): void => {
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
     cancelPanelRequests()
+    activeTreeRender = null
     activeResizeCleanup?.()
     cancelActiveConfirm?.()
     cancelActiveCopy?.()
