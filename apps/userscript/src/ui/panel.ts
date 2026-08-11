@@ -44,13 +44,16 @@ import { icon } from './icons.js'
 import {
   admitTemplates,
   cancelViewOwnedWork,
+  completionAfterImport,
   createKeyedOperationGate,
+  createRerenderGate,
   createResizeCommitter,
   finalImportNotice,
   IMPORT_ACCEPT,
   importedImageNextStep,
-  shouldDeferPanelRerender,
-  shouldNavigateAfterImport,
+  once,
+  restoreConnectedFocus,
+  toastMount,
 } from './panel-workflow.js'
 import { type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
@@ -133,6 +136,7 @@ let currentView: View = 'tree'
 let open = false
 let searchQuery = ''
 let activeResizeCleanup: (() => void) | null = null
+let activeKeyboardResizeCommit: (() => void) | null = null
 let activeTreeRender: (() => void) | null = null
 let cancelActiveConfirm: (() => void) | null = null
 let cancelActiveCopy: (() => void) | null = null
@@ -142,8 +146,9 @@ let accountObserverInstalled = false
 let panelOwnerGeneration = 0
 let controlLabelSerial = 0
 const connectionAttempts = new Map<string, number>()
-const activePanelRequests = new Set<AbortController>()
+const activePanelRequests = new Map<AbortController, () => void>()
 const copyOperations = createKeyedOperationGate()
+const panelRerenders = createRerenderGate(() => rerenderWhenIdle())
 
 type PanelRequestScope = 'view' | 'mutation'
 
@@ -157,18 +162,25 @@ const panelRequest = (
   scope: PanelRequestScope = 'view',
 ): { controller: AbortController; finish: () => void } => {
   const controller = new AbortController()
-  if (scope === 'view') activePanelRequests.add(controller)
+  const releaseRerender = scope === 'view' ? panelRerenders.hold() : null
+  if (releaseRerender !== null) activePanelRequests.set(controller, releaseRerender)
   return {
     controller,
     finish: () => {
       if (scope !== 'view') return
+      const release = activePanelRequests.get(controller)
       activePanelRequests.delete(controller)
+      release?.()
     },
   }
 }
 
 const cancelPanelRequests = (): void => {
-  for (const controller of activePanelRequests) controller.abort()
+  panelRerenders.cancel()
+  for (const [controller, release] of activePanelRequests) {
+    controller.abort()
+    release()
+  }
   activePanelRequests.clear()
 }
 
@@ -184,7 +196,10 @@ const updateResizeValue = (handle: HTMLElement, width: number): void => {
 }
 
 const rerenderWhenIdle = (): void => {
-  if (shouldDeferPanelRerender(activePanelRequests.size)) return
+  if (activePanelRequests.size > 0) {
+    panelRerenders.request()
+    return
+  }
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
   const focused = document.activeElement
@@ -353,7 +368,7 @@ const treeView = (): HTMLElement => {
           onDelete: (target) => void applyDelete(target, rerenderTree),
           onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
           onGoTo: goTo,
-          onCopyToServer: (id) => void copyToServer(id, rerenderTree),
+          onCopyToServer: (id, invoker) => void copyToServer(id, rerenderTree, invoker),
           onError: (message) => toast(message, 'error'),
         },
         rerenderTree,
@@ -703,8 +718,8 @@ const settingsView = (): HTMLElement => {
 /** A transient message anchored to the panel, so an action can report without a dialog. */
 const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): void => {
   const panel = document.getElementById(PANEL_ID)
-  if (panel === null) return
-  panel.querySelector('[data-wts-toast]')?.remove()
+  const mount = toastMount(panel, document.body)
+  mount.querySelector('[data-wts-toast]')?.remove()
   const el = document.createElement('div')
   el.setAttribute('data-wts-toast', '')
   el.className =
@@ -716,8 +731,17 @@ const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): vo
   el.setAttribute('role', kind === 'error' ? 'alert' : 'status')
   el.setAttribute('aria-live', kind === 'error' ? 'assertive' : 'polite')
   Object.assign(el.style, { margin: '0 0.5rem 0.5rem', padding: '0.5rem 0.75rem' })
+  if (panel === null) {
+    Object.assign(el.style, {
+      position: 'fixed',
+      right: '4rem',
+      bottom: '1rem',
+      zIndex: '60',
+      maxWidth: '24rem',
+    })
+  }
   el.textContent = message
-  panel.appendChild(el)
+  mount.appendChild(el)
   setTimeout(() => el.remove(), 6000)
 }
 
@@ -832,7 +856,10 @@ const applyRename = async (
  * client. The confirm names the thing rather than saying "are you sure", so the answer does not
  * depend on remembering what was right-clicked.
  */
-const confirmDestructive = (message: string): Promise<boolean> =>
+const confirmDestructive = (
+  message: string,
+  restoreFocusTo: HTMLElement | null = null,
+): Promise<boolean> =>
   new Promise((resolve) => {
     cancelActiveConfirm?.()
     const panel = document.getElementById(PANEL_ID)
@@ -861,6 +888,7 @@ const confirmDestructive = (message: string): Promise<boolean> =>
       settled = true
       if (cancelActiveConfirm === cancelPending) cancelActiveConfirm = null
       box.remove()
+      restoreConnectedFocus(restoreFocusTo)
       resolve(answer)
     }
     const cancelPending = (): void => finish(false)
@@ -873,10 +901,17 @@ const confirmDestructive = (message: string): Promise<boolean> =>
     confirm.focus()
   })
 
-const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+const applyDelete = async (
+  target: TreeTarget,
+  rerender: () => void,
+  restoreFocusTo: HTMLElement | null = null,
+): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
+    if (
+      !(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`, restoreFocusTo))
+    )
+      return
     const stoppedMove = stopMoveForDeletion(templateId)
     try {
       const removed = await removeLocalTemplate(templateId)
@@ -910,7 +945,10 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     toast('Nothing to delete here yet.', 'warning')
     return
   }
-  if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
+  if (
+    !(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`, restoreFocusTo))
+  )
+    return
   if (!isCurrentServer(target.server)) {
     toast('That server connection changed. Try again.', 'warning')
     rerender()
@@ -970,7 +1008,7 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
   const remove: readonly [IconName, string, () => void] = [
     'trash',
     'Delete',
-    () => void applyDelete(target, rerender),
+    () => void applyDelete(target, rerender, invoker),
   ]
   const entries: ReadonlyArray<readonly [IconName, string, () => void]> =
     templateId === null
@@ -1172,19 +1210,18 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
 
         const firstPlaced = admitted.added[0]
         if (firstPlaced === undefined) return
-        const notice = finalImportNotice(firstPlaced, added, imported.length, failure)
-        const navigate = shouldNavigateAfterImport(stillOwned(), isMoving())
-        if (!navigate && stillOwned() && isMoving()) {
-          toast(`${notice.message} — finish the active placement before navigating`, 'warning')
-        } else {
-          toast(notice.message, notice.tone)
-        }
+        const completion = completionAfterImport(
+          finalImportNotice(firstPlaced, added, imported.length, failure),
+          stillOwned(),
+          isMoving(),
+        )
+        toast(completion.message, completion.tone)
         // Non-image formats already know where they belong, so go and look at the first one —
         // centred on the template and zoomed to fit it, in-game. Changing the URL would reload and
         // throw the import away.
-        if (navigate) navigateTo(centreOf(firstPlaced))
+        if (completion.navigate) navigateTo(centreOf(firstPlaced))
       } catch (error) {
-        if (stillOwned()) toast(`Could not import: ${String(error)}`, 'error')
+        toast(`Could not import: ${String(error)}`, 'error')
       }
     })()
   })
@@ -1263,14 +1300,15 @@ const copyToServer = async (
   const controllers: AbortController[] = []
   let filterTimer: ReturnType<typeof setTimeout> | null = null
   let closed = false
-  const closeCopy = (): void => {
+  let closeCopy: () => void
+  closeCopy = once(() => {
     closed = true
     if (filterTimer !== null) clearTimeout(filterTimer)
     for (const controller of controllers) controller.abort()
     box.remove()
     if (cancelActiveCopy === closeCopy) cancelActiveCopy = null
-    if (restoreFocusTo?.isConnected) restoreFocusTo.focus()
-  }
+    restoreConnectedFocus(restoreFocusTo)
+  })
   cancelActiveCopy = closeCopy
   cancel.addEventListener('click', closeCopy)
   const go = document.createElement('button')
@@ -1558,6 +1596,7 @@ const buildPanel = (): HTMLElement => {
   handle.tabIndex = 0
   updateResizeValue(handle, panelWidthForViewport(getState().panelWidth))
   const keyboardResize = createResizeCommitter((width) => setState({ panelWidth: width }))
+  activeKeyboardResizeCommit = keyboardResize.commit
   const resizeKeys = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End'])
   handle.addEventListener('keydown', (event) => {
     const current = panel.getBoundingClientRect().width
@@ -1792,6 +1831,8 @@ const setOpen = (next: boolean): void => {
     closeActiveContextMenu?.(false)
     cancelPanelRequests()
     activeTreeRender = null
+    activeKeyboardResizeCommit?.()
+    activeKeyboardResizeCommit = null
     activeResizeCleanup?.()
     cancelActiveConfirm?.()
     cancelActiveCopy?.()

@@ -2,13 +2,18 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   admitTemplates,
   cancelViewOwnedWork,
+  completionAfterImport,
   createKeyedOperationGate,
+  createRerenderGate,
   createResizeCommitter,
   finalImportNotice,
   IMPORT_ACCEPT,
   importedImageNextStep,
+  once,
+  restoreConnectedFocus,
   shouldDeferPanelRerender,
   shouldNavigateAfterImport,
+  toastMount,
 } from './panel-workflow.js'
 
 describe('panel workflow ownership', () => {
@@ -68,6 +73,62 @@ describe('panel workflow ownership', () => {
   it('defers same-view rebuilding while a form request owns that view', () => {
     expect(shouldDeferPanelRerender(1)).toBe(true)
     expect(shouldDeferPanelRerender(0)).toBe(false)
+  })
+
+  it('replays one deferred rerender after the final view request finishes', async () => {
+    const render = vi.fn()
+    const gate = createRerenderGate(render)
+    const finishFirst = gate.hold()
+    const finishSecond = gate.hold()
+
+    gate.request()
+    finishFirst()
+    expect(render).not.toHaveBeenCalled()
+    finishSecond()
+    await Promise.resolve()
+
+    expect(render).toHaveBeenCalledOnce()
+  })
+
+  it('keeps partial-import error semantics when an active placement blocks navigation', () => {
+    expect(
+      completionAfterImport(
+        { message: 'Imported 1 of 2; 1 could not be added', tone: 'error' },
+        true,
+        true,
+      ),
+    ).toEqual({
+      message:
+        'Imported 1 of 2; 1 could not be added — finish the active placement before navigating',
+      tone: 'error',
+      navigate: false,
+    })
+  })
+
+  it('mounts asynchronous notices on the page when the panel was closed', () => {
+    const body = {}
+    expect(toastMount(null, body)).toBe(body)
+  })
+
+  it('runs a completed workflow closer only once', () => {
+    const close = vi.fn()
+    const closeOnce = once(close)
+
+    closeOnce()
+    closeOnce()
+
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('restores focus only to a still-connected owner', () => {
+    const connected = { isConnected: true, focus: vi.fn() }
+    const removed = { isConnected: false, focus: vi.fn() }
+
+    restoreConnectedFocus(connected)
+    restoreConnectedFocus(removed)
+
+    expect(connected.focus).toHaveBeenCalledOnce()
+    expect(removed.focus).not.toHaveBeenCalled()
   })
 
   it('navigates after import only while the tree still owns it and no move is active', () => {

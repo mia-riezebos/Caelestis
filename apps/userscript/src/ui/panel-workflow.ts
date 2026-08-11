@@ -89,6 +89,72 @@ export const shouldDeferPanelRerender = (activeViewRequests: number): boolean =>
 export const shouldNavigateAfterImport = (stillOwned: boolean, moving: boolean): boolean =>
   stillOwned && !moving
 
+export const completionAfterImport = (
+  notice: ImportNotice,
+  stillOwned: boolean,
+  moving: boolean,
+): ImportNotice & { readonly navigate: boolean } => {
+  const navigate = shouldNavigateAfterImport(stillOwned, moving)
+  return {
+    message:
+      !navigate && stillOwned && moving
+        ? `${notice.message} — finish the active placement before navigating`
+        : notice.message,
+    tone: notice.tone,
+    navigate,
+  }
+}
+
+/** Hold a view rebuild while requests own its status nodes, then replay exactly one missed build. */
+export const createRerenderGate = (
+  rerender: () => void,
+): {
+  hold: () => () => void
+  request: () => void
+  cancel: () => void
+} => {
+  let holds = 0
+  let pending = false
+  return {
+    hold: () => {
+      holds++
+      let held = true
+      return () => {
+        if (!held) return
+        held = false
+        holds--
+        if (holds !== 0 || !pending) return
+        pending = false
+        queueMicrotask(rerender)
+      }
+    },
+    request: () => {
+      if (holds === 0) rerender()
+      else pending = true
+    },
+    cancel: () => {
+      pending = false
+    },
+  }
+}
+
+export const toastMount = <T>(panel: T | null, page: T): T => panel ?? page
+
+export const once = (run: () => void): (() => void) => {
+  let pending = true
+  return () => {
+    if (!pending) return
+    pending = false
+    run()
+  }
+}
+
+export const restoreConnectedFocus = (
+  target: { readonly isConnected: boolean; focus: () => void } | null,
+): void => {
+  if (target?.isConnected) target.focus()
+}
+
 /** Everything appended to or acting on one panel view ends when that view does. */
 export const cancelViewOwnedWork = (
   cancelRequests: () => void,
