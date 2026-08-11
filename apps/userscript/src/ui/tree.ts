@@ -3,7 +3,7 @@ import {
   type ConnectedServer,
   getState,
   listNodes,
-  removeCustomOrderKeys,
+  removeTreeStateKeys,
   setState,
   type TreeNode,
   takeProbedNodes,
@@ -44,7 +44,6 @@ export interface TreeCallbacks {
   readonly onError: (message: string) => void
 }
 
-const collapsed = new Set<string>()
 let activeTreeKey: string | null = null
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
@@ -94,18 +93,20 @@ const treeFor = (server: ConnectedServer): readonly TreeNode[] | undefined => {
 }
 
 export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
-  `node:${server.info?.id ?? server.url}:${server.season ?? 'unknown'}:${nodeId}`
+  `node:${encodeURIComponent(server.url)}:${server.info?.id ?? 'unknown'}:${server.season ?? 'unknown'}:${nodeId}`
 
 export const forgetServerTree = (url: string): void => {
   const entry = nodesByServer.get(url)
   const keys = new Set([`server:${url}`])
   if (entry !== undefined) {
     for (const node of entry.nodes) {
+      keys.add(`node:${encodeURIComponent(url)}:${entry.serverId}:${entry.season}:${node.id}`)
+      // Clean up the pre-URL namespace and the original unscoped prototype key as well.
       keys.add(`node:${entry.serverId}:${entry.season}:${node.id}`)
       keys.add(`node:${node.id}`)
     }
   }
-  removeCustomOrderKeys(keys)
+  removeTreeStateKeys(keys)
   nodesByServer.delete(url)
   refreshGeneration.delete(url)
 }
@@ -128,7 +129,7 @@ export const forgetNodeOrder = (server: ConnectedServer, nodeId: string): void =
     keys.add(`node:${id}`)
     pending.push(...(children.get(id) ?? []))
   }
-  removeCustomOrderKeys(keys)
+  removeTreeStateKeys(keys)
 }
 
 export const refreshNodes = async (
@@ -245,7 +246,7 @@ export const cancelRenaming = (): void => {
 }
 const disabled = new Set<string>()
 
-const isExpanded = (key: string): boolean => !collapsed.has(key)
+const isExpanded = (key: string): boolean => !getState().collapsed.includes(key)
 const isEnabled = (key: string): boolean => !disabled.has(key)
 const toggle = (set: Set<string>, key: string): void => {
   if (set.has(key)) set.delete(key)
@@ -255,15 +256,22 @@ const toggle = (set: Set<string>, key: string): void => {
 interface OrderedItem {
   readonly key: string
   readonly name: string
+  readonly createdAt?: number
 }
 
 export const nodeSiblingItems = (
   server: ConnectedServer,
   nodes: readonly TreeNode[],
 ): ReadonlyArray<OrderedItem & { readonly node: TreeNode }> =>
-  nodes.map((node) => ({ key: nodeTreeKey(server, node.id), name: node.name, node }))
+  nodes.map((node) => ({
+    key: nodeTreeKey(server, node.id),
+    name: node.name,
+    createdAt: node.createdAt,
+    node,
+  }))
 
-const orderedItems = <T extends OrderedItem>(
+/** @internal Pure ordering seam used to pin custom-order fallback behavior. */
+export const orderedItems = <T extends OrderedItem>(
   items: readonly T[],
   rank: ReadonlyMap<string, number>,
 ): readonly T[] => {
@@ -281,6 +289,11 @@ const orderedItems = <T extends OrderedItem>(
     else ranked.push({ item, rank: itemRank })
   }
   ranked.sort((a, b) => a.rank - b.rank)
+  // The manifest's array order exists for deterministic hashing, not presentation. New, unranked
+  // server rows surface newest-first until the user's durable custom order takes over.
+  unranked.sort(
+    (a, b) => (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
+  )
   return [...ranked.map(({ item }) => item), ...unranked]
 }
 
@@ -372,11 +385,11 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
   row.style.marginRight = '0.5rem'
   row.style.minHeight = '2rem'
-  row.draggable = draggable
   row.tabIndex = -1
   row.setAttribute('role', 'treeitem')
   row.setAttribute('aria-level', String(options.depth + 1))
   const expanded = options.forceExpanded === true || isExpanded(options.key)
+  if (options.forceExpanded === true) row.dataset.wtsForceExpanded = ''
   if (options.container) row.setAttribute('aria-expanded', String(expanded))
 
   if (options.container) {
@@ -398,6 +411,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.appendChild(kind)
 
   const editing = renaming === options.key && options.onRename !== undefined
+  row.draggable = draggable && !editing
   if (editing) row.dataset.wtsRenaming = ''
   const input = document.createElement('input')
   const name = document.createElement('span')
@@ -525,8 +539,10 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.appendChild(check)
 
   const expand = (): void => {
-    if (!options.container) return
-    toggle(collapsed, options.key)
+    if (!options.container || options.forceExpanded === true) return
+    const next = new Set(getState().collapsed)
+    toggle(next, options.key)
+    setState({ collapsed: [...next] })
     options.rerender()
   }
   if (options.container) {
@@ -548,6 +564,25 @@ const treeRow = (options: RowOptions): HTMLElement => {
       }
       event.preventDefault()
       options.onContextMenu?.(event)
+    })
+  }
+
+  if (draggable && !editing) {
+    row.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown')
+    row.addEventListener('keydown', (event) => {
+      if (event.target !== row || !event.altKey) return
+      const index = options.siblings.indexOf(options.key)
+      const target =
+        event.key === 'ArrowUp'
+          ? options.siblings[index - 1]
+          : event.key === 'ArrowDown'
+            ? options.siblings[index + 1]
+            : undefined
+      if (target === undefined) return
+      event.preventDefault()
+      event.stopPropagation()
+      moveKey(options.siblings, options.key, target, event.key === 'ArrowDown')
+      options.rerender()
     })
   }
 
@@ -616,6 +651,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
 const childText = (text: string, depth: number): HTMLElement => {
   const el = document.createElement('p')
+  el.setAttribute('role', 'treeitem')
+  el.setAttribute('aria-level', String(depth + 2))
+  el.setAttribute('aria-disabled', 'true')
   el.className = 'text-xs opacity-60'
   el.style.padding = '0.125rem 0.75rem 0.375rem'
   el.style.paddingLeft = `${2.5 + depth * 1.125}rem`
@@ -625,6 +663,8 @@ const childText = (text: string, depth: number): HTMLElement => {
 
 const childRetry = (text: string, depth: number, retry: () => void): HTMLElement => {
   const row = document.createElement('div')
+  row.setAttribute('role', 'treeitem')
+  row.setAttribute('aria-level', String(depth + 2))
   row.className = 'flex items-center gap-2'
   row.style.padding = '0.125rem 0.75rem 0.375rem'
   row.style.paddingLeft = `${2.5 + depth * 1.125}rem`
@@ -888,6 +928,8 @@ export const treeContents = (
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.
       const actions = document.createElement('div')
+      actions.setAttribute('role', 'treeitem')
+      actions.setAttribute('aria-level', '2')
       actions.style.padding = '0 0.75rem 0.5rem 2.25rem'
       const importButton = document.createElement('button')
       importButton.className = 'btn btn-xs'
@@ -920,6 +962,8 @@ export const treeContents = (
   }
 
   const addWrap = document.createElement('div')
+  addWrap.setAttribute('role', 'treeitem')
+  addWrap.setAttribute('aria-level', '1')
   addWrap.className = 'flex justify-center'
   addWrap.style.padding = '0.5rem 0.75rem 0'
   const add = document.createElement('button')
@@ -937,7 +981,7 @@ export const treeContents = (
     renameDraft = null
   }
 
-  const rows = [...wrap.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+  const rows = [...wrap.querySelectorAll<HTMLElement>('[role="treeitem"][data-wts-key]')]
   const active = rows.find((row) => row.dataset.wtsKey === activeTreeKey) ?? rows[0]
   const activate = (row: HTMLElement): void => {
     for (const candidate of rows) {
@@ -955,6 +999,7 @@ export const treeContents = (
     activate(row)
   })
   wrap.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented) return
     const row = (event.target as Element | null)?.closest<HTMLElement>('[role="treeitem"]')
     if (row === null || row === undefined || event.target !== row) return
     const index = rows.indexOf(row)

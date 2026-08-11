@@ -3,6 +3,7 @@ import { type ConnectedServer, probeServer, setState } from '../state.js'
 import {
   nodeSiblingItems,
   nodeTreeKey,
+  orderedItems,
   refreshNodes,
   reorderedSiblings,
   replaceSiblingOrder,
@@ -16,8 +17,8 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const server = (id: string, season: number): ConnectedServer => ({
-  url: 'https://example.com',
+const server = (id: string, season: number, url = 'https://example.com'): ConnectedServer => ({
+  url,
   info: { id, name: 'Example', auth: 'none' },
   token: null,
   status: 'connected',
@@ -53,12 +54,44 @@ describe('tree identity and ordering', () => {
     expect(new Set([first, otherServer, nextSeason])).toHaveLength(3)
   })
 
+  it('namespaces node UI state by canonical connection URL too', () => {
+    const first = nodeTreeKey(server(SERVER_ID, 0, 'https://example.com'), NODE_ID)
+    const alias = nodeTreeKey(server(SERVER_ID, 0, 'https://example.com/api'), NODE_ID)
+
+    expect(first).not.toBe(alias)
+  })
+
+  it('surfaces unranked server rows newest-first', () => {
+    setState({ sort: { field: 'custom', direction: 'asc' }, customOrder: [] })
+
+    expect(
+      orderedItems(
+        [
+          { key: 'older', name: 'Older', createdAt: 1_700_000_000_000 },
+          { key: 'newer', name: 'Newer', createdAt: 1_800_000_000_000 },
+        ],
+        new Map(),
+      ).map((item) => item.key),
+    ).toEqual(['newer', 'older'])
+  })
+
   it('uses the same scoped keys for server node rows and their sibling order', () => {
     const connected = server(SERVER_ID, 0)
-    const node = { id: NODE_ID, parentId: null, path: '/group', name: 'Group' }
+    const node = {
+      id: NODE_ID,
+      parentId: null,
+      path: '/group',
+      name: 'Group',
+      createdAt: 1_750_000_000_000,
+    }
 
     expect(nodeSiblingItems(connected, [node])).toEqual([
-      { key: nodeTreeKey(connected, NODE_ID), name: 'Group', node },
+      {
+        key: nodeTreeKey(connected, NODE_ID),
+        name: 'Group',
+        createdAt: node.createdAt,
+        node,
+      },
     ])
   })
 

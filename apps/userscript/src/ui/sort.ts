@@ -9,9 +9,8 @@ import { icon } from './icons.js'
  * find something in a long tree, not ways to change what draws on top of what. Sorting by progress
  * to see what needs work should not silently reshuffle the canvas.
  *
- * Keys the user has not ranked keep their source order. PR #63 has no creation timestamp from which
- * it could honestly infer recency; descendant manifest rows supply the canonical oldest-created
- * default when that data exists.
+ * Keys the user has not ranked use the manifest's creation timestamps. New server rows surface
+ * newest-first until the user's own durable order takes over.
  */
 
 export type SortField = 'custom' | 'name'
@@ -64,6 +63,7 @@ export const sortControl = (
   wrapper.className = 'dropdown dropdown-end'
 
   const trigger = document.createElement('button')
+  trigger.dataset.wtsSort = ''
   trigger.type = 'button'
   trigger.className = 'btn btn-sm btn-ghost btn-square'
   const tooltip = isReorderable(current)
@@ -72,6 +72,9 @@ export const sortControl = (
   trigger.title = tooltip
   trigger.setAttribute('aria-label', tooltip)
   trigger.setAttribute('tabindex', '0')
+  trigger.setAttribute('aria-haspopup', 'menu')
+  trigger.setAttribute('aria-expanded', 'false')
+  trigger.setAttribute('aria-controls', 'wts-sort-menu')
   trigger.appendChild(icon('sort', 'size-4'))
   // Custom is the resting state, so it gets no directional mark; anything else is a deliberate
   // deviation and says which way it runs.
@@ -82,15 +85,20 @@ export const sortControl = (
   }
 
   const menu = document.createElement('ul')
+  menu.id = 'wts-sort-menu'
   menu.className = 'dropdown-content menu bg-base-100 shadow-2xl z-50 p-1'
   Object.assign(menu.style, { borderRadius: '0.5rem', width: '13rem' })
-  menu.setAttribute('tabindex', '0')
+  menu.setAttribute('role', 'menu')
+  menu.tabIndex = -1
 
   for (const entry of FIELDS) {
     const item = document.createElement('li')
+    item.setAttribute('role', 'none')
     const button = document.createElement('button')
     button.type = 'button'
     const active = entry.field === current.field
+    button.setAttribute('role', 'menuitemradio')
+    button.setAttribute('aria-checked', String(active))
     button.className = active ? 'active' : ''
 
     const name = document.createElement('span')
@@ -122,11 +130,46 @@ export const sortControl = (
       // Close the dropdown: DaisyUI keeps it open while anything inside holds focus.
       ;(document.activeElement as HTMLElement | null)?.blur()
       onChange(next)
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-wts-sort]')?.focus())
     })
 
     item.appendChild(button)
     menu.appendChild(item)
   }
+
+  const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
+  const focusButton = (index: number): void => buttons.at(index)?.focus()
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    trigger.setAttribute('aria-expanded', 'true')
+    focusButton(event.key === 'ArrowDown' ? 0 : -1)
+  })
+  menu.addEventListener('keydown', (event) => {
+    const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      trigger.setAttribute('aria-expanded', 'false')
+      trigger.focus()
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      focusButton((currentIndex + 1) % buttons.length)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      focusButton((currentIndex - 1 + buttons.length) % buttons.length)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      focusButton(0)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      focusButton(-1)
+    }
+  })
+  wrapper.addEventListener('focusin', () => trigger.setAttribute('aria-expanded', 'true'))
+  wrapper.addEventListener('focusout', (event) => {
+    if (event.relatedTarget instanceof Node && wrapper.contains(event.relatedTarget)) return
+    trigger.setAttribute('aria-expanded', 'false')
+  })
 
   wrapper.append(trigger, menu)
   return wrapper

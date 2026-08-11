@@ -32,14 +32,30 @@ describe('server cache persistence', () => {
         serverId: SERVER_ID,
         season: 0,
         fetchedAt: 10,
-        nodes: [{ id: NODE_ID, parentId: null, path: '/group', name: 'Group' }],
+        nodes: [
+          {
+            id: NODE_ID,
+            parentId: null,
+            path: '/group',
+            name: 'Group',
+            createdAt: 1_750_000_000_000,
+          },
+        ],
       },
       'https://bad.example.com': {
         url: 'https://bad.example.com',
         serverId: SERVER_ID,
         season: 0,
         fetchedAt: 20,
-        nodes: [{ id: NODE_ID, parentId: NODE_ID, path: '/loop', name: 'Loop' }],
+        nodes: [
+          {
+            id: NODE_ID,
+            parentId: NODE_ID,
+            path: '/loop',
+            name: 'Loop',
+            createdAt: 1_750_000_000_000,
+          },
+        ],
       },
       'https://stale.example.com': { url: 'https://stale.example.com' },
     }
@@ -81,7 +97,15 @@ describe('server cache persistence', () => {
         serverId: SERVER_ID,
         season: 0,
         fetchedAt: 10,
-        nodes: [{ id: NODE_ID, parentId: null, path: '/group', name: 'Group' }],
+        nodes: [
+          {
+            id: NODE_ID,
+            parentId: null,
+            path: '/group',
+            name: 'Group',
+            createdAt: 1_750_000_000_000,
+          },
+        ],
       },
     ])
     expect(database.close).toHaveBeenCalledOnce()

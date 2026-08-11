@@ -1,4 +1,4 @@
-import { PALETTE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
@@ -49,6 +49,7 @@ export interface TreeNode {
   readonly parentId: string | null
   readonly path: string
   readonly name: string
+  readonly createdAt: number
 }
 
 export type ProgressPlacement = 'inline' | 'expanded' | 'hidden'
@@ -58,6 +59,8 @@ export interface State {
   readonly servers: readonly ConnectedServer[]
   /** Row keys in the user's own order. Keys absent from this list sort after those present. */
   readonly customOrder: readonly string[]
+  /** Containers the user explicitly collapsed. Search may reveal them without changing this. */
+  readonly collapsed: readonly string[]
   /** Panel width in pixels, dragged by the handle on its left edge. */
   readonly panelWidth: number
   readonly sort: SortOrder
@@ -71,6 +74,7 @@ export interface State {
 const DEFAULT_STATE: State = {
   servers: [],
   customOrder: [],
+  collapsed: [],
   panelWidth: 320,
   sort: DEFAULT_SORT,
   progress: 'inline',
@@ -87,6 +91,8 @@ const MAX_MANIFEST_TEMPLATES = 100_000
 const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
 const MAX_CUSTOM_ORDER = 200_000
+const MIN_EPOCH_MILLISECONDS = 1_577_836_800_000 // 2020-01-01
+const MAX_EPOCH_MILLISECONDS = 4_102_444_800_000 // 2100-01-01
 export const MAX_CONNECTED_SERVERS = 32
 const SERVER_REFRESH_CONCURRENCY = 4
 const REMOTE_TIMEOUT_MS = 10_000
@@ -97,6 +103,12 @@ const MUTATION_JSON_BYTES = 64 * 1024
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const plausibleMillis = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isSafeInteger(value) &&
+  value >= MIN_EPOCH_MILLISECONDS &&
+  value < MAX_EPOCH_MILLISECONDS
 
 const readBoundedJson = async (response: Response, maxBytes: number): Promise<unknown> => {
   const declared = Number(response.headers.get('content-length'))
@@ -197,7 +209,14 @@ const treeNodeFrom = (raw: unknown): TreeNode | null => {
   )
     return null
   if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return null
-  return { id: raw.id, parentId: raw.parentId, path: raw.path, name: raw.name }
+  if (!plausibleMillis(raw.createdAt)) return null
+  return {
+    id: raw.id,
+    parentId: raw.parentId,
+    path: raw.path,
+    name: raw.name,
+    createdAt: raw.createdAt,
+  }
 }
 
 const treeNodesFrom = (value: unknown): readonly TreeNode[] | null => {
@@ -252,6 +271,41 @@ const manifestTileKey = (value: unknown): value is string => {
   return Number(match[1]) < WORLD_TILES && Number(match[2]) < WORLD_TILES
 }
 
+type ManifestBbox = {
+  readonly minX: number
+  readonly minY: number
+  readonly maxX: number
+  readonly maxY: number
+}
+
+const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> =>
+  bbox.minX < bbox.maxX
+    ? [{ start: bbox.minX, end: bbox.maxX }]
+    : [
+        { start: bbox.minX, end: WORLD_PIXELS },
+        { start: 0, end: bbox.maxX },
+      ]
+
+const tileCoordinates = (tile: string): { x: number; y: number } => {
+  const separator = tile.indexOf('/')
+  return { x: Number(tile.slice(0, separator)), y: Number(tile.slice(separator + 1)) }
+}
+
+const chunkIntersectionArea = (tile: string, bbox: ManifestBbox): number => {
+  const { x, y } = tileCoordinates(tile)
+  const tileMinX = x * TILE_SIZE
+  const tileMinY = y * TILE_SIZE
+  const height = Math.min(tileMinY + TILE_SIZE, bbox.maxY) - Math.max(tileMinY, bbox.minY)
+  if (height <= 0) return 0
+  const width = manifestXSpans(bbox).reduce(
+    (total, span) =>
+      total +
+      Math.max(0, Math.min(tileMinX + TILE_SIZE, span.end) - Math.max(tileMinX, span.start)),
+    0,
+  )
+  return width * height
+}
+
 /**
  * Validate the manifest payload before calling a connection verified.
  *
@@ -267,7 +321,7 @@ const manifestContentsValid = (
     rawNodes.some(
       (raw) =>
         !isRecord(raw) ||
-        !Number.isSafeInteger(raw.createdAt) ||
+        !plausibleMillis(raw.createdAt) ||
         (raw.description !== undefined &&
           (typeof raw.description !== 'string' ||
             raw.description.length < 1 ||
@@ -277,7 +331,12 @@ const manifestContentsValid = (
     return false
   }
 
-  if (!Array.isArray(value.tiles) || value.tiles.length > MAX_MANIFEST_TILES) return false
+  if (
+    !Array.isArray(value.tiles) ||
+    value.tiles.length > MAX_MANIFEST_TILES ||
+    value.tiles.length > MAX_MANIFEST_CHUNKS
+  )
+    return false
   const declaredTiles = new Set<string>()
   for (const tile of value.tiles) {
     if (!manifestTileKey(tile) || declaredTiles.has(tile)) return false
@@ -299,7 +358,7 @@ const manifestContentsValid = (
     if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return false
     if (typeof raw.version !== 'string' || !UUID_V7.test(raw.version)) return false
     if (!Number.isSafeInteger(raw.totalPixels) || Number(raw.totalPixels) <= 0) return false
-    if (typeof raw.published !== 'boolean' || !Number.isSafeInteger(raw.createdAt)) return false
+    if (typeof raw.published !== 'boolean' || !plausibleMillis(raw.createdAt)) return false
     if (!isRecord(raw.bbox)) return false
     const { minX, minY, maxX, maxY } = raw.bbox
     if (
@@ -321,6 +380,13 @@ const manifestContentsValid = (
     chunks += raw.chunks.length
     if (chunks > MAX_MANIFEST_CHUNKS) return false
     const ownTiles = new Set<string>()
+    let capacity = 0
+    const bbox = {
+      minX: Number(minX),
+      minY: Number(minY),
+      maxX: Number(maxX),
+      maxY: Number(maxY),
+    }
     for (const chunk of raw.chunks) {
       if (
         !isRecord(chunk) ||
@@ -331,9 +397,13 @@ const manifestContentsValid = (
       ) {
         return false
       }
+      const intersection = chunkIntersectionArea(chunk.tile, bbox)
+      if (intersection === 0) return false
+      capacity += intersection
       ownTiles.add(chunk.tile)
       referencedTiles.add(chunk.tile)
     }
+    if (Number(raw.totalPixels) > capacity) return false
   }
   return (
     referencedTiles.size === declaredTiles.size &&
@@ -385,6 +455,20 @@ const writeRaw = (value: string): void => {
 let state: State = DEFAULT_STATE
 const listeners: Array<(next: State) => void> = []
 
+const notifyStateListeners = (): void => {
+  for (const listener of listeners) {
+    try {
+      listener(state)
+    } catch (error) {
+      try {
+        warn('install', 'state observer failed', String(error))
+      } catch {
+        // An observer must never turn an already-applied state change into a reported failure.
+      }
+    }
+  }
+}
+
 export const loadState = (): State => {
   const raw = readRaw()
   if (raw === null) return state
@@ -429,6 +513,11 @@ export const loadState = (): State => {
           ),
         ].slice(0, MAX_CUSTOM_ORDER)
       : []
+    const collapsed = Array.isArray(stored.collapsed)
+      ? [
+          ...new Set(stored.collapsed.filter((key): key is string => typeof key === 'string')),
+        ].slice(0, MAX_CUSTOM_ORDER)
+      : []
     const sort: SortOrder =
       stored.sort?.field === 'name'
         ? { field: 'name', direction: stored.sort.direction === 'desc' ? 'desc' : 'asc' }
@@ -453,6 +542,7 @@ export const loadState = (): State => {
       ...DEFAULT_STATE,
       servers,
       customOrder,
+      collapsed,
       panelWidth,
       sort,
       progress,
@@ -461,7 +551,7 @@ export const loadState = (): State => {
       shareTiles: stored.shareTiles === true,
     }
     log('install', 'state loaded', { servers: state.servers.length })
-    for (const listener of listeners) listener(state)
+    notifyStateListeners()
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
   }
@@ -473,7 +563,7 @@ export const getState = (): State => state
 export const setState = (patch: Partial<State>): State => {
   state = { ...state, ...patch }
   writeRaw(JSON.stringify(state))
-  for (const listener of listeners) listener(state)
+  notifyStateListeners()
   return state
 }
 
@@ -501,10 +591,14 @@ export const removeServer = (url: string): void => {
   })
 }
 
-export const removeCustomOrderKeys = (keys: ReadonlySet<string>): void => {
-  const current = getState().customOrder
-  const next = current.filter((key) => !keys.has(key))
-  if (next.length !== current.length) setState({ customOrder: next })
+export const removeTreeStateKeys = (keys: ReadonlySet<string>): void => {
+  const currentOrder = getState().customOrder
+  const currentCollapsed = getState().collapsed
+  const customOrder = currentOrder.filter((key) => !keys.has(key))
+  const collapsed = currentCollapsed.filter((key) => !keys.has(key))
+  if (customOrder.length !== currentOrder.length || collapsed.length !== currentCollapsed.length) {
+    setState({ customOrder, collapsed })
+  }
 }
 
 export type NodeListResult =

@@ -108,7 +108,7 @@ const renderBar = (name: string): void => {
   label.textContent = `Placing “${name}”`
   const hint = document.createElement('span')
   hint.className = 'text-xs opacity-60'
-  hint.textContent = `${MODIFIER_HINT}+drag to move · middle-click to centre here`
+  hint.textContent = `${MODIFIER_HINT}+drag or arrow keys to move · Shift for 10 px · middle-click to centre here`
 
   const apply = document.createElement('button')
   apply.className = 'btn btn-sm btn-primary btn-circle'
@@ -236,6 +236,28 @@ const isPageControl = (target: EventTarget | null): boolean => {
 const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
   if (isPageControl(event.target)) return
+  const delta =
+    event.key === 'ArrowLeft'
+      ? { x: -1, y: 0 }
+      : event.key === 'ArrowRight'
+        ? { x: 1, y: 0 }
+        : event.key === 'ArrowUp'
+          ? { x: 0, y: -1 }
+          : event.key === 'ArrowDown'
+            ? { x: 0, y: 1 }
+            : null
+  if (delta !== null) {
+    const template = localTemplates().find((candidate) => candidate.id === session?.id)
+    if (template === undefined) return
+    event.preventDefault()
+    event.stopPropagation()
+    const step = event.shiftKey ? 10 : 1
+    const next = boundedOrigin(template, session.x + delta.x * step, session.y + delta.y * step)
+    session.x = next.x
+    session.y = next.y
+    previewMove(session.id, session.x, session.y)
+    return
+  }
   if (event.key === 'Escape') {
     event.preventDefault()
     void abort()

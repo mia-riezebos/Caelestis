@@ -23,6 +23,25 @@ describe('wplace account state', () => {
     expect(ownedColours()?.size).toBe(1)
   })
 
+  it('isolates a throwing ownership observer from later listeners', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify({ extraColorsBitmap: 1 }), { status: 200 })),
+      ),
+    )
+    const { loadAccount, onAccountChange } = await import('./wplace-account.js')
+    const reached = vi.fn()
+    onAccountChange(() => {
+      throw new Error('broken observer')
+    })
+    onAccountChange(reached)
+
+    await expect(loadAccount()).resolves.toBeUndefined()
+
+    expect(reached).toHaveBeenCalledOnce()
+  })
+
   it('times out a stuck account request and allows a later retry', async () => {
     vi.useFakeTimers()
     const fetchMock = vi

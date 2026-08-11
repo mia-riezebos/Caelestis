@@ -62,7 +62,17 @@ export const ownedColours = (): ReadonlySet<number> | null => owned
 const replaceOwned = (next: ReadonlySet<number> | null): void => {
   if (owned === next || (owned === null && next === null)) return
   owned = next
-  for (const listener of listeners) listener()
+  for (const listener of listeners) {
+    try {
+      listener()
+    } catch (error) {
+      try {
+        warn('install', 'account observer failed', String(error))
+      } catch {
+        // Ownership was already updated; observers cannot be allowed to turn that into a failure.
+      }
+    }
+  }
 }
 
 const fetchAccount = async (): Promise<void> => {

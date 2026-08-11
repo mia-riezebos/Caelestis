@@ -4,6 +4,8 @@ const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_A = '019fed50-87a1-7523-a88c-bdeafad49682'
 const NODE_B = '019fed50-87a1-7523-a88c-bdeafad49683'
 const TEMPLATE_ID = '019fed50-87a1-7523-a88c-bdeafad49684'
+const CREATED_AT = 1_750_000_000_000
+const HASH = 'a'.repeat(64)
 
 const serverInfo = { id: SERVER_ID, name: 'Caelestis', auth: 'none' as const }
 const manifest = {
@@ -49,6 +51,7 @@ describe('server state boundaries', () => {
             },
           ],
           customOrder: [`node:${NODE_A}`, 'local:kept'],
+          collapsed: ['local', 'server:https://example.com'],
         }),
       ),
     )
@@ -63,6 +66,7 @@ describe('server state boundaries', () => {
       }),
     ])
     expect(loadState().customOrder).toEqual(['local:kept'])
+    expect(loadState().collapsed).toEqual(['local', 'server:https://example.com'])
   })
 
   it('notifies paint subscribers after restoring persisted order', async () => {
@@ -177,6 +181,94 @@ describe('server state boundaries', () => {
       }),
     )
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    {
+      name: 'a chunk outside its template bounds',
+      document: {
+        ...manifest,
+        nodes: [
+          { id: NODE_A, parentId: null, path: '/group', name: 'Group', createdAt: CREATED_AT },
+        ],
+        templates: [
+          {
+            id: TEMPLATE_ID,
+            nodeId: NODE_A,
+            name: 'Template',
+            version: NODE_B,
+            bbox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
+            totalPixels: 1,
+            chunks: [{ tile: '1/0', hash: HASH }],
+            published: true,
+            createdAt: CREATED_AT,
+          },
+        ],
+        tiles: ['1/0'],
+      },
+    },
+    {
+      name: 'a pixel count larger than the bounded chunk capacity',
+      document: {
+        ...manifest,
+        nodes: [
+          { id: NODE_A, parentId: null, path: '/group', name: 'Group', createdAt: CREATED_AT },
+        ],
+        templates: [
+          {
+            id: TEMPLATE_ID,
+            nodeId: NODE_A,
+            name: 'Template',
+            version: NODE_B,
+            bbox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
+            totalPixels: 101,
+            chunks: [{ tile: '0/0', hash: HASH }],
+            published: true,
+            createdAt: CREATED_AT,
+          },
+        ],
+        tiles: ['0/0'],
+      },
+    },
+    {
+      name: 'a seconds-scale creation timestamp',
+      document: {
+        ...manifest,
+        nodes: [
+          { id: NODE_A, parentId: null, path: '/group', name: 'Group', createdAt: 1_750_000_000 },
+        ],
+      },
+    },
+  ])('rejects $name before verifying the connection', async ({ document }) => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(document), { status: 200 })),
+    )
+    const { probeServer } = await import('./state.js')
+
+    await expect(probeServer('https://example.com', null)).resolves.toEqual(
+      expect.objectContaining({
+        status: 'unreachable',
+        error: expect.stringContaining('manifest'),
+      }),
+    )
+  })
+
+  it('isolates throwing state observers after committing the update', async () => {
+    const { getState, onStateChange, setState } = await import('./state.js')
+    const reached = vi.fn()
+    onStateChange(() => {
+      throw new Error('broken observer')
+    })
+    onStateChange(reached)
+
+    expect(() => setState({ shareTiles: true })).not.toThrow()
+
+    expect(getState().shareTiles).toBe(true)
+    expect(reached).toHaveBeenCalledOnce()
   })
 
   it('rejects an invalid folder returned by a successful create request', async () => {

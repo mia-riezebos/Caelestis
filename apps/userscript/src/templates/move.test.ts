@@ -457,6 +457,35 @@ describe('template placement controls', () => {
     expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
   })
 
+  it('moves placement by keyboard with a larger Shift step', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const keydown = listeners.get('keydown')
+    if (keydown === undefined) throw new Error('expected keyboard listener')
+    const preventDefault = vi.fn()
+    const stopPropagation = vi.fn()
+
+    keydown({
+      key: 'ArrowRight',
+      shiftKey: false,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault,
+      stopPropagation,
+    } as unknown as Event)
+    keydown({
+      key: 'ArrowUp',
+      shiftKey: true,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault,
+      stopPropagation,
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(1, 'test', 11, 20)
+    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(2, 'test', 11, 10)
+    expect(preventDefault).toHaveBeenCalledTimes(2)
+    expect(stopPropagation).toHaveBeenCalledTimes(2)
+  })
+
   it('recovers placement controls after a final bitmap build rejects', async () => {
     harness.placeLocalTemplate.mockRejectedValueOnce(new Error('bitmap failed'))
     const moves = await import('./move.js')

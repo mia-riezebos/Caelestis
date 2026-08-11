@@ -12,8 +12,8 @@ import {
   MAX_CONNECTED_SERVERS,
   probeServer,
   refreshStoredServers,
-  removeCustomOrderKeys,
   removeServer,
+  removeTreeStateKeys,
   renameNode as renameNodeOnServer,
   setState,
   uploadTemplate,
@@ -118,8 +118,11 @@ let activeResizeCleanup: (() => void) | null = null
 let activeTreeRender: (() => void) | null = null
 let cancelActiveConfirm: (() => void) | null = null
 let cancelActiveCopy: (() => void) | null = null
+let closeActiveContextMenu: ((restoreFocus: boolean) => void) | null = null
 let viewportResizeInstalled = false
 let accountObserverInstalled = false
+let panelOwnerGeneration = 0
+let controlLabelSerial = 0
 const connectionAttempts = new Map<string, number>()
 const activePanelRequests = new Set<AbortController>()
 
@@ -140,8 +143,16 @@ const cancelPanelRequests = (): void => {
   activePanelRequests.clear()
 }
 
+const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
+const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
 const panelWidthForViewport = (wanted: number): number =>
-  Math.min(Math.max(0, window.innerWidth - 96), Math.max(260, Math.min(720, wanted)))
+  Math.min(maximumPanelWidth(), Math.max(minimumPanelWidth(), wanted))
+
+const updateResizeValue = (handle: HTMLElement, width: number): void => {
+  handle.setAttribute('aria-valuemin', String(minimumPanelWidth()))
+  handle.setAttribute('aria-valuemax', String(maximumPanelWidth()))
+  handle.setAttribute('aria-valuenow', String(Math.round(width)))
+}
 
 const rerenderWhenIdle = (): void => {
   const panel = document.getElementById(PANEL_ID)
@@ -150,7 +161,9 @@ const rerenderWhenIdle = (): void => {
   if (
     focused !== null &&
     panel.contains(focused) &&
-    focused.matches('input,textarea,select,[contenteditable="true"]')
+    focused.matches(
+      'button,input,textarea,select,[contenteditable="true"],[tabindex]:not([tabindex="-1"])',
+    )
   ) {
     panel.addEventListener('focusout', () => setTimeout(rerenderWhenIdle, 0), { once: true })
     return
@@ -244,6 +257,7 @@ const treeView = (): HTMLElement => {
   searchInput.style.flex = '1'
   searchInput.style.minWidth = '0'
   searchInput.placeholder = 'Search templates'
+  searchInput.setAttribute('aria-label', 'Search templates')
   searchInput.value = searchQuery
   search.append(searchIcon, searchInput)
 
@@ -345,6 +359,8 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
   const text = document.createElement('div')
   text.className = 'flex flex-col'
   const name = document.createElement('span')
+  const labelId = `wts-setting-${++controlLabelSerial}`
+  name.id = labelId
   name.className = 'text-sm'
   name.textContent = label
   text.append(name)
@@ -354,8 +370,15 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
     sub.textContent = hint
     text.appendChild(sub)
   }
+  control.setAttribute('aria-labelledby', labelId)
   row.append(text, control)
   return row
+}
+
+const announce = (element: HTMLElement, message: string, error = false): void => {
+  element.setAttribute('role', error ? 'alert' : 'status')
+  element.setAttribute('aria-live', error ? 'assertive' : 'polite')
+  element.textContent = message
 }
 
 const checkbox = (): HTMLInputElement => {
@@ -385,7 +408,7 @@ const retryServerButton = (server: ConnectedServer, label: string): HTMLButtonEl
         return
       }
       upsertServer(next)
-      showView('settings')
+      showView('settings', true)
     })()
   })
   return button
@@ -437,7 +460,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     forgetServerTree(server.url)
     removeServer(server.url)
     void forgetServer(server.url)
-    showView('settings')
+    showView('settings', true)
   })
 
   top.append(name, badge, remove)
@@ -467,6 +490,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   code.style.flex = '1'
   code.style.minWidth = '0'
   code.placeholder = 'Access code'
+  code.setAttribute('aria-label', `Access code for ${server.info?.name ?? server.url}`)
   const submit = document.createElement('button')
   submit.className = 'btn btn-sm btn-primary'
   submit.textContent = 'Connect'
@@ -474,7 +498,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   const status = document.createElement('p')
   status.className = 'text-xs opacity-60'
   status.style.marginTop = '0.25rem'
-  status.textContent = 'This server needs an access code from whoever runs it.'
+  announce(status, 'This server needs an access code from whoever runs it.')
 
   let checking = false
   const attempt = async (): Promise<void> => {
@@ -484,7 +508,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     checking = true
     submit.disabled = true
     status.className = 'text-xs opacity-60'
-    status.textContent = 'Checking…'
+    announce(status, 'Checking…')
     const ownsAttempt = beginConnectionAttempt(server.url)
     const request = panelRequest()
     const next = await probeServer(server.url, value, request.controller.signal)
@@ -499,16 +523,20 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
       return
     if (next.status === 'connected') {
       upsertServer(next)
-      showView('settings')
+      code.value = ''
+      showView('settings', true)
       return
     }
     // A wrong code and an unreachable server are different problems with different fixes, so they
     // must not share a message.
     status.className = 'text-xs text-error'
-    status.textContent =
+    announce(
+      status,
       next.status === 'needs-token'
         ? 'That code was not accepted. Ask whoever runs the server for a current one.'
-        : `Could not reach the server. ${next.error ?? ''}`.trim()
+        : `Could not reach the server. ${next.error ?? ''}`.trim(),
+      true,
+    )
   }
 
   submit.addEventListener('click', () => void attempt())
@@ -535,12 +563,15 @@ const settingsView = (): HTMLElement => {
   url.style.flex = '1'
   url.style.minWidth = '0'
   url.placeholder = 'https://templates.example.org'
+  url.setAttribute('aria-label', 'Template server URL')
   const add = document.createElement('button')
   add.className = 'btn btn-sm btn-primary'
   add.textContent = 'Add'
   const status = document.createElement('p')
   status.className = 'text-xs px-3 pb-2'
   status.style.display = 'none'
+  status.setAttribute('role', 'status')
+  status.setAttribute('aria-live', 'polite')
 
   let connecting = false
   const connect = async (): Promise<void> => {
@@ -553,26 +584,26 @@ const settingsView = (): HTMLElement => {
     } catch (error) {
       status.style.display = ''
       status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = String(error)
+      announce(status, String(error), true)
       return
     }
     if (getState().servers.some((server) => server.url === canonical)) {
       status.style.display = ''
       status.className = 'text-xs px-3 pb-2 opacity-60'
-      status.textContent = 'That server is already connected.'
+      announce(status, 'That server is already connected.')
       return
     }
     if (getState().servers.length >= MAX_CONNECTED_SERVERS) {
       status.style.display = ''
       status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`
+      announce(status, `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`, true)
       return
     }
     connecting = true
     add.disabled = true
     status.style.display = ''
     status.className = 'text-xs px-3 pb-2 opacity-60'
-    status.textContent = 'Connecting…'
+    announce(status, 'Connecting…')
     const ownsAttempt = beginConnectionAttempt(canonical)
     const request = panelRequest()
     const server = await probeServer(canonical, null, request.controller.signal)
@@ -583,19 +614,23 @@ const settingsView = (): HTMLElement => {
     if (!ownsAttempt()) return
     if (server.status === 'unreachable') {
       status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
+      announce(
+        status,
+        `Could not reach ${server.url}. Check the address and that the server allows this origin.`,
+        true,
+      )
       return
     }
     if (!upsertServer(server)) {
       status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`
+      announce(status, `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`, true)
       return
     }
     url.value = ''
     // Re-render so the new server's row appears — it is what carries the status badge and, when the
     // server wants one, the access-code field. Without this the panel reported "needs a code" and
     // then offered nowhere to type one.
-    showView('settings')
+    showView('settings', true)
   }
 
   add.addEventListener('click', () => void connect())
@@ -630,6 +665,8 @@ const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): vo
       : kind === 'warning'
         ? 'alert alert-warning text-xs'
         : 'alert alert-info text-xs'
+  el.setAttribute('role', kind === 'error' ? 'alert' : 'status')
+  el.setAttribute('aria-live', kind === 'error' ? 'assertive' : 'polite')
   Object.assign(el.style, { margin: '0 0.5rem 0.5rem', padding: '0.5rem 0.75rem' })
   el.textContent = message
   panel.appendChild(el)
@@ -802,7 +839,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
       if (stoppedMove !== null) beginMove(templateId, rerender, stoppedMove)
       return
     }
-    removeCustomOrderKeys(new Set([target.key]))
+    removeTreeStateKeys(new Set([target.key]))
     rerender()
     return
   }
@@ -840,9 +877,12 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
  * try first.
  */
 const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => void): void => {
-  document.querySelector('[data-wts-menu]')?.remove()
+  closeActiveContextMenu?.(false)
+  const invoker = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   const menu = document.createElement('ul')
   menu.setAttribute('data-wts-menu', '')
+  menu.setAttribute('role', 'menu')
+  menu.tabIndex = -1
   menu.className = 'menu bg-base-100 shadow-2xl'
   Object.assign(menu.style, {
     position: 'fixed',
@@ -899,20 +939,28 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
         ]
   for (const [glyph, label, run] of entries) {
     const item = document.createElement('li')
+    item.setAttribute('role', 'none')
     const button = document.createElement('button')
+    button.setAttribute('role', 'menuitem')
+    button.tabIndex = -1
     button.className = label === 'Delete' ? 'text-error' : ''
     button.appendChild(icon(glyph, 'size-4'))
     const text = document.createElement('span')
     text.textContent = label
     button.appendChild(text)
     button.addEventListener('click', () => {
-      menu.remove()
+      closeActiveContextMenu?.(false)
       run()
     })
     item.appendChild(button)
     menu.appendChild(item)
   }
   document.body.appendChild(menu)
+  if (event.clientX === 0 && event.clientY === 0 && invoker !== null) {
+    const invokerBox = invoker.getBoundingClientRect()
+    menu.style.left = `${invokerBox.left}px`
+    menu.style.top = `${invokerBox.bottom}px`
+  }
   // Keep it on screen when the click lands near an edge.
   const box = menu.getBoundingClientRect()
   if (box.right > window.innerWidth) menu.style.left = `${window.innerWidth - box.width - 8}px`
@@ -923,13 +971,45 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
   // click, so the menu was removed from the document before the click could reach the button it
   // was pressed on, and nothing happened. The synthetic `.click()` in the first test bypassed
   // pointerdown entirely and so never saw it.
-  setTimeout(() => {
-    const dismiss = (event: PointerEvent): void => {
-      if (event.target instanceof Node && menu.contains(event.target)) return
-      menu.remove()
-      window.removeEventListener('pointerdown', dismiss)
+  const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+  let pointerInstalled = false
+  const dismiss = (pointer: PointerEvent): void => {
+    if (pointer.target instanceof Node && menu.contains(pointer.target)) return
+    closeActiveContextMenu?.(true)
+  }
+  const close = (restoreFocus: boolean): void => {
+    if (closeActiveContextMenu !== close) return
+    closeActiveContextMenu = null
+    if (pointerInstalled) window.removeEventListener('pointerdown', dismiss)
+    menu.remove()
+    if (restoreFocus && invoker?.isConnected) invoker.focus()
+  }
+  closeActiveContextMenu = close
+  menu.addEventListener('keydown', (key) => {
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    const focusAt = (index: number): void => buttons.at(index)?.focus()
+    if (key.key === 'Escape') {
+      key.preventDefault()
+      close(true)
+    } else if (key.key === 'ArrowDown') {
+      key.preventDefault()
+      focusAt((current + 1) % buttons.length)
+    } else if (key.key === 'ArrowUp') {
+      key.preventDefault()
+      focusAt((current - 1 + buttons.length) % buttons.length)
+    } else if (key.key === 'Home') {
+      key.preventDefault()
+      focusAt(0)
+    } else if (key.key === 'End') {
+      key.preventDefault()
+      focusAt(-1)
     }
+  })
+  setTimeout(() => {
+    if (closeActiveContextMenu !== close) return
+    pointerInstalled = true
     window.addEventListener('pointerdown', dismiss)
+    buttons[0]?.focus()
   }, 0)
 }
 
@@ -940,6 +1020,9 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
     toast('Import into Local first, then copy it to a server.', 'warning')
     return
   }
+  const ownerGeneration = panelOwnerGeneration
+  const stillOwned = (): boolean =>
+    open && currentView === 'tree' && panelOwnerGeneration === ownerGeneration
   const picker = document.createElement('input')
   picker.type = 'file'
   picker.accept = '.wplace,.json,image/png,image/*'
@@ -966,20 +1049,22 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
             break
           }
         }
-        rerender()
+        if (stillOwned()) rerender()
 
         if (failure !== null) {
-          toast(
-            added === 0
-              ? `Could not import: ${String(failure)}`
-              : `Imported ${added} of ${imported.length}; the rest could not be added: ${String(failure)}`,
-            'error',
-          )
+          if (stillOwned()) {
+            toast(
+              added === 0
+                ? `Could not import: ${String(failure)}`
+                : `Imported ${added} of ${imported.length}; the rest could not be added: ${String(failure)}`,
+              'error',
+            )
+          }
           if (added === 0) return
         }
 
         const first = imported[0]
-        if (first === undefined) return
+        if (first === undefined || !stillOwned()) return
         const moved = first.moved
         toast(
           `Imported ${first.name} — ${first.width}x${first.height}` +
@@ -997,7 +1082,7 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           navigateTo(centreOf(first))
         }
       } catch (error) {
-        toast(`Could not import: ${String(error)}`, 'error')
+        if (stillOwned()) toast(`Could not import: ${String(error)}`, 'error')
       }
     })()
   })
@@ -1059,9 +1144,11 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   cancel.className = 'btn btn-xs btn-ghost'
   cancel.textContent = 'Cancel'
   const controllers: AbortController[] = []
+  let filterTimer: ReturnType<typeof setTimeout> | null = null
   let closed = false
   const closeCopy = (): void => {
     closed = true
+    if (filterTimer !== null) clearTimeout(filterTimer)
     for (const controller of controllers) controller.abort()
     box.remove()
     if (cancelActiveCopy === closeCopy) cancelActiveCopy = null
@@ -1080,7 +1167,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   let loadedNodes: readonly {
     readonly id: string
     readonly path: string
-    readonly name: string
+    readonly search: string
   }[] = []
   let loadGeneration = 0
   const renderDestinations = (): void => {
@@ -1088,11 +1175,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     const needle = filter.value.trim().toLocaleLowerCase()
     let matches = 0
     for (const node of loadedNodes) {
-      if (
-        needle !== '' &&
-        !node.path.toLocaleLowerCase().includes(needle) &&
-        !node.name.toLocaleLowerCase().includes(needle)
-      ) {
+      if (needle !== '' && !node.search.includes(needle)) {
         continue
       }
       matches++
@@ -1134,11 +1217,21 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
       label.textContent = `Could not load folders. ${result.message}`
       return
     }
-    loadedNodes = result.nodes
+    loadedNodes = result.nodes.map((node) => ({
+      id: node.id,
+      path: node.path,
+      search: `${node.path}\n${node.name}`.toLocaleLowerCase(),
+    }))
     renderDestinations()
   }
   serverChooser.addEventListener('change', () => void loadSelectedServer())
-  filter.addEventListener('input', renderDestinations)
+  filter.addEventListener('input', () => {
+    if (filterTimer !== null) clearTimeout(filterTimer)
+    filterTimer = setTimeout(() => {
+      filterTimer = null
+      if (!closed) renderDestinations()
+    }, 150)
+  })
   await loadSelectedServer()
   if (!box.isConnected) return
 
@@ -1314,6 +1407,29 @@ const buildPanel = (): HTMLElement => {
   handle.className = 'wts-resize'
   handle.setAttribute('role', 'separator')
   handle.setAttribute('aria-label', 'Resize panel')
+  handle.setAttribute('aria-orientation', 'vertical')
+  handle.tabIndex = 0
+  updateResizeValue(handle, panelWidthForViewport(getState().panelWidth))
+  handle.addEventListener('keydown', (event) => {
+    const current = panel.getBoundingClientRect().width
+    const step = event.shiftKey ? 50 : 10
+    const wanted =
+      event.key === 'ArrowLeft'
+        ? current + step
+        : event.key === 'ArrowRight'
+          ? current - step
+          : event.key === 'Home'
+            ? minimumPanelWidth()
+            : event.key === 'End'
+              ? maximumPanelWidth()
+              : null
+    if (wanted === null) return
+    event.preventDefault()
+    const next = panelWidthForViewport(wanted)
+    panel.style.width = `${next}px`
+    updateResizeValue(handle, next)
+    setState({ panelWidth: Math.round(next) })
+  })
   handle.addEventListener('pointerdown', (event) => {
     if (activeResizeCleanup !== null) return
     event.preventDefault()
@@ -1333,6 +1449,7 @@ const buildPanel = (): HTMLElement => {
       // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
       const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
       panel.style.width = `${next}px`
+      updateResizeValue(handle, next)
     }
     let active = true
     const cleanup = (commit: boolean): void => {
@@ -1346,7 +1463,10 @@ const buildPanel = (): HTMLElement => {
       handle.removeEventListener('lostpointercapture', cancelResize)
       activeResizeCleanup = null
       if (commit) setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
-      else panel.style.width = `${startWidth}px`
+      else {
+        panel.style.width = `${startWidth}px`
+        updateResizeValue(handle, startWidth)
+      }
     }
     const done = (ended: PointerEvent): void => {
       if (ended.pointerId === pointerId) cleanup(true)
@@ -1433,8 +1553,9 @@ const restoreSettingsDrafts = (panel: HTMLElement, drafts: SettingsDrafts): void
 }
 
 const showView = (view: View, preserveDrafts = false): void => {
-  document.querySelector('[data-wts-menu]')?.remove()
+  closeActiveContextMenu?.(false)
   if (view !== currentView) {
+    panelOwnerGeneration++
     cancelPanelRequests()
     cancelActiveConfirm?.()
     cancelActiveCopy?.()
@@ -1469,7 +1590,12 @@ const setOpen = (next: boolean): void => {
   syncRailButtonState()
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
-    document.querySelector('[data-wts-menu]')?.remove()
+    const restoreRailFocus =
+      existing !== null &&
+      document.activeElement !== null &&
+      existing.contains(document.activeElement)
+    panelOwnerGeneration++
+    closeActiveContextMenu?.(false)
     cancelPanelRequests()
     activeTreeRender = null
     activeResizeCleanup?.()
@@ -1477,6 +1603,7 @@ const setOpen = (next: boolean): void => {
     cancelActiveCopy?.()
     cancelRenaming()
     existing?.remove()
+    if (restoreRailFocus) queueMicrotask(() => document.getElementById(BUTTON_ID)?.focus())
     return
   }
   if (existing !== null) return
@@ -1504,7 +1631,12 @@ export const installPanel = (): void => {
     window.addEventListener('resize', () => {
       activeResizeCleanup?.()
       const panel = document.getElementById(PANEL_ID)
-      if (panel !== null) panel.style.width = `${panelWidthForViewport(getState().panelWidth)}px`
+      if (panel !== null) {
+        const width = panelWidthForViewport(getState().panelWidth)
+        panel.style.width = `${width}px`
+        const handle = panel.querySelector<HTMLElement>('[role="separator"]')
+        if (handle !== null) updateResizeValue(handle, width)
+      }
     })
   }
   let warned = false
