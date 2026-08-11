@@ -8,15 +8,93 @@ import {
   refreshNodes,
   reorderedSiblings,
   replaceSiblingOrder,
+  treeContents,
 } from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
 
 afterEach(() => {
+  forgetServerTree('https://public.example.com')
+  forgetServerTree('https://cached.example.com')
+  forgetServerTree('https://loading.example.com')
+  setState({ servers: [], customOrder: [], collapsed: [] })
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
+
+class FakeElement {
+  readonly children: FakeElement[] = []
+  readonly dataset: Record<string, string> = {}
+  readonly style: Record<string, string> = {}
+  readonly classList = {
+    add: vi.fn(),
+    remove: vi.fn(),
+    contains: vi.fn(() => false),
+  }
+  className = ''
+  textContent = ''
+  checked = false
+  disabled = false
+  draggable = false
+  tabIndex = 0
+  title = ''
+  type = ''
+  value = ''
+  scrollWidth = 0
+  clientWidth = 0
+
+  appendChild(child: FakeElement): FakeElement {
+    this.children.push(child)
+    return child
+  }
+
+  append(...children: FakeElement[]): void {
+    this.children.push(...children)
+  }
+
+  setAttribute(): void {}
+  addEventListener(): void {}
+  focus(): void {}
+  remove(): void {}
+  contains(child: FakeElement): boolean {
+    return child === this || this.children.some((candidate) => candidate.contains(child))
+  }
+  querySelector(): FakeElement | null {
+    return null
+  }
+  querySelectorAll(): FakeElement[] {
+    return []
+  }
+}
+
+const installFakeDom = (): void => {
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    callback(0)
+    return 1
+  })
+  vi.stubGlobal('document', {
+    createElement: () => new FakeElement(),
+    createElementNS: () => new FakeElement(),
+  })
+}
+
+const renderedText = (element: FakeElement): string =>
+  [element.textContent, ...element.children.map((child) => renderedText(child))]
+    .filter((text) => text !== '')
+    .join(' ')
+
+const callbacks = {
+  onAddServer: vi.fn(),
+  onCreateFolder: vi.fn(),
+  onImportTemplate: vi.fn(),
+  onRename: vi.fn(),
+  onDelete: vi.fn(),
+  onContextMenu: vi.fn(),
+  onGoTo: vi.fn(),
+  onCopyToServer: vi.fn(),
+  onError: vi.fn(),
+}
 
 const server = (id: string, season: number, url = 'https://example.com'): ConnectedServer => ({
   url,
@@ -184,5 +262,101 @@ describe('tree identity and ordering', () => {
 
     expect(rerender).toHaveBeenCalledOnce()
     expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('retains manifest folders for a connected server without admin scope', async () => {
+    const info = { id: SERVER_ID, name: 'Public', auth: 'none' as const }
+    const nodes = [
+      {
+        id: NODE_ID,
+        parentId: null,
+        path: '/public',
+        name: 'Public',
+        createdAt: 1_750_000_000_000,
+      },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(info), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              version: 'v1',
+              season: 0,
+              server: info,
+              nodes,
+              templates: [],
+              tiles: [],
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 403 })),
+    )
+    const connected = await probeServer('https://public.example.com', null)
+    setState({ servers: [connected] })
+
+    await expect(refreshNodes(connected, vi.fn())).resolves.toEqual({ ok: true })
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('renders cached folders alongside an unreachable connection warning', async () => {
+    installFakeDom()
+    const connected = server(SERVER_ID, 0, 'https://cached.example.com')
+    setState({ servers: [connected] })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                id: NODE_ID,
+                parentId: null,
+                path: '/cached',
+                name: 'Cached folder',
+                createdAt: 1_750_000_000_000,
+              },
+            ]),
+            { status: 200 },
+          ),
+        ),
+      ),
+    )
+    await refreshNodes(connected, vi.fn())
+    const stale: ConnectedServer = {
+      ...connected,
+      info: null,
+      status: 'unreachable',
+      error: 'offline',
+      isAdmin: false,
+      season: null,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [stale] })
+
+    const tree = treeContents(callbacks, vi.fn()) as unknown as FakeElement
+    const text = renderedText(tree)
+
+    expect(text).toContain('Cached folder')
+    expect(text).toContain('Could not be reached. offline')
+  })
+
+  it('reports loading rather than an empty server while the first folder fetch is pending', () => {
+    installFakeDom()
+    const connected = server(SERVER_ID, 0, 'https://loading.example.com')
+    setState({ servers: [connected] })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>(() => {})),
+    )
+
+    const tree = treeContents(callbacks, vi.fn()) as unknown as FakeElement
+    const text = renderedText(tree)
+
+    expect(text).toContain('Loading folders…')
+    expect(text).not.toContain('No templates published yet.')
   })
 })

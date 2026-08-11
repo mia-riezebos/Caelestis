@@ -152,17 +152,22 @@ export const refreshNodes = async (
   force = false,
   signal?: AbortSignal,
 ): Promise<NodeRefreshResult> => {
-  if (!server.isAdmin) return { ok: false, message: 'Admin access is required to refresh folders.' }
   const existing = refreshes.get(server)
   if (!force && existing !== undefined) {
     const result = await existing
     queueMicrotask(rerender)
     return result
   }
+  // Every successful manifest probe already carries the public node tree. Consume that first: a
+  // read-only or anonymous connection cannot call the admin route, but it still owns the manifest
+  // folders it just verified.
+  const probed = takeProbedNodes(server)
+  if (!server.isAdmin && probed === undefined) {
+    return { ok: false, message: 'Admin access is required to refresh folders.' }
+  }
   const generation = (refreshGeneration.get(server.url) ?? 0) + 1
   refreshGeneration.set(server.url, generation)
   const loading = Promise.resolve().then(async (): Promise<NodeRefreshResult> => {
-    const probed = takeProbedNodes(server)
     const result =
       probed === undefined ? await listNodes(server, signal) : { ok: true as const, nodes: probed }
     if (signal?.aborted) {
@@ -922,13 +927,13 @@ export const treeContents = (
           }
         }
         renderChildren(null, 1)
-        if (nodeError !== undefined) {
+        if (server.status === 'connected' && nodeError !== undefined) {
           wrap.appendChild(
             childRetry(`Could not refresh folders. ${nodeError}`, 0, () => {
               void refreshNodes(server, backgroundRerender, true)
             }),
           )
-        } else if (known.length === 0) {
+        } else if (server.status === 'connected' && known.length === 0) {
           wrap.appendChild(
             childText(needle === '' ? 'No templates published yet.' : 'No matches.', 0),
           )
@@ -944,7 +949,9 @@ export const treeContents = (
         } else if (renderedRows === 0 && needle !== '') {
           wrap.appendChild(childText('No matches.', 0))
         }
-        continue
+        // A stale tree is useful context while a server is offline or needs a new code, but it must
+        // not hide that connection state. Healthy trees need no extra status row.
+        if (server.status === 'connected') continue
       }
     }
 
@@ -1038,7 +1045,7 @@ export const treeContents = (
       const nodeError = nodeErrors.get(server)
       wrap.appendChild(
         nodeError === undefined
-          ? childText('No templates published yet.', 0)
+          ? childText('Loading folders…', 0)
           : childRetry(`Could not load folders. ${nodeError}`, 0, () => {
               void refreshNodes(server, backgroundRerender, true)
             }),
