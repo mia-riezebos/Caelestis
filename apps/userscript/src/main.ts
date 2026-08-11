@@ -280,9 +280,11 @@ const main = (): void => {
   void restoreLocalTemplates()
   void loadAccount()
   onPaint(paintTemplates)
-  // The buttons ride with the overlay, so they are repositioned on the same frame the map moved.
-  onPaint(() => renderOverlayControls(repaint))
   onPaint(paintMark)
+  // The buttons ride with the overlay, so they are repositioned on the same frame the map moved.
+  // Last, because they are DOM rather than canvas: nothing painted after them depends on the order,
+  // and inserting them earlier would shift the canvas painters other code indexes by position.
+  onPaint(() => renderOverlayControls(repaint))
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
   onLocalChange(repaint)
