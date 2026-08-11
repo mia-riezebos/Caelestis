@@ -52,6 +52,7 @@ let renameDraft: { readonly key: string; value: string } | null = null
 const TREE_DRAG_TYPE = 'application/x-caelestis-tree-key'
 const MAX_RENDERED_ROWS = 2_000
 const MAX_TOTAL_SERVER_NODES = MAX_TREE_NODES
+const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
 
 /**
  * Nodes per server, fetched once and refreshed on demand.
@@ -80,8 +81,12 @@ export type NodeRefreshResult =
     }
 const refreshes = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
 
-const serverIdentity = (server: ConnectedServer): string | null =>
-  server.info === null || server.season === null ? null : `${server.info.id}:${server.season}`
+const serverIdentity = (server: ConnectedServer): string | null => {
+  if (server.info !== null && server.season !== null) return `${server.info.id}:${server.season}`
+  return server.lastVerified === null || server.lastVerified === undefined
+    ? null
+    : `${server.lastVerified.serverId}:${server.lastVerified.season}`
+}
 
 const treeFor = (server: ConnectedServer): readonly TreeNode[] | undefined => {
   const identity = serverIdentity(server)
@@ -93,12 +98,20 @@ const treeFor = (server: ConnectedServer): readonly TreeNode[] | undefined => {
     : undefined
 }
 
-export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
-  `node:${encodeURIComponent(server.url)}:${server.info?.id ?? 'unknown'}:${server.season ?? 'unknown'}:${nodeId}`
+export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string => {
+  const identity = serverIdentity(server) ?? 'unknown:unknown'
+  return `node:${encodeURIComponent(server.url)}:${identity}:${nodeId}`
+}
 
 export const forgetServerTree = (url: string): void => {
   const entry = nodesByServer.get(url)
-  const keys = new Set([`server:${url}`])
+  const prefix = `node:${encodeURIComponent(url)}:`
+  const state = getState()
+  const keys = new Set([
+    `server:${url}`,
+    ...state.customOrder.filter((key) => key.startsWith(prefix)),
+    ...state.collapsed.filter((key) => key.startsWith(prefix)),
+  ])
   if (entry !== undefined) {
     for (const node of entry.nodes) {
       keys.add(`node:${encodeURIComponent(url)}:${entry.serverId}:${entry.season}:${node.id}`)
@@ -221,8 +234,8 @@ export const primeFromCache = async (rerender: () => void): Promise<void> => {
   for (const entry of await loadServerCache(configured)) {
     const server = getState().servers.find((candidate) => candidate.url === entry.url)
     if (
-      server?.info?.id !== entry.serverId ||
-      server.season !== entry.season ||
+      server?.lastVerified?.serverId !== entry.serverId ||
+      server.lastVerified.season !== entry.season ||
       nodesByServer.has(entry.url)
     ) {
       continue
@@ -275,11 +288,71 @@ export const nodeSiblingItems = (
 export const orderedItems = <T extends OrderedItem>(
   items: readonly T[],
   rank: ReadonlyMap<string, number>,
+  limit = Number.POSITIVE_INFINITY,
 ): readonly T[] => {
+  const bounded = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : items.length
+  if (bounded === 0) return []
+  const takeFirst = (compare: (a: T, b: T) => number): readonly T[] => {
+    if (bounded >= items.length) return [...items].sort(compare)
+    const heap: T[] = []
+    const siftUp = (start: number): void => {
+      let index = start
+      while (index > 0) {
+        const parent = Math.floor((index - 1) / 2)
+        const item = heap[index]
+        const parentItem = heap[parent]
+        if (item === undefined || parentItem === undefined || compare(item, parentItem) <= 0) break
+        ;[heap[index], heap[parent]] = [parentItem, item]
+        index = parent
+      }
+    }
+    const siftDown = (): void => {
+      let index = 0
+      while (true) {
+        const left = index * 2 + 1
+        const right = left + 1
+        let worst = index
+        const leftItem = heap[left]
+        const currentWorst = heap[worst]
+        if (
+          leftItem !== undefined &&
+          currentWorst !== undefined &&
+          compare(leftItem, currentWorst) > 0
+        ) {
+          worst = left
+        }
+        const rightItem = heap[right]
+        const nextWorst = heap[worst]
+        if (
+          rightItem !== undefined &&
+          nextWorst !== undefined &&
+          compare(rightItem, nextWorst) > 0
+        ) {
+          worst = right
+        }
+        if (worst === index) return
+        const current = heap[index]
+        const replacement = heap[worst]
+        if (current === undefined || replacement === undefined) return
+        ;[heap[index], heap[worst]] = [replacement, current]
+        index = worst
+      }
+    }
+    for (const item of items) {
+      if (heap.length < bounded) {
+        heap.push(item)
+        siftUp(heap.length - 1)
+      } else if (heap[0] !== undefined && compare(item, heap[0]) < 0) {
+        heap[0] = item
+        siftDown()
+      }
+    }
+    return heap.sort(compare)
+  }
   if (getState().sort.field === 'name') {
     const direction = getState().sort.direction === 'desc' ? -1 : 1
-    return [...items].sort(
-      (a, b) => direction * a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+    return takeFirst(
+      (a, b) => direction * NAME_COLLATOR.compare(a.name, b.name) || a.key.localeCompare(b.key),
     )
   }
   const ranked: Array<{ readonly item: T; readonly rank: number }> = []
@@ -295,7 +368,7 @@ export const orderedItems = <T extends OrderedItem>(
   unranked.sort(
     (a, b) => (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
   )
-  return [...ranked.map(({ item }) => item), ...unranked]
+  return [...ranked.map(({ item }) => item), ...unranked].slice(0, bounded)
 }
 
 const isTreeDrag = (transfer: DataTransfer | null): boolean =>
@@ -759,16 +832,16 @@ export const treeContents = (
     )
     if (!isExpanded(key) && needle === '') continue
 
-    if (server !== undefined && server.status === 'connected') {
+    if (server !== undefined && (server.status === 'connected' || treeFor(server) !== undefined)) {
       const known = treeFor(server)
       const nodeError = nodeErrors.get(server)
       if (known === undefined) {
         // First sight of this server: kick off the fetch, draw nothing extra this pass.
-        if (!refreshedConnections.has(server)) {
+        if (server.status === 'connected' && !refreshedConnections.has(server)) {
           void refreshNodes(server, backgroundRerender)
         }
       } else {
-        if (!refreshedConnections.has(server)) {
+        if (server.status === 'connected' && !refreshedConnections.has(server)) {
           void refreshNodes(server, backgroundRerender)
         }
         const byParent = new Map<string | null, TreeNode[]>()
@@ -792,11 +865,21 @@ export const treeContents = (
         let truncated = false
         const renderChildren = (parentId: string | null, depth: number): void => {
           const siblings = byParent.get(parentId) ?? []
-          const orderedSiblings = orderedItems(nodeSiblingItems(server, siblings), rank)
+          const remaining = MAX_RENDERED_ROWS - renderedServerRows
+          if (remaining <= 0) {
+            truncated = siblings.length > 0
+            return
+          }
+          const matchingSiblings = siblings.filter((node) => nodeMatches(node))
+          const orderedSiblings = orderedItems(
+            nodeSiblingItems(server, matchingSiblings),
+            rank,
+            remaining,
+          )
+          if (orderedSiblings.length < matchingSiblings.length) truncated = true
           const siblingKeys = orderedSiblings.map((item) => item.key)
           for (const item of orderedSiblings) {
             const node = item.node
-            if (!nodeMatches(node)) continue
             if (renderedServerRows >= MAX_RENDERED_ROWS) {
               truncated = true
               break

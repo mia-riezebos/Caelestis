@@ -335,11 +335,24 @@ export const beginMove = (
   if (session !== null || finishing || moveReservation !== null) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
   if (template === undefined) return false
-  session = {
+  const nextSession: MoveSession = {
     id,
     x: restoredOrigin?.x ?? template.originX,
     y: restoredOrigin?.y ?? template.originY,
     dragging: null,
+  }
+  session = nextSession
+  if (restoredOrigin !== undefined) {
+    try {
+      if (!previewLocalTemplate(id, nextSession.x, nextSession.y)) {
+        session = null
+        return false
+      }
+    } catch (error) {
+      session = null
+      warn('install', 'template placement could not be restored', String(error))
+      return false
+    }
   }
   onFinish = finished
   finishing = false

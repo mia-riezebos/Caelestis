@@ -982,7 +982,11 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
               }
             },
           ],
-          ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
+          [
+            'uploadFile',
+            'Copy to a server',
+            () => void copyToServer(templateId, rerender, invoker),
+          ],
           rename,
           remove,
         ]
@@ -1180,7 +1184,11 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
  * are chosen here rather than assumed. The placement travels with it — the whole point of getting
  * it right locally first is not having to do it again on the other side.
  */
-const copyToServer = async (templateId: string, rerender: () => void): Promise<void> => {
+const copyToServer = async (
+  templateId: string,
+  rerender: () => void,
+  restoreFocusTo: HTMLElement | null = null,
+): Promise<void> => {
   const template = allLocal().find((candidate) => candidate.id === templateId)
   if (template === undefined) return
   if (!template.everPlaced || movePreviewOrigin(template.id) !== null) {
@@ -1199,12 +1207,17 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   cancelActiveCopy?.()
   const box = document.createElement('div')
   box.setAttribute('data-wts-copy', '')
+  box.setAttribute('role', 'group')
+  box.setAttribute('aria-label', `Copy ${template.name} to a server`)
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
   Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
 
   const label = document.createElement('span')
+  label.setAttribute('role', 'status')
+  label.setAttribute('aria-live', 'polite')
   label.textContent = 'Loading destinations…'
   const serverChooser = document.createElement('select')
+  serverChooser.setAttribute('aria-label', 'Server')
   serverChooser.className = 'select select-xs select-bordered'
   targets.forEach((server, index) => {
     const option = document.createElement('option')
@@ -1214,9 +1227,11 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   })
   const filter = document.createElement('input')
   filter.type = 'search'
+  filter.setAttribute('aria-label', 'Filter folders')
   filter.className = 'input input-xs input-bordered'
   filter.placeholder = 'Filter folders'
   const chooser = document.createElement('select')
+  chooser.setAttribute('aria-label', 'Destination folder')
   chooser.className = 'select select-xs select-bordered'
   chooser.disabled = true
   const buttons = document.createElement('div')
@@ -1233,6 +1248,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     for (const controller of controllers) controller.abort()
     box.remove()
     if (cancelActiveCopy === closeCopy) cancelActiveCopy = null
+    if (restoreFocusTo?.isConnected) restoreFocusTo.focus()
   }
   cancelActiveCopy = closeCopy
   cancel.addEventListener('click', closeCopy)
@@ -1243,6 +1259,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   buttons.append(cancel, go)
   box.append(label, serverChooser, filter, chooser, buttons)
   panel.appendChild(box)
+  serverChooser.focus()
 
   let destinationController: AbortController | null = null
   let loadedNodes: readonly {
@@ -1535,7 +1552,7 @@ const buildPanel = (): HTMLElement => {
     setState({ panelWidth: Math.round(next) })
   })
   handle.addEventListener('pointerdown', (event) => {
-    if (activeResizeCleanup !== null) return
+    if (!event.isPrimary || event.button !== 0 || activeResizeCleanup !== null) return
     event.preventDefault()
     const pointerId = event.pointerId
     handle.classList.add('wts-resizing')

@@ -35,7 +35,7 @@ describe('server state boundaries', () => {
     expect(() => canonicalServerUrl('https://name:secret@example.com')).toThrow(/credentials/)
   })
 
-  it('does not trust persisted connectivity, scope, or season', async () => {
+  it('does not trust persisted connectivity or scope but retains cache identity', async () => {
     vi.stubGlobal(
       'GM_getValue',
       vi.fn(() =>
@@ -63,6 +63,7 @@ describe('server state boundaries', () => {
         status: 'unreachable',
         isAdmin: false,
         season: null,
+        lastVerified: { serverId: SERVER_ID, season: 99 },
       }),
     ])
     expect(loadState().customOrder).toEqual(['local:kept'])
@@ -358,6 +359,30 @@ describe('server state boundaries', () => {
     expect(getState().servers[0]).toEqual(
       expect.objectContaining({ token: 'keep-me', status: 'needs-token' }),
     )
+  })
+
+  it('retries an open server anonymously when its persisted token is stale', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(manifest), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 403 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { probeServer } = await import('./state.js')
+
+    await expect(probeServer('https://example.com', 'stale-code')).resolves.toEqual(
+      expect.objectContaining({
+        status: 'connected',
+        token: null,
+        isAdmin: false,
+        season: 0,
+      }),
+    )
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
+      authorization: 'Bearer stale-code',
+    })
+    expect(fetchMock.mock.calls[2]?.[1]?.headers).toEqual({})
   })
 
   it('publishes each stored-server refresh as soon as that server settles', async () => {

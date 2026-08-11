@@ -711,6 +711,7 @@ describe('template placement controls', () => {
     expect(stopped?.origin).toEqual({ x: 71, y: 82 })
     expect(stopped?.reservation.start('test', vi.fn(), stopped.origin)).toBe(true)
     expect(moves.movePreviewOrigin('test')).toEqual({ x: 71, y: 82 })
+    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 71, 82)
   })
 
   it('discards a fresh image import on its first cancel', async () => {

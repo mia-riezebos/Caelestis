@@ -42,6 +42,11 @@ export interface ConnectedServer {
   readonly isAdmin: boolean
   /** Non-negative season advertised by the validated manifest. */
   readonly season: number | null
+  /** Last manifest identity proven for this URL, retained only to validate render-only cache data. */
+  readonly lastVerified?: {
+    readonly serverId: string
+    readonly season: number
+  } | null
 }
 
 export interface TreeNode {
@@ -491,14 +496,33 @@ export const loadState = (): State => {
         }
         if (seenServers.has(url)) continue
         seenServers.add(url)
+        const info = serverInfoFrom(candidate.info)
+        const storedSeason =
+          Number.isSafeInteger(candidate.season) && Number(candidate.season) >= 0
+            ? Number(candidate.season)
+            : null
+        const storedIdentity = isRecord(candidate.lastVerified) ? candidate.lastVerified : null
+        const lastVerified =
+          typeof storedIdentity?.serverId === 'string' &&
+          storedIdentity.serverId === info?.id &&
+          Number.isSafeInteger(storedIdentity.season) &&
+          Number(storedIdentity.season) >= 0
+            ? {
+                serverId: storedIdentity.serverId,
+                season: Number(storedIdentity.season),
+              }
+            : info !== null && storedSeason !== null
+              ? { serverId: info.id, season: storedSeason }
+              : null
         servers.push({
           url,
-          info: serverInfoFrom(candidate.info),
+          info,
           token: typeof candidate.token === 'string' ? candidate.token : null,
           status: 'unreachable',
           error: 'Checking connection…',
           isAdmin: false,
           season: null,
+          lastVerified,
         })
         if (servers.length >= MAX_CONNECTED_SERVERS) break
       }
@@ -576,9 +600,14 @@ export const upsertServer = (server: ConnectedServer): boolean => {
   const servers = getState().servers
   const index = servers.findIndex((s) => s.url === server.url)
   if (index === -1 && servers.length >= MAX_CONNECTED_SERVERS) return false
+  const current = index === -1 ? undefined : servers[index]
+  const canRetainIdentity =
+    server.lastVerified == null &&
+    current?.lastVerified != null &&
+    (server.info === null || server.info.id === current.lastVerified.serverId)
+  const next = canRetainIdentity ? { ...server, lastVerified: current.lastVerified } : server
   setState({
-    servers:
-      index === -1 ? [...servers, server] : servers.map((s, i) => (i === index ? server : s)),
+    servers: index === -1 ? [...servers, next] : servers.map((s, i) => (i === index ? next : s)),
   })
   return true
 }
@@ -740,15 +769,29 @@ export const probeServer = async (
     // `GET /server` is public and never looks at the Authorization header, so reaching it proves
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
-    const { response: authed, body: manifestBody } = await remoteJson(
-      `${base}/manifest`,
-      {
-        headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        ...(signal === undefined ? {} : { signal }),
-      },
-      TREE_JSON_BYTES,
-      LARGE_TRANSFER_TIMEOUT_MS,
-    )
+    const fetchManifest = (credential: string | null) =>
+      remoteJson(
+        `${base}/manifest`,
+        {
+          headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
+          ...(signal === undefined ? {} : { signal }),
+        },
+        TREE_JSON_BYTES,
+        LARGE_TRANSFER_TIMEOUT_MS,
+      )
+    let effectiveToken = token
+    let { response: authed, body: manifestBody } = await fetchManifest(effectiveToken)
+    if (
+      info.auth === 'none' &&
+      effectiveToken !== null &&
+      (authed.status === 401 || authed.status === 403)
+    ) {
+      log('install', `${base} rejected the stored code; retrying open access`)
+      effectiveToken = null
+      const anonymous = await fetchManifest(null)
+      authed = anonymous.response
+      manifestBody = anonymous.body
+    }
     if (authed.status === 401 || authed.status === 403) {
       log('install', `${base} rejected the code`, { status: authed.status })
       return {
@@ -774,14 +817,15 @@ export const probeServer = async (
     }
     const manifest = manifestProbeFrom(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
-    const isAdmin = await probeAdminScope(base, token, manifest.season, signal)
+    const isAdmin = await probeAdminScope(base, effectiveToken, manifest.season, signal)
     const connected: ConnectedServer = {
       url: base,
       info,
-      token,
+      token: effectiveToken,
       status: 'connected',
       isAdmin,
       season: manifest.season,
+      lastVerified: { serverId: info.id, season: manifest.season },
     }
     probedNodes.set(connected, manifest.nodes)
     return connected

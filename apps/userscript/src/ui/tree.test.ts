@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { type ConnectedServer, probeServer, setState } from '../state.js'
+import { type ConnectedServer, getState, probeServer, setState } from '../state.js'
 import {
+  forgetServerTree,
   nodeSiblingItems,
   nodeTreeKey,
   orderedItems,
@@ -73,6 +74,33 @@ describe('tree identity and ordering', () => {
         new Map(),
       ).map((item) => item.key),
     ).toEqual(['newer', 'older'])
+  })
+
+  it('bounds name ordering before sorting a large sibling collection', () => {
+    setState({ sort: { field: 'name', direction: 'asc' } })
+    const items = Array.from({ length: 10_000 }, (_, index) => ({
+      key: `key:${index}`,
+      name: String(10_000 - index).padStart(5, '0'),
+    }))
+
+    expect(orderedItems(items, new Map(), 3).map((item) => item.name)).toEqual([
+      '00001',
+      '00002',
+      '00003',
+    ])
+  })
+
+  it('forgets URL-scoped node state even when no server tree is loaded', () => {
+    const prefix = `node:${encodeURIComponent('https://offline.example.com')}:`
+    setState({
+      customOrder: [`${prefix}${SERVER_ID}:0:${NODE_ID}`, 'local:kept'],
+      collapsed: [`${prefix}${SERVER_ID}:0:${NODE_ID}`, 'local'],
+    })
+
+    forgetServerTree('https://offline.example.com')
+
+    expect(getState().customOrder).toEqual(['local:kept'])
+    expect(getState().collapsed).toEqual(['local'])
   })
 
   it('uses the same scoped keys for server node rows and their sibling order', () => {
