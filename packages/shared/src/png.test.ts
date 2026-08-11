@@ -411,6 +411,21 @@ describe('encoding', () => {
 
   it('rejects a palette that leaves no room for the transparent entry', async () => {
     const oversized = Array.from({ length: PALETTE_SIZE }, () => [0, 0, 0] as const)
-    await expect(encodeIndexedPng(1, 1, new Uint8Array([0]), oversized)).rejects.toThrow(/63/)
+    await expect(encodeIndexedPng(1, 1, new Uint8Array([0]), undefined, oversized)).rejects.toThrow(
+      /63/,
+    )
+  })
+
+  it('stops an indexed encode when its caller aborts', async () => {
+    const controller = new AbortController()
+    const encoding = encodeIndexedPng(
+      1_024,
+      1_024,
+      new Uint8Array(1_024 * 1_024),
+      controller.signal,
+    )
+    setTimeout(() => controller.abort(new DOMException('cancelled', 'AbortError')), 0)
+
+    await expect(encoding).rejects.toMatchObject({ name: 'AbortError' })
   })
 })

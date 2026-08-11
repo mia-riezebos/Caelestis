@@ -40,6 +40,7 @@ describe('icons', () => {
       'uploadFile',
       'check',
       'rename',
+      'move',
       'trash',
     ]
     const expectedPathHashes: Record<IconName, number> = {
@@ -60,6 +61,7 @@ describe('icons', () => {
       uploadFile: 3_064_132_360,
       check: 4_041_847_984,
       rename: 150_577_215,
+      move: 3_662_084_910,
       trash: 2_220_404_040,
     }
 

@@ -98,11 +98,37 @@ const inflate = async (bytes: Uint8Array, limit: number): Promise<Uint8Array> =>
   return out
 }
 
-const deflate = async (bytes: Uint8Array): Promise<Uint8Array> => {
+const deflate = async (bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> => {
+  signal?.throwIfAborted()
   const stream = new Blob([bytes as BlobPart])
     .stream()
     .pipeThrough(new CompressionStream('deflate'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
+  const reader = stream.getReader()
+  const parts: Uint8Array[] = []
+  let total = 0
+  const abort = (): void => {
+    void reader.cancel(signal?.reason).catch(() => {})
+  }
+  signal?.addEventListener('abort', abort, { once: true })
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      signal?.throwIfAborted()
+      parts.push(value)
+      total += value.length
+    }
+  } finally {
+    signal?.removeEventListener('abort', abort)
+  }
+  signal?.throwIfAborted()
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const part of parts) {
+    out.set(part, offset)
+    offset += part.length
+  }
+  return out
 }
 
 /** An image decoded to straight RGBA, one byte per channel. */
@@ -338,8 +364,10 @@ export const encodeIndexedPng = async (
   width: number,
   height: number,
   indices: Uint8Array,
+  signal?: AbortSignal,
   palette: ReadonlyArray<readonly [number, number, number]> = PALETTE_RGB,
 ): Promise<Uint8Array> => {
+  signal?.throwIfAborted()
   if (indices.length !== width * height) {
     throw new PngError(`expected ${width * height} indices, received ${indices.length}`)
   }
@@ -368,6 +396,10 @@ export const encodeIndexedPng = async (
   for (let row = 0; row < height; row += 1) {
     raw[row * (width + 1)] = 0
     raw.set(indices.subarray(row * width, (row + 1) * width), row * (width + 1) + 1)
+    if (signal !== undefined && row % 512 === 511) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      signal.throwIfAborted()
+    }
   }
 
   const parts = [
@@ -375,10 +407,11 @@ export const encodeIndexedPng = async (
     chunk('IHDR', ihdr),
     chunk('PLTE', plte),
     chunk('tRNS', trns),
-    chunk('IDAT', await deflate(raw)),
+    chunk('IDAT', await deflate(raw, signal)),
     chunk('IEND', new Uint8Array(0)),
   ]
   const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0))
+  signal?.throwIfAborted()
   let cursor = 0
   for (const part of parts) {
     out.set(part, cursor)

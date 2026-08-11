@@ -84,6 +84,50 @@ afterEach(() => {
 })
 
 describe('template placement controls', () => {
+  it('tells keyboard users to return focus to the map before nudging', async () => {
+    const moves = await import('./move.js')
+
+    expect(moves.MOVE_HINT).toContain('Click the map')
+    expect(moves.MOVE_HINT).toContain('arrow keys')
+  })
+
+  it('reports when another placement prevents a new one from starting', async () => {
+    const moves = await import('./move.js')
+
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+    expect(moves.beginMove('test', vi.fn())).toBe(false)
+    movebar = { remove: vi.fn() }
+    await moves.commit()
+  })
+
+  it('reserves the placement slot across asynchronous import preparation', async () => {
+    const moves = await import('./move.js')
+    const reservation = moves.reserveMove()
+    if (reservation === null) throw new Error('expected move reservation')
+
+    expect(moves.isMoving()).toBe(true)
+    expect(moves.beginMove('test', vi.fn())).toBe(false)
+    expect(reservation.start('test', vi.fn())).toBe(true)
+    expect(moves.movingId()).toBe('test')
+
+    reservation.release()
+    movebar = { remove: vi.fn() }
+    await moves.commit()
+  })
+
+  it('releases an unused placement reservation', async () => {
+    const moves = await import('./move.js')
+    const reservation = moves.reserveMove()
+    if (reservation === null) throw new Error('expected move reservation')
+
+    reservation.release()
+
+    expect(moves.isMoving()).toBe(false)
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+    movebar = { remove: vi.fn() }
+    await moves.commit()
+  })
+
   it('removes the exact auxclick listener it installed', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())
@@ -422,7 +466,7 @@ describe('template placement controls', () => {
     expect(harness.previewLocalTemplate).toHaveBeenCalledWith('test', 20, 40)
   })
 
-  it('ignores placement shortcuts in editable controls and page dialogs', async () => {
+  it('ignores placement shortcuts in controls, dialogs and the panel tree', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())
     const keydown = listeners.get('keydown')
@@ -443,9 +487,62 @@ describe('template placement controls', () => {
       target: { tagName: 'DIV', closest: vi.fn(() => ({})) },
       preventDefault: vi.fn(),
     } as unknown as Event)
+    const panelTarget = {
+      tagName: 'DIV',
+      closest: vi.fn((selector: string) => (selector.includes('#wts-panel') ? {} : null)),
+    }
+    const panelPreventDefault = vi.fn()
+    keydown({
+      key: 'ArrowDown',
+      target: panelTarget,
+      preventDefault: panelPreventDefault,
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    keydown({
+      key: 'Enter',
+      target: panelTarget,
+      preventDefault: panelPreventDefault,
+    } as unknown as Event)
+    keydown({
+      key: 'Escape',
+      target: panelTarget,
+      preventDefault: panelPreventDefault,
+    } as unknown as Event)
     await Promise.resolve()
 
     expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.previewLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.clearLocalPreview).not.toHaveBeenCalled()
+    expect(panelPreventDefault).not.toHaveBeenCalled()
+  })
+
+  it('moves placement by keyboard with a larger Shift step', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const keydown = listeners.get('keydown')
+    if (keydown === undefined) throw new Error('expected keyboard listener')
+    const preventDefault = vi.fn()
+    const stopPropagation = vi.fn()
+
+    keydown({
+      key: 'ArrowRight',
+      shiftKey: false,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault,
+      stopPropagation,
+    } as unknown as Event)
+    keydown({
+      key: 'ArrowUp',
+      shiftKey: true,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault,
+      stopPropagation,
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(1, 'test', 11, 20)
+    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(2, 'test', 11, 10)
+    expect(preventDefault).toHaveBeenCalledTimes(2)
+    expect(stopPropagation).toHaveBeenCalledTimes(2)
   })
 
   it('recovers placement controls after a final bitmap build rejects', async () => {
@@ -592,6 +689,36 @@ describe('template placement controls', () => {
     expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
     expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
     expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
+  })
+
+  it('releases placement ownership before another surface deletes the template', async () => {
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+
+    const stopped = moves.stopMoveForDeletion('test')
+    expect(stopped?.origin).toEqual({ x: 10, y: 20 })
+
+    // Deletion has released the active preview, but keeps ownership of the one move slot until the
+    // durable delete either succeeds or restores it.
+    expect(moves.isMoving()).toBe(true)
+    expect(moves.beginMove('other', vi.fn())).toBe(false)
+    expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
+    expect(finished).toHaveBeenCalledOnce()
+    expect(moves.stopMoveForDeletion('other')).toBeNull()
+    stopped?.reservation.release()
+    expect(moves.isMoving()).toBe(false)
+  })
+
+  it('can restore the preview origin after a failed deletion', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn(), { x: 71, y: 82 })
+
+    const stopped = moves.stopMoveForDeletion('test')
+    expect(stopped?.origin).toEqual({ x: 71, y: 82 })
+    expect(stopped?.reservation.start('test', vi.fn(), stopped.origin)).toBe(true)
+    expect(moves.movePreviewOrigin('test')).toEqual({ x: 71, y: 82 })
+    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 71, 82)
   })
 
   it('discards a fresh image import on its first cancel', async () => {

@@ -31,11 +31,11 @@ declare namespace Cloudflare {
     ADMIN_TOKEN?: string
 
     /**
-     * The canvas season this deployment serves. Defaults to 1.
+     * The canvas season this deployment serves. Defaults to 0.
      *
      * `/manifest` is season-scoped and `ServerInfo` carries no season, so a client has no way to
      * discover it — a server running season 2 without this answers every manifest request with
-     * season 1's, which for a fresh server is empty and looks like a bug in the userscript.
+     * season 0's, which for a fresh server is empty and looks like a bug in the userscript.
      */
     SEASON?: string
 

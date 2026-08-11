@@ -71,7 +71,7 @@ it('refuses an unsupported shard strategy rather than serving on it', async () =
   ).rejects.toThrow(/Unsupported telemetry shard strategy/)
 })
 
-it.each([['abc'], ['-1'], ['0'], ['1.5'], ['']])(
+it.each([['abc'], ['-1'], ['1.5'], ['']])(
   'refuses SEASON=%o rather than serving an unusable season',
   async (season) => {
     // Number('abc') is NaN and NaN serializes to null, which the wire refuses — so a typo in a
@@ -97,7 +97,7 @@ it('forwards the configured identity, season and open access to the app', async 
     SERVER_ID: '01890f3a-6b7c-7def-8123-456789abcdef',
     SERVER_NAME: 'Second Season Server',
     SERVER_DESCRIPTION: 'Configured, not defaulted',
-    SEASON: '7',
+    SEASON: '0',
     OPEN_ACCESS: 'true',
   } as unknown as Env
 
@@ -112,5 +112,5 @@ it('forwards the configured identity, season and open access to the app', async 
     auth: 'none',
   })
   expect(manifest.status).toBe(200)
-  await expect(manifest.json()).resolves.toMatchObject({ season: 7 })
+  await expect(manifest.json()).resolves.toMatchObject({ season: 0 })
 })

@@ -27,8 +27,8 @@ SERVER_ID = "00000000-0000-7000-8000-000000000000"
 SERVER_NAME = "Wplace Template Server"
 SERVER_DESCRIPTION = "A self-hosted Wplace template server"
 # The canvas season this deployment serves. /manifest is season-scoped and ServerInfo carries no
-# season, so a server running anything but 1 has to say so here or it answers with season 1's.
-SEASON = "1"
+# season, so a later-season server has to say so here or it answers with season 0's.
+SEASON = "0"
 # "true" serves the read surface without a token and makes /server advertise auth: 'none'.
 OPEN_ACCESS = "false"
 
