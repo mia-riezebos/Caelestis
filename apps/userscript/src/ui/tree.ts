@@ -851,7 +851,12 @@ export const treeContents = (
           )
         } else if (truncated) {
           wrap.appendChild(
-            childText(`Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} server folders.`, 0),
+            childText(
+              renderedRows === 0
+                ? `No folders from this server are shown because the panel's ${MAX_RENDERED_ROWS.toLocaleString()}-folder limit was reached by earlier servers.`
+                : `Showing ${renderedRows.toLocaleString()} folders from this server; the panel's ${MAX_RENDERED_ROWS.toLocaleString()}-folder limit has been reached.`,
+              0,
+            ),
           )
         } else if (renderedRows === 0 && needle !== '') {
           wrap.appendChild(childText('No matches.', 0))
@@ -1023,7 +1028,10 @@ export const treeContents = (
         next = child
       }
     } else if (event.key === 'ArrowLeft') {
-      if (row.getAttribute('aria-expanded') === 'true') {
+      if (
+        row.getAttribute('aria-expanded') === 'true' &&
+        row.dataset.wtsForceExpanded === undefined
+      ) {
         event.preventDefault()
         row.click()
         return

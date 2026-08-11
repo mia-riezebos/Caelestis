@@ -54,9 +54,29 @@ export const movingId = (): string | null => session?.id ?? null
 
 export interface MoveReservation {
   /** Consume this reservation by starting the move synchronously. */
-  readonly start: (id: string, finished: () => void) => boolean
+  readonly start: (
+    id: string,
+    finished: () => void,
+    restoredOrigin?: { readonly x: number; readonly y: number },
+  ) => boolean
   /** Release an unconsumed reservation. Safe to call after `start`. */
   readonly release: () => void
+}
+
+const holdMoveSlot = (): MoveReservation => {
+  const token = Symbol('move reservation')
+  moveReservation = token
+  const release = (): void => {
+    if (moveReservation === token) moveReservation = null
+  }
+  return {
+    start: (id, finished, restoredOrigin) => {
+      if (moveReservation !== token) return false
+      moveReservation = null
+      return beginMove(id, finished, restoredOrigin)
+    },
+    release,
+  }
 }
 
 /**
@@ -67,19 +87,7 @@ export interface MoveReservation {
  */
 export const reserveMove = (): MoveReservation | null => {
   if (session !== null || finishing || moveReservation !== null) return null
-  const token = Symbol('move reservation')
-  moveReservation = token
-  const release = (): void => {
-    if (moveReservation === token) moveReservation = null
-  }
-  return {
-    start: (id, finished) => {
-      if (moveReservation !== token) return false
-      moveReservation = null
-      return beginMove(id, finished)
-    },
-    release,
-  }
+  return holdMoveSlot()
 }
 
 /** Where the template currently sits during a move, so the renderer can draw it there. */
@@ -342,7 +350,7 @@ export const beginMove = (
   return true
 }
 
-const finish = (): void => {
+const finish = (reserveNext = false): MoveReservation | null => {
   listen(false)
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
@@ -350,6 +358,9 @@ const finish = (): void => {
   suppressMiddleAuxClickFor = null
   const finished = onFinish
   onFinish = null
+  // Reserve before notifying observers. A completion callback may synchronously start another
+  // placement, which would otherwise steal the slot while deletion is still awaiting storage.
+  const reservation = reserveNext ? holdMoveSlot() : null
   try {
     finished?.()
   } catch (error) {
@@ -359,17 +370,22 @@ const finish = (): void => {
       warn('install', 'placement completion callback failed', String(error))
     } catch {}
   }
+  return reservation
 }
 
 /** Tear down placement ownership before its template is deleted through another surface. */
 export const stopMoveForDeletion = (
   id: string,
-): { readonly x: number; readonly y: number } | null => {
+): {
+  readonly origin: { readonly x: number; readonly y: number }
+  readonly reservation: MoveReservation
+} | null => {
   if (session?.id !== id) return null
   const origin = { x: session.x, y: session.y }
   clearLocalPreview(id)
-  finish()
-  return origin
+  const reservation = finish(true)
+  if (reservation === null) return null
+  return { origin, reservation }
 }
 
 const resumeAfterFailure = (action: string, error?: unknown): void => {

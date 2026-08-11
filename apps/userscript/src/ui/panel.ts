@@ -40,7 +40,7 @@ import { loadAccount, onAccountChange } from '../wplace-account.js'
 import { coloursSection } from './colours.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
-import { sortControl } from './sort.js'
+import { type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import {
   cancelRenaming,
@@ -132,16 +132,25 @@ let controlLabelSerial = 0
 const connectionAttempts = new Map<string, number>()
 const activePanelRequests = new Set<AbortController>()
 
+type PanelRequestScope = 'view' | 'mutation'
+
 const beginConnectionAttempt = (url: string): (() => boolean) => {
   const generation = (connectionAttempts.get(url) ?? 0) + 1
   connectionAttempts.set(url, generation)
   return () => connectionAttempts.get(url) === generation
 }
 
-const panelRequest = (): { controller: AbortController; finish: () => void } => {
+const panelRequest = (
+  scope: PanelRequestScope = 'view',
+): { controller: AbortController; finish: () => void } => {
   const controller = new AbortController()
-  activePanelRequests.add(controller)
-  return { controller, finish: () => activePanelRequests.delete(controller) }
+  if (scope === 'view') activePanelRequests.add(controller)
+  return {
+    controller,
+    finish: () => {
+      if (scope === 'view') activePanelRequests.delete(controller)
+    },
+  }
 }
 
 const cancelPanelRequests = (): void => {
@@ -164,14 +173,18 @@ const rerenderWhenIdle = (): void => {
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
   const focused = document.activeElement
-  if (
-    focused !== null &&
-    panel.contains(focused) &&
-    focused.matches(
-      'button,input,textarea,select,[contenteditable="true"],[tabindex]:not([tabindex="-1"])',
-    )
-  ) {
-    panel.addEventListener('focusout', () => setTimeout(rerenderWhenIdle, 0), { once: true })
+  if (focused !== null && panel.contains(focused) && focused.matches(':active')) {
+    // Do not detach a pressed control between pointer/key down and its click. Focus alone is not a
+    // render lock: keyboard users commonly leave a button or access-code field focused.
+    const settle = (): void => {
+      window.removeEventListener('pointerup', settle)
+      window.removeEventListener('pointercancel', settle)
+      window.removeEventListener('keyup', settle)
+      setTimeout(rerenderWhenIdle, 0)
+    }
+    window.addEventListener('pointerup', settle, { once: true })
+    window.addEventListener('pointercancel', settle, { once: true })
+    window.addEventListener('keyup', settle, { once: true })
     return
   }
   showView(currentView, true)
@@ -267,18 +280,26 @@ const treeView = (): HTMLElement => {
   searchInput.value = searchQuery
   search.append(searchIcon, searchInput)
 
-  toolbar.append(
-    search,
-    sortControl(getState().sort, (next) => {
-      setState({ sort: next })
-      showView('tree')
-    }),
-  )
+  const rerenderTree = (): void => activeTreeRender?.()
+  let sortElement: HTMLElement
+  const changeSort = (next: SortOrder): void => {
+    setState({ sort: next })
+    // Only row order changed. Rebuilding the whole view resets the tree scroller and makes the
+    // freshly focused replacement trigger satisfy DaisyUI's focus-within open rule.
+    rerenderTree()
+    const replacement = sortControl(next, changeSort)
+    sortElement.replaceWith(replacement)
+    sortElement = replacement
+    requestAnimationFrame(() =>
+      replacement.querySelector<HTMLElement>('[data-wts-sort]')?.focus({ preventScroll: true }),
+    )
+  }
+  sortElement = sortControl(getState().sort, changeSort)
+  toolbar.append(search, sortElement)
 
   const body = document.createElement('div')
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
   let renderTree: () => void
-  const rerenderTree = (): void => activeTreeRender?.()
   const backgroundRenderTree = (): void => {
     if (activeTreeRender !== renderTree) {
       rerenderTree()
@@ -404,17 +425,21 @@ const retryServerButton = (server: ConnectedServer, label: string): HTMLButtonEl
     void (async () => {
       const ownsAttempt = beginConnectionAttempt(server.url)
       const request = panelRequest()
-      const next = await probeServer(server.url, server.token, request.controller.signal)
-      request.finish()
-      if (
-        request.controller.signal.aborted ||
-        !ownsAttempt() ||
-        getState().servers.find((candidate) => candidate.url === server.url) !== server
-      ) {
-        return
+      try {
+        const next = await probeServer(server.url, server.token, request.controller.signal)
+        if (
+          request.controller.signal.aborted ||
+          !ownsAttempt() ||
+          getState().servers.find((candidate) => candidate.url === server.url) !== server
+        ) {
+          return
+        }
+        upsertServer(next)
+        showView('settings', true)
+      } finally {
+        request.finish()
+        if (button.isConnected) button.disabled = false
       }
-      upsertServer(next)
-      showView('settings', true)
     })()
   })
   return button
@@ -461,8 +486,9 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   remove.setAttribute('aria-label', `Disconnect ${server.info?.name ?? server.url}`)
   remove.appendChild(icon('close', 'size-3'))
   remove.addEventListener('click', () => {
-    cancelPanelRequests()
-    cancelActiveCopy?.()
+    // Invalidate only work owned by this connection. Requests and uploads for other servers must
+    // survive an unrelated disconnect.
+    beginConnectionAttempt(server.url)
     forgetServerTree(server.url)
     removeServer(server.url)
     void forgetServer(server.url)
@@ -557,6 +583,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
 
 const settingsView = (): HTMLElement => {
   const view = document.createElement('div')
+  view.dataset.wtsSettingsScroll = ''
   Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
 
   view.appendChild(sectionHeader('Servers'))
@@ -683,7 +710,8 @@ const refreshAfterMutation = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<boolean> => {
-  const request = panelRequest()
+  if (!isCurrentServer(server)) return false
+  const request = panelRequest('mutation')
   const refreshed = await refreshNodes(server, rerender, true, request.controller.signal)
   request.finish()
   if (request.controller.signal.aborted || (!refreshed.ok && refreshed.cancelled)) return false
@@ -764,7 +792,7 @@ const applyRename = async (
     rerender()
     return
   }
-  const request = panelRequest()
+  const request = panelRequest('mutation')
   const result = await renameNodeOnServer(
     target.server,
     target.nodeId,
@@ -778,6 +806,7 @@ const applyRename = async (
     rerender()
     return
   }
+  if (!isCurrentServer(target.server)) return
   await refreshAfterMutation(target.server, rerender)
 }
 
@@ -834,19 +863,32 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   if (templateId !== null) {
     if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
     const stoppedMove = stopMoveForDeletion(templateId)
-    let removed = false
     try {
-      removed = await removeLocalTemplate(templateId)
+      const removed = await removeLocalTemplate(templateId)
+      if (!removed) {
+        toast(`Could not delete “${target.name}”.`, 'error')
+        if (
+          stoppedMove !== null &&
+          !stoppedMove.reservation.start(templateId, rerender, stoppedMove.origin)
+        ) {
+          toast(`Could not restore placement for “${target.name}”.`, 'error')
+        }
+        return
+      }
+      removeTreeStateKeys(new Set([target.key]))
+      rerender()
     } catch (error) {
       warn('install', 'local delete failed', String(error))
-    }
-    if (!removed) {
       toast(`Could not delete “${target.name}”.`, 'error')
-      if (stoppedMove !== null) beginMove(templateId, rerender, stoppedMove)
-      return
+      if (
+        stoppedMove !== null &&
+        !stoppedMove.reservation.start(templateId, rerender, stoppedMove.origin)
+      ) {
+        toast(`Could not restore placement for “${target.name}”.`, 'error')
+      }
+    } finally {
+      stoppedMove?.reservation.release()
     }
-    removeTreeStateKeys(new Set([target.key]))
-    rerender()
     return
   }
   if (target.server === null || target.nodeId === null) {
@@ -859,7 +901,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     rerender()
     return
   }
-  const request = panelRequest()
+  const request = panelRequest('mutation')
   const result = await deleteNodeOnServer(target.server, target.nodeId, request.controller.signal)
   request.finish()
   if (request.controller.signal.aborted) return
@@ -868,6 +910,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     rerender()
     return
   }
+  if (!isCurrentServer(target.server)) return
   forgetNodeOrder(target.server, target.nodeId)
   await refreshAfterMutation(target.server, rerender)
 }
@@ -1243,12 +1286,22 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     chooser.replaceChildren()
     chooser.disabled = true
     go.disabled = true
+    if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+      label.textContent = 'That server was disconnected. Choose another server or reopen Copy.'
+      return
+    }
     label.textContent = `Loading folders from ${server.info?.name ?? server.url}…`
     const controller = new AbortController()
     destinationController = controller
     controllers.push(controller)
     const result = await listNodes(server, controller.signal)
     if (closed || controller.signal.aborted || generation !== loadGeneration) return
+    if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+      loadedNodes = []
+      chooser.replaceChildren()
+      label.textContent = 'That server was disconnected. Choose another server or reopen Copy.'
+      return
+    }
     if (!result.ok) {
       loadedNodes = []
       chooser.replaceChildren()
@@ -1344,6 +1397,14 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         )
         if (uploadController.signal.aborted) return
         if (!result.ok) throw new Error(result.message)
+        if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+          closeCopy()
+          toast(
+            `Copied “${ready.name}”, but that server was disconnected here. Reconnect to refresh it.`,
+            'warning',
+          )
+          return
+        }
         closeCopy()
         toast(`Copied “${ready.name}” to ${server.info?.name ?? server.url}.`)
         await refreshAfterMutation(server, rerender)
@@ -1374,7 +1435,7 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
     rerender()
     return
   }
-  const request = panelRequest()
+  const request = panelRequest('mutation')
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
   const existing = await listNodes(server, request.controller.signal)
@@ -1406,6 +1467,11 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   if (!result.ok) {
     toast(result.message, 'error')
     return
+  }
+  if (!isCurrentServer(server)) return
+  const collapsed = getState().collapsed
+  if (collapsed.includes(target.key)) {
+    setState({ collapsed: collapsed.filter((key) => key !== target.key) })
   }
   // Refresh before rendering: the row we are about to put into rename mode does not exist in the
   // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
@@ -1569,6 +1635,14 @@ const buildPanel = (): HTMLElement => {
 interface SettingsDrafts {
   readonly serverUrl: string
   readonly accessCodes: ReadonlyMap<string, string>
+  readonly focused: {
+    readonly kind: 'url' | 'code'
+    readonly server?: string
+    readonly selectionStart: number | null
+    readonly selectionEnd: number | null
+    readonly selectionDirection: 'forward' | 'backward' | 'none' | null
+  } | null
+  readonly scrollTop: number
 }
 
 const settingsDrafts = (panel: HTMLElement): SettingsDrafts => {
@@ -1578,7 +1652,23 @@ const settingsDrafts = (panel: HTMLElement): SettingsDrafts => {
     const server = input.dataset.wtsDraftCode
     if (server !== undefined) accessCodes.set(server, input.value)
   }
-  return { serverUrl, accessCodes }
+  const active = document.activeElement
+  let focused: SettingsDrafts['focused'] = null
+  if (active instanceof HTMLInputElement) {
+    const selection = {
+      selectionStart: active.selectionStart,
+      selectionEnd: active.selectionEnd,
+      selectionDirection: active.selectionDirection,
+    }
+    if (active.matches('[data-wts-draft-url]')) {
+      focused = { kind: 'url', ...selection }
+    } else {
+      const server = active.dataset.wtsDraftCode
+      if (server !== undefined) focused = { kind: 'code', server, ...selection }
+    }
+  }
+  const scrollTop = panel.querySelector<HTMLElement>('[data-wts-settings-scroll]')?.scrollTop ?? 0
+  return { serverUrl, accessCodes, focused, scrollTop }
 }
 
 const restoreSettingsDrafts = (panel: HTMLElement, drafts: SettingsDrafts): void => {
@@ -1588,6 +1678,25 @@ const restoreSettingsDrafts = (panel: HTMLElement, drafts: SettingsDrafts): void
     const value = input.dataset.wtsDraftCode
     if (value !== undefined) input.value = drafts.accessCodes.get(value) ?? ''
   }
+  const scroller = panel.querySelector<HTMLElement>('[data-wts-settings-scroll]')
+  if (scroller !== null) scroller.scrollTop = drafts.scrollTop
+  const focused = drafts.focused
+  if (focused === null) return
+  const target =
+    focused.kind === 'url'
+      ? panel.querySelector<HTMLInputElement>('[data-wts-draft-url]')
+      : [...panel.querySelectorAll<HTMLInputElement>('[data-wts-draft-code]')].find(
+          (input) => input.dataset.wtsDraftCode === focused.server,
+        )
+  if (target === null || target === undefined) return
+  target.focus({ preventScroll: true })
+  if (focused.selectionStart !== null && focused.selectionEnd !== null) {
+    target.setSelectionRange(
+      focused.selectionStart,
+      focused.selectionEnd,
+      focused.selectionDirection ?? undefined,
+    )
+  }
 }
 
 const showView = (view: View, preserveDrafts = false): void => {
@@ -1596,7 +1705,6 @@ const showView = (view: View, preserveDrafts = false): void => {
     panelOwnerGeneration++
     cancelPanelRequests()
     cancelActiveConfirm?.()
-    cancelActiveCopy?.()
   }
   currentView = view
   const panel = document.getElementById(PANEL_ID)

@@ -689,21 +689,27 @@ describe('template placement controls', () => {
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
 
-    expect(moves.stopMoveForDeletion('test')).toEqual({ x: 10, y: 20 })
+    const stopped = moves.stopMoveForDeletion('test')
+    expect(stopped?.origin).toEqual({ x: 10, y: 20 })
 
-    expect(moves.isMoving()).toBe(false)
+    // Deletion has released the active preview, but keeps ownership of the one move slot until the
+    // durable delete either succeeds or restores it.
+    expect(moves.isMoving()).toBe(true)
+    expect(moves.beginMove('other', vi.fn())).toBe(false)
     expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
     expect(finished).toHaveBeenCalledOnce()
     expect(moves.stopMoveForDeletion('other')).toBeNull()
+    stopped?.reservation.release()
+    expect(moves.isMoving()).toBe(false)
   })
 
   it('can restore the preview origin after a failed deletion', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn(), { x: 71, y: 82 })
 
-    const origin = moves.stopMoveForDeletion('test')
-    expect(origin).toEqual({ x: 71, y: 82 })
-    expect(moves.beginMove('test', vi.fn(), origin ?? undefined)).toBe(true)
+    const stopped = moves.stopMoveForDeletion('test')
+    expect(stopped?.origin).toEqual({ x: 71, y: 82 })
+    expect(stopped?.reservation.start('test', vi.fn(), stopped.origin)).toBe(true)
     expect(moves.movePreviewOrigin('test')).toEqual({ x: 71, y: 82 })
   })
 

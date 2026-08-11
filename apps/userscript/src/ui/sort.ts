@@ -90,6 +90,15 @@ export const sortControl = (
   Object.assign(menu.style, { borderRadius: '0.5rem', width: '13rem' })
   menu.setAttribute('role', 'menu')
   menu.tabIndex = -1
+  let open = false
+  const setOpen = (next: boolean): void => {
+    open = next
+    trigger.setAttribute('aria-expanded', String(next))
+    // DaisyUI's dropdown is focus-within based. Inline display ownership keeps focus restoration
+    // from reopening a menu that was explicitly dismissed or whose selection rebuilt the toolbar.
+    menu.style.display = next ? '' : 'none'
+  }
+  setOpen(false)
 
   for (const entry of FIELDS) {
     const item = document.createElement('li')
@@ -127,10 +136,8 @@ export const sortControl = (
             : // Most fields are most useful large-end-first on arrival; a name is not.
               { field: entry.field, direction: entry.field === 'name' ? 'asc' : 'desc' }
       log('install', `sort: ${next.field} ${next.direction}`)
-      // Close the dropdown: DaisyUI keeps it open while anything inside holds focus.
-      ;(document.activeElement as HTMLElement | null)?.blur()
+      setOpen(false)
       onChange(next)
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-wts-sort]')?.focus())
     })
 
     item.appendChild(button)
@@ -139,17 +146,22 @@ export const sortControl = (
 
   const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
   const focusButton = (index: number): void => buttons.at(index)?.focus()
+  trigger.addEventListener('click', () => setOpen(!open))
   trigger.addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
-    event.preventDefault()
-    trigger.setAttribute('aria-expanded', 'true')
-    focusButton(event.key === 'ArrowDown' ? 0 : -1)
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setOpen(false)
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setOpen(true)
+      focusButton(event.key === 'ArrowDown' ? 0 : -1)
+    }
   })
   menu.addEventListener('keydown', (event) => {
     const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement)
     if (event.key === 'Escape') {
       event.preventDefault()
-      trigger.setAttribute('aria-expanded', 'false')
+      setOpen(false)
       trigger.focus()
     } else if (event.key === 'ArrowDown') {
       event.preventDefault()
@@ -165,10 +177,9 @@ export const sortControl = (
       focusButton(-1)
     }
   })
-  wrapper.addEventListener('focusin', () => trigger.setAttribute('aria-expanded', 'true'))
   wrapper.addEventListener('focusout', (event) => {
     if (event.relatedTarget instanceof Node && wrapper.contains(event.relatedTarget)) return
-    trigger.setAttribute('aria-expanded', 'false')
+    setOpen(false)
   })
 
   wrapper.append(trigger, menu)
