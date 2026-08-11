@@ -4,6 +4,7 @@ import {
   getState,
   listNodes,
   MAX_TREE_NODES,
+  peekProbedNodes,
   removeTreeStateKeys,
   setState,
   type TreeNode,
@@ -161,7 +162,7 @@ export const refreshNodes = async (
   // Every successful manifest probe already carries the public node tree. Consume that first: a
   // read-only or anonymous connection cannot call the admin route, but it still owns the manifest
   // folders it just verified.
-  const pendingProbe = takeProbedNodes(server)
+  const pendingProbe = force ? peekProbedNodes(server) : takeProbedNodes(server)
   const probed = force ? undefined : pendingProbe
   if (!server.isAdmin && probed === undefined) {
     return { ok: false, message: 'Admin access is required to refresh folders.' }
@@ -185,16 +186,36 @@ export const refreshNodes = async (
       }
     }
     refreshedConnections.add(server)
-    if (!result.ok) {
-      nodeErrors.set(server, result.message)
-      return result
-    }
     const identity = serverIdentity(server)
     if (identity === null || server.info === null || server.season === null) {
       const failure = { ok: false as const, message: 'The server identity is unavailable.' }
       nodeErrors.set(server, failure.message)
       return failure
     }
+    if (!result.ok) {
+      nodeErrors.set(server, result.message)
+      if (pendingProbe === undefined) return result
+      let retainedNodes = 0
+      for (const [url, entry] of nodesByServer) {
+        if (url !== server.url) retainedNodes += entry.nodes.length
+      }
+      if (retainedNodes + pendingProbe.length <= MAX_TOTAL_SERVER_NODES) {
+        nodesByServer.set(server.url, {
+          serverId: server.info.id,
+          season: server.season,
+          nodes: pendingProbe,
+        })
+        void cacheServer({
+          url: server.url,
+          serverId: server.info.id,
+          season: server.season,
+          nodes: pendingProbe,
+          fetchedAt: Date.now(),
+        })
+      }
+      return result
+    }
+    if (force) takeProbedNodes(server)
     let retainedNodes = 0
     for (const [url, entry] of nodesByServer) {
       if (url !== server.url) retainedNodes += entry.nodes.length
@@ -412,6 +433,25 @@ export const reorderedSiblings = (
   return next
 }
 
+export const reorderedVisibleSiblings = (
+  allKeys: readonly string[],
+  visibleKeys: readonly string[],
+  from: string,
+  to: string,
+  after: boolean,
+): readonly string[] | null => {
+  const visible = reorderedSiblings(visibleKeys, from, to, after)
+  if (visible === null) return null
+  const visibleSet = new Set(visibleKeys)
+  let cursor = 0
+  return allKeys.map((key) => {
+    if (!visibleSet.has(key)) return key
+    const replacement = visible[cursor]
+    cursor++
+    return replacement ?? key
+  })
+}
+
 export const replaceSiblingOrder = (
   current: readonly string[],
   siblings: readonly string[],
@@ -424,12 +464,21 @@ export const replaceSiblingOrder = (
   return [...retained.slice(0, insertion), ...next, ...retained.slice(insertion)]
 }
 
-const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
-  const next = reorderedSiblings(keys, from, to, after)
+const moveKey = (
+  keys: readonly string[],
+  from: string,
+  to: string,
+  after: boolean,
+  allKeys: readonly string[] = keys,
+): void => {
+  const next =
+    allKeys === keys
+      ? reorderedSiblings(keys, from, to, after)
+      : reorderedVisibleSiblings(allKeys, keys, from, to, after)
   if (next === null) return
-  if (next.every((key, index) => key === keys[index])) return
+  if (next.every((key, index) => key === allKeys[index])) return
   const current = getState().customOrder
-  setState({ customOrder: replaceSiblingOrder(current, keys, next) })
+  setState({ customOrder: replaceSiblingOrder(current, allKeys, next) })
 }
 
 /** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
@@ -462,6 +511,8 @@ interface RowOptions {
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly siblings: readonly string[]
+  /** Full sibling order, computed only when a filtered/truncated view is actually reordered. */
+  readonly orderingSiblings?: (() => readonly string[]) | undefined
   readonly rerender: () => void
   readonly onDropInto?: ((draggedKey: string) => void) | undefined
   /** When present, the row reflects this instead of the tree's own disabled set. */
@@ -677,7 +728,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
       if (target === undefined) return
       event.preventDefault()
       event.stopPropagation()
-      moveKey(options.siblings, options.key, target, event.key === 'ArrowDown')
+      moveKey(
+        options.siblings,
+        options.key,
+        target,
+        event.key === 'ArrowDown',
+        options.orderingSiblings?.() ?? options.siblings,
+      )
       options.rerender()
     })
   }
@@ -738,7 +795,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     }
     if (!options.siblings.includes(from)) return
     const box = row.getBoundingClientRect()
-    moveKey(options.siblings, from, options.key, event.clientY > box.top + box.height / 2)
+    moveKey(
+      options.siblings,
+      from,
+      options.key,
+      event.clientY > box.top + box.height / 2,
+      options.orderingSiblings?.() ?? options.siblings,
+    )
     options.rerender()
   })
 
@@ -922,6 +985,10 @@ export const treeContents = (
                 container: true,
                 forceExpanded: needle !== '',
                 siblings: siblingKeys,
+                orderingSiblings: () =>
+                  orderedItems(nodeSiblingItems(server, siblings), rank).map((sibling) =>
+                    nodeTreeKey(server, sibling.node.id),
+                  ),
                 rerender,
                 onContextMenu: canEdit
                   ? (event) => callbacks.onContextMenu(nodeTarget, event)
@@ -1008,6 +1075,7 @@ export const treeContents = (
           meta: `${template.width}×${template.height}`,
           container: false,
           siblings: localKeys,
+          orderingSiblings: () => orderedMine.map((sibling) => sibling.key),
           rerender,
           checked: template.visible,
           onToggleChecked: (on) => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { type ConnectedServer, getState, probeServer, setState } from '../state.js'
+import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState } from '../state.js'
 import {
   canRetryNodeRefresh,
   forgetServerTree,
@@ -9,6 +9,7 @@ import {
   orderedItems,
   refreshNodes,
   reorderedSiblings,
+  reorderedVisibleSiblings,
   replaceSiblingOrder,
   treeContents,
 } from './tree.js'
@@ -111,6 +112,15 @@ describe('tree identity and ordering', () => {
   it('does not admit a key from another sibling group', () => {
     expect(reorderedSiblings(['a', 'b'], 'foreign', 'b', false)).toBeNull()
     expect(reorderedSiblings(['a', 'b'], 'a', 'b', true)).toEqual(['b', 'a'])
+  })
+
+  it('swaps filtered rows in their full sibling slots without displacing hidden rows', () => {
+    expect(reorderedVisibleSiblings(['a', 'b', 'c', 'd'], ['a', 'd'], 'a', 'd', true)).toEqual([
+      'd',
+      'b',
+      'c',
+      'a',
+    ])
   })
 
   it('replaces a very large sibling order without spreading function arguments', () => {
@@ -299,6 +309,91 @@ describe('tree identity and ordering', () => {
       'https://example.com/admin/nodes?season=0',
       expect.any(Object),
     )
+    expect(peekProbedNodes(connected)).toBeUndefined()
+  })
+
+  it('retains the probe snapshot when a forced live refresh fails', async () => {
+    const info = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
+    const nodes = [
+      {
+        id: NODE_ID,
+        parentId: null,
+        path: '/known',
+        name: 'Known',
+        createdAt: 1_750_000_000_000,
+      },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(info), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              version: 'v1',
+              season: 0,
+              server: info,
+              nodes,
+              templates: [],
+              tiles: [],
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(new Response(null, { status: 500 })),
+    )
+    const connected = await probeServer('https://example.com', null)
+    setState({ servers: [connected] })
+
+    await expect(refreshNodes(connected, vi.fn(), true)).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    )
+
+    expect(peekProbedNodes(connected)).toEqual(nodes)
+  })
+
+  it('transfers the probe snapshot when a forced refresh discovers revoked admin scope', async () => {
+    const info = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
+    const nodes = [
+      {
+        id: NODE_ID,
+        parentId: null,
+        path: '/known',
+        name: 'Known',
+        createdAt: 1_750_000_000_000,
+      },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(info), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              version: 'v1',
+              season: 0,
+              server: info,
+              nodes,
+              templates: [],
+              tiles: [],
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(new Response(null, { status: 403 })),
+    )
+    const connected = await probeServer('https://example.com', null)
+    setState({ servers: [connected] })
+
+    await refreshNodes(connected, vi.fn(), true)
+    const downgraded = getState().servers[0]
+
+    expect(downgraded).toEqual(expect.objectContaining({ isAdmin: false }))
+    expect(downgraded === undefined ? undefined : peekProbedNodes(downgraded)).toEqual(nodes)
   })
 
   it('offers folder retry only to a connection that can perform it', () => {

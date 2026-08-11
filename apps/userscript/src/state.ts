@@ -706,6 +706,10 @@ export const takeProbedNodes = (server: ConnectedServer): readonly TreeNode[] | 
   return nodes
 }
 
+/** Inspect a probe snapshot without changing its owner; forced refresh keeps it as a fallback. */
+export const peekProbedNodes = (server: ConnectedServer): readonly TreeNode[] | undefined =>
+  probedNodes.get(server)
+
 /**
  * Ask a server who it is.
  *
