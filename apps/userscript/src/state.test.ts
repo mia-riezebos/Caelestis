@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_A = '019fed50-87a1-7523-a88c-bdeafad49682'
 const NODE_B = '019fed50-87a1-7523-a88c-bdeafad49683'
+const TEMPLATE_ID = '019fed50-87a1-7523-a88c-bdeafad49684'
 
 const serverInfo = { id: SERVER_ID, name: 'Caelestis', auth: 'none' as const }
 const manifest = {
@@ -155,6 +156,27 @@ describe('server state boundaries', () => {
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
+  })
+
+  it('rejects malformed manifest members before reporting a verified connection', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...manifest, nodes: [null] }), { status: 200 }),
+        ),
+    )
+    const { probeServer } = await import('./state.js')
+
+    await expect(probeServer('https://example.com', null)).resolves.toEqual(
+      expect.objectContaining({
+        status: 'unreachable',
+        error: 'TypeError: server returned an invalid manifest',
+      }),
+    )
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('rejects an invalid folder returned by a successful create request', async () => {
@@ -435,5 +457,40 @@ describe('server state boundaries', () => {
     await vi.advanceTimersByTimeAsync(110_000)
 
     await expect(uploading).resolves.toEqual({ ok: false, message: 'Error: request timed out' })
+  })
+
+  it('requires the canonical created-template identity from a successful upload', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ templateId: TEMPLATE_ID }), { status: 201 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ templateId: '' }), { status: 201 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { uploadTemplate } = await import('./state.js')
+    const connected = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    const input = {
+      nodeId: NODE_A,
+      name: 'Template',
+      originX: 0,
+      originY: 0,
+      png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+    }
+
+    await expect(uploadTemplate(connected, input)).resolves.toEqual({
+      ok: true,
+      id: TEMPLATE_ID,
+    })
+    await expect(uploadTemplate(connected, input)).resolves.toEqual({
+      ok: false,
+      message: 'Server returned an invalid uploaded template.',
+    })
   })
 })

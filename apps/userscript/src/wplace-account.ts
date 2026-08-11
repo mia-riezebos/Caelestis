@@ -59,6 +59,13 @@ const premiumIndices = (): readonly number[] =>
 /** Palette indices this account can place, or null when we have not been able to ask. */
 export const ownedColours = (): ReadonlySet<number> | null => owned
 
+const replaceOwned = (next: ReadonlySet<number> | null): void => {
+  if (owned === next || (owned === null && next === null)) return
+  owned = next
+  loadedAt = next === null ? 0 : Date.now()
+  for (const listener of listeners) listener()
+}
+
 const fetchAccount = async (): Promise<void> => {
   const controller = new AbortController()
   const timeout = setTimeout(
@@ -71,27 +78,31 @@ const fetchAccount = async (): Promise<void> => {
       signal: controller.signal,
     })
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) replaceOwned(null)
       log('install', `/me said ${response.status}; owned colours unavailable`)
       return
     }
     const body = await readBoundedJson(response)
-    if (!isRecord(body)) return
+    if (!isRecord(body)) {
+      replaceOwned(null)
+      return
+    }
     const mask = body.extraColorsBitmap
     if (
       typeof mask !== 'number' ||
       !Number.isSafeInteger(mask) ||
       (mask !== -1 && (mask < 0 || mask > 0xffff_ffff))
-    )
+    ) {
+      replaceOwned(null)
       return
+    }
 
     const set = new Set<number>()
     // -1 is all bits set, which is how wplace says "everything".
     premiumIndices().forEach((paletteIndex, bit) => {
       if (mask === -1 || (mask & (1 << bit)) !== 0) set.add(paletteIndex)
     })
-    owned = set
-    loadedAt = Date.now()
-    for (const listener of listeners) listener()
+    replaceOwned(set)
     log('install', 'owned colours read from /me', { premium: set.size, mask })
   } catch (error) {
     // Signed out, offline, or blocked. The preset simply stays unavailable.

@@ -304,6 +304,14 @@ const finish = (): void => {
   }
 }
 
+/** Tear down placement ownership before its template is deleted through another surface. */
+export const stopMoveForDeletion = (id: string): boolean => {
+  if (session?.id !== id) return false
+  clearLocalPreview(id)
+  finish()
+  return true
+}
+
 const resumeAfterFailure = (action: string, error?: unknown): void => {
   warn('install', `${action} could not be saved; placement is still open`, String(error ?? ''))
   finishing = false

@@ -28,7 +28,7 @@ import {
   renameLocalTemplate,
   templateAsPng,
 } from '../templates/local-store.js'
-import { beginMove } from '../templates/move.js'
+import { beginMove, movePreviewOrigin, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { loadAccount, onAccountChange } from '../wplace-account.js'
 import { coloursSection } from './colours.js'
@@ -158,6 +158,16 @@ const rerenderWhenIdle = (): void => {
   showView(currentView)
 }
 
+const rerenderAccountWhenRelevant = (): void => {
+  if (open && currentView === 'settings') rerenderWhenIdle()
+}
+
+const rerenderServersWhenRelevant = (): void => {
+  if (!open) return
+  if (currentView === 'tree') activeTreeRender?.()
+  else rerenderWhenIdle()
+}
+
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
  * the class list. Using the same class rather than a colour of our own means our button lights up
@@ -270,6 +280,13 @@ const treeView = (): HTMLElement => {
       rerenderTree()
       return
     }
+    const focused = document.activeElement as HTMLElement | null
+    const focusedRow = focused?.closest<HTMLElement>('[data-wts-key]') ?? null
+    const focusKey = focusedRow?.dataset.wtsKey ?? null
+    const focusLabel = focused?.getAttribute('aria-label') ?? null
+    const focusedRename = focused?.matches('[data-wts-rename]') === true
+    const focusedRowItself = focused === focusedRow
+    const scrollTop = body.scrollTop
     body.replaceChildren(
       treeContents(
         {
@@ -288,6 +305,20 @@ const treeView = (): HTMLElement => {
         backgroundRenderTree,
       ),
     )
+    if (focusKey !== null) {
+      const nextRow = [...body.querySelectorAll<HTMLElement>('[data-wts-key]')].find(
+        (row) => row.dataset.wtsKey === focusKey,
+      )
+      const nextFocus = focusedRowItself
+        ? nextRow
+        : focusedRename
+          ? nextRow?.querySelector<HTMLElement>('[data-wts-rename]')
+          : [...(nextRow?.querySelectorAll<HTMLElement>('[aria-label]') ?? [])].find(
+              (control) => control.getAttribute('aria-label') === focusLabel,
+            )
+      nextFocus?.focus({ preventScroll: true })
+      body.scrollTop = scrollTop
+    }
   }
   let searchTimer: ReturnType<typeof setTimeout> | null = null
   searchInput.addEventListener('input', () => {
@@ -332,6 +363,32 @@ const checkbox = (): HTMLInputElement => {
   el.type = 'checkbox'
   el.className = 'checkbox checkbox-sm'
   return el
+}
+
+const retryServerButton = (server: ConnectedServer, label: string): HTMLButtonElement => {
+  const button = document.createElement('button')
+  button.className = 'btn btn-xs btn-ghost'
+  button.textContent = label
+  button.addEventListener('click', () => {
+    if (button.disabled) return
+    button.disabled = true
+    void (async () => {
+      const ownsAttempt = beginConnectionAttempt(server.url)
+      const request = panelRequest()
+      const next = await probeServer(server.url, server.token, request.controller.signal)
+      request.finish()
+      if (
+        request.controller.signal.aborted ||
+        !ownsAttempt() ||
+        getState().servers.find((candidate) => candidate.url === server.url) !== server
+      ) {
+        return
+      }
+      upsertServer(next)
+      showView('settings')
+    })()
+  })
+  return button
 }
 
 /**
@@ -392,6 +449,9 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
       why.className = 'text-xs opacity-60'
       why.textContent = server.error ?? 'Could not be reached.'
       wrap.appendChild(why)
+      wrap.appendChild(retryServerButton(server, 'Retry'))
+    } else if (!server.isAdmin) {
+      wrap.appendChild(retryServerButton(server, 'Recheck admin access'))
     }
     return wrap
   }
@@ -578,8 +638,11 @@ const refreshAfterMutation = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<boolean> => {
-  const refreshed = await refreshNodes(server, rerender, true)
-  if (refreshed.ok) return true
+  const request = panelRequest()
+  const refreshed = await refreshNodes(server, rerender, true, request.controller.signal)
+  request.finish()
+  if (request.controller.signal.aborted || (!refreshed.ok && refreshed.cancelled)) return false
+  if (refreshed.ok || refreshed.superseded) return true
   toast(`Saved, but the folder list could not refresh. ${refreshed.message}`, 'warning')
   return false
 }
@@ -604,7 +667,15 @@ const isCurrentServer = (server: ConnectedServer): boolean =>
 
 const goTo = (templateId: string): void => {
   const template = localTemplates().find((candidate) => candidate.id === templateId)
-  if (template !== undefined) navigateTo(centreOf(template))
+  if (template === undefined) return
+  if (!template.everPlaced) {
+    toast('Finish placing this import before navigating away.', 'warning')
+    return
+  }
+  const preview = movePreviewOrigin(template.id)
+  navigateTo(
+    centreOf(preview === null ? template : { ...template, originX: preview.x, originY: preview.y }),
+  )
 }
 
 const applyRename = async (
@@ -699,8 +770,10 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   const templateId = localTemplateId(target)
   if (templateId !== null) {
     if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
+    const stoppedMove = stopMoveForDeletion(templateId)
     if (!(await removeLocalTemplate(templateId))) {
       toast(`Could not delete “${target.name}”.`, 'error')
+      if (stoppedMove) beginMove(templateId, rerender)
       return
     }
     removeCustomOrderKeys(new Set([target.key]))
@@ -918,6 +991,11 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
 const copyToServer = async (templateId: string, rerender: () => void): Promise<void> => {
   const template = allLocal().find((candidate) => candidate.id === templateId)
   if (template === undefined) return
+  if (!template.everPlaced || movePreviewOrigin(template.id) !== null) {
+    toast('Finish placing this template before copying it to a server.', 'warning')
+    return
+  }
+  const openingRevision = template.revision
   const targets = getState().servers.filter((server) => server.isAdmin)
   if (targets.length === 0) {
     toast('No server here accepts uploads — you need an admin code on one.', 'warning')
@@ -934,6 +1012,18 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
 
   const label = document.createElement('span')
   label.textContent = 'Loading destinations…'
+  const serverChooser = document.createElement('select')
+  serverChooser.className = 'select select-xs select-bordered'
+  targets.forEach((server, index) => {
+    const option = document.createElement('option')
+    option.value = String(index)
+    option.textContent = server.info?.name ?? server.url
+    serverChooser.appendChild(option)
+  })
+  const filter = document.createElement('input')
+  filter.type = 'search'
+  filter.className = 'input input-xs input-bordered'
+  filter.placeholder = 'Filter folders'
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
   chooser.disabled = true
@@ -957,62 +1047,81 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   go.textContent = 'Copy'
   go.disabled = true
   buttons.append(cancel, go)
-  box.append(label, chooser, buttons)
+  box.append(label, serverChooser, filter, chooser, buttons)
   panel.appendChild(box)
 
-  const loaded = await Promise.all(
-    targets.map(async (server) => {
-      const controller = new AbortController()
-      controllers.push(controller)
-      return { server, result: await listNodes(server, controller.signal) }
-    }),
-  )
-  if (!box.isConnected) {
-    if (cancelActiveCopy === closeCopy) cancelActiveCopy = null
-    return
-  }
-  let failedLoads = 0
-  let availableDestinations = 0
-  const destinations: Array<{ readonly server: ConnectedServer; readonly nodeId: string }> = []
-  for (const { server, result } of loaded) {
-    if (!result.ok) {
-      failedLoads++
-      continue
-    }
-    const nodes = result.nodes
-    availableDestinations += nodes.length
-    const remaining = MAX_COPY_DESTINATIONS - destinations.length
-    for (const node of nodes.slice(0, Math.max(0, remaining))) {
+  let destinationController: AbortController | null = null
+  let loadedNodes: readonly {
+    readonly id: string
+    readonly path: string
+    readonly name: string
+  }[] = []
+  let loadGeneration = 0
+  const renderDestinations = (): void => {
+    chooser.replaceChildren()
+    const needle = filter.value.trim().toLocaleLowerCase()
+    let matches = 0
+    for (const node of loadedNodes) {
+      if (
+        needle !== '' &&
+        !node.path.toLocaleLowerCase().includes(needle) &&
+        !node.name.toLocaleLowerCase().includes(needle)
+      ) {
+        continue
+      }
+      matches++
+      if (chooser.options.length >= MAX_COPY_DESTINATIONS) continue
       const option = document.createElement('option')
-      option.value = String(destinations.length)
-      option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
-      destinations.push({ server, nodeId: node.id })
+      option.value = node.id
+      option.textContent = node.path
       chooser.appendChild(option)
     }
+    chooser.disabled = chooser.options.length === 0
+    go.disabled = chooser.options.length === 0
+    label.textContent =
+      matches > chooser.options.length
+        ? `Showing ${chooser.options.length.toLocaleString()} of ${matches.toLocaleString()} matching folders — narrow the filter to reach the rest.`
+        : matches === 0
+          ? needle === ''
+            ? 'Create a folder on this server first.'
+            : 'No folders match that filter.'
+          : `Copy “${template.name}” to:`
   }
-  if (chooser.options.length === 0) {
-    toast(
-      failedLoads > 0
-        ? 'Could not load any server destinations. Try again.'
-        : 'Create a folder on the server first — a template has to live somewhere.',
-      'warning',
-    )
-    closeCopy()
-    return
+  const loadSelectedServer = async (): Promise<void> => {
+    destinationController?.abort()
+    const generation = ++loadGeneration
+    const server = targets[Number(serverChooser.value)]
+    if (server === undefined) return
+    loadedNodes = []
+    chooser.replaceChildren()
+    chooser.disabled = true
+    go.disabled = true
+    label.textContent = `Loading folders from ${server.info?.name ?? server.url}…`
+    const controller = new AbortController()
+    destinationController = controller
+    controllers.push(controller)
+    const result = await listNodes(server, controller.signal)
+    if (closed || controller.signal.aborted || generation !== loadGeneration) return
+    if (!result.ok) {
+      loadedNodes = []
+      chooser.replaceChildren()
+      label.textContent = `Could not load folders. ${result.message}`
+      return
+    }
+    loadedNodes = result.nodes
+    renderDestinations()
   }
-  label.textContent =
-    availableDestinations > destinations.length
-      ? `Copy “${template.name}” to (showing the first ${destinations.length.toLocaleString()} of ${availableDestinations.toLocaleString()} folders):`
-      : `Copy “${template.name}” to:`
-  chooser.disabled = false
-  go.disabled = false
+  serverChooser.addEventListener('change', () => void loadSelectedServer())
+  filter.addEventListener('input', renderDestinations)
+  await loadSelectedServer()
+  if (!box.isConnected) return
+
   let uploading = false
   go.addEventListener('click', () => {
     if (uploading) return
     void (async () => {
-      const destination = destinations[Number(chooser.value)]
-      const selected = destination?.server
-      const nodeId = destination?.nodeId
+      const selected = targets[Number(serverChooser.value)]
+      const nodeId = chooser.value || undefined
       const server = getState().servers.find((candidate) => candidate.url === selected?.url)
       if (
         selected === undefined ||
@@ -1029,11 +1138,36 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
       }
       uploading = true
       go.disabled = true
+      serverChooser.disabled = true
+      filter.disabled = true
+      chooser.disabled = true
       try {
+        const source = allLocal().find((candidate) => candidate.id === templateId)
+        if (
+          source === undefined ||
+          source.revision !== openingRevision ||
+          !source.everPlaced ||
+          movePreviewOrigin(source.id) !== null
+        ) {
+          closeCopy()
+          toast('That template changed. Open Copy again.', 'warning')
+          return
+        }
         label.textContent = 'Encoding…'
-        const png = await templateAsPng(template)
+        const png = await templateAsPng(source)
         if (closed) return
         if (png === null) throw new Error('encoder returned no image')
+        const ready = allLocal().find((candidate) => candidate.id === templateId)
+        if (
+          ready === undefined ||
+          ready.revision !== openingRevision ||
+          !ready.everPlaced ||
+          movePreviewOrigin(ready.id) !== null
+        ) {
+          closeCopy()
+          toast('That template changed while it was encoding. Open Copy again.', 'warning')
+          return
+        }
         if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
           throw new Error('server connection changed while encoding')
         }
@@ -1044,9 +1178,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
           server,
           {
             nodeId,
-            name: template.name,
-            originX: template.originX,
-            originY: template.originY,
+            name: ready.name,
+            originX: ready.originX,
+            originY: ready.originY,
             png,
           },
           uploadController.signal,
@@ -1054,14 +1188,19 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         if (uploadController.signal.aborted) return
         if (!result.ok) throw new Error(result.message)
         closeCopy()
-        toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
+        toast(`Copied “${ready.name}” to ${server.info?.name ?? server.url}.`)
         await refreshAfterMutation(server, rerender)
       } catch (error) {
         if (closed) return
         toast(`Could not copy: ${String(error)}`, 'error')
         label.textContent = `Copy “${template.name}” to:`
         uploading = false
-        if (box.isConnected) go.disabled = false
+        if (box.isConnected) {
+          serverChooser.disabled = false
+          filter.disabled = false
+          chooser.disabled = chooser.options.length === 0
+          go.disabled = chooser.options.length === 0
+        }
       }
     })()
   })
@@ -1302,10 +1441,10 @@ export const installPanel = (): void => {
   loadState()
   if (!accountObserverInstalled) {
     accountObserverInstalled = true
-    onAccountChange(rerenderWhenIdle)
+    onAccountChange(rerenderAccountWhenRelevant)
   }
   void refreshStoredServers().then(() => {
-    rerenderWhenIdle()
+    rerenderServersWhenRelevant()
   })
   installStyles()
   if (!viewportResizeInstalled) {

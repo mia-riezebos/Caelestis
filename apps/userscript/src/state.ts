@@ -1,4 +1,4 @@
-import { PALETTE_SIZE } from '@wts/shared'
+import { PALETTE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
@@ -80,8 +80,12 @@ const DEFAULT_STATE: State = {
 }
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const SHA256_HEX = /^[0-9a-f]{64}$/
 const NODE_PATH = /^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u
 const MAX_TREE_NODES = 100_000
+const MAX_MANIFEST_TEMPLATES = 100_000
+const MAX_MANIFEST_CHUNKS = 200_000
+const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
 const MAX_CUSTOM_ORDER = 200_000
 export const MAX_CONNECTED_SERVERS = 32
 const SERVER_REFRESH_CONCURRENCY = 4
@@ -241,6 +245,101 @@ const treeNodesFrom = (value: unknown): readonly TreeNode[] | null => {
 export const validateTreeNodes = (value: unknown): readonly TreeNode[] | null =>
   treeNodesFrom(value)
 
+const manifestTileKey = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false
+  const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
+  if (match === null) return false
+  return Number(match[1]) < WORLD_TILES && Number(match[2]) < WORLD_TILES
+}
+
+/**
+ * Validate the manifest payload before calling a connection verified.
+ *
+ * The userscript deliberately keeps Effect out of its browser bundle, so this mirrors the wire
+ * boundary with the limits and relationships that protect its later tree/render consumers.
+ */
+const manifestContentsValid = (value: Record<string, unknown>): boolean => {
+  const nodes = treeNodesFrom(value.nodes)
+  if (nodes === null) return false
+  const rawNodes = value.nodes as readonly unknown[]
+  if (
+    rawNodes.some(
+      (raw) =>
+        !isRecord(raw) ||
+        !Number.isSafeInteger(raw.createdAt) ||
+        (raw.description !== undefined &&
+          (typeof raw.description !== 'string' ||
+            raw.description.length < 1 ||
+            raw.description.length > 4_096)),
+    )
+  ) {
+    return false
+  }
+
+  if (!Array.isArray(value.tiles) || value.tiles.length > MAX_MANIFEST_TILES) return false
+  const declaredTiles = new Set<string>()
+  for (const tile of value.tiles) {
+    if (!manifestTileKey(tile) || declaredTiles.has(tile)) return false
+    declaredTiles.add(tile)
+  }
+
+  if (!Array.isArray(value.templates) || value.templates.length > MAX_MANIFEST_TEMPLATES) {
+    return false
+  }
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const templateIds = new Set<string>()
+  const referencedTiles = new Set<string>()
+  let chunks = 0
+  for (const raw of value.templates) {
+    if (!isRecord(raw)) return false
+    if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id) || templateIds.has(raw.id)) return false
+    templateIds.add(raw.id)
+    if (typeof raw.nodeId !== 'string' || !nodeIds.has(raw.nodeId)) return false
+    if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return false
+    if (typeof raw.version !== 'string' || !UUID_V7.test(raw.version)) return false
+    if (!Number.isSafeInteger(raw.totalPixels) || Number(raw.totalPixels) <= 0) return false
+    if (typeof raw.published !== 'boolean' || !Number.isSafeInteger(raw.createdAt)) return false
+    if (!isRecord(raw.bbox)) return false
+    const { minX, minY, maxX, maxY } = raw.bbox
+    if (
+      ![minX, minY, maxX, maxY].every(Number.isSafeInteger) ||
+      Number(minX) < 0 ||
+      Number(minX) >= WORLD_PIXELS ||
+      Number(maxX) < 1 ||
+      Number(maxX) > WORLD_PIXELS ||
+      Number(minX) === Number(maxX) ||
+      Number(minY) < 0 ||
+      Number(minY) >= WORLD_PIXELS ||
+      Number(maxY) < 1 ||
+      Number(maxY) > WORLD_PIXELS ||
+      Number(minY) >= Number(maxY)
+    ) {
+      return false
+    }
+    if (!Array.isArray(raw.chunks) || raw.chunks.length === 0) return false
+    chunks += raw.chunks.length
+    if (chunks > MAX_MANIFEST_CHUNKS) return false
+    const ownTiles = new Set<string>()
+    for (const chunk of raw.chunks) {
+      if (
+        !isRecord(chunk) ||
+        !manifestTileKey(chunk.tile) ||
+        typeof chunk.hash !== 'string' ||
+        !SHA256_HEX.test(chunk.hash) ||
+        ownTiles.has(chunk.tile)
+      ) {
+        return false
+      }
+      ownTiles.add(chunk.tile)
+      referencedTiles.add(chunk.tile)
+    }
+  }
+  return (
+    referencedTiles.size === declaredTiles.size &&
+    [...referencedTiles].every((tile) => declaredTiles.has(tile))
+  )
+}
+
 const manifestProbeFrom = (
   value: unknown,
   expected: ServerInfo,
@@ -249,19 +348,13 @@ const manifestProbeFrom = (
     !isRecord(value) ||
     typeof value.version !== 'string' ||
     value.version.length < 1 ||
-    value.version.length > 256
+    value.version.length > 64
   )
     return null
   if (!Number.isSafeInteger(value.season) || Number(value.season) < 0) return null
   const server = serverInfoFrom(value.server)
   if (server === null || server.id !== expected.id) return null
-  if (
-    !Array.isArray(value.nodes) ||
-    !Array.isArray(value.templates) ||
-    !Array.isArray(value.tiles)
-  ) {
-    return null
-  }
+  if (!manifestContentsValid(value)) return null
   return { season: Number(value.season), server }
 }
 
@@ -759,7 +852,10 @@ export const uploadTemplate = async (
       LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (response.ok) {
-      return { ok: true, id: isRecord(body) && typeof body.id === 'string' ? body.id : '' }
+      const id = isRecord(body) ? body.templateId : undefined
+      return typeof id === 'string' && UUID_V7.test(id)
+        ? { ok: true, id }
+        : { ok: false, message: 'Server returned an invalid uploaded template.' }
     }
     if (response.status === 401 || response.status === 403) {
       noteAuthFailure(server, response.status)

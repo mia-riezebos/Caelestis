@@ -71,7 +71,12 @@ const refreshedConnections = new WeakSet<ConnectedServer>()
 const nodeErrors = new WeakMap<ConnectedServer, string>()
 export type NodeRefreshResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly message: string }
+  | {
+      readonly ok: false
+      readonly message: string
+      readonly cancelled?: true
+      readonly superseded?: true
+    }
 const refreshes = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
 
 const serverIdentity = (server: ConnectedServer): string | null =>
@@ -129,6 +134,7 @@ export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
   force = false,
+  signal?: AbortSignal,
 ): Promise<NodeRefreshResult> => {
   if (!server.isAdmin) return { ok: false, message: 'Admin access is required to refresh folders.' }
   const existing = refreshes.get(server)
@@ -142,12 +148,19 @@ export const refreshNodes = async (
   const loading = Promise.resolve().then(async (): Promise<NodeRefreshResult> => {
     const probed = takeProbedNodes(server)
     const result =
-      probed === undefined ? await listNodes(server) : { ok: true as const, nodes: probed }
+      probed === undefined ? await listNodes(server, signal) : { ok: true as const, nodes: probed }
+    if (signal?.aborted) {
+      return { ok: false, message: 'Folder refresh cancelled.', cancelled: true }
+    }
     if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
       return { ok: false, message: 'The server connection changed during refresh.' }
     }
     if (refreshGeneration.get(server.url) !== generation) {
-      return { ok: false, message: 'A newer folder refresh replaced this one.' }
+      return {
+        ok: false,
+        message: 'A newer folder refresh replaced this one.',
+        superseded: true,
+      }
     }
     refreshedConnections.add(server)
     if (!result.ok) {
@@ -190,7 +203,7 @@ export const refreshNodes = async (
   refreshes.set(server, loading)
   const result = await loading
   if (refreshes.get(server) === loading) refreshes.delete(server)
-  queueMicrotask(rerender)
+  if (!signal?.aborted) queueMicrotask(rerender)
   return result
 }
 
@@ -431,14 +444,20 @@ const treeRow = (options: RowOptions): HTMLElement => {
     const group = document.createElement('span')
     group.className = 'flex items-center gap-0.5'
     group.style.flex = '0 0 auto'
+    let submitted = false
     const commit = (): void => {
+      if (submitted) return
+      submitted = true
       const value = input.value.trim()
       renaming = null
       renameDraft = null
+      input.disabled = true
+      for (const button of group.querySelectorAll('button')) button.disabled = true
       if (value !== '' && value !== options.name) options.onRename?.(value)
       else options.rerender()
     }
     const cancel = (): void => {
+      if (submitted) return
       renaming = null
       renameDraft = null
       options.rerender()
@@ -599,6 +618,22 @@ const childText = (text: string, depth: number): HTMLElement => {
   return el
 }
 
+const childRetry = (text: string, depth: number, retry: () => void): HTMLElement => {
+  const row = document.createElement('div')
+  row.className = 'flex items-center gap-2'
+  row.style.padding = '0.125rem 0.75rem 0.375rem'
+  row.style.paddingLeft = `${2.5 + depth * 1.125}rem`
+  const message = document.createElement('span')
+  message.className = 'text-xs opacity-60'
+  message.textContent = text
+  const button = document.createElement('button')
+  button.className = 'btn btn-xs btn-ghost'
+  button.textContent = 'Retry'
+  button.addEventListener('click', retry)
+  row.append(message, button)
+  return row
+}
+
 export const treeContents = (
   callbacks: TreeCallbacks,
   rerender: () => void,
@@ -626,6 +661,7 @@ export const treeContents = (
     rank,
   ).map((item) => item.key)
   const needle = query.trim().toLocaleLowerCase()
+  let renderedServerRows = 0
 
   for (const key of ordered) {
     const server = servers.find((candidate) => `server:${candidate.url}` === key)
@@ -706,15 +742,18 @@ export const treeContents = (
           return result
         }
         let renderedRows = 0
+        let truncated = false
         const renderChildren = (parentId: string | null, depth: number): void => {
-          if (renderedRows >= MAX_RENDERED_ROWS) return
           const siblings = byParent.get(parentId) ?? []
           const orderedSiblings = orderedItems(nodeSiblingItems(server, siblings), rank)
           const siblingKeys = orderedSiblings.map((item) => item.key)
           for (const item of orderedSiblings) {
-            if (renderedRows >= MAX_RENDERED_ROWS) break
             const node = item.node
             if (!nodeMatches(node)) continue
+            if (renderedServerRows >= MAX_RENDERED_ROWS) {
+              truncated = true
+              break
+            }
             const nodeKey = nodeTreeKey(server, node.id)
             const nodeTarget: TreeTarget = {
               server,
@@ -747,21 +786,26 @@ export const treeContents = (
               }),
             )
             renderedRows++
+            renderedServerRows++
             if (isExpanded(nodeKey) || needle !== '') renderChildren(node.id, depth + 1)
           }
         }
         renderChildren(null, 1)
         if (nodeError !== undefined) {
-          wrap.appendChild(childText(`Could not refresh folders. ${nodeError}`, 0))
+          wrap.appendChild(
+            childRetry(`Could not refresh folders. ${nodeError}`, 0, () => {
+              void refreshNodes(server, backgroundRerender, true)
+            }),
+          )
         } else if (known.length === 0) {
           wrap.appendChild(
             childText(needle === '' ? 'No templates published yet.' : 'No matches.', 0),
           )
         } else if (renderedRows === 0 && needle !== '') {
           wrap.appendChild(childText('No matches.', 0))
-        } else if (renderedRows >= MAX_RENDERED_ROWS) {
+        } else if (truncated) {
           wrap.appendChild(
-            childText(`Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} matches.`, 0),
+            childText(`Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} server folders.`, 0),
           )
         }
         continue
@@ -847,12 +891,11 @@ export const treeContents = (
     if (server.status === 'connected') {
       const nodeError = nodeErrors.get(server)
       wrap.appendChild(
-        childText(
-          nodeError === undefined
-            ? 'No templates published yet.'
-            : `Could not load folders. ${nodeError}`,
-          0,
-        ),
+        nodeError === undefined
+          ? childText('No templates published yet.', 0)
+          : childRetry(`Could not load folders. ${nodeError}`, 0, () => {
+              void refreshNodes(server, backgroundRerender, true)
+            }),
       )
     } else if (server.status === 'needs-token') {
       wrap.appendChild(childText('Needs an access code — add it in settings.', 0))

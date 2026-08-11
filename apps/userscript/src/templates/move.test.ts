@@ -603,6 +603,19 @@ describe('template placement controls', () => {
     expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
   })
 
+  it('releases placement ownership before another surface deletes the template', async () => {
+    const finished = vi.fn()
+    const moves = await import('./move.js')
+    moves.beginMove('test', finished)
+
+    expect(moves.stopMoveForDeletion('test')).toBe(true)
+
+    expect(moves.isMoving()).toBe(false)
+    expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
+    expect(finished).toHaveBeenCalledOnce()
+    expect(moves.stopMoveForDeletion('other')).toBe(false)
+  })
+
   it('discards a fresh image import on its first cancel', async () => {
     harness.localTemplates.mockReturnValue([
       {

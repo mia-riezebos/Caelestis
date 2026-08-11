@@ -69,4 +69,24 @@ describe('wplace account state', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(ownedColours()).toBeNull()
   })
+
+  it('clears the previous account when the session becomes unauthorised', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ extraColorsBitmap: 1 }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { loadAccount, onAccountChange, ownedColours } = await import('./wplace-account.js')
+    const changed = vi.fn()
+    onAccountChange(changed)
+
+    await loadAccount()
+    expect(ownedColours()?.size).toBe(1)
+    await loadAccount(0)
+
+    expect(ownedColours()).toBeNull()
+    expect(changed).toHaveBeenCalledTimes(2)
+  })
 })

@@ -101,7 +101,7 @@ export const sortControl = (
     if (entry.field !== 'custom') {
       const hint = document.createElement('span')
       hint.className = 'text-xs opacity-60'
-      hint.textContent = active ? entry[current.direction] : entry.desc
+      hint.textContent = active ? entry[current.direction] : entry.asc
       button.appendChild(hint)
       if (active) {
         button.appendChild(
