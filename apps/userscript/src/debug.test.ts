@@ -36,6 +36,27 @@ describe('installDebugApi', () => {
     expect((descriptor.value as Record<string, unknown>).mark).toBe(mark)
     expect((descriptor.value as Record<string, unknown>).counters).toBeTypeOf('function')
   })
+
+  it('starts noisy console suppression fresh after clear', () => {
+    const pageRealm = { Object }
+    vi.stubGlobal('window', pageRealm)
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => '1'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    const consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    installDebugApi()
+    consoleInfo.mockClear()
+    const api = (pageRealm as Record<string, unknown>).__wts as { clear(): void }
+
+    log('frame', 'same noisy frame', { quads: 1 })
+    log('frame', 'same noisy frame', { quads: 1 })
+    api.clear()
+    log('frame', 'same noisy frame', { quads: 1 })
+
+    expect(consoleInfo).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('counterKey', () => {
@@ -95,5 +116,67 @@ describe('warn', () => {
     expect(consoleWarn).toHaveBeenCalledTimes(300)
     count('bitmap:fell-back-to-byte-length')
     expect(counters.get('bitmap:fell-back-to-byte-length')).toBe(1)
+  })
+
+  it('never throws through page-controlled console sinks or serialization', () => {
+    vi.stubGlobal('window', { Object })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => '1'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    vi.spyOn(console, 'info').mockImplementation(() => {
+      throw new Error('page console failed')
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {
+      throw new Error('page console failed')
+    })
+    installDebugApi()
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    expect(() => log('draw', 'circular payload', circular)).not.toThrow()
+    expect(() => warn('install', 'warning sink failed')).not.toThrow()
+  })
+
+  it('does not retain attacker-sized messages or nested payloads in the event ring', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    vi.stubGlobal('window', { Object })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    installDebugApi()
+    const huge = 'x'.repeat(1_000_000)
+
+    warn('install', huge, { coords: huge })
+
+    const api = (window as unknown as Record<string, unknown>).__wts as {
+      events: () => Array<{ message: string; data: { coords: string } }>
+    }
+    const entry = api.events().at(-1)
+    expect(entry?.message.length).toBeLessThanOrEqual(512)
+    expect(entry?.data.coords.length).toBeLessThanOrEqual(512)
+    expect(consoleWarn).toHaveBeenCalledOnce()
+  })
+
+  it('preserves bounded cross-realm Error diagnostics', () => {
+    vi.stubGlobal('window', { Object })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    installDebugApi()
+    const foreign = new (class ForeignError extends Error {})('decode failed')
+
+    warn('install', 'tile failed', foreign)
+
+    const api = (window as unknown as Record<string, unknown>).__wts as {
+      events: () => Array<{ data?: unknown }>
+    }
+    expect(api.events().at(-1)?.data).toBe('Error: decode failed')
   })
 })

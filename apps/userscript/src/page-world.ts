@@ -27,6 +27,10 @@ export const pageWindow = (): Window & typeof globalThis => {
 /** True when the sandbox and the page really are separate objects, which is worth logging once. */
 export const isSandboxed = (): boolean => typeof window !== 'undefined' && pageWindow() !== window
 
+/** Cross-realm Uint8Array check for values returned by page-owned browser APIs such as IndexedDB. */
+export const isUint8Array = (value: unknown): value is Uint8Array =>
+  ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]'
+
 /**
  * `value instanceof Type`, asked of the page's constructor rather than this realm's.
  *

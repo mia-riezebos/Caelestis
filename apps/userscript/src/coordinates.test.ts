@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   canvasPixelAtIn,
-  pixelsPerCanvasPixelIn,
+  cssPixelsPerCanvasPixelIn,
   screenPointForIn,
   viewportCentreIn,
 } from './coordinates.js'
@@ -83,8 +83,8 @@ describe('overlay coordinates', () => {
     expect(screenPointForIn(current, 2_250, 3_250)).toBeNull()
   })
 
-  it('reports the current horizontal pixel scale and the no-frame fallback', () => {
-    expect(pixelsPerCanvasPixelIn(frame())).toBe(0.2)
-    expect(pixelsPerCanvasPixelIn(null)).toBe(1)
+  it('reports CSS pixels per canvas pixel without double-counting device pixel ratio', () => {
+    expect(cssPixelsPerCanvasPixelIn(frame())).toEqual({ x: 0.1, y: 0.0505 })
+    expect(cssPixelsPerCanvasPixelIn(null)).toEqual({ x: 1, y: 1 })
   })
 })
