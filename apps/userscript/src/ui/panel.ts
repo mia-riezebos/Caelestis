@@ -575,6 +575,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     checking = true
     submit.disabled = true
     status.className = 'text-xs opacity-60'
+    status.dataset.wtsStatusPending = ''
     announce(status, 'Checking…')
     const ownsAttempt = beginConnectionAttempt(server.url)
     const request = panelRequest()
@@ -582,6 +583,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     request.finish()
     checking = false
     submit.disabled = false
+    delete status.dataset.wtsStatusPending
     if (request.controller.signal.aborted) return
     if (
       !ownsAttempt() ||
@@ -672,6 +674,7 @@ const settingsView = (): HTMLElement => {
     add.disabled = true
     status.style.display = ''
     status.className = 'text-xs px-3 pb-2 opacity-60'
+    status.dataset.wtsStatusPending = ''
     announce(status, 'Connecting…')
     const ownsAttempt = beginConnectionAttempt(canonical)
     const request = panelRequest()
@@ -679,6 +682,7 @@ const settingsView = (): HTMLElement => {
     request.finish()
     connecting = false
     add.disabled = false
+    delete status.dataset.wtsStatusPending
     if (request.controller.signal.aborted) return
     if (!ownsAttempt()) return
     if (server.status === 'unreachable') {
@@ -1746,7 +1750,8 @@ const settingsDrafts = (panel: HTMLElement): SettingsDrafts => {
   const statuses = new Map<string, TransientStatus>()
   for (const status of panel.querySelectorAll<HTMLElement>('[data-wts-draft-status]')) {
     const key = status.dataset.wtsDraftStatus
-    if (key !== undefined) statuses.set(key, readTransientStatus(status))
+    const saved = readTransientStatus(status)
+    if (key !== undefined && saved !== null) statuses.set(key, saved)
   }
   const active = document.activeElement
   let focused: SettingsDrafts['focused'] = null

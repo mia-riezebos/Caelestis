@@ -164,13 +164,17 @@ export const readTransientStatus = (element: {
   readonly className: string
   readonly style: { readonly display: string }
   getAttribute: (name: string) => string | null
-}): TransientStatus => ({
-  text: element.textContent ?? '',
-  className: element.className,
-  display: element.style.display,
-  role: element.getAttribute('role') ?? 'status',
-  live: element.getAttribute('aria-live') ?? 'polite',
-})
+  hasAttribute: (name: string) => boolean
+}): TransientStatus | null =>
+  element.hasAttribute('data-wts-status-pending')
+    ? null
+    : {
+        text: element.textContent ?? '',
+        className: element.className,
+        display: element.style.display,
+        role: element.getAttribute('role') ?? 'status',
+        live: element.getAttribute('aria-live') ?? 'polite',
+      }
 
 export const restoreTransientStatus = (
   element: {

@@ -119,6 +119,7 @@ describe('panel workflow ownership', () => {
       className: 'text-xs text-error',
       style: { display: '' },
       getAttribute: (name: string) => (name === 'role' ? 'alert' : 'assertive'),
+      hasAttribute: () => false,
     }
     const replacement = {
       textContent: 'generic',
@@ -127,7 +128,10 @@ describe('panel workflow ownership', () => {
       setAttribute: vi.fn(),
     }
 
-    restoreTransientStatus(replacement, readTransientStatus(original))
+    const saved = readTransientStatus(original)
+    expect(saved).not.toBeNull()
+    if (saved === null) throw new Error('terminal status was not captured')
+    restoreTransientStatus(replacement, saved)
 
     expect(replacement).toEqual(
       expect.objectContaining({
@@ -138,6 +142,18 @@ describe('panel workflow ownership', () => {
     )
     expect(replacement.setAttribute).toHaveBeenCalledWith('role', 'alert')
     expect(replacement.setAttribute).toHaveBeenCalledWith('aria-live', 'assertive')
+  })
+
+  it('does not preserve an in-flight form status across a direct settings rebuild', () => {
+    const pending = {
+      textContent: 'Checking…',
+      className: 'text-xs opacity-60',
+      style: { display: '' },
+      getAttribute: () => null,
+      hasAttribute: (name: string) => name === 'data-wts-status-pending',
+    }
+
+    expect(readTransientStatus(pending)).toBeNull()
   })
 
   it('keeps page-level notices bounded below the panel and host chrome', () => {
