@@ -172,7 +172,10 @@ export const warn = (category: Category, message: string, data?: unknown): void 
     count(counterKey(category, boundedMessage))
     ring.push({ at: Date.now() - started, category, message: boundedMessage, data: boundedData })
     if (ring.length > RING_SIZE) ring.shift()
-    console.warn(`[wts:${category}] ${boundedMessage}`, boundedData ?? '')
+    // Keep the bounded snapshot in the ring, but let devtools see the original Error so its stack
+    // remains inspectable. This is a console argument only; the diagnostic store retains no page or
+    // import-owned object.
+    console.warn(`[wts:${category}] ${boundedMessage}`, data ?? '')
   } catch {
     // Warnings report failures; they must not create a second failure of their own.
   }

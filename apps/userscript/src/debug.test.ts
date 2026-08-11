@@ -161,14 +161,14 @@ describe('warn', () => {
     expect(consoleWarn).toHaveBeenCalledOnce()
   })
 
-  it('preserves bounded cross-realm Error diagnostics', () => {
+  it('bounds cross-realm Errors in the ring without stripping the console stack', () => {
     vi.stubGlobal('window', { Object })
     vi.stubGlobal('localStorage', {
       getItem: vi.fn(() => null),
       setItem: vi.fn(),
       removeItem: vi.fn(),
     })
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     installDebugApi()
     const foreign = new (class ForeignError extends Error {})('decode failed')
 
@@ -178,5 +178,6 @@ describe('warn', () => {
       events: () => Array<{ data?: unknown }>
     }
     expect(api.events().at(-1)?.data).toBe('Error: decode failed')
+    expect(consoleWarn).toHaveBeenCalledWith('[wts:install] tile failed', foreign)
   })
 })
