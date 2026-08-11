@@ -1,4 +1,5 @@
 import { log, warn } from './debug.js'
+import type { ServerTemplate } from './server-cache.js'
 import { type Appearance, DEFAULT_APPEARANCE, normaliseAppearance } from './templates/appearance.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
@@ -182,6 +183,11 @@ export const loadState = (): State => {
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
   }
+  // Loading *is* a change, and the biggest one there is — it is where the connected servers arrive.
+  // Assigning silently meant nothing watching the state ever heard about them, so the templates a
+  // server publishes were not fetched until something else happened to change the state, which in
+  // practice was opening the panel. The map sat empty until then for no reason anyone could see.
+  for (const listener of listeners) listener(state)
   return state
 }
 
@@ -457,14 +463,25 @@ export const renameNode = async (
   }
 }
 
-export const deleteNode = async (
+/**
+ * Move a folder to a different parent on the same server.
+ *
+ * Server-backed, unlike the order rows sit in: where a folder *lives* is structure everyone shares,
+ * so it has to be the server's answer, while what order you like to see things in is yours alone and
+ * never leaves this browser.
+ *
+ * Null puts it at the top level of the server.
+ */
+export const moveNode = async (
   server: ConnectedServer,
   nodeId: string,
+  parentId: string | null,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
     const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
-      method: 'DELETE',
+      method: 'PATCH',
       headers: adminHeaders(server),
+      body: JSON.stringify({ parentId }),
     })
     if (response.ok) return { ok: true }
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
@@ -473,19 +490,128 @@ export const deleteNode = async (
   }
 }
 
-/** Existing sibling names, so a new folder can pick one that is free without asking. */
-export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> => {
+export const deleteNode = async (
+  server: ConnectedServer,
+  nodeId: string,
+  cascade = false,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/nodes?season=0`, {
-      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
-    })
-    if (!response.ok) return []
-    const body = (await response.json()) as { nodes?: TreeNode[] } | TreeNode[]
-    return Array.isArray(body) ? body : (body.nodes ?? [])
-  } catch {
-    return []
+    const response = await fetch(
+      `${server.url}/admin/nodes/${nodeId}${cascade ? '?cascade=true' : ''}`,
+      { method: 'DELETE', headers: adminHeaders(server) },
+    )
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
   }
 }
+
+/**
+ * How much a folder is holding, so a delete can say what it is about to take with it.
+ *
+ * Asked of the server rather than counted from the tree, because the tree only knows what it has
+ * fetched: a collapsed folder's contents may never have been listed, and "delete 1 folder" for
+ * something holding forty templates is the kind of wrong that only shows up afterwards.
+ */
+export const countNodeSubtree = async (
+  server: ConnectedServer,
+  nodeId: string,
+): Promise<{ nodes: number; templates: number } | null> => {
+  try {
+    const response = await fetch(`${server.url}/admin/nodes/${nodeId}/subtree`, {
+      headers: adminHeaders(server),
+    })
+    if (!response.ok) return null
+    const body = (await response.json()) as { nodes?: unknown; templates?: unknown }
+    if (typeof body.nodes !== 'number' || typeof body.templates !== 'number') return null
+    return { nodes: body.nodes, templates: body.templates }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Everything a server is publishing: the folder tree and the templates hanging off it.
+ *
+ * One fetch, from `/manifest`, and that endpoint is the right one for **both** — the structure is
+ * not privileged information. Anyone with a read code is meant to see the tree; the admin boundary
+ * is *changing* it, which lives on the `/admin` routes. Reading the tree from `GET /admin/nodes`
+ * put the boundary in the wrong place and left every read-scope member staring at a server with no
+ * folders, and therefore no templates, since a template row is drawn under its folder.
+ *
+ * Answers empty on any failure rather than throwing. A tree that has drawn a stale row is better
+ * than a tree that has thrown, and the cached copy is what it falls back to.
+ */
+export const listServerContents = async (
+  server: ConnectedServer,
+): Promise<{ nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] } | null> => {
+  try {
+    const response = await fetch(`${server.url}/manifest?season=0`, {
+      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+    })
+    if (!response.ok) return null
+    const body = (await response.json()) as {
+      nodes?: ReadonlyArray<Partial<TreeNode>>
+      templates?: ReadonlyArray<
+        Partial<ServerTemplate> & { chunks?: ReadonlyArray<{ tile?: unknown; hash?: unknown }> }
+      >
+    }
+    const nodes = (body.nodes ?? []).flatMap((node) =>
+      typeof node.id === 'string'
+        ? [
+            {
+              id: node.id,
+              parentId: typeof node.parentId === 'string' ? node.parentId : null,
+              path: node.path ?? '',
+              name: node.name ?? 'Untitled',
+            },
+          ]
+        : [],
+    )
+    const templates = (body.templates ?? []).flatMap((template) => {
+      const bbox = template.bbox
+      if (typeof template.id !== 'string' || typeof template.nodeId !== 'string') return []
+      if (bbox === undefined) return []
+      return [
+        {
+          id: template.id,
+          nodeId: template.nodeId,
+          name: template.name ?? 'Untitled',
+          version: template.version ?? '',
+          published: template.published === true,
+          // Absent on a server older than the field. Zero reads as "never edited", which is a
+          // better lie than `Date.now()` — it cannot make a stale row look freshly changed.
+          updatedAt: typeof template.updatedAt === 'number' ? template.updatedAt : 0,
+          bbox,
+          chunks: (template.chunks ?? []).filter(
+            (chunk): chunk is { tile: string; hash: string } =>
+              typeof chunk?.tile === 'string' && typeof chunk?.hash === 'string',
+          ),
+        },
+      ]
+    })
+    return { nodes, templates }
+  } catch {
+    return null
+  }
+}
+
+/** The folder tree alone, for the admin flows that need somewhere to put something. */
+export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> =>
+  (await listServerContents(server))?.nodes ?? []
+
+/**
+ * The templates alone, or null when the server could not be asked.
+ *
+ * Null and empty are kept apart on purpose. A failed fetch used to answer with an empty list, and
+ * the sync read that as "this server publishes nothing" — so one blip, or a server restarting, took
+ * every template off the canvas and the next success put them back as if they were new.
+ */
+export const listServerTemplates = async (
+  server: ConnectedServer,
+): Promise<readonly ServerTemplate[] | null> =>
+  (await listServerContents(server))?.templates ?? null
 
 /**
  * Publish a local template to a server.
@@ -517,14 +643,121 @@ export const uploadTemplate = async (
       body: form,
     })
     if (response.ok) {
-      const body = (await response.json()) as { id?: string }
-      return { ok: true, id: body.id ?? '' }
+      // `templateId`, not `id` — the upload answers with the whole stored template, and reading the
+      // wrong field here handed back an empty string that every caller then treated as a real id.
+      const body = (await response.json()) as { templateId?: string }
+      return { ok: true, id: body.templateId ?? '' }
     }
     if (response.status === 401 || response.status === 403) {
       return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
     }
     const body = (await response.json().catch(() => null)) as { error?: string } | null
     return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Edit a published template: its name, which folder it sits in, or whether it is published.
+ *
+ * One call for all three because the server takes one patch, and because they are the same kind of
+ * change — everything here leaves the pixels alone. Replacing those is `uploadTemplateVersion`.
+ */
+export const patchTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+  patch: { name?: string; nodeId?: string; published?: boolean },
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/templates/${templateId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify(patch),
+    })
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Rename a server — the name every member sees, not a label local to this browser.
+ *
+ * Worth being explicit about, because the row it is edited from looks exactly like the Local one
+ * above it, and that one *is* local. This writes to the server, and the next member to open their
+ * panel sees the new name.
+ *
+ * The local copy is updated from the answer rather than re-probed: the tree is labelled from
+ * `info.name`, and leaving it stale until the next probe would make a rename look like it failed.
+ */
+export const renameServer = async (
+  server: ConnectedServer,
+  name: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  const trimmed = name.trim()
+  if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
+  try {
+    const response = await fetch(`${server.url}/admin/server`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ name: trimmed }),
+    })
+    if (!response.ok) {
+      return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    }
+    if (server.info !== null) {
+      upsertServer({ ...server, info: { ...server.info, name: trimmed } })
+    }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+export const deleteTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const response = await fetch(`${server.url}/admin/templates/${templateId}`, {
+      method: 'DELETE',
+      headers: adminHeaders(server),
+    })
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Replace a published template's pixels, keeping everything else about it.
+ *
+ * The origin travels with the image because a new version is a new slicing — moving artwork on the
+ * canvas is a different picture as far as the chunk index is concerned, not an edit to the old one.
+ */
+export const uploadTemplateVersion = async (
+  server: ConnectedServer,
+  templateId: string,
+  input: { originX: number; originY: number; png: Blob; name: string },
+): Promise<{ ok: true; versionId: string } | { ok: false; message: string }> => {
+  try {
+    const form = new FormData()
+    form.set('png', input.png, `${input.name}.png`)
+    form.set('originX', String(input.originX))
+    form.set('originY', String(input.originY))
+    const response = await fetch(`${server.url}/admin/templates/${templateId}/versions`, {
+      method: 'POST',
+      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+      body: form,
+    })
+    if (response.ok) {
+      const body = (await response.json()) as { versionId?: string }
+      return { ok: true, versionId: body.versionId ?? '' }
+    }
+    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }

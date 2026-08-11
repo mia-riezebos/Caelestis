@@ -13,6 +13,10 @@ export class MemoryBlobStore implements BlobStore {
     return this.objects.get(objectKey(namespace, hash))?.slice() ?? null
   }
 
+  async delete(namespace: BlobNamespace, hashes: readonly string[]): Promise<void> {
+    for (const hash of hashes) this.objects.delete(objectKey(namespace, hash))
+  }
+
   async hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>> {
     return new Set(hashes.filter((hash) => this.objects.has(objectKey(namespace, hash))))
   }

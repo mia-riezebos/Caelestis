@@ -1,16 +1,22 @@
-import { cacheServer, loadServerCache } from '../server-cache.js'
+import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cache.js'
 import {
   type ConnectedServer,
   getState,
   isScopeVisible,
   type LocalFolder,
-  listNodes,
+  listServerContents,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
   type TreeNode,
 } from '../state.js'
-import { localTemplates, type PlacedTemplate, setLocalVisible } from '../templates/local-store.js'
+import {
+  isServerTemplate,
+  localTemplates,
+  type PlacedTemplate,
+  setLocalVisible,
+} from '../templates/local-store.js'
+import { serverTemplateKey, syncServerTemplates } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -31,6 +37,15 @@ export interface TreeTarget {
   readonly nodeId: string | null
   readonly key: string
   readonly name: string
+  /**
+   * Set when the row is a template published on a server, rather than a folder.
+   *
+   * The two need telling apart because every action means something different on each: renaming a
+   * folder rewrites the paths of everything beneath it, renaming a template is one column. Before
+   * this, `server !== null` was enough to mean "a folder on a server", and adding template rows is
+   * what stopped that being true.
+   */
+  readonly templateId?: string
 }
 
 export interface TreeCallbacks {
@@ -50,6 +65,14 @@ export interface TreeCallbacks {
     parentKey: string | null,
     beforeKey: string | null,
   ) => void
+  /**
+   * Something was dropped onto a server's folder.
+   *
+   * One callback for three journeys, because they are one gesture: a Local template lands as an
+   * upload, a template already on this server is refiled, and one from another server moves across.
+   * Which of those it is comes from the dragged key, not from the caller.
+   */
+  readonly onDropOnNode: (target: TreeTarget, draggedKey: string) => void
 }
 
 const collapsed = new Set<string>()
@@ -65,15 +88,97 @@ let renaming: string | null = null
  */
 const nodesByServer = new Map<string, readonly TreeNode[]>()
 
+/** Templates per server, from the manifest, on the same terms as the nodes above. */
+const templatesByServer = new Map<string, readonly ServerTemplate[]>()
+
+/**
+ * Which server holds a template, given only its id.
+ *
+ * A drag carries one string, and a template row's key is `st:<id>` — so a drop has the template but
+ * not where it came from, and a cross-server move needs both ends. Ids are UUIDv7 and unique across
+ * servers in practice, so the first match is the right one.
+ */
+export const findServerTemplate = (
+  id: string,
+): { serverUrl: string; template: ServerTemplate } | null => {
+  for (const [serverUrl, templates] of templatesByServer) {
+    const template = templates.find((candidate) => candidate.id === id)
+    if (template !== undefined) return { serverUrl, template }
+  }
+  return null
+}
+
+/**
+ * What a server last said about one template, for whoever is acting on a row.
+ *
+ * Read from the same cache the row was drawn from, so a menu can never offer "Unpublish" on a row
+ * drawn as unpublished — the two would otherwise be answering from different copies.
+ */
+export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null =>
+  templatesByServer.get(serverUrl)?.find((template) => template.id === id) ?? null
+
+/** Which server holds a folder, given only its id — the same problem `findServerTemplate` solves. */
+export const findServerNode = (id: string): { serverUrl: string; node: TreeNode } | null => {
+  for (const [serverUrl, nodes] of nodesByServer) {
+    const node = nodes.find((candidate) => candidate.id === id)
+    if (node !== undefined) return { serverUrl, node }
+  }
+  return null
+}
+
+/** What a server publishes directly inside one folder. */
+export const templatesOfNode = (
+  serverUrl: string,
+  nodeId: string,
+): ReadonlyArray<{ id: string; name: string }> =>
+  (templatesByServer.get(serverUrl) ?? []).filter((template) => template.nodeId === nodeId)
+
+/**
+ * Re-read what a server publishes: its folders and the templates under them.
+ *
+ * **Not gated on admin.** The tree is what a read code is for — seeing what the alliance is
+ * building. Only *changing* it is privileged, and that boundary is drawn per row by `canEdit`.
+ * Refusing to fetch here left every member looking at a connected server with nothing under it.
+ *
+ * Both in one call, from the manifest, which is also the only way they can agree: a template row is
+ * drawn under its folder, so fetching one without the other puts templates under folders that are
+ * not there, or leaves a folder claiming to be empty a moment after something landed in it.
+ *
+ * One at a time per server. The render pass calls this for any connected server it has nothing for,
+ * and a render pass is cheap to provoke — so a server that is slow, unreachable, or refusing the
+ * token got a fresh manifest request on *every* re-render, because a failure leaves the map empty
+ * and the next pass sees the same gap. Sharing the in-flight promise makes that one request.
+ */
+const refreshing = new Map<string, Promise<void>>()
+
 export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<void> => {
-  if (!server.isAdmin) return
-  const nodes = await listNodes(server)
+  const pending = refreshing.get(server.url)
+  if (pending !== undefined) return pending
+  const run = refreshOnce(server, rerender).finally(() => refreshing.delete(server.url))
+  refreshing.set(server.url, run)
+  return run
+}
+
+const refreshOnce = async (server: ConnectedServer, rerender: () => void): Promise<void> => {
+  const contents = await listServerContents(server)
+  // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
+  // emptying itself — a server that blinks should not take its folders off your screen.
+  if (contents === null) return
+  const { nodes, templates } = contents
   nodesByServer.set(server.url, nodes)
-  void cacheServer({ url: server.url, nodes, fetchedAt: Date.now() })
+  templatesByServer.set(server.url, templates)
+  void cacheServer({ url: server.url, nodes, templates, fetchedAt: Date.now() })
   rerender()
+  // Every caller of this is a mutation that just landed — a publish, an upload, a delete. Waiting
+  // out the poll to see it on the canvas would make each of those feel like it had not worked.
+  //
+  // Handing over the manifest we just read, rather than letting the sync fetch its own: they are the
+  // same document, requested a millisecond apart, and the second one can only disagree with the
+  // first by being newer than the tree that is already on screen.
+  void syncServerTemplates(server, templates)
 }
 
 /**
@@ -85,6 +190,9 @@ export const refreshNodes = async (
 export const primeFromCache = async (rerender: () => void): Promise<void> => {
   for (const entry of await loadServerCache()) {
     if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
+    if (!templatesByServer.has(entry.url) && entry.templates !== undefined) {
+      templatesByServer.set(entry.url, entry.templates)
+    }
   }
   rerender()
 }
@@ -122,12 +230,20 @@ export const placeKey = (key: string, beforeKey: string | null): void => {
   setState({ customOrder: next })
 }
 
+/**
+ * Reorder one row among its siblings, expressed as "before this one" so it goes through `placeKey`.
+ *
+ * It used to build the new order from the sibling list alone and store *that* as the whole custom
+ * order — so reordering two categories replaced the flat list with two keys and threw away the
+ * arrangement of every folder and template in the tree. `customOrder` spans all levels; only ever
+ * edit it, never rewrite it.
+ */
 const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
-  const next = keys.filter((key) => key !== from)
-  const index = next.indexOf(to)
+  const siblings = keys.filter((key) => key !== from)
+  const index = siblings.indexOf(to)
   if (index === -1) return
-  next.splice(after ? index + 1 : index, 0, from)
-  setState({ customOrder: next })
+  // Land before whichever sibling now follows the target; null means last among these siblings.
+  placeKey(from, after ? (siblings[index + 1] ?? null) : to)
 }
 
 /**
@@ -149,6 +265,37 @@ let dropTarget: {
 } | null = null
 
 /** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
+/**
+ * The rows a drag is carrying: the one grabbed, and everything nested under it.
+ *
+ * Read off the rendered list rather than the model, because the model would have to be asked three
+ * different ways — a Local folder holds folders and templates, a server node holds nodes and
+ * templates — while the DOM already states it once, as depth. The subtree is the run of rows after
+ * this one that are deeper than it, which is exactly what a depth-first render produces.
+ */
+const draggedRows = (row: HTMLElement): HTMLElement[] => {
+  const depth = Number(row.dataset.wtsDepth ?? 0)
+  const rows = [row]
+  let next = row.nextElementSibling
+  while (next instanceof HTMLElement && next.dataset.wtsKey !== undefined) {
+    if (Number(next.dataset.wtsDepth ?? 0) <= depth) break
+    rows.push(next)
+    next = next.nextElementSibling
+  }
+  return rows
+}
+
+/** How tall the hole should be: everything in flight, plus the gaps between those rows. */
+const draggedHeight = (rows: readonly HTMLElement[]): number => {
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  if (first === undefined || last === undefined) return 0
+  return last.getBoundingClientRect().bottom - first.getBoundingClientRect().top
+}
+
+/** Set while a drag is in flight, so every placeholder is cut to the size of what is being moved. */
+let draggedPixels = 0
+
 const placeholder = (depth: number): HTMLElement => {
   const el = document.createElement('div')
   el.className = 'wts-placeholder'
@@ -156,6 +303,9 @@ const placeholder = (depth: number): HTMLElement => {
   // Indented to the level it would land at, so the outline says *where* and not merely *between
   // which two rows* — the two differ exactly when the drop would change a row's parent.
   el.style.marginLeft = `${0.25 + depth * 1.125}rem`
+  // The hole is the shape of what would fill it. A folder carrying nine templates leaves a
+  // one-row gap otherwise, which reads as "this lands here alone" and makes the list jump on drop.
+  if (draggedPixels > 0) el.style.height = `${draggedPixels}px`
   // The outline accepts the drop itself. Aiming at a gap and having to hit a row instead is the
   // thing that made filing into a folder feel like a trick — and a `dragover` alone was not enough,
   // since a drop landing here bubbled past every row's handler and was simply lost.
@@ -256,6 +406,8 @@ interface RowOptions {
    * structure, and only an admin may rearrange that.
    */
   readonly canReparent?: boolean | undefined
+  /** Dimmed, for a row that exists but is not doing anything yet — an unpublished template. */
+  readonly muted?: boolean | undefined
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
   /** Present only where the user can actually change things; absent means no rename affordance. */
   readonly onRename?: ((name: string) => void) | undefined
@@ -293,6 +445,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
   row.style.marginRight = '0.5rem'
   row.style.minHeight = '2rem'
+  if (options.muted === true) row.style.opacity = '0.55'
   row.draggable = draggable
   row.tabIndex = 0
   row.setAttribute('role', 'treeitem')
@@ -446,17 +599,27 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.addEventListener('dragstart', (event) => {
     event.dataTransfer?.setData('text/plain', options.key)
     dragging = { key: options.key, parentKey: options.parentKey ?? null }
-    // Take the row out of the flow, so what is on screen is the drag image plus the hole it will
-    // land in — nothing else. Leaving it in place at reduced opacity reads as a duplicate, and
+    // A folder travels with what is inside it. Measured before anything is hidden, because a hidden
+    // row has no height and the hole has to be the size of what left it.
+    const moving = draggedRows(row)
+    draggedPixels = draggedHeight(moving)
+    // Take the rows out of the flow, so what is on screen is the drag image plus the hole they will
+    // land in — nothing else. Leaving them in place at reduced opacity reads as a duplicate, and
     // every row below shifts as the placeholder is inserted.
     //
     // Deferred by a tick because the browser captures the drag image *after* dragstart returns;
     // hiding it synchronously would drag an invisible ghost.
-    setTimeout(() => row.classList.add('wts-dragging'), 0)
+    setTimeout(() => {
+      for (const moved of moving) moved.classList.add('wts-dragging')
+    }, 0)
   })
   row.addEventListener('dragend', () => {
-    row.classList.remove('wts-dragging')
-    clearDropMarks(row.parentElement ?? document)
+    const parent = row.parentElement ?? document
+    for (const moved of parent.querySelectorAll('.wts-dragging')) {
+      moved.classList.remove('wts-dragging')
+    }
+    draggedPixels = 0
+    clearDropMarks(parent)
     dropTarget = null
     dragging = null
   })
@@ -466,18 +629,27 @@ const treeRow = (options: RowOptions): HTMLElement => {
     if (parent === null) return
     clearDropMarks(parent)
 
+    const box = row.getBoundingClientRect()
+    const offset = (event.clientY - box.top) / box.height
+
+    /**
+     * The middle of a container means *into* it, whatever else the row can do.
+     *
+     * This used to be reachable only on rows with no position handler, so a row that could both
+     * accept something and be reordered silently lost the first — which is exactly a server's own
+     * row, and dropping a folder onto it is the only way to reach a server's top level.
+     */
+    if (options.onDropInto !== undefined && options.container && offset > 0.3 && offset < 0.7) {
+      row.classList.add('wts-drop-into')
+      // The drop reads this to tell "into" from "between"; a target left over from the row the
+      // cursor was on a moment ago would win over the outline now on screen.
+      dropTarget = null
+      return
+    }
+
     const place = options.onDropAt
     if (place === undefined) {
-      // Rows without a position handler still reorder among their own siblings, which is all a
-      // server's nodes can do until there is an endpoint for moving one.
-      const box = row.getBoundingClientRect()
-      const offset = (event.clientY - box.top) / box.height
-      const into =
-        options.container && options.onDropInto !== undefined && offset > 0.3 && offset < 0.7
-      if (into) {
-        row.classList.add('wts-drop-into')
-        return
-      }
+      // Rows without a position handler still reorder among their own siblings.
       parent.insertBefore(placeholder(options.depth), offset < 0.5 ? row : row.nextSibling)
       return
     }
@@ -577,7 +749,28 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         depth: 0,
         container: true,
         siblings: ordered,
+        parentKey: null,
         rerender,
+        /**
+         * Categories reorder among themselves, and only among themselves.
+         *
+         * Without a position handler a category could only be dropped *onto* another row, so the
+         * one place you cannot aim — the gap above the first row — was the only way to reach first
+         * place, and it silently did nothing. Reordering was therefore one-way: a category could be
+         * moved down past its neighbour and never brought back up.
+         *
+         * `canReparent` stays off, so nothing can be filed *inside* a category by dragging.
+         */
+        onDropAt: (draggedKey, parentKey, beforeKey) => {
+          if (parentKey !== null || !keys.includes(draggedKey)) return
+          placeKey(draggedKey, beforeKey)
+        },
+        // Dropping a folder onto the server itself means its top level, which is otherwise
+        // unreachable: every other destination is a folder, and "no folder" has no row but this one.
+        onDropInto:
+          canEdit && !isLocal
+            ? (draggedKey) => callbacks.onDropOnNode(target, draggedKey)
+            : undefined,
         // A category is a group like a folder is: switching it off takes everything under it off
         // the canvas, and leaves every row inside saying exactly what it said before.
         checked: isScopeVisible(key),
@@ -617,6 +810,10 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           siblings.push(node)
           byParent.set(node.parentId, siblings)
         }
+        const published = templatesByServer.get(server.url) ?? []
+        const templatesIn = (nodeId: string): readonly ServerTemplate[] =>
+          published.filter((template) => template.nodeId === nodeId)
+
         const renderChildren = (parentId: string | null, depth: number): void => {
           for (const node of byParent.get(parentId) ?? []) {
             const nodeKey = `node:${node.id}`
@@ -639,6 +836,12 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   ? (event) => callbacks.onContextMenu(nodeTarget, event)
                   : undefined,
                 onRename: canEdit ? (value) => callbacks.onRename(nodeTarget, value) : undefined,
+                // Dropping onto a folder files a template into it: a local one is uploaded here, a
+                // template already on this server is moved, and one from another server crosses
+                // over. The dedicated buttons still exist — this is the shortcut, not the only way.
+                onDropInto: canEdit
+                  ? (draggedKey) => callbacks.onDropOnNode(nodeTarget, draggedKey)
+                  : undefined,
                 actions: canEdit
                   ? [
                       {
@@ -655,7 +858,55 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   : undefined,
               }),
             )
-            if (isExpanded(nodeKey)) renderChildren(node.id, depth + 1)
+            if (!isExpanded(nodeKey)) continue
+            renderChildren(node.id, depth + 1)
+            for (const template of templatesIn(node.id)) {
+              const templateKey = `st:${template.id}`
+              // The copy on the canvas, if the sync has fetched it yet. Absent means the row is
+              // drawn from the manifest alone — which is the right first frame, since the manifest
+              // arrives long before the chunks do.
+              const drawn = localTemplates().find(
+                (candidate) => candidate.id === serverTemplateKey(server.url, template.id),
+              )
+              const templateTarget: TreeTarget = {
+                server,
+                nodeId: node.id,
+                key: templateKey,
+                name: template.name,
+                templateId: template.id,
+              }
+              wrap.appendChild(
+                treeRow({
+                  key: templateKey,
+                  name: template.name,
+                  // The same glyph a Local template row wears: it is the same kind of thing, and
+                  // where it lives is said by the tree rather than by the icon.
+                  kind: 'image',
+                  depth: depth + 1,
+                  container: false,
+                  siblings: templatesIn(node.id).map((candidate) => `st:${candidate.id}`),
+                  rerender,
+                  // Unpublished ones are visible to an admin and nobody else, so they have to look
+                  // different — otherwise the tree shows a template that members cannot see and
+                  // gives no hint why.
+                  muted: !template.published,
+                  ...(template.published ? {} : { meta: 'unpublished' }),
+                  // Drafts draw too — for the admin who can see them, which is the only person the
+                  // manifest lists them for — so they get the same switch as anything else.
+                  checked: drawn?.visible ?? false,
+                  onToggleChecked: (on: boolean) => {
+                    if (drawn !== undefined) setLocalVisible(drawn.id, on)
+                    rerender()
+                  },
+                  onContextMenu: canEdit
+                    ? (event) => callbacks.onContextMenu(templateTarget, event)
+                    : undefined,
+                  onRename: canEdit
+                    ? (value) => callbacks.onRename(templateTarget, value)
+                    : undefined,
+                }),
+              )
+            }
           }
         }
         renderChildren(null, 1)
@@ -665,7 +916,10 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
     }
 
     if (isLocal) {
-      const mine = localTemplates()
+      // Local means "only in this browser". Server templates share the store — everything that
+      // draws them takes a `PlacedTemplate` and does not care where it came from — but they are
+      // listed under the server publishing them, not here.
+      const mine = localTemplates().filter((template) => !isServerTemplate(template))
       const folders = getState().localFolders
 
       /** Templates sitting directly in one folder, or at the top of Local when null. */

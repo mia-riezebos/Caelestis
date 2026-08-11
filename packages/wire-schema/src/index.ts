@@ -255,6 +255,14 @@ export const Template = Schema.Struct({
   chunks: boundedArray(Chunk, MAX_TEMPLATE_CHUNKS),
   published: Schema.Boolean,
   createdAt: Millis,
+  /**
+   * When anything last changed, including things that leave the chunks alone.
+   *
+   * Not redundant with `version`: renaming a template or moving it to another node keeps every
+   * chunk exactly where it was, so the version is unchanged and a client watching only that would
+   * never re-read the name.
+   */
+  updatedAt: Millis,
 })
 
 const ManifestStruct = Schema.Struct({

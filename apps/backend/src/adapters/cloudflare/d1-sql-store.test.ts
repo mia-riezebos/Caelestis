@@ -247,6 +247,96 @@ describe('D1SqlStore', () => {
     await expect(store.readTemplateVersion(stored.versionId)).resolves.toMatchObject({ nodeId })
   })
 
+  describe('editing a template', () => {
+    const nodeId = '01890f3a-6b7c-7def-8123-456789abcdef'
+
+    const seed = async (): Promise<void> => {
+      await store.insertNode({
+        id: nodeId,
+        season: 1,
+        parentId: null,
+        path: '/node',
+        name: 'Node',
+        description: null,
+        createdAt: millis(1_750_000_000_000),
+      })
+      await store.insertTemplateVersion(templateVersion({ nodeId }))
+    }
+
+    it('renames and moves, and moves `updated_at_ms` with it', async () => {
+      await seed()
+      await store.insertNode({
+        id: 'node-2',
+        season: 1,
+        parentId: null,
+        path: '/node-2',
+        name: 'Node 2',
+        description: null,
+        createdAt: millis(1_750_000_000_000),
+      })
+
+      const moved = await store.updateTemplate(
+        'template-1',
+        { name: 'Renamed', nodeId: 'node-2' },
+        millis(2_000),
+      )
+
+      expect(moved).toBe(true)
+      await expect(store.readTemplate('template-1')).resolves.toMatchObject({
+        name: 'Renamed',
+        nodeId: 'node-2',
+        updatedAt: 2_000,
+        // Untouched: what the pixels are is a different question from where they live.
+        currentVersionId: 'version-1',
+      })
+    })
+
+    it('refuses a move to a node that does not exist', async () => {
+      await seed()
+
+      await expect(
+        store.updateTemplate('template-1', { nodeId: 'nowhere' }, millis(2_000)),
+      ).rejects.toBeInstanceOf(NodeNotFoundError)
+      // D1 reports a foreign-key failure as an opaque string, so this is checked rather than caught —
+      // and the template must be exactly where it was.
+      await expect(store.readTemplate('template-1')).resolves.toMatchObject({ nodeId })
+    })
+
+    it('answers false for a template that is not there, rather than inventing one', async () => {
+      await seed()
+
+      await expect(store.updateTemplate('missing', { name: 'x' }, millis(2_000))).resolves.toBe(
+        false,
+      )
+      await expect(store.deleteTemplate('missing')).resolves.toBe(false)
+    })
+
+    it('deletes a template with its versions and tiles', async () => {
+      await seed()
+      await store.insertTemplateVersion(
+        templateVersion({ nodeId, versionId: 'version-2', createdAt: millis(2_000) }),
+      )
+
+      // The order is the whole risk: `templates.current_version_id` points at a version and every
+      // version points back at the template, so a naive delete trips one foreign key or the other.
+      await expect(store.deleteTemplate('template-1')).resolves.toBe(true)
+
+      expect(d1.sqlite.prepare('SELECT count(*) AS n FROM templates').get()).toEqual({ n: 0 })
+      expect(d1.sqlite.prepare('SELECT count(*) AS n FROM template_versions').get()).toEqual({
+        n: 0,
+      })
+      expect(d1.sqlite.prepare('SELECT count(*) AS n FROM version_tiles').get()).toEqual({ n: 0 })
+    })
+
+    it('leaves the node it hung from alone', async () => {
+      await seed()
+
+      await store.deleteTemplate('template-1')
+
+      await expect(store.readNode(nodeId)).resolves.not.toBeNull()
+    })
+  })
+
   it('reports a duplicate path as a conflict rather than letting the driver error escape', async () => {
     // The in-memory store threw NodePathConflictError here and D1 did not, because Drizzle wraps the
     // database error: its own message is only "Failed query: insert into …" and the constraint text
@@ -288,6 +378,25 @@ describe('D1SqlStore', () => {
       current_version_id: version.versionId,
     })
     await expect(store.readTemplateVersion(version.versionId)).resolves.toEqual(version)
+  })
+
+  it('deletes a node subtree in one foreign-key-safe batch', async () => {
+    d1.sqlite.exec(`
+      INSERT INTO nodes VALUES ('root', 1, NULL, '/root', 'Root', NULL, 1);
+      INSERT INTO nodes VALUES ('child', 1, 'root', '/root/child', 'Child', NULL, 1);
+    `)
+    await store.insertTemplateVersion(templateVersion({ nodeId: 'child' }))
+    const batchesBeforeDelete = d1.batchCalls
+
+    // The circular template/version references make ordering observable: if the current pointer is
+    // not cleared first, or tiles do not precede versions, SQLite rejects the batch.
+    await expect(store.deleteNodeCascade('root')).resolves.toMatchObject({ nodes: 2, templates: 1 })
+
+    expect(d1.batchCalls).toBe(batchesBeforeDelete + 1)
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM nodes').get()).toEqual({ n: 0 })
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM templates').get()).toEqual({ n: 0 })
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM template_versions').get()).toEqual({ n: 0 })
+    expect(d1.sqlite.prepare('SELECT count(*) AS n FROM version_tiles').get()).toEqual({ n: 0 })
   })
 
   it('rolls the whole template write back when one tile row fails', async () => {
@@ -561,7 +670,7 @@ describe('D1SqlStore', () => {
   it('accepts a bounding box that wraps through zero in x', () => {
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('wrap-node', 1, NULL, '/wrap', 'Wrap', NULL, 1);
-      INSERT INTO templates VALUES ('wrap-template', 'wrap-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT INTO templates VALUES ('wrap-template', 'wrap-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -607,7 +716,7 @@ describe('D1SqlStore', () => {
     (minX, minY, maxX, maxY, totalPixels) => {
       d1.sqlite.exec(`
         INSERT OR IGNORE INTO nodes VALUES ('pixel-node', 1, NULL, '/pixel', 'Pixel', NULL, 1);
-        INSERT OR IGNORE INTO templates VALUES ('pixel-template', 'pixel-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+        INSERT OR IGNORE INTO templates VALUES ('pixel-template', 'pixel-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
       `)
       expect(() =>
         d1.sqlite
@@ -675,7 +784,7 @@ describe('D1SqlStore', () => {
   it('requires native bounds to be complete, ordered and in latitude/longitude range', () => {
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('node', 1, NULL, '/node', 'Node', NULL, 1);
-      INSERT INTO templates VALUES ('template', 'node', 'Template', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT INTO templates VALUES ('template', 'node', 'Template', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
     `)
 
     expect(() =>
@@ -840,7 +949,7 @@ describe('D1SqlStore', () => {
   ])('rejects a counter outside its SQL domain: %s', (statement) => {
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('cn', 1, NULL, '/cn', 'CN', NULL, 1);
-      INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'cn', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
     `)
     // The geometry columns get typeof + range; the counters got neither, so a negative, fractional
     // or textual count persisted. isValidCounterDelta already refuses these — this is the second
@@ -1034,7 +1143,7 @@ describe('D1SqlStore', () => {
     // Same reason as tile_history: the reporter record has to outlive the credential it names.
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('fk-node', 1, NULL, '/fk', 'FK', NULL, 1);
-      INSERT OR IGNORE INTO templates VALUES ('fk-t', 'fk-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO templates VALUES ('fk-t', 'fk-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -1360,7 +1469,7 @@ describe('D1SqlStore', () => {
     // against.
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('bounds-node', 1, NULL, '/bounds', 'Bounds', NULL, 1);
-      INSERT OR IGNORE INTO templates VALUES ('bounds-template', 'bounds-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO templates VALUES ('bounds-template', 'bounds-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
     `)
     expect(() =>
       d1.sqlite
@@ -1396,7 +1505,7 @@ describe('D1SqlStore', () => {
     // differ only in the trailing key column.
     d1.sqlite.exec(`
       INSERT OR IGNORE INTO nodes VALUES ('pk-node', 1, NULL, '/pk', 'PK', NULL, 1);
-      INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1);
+      INSERT OR IGNORE INTO templates VALUES ('ct', 'pk-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 1, 1);
       INSERT OR IGNORE INTO template_versions VALUES ('v1', 'ct', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 7, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(() => d1.sqlite.prepare(statement).run()).not.toThrow()

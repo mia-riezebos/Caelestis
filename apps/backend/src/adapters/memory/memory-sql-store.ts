@@ -12,13 +12,17 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
   NodePathTooLongError,
   type NodeRecord,
+  type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
+  type TemplatePatch,
+  type TemplateRecord,
   TemplateIdentityError,
   type TemplateVersionRecord,
   tooManyTemplateIds,
@@ -46,10 +50,24 @@ export class MemorySqlStore implements SqlStore {
     Pick<TemplateVersionRecord, 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
       publishedAt: Millis | null
+      updatedAt: Millis
     }
   >()
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
+
+  private settings: ServerSettings = { name: null, description: null }
+
+  async readServerSettings(): Promise<ServerSettings> {
+    return { ...this.settings }
+  }
+
+  async writeServerSettings(patch: { name?: string; description?: string | null }): Promise<void> {
+    this.settings = {
+      name: patch.name ?? this.settings.name,
+      description: patch.description === undefined ? this.settings.description : patch.description,
+    }
+  }
 
   async insertNode(node: NodeRecord): Promise<NodeRecord> {
     if (this.nodes.has(node.id)) throw new Error(`node already exists: ${node.id}`)
@@ -160,6 +178,64 @@ export class MemorySqlStore implements SqlStore {
     return renamed
   }
 
+  async moveNode(nodeId: string, parentId: string | null, proposedPath: string): Promise<boolean> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) return false
+
+    let parent: NodeRecord | undefined
+    if (parentId !== null) {
+      parent = this.nodes.get(parentId)
+      if (parent === undefined) throw new InvalidNodeParentError('parent node does not exist')
+      if (parent.season !== node.season) {
+        throw new InvalidNodeParentError('parent node belongs to a different season')
+      }
+      // A parent inside this subtree would make the moved branch unreachable: its new path would
+      // depend on a descendant whose own path is being rewritten from the branch's old prefix.
+      if (parent.id === node.id || parent.path.startsWith(`${node.path}/`)) {
+        throw new InvalidNodeParentError(
+          'parent node cannot be the node itself or one of its descendants',
+        )
+      }
+    }
+
+    const segment = proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
+    const path = `${parent?.path ?? ''}/${segment}`
+    const oldPrefix = `${node.path}/`
+    const foldedPrefix = foldPath(oldPrefix)
+    const descendants = [...this.nodes.values()].filter(
+      (candidate) =>
+        candidate.season === node.season && foldPath(candidate.path).startsWith(foldedPrefix),
+    )
+    const movedIds = new Set([node.id, ...descendants.map(({ id }) => id)])
+    const rewritten = descendants.map((descendant) => ({
+      ...descendant,
+      path: `${path}${descendant.path.slice(node.path.length)}`,
+    }))
+    const longest = rewritten.reduce(
+      (worst, entry) => Math.max(worst, entry.path.length),
+      path.length,
+    )
+    if (longest > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(
+        `move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+      )
+    }
+    const rewrittenPaths = new Set([path, ...rewritten.map(({ path: next }) => next)].map(foldPath))
+    const taken = [...this.nodes.values()].some(
+      (candidate) =>
+        candidate.season === node.season &&
+        !movedIds.has(candidate.id) &&
+        rewrittenPaths.has(foldPath(candidate.path)),
+    )
+    if (taken) {
+      throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+    }
+
+    this.nodes.set(node.id, { ...node, parentId, path })
+    for (const descendant of rewritten) this.nodes.set(descendant.id, descendant)
+    return true
+  }
+
   async deleteNode(nodeId: string): Promise<void> {
     if (!this.nodes.has(nodeId)) return
     const hasChildren = [...this.nodes.values()].some((node) => node.parentId === nodeId)
@@ -168,6 +244,66 @@ export class MemorySqlStore implements SqlStore {
       throw new NodeNotEmptyError('node has children or templates')
     }
     this.nodes.delete(nodeId)
+  }
+
+  async countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    const prefix = `${node.path}/`
+    const nodeIds = new Set(
+      [...this.nodes.values()]
+        .filter(
+          (candidate) =>
+            candidate.season === node.season &&
+            (candidate.id === nodeId || candidate.path.startsWith(prefix)),
+        )
+        .map((candidate) => candidate.id),
+    )
+    const templates = [...this.templates.values()].filter((template) =>
+      nodeIds.has(template.nodeId),
+    ).length
+    return { nodes: nodeIds.size, templates }
+  }
+
+  async deleteNodeCascade(nodeId: string): Promise<NodeDeletion> {
+    const node = this.nodes.get(nodeId)
+    if (node === undefined) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    const prefix = `${node.path}/`
+    const nodeIds = new Set(
+      [...this.nodes.values()]
+        .filter(
+          (candidate) =>
+            candidate.season === node.season &&
+            (candidate.id === nodeId || candidate.path.startsWith(prefix)),
+        )
+        .map((candidate) => candidate.id),
+    )
+    const templateIds = new Set(
+      [...this.templates.entries()]
+        .filter(([, template]) => nodeIds.has(template.nodeId))
+        .map(([templateId]) => templateId),
+    )
+    const hashes = new Set<string>()
+
+    // The collections do not enforce foreign keys, but this deliberately follows D1's safe order:
+    // collect the tile hashes, remove versions, then their templates, and only then their nodes.
+    for (const [versionId, version] of this.templateVersions) {
+      if (!templateIds.has(version.templateId)) continue
+      for (const chunk of version.chunks) hashes.add(chunk.hash)
+      this.templateVersions.delete(versionId)
+    }
+    for (const templateId of templateIds) this.templates.delete(templateId)
+    for (const descendantId of nodeIds) this.nodes.delete(descendantId)
+
+    return { nodes: nodeIds.size, templates: templateIds.size, hashes: [...hashes] }
+  }
+
+  async unreferencedHashes(hashes: readonly string[]): Promise<readonly string[]> {
+    const candidates = new Set(hashes)
+    for (const version of this.templateVersions.values()) {
+      for (const chunk of version.chunks) candidates.delete(chunk.hash)
+    }
+    return [...candidates]
   }
 
   async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
@@ -212,13 +348,20 @@ export class MemorySqlStore implements SqlStore {
       createdAt: version.createdAt,
       currentVersionId: version.versionId,
       publishedAt: null,
+      updatedAt: version.createdAt,
     }
     this.templateVersions.set(version.versionId, {
       ...version,
       bbox: { ...version.bbox },
       chunks: version.chunks.map((chunk) => ({ ...chunk })),
     })
-    this.templates.set(version.templateId, { ...template, currentVersionId: version.versionId })
+    // New pixels are a change like any other. An existing template keeps its name, parent, published
+    // state and creation date — only what it points at, and when it last moved, are its own.
+    this.templates.set(version.templateId, {
+      ...template,
+      currentVersionId: version.versionId,
+      updatedAt: version.createdAt,
+    })
   }
 
   async readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null> {
@@ -236,10 +379,56 @@ export class MemorySqlStore implements SqlStore {
     }
   }
 
-  async setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean> {
+  async readTemplate(templateId: string): Promise<TemplateRecord | null> {
+    const template = this.templates.get(templateId)
+    if (template === undefined) return null
+    return {
+      id: templateId,
+      nodeId: template.nodeId,
+      name: template.name,
+      currentVersionId: template.currentVersionId,
+      published: template.publishedAt !== null,
+      createdAt: template.createdAt,
+      updatedAt: template.updatedAt,
+    }
+  }
+
+  async setTemplatePublishedAt(
+    templateId: string,
+    publishedAt: Millis | null,
+    updatedAt: Millis,
+  ): Promise<boolean> {
     const template = this.templates.get(templateId)
     if (template === undefined) return false
-    this.templates.set(templateId, { ...template, publishedAt })
+    this.templates.set(templateId, { ...template, publishedAt, updatedAt })
+    return true
+  }
+
+  async updateTemplate(
+    templateId: string,
+    patch: TemplatePatch,
+    updatedAt: Millis,
+  ): Promise<boolean> {
+    const template = this.templates.get(templateId)
+    if (template === undefined) return false
+    if (patch.nodeId !== undefined && !this.nodes.has(patch.nodeId)) {
+      throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+    }
+    this.templates.set(templateId, {
+      ...template,
+      name: patch.name ?? template.name,
+      nodeId: patch.nodeId ?? template.nodeId,
+      updatedAt,
+    })
+    return true
+  }
+
+  async deleteTemplate(templateId: string): Promise<boolean> {
+    if (!this.templates.delete(templateId)) return false
+    for (const [versionId, version] of this.templateVersions) {
+      if (version.templateId === templateId) this.templateVersions.delete(versionId)
+    }
+    // Chunks are not touched: they are content-addressed and shared. See `deleteTemplate` on the port.
     return true
   }
 
@@ -268,6 +457,7 @@ export class MemorySqlStore implements SqlStore {
         totalPixels: version.totalPixels,
         published: template.publishedAt !== null,
         createdAt: template.createdAt,
+        updatedAt: template.updatedAt,
       })
     }
     return records.sort((left, right) => left.id.localeCompare(right.id))

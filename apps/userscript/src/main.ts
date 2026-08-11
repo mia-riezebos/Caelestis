@@ -9,9 +9,15 @@ import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
-import { onStateChange } from './state.js'
-import { onLocalChange, restoreLocalTemplates } from './templates/local-store.js'
+import { loadState, onStateChange } from './state.js'
+import {
+  isTemplateVisible,
+  localTemplates,
+  onLocalChange,
+  restoreLocalTemplates,
+} from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { installServerSync } from './templates/server-sync.js'
 import {
   captureTilePixels,
   install,
@@ -136,6 +142,16 @@ const main = (): void => {
     installDebugApi({
       /** The captured MapLibre Map, for poking at its style and layers from the console. */
       map: () => getMap(),
+      /** Each template's own switch beside the renderer's effective visibility decision. */
+      templates: () =>
+        localTemplates().map((template) => ({
+          id: template.id,
+          name: template.name,
+          visible: template.visible,
+          drawing: isTemplateVisible(template),
+          folderId: template.folderId,
+          server: template.serverUrl ?? null,
+        })),
       /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
       quads: () =>
         lastFrame === null
@@ -155,7 +171,20 @@ const main = (): void => {
     })
   })
   step('tile capture', install)
+  /**
+   * Settings and connected servers, before anything reads either.
+   *
+   * This used to happen as a side effect of the panel installing, which is late and in the wrong
+   * place: everything before it — the appearance defaults, the colour filter, the list of servers to
+   * fetch from — was reading the defaults instead of what was stored. Loading it here makes the rest
+   * of this sequence mean what it says.
+   */
+  step('settings', () => void loadState())
+  // Templates outlive a page load, which is what makes navigating to one survivable at all.
   step('local templates', () => void restoreLocalTemplates())
+  // Server templates do not: they are re-fetched, because the server is where they live and a copy
+  // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
+  step('server templates', installServerSync)
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {
     watchPaintSelection()

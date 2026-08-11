@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import type { Ports } from './ports/index.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
-import { createServerRoutes } from './routes/server.js'
+import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createChunkRoutes, createTemplateRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
 
@@ -51,7 +51,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
       'serverId',
     ),
     name: configured(
-      options.serverName ?? 'Wplace Template Server',
+      options.serverName ?? 'Template Server',
       (name) => name.length > 0 && name.length <= 256,
       'serverName',
     ),
@@ -76,17 +76,25 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   // never build an `If-None-Match`. The whole 304 path was unreachable for the only client it
   // exists for, which is also what `assembleManifest` goes to the trouble of being deterministic
   // for. `/chunks` was unaffected: it signals with `Cache-Control`, which is safelisted.
-  app.use('/*', cors({ exposeHeaders: ['ETag'] }))
+  // Every request it makes carries an `Authorization` header, which is not a CORS-simple header, so
+  // *each one* is preceded by an `OPTIONS` preflight — and the default `maxAge` is unset, meaning
+  // the browser may not reuse the answer at all. That is what fills the log with 204s: one per
+  // manifest poll, one per chunk, one per admin action. The answer cannot vary here — the policy is
+  // a constant, not derived from the request — so caching it is free. Browsers clamp this hard
+  // (Chromium at 2 hours, Safari at 10 minutes), which is why the number is a ceiling to be ignored
+  // rather than a promise to be kept.
+  app.use('/*', cors({ origin: '*', exposeHeaders: ['ETag'], maxAge: 86_400 }))
 
   app.get('/health', (c) => c.json({ ok: true }))
-  app.route('/server', createServerRoutes(server))
+  app.route('/server', createServerRoutes(ports, server))
+  app.route('/admin/server', createServerAdminRoutes(ports, auth))
   app.route(
     '/manifest',
     createManifestRoutes(ports, auth, { server, currentSeason: options.currentSeason ?? 1 }),
   )
 
   app.route('/admin/tokens', createTokenRoutes(auth))
-  app.route('/admin/nodes', createNodeRoutes(ports.sql, auth))
+  app.route('/admin/nodes', createNodeRoutes(ports, auth))
   app.route('/admin/templates', createTemplateRoutes(ports, auth))
   app.route('/chunks', createChunkRoutes(ports, auth))
 

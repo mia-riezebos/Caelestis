@@ -319,6 +319,42 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "server_settings": {
+      "name": "server_settings",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "server_settings_single_row_check": {
+          "name": "server_settings_single_row_check",
+          "value": "\"server_settings\".\"id\" = 1"
+        }
+      }
+    },
     "telemetry_buckets": {
       "name": "telemetry_buckets",
       "columns": {
@@ -595,6 +631,13 @@
         },
         "created_at_ms": {
           "name": "created_at_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at_ms": {
+          "name": "updated_at_ms",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
