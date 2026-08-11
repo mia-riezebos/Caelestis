@@ -3,6 +3,7 @@ import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
   type ConnectedServer,
+  canonicalServerUrl,
   createNode,
   deleteNode as deleteNodeOnServer,
   getState,
@@ -28,6 +29,7 @@ import {
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
+import { loadAccount, onAccountChange } from '../wplace-account.js'
 import { coloursSection } from './colours.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
@@ -37,6 +39,7 @@ import {
   cancelRenaming,
   forgetNodeOrder,
   forgetServerTree,
+  nodeTreeKey,
   primeFromCache,
   refreshNodes,
   startRenaming,
@@ -111,7 +114,28 @@ let open = false
 let searchQuery = ''
 let activeResizeCleanup: (() => void) | null = null
 let cancelActiveConfirm: (() => void) | null = null
+let cancelActiveCopy: (() => void) | null = null
 let viewportResizeInstalled = false
+let accountObserverInstalled = false
+const connectionAttempts = new Map<string, number>()
+const activePanelRequests = new Set<AbortController>()
+
+const beginConnectionAttempt = (url: string): (() => boolean) => {
+  const generation = (connectionAttempts.get(url) ?? 0) + 1
+  connectionAttempts.set(url, generation)
+  return () => connectionAttempts.get(url) === generation
+}
+
+const panelRequest = (): { controller: AbortController; finish: () => void } => {
+  const controller = new AbortController()
+  activePanelRequests.add(controller)
+  return { controller, finish: () => activePanelRequests.delete(controller) }
+}
+
+const cancelPanelRequests = (): void => {
+  for (const controller of activePanelRequests) controller.abort()
+  activePanelRequests.clear()
+}
 
 const panelWidthForViewport = (wanted: number): number =>
   Math.min(Math.max(0, window.innerWidth - 96), Math.max(260, Math.min(720, wanted)))
@@ -240,9 +264,14 @@ const treeView = (): HTMLElement => {
       ),
     )
   }
+  let searchTimer: ReturnType<typeof setTimeout> | null = null
   searchInput.addEventListener('input', () => {
     searchQuery = searchInput.value
-    renderTree()
+    if (searchTimer !== null) clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => {
+      searchTimer = null
+      renderTree()
+    }, 100)
   })
   renderTree()
   // Paint what the servers said last time, then let a live fetch replace it.
@@ -320,6 +349,8 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   remove.setAttribute('aria-label', `Disconnect ${server.info?.name ?? server.url}`)
   remove.appendChild(icon('close', 'size-3'))
   remove.addEventListener('click', () => {
+    cancelPanelRequests()
+    cancelActiveCopy?.()
     forgetServerTree(server.url)
     removeServer(server.url)
     void forgetServer(server.url)
@@ -367,10 +398,18 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     submit.disabled = true
     status.className = 'text-xs opacity-60'
     status.textContent = 'Checking…'
-    const next = await probeServer(server.url, value)
+    const ownsAttempt = beginConnectionAttempt(server.url)
+    const request = panelRequest()
+    const next = await probeServer(server.url, value, request.controller.signal)
+    request.finish()
     checking = false
     submit.disabled = false
-    if (!getState().servers.some((candidate) => candidate.url === server.url)) return
+    if (request.controller.signal.aborted) return
+    if (
+      !ownsAttempt() ||
+      getState().servers.find((candidate) => candidate.url === server.url) !== server
+    )
+      return
     if (next.status === 'connected') {
       upsertServer(next)
       showView('settings')
@@ -420,14 +459,34 @@ const settingsView = (): HTMLElement => {
     if (connecting) return
     const value = url.value.trim()
     if (value === '') return
+    let canonical: string
+    try {
+      canonical = canonicalServerUrl(value)
+    } catch (error) {
+      status.style.display = ''
+      status.className = 'text-xs px-3 pb-2 text-error'
+      status.textContent = String(error)
+      return
+    }
+    if (getState().servers.some((server) => server.url === canonical)) {
+      status.style.display = ''
+      status.className = 'text-xs px-3 pb-2 opacity-60'
+      status.textContent = 'That server is already connected.'
+      return
+    }
     connecting = true
     add.disabled = true
     status.style.display = ''
     status.className = 'text-xs px-3 pb-2 opacity-60'
     status.textContent = 'Connecting…'
-    const server = await probeServer(value, null)
+    const ownsAttempt = beginConnectionAttempt(canonical)
+    const request = panelRequest()
+    const server = await probeServer(canonical, null, request.controller.signal)
+    request.finish()
     connecting = false
     add.disabled = false
+    if (request.controller.signal.aborted) return
+    if (!ownsAttempt()) return
     if (server.status === 'unreachable') {
       status.className = 'text-xs px-3 pb-2 text-error'
       status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
@@ -494,6 +553,9 @@ const freeFolderName = (taken: ReadonlySet<string>): string => {
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
 
+const isCurrentServer = (server: ConnectedServer): boolean =>
+  getState().servers.find((candidate) => candidate.url === server.url) === server
+
 const goTo = (templateId: string): void => {
   const template = localTemplates().find((candidate) => candidate.id === templateId)
   if (template !== undefined) navigateTo(centreOf(template))
@@ -517,7 +579,20 @@ const applyRename = async (
     rerender()
     return
   }
-  const result = await renameNodeOnServer(target.server, target.nodeId, name)
+  if (!isCurrentServer(target.server)) {
+    toast('That server connection changed. Try again.', 'warning')
+    rerender()
+    return
+  }
+  const request = panelRequest()
+  const result = await renameNodeOnServer(
+    target.server,
+    target.nodeId,
+    name,
+    request.controller.signal,
+  )
+  request.finish()
+  if (request.controller.signal.aborted) return
   if (!result.ok) {
     toast(result.message, 'error')
     rerender()
@@ -591,13 +666,21 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     return
   }
   if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
-  const result = await deleteNodeOnServer(target.server, target.nodeId)
+  if (!isCurrentServer(target.server)) {
+    toast('That server connection changed. Try again.', 'warning')
+    rerender()
+    return
+  }
+  const request = panelRequest()
+  const result = await deleteNodeOnServer(target.server, target.nodeId, request.controller.signal)
+  request.finish()
+  if (request.controller.signal.aborted) return
   if (!result.ok) {
     toast(result.message, 'error')
     rerender()
     return
   }
-  forgetNodeOrder(target.server.url, target.nodeId)
+  forgetNodeOrder(target.server, target.nodeId)
   await refreshNodes(target.server, rerender)
 }
 
@@ -786,7 +869,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
 
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
-  panel.querySelector('[data-wts-copy]')?.remove()
+  cancelActiveCopy?.()
   const box = document.createElement('div')
   box.setAttribute('data-wts-copy', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
@@ -802,7 +885,14 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   const cancel = document.createElement('button')
   cancel.className = 'btn btn-xs btn-ghost'
   cancel.textContent = 'Cancel'
-  cancel.addEventListener('click', () => box.remove())
+  const controllers: AbortController[] = []
+  const closeCopy = (): void => {
+    for (const controller of controllers) controller.abort()
+    box.remove()
+    if (cancelActiveCopy === closeCopy) cancelActiveCopy = null
+  }
+  cancelActiveCopy = closeCopy
+  cancel.addEventListener('click', closeCopy)
   const go = document.createElement('button')
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Copy'
@@ -814,16 +904,26 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   const loaded = await Promise.all(
     targets.map(async (server) => {
       const controller = new AbortController()
+      controllers.push(controller)
       const timeout = setTimeout(() => controller.abort(), 10_000)
       try {
-        return { server, nodes: await listNodes(server, controller.signal) }
+        return { server, result: await listNodes(server, controller.signal) }
       } finally {
         clearTimeout(timeout)
       }
     }),
   )
-  if (!box.isConnected) return
-  for (const { server, nodes } of loaded) {
+  if (!box.isConnected) {
+    if (cancelActiveCopy === closeCopy) cancelActiveCopy = null
+    return
+  }
+  let failedLoads = 0
+  for (const { server, result } of loaded) {
+    if (!result.ok) {
+      failedLoads++
+      continue
+    }
+    const nodes = result.nodes
     for (const node of nodes) {
       const option = document.createElement('option')
       option.value = `${server.url}|${node.id}`
@@ -832,8 +932,13 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     }
   }
   if (chooser.options.length === 0) {
-    toast('Create a folder on the server first — a template has to live somewhere.', 'warning')
-    box.remove()
+    toast(
+      failedLoads > 0
+        ? 'Could not load any server destinations. Try again.'
+        : 'Create a folder on the server first — a template has to live somewhere.',
+      'warning',
+    )
+    closeCopy()
     return
   }
   label.textContent = `Copy “${template.name}” to:`
@@ -844,31 +949,54 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     if (uploading) return
     void (async () => {
       const [url, nodeId] = (chooser.value ?? '').split('|')
-      const server = targets.find((candidate) => candidate.url === url)
-      if (server === undefined || nodeId === undefined) return
+      const selected = targets.find((candidate) => candidate.url === url)
+      const server = getState().servers.find((candidate) => candidate.url === url)
+      if (
+        selected === undefined ||
+        server === undefined ||
+        nodeId === undefined ||
+        !server.isAdmin ||
+        server.info?.id !== selected.info?.id ||
+        server.season !== selected.season ||
+        server.token !== selected.token
+      ) {
+        closeCopy()
+        toast('That server connection changed. Open Copy again.', 'warning')
+        return
+      }
       uploading = true
       go.disabled = true
       try {
         label.textContent = 'Encoding…'
         const png = await templateAsPng(template)
         if (png === null) throw new Error('encoder returned no image')
+        if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+          throw new Error('server connection changed while encoding')
+        }
         label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-        const result = await uploadTemplate(server, {
-          nodeId,
-          name: template.name,
-          originX: template.originX,
-          originY: template.originY,
-          png,
-        })
+        const uploadController = new AbortController()
+        controllers.push(uploadController)
+        const result = await uploadTemplate(
+          server,
+          {
+            nodeId,
+            name: template.name,
+            originX: template.originX,
+            originY: template.originY,
+            png,
+          },
+          uploadController.signal,
+        )
+        if (uploadController.signal.aborted) return
         if (!result.ok) throw new Error(result.message)
-        box.remove()
+        closeCopy()
         toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
         await refreshNodes(server, rerender)
       } catch (error) {
         toast(`Could not copy: ${String(error)}`, 'error')
         label.textContent = `Copy “${template.name}” to:`
         uploading = false
-        go.disabled = false
+        if (box.isConnected) go.disabled = false
       }
     })()
   })
@@ -880,22 +1008,47 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
     toast('Local folders are not stored yet — see 32-local-templates.', 'warning')
     return
   }
+  if (!isCurrentServer(server)) {
+    toast('That server connection changed. Try again.', 'warning')
+    rerender()
+    return
+  }
+  const request = panelRequest()
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
-  const existing = await listNodes(server)
+  const existing = await listNodes(server, request.controller.signal)
+  if (request.controller.signal.aborted) {
+    request.finish()
+    return
+  }
+  if (!existing.ok) {
+    request.finish()
+    toast(existing.message, 'error')
+    return
+  }
+  if (!isCurrentServer(server)) {
+    request.finish()
+    toast('That server connection changed. Try again.', 'warning')
+    rerender()
+    return
+  }
   const name = freeFolderName(
     new Set(
-      existing.filter((node) => node.parentId === nodeId).map((node) => node.name.toLowerCase()),
+      existing.nodes
+        .filter((node) => node.parentId === nodeId)
+        .map((node) => node.name.toLowerCase()),
     ),
   )
-  const result = await createNode(server, name, nodeId)
+  const result = await createNode(server, name, nodeId, request.controller.signal)
+  request.finish()
+  if (request.controller.signal.aborted) return
   if (!result.ok) {
     toast(result.message, 'error')
     return
   }
   // Refresh before rendering: the row we are about to put into rename mode does not exist in the
   // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
-  startRenaming(`node:${result.node.id}`)
+  startRenaming(nodeTreeKey(server, result.node.id))
   await refreshNodes(server, rerender)
 }
 
@@ -932,7 +1085,9 @@ const buildPanel = (): HTMLElement => {
   handle.setAttribute('role', 'separator')
   handle.setAttribute('aria-label', 'Resize panel')
   handle.addEventListener('pointerdown', (event) => {
+    if (activeResizeCleanup !== null) return
     event.preventDefault()
+    const pointerId = event.pointerId
     handle.classList.add('wts-resizing')
     // Capture is an optimisation, not a requirement — synthetic pointers can lack a capturable id,
     // and throwing here would abort the whole drag before it started.
@@ -944,11 +1099,11 @@ const buildPanel = (): HTMLElement => {
     const startX = event.clientX
     const startWidth = panel.getBoundingClientRect().width
     const move = (moved: PointerEvent): void => {
+      if (moved.pointerId !== pointerId) return
       // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
       const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
       panel.style.width = `${next}px`
     }
-    activeResizeCleanup?.()
     let active = true
     const cleanup = (commit: boolean): void => {
       if (!active) return
@@ -963,8 +1118,13 @@ const buildPanel = (): HTMLElement => {
       if (commit) setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
       else panel.style.width = `${startWidth}px`
     }
-    const done = (): void => cleanup(true)
-    const cancelResize = (): void => cleanup(false)
+    const done = (ended: PointerEvent): void => {
+      if (ended.pointerId === pointerId) cleanup(true)
+    }
+    const cancelResize = (ended?: PointerEvent | Event): void => {
+      if (ended !== undefined && 'pointerId' in ended && ended.pointerId !== pointerId) return
+      cleanup(false)
+    }
     activeResizeCleanup = cancelResize
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', done)
@@ -1019,12 +1179,17 @@ const buildPanel = (): HTMLElement => {
 }
 
 const showView = (view: View): void => {
+  if (view !== currentView) {
+    cancelPanelRequests()
+    cancelActiveCopy?.()
+  }
   currentView = view
   const panel = document.getElementById(PANEL_ID)
   const body = panel?.querySelector('[data-wts-body]')
   const title = panel?.querySelector('h2')
   if (!body || !title) return
   const inSettings = view === 'settings'
+  if (inSettings) void loadAccount()
   body.replaceChildren(inSettings ? settingsView() : treeView())
   title.textContent = inSettings ? 'Settings' : PANEL_TITLE
 
@@ -1045,8 +1210,10 @@ const setOpen = (next: boolean): void => {
   syncRailButtonState()
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
+    cancelPanelRequests()
     activeResizeCleanup?.()
     cancelActiveConfirm?.()
+    cancelActiveCopy?.()
     cancelRenaming()
     existing?.remove()
     return
@@ -1065,6 +1232,10 @@ const setOpen = (next: boolean): void => {
  */
 export const installPanel = (): void => {
   loadState()
+  if (!accountObserverInstalled) {
+    accountObserverInstalled = true
+    onAccountChange(rerenderWhenIdle)
+  }
   void refreshStoredServers().then(() => {
     rerenderWhenIdle()
   })

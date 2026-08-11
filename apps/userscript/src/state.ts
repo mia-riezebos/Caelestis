@@ -83,9 +83,65 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const NODE_PATH = /^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u
 const MAX_TREE_NODES = 100_000
 const MAX_CUSTOM_ORDER = 200_000
+const REMOTE_TIMEOUT_MS = 10_000
+const SERVER_JSON_BYTES = 16 * 1024
+const TREE_JSON_BYTES = 64 * 1024 * 1024
+const MUTATION_JSON_BYTES = 64 * 1024
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const readBoundedJson = async (response: Response, maxBytes: number): Promise<unknown> => {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    void response.body?.cancel()
+    throw new RangeError(`response exceeds ${maxBytes} bytes`)
+  }
+  if (response.body === null) return null
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let text = ''
+  try {
+    while (true) {
+      const part = await reader.read()
+      if (part.done) break
+      bytes += part.value.byteLength
+      if (bytes > maxBytes) {
+        await reader.cancel()
+        throw new RangeError(`response exceeds ${maxBytes} bytes`)
+      }
+      text += decoder.decode(part.value, { stream: true })
+    }
+    text += decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
+  return text === '' ? null : JSON.parse(text)
+}
+
+const remoteJson = async (
+  input: string,
+  init: RequestInit = {},
+  maxBytes = MUTATION_JSON_BYTES,
+): Promise<{ response: Response; body: unknown }> => {
+  const controller = new AbortController()
+  const external = init.signal
+  const forwardAbort = (): void => controller.abort(external?.reason)
+  if (external?.aborted) forwardAbort()
+  else external?.addEventListener('abort', forwardAbort, { once: true })
+  const timeout = setTimeout(
+    () => controller.abort(new Error('request timed out')),
+    REMOTE_TIMEOUT_MS,
+  )
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal })
+    return { response, body: await readBoundedJson(response, maxBytes) }
+  } finally {
+    clearTimeout(timeout)
+    external?.removeEventListener('abort', forwardAbort)
+  }
+}
 
 const serverInfoFrom = (value: unknown): ServerInfo | null => {
   if (!isRecord(value)) return null
@@ -268,7 +324,12 @@ export const loadState = (): State => {
     }
     const customOrder = Array.isArray(stored.customOrder)
       ? [
-          ...new Set(stored.customOrder.filter((key): key is string => typeof key === 'string')),
+          ...new Set(
+            stored.customOrder.filter(
+              (key): key is string =>
+                typeof key === 'string' && !(key.startsWith('node:') && UUID_V7.test(key.slice(5))),
+            ),
+          ),
         ].slice(0, MAX_CUSTOM_ORDER)
       : []
     const sort: SortOrder =
@@ -346,16 +407,48 @@ export const removeCustomOrderKeys = (keys: ReadonlySet<string>): void => {
   if (next.length !== current.length) setState({ customOrder: next })
 }
 
-/** Can this code administer the server? The only way to know is to ask it to do something admin. */
-const probeAdmin = async (base: string, token: string | null, season: number): Promise<boolean> => {
+export type NodeListResult =
+  | { readonly ok: true; readonly nodes: readonly TreeNode[] }
+  | { readonly ok: false; readonly message: string; readonly status?: number }
+
+const nodeListFrom = (body: unknown): readonly TreeNode[] | null => {
+  const raw = isRecord(body) && 'nodes' in body ? body.nodes : body
+  return treeNodesFrom(raw)
+}
+
+const fetchNodes = async (
+  base: string,
+  token: string | null,
+  season: number,
+  signal?: AbortSignal,
+): Promise<NodeListResult> => {
   try {
-    const response = await fetch(`${base}/admin/nodes?season=${season}`, {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
-    })
-    return response.ok
-  } catch {
-    return false
+    const { response, body } = await remoteJson(
+      `${base}/admin/nodes?season=${season}`,
+      {
+        headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        ...(signal === undefined ? {} : { signal }),
+      },
+      TREE_JSON_BYTES,
+    )
+    if (!response.ok)
+      return { ok: false, status: response.status, message: `Server said ${response.status}.` }
+    const nodes = nodeListFrom(body)
+    return nodes === null
+      ? { ok: false, message: 'Server returned an invalid folder list.' }
+      : { ok: true, nodes }
+  } catch (error) {
+    return { ok: false, message: String(error) }
   }
+}
+
+const probedNodes = new WeakMap<ConnectedServer, readonly TreeNode[]>()
+
+/** Consume the node collection already downloaded while verifying admin scope. */
+export const takeProbedNodes = (server: ConnectedServer): readonly TreeNode[] | undefined => {
+  const nodes = probedNodes.get(server)
+  probedNodes.delete(server)
+  return nodes
 }
 
 /**
@@ -365,7 +458,11 @@ const probeAdmin = async (base: string, token: string | null, season: number): P
  * needed *before* asking anyone for one. Asking for a code up front is the likeliest way to lose
  * someone on first run — most servers will not want one.
  */
-export const probeServer = async (url: string, token: string | null): Promise<ConnectedServer> => {
+export const probeServer = async (
+  url: string,
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<ConnectedServer> => {
   let base: string
   try {
     base = canonicalServerUrl(url)
@@ -381,9 +478,14 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     }
   }
   try {
-    const response = await fetch(`${base}/server`, {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
-    })
+    const { response, body } = await remoteJson(
+      `${base}/server`,
+      {
+        headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        ...(signal === undefined ? {} : { signal }),
+      },
+      SERVER_JSON_BYTES,
+    )
     if (!response.ok) {
       return {
         url: base,
@@ -395,7 +497,7 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
         season: null,
       }
     }
-    const info = serverInfoFrom(await response.json())
+    const info = serverInfoFrom(body)
     if (info === null) throw new TypeError('server returned invalid metadata')
     log('install', `probed ${base}`, { name: info.name, auth: info.auth })
 
@@ -413,9 +515,14 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     // `GET /server` is public and never looks at the Authorization header, so reaching it proves
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
-    const authed = await fetch(`${base}/manifest`, {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
-    })
+    const { response: authed, body: manifestBody } = await remoteJson(
+      `${base}/manifest`,
+      {
+        headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        ...(signal === undefined ? {} : { signal }),
+      },
+      TREE_JSON_BYTES,
+    )
     if (authed.status === 401 || authed.status === 403) {
       log('install', `${base} rejected the code`, { status: authed.status })
       return {
@@ -439,16 +546,19 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
         season: null,
       }
     }
-    const manifest = manifestProbeFrom(await authed.json(), info)
+    const manifest = manifestProbeFrom(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
-    return {
+    const admin = await fetchNodes(base, token, manifest.season, signal)
+    const connected: ConnectedServer = {
       url: base,
       info,
       token,
       status: 'connected',
-      isAdmin: await probeAdmin(base, token, manifest.season),
+      isAdmin: admin.ok,
       season: manifest.season,
     }
+    if (admin.ok) probedNodes.set(connected, admin.nodes)
+    return connected
   } catch (error) {
     // A bad hostname, a refused connection, or a server without CORS all land here, and the
     // distinction is not visible to us — the browser withholds it deliberately.
@@ -487,31 +597,38 @@ export const createNode = async (
   server: ConnectedServer,
   name: string,
   parentId: string | null,
+  signal?: AbortSignal,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
   try {
-    const response = await fetch(`${server.url}/admin/nodes`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
       },
       body: JSON.stringify({ season: server.season, parentId, name }),
+      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) {
-      const node = treeNodeFrom(await response.json())
+      const node = treeNodeFrom(body)
       if (node === null || node.parentId !== parentId) {
         return { ok: false, message: 'Server returned an invalid folder.' }
       }
       return { ok: true, node }
     }
     if (response.status === 401 || response.status === 403) {
-      noteAuthFailure(server)
+      noteAuthFailure(server, response.status)
       return { ok: false, message: 'That code cannot create folders — it needs admin access.' }
     }
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
+    return {
+      ok: false,
+      message:
+        isRecord(body) && typeof body.error === 'string'
+          ? body.error
+          : `Server said ${response.status}.`,
+    }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -522,14 +639,14 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
   ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
 })
 
-const noteAuthFailure = (server: ConnectedServer): void => {
+const noteAuthFailure = (server: ConnectedServer, status: number): void => {
   if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
-  const needsToken = server.info?.auth === 'access_token'
+  const needsToken = status === 401 && server.info?.auth === 'access_token'
   upsertServer({
     ...server,
     token: needsToken ? null : server.token,
     status: needsToken ? 'needs-token' : 'connected',
-    error: 'authorization expired',
+    error: needsToken ? 'authorization expired' : 'admin access required',
     isAdmin: false,
   })
 }
@@ -543,16 +660,18 @@ export const renameNode = async (
   server: ConnectedServer,
   nodeId: string,
   name: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify({ name }),
+      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) return { ok: true }
-    if (response.status === 401 || response.status === 403) noteAuthFailure(server)
-    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -561,15 +680,17 @@ export const renameNode = async (
 export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
       method: 'DELETE',
       headers: adminHeaders(server),
+      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) return { ok: true }
-    if (response.status === 401 || response.status === 403) noteAuthFailure(server)
-    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -579,23 +700,13 @@ export const deleteNode = async (
 export const listNodes = async (
   server: ConnectedServer,
   signal?: AbortSignal,
-): Promise<readonly TreeNode[]> => {
-  if (server.season === null) return []
-  try {
-    const response = await fetch(`${server.url}/admin/nodes?season=${server.season}`, {
-      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
-      ...(signal === undefined ? {} : { signal }),
-    })
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) noteAuthFailure(server)
-      return []
-    }
-    const body: unknown = await response.json()
-    const raw = isRecord(body) && 'nodes' in body ? body.nodes : body
-    return treeNodesFrom(raw) ?? []
-  } catch {
-    return []
+): Promise<NodeListResult> => {
+  if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
+  const result = await fetchNodes(server.url, server.token, server.season, signal)
+  if (!result.ok && (result.status === 401 || result.status === 403)) {
+    noteAuthFailure(server, result.status)
   }
+  return result
 }
 
 /**
@@ -614,6 +725,7 @@ export const uploadTemplate = async (
     originY: number
     png: Blob
   },
+  signal?: AbortSignal,
 ): Promise<{ ok: true; id: string } | { ok: false; message: string }> => {
   try {
     const form = new FormData()
@@ -622,21 +734,26 @@ export const uploadTemplate = async (
     form.set('name', input.name)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
-    const response = await fetch(`${server.url}/admin/templates`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/templates`, {
       method: 'POST',
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
       body: form,
+      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) {
-      const body = (await response.json()) as { id?: string }
-      return { ok: true, id: body.id ?? '' }
+      return { ok: true, id: isRecord(body) && typeof body.id === 'string' ? body.id : '' }
     }
     if (response.status === 401 || response.status === 403) {
-      noteAuthFailure(server)
+      noteAuthFailure(server, response.status)
       return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
     }
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    return { ok: false, message: body?.error ?? `Server said ${response.status}.` }
+    return {
+      ok: false,
+      message:
+        isRecord(body) && typeof body.error === 'string'
+          ? body.error
+          : `Server said ${response.status}.`,
+    }
   } catch (error) {
     return { ok: false, message: String(error) }
   }

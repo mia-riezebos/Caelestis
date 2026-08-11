@@ -20,6 +20,9 @@ const VERSION = 3
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
   readonly url: string
+  /** Verified identity and season prevent one deployment at this URL reusing another's tree. */
+  readonly serverId: string
+  readonly season: number
   readonly nodes: readonly TreeNode[]
   readonly fetchedAt: number
   /** ETag from the manifest, so a refetch can be a 304. */
@@ -101,12 +104,17 @@ export const loadServerCache = async (): Promise<readonly CachedServer[]> => {
     const nodes = validateTreeNodes(candidate.nodes)
     if (
       typeof candidate.url !== 'string' ||
+      typeof candidate.serverId !== 'string' ||
+      !Number.isSafeInteger(candidate.season) ||
+      Number(candidate.season) < 0 ||
       !Number.isFinite(candidate.fetchedAt) ||
       nodes === null
     )
       continue
     valid.push({
       url: candidate.url,
+      serverId: candidate.serverId,
+      season: Number(candidate.season),
       nodes,
       fetchedAt: Number(candidate.fetchedAt),
       ...(typeof candidate.etag === 'string' ? { etag: candidate.etag } : {}),

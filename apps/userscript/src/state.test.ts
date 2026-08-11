@@ -15,6 +15,7 @@ const manifest = {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   vi.resetModules()
@@ -46,6 +47,7 @@ describe('server state boundaries', () => {
               season: 99,
             },
           ],
+          customOrder: [`node:${NODE_A}`, 'local:kept'],
         }),
       ),
     )
@@ -59,6 +61,7 @@ describe('server state boundaries', () => {
         season: null,
       }),
     ])
+    expect(loadState().customOrder).toEqual(['local:kept'])
   })
 
   it('rejects remote tree cycles before rendering them', async () => {
@@ -88,9 +91,10 @@ describe('server state boundaries', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(manifest), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ nodes: [] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
-    const { probeServer } = await import('./state.js')
+    const { probeServer, takeProbedNodes } = await import('./state.js')
 
-    await expect(probeServer('https://example.com/', null)).resolves.toEqual(
+    const connected = await probeServer('https://example.com/', null)
+    expect(connected).toEqual(
       expect.objectContaining({
         url: 'https://example.com',
         status: 'connected',
@@ -98,6 +102,8 @@ describe('server state boundaries', () => {
         isAdmin: true,
       }),
     )
+    expect(takeProbedNodes(connected)).toEqual([])
+    expect(takeProbedNodes(connected)).toBeUndefined()
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
   })
 
@@ -157,5 +163,101 @@ describe('server state boundaries', () => {
     await refreshing
 
     expect(getState().servers).toEqual([])
+  })
+
+  it('retains a valid read token when an admin operation returns forbidden', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(null, { status: 403 }))),
+    )
+    const { getState, renameNode, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: { ...serverInfo, auth: 'access_token' as const },
+      token: 'read-code',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+
+    await expect(renameNode(server, NODE_A, 'Renamed')).resolves.toEqual({
+      ok: false,
+      message: 'That code cannot change this server — it needs admin access.',
+    })
+    expect(getState().servers[0]).toEqual(
+      expect.objectContaining({
+        token: 'read-code',
+        status: 'connected',
+        isAdmin: false,
+      }),
+    )
+  })
+
+  it('distinguishes a failed node listing from a valid empty collection', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(null, { status: 503 }))),
+    )
+    const { listNodes } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+
+    await expect(listNodes(server)).resolves.toEqual({
+      ok: false,
+      status: 503,
+      message: 'Server said 503.',
+    })
+  })
+
+  it('rejects an oversized body before parsing it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response('{}', { headers: { 'content-length': String(16 * 1024 + 1) } }),
+        ),
+      ),
+    )
+    const { probeServer } = await import('./state.js')
+
+    await expect(probeServer('https://example.com', null)).resolves.toEqual(
+      expect.objectContaining({
+        status: 'unreachable',
+        error: expect.stringContaining('response exceeds'),
+      }),
+    )
+  })
+
+  it('bounds a server request that never responds', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            })
+          }),
+      ),
+    )
+    const { probeServer } = await import('./state.js')
+
+    const probing = probeServer('https://example.com', null)
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    await expect(probing).resolves.toEqual(
+      expect.objectContaining({
+        status: 'unreachable',
+        error: 'Error: request timed out',
+      }),
+    )
   })
 })

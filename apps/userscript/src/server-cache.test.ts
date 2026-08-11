@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
+const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -29,11 +30,15 @@ describe('server cache persistence', () => {
       result: [
         {
           url: 'https://example.com',
+          serverId: SERVER_ID,
+          season: 0,
           fetchedAt: 10,
           nodes: [{ id: NODE_ID, parentId: null, path: '/group', name: 'Group' }],
         },
         {
           url: 'https://bad.example.com',
+          serverId: SERVER_ID,
+          season: 0,
           fetchedAt: 20,
           nodes: [{ id: NODE_ID, parentId: NODE_ID, path: '/loop', name: 'Loop' }],
         },
@@ -64,6 +69,8 @@ describe('server cache persistence', () => {
     await expect(loading).resolves.toEqual([
       {
         url: 'https://example.com',
+        serverId: SERVER_ID,
+        season: 0,
         fetchedAt: 10,
         nodes: [{ id: NODE_ID, parentId: null, path: '/group', name: 'Group' }],
       },

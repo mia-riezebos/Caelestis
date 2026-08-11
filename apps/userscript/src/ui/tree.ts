@@ -6,6 +6,7 @@ import {
   removeCustomOrderKeys,
   setState,
   type TreeNode,
+  takeProbedNodes,
 } from '../state.js'
 import { localTemplates, setLocalVisible } from '../templates/local-store.js'
 import { type IconName, icon } from './icons.js'
@@ -48,6 +49,7 @@ const collapsed = new Set<string>()
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
 const TREE_DRAG_TYPE = 'application/x-caelestis-tree-key'
+const MAX_RENDERED_ROWS = 2_000
 
 /**
  * Nodes per server, fetched once and refreshed on demand.
@@ -56,16 +58,48 @@ const TREE_DRAG_TYPE = 'application/x-caelestis-tree-key'
  * A server with no nodes yet and a server whose nodes have not arrived look the same for a moment,
  * which is the right trade against blocking the whole panel on a network call.
  */
-const nodesByServer = new Map<string, readonly TreeNode[]>()
-
-export const forgetServerTree = (url: string): void => {
-  const nodes = nodesByServer.get(url) ?? []
-  removeCustomOrderKeys(new Set([`server:${url}`, ...nodes.map((node) => `node:${node.id}`)]))
-  nodesByServer.delete(url)
+interface ServerTree {
+  readonly serverId: string
+  readonly season: number
+  readonly nodes: readonly TreeNode[]
 }
 
-export const forgetNodeOrder = (url: string, nodeId: string): void => {
-  const nodes = nodesByServer.get(url) ?? []
+const nodesByServer = new Map<string, ServerTree>()
+const refreshGeneration = new Map<string, number>()
+const refreshedConnections = new WeakSet<ConnectedServer>()
+
+const serverIdentity = (server: ConnectedServer): string | null =>
+  server.info === null || server.season === null ? null : `${server.info.id}:${server.season}`
+
+const treeFor = (server: ConnectedServer): readonly TreeNode[] | undefined => {
+  const identity = serverIdentity(server)
+  const entry = nodesByServer.get(server.url)
+  return identity !== null &&
+    entry !== undefined &&
+    `${entry.serverId}:${entry.season}` === identity
+    ? entry.nodes
+    : undefined
+}
+
+export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
+  `node:${server.info?.id ?? server.url}:${server.season ?? 'unknown'}:${nodeId}`
+
+export const forgetServerTree = (url: string): void => {
+  const entry = nodesByServer.get(url)
+  const keys = new Set([`server:${url}`])
+  if (entry !== undefined) {
+    for (const node of entry.nodes) {
+      keys.add(`node:${entry.serverId}:${entry.season}:${node.id}`)
+      keys.add(`node:${node.id}`)
+    }
+  }
+  removeCustomOrderKeys(keys)
+  nodesByServer.delete(url)
+  refreshGeneration.delete(url)
+}
+
+export const forgetNodeOrder = (server: ConnectedServer, nodeId: string): void => {
+  const nodes = treeFor(server) ?? []
   const children = new Map<string, string[]>()
   for (const node of nodes) {
     if (node.parentId === null) continue
@@ -77,7 +111,8 @@ export const forgetNodeOrder = (url: string, nodeId: string): void => {
   const keys = new Set<string>()
   while (pending.length > 0) {
     const id = pending.pop()
-    if (id === undefined || keys.has(`node:${id}`)) continue
+    if (id === undefined || keys.has(nodeTreeKey(server, id))) continue
+    keys.add(nodeTreeKey(server, id))
     keys.add(`node:${id}`)
     pending.push(...(children.get(id) ?? []))
   }
@@ -89,13 +124,33 @@ export const refreshNodes = async (
   rerender: () => void,
 ): Promise<void> => {
   if (!server.isAdmin) return
-  const nodes = await listNodes(server)
+  const generation = (refreshGeneration.get(server.url) ?? 0) + 1
+  refreshGeneration.set(server.url, generation)
+  const probed = takeProbedNodes(server)
+  const result =
+    probed === undefined ? await listNodes(server) : { ok: true as const, nodes: probed }
   if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
     rerender()
     return
   }
-  nodesByServer.set(server.url, nodes)
-  void cacheServer({ url: server.url, nodes, fetchedAt: Date.now() })
+  if (refreshGeneration.get(server.url) !== generation || !result.ok) {
+    rerender()
+    return
+  }
+  const identity = serverIdentity(server)
+  if (identity === null || server.info === null || server.season === null) return
+  nodesByServer.set(server.url, {
+    serverId: server.info.id,
+    season: server.season,
+    nodes: result.nodes,
+  })
+  void cacheServer({
+    url: server.url,
+    serverId: server.info.id,
+    season: server.season,
+    nodes: result.nodes,
+    fetchedAt: Date.now(),
+  })
   rerender()
 }
 
@@ -107,8 +162,15 @@ export const refreshNodes = async (
  */
 export const primeFromCache = async (rerender: () => void): Promise<void> => {
   for (const entry of await loadServerCache()) {
-    if (!getState().servers.some((server) => server.url === entry.url)) continue
-    if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
+    const server = getState().servers.find((candidate) => candidate.url === entry.url)
+    if (
+      server?.info?.id !== entry.serverId ||
+      server.season !== entry.season ||
+      nodesByServer.has(entry.url)
+    ) {
+      continue
+    }
+    nodesByServer.set(entry.url, entry)
   }
   rerender()
 }
@@ -143,10 +205,15 @@ const orderedItems = <T extends OrderedItem>(
       (a, b) => direction * a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
     )
   }
-  return [...items].sort(
-    (a, b) =>
-      (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
-  )
+  const ranked: Array<{ readonly item: T; readonly rank: number }> = []
+  const unranked: T[] = []
+  for (const item of items) {
+    const itemRank = rank.get(item.key)
+    if (itemRank === undefined) unranked.push(item)
+    else ranked.push({ item, rank: itemRank })
+  }
+  ranked.sort((a, b) => a.rank - b.rank)
+  return [...ranked.map(({ item }) => item), ...unranked]
 }
 
 const isTreeDrag = (transfer: DataTransfer | null): boolean =>
@@ -158,11 +225,23 @@ const isTreeKey = (key: string): boolean =>
   key.startsWith('node:') ||
   key.startsWith('server:')
 
-const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
+export const reorderedSiblings = (
+  keys: readonly string[],
+  from: string,
+  to: string,
+  after: boolean,
+): readonly string[] | null => {
+  if (!keys.includes(from)) return null
   const next = keys.filter((key) => key !== from)
   const index = next.indexOf(to)
-  if (index === -1) return
+  if (index === -1) return null
   next.splice(after ? index + 1 : index, 0, from)
+  return next
+}
+
+const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
+  const next = reorderedSiblings(keys, from, to, after)
+  if (next === null) return
   const siblings = new Set(keys)
   const current = getState().customOrder
   const firstSibling = current.findIndex((key) => siblings.has(key))
@@ -217,7 +296,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.draggable = draggable
   row.tabIndex = 0
   row.setAttribute('role', 'treeitem')
-  row.setAttribute('aria-expanded', String(isExpanded(options.key)))
+  if (options.container) row.setAttribute('aria-expanded', String(isExpanded(options.key)))
 
   if (options.container) {
     const glyph = icon('caret', 'size-4 opacity-60')
@@ -258,9 +337,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     name.textContent = options.name
     row.appendChild(name)
     // A tooltip that repeats fully visible text is noise; only label what is actually clipped.
-    requestAnimationFrame(() => {
-      if (name.scrollWidth > name.clientWidth) name.title = options.name
-    })
+    name.addEventListener(
+      'pointerenter',
+      () => {
+        if (name.scrollWidth > name.clientWidth) name.title = options.name
+      },
+      { once: true },
+    )
   }
 
   if (options.meta !== undefined) {
@@ -345,20 +428,27 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.appendChild(check)
 
   const expand = (): void => {
+    if (!options.container) return
     toggle(collapsed, options.key)
     options.rerender()
   }
-  if (!editing) row.addEventListener('click', expand)
-  row.addEventListener('keydown', (event) => {
-    if (event.target !== row) return
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      expand()
-    }
-  })
+  if (options.container) {
+    if (!editing) row.addEventListener('click', expand)
+    row.addEventListener('keydown', (event) => {
+      if (event.target !== row) return
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        expand()
+      }
+    })
+  }
 
   if (options.onContextMenu !== undefined) {
     row.addEventListener('contextmenu', (event) => {
+      const target = event.target as { closest?: (selector: string) => Element | null } | null
+      if (target?.closest?.('input,[contenteditable="true"]')) {
+        return
+      }
       event.preventDefault()
       options.onContextMenu?.(event)
     })
@@ -418,6 +508,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
       options.onDropInto?.(from)
       return
     }
+    if (!options.siblings.includes(from)) return
     const box = row.getBoundingClientRect()
     moveKey(options.siblings, from, options.key, event.clientY > box.top + box.height / 2)
     options.rerender()
@@ -509,14 +600,21 @@ export const treeContents = (
           : undefined,
       }),
     )
-    if (!isExpanded(key)) continue
+    if (!isExpanded(key) && needle === '') continue
 
     if (server !== undefined && server.status === 'connected') {
-      const known = nodesByServer.get(server.url)
+      const known = treeFor(server)
       if (known === undefined) {
         // First sight of this server: kick off the fetch, draw nothing extra this pass.
-        void refreshNodes(server, rerender)
+        if (!refreshedConnections.has(server)) {
+          refreshedConnections.add(server)
+          void refreshNodes(server, rerender)
+        }
       } else {
+        if (!refreshedConnections.has(server)) {
+          refreshedConnections.add(server)
+          void refreshNodes(server, rerender)
+        }
         const byParent = new Map<string | null, TreeNode[]>()
         for (const node of known) {
           const siblings = byParent.get(node.parentId) ?? []
@@ -534,7 +632,9 @@ export const treeContents = (
           matches.set(node.id, result)
           return result
         }
+        let renderedRows = 0
         const renderChildren = (parentId: string | null, depth: number): void => {
+          if (renderedRows >= MAX_RENDERED_ROWS) return
           const siblings = byParent.get(parentId) ?? []
           const orderedSiblings = orderedItems(
             siblings.map((node) => ({ key: `node:${node.id}`, name: node.name, node })),
@@ -542,9 +642,10 @@ export const treeContents = (
           )
           const siblingKeys = orderedSiblings.map((item) => item.key)
           for (const item of orderedSiblings) {
+            if (renderedRows >= MAX_RENDERED_ROWS) break
             const node = item.node
             if (!nodeMatches(node)) continue
-            const nodeKey = `node:${node.id}`
+            const nodeKey = nodeTreeKey(server, node.id)
             const nodeTarget: TreeTarget = {
               server,
               nodeId: node.id,
@@ -575,11 +676,22 @@ export const treeContents = (
                   : undefined,
               }),
             )
-            if (isExpanded(nodeKey)) renderChildren(node.id, depth + 1)
+            renderedRows++
+            if (isExpanded(nodeKey) || needle !== '') renderChildren(node.id, depth + 1)
           }
         }
         renderChildren(null, 1)
-        if (known.length === 0) wrap.appendChild(childText('No templates published yet.', 0))
+        if (known.length === 0) {
+          wrap.appendChild(
+            childText(needle === '' ? 'No templates published yet.' : 'No matches.', 0),
+          )
+        } else if (renderedRows === 0 && needle !== '') {
+          wrap.appendChild(childText('No matches.', 0))
+        } else if (renderedRows >= MAX_RENDERED_ROWS) {
+          wrap.appendChild(
+            childText(`Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} matches.`, 0),
+          )
+        }
         continue
       }
     }
@@ -639,7 +751,9 @@ export const treeContents = (
         })
         wrap.appendChild(row)
       }
-      if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
+      if (mine.length === 0) {
+        wrap.appendChild(childText(needle === '' ? 'No local templates yet.' : 'No matches.', 0))
+      }
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.
       const actions = document.createElement('div')

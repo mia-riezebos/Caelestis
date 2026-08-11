@@ -9,8 +9,9 @@ import { icon } from './icons.js'
  * find something in a long tree, not ways to change what draws on top of what. Sorting by progress
  * to see what needs work should not silently reshuffle the canvas.
  *
- * Anything the client has not seen before sorts most-recent-first regardless of the mode in force,
- * so connecting to a new server surfaces what arrived rather than burying it.
+ * Keys the user has not ranked keep their source order. PR #63 has no creation timestamp from which
+ * it could honestly infer recency; descendant manifest rows supply the canonical oldest-created
+ * default when that data exists.
  */
 
 export type SortField = 'custom' | 'name'
