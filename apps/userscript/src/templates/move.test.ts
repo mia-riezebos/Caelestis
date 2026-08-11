@@ -293,6 +293,38 @@ describe('template placement controls', () => {
     expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 60, 45)
   })
 
+  it('does not rescale the accumulated drag delta when the map zoom changes mid-drag', async () => {
+    harness.canvasPixelAt.mockReturnValue({ x: 12, y: 22 })
+    harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 2, y: 4 })
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    const pointermove = listeners.get('pointermove')
+    if (pointerdown === undefined || pointermove === undefined)
+      throw new Error('expected listeners')
+
+    pointerdown({
+      button: 0,
+      pointerId: 1,
+      clientX: 100,
+      clientY: 100,
+      ctrlKey: true,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 4, y: 8 })
+    pointermove({
+      pointerId: 1,
+      clientX: 200,
+      clientY: 200,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 60, 45)
+  })
+
   it('binds a drag to one pointer and ends it on pointer cancellation', async () => {
     harness.canvasPixelAt.mockReturnValue({ x: 12, y: 22 })
     const moves = await import('./move.js')

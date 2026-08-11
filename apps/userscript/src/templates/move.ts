@@ -38,6 +38,8 @@ interface MoveSession {
     pointerY: number
     startX: number
     startY: number
+    scaleX: number
+    scaleY: number
   } | null
 }
 
@@ -157,12 +159,15 @@ const onPointerDown = (event: PointerEvent): void => {
   if (!isOverTemplate(event.clientX, event.clientY)) return
   event.preventDefault()
   event.stopPropagation()
+  const scale = cssPixelsPerCanvasPixel()
   session.dragging = {
     pointerId: event.pointerId,
     pointerX: event.clientX,
     pointerY: event.clientY,
     startX: session.x,
     startY: session.y,
+    scaleX: scale.x,
+    scaleY: scale.y,
   }
 }
 
@@ -172,13 +177,12 @@ const onPointerMove = (event: PointerEvent): void => {
   event.preventDefault()
   event.stopPropagation()
   // Screen delta to canvas delta: one canvas pixel is many screen pixels when zoomed in.
-  const scale = cssPixelsPerCanvasPixel()
   const template = localTemplates().find((candidate) => candidate.id === session?.id)
   if (template === undefined) return
   const next = boundedOrigin(
     template,
-    session.dragging.startX + (event.clientX - session.dragging.pointerX) / scale.x,
-    session.dragging.startY + (event.clientY - session.dragging.pointerY) / scale.y,
+    session.dragging.startX + (event.clientX - session.dragging.pointerX) / session.dragging.scaleX,
+    session.dragging.startY + (event.clientY - session.dragging.pointerY) / session.dragging.scaleY,
   )
   session.x = next.x
   session.y = next.y
