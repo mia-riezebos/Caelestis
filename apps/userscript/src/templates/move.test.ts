@@ -93,6 +93,34 @@ describe('template placement controls', () => {
     await moves.commit()
   })
 
+  it('reserves the placement slot across asynchronous import preparation', async () => {
+    const moves = await import('./move.js')
+    const reservation = moves.reserveMove()
+    if (reservation === null) throw new Error('expected move reservation')
+
+    expect(moves.isMoving()).toBe(true)
+    expect(moves.beginMove('test', vi.fn())).toBe(false)
+    expect(reservation.start('test', vi.fn())).toBe(true)
+    expect(moves.movingId()).toBe('test')
+
+    reservation.release()
+    movebar = { remove: vi.fn() }
+    await moves.commit()
+  })
+
+  it('releases an unused placement reservation', async () => {
+    const moves = await import('./move.js')
+    const reservation = moves.reserveMove()
+    if (reservation === null) throw new Error('expected move reservation')
+
+    reservation.release()
+
+    expect(moves.isMoving()).toBe(false)
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+    movebar = { remove: vi.fn() }
+    await moves.commit()
+  })
+
   it('removes the exact auxclick listener it installed', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', vi.fn())

@@ -3,6 +3,7 @@ import {
   type ConnectedServer,
   getState,
   listNodes,
+  MAX_TREE_NODES,
   removeTreeStateKeys,
   setState,
   type TreeNode,
@@ -50,7 +51,7 @@ let renaming: string | null = null
 let renameDraft: { readonly key: string; value: string } | null = null
 const TREE_DRAG_TYPE = 'application/x-caelestis-tree-key'
 const MAX_RENDERED_ROWS = 2_000
-const MAX_TOTAL_SERVER_NODES = 100_000
+const MAX_TOTAL_SERVER_NODES = MAX_TREE_NODES
 
 /**
  * Nodes per server, fetched once and refreshed on demand.

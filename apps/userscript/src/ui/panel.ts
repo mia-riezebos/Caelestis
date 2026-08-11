@@ -28,7 +28,13 @@ import {
   renameLocalTemplate,
   templateAsPng,
 } from '../templates/local-store.js'
-import { beginMove, movePreviewOrigin, stopMoveForDeletion } from '../templates/move.js'
+import {
+  beginMove,
+  isMoving,
+  movePreviewOrigin,
+  reserveMove,
+  stopMoveForDeletion,
+} from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { loadAccount, onAccountChange } from '../wplace-account.js'
 import { coloursSection } from './colours.js'
@@ -1020,6 +1026,10 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
     toast('Import into Local first, then copy it to a server.', 'warning')
     return
   }
+  if (isMoving()) {
+    toast('Finish the current placement before importing another template.', 'warning')
+    return
+  }
   const ownerGeneration = panelOwnerGeneration
   const stillOwned = (): boolean =>
     open && currentView === 'tree' && panelOwnerGeneration === ownerGeneration
@@ -1036,6 +1046,41 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
         const imported = await importFile(file, centre)
         if (imported.length === 0) {
           toast('Nothing importable in that file.', 'error')
+          return
+        }
+        const first = imported[0]
+        if (first?.source === 'image') {
+          if (!stillOwned()) return
+          const reservation = reserveMove()
+          if (reservation === null) {
+            toast('Finish the current placement, then import this image again.', 'warning')
+            return
+          }
+          try {
+            await addLocalTemplate(first)
+            if (!stillOwned()) {
+              await removeLocalTemplate(first.id)
+              return
+            }
+            if (!reservation.start(first.id, rerender)) {
+              const discarded = await removeLocalTemplate(first.id)
+              rerender()
+              toast(
+                discarded
+                  ? 'Another placement started. Finish it, then import this image again.'
+                  : 'Could not start placement for this image. Remove it or place it before reloading.',
+                discarded ? 'warning' : 'error',
+              )
+              return
+            }
+            rerender()
+            toast(
+              `Imported ${first.name} — ${first.width}x${first.height}` +
+                (first.moved > 0 ? `, ${first.moved.toLocaleString()} pixels quantised` : ''),
+            )
+          } finally {
+            reservation.release()
+          }
           return
         }
         let added = 0
@@ -1063,24 +1108,17 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           if (added === 0) return
         }
 
-        const first = imported[0]
-        if (first === undefined || !stillOwned()) return
-        const moved = first.moved
+        const firstPlaced = imported[0]
+        if (firstPlaced === undefined || !stillOwned()) return
+        const moved = firstPlaced.moved
         toast(
-          `Imported ${first.name} — ${first.width}x${first.height}` +
+          `Imported ${firstPlaced.name} — ${firstPlaced.width}x${firstPlaced.height}` +
             (moved > 0 ? `, ${moved.toLocaleString()} pixels quantised` : ''),
         )
-        if (first.source === 'image') {
-          // An image arrives with no placement of its own, so placing it is not an extra step —
-          // it is the rest of the import.
-          if (!beginMove(first.id, rerender)) {
-            toast('Finish the placement already in progress, then place this import.', 'warning')
-          }
-        } else {
-          // It already knows where it belongs, so go and look at it — centred on the template and
-          // zoomed to fit it, in-game. Changing the URL would reload and throw the import away.
-          navigateTo(centreOf(first))
-        }
+        // Non-image formats already know where they belong, so go and look at the first one —
+        // centred on the template and zoomed to fit it, in-game. Changing the URL would reload and
+        // throw the import away.
+        navigateTo(centreOf(firstPlaced))
       } catch (error) {
         if (stillOwned()) toast(`Could not import: ${String(error)}`, 'error')
       }

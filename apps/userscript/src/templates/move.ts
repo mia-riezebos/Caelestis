@@ -47,9 +47,40 @@ let session: MoveSession | null = null
 let onFinish: (() => void) | null = null
 let finishing = false
 let suppressMiddleAuxClickFor: number | null = null
+let moveReservation: symbol | null = null
 
-export const isMoving = (): boolean => session !== null
+export const isMoving = (): boolean => session !== null || moveReservation !== null
 export const movingId = (): string | null => session?.id ?? null
+
+export interface MoveReservation {
+  /** Consume this reservation by starting the move synchronously. */
+  readonly start: (id: string, finished: () => void) => boolean
+  /** Release an unconsumed reservation. Safe to call after `start`. */
+  readonly release: () => void
+}
+
+/**
+ * Hold the single placement slot across asynchronous preparation.
+ *
+ * Image imports must be sliced and admitted before `beginMove` can see them. Without a reservation,
+ * another row can start moving during that await and strand the new image in volatile local state.
+ */
+export const reserveMove = (): MoveReservation | null => {
+  if (session !== null || finishing || moveReservation !== null) return null
+  const token = Symbol('move reservation')
+  moveReservation = token
+  const release = (): void => {
+    if (moveReservation === token) moveReservation = null
+  }
+  return {
+    start: (id, finished) => {
+      if (moveReservation !== token) return false
+      moveReservation = null
+      return beginMove(id, finished)
+    },
+    release,
+  }
+}
 
 /** Where the template currently sits during a move, so the renderer can draw it there. */
 export const movePreviewOrigin = (id: string): { x: number; y: number } | null =>
@@ -293,7 +324,7 @@ export const beginMove = (
   finished: () => void,
   restoredOrigin?: { readonly x: number; readonly y: number },
 ): boolean => {
-  if (session !== null) return false
+  if (session !== null || finishing || moveReservation !== null) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
   if (template === undefined) return false
   session = {
