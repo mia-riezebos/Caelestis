@@ -1822,6 +1822,33 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates()[0]?.indices).toBe(foreignIndices)
   })
 
+  it('refreshes server metadata without rebuilding unchanged pixels', async () => {
+    const store = await import('./local-store.js')
+    await store.putServerTemplate({
+      ...template({ id: 'srv:https://example.test:template-1', name: 'Before' }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-before',
+      serverVersion: 'version-1',
+    })
+    const before = store.localTemplates()[0]
+    const bitmapCalls = vi.mocked(createImageBitmap).mock.calls.length
+
+    expect(
+      store.updateServerTemplateMetadata(
+        'srv:https://example.test:template-1',
+        'After',
+        'folder-after',
+      ),
+    ).toBe(true)
+
+    const after = store.localTemplates()[0]
+    expect(after).toMatchObject({ name: 'After', serverNodeId: 'folder-after' })
+    expect(after?.indices).toBe(before?.indices)
+    expect(after?.tiles).toBe(before?.tiles)
+    expect(createImageBitmap).toHaveBeenCalledTimes(bitmapCalls)
+  })
+
   it('renders imported source order from lowest to highest', async () => {
     const store = await import('./local-store.js')
     await store.addLocalTemplate(template({ id: 'high', sortOrder: 10 }))

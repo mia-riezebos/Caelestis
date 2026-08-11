@@ -6,7 +6,7 @@ import {
   forgetServerTemplate,
   localTemplates,
   putServerTemplate,
-  renameLocalTemplate,
+  updateServerTemplateMetadata,
 } from './local-store.js'
 import { rememberNodes } from './server-nodes.js'
 
@@ -170,11 +170,10 @@ export const syncServerTemplates = async (
   for (const [key, template] of wanted) {
     const held = localTemplates().find((candidate) => candidate.id === key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
-    // do. A rename arrives through the manifest and is applied without downloading a byte.
+    // rebuild. Names and folder membership still arrive through the manifest because neither
+    // changes the pixel version.
     if (held !== undefined && held.serverVersion === template.version) {
-      // A rename is a name. Re-slicing a template into per-tile bitmaps to change a string would
-      // cost seconds on a large one, for a field the renderer never looks at.
-      if (held.name !== template.name) renameLocalTemplate(key, template.name)
+      updateServerTemplateMetadata(key, template.name, template.nodeId)
       continue
     }
     if (inFlight.has(key)) continue
