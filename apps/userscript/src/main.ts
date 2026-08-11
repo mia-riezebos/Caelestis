@@ -8,6 +8,7 @@ import {
 import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
+import { getState } from './state.js'
 import { DEFAULT_APPEARANCE } from './templates/appearance.js'
 import {
   levelFor,
@@ -145,7 +146,14 @@ export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
  */
 /** Draws every visible template over the tiles wplace is currently showing. */
 const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
-  const visible = localTemplates().filter((template) => template.visible)
+  const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
+  const visible = localTemplates()
+    .filter((template) => template.visible)
+    .sort(
+      (a, b) =>
+        (rank.get(`local:${a.id}`) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(`local:${b.id}`) ?? Number.MAX_SAFE_INTEGER),
+    )
   if (visible.length === 0) return
 
   let drawn = 0

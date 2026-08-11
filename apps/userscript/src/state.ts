@@ -1,3 +1,4 @@
+import { PALETTE_SIZE } from '@wts/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
@@ -39,6 +40,8 @@ export interface ConnectedServer {
    * will only ever get a 403 is worse than not offering them.
    */
   readonly isAdmin: boolean
+  /** Positive season advertised by the validated manifest. */
+  readonly season: number | null
 }
 
 export interface TreeNode {
@@ -76,6 +79,132 @@ const DEFAULT_STATE: State = {
   shareTiles: false,
 }
 
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const NODE_PATH = /^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u
+const MAX_TREE_NODES = 100_000
+const MAX_CUSTOM_ORDER = 200_000
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const serverInfoFrom = (value: unknown): ServerInfo | null => {
+  if (!isRecord(value)) return null
+  if (typeof value.id !== 'string' || !UUID_V7.test(value.id)) return null
+  if (typeof value.name !== 'string' || value.name.length < 1 || value.name.length > 256)
+    return null
+  if (value.auth !== 'none' && value.auth !== 'access_token') return null
+  if (
+    value.description !== undefined &&
+    (typeof value.description !== 'string' ||
+      value.description.length < 1 ||
+      value.description.length > 4_096)
+  )
+    return null
+  return {
+    id: value.id,
+    name: value.name,
+    ...(typeof value.description === 'string' ? { description: value.description } : {}),
+    auth: value.auth,
+  }
+}
+
+export const canonicalServerUrl = (value: string): string => {
+  const parsed = new URL(value.trim())
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new TypeError('server URL must use HTTP or HTTPS')
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new TypeError('server URL must not contain credentials')
+  }
+  parsed.search = ''
+  parsed.hash = ''
+  const path = parsed.pathname.replace(/\/+$/, '')
+  return `${parsed.origin}${path}`
+}
+
+const treeNodesFrom = (value: unknown): readonly TreeNode[] | null => {
+  if (!Array.isArray(value) || value.length > MAX_TREE_NODES) return null
+  const nodes: TreeNode[] = []
+  const ids = new Set<string>()
+  for (const raw of value) {
+    if (!isRecord(raw)) return null
+    if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id) || ids.has(raw.id)) return null
+    if (
+      raw.parentId !== null &&
+      (typeof raw.parentId !== 'string' || !UUID_V7.test(raw.parentId))
+    ) {
+      return null
+    }
+    if (
+      typeof raw.path !== 'string' ||
+      raw.path.length < 1 ||
+      raw.path.length > 256 ||
+      !NODE_PATH.test(raw.path)
+    )
+      return null
+    if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return null
+    ids.add(raw.id)
+    nodes.push({ id: raw.id, parentId: raw.parentId, path: raw.path, name: raw.name })
+  }
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const foldPath = (path: string): string =>
+    path.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+  const foldedPaths = nodes.map((node) => foldPath(node.path))
+  if (new Set(foldedPaths).size !== foldedPaths.length) return null
+  const validated = new Set<string>()
+  for (const node of nodes) {
+    if (validated.has(node.id)) continue
+    if (node.parentId === null) {
+      if (node.path.indexOf('/', 1) !== -1) return null
+    } else {
+      const parent = byId.get(node.parentId)
+      if (parent === undefined) return null
+      const path = foldPath(node.path)
+      const parentPath = foldPath(parent.path)
+      if (!path.startsWith(parentPath)) return null
+      const suffix = path.slice(parentPath.length)
+      if (!suffix.startsWith('/') || suffix.indexOf('/', 1) !== -1) return null
+    }
+    const path = new Set<string>()
+    let cursor: TreeNode | undefined = node
+    while (cursor !== undefined && !validated.has(cursor.id)) {
+      if (path.has(cursor.id)) return null
+      path.add(cursor.id)
+      if (cursor.parentId !== null && !byId.has(cursor.parentId)) return null
+      cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId)
+    }
+    for (const id of path) validated.add(id)
+  }
+  return nodes
+}
+
+export const validateTreeNodes = (value: unknown): readonly TreeNode[] | null =>
+  treeNodesFrom(value)
+
+const manifestProbeFrom = (
+  value: unknown,
+  expected: ServerInfo,
+): { season: number; server: ServerInfo } | null => {
+  if (
+    !isRecord(value) ||
+    typeof value.version !== 'string' ||
+    value.version.length < 1 ||
+    value.version.length > 256
+  )
+    return null
+  if (!Number.isSafeInteger(value.season) || Number(value.season) < 1) return null
+  const server = serverInfoFrom(value.server)
+  if (server === null || server.id !== expected.id) return null
+  if (
+    !Array.isArray(value.nodes) ||
+    !Array.isArray(value.templates) ||
+    !Array.isArray(value.tiles)
+  ) {
+    return null
+  }
+  return { season: Number(value.season), server }
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: the GM_* API only exists under a userscript manager
 const gm = globalThis as any
 
@@ -107,7 +236,69 @@ export const loadState = (): State => {
   try {
     // Spread over the defaults rather than trusting the stored shape: a build that adds a field
     // must not be broken by state written before it existed.
-    state = { ...DEFAULT_STATE, ...(JSON.parse(raw) as Partial<State>) }
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed)) throw new TypeError('stored state is not an object')
+    const stored = parsed as Partial<State>
+    const servers: ConnectedServer[] = []
+    const seenServers = new Set<string>()
+    if (Array.isArray(stored.servers)) {
+      for (const candidate of stored.servers) {
+        if (!isRecord(candidate) || typeof candidate.url !== 'string') continue
+        let url: string
+        try {
+          url = canonicalServerUrl(candidate.url)
+        } catch {
+          continue
+        }
+        if (seenServers.has(url)) continue
+        seenServers.add(url)
+        servers.push({
+          url,
+          info: serverInfoFrom(candidate.info),
+          token: typeof candidate.token === 'string' ? candidate.token : null,
+          status: 'unreachable',
+          error: 'Checking connection…',
+          isAdmin: false,
+          season: null,
+        })
+      }
+    }
+    const customOrder = Array.isArray(stored.customOrder)
+      ? [
+          ...new Set(stored.customOrder.filter((key): key is string => typeof key === 'string')),
+        ].slice(0, MAX_CUSTOM_ORDER)
+      : []
+    const sort: SortOrder =
+      stored.sort?.field === 'name'
+        ? { field: 'name', direction: stored.sort.direction === 'desc' ? 'desc' : 'asc' }
+        : DEFAULT_SORT
+    const hiddenColours = Array.isArray(stored.hiddenColours)
+      ? [
+          ...new Set(
+            stored.hiddenColours.filter(
+              (index): index is number =>
+                Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
+            ),
+          ),
+        ]
+      : []
+    const panelWidth =
+      typeof stored.panelWidth === 'number' && Number.isFinite(stored.panelWidth)
+        ? Math.min(720, Math.max(260, stored.panelWidth))
+        : DEFAULT_STATE.panelWidth
+    const progress: ProgressPlacement =
+      stored.progress === 'expanded' || stored.progress === 'hidden' ? stored.progress : 'inline'
+    state = {
+      ...DEFAULT_STATE,
+      servers,
+      customOrder,
+      panelWidth,
+      sort,
+      progress,
+      hiddenColours,
+      reportPaints: stored.reportPaints === true,
+      shareTiles: stored.shareTiles === true,
+    }
     log('install', 'state loaded', { servers: state.servers.length })
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
@@ -139,13 +330,23 @@ export const upsertServer = (server: ConnectedServer): void => {
 }
 
 export const removeServer = (url: string): void => {
-  setState({ servers: getState().servers.filter((s) => s.url !== url) })
+  const key = `server:${url}`
+  setState({
+    servers: getState().servers.filter((s) => s.url !== url),
+    customOrder: getState().customOrder.filter((candidate) => candidate !== key),
+  })
+}
+
+export const removeCustomOrderKeys = (keys: ReadonlySet<string>): void => {
+  const current = getState().customOrder
+  const next = current.filter((key) => !keys.has(key))
+  if (next.length !== current.length) setState({ customOrder: next })
 }
 
 /** Can this code administer the server? The only way to know is to ask it to do something admin. */
-const probeAdmin = async (base: string, token: string | null): Promise<boolean> => {
+const probeAdmin = async (base: string, token: string | null, season: number): Promise<boolean> => {
   try {
-    const response = await fetch(`${base}/admin/nodes?season=0`, {
+    const response = await fetch(`${base}/admin/nodes?season=${season}`, {
       headers: token === null ? {} : { authorization: `Bearer ${token}` },
     })
     return response.ok
@@ -162,7 +363,20 @@ const probeAdmin = async (base: string, token: string | null): Promise<boolean> 
  * someone on first run — most servers will not want one.
  */
 export const probeServer = async (url: string, token: string | null): Promise<ConnectedServer> => {
-  const base = url.trim().replace(/\/+$/, '')
+  let base: string
+  try {
+    base = canonicalServerUrl(url)
+  } catch (error) {
+    return {
+      url: url.trim(),
+      info: null,
+      token,
+      status: 'unreachable',
+      error: String(error),
+      isAdmin: false,
+      season: null,
+    }
+  }
   try {
     const response = await fetch(`${base}/server`, {
       headers: token === null ? {} : { authorization: `Bearer ${token}` },
@@ -175,23 +389,29 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
         status: 'unreachable',
         error: `HTTP ${response.status}`,
         isAdmin: false,
+        season: null,
       }
     }
-    const info = (await response.json()) as ServerInfo
+    const info = serverInfoFrom(await response.json())
+    if (info === null) throw new TypeError('server returned invalid metadata')
     log('install', `probed ${base}`, { name: info.name, auth: info.auth })
 
-    if (info.auth !== 'access_token') {
-      return { url: base, info, token, status: 'connected', isAdmin: await probeAdmin(base, token) }
-    }
-    if (token === null) {
-      return { url: base, info, token: null, status: 'needs-token', isAdmin: false }
+    if (info.auth === 'access_token' && token === null) {
+      return {
+        url: base,
+        info,
+        token: null,
+        status: 'needs-token',
+        isAdmin: false,
+        season: null,
+      }
     }
 
     // `GET /server` is public and never looks at the Authorization header, so reaching it proves
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
     const authed = await fetch(`${base}/manifest`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
     })
     if (authed.status === 401 || authed.status === 403) {
       log('install', `${base} rejected the code`, { status: authed.status })
@@ -202,6 +422,7 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
         status: 'needs-token',
         error: 'rejected',
         isAdmin: false,
+        season: null,
       }
     }
     if (!authed.ok) {
@@ -212,9 +433,19 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
         status: 'unreachable',
         error: `HTTP ${authed.status}`,
         isAdmin: false,
+        season: null,
       }
     }
-    return { url: base, info, token, status: 'connected', isAdmin: await probeAdmin(base, token) }
+    const manifest = manifestProbeFrom(await authed.json(), info)
+    if (manifest === null) throw new TypeError('server returned an invalid manifest')
+    return {
+      url: base,
+      info,
+      token,
+      status: 'connected',
+      isAdmin: await probeAdmin(base, token, manifest.season),
+      season: manifest.season,
+    }
   } catch (error) {
     // A bad hostname, a refused connection, or a server without CORS all land here, and the
     // distinction is not visible to us — the browser withholds it deliberately.
@@ -225,8 +456,21 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
       status: 'unreachable',
       error: String(error),
       isAdmin: false,
+      season: null,
     }
   }
+}
+
+/** Revalidate persisted identity, auth and scope without allowing stale requests to resurrect rows. */
+export const refreshStoredServers = async (): Promise<void> => {
+  const snapshot = [...getState().servers]
+  await Promise.all(
+    snapshot.map(async (server) => {
+      const refreshed = await probeServer(server.url, server.token)
+      if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+      upsertServer(refreshed)
+    }),
+  )
 }
 
 /**
@@ -241,6 +485,8 @@ export const createNode = async (
   name: string,
   parentId: string | null,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
+  if (server.season === null)
+    return { ok: false, message: 'Refresh this server before editing it.' }
   try {
     const response = await fetch(`${server.url}/admin/nodes`, {
       method: 'POST',
@@ -248,10 +494,11 @@ export const createNode = async (
         'content-type': 'application/json',
         ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
       },
-      body: JSON.stringify({ season: 0, parentId, name }),
+      body: JSON.stringify({ season: server.season, parentId, name }),
     })
     if (response.ok) return { ok: true, node: (await response.json()) as TreeNode }
     if (response.status === 401 || response.status === 403) {
+      noteAuthFailure(server)
       return { ok: false, message: 'That code cannot create folders — it needs admin access.' }
     }
     const body = (await response.json().catch(() => null)) as { error?: string } | null
@@ -265,6 +512,18 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
   'content-type': 'application/json',
   ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
 })
+
+const noteAuthFailure = (server: ConnectedServer): void => {
+  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+  const needsToken = server.info?.auth === 'access_token'
+  upsertServer({
+    ...server,
+    token: needsToken ? null : server.token,
+    status: needsToken ? 'needs-token' : 'connected',
+    error: 'authorization expired',
+    isAdmin: false,
+  })
+}
 
 const failure = (response: Response, body: { error?: string } | null): string =>
   response.status === 401 || response.status === 403
@@ -283,6 +542,7 @@ export const renameNode = async (
       body: JSON.stringify({ name }),
     })
     if (response.ok) return { ok: true }
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server)
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
     return { ok: false, message: String(error) }
@@ -299,6 +559,7 @@ export const deleteNode = async (
       headers: adminHeaders(server),
     })
     if (response.ok) return { ok: true }
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server)
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
     return { ok: false, message: String(error) }
@@ -306,14 +567,23 @@ export const deleteNode = async (
 }
 
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
-export const listNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> => {
+export const listNodes = async (
+  server: ConnectedServer,
+  signal?: AbortSignal,
+): Promise<readonly TreeNode[]> => {
+  if (server.season === null) return []
   try {
-    const response = await fetch(`${server.url}/admin/nodes?season=0`, {
+    const response = await fetch(`${server.url}/admin/nodes?season=${server.season}`, {
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+      ...(signal === undefined ? {} : { signal }),
     })
-    if (!response.ok) return []
-    const body = (await response.json()) as { nodes?: TreeNode[] } | TreeNode[]
-    return Array.isArray(body) ? body : (body.nodes ?? [])
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) noteAuthFailure(server)
+      return []
+    }
+    const body: unknown = await response.json()
+    const raw = isRecord(body) && 'nodes' in body ? body.nodes : body
+    return treeNodesFrom(raw) ?? []
   } catch {
     return []
   }
@@ -353,6 +623,7 @@ export const uploadTemplate = async (
       return { ok: true, id: body.id ?? '' }
     }
     if (response.status === 401 || response.status === 403) {
+      noteAuthFailure(server)
       return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
     }
     const body = (await response.json().catch(() => null)) as { error?: string } | null

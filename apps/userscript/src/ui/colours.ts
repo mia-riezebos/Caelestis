@@ -61,9 +61,11 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
     if (id === 'owned' && ownedColours() === null) {
       // Only disabled when we genuinely could not ask — signed out, or wplace refused.
       button.classList.add('btn-disabled')
+      button.disabled = true
       button.title = 'Sign in to wplace so it can tell us which colours you own'
     }
     button.addEventListener('click', () => {
+      if (button.disabled) return
       applyPreset(id)
       rerender()
     })

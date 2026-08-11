@@ -1,5 +1,12 @@
 import { cacheServer, loadServerCache } from '../server-cache.js'
-import { type ConnectedServer, getState, listNodes, setState, type TreeNode } from '../state.js'
+import {
+  type ConnectedServer,
+  getState,
+  listNodes,
+  removeCustomOrderKeys,
+  setState,
+  type TreeNode,
+} from '../state.js'
 import { localTemplates, setLocalVisible } from '../templates/local-store.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
@@ -34,6 +41,7 @@ export interface TreeCallbacks {
   readonly onGoTo: (templateId: string) => void
   readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
+  readonly onError: (message: string) => void
 }
 
 const collapsed = new Set<string>()
@@ -49,12 +57,39 @@ let renaming: string | null = null
  */
 const nodesByServer = new Map<string, readonly TreeNode[]>()
 
+export const forgetServerTree = (url: string): void => {
+  const nodes = nodesByServer.get(url) ?? []
+  removeCustomOrderKeys(new Set([`server:${url}`, ...nodes.map((node) => `node:${node.id}`)]))
+  nodesByServer.delete(url)
+}
+
+export const forgetNodeOrder = (url: string, nodeId: string): void => {
+  const nodes = nodesByServer.get(url) ?? []
+  const children = new Map<string, string[]>()
+  for (const node of nodes) {
+    if (node.parentId === null) continue
+    const bucket = children.get(node.parentId) ?? []
+    bucket.push(node.id)
+    children.set(node.parentId, bucket)
+  }
+  const pending = [nodeId]
+  const keys = new Set<string>()
+  while (pending.length > 0) {
+    const id = pending.pop()
+    if (id === undefined || keys.has(`node:${id}`)) continue
+    keys.add(`node:${id}`)
+    pending.push(...(children.get(id) ?? []))
+  }
+  removeCustomOrderKeys(keys)
+}
+
 export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
 ): Promise<void> => {
   if (!server.isAdmin) return
   const nodes = await listNodes(server)
+  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
   nodesByServer.set(server.url, nodes)
   void cacheServer({ url: server.url, nodes, fetchedAt: Date.now() })
   rerender()
@@ -68,6 +103,7 @@ export const refreshNodes = async (
  */
 export const primeFromCache = async (rerender: () => void): Promise<void> => {
   for (const entry of await loadServerCache()) {
+    if (!getState().servers.some((server) => server.url === entry.url)) continue
     if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
   }
   rerender()
@@ -85,11 +121,25 @@ const toggle = (set: Set<string>, key: string): void => {
   else set.add(key)
 }
 
-const orderedKeys = (keys: readonly string[]): readonly string[] => {
+interface OrderedItem {
+  readonly key: string
+  readonly name: string
+}
+
+const orderedKeys = (items: readonly OrderedItem[]): readonly string[] => {
+  if (getState().sort.field === 'name') {
+    const direction = getState().sort.direction === 'desc' ? -1 : 1
+    return [...items]
+      .sort((a, b) => direction * a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      .map((item) => item.key)
+  }
   const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
-  return [...keys].sort(
-    (a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
-  )
+  return [...items]
+    .sort(
+      (a, b) =>
+        (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
+    )
+    .map((item) => item.key)
 }
 
 const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
@@ -97,7 +147,12 @@ const moveKey = (keys: readonly string[], from: string, to: string, after: boole
   const index = next.indexOf(to)
   if (index === -1) return
   next.splice(after ? index + 1 : index, 0, from)
-  setState({ customOrder: next })
+  const siblings = new Set(keys)
+  const current = getState().customOrder
+  const firstSibling = current.findIndex((key) => siblings.has(key))
+  const retained = current.filter((key) => !siblings.has(key))
+  retained.splice(firstSibling === -1 ? retained.length : firstSibling, 0, ...next)
+  setState({ customOrder: retained })
 }
 
 /** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
@@ -278,6 +333,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
   }
   if (!editing) row.addEventListener('click', expand)
   row.addEventListener('keydown', (event) => {
+    if (event.target !== row) return
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
       expand()
@@ -293,6 +349,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
   if (!draggable || editing) return row
 
+  let hideTimer: ReturnType<typeof setTimeout> | null = null
   row.addEventListener('dragstart', (event) => {
     event.dataTransfer?.setData('text/plain', options.key)
     // Take the row out of the flow, so what is on screen is the drag image plus the hole it will
@@ -301,9 +358,14 @@ const treeRow = (options: RowOptions): HTMLElement => {
     //
     // Deferred by a tick because the browser captures the drag image *after* dragstart returns;
     // hiding it synchronously would drag an invisible ghost.
-    setTimeout(() => row.classList.add('wts-dragging'), 0)
+    hideTimer = setTimeout(() => {
+      hideTimer = null
+      row.classList.add('wts-dragging')
+    }, 0)
   })
   row.addEventListener('dragend', () => {
+    if (hideTimer !== null) clearTimeout(hideTimer)
+    hideTimer = null
     row.classList.remove('wts-dragging')
     clearDropMarks(row.parentElement ?? document)
   })
@@ -351,7 +413,11 @@ const childText = (text: string, depth: number): HTMLElement => {
   return el
 }
 
-export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HTMLElement => {
+export const treeContents = (
+  callbacks: TreeCallbacks,
+  rerender: () => void,
+  query = '',
+): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.setAttribute('role', 'tree')
   wrap.className = 'flex flex-col'
@@ -361,8 +427,14 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
   wrap.style.paddingBottom = '0.5rem'
 
   const servers = getState().servers
-  const keys = ['local', ...servers.map((server) => `server:${server.url}`)]
-  const ordered = orderedKeys(keys)
+  const ordered = orderedKeys([
+    { key: 'local', name: 'Local' },
+    ...servers.map((server) => ({
+      key: `server:${server.url}`,
+      name: server.info?.name ?? server.url,
+    })),
+  ])
+  const needle = query.trim().toLocaleLowerCase()
 
   for (const key of ordered) {
     const server = servers.find((candidate) => `server:${candidate.url}` === key)
@@ -390,7 +462,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         siblings: ordered,
         rerender,
         onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
-        onRename: canEdit ? (value) => callbacks.onRename(target, value) : undefined,
+        onRename: undefined,
         actions: canEdit
           ? [
               {
@@ -398,11 +470,15 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                 label: 'New folder',
                 run: () => callbacks.onCreateFolder(target),
               },
-              {
-                icon: 'uploadFile',
-                label: 'Import template',
-                run: () => callbacks.onImportTemplate(target),
-              },
+              ...(isLocal
+                ? [
+                    {
+                      icon: 'uploadFile' as const,
+                      label: 'Import template',
+                      run: () => callbacks.onImportTemplate(target),
+                    },
+                  ]
+                : []),
             ]
           : undefined,
       }),
@@ -421,8 +497,25 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           siblings.push(node)
           byParent.set(node.parentId, siblings)
         }
+        const matches = new Map<string, boolean>()
+        const nodeMatches = (node: TreeNode): boolean => {
+          const memoised = matches.get(node.id)
+          if (memoised !== undefined) return memoised
+          if (needle === '' || node.name.toLocaleLowerCase().includes(needle)) return true
+          // A provisional value also makes this defensive if an old cache predates validation.
+          matches.set(node.id, false)
+          const result = (byParent.get(node.id) ?? []).some((child) => nodeMatches(child))
+          matches.set(node.id, result)
+          return result
+        }
         const renderChildren = (parentId: string | null, depth: number): void => {
-          for (const node of byParent.get(parentId) ?? []) {
+          const siblings = byParent.get(parentId) ?? []
+          const siblingKeys = orderedKeys(
+            siblings.map((node) => ({ key: `node:${node.id}`, name: node.name })),
+          )
+          for (const candidateKey of siblingKeys) {
+            const node = siblings.find((candidate) => `node:${candidate.id}` === candidateKey)
+            if (node === undefined || !nodeMatches(node)) continue
             const nodeKey = `node:${node.id}`
             const nodeTarget: TreeTarget = {
               server,
@@ -437,7 +530,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                 kind: 'folder',
                 depth,
                 container: true,
-                siblings: (byParent.get(parentId) ?? []).map((n) => `node:${n.id}`),
+                siblings: siblingKeys,
                 rerender,
                 onContextMenu: canEdit
                   ? (event) => callbacks.onContextMenu(nodeTarget, event)
@@ -449,11 +542,6 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                         icon: 'createFolder',
                         label: 'New folder',
                         run: () => callbacks.onCreateFolder(nodeTarget),
-                      },
-                      {
-                        icon: 'uploadFile',
-                        label: 'Import template',
-                        run: () => callbacks.onImportTemplate(nodeTarget),
                       },
                     ]
                   : undefined,
@@ -469,9 +557,20 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
     }
 
     if (isLocal) {
-      const mine = localTemplates()
-      for (const template of mine) {
-        const key = `local:${template.id}`
+      const allMine = localTemplates()
+      const mine = allMine.filter(
+        (template) => needle === '' || template.name.toLocaleLowerCase().includes(needle),
+      )
+      const localKeys = orderedKeys(
+        allMine.map((template) => ({ key: `local:${template.id}`, name: template.name })),
+      )
+      for (const key of localKeys) {
+        const template = allMine.find((candidate) => `local:${candidate.id}` === key)
+        if (
+          template === undefined ||
+          (needle !== '' && !template.name.toLocaleLowerCase().includes(needle))
+        )
+          continue
         const templateTarget: TreeTarget = {
           server: null,
           nodeId: null,
@@ -485,12 +584,14 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           depth: 1,
           meta: `${template.width}×${template.height}`,
           container: false,
-          siblings: mine.map((t) => `local:${t.id}`),
+          siblings: localKeys,
           rerender,
           checked: template.visible,
           onToggleChecked: (on) => {
-            setLocalVisible(template.id, on)
-            rerender()
+            void setLocalVisible(template.id, on).then((changed) => {
+              if (!changed) callbacks.onError(`Could not change visibility for “${template.name}”.`)
+              rerender()
+            })
           },
           onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
           onRename: (value) => callbacks.onRename(templateTarget, value),

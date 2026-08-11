@@ -13,7 +13,7 @@ import { icon } from './icons.js'
  * so connecting to a new server surfaces what arrived rather than burying it.
  */
 
-export type SortField = 'custom' | 'created' | 'activity' | 'progress' | 'name'
+export type SortField = 'custom' | 'name'
 export type SortDirection = 'asc' | 'desc'
 
 export interface SortOrder {
@@ -41,9 +41,6 @@ const FIELDS: ReadonlyArray<{
   readonly desc: string
 }> = [
   { field: 'custom', label: 'Custom', asc: 'Your order', desc: 'Your order' },
-  { field: 'created', label: 'Created', asc: 'Oldest first', desc: 'Newest first' },
-  { field: 'activity', label: 'Activity', asc: 'Quietest first', desc: 'Busiest first' },
-  { field: 'progress', label: 'Progress', asc: 'Least complete', desc: 'Most complete' },
   { field: 'name', label: 'Name', asc: 'A to Z', desc: 'Z to A' },
 ]
 

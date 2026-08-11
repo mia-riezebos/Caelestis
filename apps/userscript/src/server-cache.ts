@@ -1,5 +1,5 @@
 import { warn } from './debug.js'
-import type { TreeNode } from './state.js'
+import { type TreeNode, validateTreeNodes } from './state.js'
 
 /**
  * What a server told us, kept between sessions.
@@ -14,7 +14,8 @@ import type { TreeNode } from './state.js'
 
 const DB_NAME = 'caelestis'
 const STORE = 'server-cache'
-const VERSION = 2
+// Shared with local template persistence. Opening an older version after v3 exists is a VersionError.
+const VERSION = 3
 
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
@@ -28,6 +29,7 @@ export interface CachedServer {
 const open = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
+    let abandoned = false
     request.onupgradeneeded = () => {
       const db = request.result
       // The local-template store lives in the same database and must survive this upgrade.
@@ -36,7 +38,19 @@ const open = (): Promise<IDBDatabase> =>
       }
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'url' })
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onblocked = () => {
+      abandoned = true
+      reject(new Error('indexedDB.open blocked by another connection'))
+    }
+    request.onsuccess = () => {
+      const db = request.result
+      if (abandoned) {
+        db.close()
+        return
+      }
+      db.onversionchange = () => db.close()
+      resolve(db)
+    }
     request.onerror = () => reject(request.error ?? new Error('indexedDB.open failed'))
   })
 
@@ -46,11 +60,24 @@ const run = async <T>(
 ): Promise<T | null> => {
   try {
     const db = await open()
-    return await new Promise<T>((resolve, reject) => {
-      const request = body(db.transaction(STORE, mode).objectStore(STORE))
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
-    })
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const transaction = db.transaction(STORE, mode)
+        const request = body(transaction.objectStore(STORE))
+        let result: T
+        request.onsuccess = () => {
+          result = request.result
+        }
+        request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
+        transaction.oncomplete = () => resolve(result)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+      })
+    } finally {
+      db.close()
+    }
   } catch (error) {
     warn('install', 'server cache unavailable', String(error))
     return null
@@ -65,5 +92,25 @@ export const forgetServer = async (url: string): Promise<void> => {
   await run('readwrite', (store) => store.delete(url))
 }
 
-export const loadServerCache = async (): Promise<readonly CachedServer[]> =>
-  (await run<CachedServer[]>('readonly', (store) => store.getAll())) ?? []
+export const loadServerCache = async (): Promise<readonly CachedServer[]> => {
+  const raw = (await run<unknown[]>('readonly', (store) => store.getAll())) ?? []
+  const valid: CachedServer[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const candidate = entry as Partial<CachedServer>
+    const nodes = validateTreeNodes(candidate.nodes)
+    if (
+      typeof candidate.url !== 'string' ||
+      !Number.isFinite(candidate.fetchedAt) ||
+      nodes === null
+    )
+      continue
+    valid.push({
+      url: candidate.url,
+      nodes,
+      fetchedAt: Number(candidate.fetchedAt),
+      ...(typeof candidate.etag === 'string' ? { etag: candidate.etag } : {}),
+    })
+  }
+  return valid
+}

@@ -1,4 +1,3 @@
-import { canvasPixelToLatLng } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
@@ -10,6 +9,8 @@ import {
   listNodes,
   loadState,
   probeServer,
+  refreshStoredServers,
+  removeCustomOrderKeys,
   removeServer,
   renameNode as renameNodeOnServer,
   setState,
@@ -30,9 +31,11 @@ import { centreOf, navigateTo } from '../templates/navigate.js'
 import { coloursSection } from './colours.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
-import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
+import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import {
+  forgetNodeOrder,
+  forgetServerTree,
   primeFromCache,
   refreshNodes,
   startRenaming,
@@ -104,7 +107,8 @@ type View = 'tree' | 'settings'
 
 let currentView: View = 'tree'
 let open = false
-let sortOrder: SortOrder = DEFAULT_SORT
+let searchQuery = ''
+let activeResizeCleanup: (() => void) | null = null
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -163,30 +167,6 @@ const sectionHeader = (title: string): HTMLElement => {
   return h
 }
 
-const emptyState = (): HTMLElement => {
-  const wrap = document.createElement('div')
-  wrap.className = 'flex flex-col items-center text-center gap-3 py-10 px-4'
-  const art = document.createElement('div')
-  art.className = 'opacity-30'
-  art.appendChild(icon('extension', 'size-10'))
-  const title = document.createElement('p')
-  title.className = 'font-medium'
-  title.textContent = 'No servers connected'
-  const body = document.createElement('p')
-  body.className = 'text-sm opacity-70'
-  body.style.maxWidth = '16rem'
-  // The empty state is the whole onboarding: it has to say what a server is and what to do next,
-  // because there is no other moment where anyone will read that.
-  body.textContent =
-    'Templates come from a server your alliance runs. Add its address to see everything it shares.'
-  const action = document.createElement('button')
-  action.className = 'btn btn-primary btn-sm'
-  action.textContent = 'Add a server'
-  action.addEventListener('click', () => showView('settings'))
-  wrap.append(art, title, body, action)
-  return wrap
-}
-
 const treeView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
@@ -206,12 +186,13 @@ const treeView = (): HTMLElement => {
   searchInput.style.flex = '1'
   searchInput.style.minWidth = '0'
   searchInput.placeholder = 'Search templates'
+  searchInput.value = searchQuery
   search.append(searchIcon, searchInput)
 
   toolbar.append(
     search,
-    sortControl(sortOrder, (next) => {
-      sortOrder = next
+    sortControl(getState().sort, (next) => {
+      setState({ sort: next })
       showView('tree')
     }),
   )
@@ -231,11 +212,17 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
+          onError: (message) => toast(message, 'error'),
         },
         renderTree,
+        searchQuery,
       ),
     )
   }
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value
+    renderTree()
+  })
   renderTree()
   // Paint what the servers said last time, then let a live fetch replace it.
   void primeFromCache(renderTree)
@@ -262,22 +249,6 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
   }
   row.append(text, control)
   return row
-}
-
-const select = (options: readonly (readonly [string, string])[]): HTMLSelectElement => {
-  const el = document.createElement('select')
-  el.className = 'select select-sm select-bordered'
-  // Sized once rather than by content: three selects of three widths in one column reads as
-  // ragged even though their right edges agree.
-  el.style.width = '11.5rem'
-  el.style.flex = '0 0 auto'
-  for (const [value, label] of options) {
-    const option = document.createElement('option')
-    option.value = value
-    option.textContent = label
-    el.appendChild(option)
-  }
-  return el
 }
 
 const checkbox = (): HTMLInputElement => {
@@ -328,6 +299,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   remove.setAttribute('aria-label', `Disconnect ${server.info?.name ?? server.url}`)
   remove.appendChild(icon('close', 'size-3'))
   remove.addEventListener('click', () => {
+    forgetServerTree(server.url)
     removeServer(server.url)
     void forgetServer(server.url)
     showView('settings')
@@ -365,14 +337,19 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   status.style.marginTop = '0.25rem'
   status.textContent = 'This server needs an access code from whoever runs it.'
 
+  let checking = false
   const attempt = async (): Promise<void> => {
+    if (checking) return
     const value = code.value.trim()
     if (value === '') return
-    submit.classList.add('btn-disabled')
+    checking = true
+    submit.disabled = true
     status.className = 'text-xs opacity-60'
     status.textContent = 'Checking…'
     const next = await probeServer(server.url, value)
-    submit.classList.remove('btn-disabled')
+    checking = false
+    submit.disabled = false
+    if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
     if (next.status === 'connected') {
       upsertServer(next)
       showView('settings')
@@ -417,15 +394,19 @@ const settingsView = (): HTMLElement => {
   status.className = 'text-xs px-3 pb-2'
   status.style.display = 'none'
 
+  let connecting = false
   const connect = async (): Promise<void> => {
+    if (connecting) return
     const value = url.value.trim()
     if (value === '') return
-    add.classList.add('btn-disabled')
+    connecting = true
+    add.disabled = true
     status.style.display = ''
     status.className = 'text-xs px-3 pb-2 opacity-60'
     status.textContent = 'Connecting…'
     const server = await probeServer(value, null)
-    add.classList.remove('btn-disabled')
+    connecting = false
+    add.disabled = false
     if (server.status === 'unreachable') {
       status.className = 'text-xs px-3 pb-2 text-error'
       status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
@@ -449,33 +430,8 @@ const settingsView = (): HTMLElement => {
 
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
-  view.appendChild(sectionHeader('Appearance'))
-  view.appendChild(
-    settingRow(
-      'Display progress bars',
-      null,
-      select([
-        ['inline', 'Inline'],
-        ['expanded', 'When expanded'],
-        ['hidden', 'Never'],
-      ]),
-    ),
-  )
-
   view.appendChild(sectionHeader('Colours'))
   view.appendChild(coloursSection(() => showView('settings')))
-
-  view.appendChild(sectionHeader('Contributing'))
-  view.appendChild(
-    settingRow(
-      'Report my activity',
-      'Sends your paint activity on templates to the respective servers.',
-      checkbox(),
-    ),
-  )
-  view.appendChild(
-    settingRow('Share tiles', 'Forwards tiles with templates to respective servers.', checkbox()),
-  )
 
   view.appendChild(sectionHeader('Diagnostics'))
   const debugRow = settingRow('Debug logging', 'Verbose console output for bug reports', checkbox())
@@ -529,7 +485,9 @@ const applyRename = async (
 ): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    await renameLocalTemplate(templateId, name)
+    if (!(await renameLocalTemplate(templateId, name))) {
+      toast(`Could not rename “${target.name}”.`, 'error')
+    }
     rerender()
     return
   }
@@ -588,7 +546,11 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   const templateId = localTemplateId(target)
   if (templateId !== null) {
     if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
-    removeLocalTemplate(templateId)
+    if (!(await removeLocalTemplate(templateId))) {
+      toast(`Could not delete “${target.name}”.`, 'error')
+      return
+    }
+    removeCustomOrderKeys(new Set([target.key]))
     rerender()
     return
   }
@@ -599,6 +561,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
   const result = await deleteNodeOnServer(target.server, target.nodeId)
   if (!result.ok) toast(result.message, 'error')
+  else forgetNodeOrder(target.server.url, target.nodeId)
   await refreshNodes(target.server, rerender)
 }
 
@@ -645,9 +608,12 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
     templateId === null
       ? [
           ['createFolder', 'New folder', () => void createFolder(target, rerender)],
-          ['uploadFile', 'Import template', () => void importTemplate(target, rerender)],
-          rename,
-          remove,
+          ...(target.server === null
+            ? ([
+                ['uploadFile', 'Import template', () => void importTemplate(target, rerender)],
+              ] as const)
+            : []),
+          ...(target.nodeId !== null ? [rename, remove] : []),
         ]
       : [
           ['search', 'Go to', () => void goTo(templateId)],
@@ -714,8 +680,28 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           toast('Nothing importable in that file.', 'error')
           return
         }
-        for (const template of imported) await addLocalTemplate(template)
+        let added = 0
+        let failure: unknown = null
+        for (const template of imported) {
+          try {
+            await addLocalTemplate(template)
+            added++
+          } catch (error) {
+            failure = error
+            break
+          }
+        }
         rerender()
+
+        if (failure !== null) {
+          toast(
+            added === 0
+              ? `Could not import: ${String(failure)}`
+              : `Imported ${added} of ${imported.length}; the rest could not be added: ${String(failure)}`,
+            'error',
+          )
+          if (added === 0) return
+        }
 
         const first = imported[0]
         if (first === undefined) return
@@ -769,22 +755,10 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
 
   const label = document.createElement('span')
-  label.textContent = `Copy “${template.name}” to:`
+  label.textContent = 'Loading destinations…'
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
-  for (const server of targets) {
-    for (const node of await listNodes(server)) {
-      const option = document.createElement('option')
-      option.value = `${server.url}|${node.id}`
-      option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
-      chooser.appendChild(option)
-    }
-  }
-  if (chooser.options.length === 0) {
-    toast('Create a folder on the server first — a template has to live somewhere.', 'warning')
-    return
-  }
-
+  chooser.disabled = true
   const buttons = document.createElement('div')
   buttons.className = 'flex gap-2 justify-end'
   const cancel = document.createElement('button')
@@ -794,39 +768,72 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   const go = document.createElement('button')
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Copy'
+  go.disabled = true
+  buttons.append(cancel, go)
+  box.append(label, chooser, buttons)
+  panel.appendChild(box)
+
+  const loaded = await Promise.all(
+    targets.map(async (server) => {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 10_000)
+      try {
+        return { server, nodes: await listNodes(server, controller.signal) }
+      } finally {
+        clearTimeout(timeout)
+      }
+    }),
+  )
+  if (!box.isConnected) return
+  for (const { server, nodes } of loaded) {
+    for (const node of nodes) {
+      const option = document.createElement('option')
+      option.value = `${server.url}|${node.id}`
+      option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
+      chooser.appendChild(option)
+    }
+  }
+  if (chooser.options.length === 0) {
+    toast('Create a folder on the server first — a template has to live somewhere.', 'warning')
+    box.remove()
+    return
+  }
+  label.textContent = `Copy “${template.name}” to:`
+  chooser.disabled = false
+  go.disabled = false
+  let uploading = false
   go.addEventListener('click', () => {
+    if (uploading) return
     void (async () => {
       const [url, nodeId] = (chooser.value ?? '').split('|')
       const server = targets.find((candidate) => candidate.url === url)
       if (server === undefined || nodeId === undefined) return
-      go.classList.add('btn-disabled')
-      label.textContent = 'Encoding…'
-      const png = await templateAsPng(template)
-      if (png === null) {
-        toast('Could not encode that template.', 'error')
+      uploading = true
+      go.disabled = true
+      try {
+        label.textContent = 'Encoding…'
+        const png = await templateAsPng(template)
+        if (png === null) throw new Error('encoder returned no image')
+        label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
+        const result = await uploadTemplate(server, {
+          nodeId,
+          name: template.name,
+          originX: template.originX,
+          originY: template.originY,
+          png,
+        })
+        if (!result.ok) throw new Error(result.message)
         box.remove()
-        return
-      }
-      label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-      const result = await uploadTemplate(server, {
-        nodeId,
-        name: template.name,
-        originX: template.originX,
-        originY: template.originY,
-        png,
-      })
-      box.remove()
-      if (result.ok) {
         toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
         await refreshNodes(server, rerender)
-      } else {
-        toast(result.message, 'error')
+      } catch (error) {
+        toast(`Could not copy: ${String(error)}`, 'error')
+        label.textContent = `Copy “${template.name}” to:`
+        uploading = false
+        go.disabled = false
       }
     })()
   })
-  buttons.append(cancel, go)
-  box.append(label, chooser, buttons)
-  panel.appendChild(box)
 }
 
 const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {
@@ -899,14 +906,29 @@ const buildPanel = (): HTMLElement => {
       const next = Math.min(720, Math.max(260, startWidth - (moved.clientX - startX)))
       panel.style.width = `${next}px`
     }
-    const done = (): void => {
+    activeResizeCleanup?.()
+    let active = true
+    const cleanup = (commit: boolean): void => {
+      if (!active) return
+      active = false
       handle.classList.remove('wts-resizing')
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', done)
-      setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
+      window.removeEventListener('pointercancel', cancelResize)
+      window.removeEventListener('blur', cancelResize)
+      handle.removeEventListener('lostpointercapture', cancelResize)
+      activeResizeCleanup = null
+      if (commit) setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
+      else panel.style.width = `${startWidth}px`
     }
+    const done = (): void => cleanup(true)
+    const cancelResize = (): void => cleanup(false)
+    activeResizeCleanup = cancelResize
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', done)
+    window.addEventListener('pointercancel', cancelResize)
+    window.addEventListener('blur', cancelResize)
+    handle.addEventListener('lostpointercapture', cancelResize)
   })
   panel.appendChild(handle)
 
@@ -982,6 +1004,7 @@ const setOpen = (next: boolean): void => {
   syncRailButtonState()
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
+    activeResizeCleanup?.()
     existing?.remove()
     return
   }
@@ -999,6 +1022,9 @@ const setOpen = (next: boolean): void => {
  */
 export const installPanel = (): void => {
   loadState()
+  void refreshStoredServers().then(() => {
+    if (document.getElementById(PANEL_ID) !== null) showView(currentView)
+  })
   installStyles()
   let warned = false
   const attach = (): void => {
