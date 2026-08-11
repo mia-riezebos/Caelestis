@@ -147,7 +147,7 @@ const renderBar = (name: string): void => {
   label.textContent = `Placing “${name}”`
   const hint = document.createElement('span')
   hint.className = 'text-xs opacity-60'
-  hint.textContent = `${MODIFIER_HINT}+drag or arrow keys to move · Shift for 10 px · middle-click to centre here`
+  hint.textContent = MOVE_HINT
 
   const apply = document.createElement('button')
   apply.className = 'btn btn-sm btn-primary btn-circle'
@@ -165,6 +165,8 @@ const renderBar = (name: string): void => {
 
   el.append(label, hint, apply, cancel)
 }
+
+export const MOVE_HINT = `Click the map, then ${MODIFIER_HINT}+drag or use arrow keys to move · Shift for 10 px · middle-click to centre here`
 
 const onPointerDown = (event: PointerEvent): void => {
   if (session === null || finishing) return

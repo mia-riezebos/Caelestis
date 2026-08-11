@@ -84,6 +84,13 @@ afterEach(() => {
 })
 
 describe('template placement controls', () => {
+  it('tells keyboard users to return focus to the map before nudging', async () => {
+    const moves = await import('./move.js')
+
+    expect(moves.MOVE_HINT).toContain('Click the map')
+    expect(moves.MOVE_HINT).toContain('arrow keys')
+  })
+
   it('reports when another placement prevents a new one from starting', async () => {
     const moves = await import('./move.js')
 
