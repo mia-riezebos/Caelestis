@@ -35,13 +35,24 @@ const flag = (name, fallback) => {
   const index = argv.indexOf(name)
   return index === -1 ? fallback : (argv[index + 1] ?? fallback)
 }
+
+/**
+ * Accept the mangled flag pnpm produces.
+ *
+ * `pnpm inject --watch` arrives here as `-atch`: pnpm claims the `-w` for its own `--workspace-root`
+ * and forwards the remainder. That injected once and then sat there looking like a watcher which had
+ * stopped noticing saves. Taking it as written means the obvious command works.
+ */
+if (argv.includes('-atch')) argv[argv.indexOf('-atch')] = '--watch'
 const watching = argv.includes('--watch')
 /** Pass --verbose to see wplace's own console output alongside ours. */
 const verbose = argv.includes('--verbose')
 /** Quit an already-running Chromium that has no debugging port, rather than refusing to continue. */
 const relaunch = argv.includes('--relaunch')
 const shotPath = flag('--shot', null)
-const url = flag('--url', 'https://wplace.live/?lat=52.37&lng=4.90&zoom=11')
+// No coordinates by default. wplace restores its own last position on load, so pinning a lat/lng
+// only overrode it and dropped every run in the same unrelated place.
+const url = flag('--url', 'https://wplace.live/')
 const settleMs = Number(flag('--settle', shotPath ? 12_000 : 4_000))
 
 const build = () =>

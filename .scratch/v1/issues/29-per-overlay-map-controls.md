@@ -1,8 +1,8 @@
 # Per-overlay controls on the map
 
 Type: prototype
-Status: open
-Blocked by: 13, 14
+Status: resolved
+Blocked by: —
 GitHub: —
 
 ## Question
@@ -204,3 +204,31 @@ Probably both, with the global one acting as a default the per-overlay toggles o
 Same instruction as `14`: this is a "how should it look and behave" question. The anchoring and
 overlap behaviour in particular will not survive being reasoned about — they need something running
 over a real wplace canvas at several zoom levels.
+
+## Answer — 2026-08-08: built, and the split holds
+
+Both surfaces ship as proposed. The rail button opens the panel, which owns servers, the tree,
+global defaults and appearance; a button rendered on the map beside each overlay opens that
+overlay's own menu. Nothing has a "which template am I configuring" selector, which was the point.
+
+What only running it could settle:
+
+- **Anchoring is derived from the tile quads**, not from MapLibre. Any one visible tile fixes the
+  whole mapping, so a button follows its template on the same frame the map moved, and a template
+  whose origin is just off-screen still has a position — requiring the anchor to fall inside a
+  visible tile made exactly the reachable-when-needed case unreachable.
+- **The menu does not dismiss on outside clicks.** Everything in it changes what is on the map
+  behind it, so clicking the map to look at the result must not close the thing being adjusted.
+- **It never rebuilds itself on a redraw**, because a rebuild mid-drag takes the slider out from
+  under the pointer. That is a real cost, not a free win: every control in it has to restate itself
+  in place, and each one that did not was a bug — a stale `on` that could only be switched one way,
+  a preset row that went on claiming the filter from whenever the menu was opened.
+- **Colour toggles are both**, as predicted — with the correction that a per-overlay filter is an
+  **override** of the global set rather than a union with it. An overlay with an opinion answers to
+  its own switches only.
+- **The button hides with its overlay**, and past the zoom where wplace stop serving tiles, since
+  there is nothing to anchor to.
+
+Later additions on this surface: a "use defaults" switch that dims and disables the controls it
+governs rather than silently detaching on first use, mismatch marking and its threshold, and the
+appearance controls moving to a page of their own behind a palette button.

@@ -217,9 +217,24 @@ export const clearLocalPreview = (id: string): boolean => {
 export const isTemplateVisible = (template: PlacedTemplate): boolean =>
   template.visible && localFolderChainVisible(template.folderId)
 
-/** How this template is actually drawn: its own appearance, or the global default it inherits. */
-export const appearanceOf = (template: PlacedTemplate): Appearance =>
-  template.appearance ?? getState().appearance
+/**
+ * How this template is actually drawn: its own appearance, or the global default it inherits.
+ *
+ * The global colour filter lives beside the global appearance rather than inside it — the colour
+ * grid writes `hiddenColours` on the state directly — so the inherited object has to be completed
+ * from both. Without this an overlay showed an empty filter while following defaults that hid half
+ * the palette, and switching "use defaults" off copied that empty filter over the top, quietly
+ * turning every hidden colour back on at the moment of detaching.
+ */
+export const appearanceOf = (template: PlacedTemplate): Appearance => {
+  if (template.appearance !== null) return template.appearance
+  const state = getState()
+  return {
+    ...state.appearance,
+    hiddenColours: state.hiddenColours,
+    onlySelectedColour: state.onlySelectedColour,
+  }
+}
 
 /**
  * Slice a template into tile-sized bitmaps.

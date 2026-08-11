@@ -101,10 +101,13 @@ export const setSwatchState = (swatch: HTMLElement, on: boolean): void => {
 /** The settings pane indents its rows; the overlay menu does not. Only the wrapper differs. */
 const withPadding = (element: HTMLElement): HTMLElement => {
   const wrap = document.createElement('div')
-  wrap.className = 'px-3 pb-2'
+  wrap.className = 'px-3'
   wrap.appendChild(element)
   return wrap
 }
+
+/** The follow-the-selection toggle's slot in the preset row, so it lights up by the same rule. */
+const ONLY_SELECTED = 'only-selected'
 
 const PRESETS: ReadonlyArray<readonly [ColourPresetId, string]> = [
   ['all', 'All'],
@@ -120,19 +123,72 @@ const PRESETS: ReadonlyArray<readonly [ColourPresetId, string]> = [
  * written — one sets the global filter, the other one overlay's — so the buttons themselves have no
  * business knowing which is which.
  */
+/** Whether two hidden-colour sets say the same thing, order and duplicates aside. */
+const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
+  const left = new Set(a)
+  const right = new Set(b)
+  if (left.size !== right.size) return false
+  for (const index of left) if (!right.has(index)) return false
+  return true
+}
+
+/**
+ * Which preset the current filter *is*, or null when it is some subset of its own.
+ *
+ * Derived rather than stored. A preset is a shortcut for a set of switches, not a mode the filter
+ * stays in, so remembering which button was pressed would go stale the moment a single swatch was
+ * clicked — and the button would then claim a state the palette no longer had.
+ *
+ * Read from the switches alone, so follow-the-selection does not blank it. The two are separate
+ * things and both can be true at once: the preset says which colours this overlay claims, the mode
+ * says to look at one of them at a time. Blanking the preset while the mode ran made the mode look
+ * like a fifth preset, and left nothing on screen saying what you would be back to on switching it
+ * off.
+ */
+const activePreset = (hidden: readonly number[]): ColourPresetId | null => {
+  for (const [id] of PRESETS) {
+    if (id === 'owned' && ownedColours() === null) continue
+    if (sameSet(hidden, hiddenForPreset(id))) return id
+  }
+  return null
+}
+
+/**
+ * The preset buttons, plus the follow-the-selection toggle.
+ *
+ * Shared by the settings pane and each overlay's own menu. They differ only in where the answer is
+ * written and read — one the global filter, the other one overlay's — so the buttons themselves have
+ * no business knowing which is which.
+ */
 export const colourPresets = (
   apply: (hidden: number[]) => void,
   rerender: () => void,
+  scope: {
+    /** The filter as it stands, so the matching button can show itself as the one in effect. */
+    readonly hidden: readonly number[]
+    readonly onlySelected: boolean
+    readonly setOnlySelected: (next: boolean) => void
+  },
 ): HTMLElement => {
   const presets = document.createElement('div')
   // Wraps: the panel is user-resizable and a fifth control was already enough to push the last one
   // off the edge at the default width.
   presets.className = 'flex flex-wrap gap-1'
+  // The row owns the space beneath it, so it stands off the swatches wherever it is used. The
+  // settings pane had this from its own wrapper; the overlay menu has no wrapper, and the grid sat
+  // flush against the buttons.
+  presets.style.marginBottom = '0.5rem'
+  const active = activePreset(scope.hidden)
   // The labels are the labels. Nothing here needs a sentence.
   for (const [id, label] of PRESETS) {
     const button = document.createElement('button')
     button.type = 'button'
-    button.className = 'btn btn-xs'
+    // btn-primary, the same blue the rail button wears while the panel is open. btn-active is only a
+    // slightly darker grey in wplace's theme, which reads as a hover state rather than as a setting
+    // that is switched on — and a row where one grey button is "on" is a row that has to be studied.
+    button.className = id === active ? 'btn btn-xs btn-primary' : 'btn btn-xs'
+    button.dataset.wtsPreset = id
+    button.setAttribute('aria-pressed', String(id === active))
     button.textContent = label
     if (id === 'owned' && ownedColours() === null) {
       // Only disabled when we genuinely could not ask — signed out, or wplace refused.
@@ -145,8 +201,34 @@ export const colourPresets = (
     })
     presets.appendChild(button)
   }
-  presets.appendChild(onlySelectedToggle(rerender))
+  presets.appendChild(onlySelectedToggle(scope.onlySelected, scope.setOnlySelected, rerender))
+
+  // A set of its own gets no label. "Custom" said what the row already says by having nothing lit,
+  // and it said it on a line of its own that pushed the swatches down whenever it appeared.
   return presets
+}
+
+/**
+ * Restate which preset is in effect, without rebuilding the row.
+ *
+ * The settings pane never needs this because it rebuilds itself wholesale. The per-overlay menu
+ * deliberately does not — a rebuild mid-drag takes a slider out from under the pointer — so its
+ * preset buttons stayed exactly as they were drawn: clicking "Free" filtered the overlay and lit
+ * nothing, and the row went on claiming the filter from whenever the menu was opened.
+ */
+export const setPresetState = (
+  root: ParentNode,
+  hidden: readonly number[],
+  onlySelected: boolean,
+): void => {
+  const active = activePreset(hidden)
+  for (const element of root.querySelectorAll<HTMLElement>('[data-wts-preset]')) {
+    const id = element.dataset.wtsPreset
+    // Two independent answers, not one choice between five buttons.
+    const on = id === ONLY_SELECTED ? onlySelected : id === active
+    element.classList.toggle('btn-primary', on)
+    element.setAttribute('aria-pressed', String(on))
+  }
 }
 
 /**
@@ -157,11 +239,17 @@ export const colourPresets = (
  * open, because before that there is no colour being placed. Turning it off gives back whatever was
  * switched off by hand, since it never wrote to that set.
  */
-export const onlySelectedToggle = (rerender: () => void): HTMLButtonElement => {
-  const on = getState().onlySelectedColour
+export const onlySelectedToggle = (
+  on: boolean,
+  setOn: (next: boolean) => void,
+  rerender: () => void,
+): HTMLButtonElement => {
   const button = document.createElement('button')
   button.type = 'button'
-  button.className = on ? 'btn btn-xs btn-active' : 'btn btn-xs'
+  // The same blue as the presets it sits beside: it is one more way of answering "which colours",
+  // so it has to look switched on the same way they do.
+  button.className = on ? 'btn btn-xs btn-primary' : 'btn btn-xs'
+  button.dataset.wtsPreset = ONLY_SELECTED
   // A palette, because that is what wplace puts on the same idea — their own control for this reads
   // "Highlight selected color" behind a palette icon. Borrowing the symbol means someone who has
   // used theirs recognises ours without reading anything.
@@ -174,8 +262,19 @@ export const onlySelectedToggle = (rerender: () => void): HTMLButtonElement => {
       : 'Highlighting the selected colour — open wplace’s paint drawer to pick one'
   button.setAttribute('aria-label', 'Highlight the selected colour')
   button.setAttribute('aria-pressed', String(on))
+  /**
+   * What it does next comes from the button, not from the closure.
+   *
+   * `on` is the state at the moment the row was built. The settings pane rebuilds itself, so there
+   * it is never stale; the per-overlay menu deliberately never rebuilds, so it was stale from the
+   * first click onwards — the mode went on and then every further click asked for it to go on again.
+   * The only way back out was to close the menu, or to pick a preset and lose the filter as well.
+   *
+   * `aria-pressed` is the live answer: `setPresetState` writes it whenever the filter moves, so it
+   * is exactly the state the button is currently drawn in.
+   */
   button.addEventListener('click', () => {
-    setState({ onlySelectedColour: !on })
+    setOn(button.getAttribute('aria-pressed') !== 'true')
     rerender()
   })
   return button
@@ -193,11 +292,19 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
 
   wrap.appendChild(
     withPadding(
-      colourPresets((next) => {
-        // Picking a preset is an explicit statement about which colours to show, so it takes the
-        // wheel back from the follow-the-selection mode rather than being silently overridden by it.
-        setState({ hiddenColours: next, onlySelectedColour: false })
-      }, rerender),
+      colourPresets(
+        (next) => {
+          // The mode is left alone. It is a way of looking at the set, not a member of it, so a
+          // preset chosen while it runs says what to come back to rather than cancelling it.
+          setState({ hiddenColours: next })
+        },
+        rerender,
+        {
+          hidden: getState().hiddenColours,
+          onlySelected: getState().onlySelectedColour,
+          setOnlySelected: (next) => setState({ onlySelectedColour: next }),
+        },
+      ),
     ),
   )
 

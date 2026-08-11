@@ -44,6 +44,63 @@ export interface Appearance {
   readonly opacity: number
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]
+  /**
+   * Show only the colour wplace has selected, while its paint drawer is open.
+   *
+   * Scoped the same way the rest of this object is: it beats `hiddenColours` *beside* it and nothing
+   * else. The global mode governs overlays following the global defaults; this one governs the
+   * overlay that owns it. A global mode reaching into an overlay with a filter of its own would be
+   * the union rule again, one level up — the overlay would stop being able to say what it draws.
+   */
+  readonly onlySelectedColour: boolean
+  /**
+   * Mark every pixel the canvas disagrees with.
+   *
+   * Not called "enhance", which is what the scripts this borrows from call it and which says nothing
+   * about what it does. It marks; the thing it draws is a marker.
+   *
+   * Only pixels this overlay is actually drawing can disagree: a filtered colour is one the user has
+   * said to stop showing, and the wildcard index asserts no colour at all, so neither can be wrong.
+   */
+  readonly markMismatch: boolean
+  /**
+   * Count "nothing placed here yet" as a disagreement.
+   *
+   * Off by default, and separate for a reason: on a template being worked through, everything unbuilt
+   * is unpainted, so folding it in marks the entire remainder and buries the handful of pixels that
+   * are actually *wrong*. Finding those is the reason this feature exists.
+   */
+  readonly markUnpainted: boolean
+  /**
+   * How much of a template may still be unpainted before the above stops applying.
+   *
+   * A fraction of the pixels the template asserts a colour for, and the reason the switch above is
+   * usable at all. Turning it on over a template nobody has started is a marker on every pixel of it,
+   * which is a solid wall of crosshairs that says nothing — the answer is already visible, in that
+   * none of it is built. The same switch on a template with eleven pixels left is exactly the map of
+   * what is left to do.
+   *
+   * So the switch means "mark the remainder once there is little enough of it to be a to-do list",
+   * and this is where little enough falls.
+   */
+  readonly unpaintedLimit: number
+}
+
+/**
+ * The most of a template that may be unpainted and still be marked.
+ *
+ * Not a setting. Past a fifth of a template the marks stop being a to-do list and become the shape
+ * of the template redrawn in crosshairs, and every value beyond this one is that with more of it.
+ */
+export const UNPAINTED_LIMIT_MAX = 0.2
+
+/** The limit as a control, so the settings page and the per-overlay menu read the same. */
+export const UNPAINTED_LIMIT_CONTROL = {
+  label: 'Left to do',
+  min: 0,
+  max: UNPAINTED_LIMIT_MAX,
+  step: 0.005,
+  format: (value: number): string => `${(value * 100).toFixed(1)}%`,
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -54,6 +111,10 @@ export const DEFAULT_APPEARANCE: Appearance = {
   rotation: 0,
   opacity: 1,
   hiddenColours: [],
+  onlySelectedColour: false,
+  markMismatch: false,
+  markUnpainted: false,
+  unpaintedLimit: 0.05,
 }
 
 /**
@@ -86,6 +147,15 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     rotation: number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),
     opacity: number('opacity', DEFAULT_APPEARANCE.opacity, 0.05, 1),
     hiddenColours: hidden,
+    onlySelectedColour: source.onlySelectedColour === true,
+    markMismatch: source.markMismatch === true,
+    markUnpainted: source.markUnpainted === true,
+    unpaintedLimit: number(
+      'unpaintedLimit',
+      DEFAULT_APPEARANCE.unpaintedLimit,
+      0,
+      UNPAINTED_LIMIT_MAX,
+    ),
   }
 }
 

@@ -1,8 +1,8 @@
 # Render path: raster intercept vs vector overlay
 
 Type: grilling
-Status: open
-Blocked by: 10
+Status: resolved
+Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/14
 
 ## Question
@@ -225,3 +225,39 @@ Two ways to get that one anchor, neither yet built:
 
 Prefer the second — it needs no content inspection and cannot be confused by two tiles that happen to
 compress to the same size.
+## Answer — 2026-08-08: neither, and the intercept changed jobs
+
+**Vector, in a MapLibre custom layer inside wplace's own canvas.** Not an overlay canvas above the
+map, and not upscaled tiles out of the intercept. The recon it was blocked on came back the good way
+— wplace is MapLibre and a custom layer is reachable — so the raster-first position was overtaken
+before it was built.
+
+The decisive detail is not that MapLibre is reachable but *what is reachable through it*. The layer
+does not reimplement the projection: it reads MapLibre's own `u_projection_matrix` back out of the
+WebGL context by hooking `getUniformLocation` and `uniformMatrix4fv`, and derives each visible tile's
+screen rectangle from the matrix wplace just uploaded. Nothing is recomputed, so nothing can drift.
+
+What follows from being *inside* their canvas rather than above it:
+
+- **Alignment is theirs.** MapLibre snaps raster tiles to whole device pixels only while the map is
+  still (`const align = !painter.options.moving`). Using the aligned matrix removed the last
+  sub-pixel seams between our pixels and theirs; an overlay canvas could never have seen that
+  decision, let alone matched it.
+- **Layer order is a first-class concern**, because we are in their stack: wplace tiles → their
+  overlays → ours → their draft layer → our mismatch markers → their crosshair. Some of that has to
+  be re-asserted per frame, since they add a layer per tile being painted.
+- **No render scale.** There is no per-tile buffer to size, so `S` and its quadratic memory cost
+  simply do not exist. See `14-v1-viewing-modes`.
+- **A stamp mask replaces the atlas.** One 64px mask, rasterised once and tiled at draw time, so
+  shape is resolution-independent rather than carved out of the pixel grid.
+- **Zoom threshold survives, inverted.** Below `MIN_CELL_FOR_SHAPE` (3 device px per cell) shapes
+  stop being drawn and pixels render solid — not a second renderer, one branch. Below 1:1 the shader
+  takes 4×4 taps to kill the moiré that nearest-sampling produced.
+
+**The fetch intercept survived, doing something else entirely.** It no longer composites; it reads.
+The chain `fetch → Blob → ImageBitmap → texImage2D` is hooked to capture each tile's pixels as
+palette indices, which is what the comparison in `31-mismatch-marking` runs against. So the two
+options in this ticket were not exclusive after all — one became the renderer, the other became the
+sensor.
+
+Only one renderer ships. There is no setting.

@@ -5,18 +5,22 @@ import {
   APPEARANCE_CONTROLS,
   type Appearance,
   DEFAULT_APPEARANCE,
+  UNPAINTED_LIMIT_CONTROL,
 } from '../templates/appearance.js'
+import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
   appearanceOf,
+  isTemplateVisible,
   localTemplates,
   removeLocalTemplate,
   setAppearance,
   setLocalVisible,
 } from '../templates/local-store.js'
 import { beginMove } from '../templates/move.js'
-import { colourPresets, paletteSwatch, setSwatchState } from './colours.js'
+import { isDrawingTiles } from '../tile-transform.js'
+import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
-import { icon } from './icons.js'
+import { type IconName, icon } from './icons.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
 
 /**
@@ -73,7 +77,13 @@ const rightEdge = (): number => {
 export const isOverlayMenuOpen = (id: string): boolean => openFor === id
 
 const slider = (
-  control: (typeof APPEARANCE_CONTROLS)[number],
+  control: {
+    label: string
+    min: number
+    max: number
+    step: number
+    format: (value: number) => string
+  },
   value: number,
   onChange: (next: number) => void,
 ): HTMLElement => {
@@ -109,20 +119,34 @@ const slider = (
   return wrap
 }
 
-const section = (title: string): HTMLElement => {
-  const el = document.createElement('h4')
-  el.className = 'text-xs font-semibold opacity-60 uppercase tracking-wide'
-  el.style.padding = '0.5rem 0 0.25rem'
-  el.textContent = title
-  return el
+/**
+ * The settings pane's section header, at this menu's scale.
+ *
+ * Same chip, same icon, same weight — these are the same settings in a different place, and two
+ * treatments of one idea made them read as two features. Only the padding differs, because this menu
+ * has no indent to sit inside.
+ */
+const section = (title: string, glyph: IconName): HTMLElement => {
+  const row = document.createElement('div')
+  row.className = 'flex items-center gap-2'
+  row.style.padding = '0.625rem 0 0.25rem'
+  const chip = document.createElement('span')
+  chip.className = 'bg-base-200 flex items-center justify-center'
+  Object.assign(chip.style, {
+    borderRadius: '0.5rem',
+    width: '1.5rem',
+    height: '1.5rem',
+    flex: '0 0 auto',
+  })
+  chip.appendChild(icon(glyph, 'size-3'))
+  const heading = document.createElement('h4')
+  heading.className = 'text-sm font-semibold'
+  heading.textContent = title
+  row.append(chip, heading)
+  return row
 }
 
-const buildMenu = (
-  id: string,
-  appearance: Appearance,
-  visible: boolean,
-  rerender: () => void,
-): HTMLElement => {
+const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElement => {
   const menu = document.createElement('div')
   menu.id = MENU_ID
   menu.className = 'bg-base-100 shadow-2xl'
@@ -131,7 +155,10 @@ const buildMenu = (
     // Below the panel's 30. When the window is too narrow for the clamp to keep this clear of the
     // panel, something has to give, and the panel is the surface being deliberately worked in.
     zIndex: '29',
-    width: '15rem',
+    // Wide enough for the four presets and the palette toggle on one line, and — once its padding is
+    // taken off — for the swatch grid's eight-column step. A hair narrower and the palette fell back
+    // to four columns, which is the whole thing twice as tall for no gain.
+    width: '19.5rem',
     // 12px, the same as the panel and every other popout here.
     borderRadius: '0.75rem',
     padding: '0.75rem',
@@ -249,7 +276,7 @@ const buildMenu = (
   header.append(title, hide, move, remove, close)
   menu.appendChild(header)
 
-  const pixels = section('Pixels')
+  const pixels = section('Pixels', 'tune')
   pixels.className = `${pixels.className} flex items-center justify-between gap-2`
   menu.appendChild(pixels)
 
@@ -288,13 +315,50 @@ const buildMenu = (
   defaults.append(defaultsBox, defaultsText)
   pixels.appendChild(defaults)
 
+  /**
+   * Everything "use defaults" governs, so it can be switched off as one thing.
+   *
+   * While defaults are on, these controls describe values this overlay does not own. Leaving them
+   * live meant the only way to discover that was to move one and watch the tick come off by itself —
+   * the control worked, but not in the way it appeared to: it silently detached the overlay from the
+   * defaults as a side effect. Dimmed and inert, the tick reads as the switch it is.
+   */
+  const overrides = document.createElement('div')
+  Object.assign(overrides.style, { display: 'contents' })
+
   for (const control of APPEARANCE_CONTROLS) {
-    menu.appendChild(
+    overrides.appendChild(
       slider(control, current()[control.key], (value) => update({ [control.key]: value })),
     )
   }
 
-  menu.appendChild(section('Colours'))
+  overrides.appendChild(section('Mismatches', 'search'))
+  for (const [key, label] of [
+    ['markMismatch', 'Mark mismatched'],
+    ['markUnpainted', 'Count unpainted'],
+  ] as const) {
+    const row = document.createElement('label')
+    row.className = 'flex items-center gap-2 text-xs font-normal'
+    row.style.textTransform = 'none'
+    row.style.letterSpacing = 'normal'
+    const box = document.createElement('input')
+    box.type = 'checkbox'
+    box.className = 'checkbox checkbox-xs'
+    box.checked = current()[key]
+    box.addEventListener('change', () => update({ [key]: box.checked }))
+    const text = document.createElement('span')
+    text.textContent = label
+    row.append(box, text)
+    overrides.appendChild(row)
+  }
+  // How little may be left before "count unpainted" applies. Beside the switch it qualifies.
+  overrides.appendChild(
+    slider(UNPAINTED_LIMIT_CONTROL, current().unpaintedLimit, (value) =>
+      update({ unpaintedLimit: value }),
+    ),
+  )
+
+  overrides.appendChild(section('Colours', 'palette'))
 
   const gridWrap = document.createElement('div')
   gridWrap.className = 'wts-swatches'
@@ -308,40 +372,84 @@ const buildMenu = (
    * not, so a swatch clicked here changed the canvas and then sat there looking exactly as it had.
    * A preset moves dozens at once, so this walks all of them rather than the one that was clicked.
    */
+  /**
+   * What this overlay is actually drawing right now, which is not always what its switches say.
+   *
+   * While its "only selected" mode is on and wplace's drawer is open, the mode is the filter. Paint
+   * the grid from the switches underneath and it shows a palette the canvas is not obeying.
+   */
+  const effective = (): readonly number[] => {
+    const found = localTemplates().find((candidate) => candidate.id === id)
+    return hiddenColoursFor(found?.appearance ?? null)
+  }
+
   const refreshSwatches = (): void => {
-    const off = new Set(current().hiddenColours)
+    const off = new Set(effective())
     for (const element of grid.children) {
       if (!(element instanceof HTMLElement)) continue
       setSwatchState(element, !off.has(Number(element.dataset.index)))
     }
+    // The preset row reads the same filter, so it goes stale in the same way and on the same events.
+    setPresetState(menu, current().hiddenColours, current().onlySelectedColour)
   }
 
   // The same presets as settings, applied to this overlay's own filter. Reaching them should not
   // mean opening the panel when this menu is already the thing being looked at.
-  menu.appendChild(
-    colourPresets((next) => {
-      update({ hiddenColours: next })
-      refreshSwatches()
-    }, rerender),
+  overrides.appendChild(
+    colourPresets(
+      (next) => {
+        // Same as the global row: the mode is left running. A preset says which colours this
+        // overlay claims, which is a different question from which one is being looked at.
+        update({ hiddenColours: next })
+        refreshSwatches()
+      },
+      rerender,
+      {
+        hidden: current().hiddenColours,
+        onlySelected: current().onlySelectedColour,
+        setOnlySelected: (next) => {
+          update({ onlySelectedColour: next })
+          refreshSwatches()
+        },
+      },
+    ),
   )
 
-  const hidden = new Set(appearance.hiddenColours)
+  const hidden = new Set(effective())
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
     grid.appendChild(
       paletteSwatch(colour, !hidden.has(colour.index), () => {
-        // Current, not captured — same reason as every other control here.
-        const next = new Set(current().hiddenColours)
+        // Whatever is on screen is what a click is aimed at, so a colour switched off by the mode
+        // toggles from *there* — and clicking at all is an explicit choice, which takes the wheel
+        // back from the mode rather than being silently overridden by it on the next frame.
+        const next = new Set(effective())
         if (next.has(colour.index)) next.delete(colour.index)
         else next.add(colour.index)
-        update({ hiddenColours: [...next] })
+        update({ hiddenColours: [...next], onlySelectedColour: false })
         refreshSwatches()
         rerender()
       }),
     )
   }
   gridWrap.appendChild(grid)
-  menu.appendChild(gridWrap)
+  overrides.appendChild(gridWrap)
+
+  // `display: contents` leaves no box to fade, so the dimming goes on the children — which is also
+  // what keeps the "use defaults" row itself at full strength while everything it governs recedes.
+  for (const child of overrides.children) {
+    if (!(child instanceof HTMLElement)) continue
+    child.style.opacity = usingDefaults ? '0.7' : ''
+  }
+  if (usingDefaults) {
+    overrides.style.pointerEvents = 'none'
+    // Disabled as well as inert: pointer-events alone still leaves every slider and swatch in the
+    // tab order, reachable and operable by keyboard.
+    for (const control of overrides.querySelectorAll('input, button, select')) {
+      if (control instanceof HTMLElement) control.setAttribute('disabled', '')
+    }
+  }
+  menu.appendChild(overrides)
   return menu
 }
 
@@ -379,10 +487,25 @@ export const renderOverlayControls = (rerender: () => void): void => {
     )
     let button = document.getElementById(buttonId)
 
+    // Off the canvas entirely: nothing to anchor to, so there is nothing to keep.
     if (topLeft === null || bottomRight === null) {
       button?.remove()
       if (openFor === template.id) document.getElementById(MENU_ID)?.remove()
       continue
+    }
+
+    // A hidden overlay is hidden by any route — its own switch, a folder it sits in, or the whole of
+    // Local being off — and a button pointing at an overlay that is not drawn is a control with no
+    // subject. It fades on the same curve and over the same time as the overlay it belongs to, so
+    // the two leave together instead of the button blinking out over a template still fading.
+    //
+    // Zooming out past the point where wplace stops serving tiles counts as not drawn. The overlay
+    // stops there too — there is nothing left under it to annotate — so a button left behind would
+    // be anchored to a template that is no longer on the map.
+    const shown = isTemplateVisible(template) && isDrawingTiles()
+    if (!shown && openFor === template.id) {
+      openFor = null
+      document.getElementById(MENU_ID)?.remove()
     }
     if (button === null) {
       button = document.createElement('button')
@@ -398,6 +521,8 @@ export const renderOverlayControls = (rerender: () => void): void => {
       button.style.position = 'fixed'
       // Behind the panel too, for the same reason, and below the menu it opens.
       button.style.zIndex = '28'
+      // Matches the overlay's own ramp in `gl/layer.ts`, in both duration and curve.
+      button.style.transition = 'opacity 500ms ease-in-out'
       button.addEventListener('click', (event) => {
         event.stopPropagation()
         if (openFor === template.id) closeOverlayMenu()
@@ -406,6 +531,12 @@ export const renderOverlayControls = (rerender: () => void): void => {
       })
       document.body.appendChild(button)
     }
+    button.style.opacity = shown ? '1' : '0'
+    // Not just invisible: an opacity-0 button is still clickable and still in the tab order.
+    button.style.pointerEvents = shown ? '' : 'none'
+    button.setAttribute('aria-hidden', String(!shown))
+    button.tabIndex = shown ? 0 : -1
+
     const size = button.getBoundingClientRect().width || 40
 
     /**
@@ -454,7 +585,7 @@ export const renderOverlayControls = (rerender: () => void): void => {
     if (!isOpen) continue
     let menu = document.getElementById(MENU_ID)
     if (menu === null) {
-      menu = buildMenu(template.id, appearanceOf(template), template.visible, rerender)
+      menu = buildMenu(template.id, template.visible, rerender)
       document.body.appendChild(menu)
     }
     // The same anchoring as the button, measured against the menu's own size rather than reusing

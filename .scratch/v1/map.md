@@ -1,7 +1,10 @@
-# wplace template server — v1
+# Caelestis — v1
 
 Label: `wayfinder:map`
-GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/1
+GitHub: https://github.com/mia-riezebos/Caelestis/issues/1
+
+The project is named **Caelestis**, and the repo moved to `mia-riezebos/Caelestis` on 2026-08-08.
+Older links here still resolve through GitHub's redirect.
 
 ## Destination
 
@@ -10,6 +13,12 @@ userscript that renders those templates over wplace.live with viewing modes and 
 
 Spec-driven, but not spec-only — as tickets resolve we write prototypes and code, and keep the spec
 updated until v1 actually runs.
+
+**Standing risk, learned the hard way (2026-08-08).** "Not spec-only" cuts both ways: a long
+implementation stretch left this map claiming a raster renderer we had already replaced, and its
+frontier was three recon tickets that building had answered weeks earlier. Anything that gets
+*decided by being built* still has to come back here, or the map quietly starts misdirecting whoever
+reads it next.
 
 ## Notes
 
@@ -20,7 +29,7 @@ updated until v1 actually runs.
   modules, esbuild, Violentmonkey. **wplace itself is SvelteKit + Tailwind + DaisyUI, and the
   userscript should look at home in it** — by adopting DaisyUI's theme variables through the shadow
   boundary, never their purged utility classes. See `19-shared-ui-components`. Turborepo + pnpm: `apps/{backend,userscript,frontend}`,
-  `packages/{shared,ui}`.
+  `packages/{shared,ui,wire-schema}`.
 - **All UI is userscript-side in v1**, and the userscript shows **current state and alarms only** —
   no charts, no history, no pace. Everything time-series is frontend-only for now, and may come back
   to the userscript once the frontend has designed that UI. This narrows the userscript's read
@@ -55,8 +64,10 @@ updated until v1 actually runs.
   the client) computes diffs, anchors, and repair classification.
 - [Repo layout & build pipeline](issues/12-repo-layout-and-build.md) — turborepo + pnpm, backend wired to
   Cloudflare behind three port interfaces, `wrangler dev` locally, vitest against in-memory adapters.
-- [Rendering model](issues/05-rendering-model.md) — tile-fetch interception, culling by tile-index
-  lookup, viewing modes as one `{shape, size, anchor, opacity}` parameterisation.
+- [Rendering model](issues/05-rendering-model.md) — one parameterisation rather than a mode list;
+  colour filtering is part of the model, with an overlay's own set overriding the global one and
+  follow-the-selection as a mode above both. **Amended 2026-08-08**: culling is the tile quads wplace
+  drew this frame, recovered from their own matrix, not a tile-index lookup.
 - [Bucket attribution by event time](issues/22-bucket-attribution-by-event-time.md) — counters are
   bucketed by event time, not flush time; only buckets closed past a 30s grace are flushed; flushed
   buckets are retained an hour so a late arrival rewrites the cumulative total; past that, dropped
@@ -66,6 +77,30 @@ updated until v1 actually runs.
   every ladder tier; the DO is a write-absorption buffer for live counters and sub-1m data.
   `shardStrategy: 'single'` in v1, `per-template` and `dynamic` stubbed. `wrangler dev` locally.
   Free-tier viable for small alliances.
+- [Recon: wplace tile serving](issues/06-recon-tile-serving.md) — `/files/s0/tiles/{x}/{y}.png`,
+  1000², in-range unpainted returns a near-empty 200 and only out-of-range 404s. The read path is
+  `fetch → arrayBuffer → Blob → ImageBitmap → texImage2D`, and identity survives none of it, so the
+  tag rides on the buffer.
+- [Recon: wplace colour palette](issues/09-recon-palette.md) — 63 colours committed as
+  `WPLACE_PALETTE` with the free/premium split. Index 63 is a **wildcard** in a template, asserting
+  nothing; `UNPAINTED = 255` is our own sentinel, outside their palette, because wplace store colour
+  and absence as the same value.
+- [Recon: map stack & triangle mode](issues/10-recon-map-stack-and-triangle-mode.md) — MapLibre,
+  custom layers reachable from a userscript, the map instance capturable at construction, and the
+  projection matrix readable back out of the GL context. They never mipmap.
+- [Render path](issues/13-render-path.md) — **vector, in a custom layer inside wplace's own canvas**,
+  reversing the raster-first position. The fetch intercept survived doing the opposite job: it reads
+  tile pixels rather than compositing them.
+- [v1 viewing modes & render scale](issues/14-v1-viewing-modes.md) — no modes and no render scale.
+  Size, rounding, offset, rotation and opacity over a 64px stamp mask; anchors dissolved into offset.
+  Colour presets (All/Free/Premium/Owned) are the only presets that survived.
+- [Per-overlay controls on the map](issues/29-per-overlay-map-controls.md) — both surfaces ship: a
+  rail button opening the tree and defaults, and a button beside each overlay owning that overlay.
+  The menu never rebuilds itself, so every control in it restates itself in place.
+- [Mismatch marking & the client-side pixel store](issues/31-mismatch-marking.md) — three arrays per
+  tile (server, draft, template), compared on a worker thread, drawn as fixed-device-size crosshairs
+  from a CPU-side list. Drafted-Transparent is read from wplace's crosshair annotations, the only
+  place it is distinguishable. Marking unpainted pixels is gated on how little is left.
 
 ### Settled by building it — 2026-08-09
 
@@ -173,14 +208,20 @@ userscript has nowhere to report to. Everything else it needs from a server — 
 - ~~Empty-tile synthesis behaviour~~ — **dissolved.** In-range unpainted tiles return 200 with a
   near-empty PNG; only out-of-range coordinates 404. The canvas is Web Mercator zoom 11, 2048×2048
   tiles. There is no synthesis path and nothing to fabricate. See `06-recon-tile-serving`.
-- **The two userscript surfaces** — a primary menu button in wplace's own right-hand rail opening a
-  drawer with the whole node tree, and a three-dot button to the right of each overlay, top-aligned,
-  expanding into that overlay's display mode, opacity, mismatch highlighting, colour filters and
-  focus. Captured in
-  [Per-overlay controls on the map](issues/29-per-overlay-map-controls.md). Carries two things the
-  viewing-modes ticket does not: mismatch highlighting is a new axis outside
-  `{shape, size, anchor, opacity}`, and a progress chart there would contradict the userscript's
-  current-state-only read surface.
+- **The telemetry write path is the gap between here and a running v1.** The DO shard exists and is
+  tested; no route mounts it, and the userscript reports nothing. Everything else the userscript
+  needs from a server — manifest, nodes, templates, chunks, tokens — is mounted and in use.
+- **Cache invalidation for shared templates.** The server owns shared templates and the manifest
+  says when one changed; the userscript now caches them locally, so it needs a settled answer for
+  re-fetch on change, and for what happens when a cached template's server says it is gone. See the
+  2026-08-08 amendment on `01-template-storage-and-chunk-model`.
+- **Promoting a locally-imported template to a shared one** — in place, or re-upload.
+- **Does the palette grow?** A new colour would not break stored templates, but it would silently
+  change what `Owned` and `Free` mean, and what a validated upload was validated against.
+
+Newly ticketed rather than fog: whether a server can verify alliance membership itself, rather than
+trusting the client's `/me` claim — [Can a server verify alliance membership
+itself?](https://github.com/mia-riezebos/Caelestis/issues/51).
 - **Multi-server merge UX** — how conflicting/overlapping templates from different servers are
   surfaced, and where the "what did this server just add" trust diff lives in the userscript UI.
 - **Admin surface without a web frontend** — how an alliance leader uploads templates and edits the
