@@ -140,6 +140,54 @@ export const createRerenderGate = (
 
 export const toastMount = <T>(panel: T | null, page: T): T => panel ?? page
 
+export const PAGE_TOAST_STYLE = {
+  position: 'fixed',
+  right: '4rem',
+  bottom: '1rem',
+  zIndex: '20',
+  maxWidth: '24rem',
+  maxHeight: 'min(8rem, calc(100vh - 2rem))',
+  overflow: 'auto',
+  overflowWrap: 'anywhere',
+} as const
+
+export interface TransientStatus {
+  readonly text: string
+  readonly className: string
+  readonly display: string
+  readonly role: string
+  readonly live: string
+}
+
+export const readTransientStatus = (element: {
+  readonly textContent: string | null
+  readonly className: string
+  readonly style: { readonly display: string }
+  getAttribute: (name: string) => string | null
+}): TransientStatus => ({
+  text: element.textContent ?? '',
+  className: element.className,
+  display: element.style.display,
+  role: element.getAttribute('role') ?? 'status',
+  live: element.getAttribute('aria-live') ?? 'polite',
+})
+
+export const restoreTransientStatus = (
+  element: {
+    textContent: string | null
+    className: string
+    readonly style: { display: string }
+    setAttribute: (name: string, value: string) => void
+  },
+  status: TransientStatus,
+): void => {
+  element.textContent = status.text
+  element.className = status.className
+  element.style.display = status.display
+  element.setAttribute('role', status.role)
+  element.setAttribute('aria-live', status.live)
+}
+
 export const once = (run: () => void): (() => void) => {
   let pending = true
   return () => {

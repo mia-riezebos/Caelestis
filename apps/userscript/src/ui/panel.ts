@@ -52,7 +52,11 @@ import {
   IMPORT_ACCEPT,
   importedImageNextStep,
   once,
+  PAGE_TOAST_STYLE,
+  readTransientStatus,
   restoreConnectedFocus,
+  restoreTransientStatus,
+  type TransientStatus,
   toastMount,
 } from './panel-workflow.js'
 import { type SortOrder, sortControl } from './sort.js'
@@ -558,6 +562,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   submit.textContent = 'Connect'
 
   const status = document.createElement('p')
+  status.dataset.wtsDraftStatus = `server:${server.url}`
   status.className = 'text-xs opacity-60'
   status.style.marginTop = '0.25rem'
   announce(status, 'This server needs an access code from whoever runs it.')
@@ -631,6 +636,7 @@ const settingsView = (): HTMLElement => {
   add.className = 'btn btn-sm btn-primary'
   add.textContent = 'Add'
   const status = document.createElement('p')
+  status.dataset.wtsDraftStatus = 'connect'
   status.className = 'text-xs px-3 pb-2'
   status.style.display = 'none'
   status.setAttribute('role', 'status')
@@ -690,6 +696,8 @@ const settingsView = (): HTMLElement => {
       return
     }
     url.value = ''
+    status.textContent = ''
+    status.style.display = 'none'
     // Re-render so the new server's row appears — it is what carries the status badge and, when the
     // server wants one, the access-code field. Without this the panel reported "needs a code" and
     // then offered nowhere to type one.
@@ -732,13 +740,7 @@ const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): vo
   el.setAttribute('aria-live', kind === 'error' ? 'assertive' : 'polite')
   Object.assign(el.style, { margin: '0 0.5rem 0.5rem', padding: '0.5rem 0.75rem' })
   if (panel === null) {
-    Object.assign(el.style, {
-      position: 'fixed',
-      right: '4rem',
-      bottom: '1rem',
-      zIndex: '60',
-      maxWidth: '24rem',
-    })
+    Object.assign(el.style, PAGE_TOAST_STYLE)
   }
   el.textContent = message
   mount.appendChild(el)
@@ -1723,6 +1725,7 @@ const buildPanel = (): HTMLElement => {
 interface SettingsDrafts {
   readonly serverUrl: string
   readonly accessCodes: ReadonlyMap<string, string>
+  readonly statuses: ReadonlyMap<string, TransientStatus>
   readonly focused: {
     readonly kind: 'url' | 'code'
     readonly server?: string
@@ -1740,6 +1743,11 @@ const settingsDrafts = (panel: HTMLElement): SettingsDrafts => {
     const server = input.dataset.wtsDraftCode
     if (server !== undefined) accessCodes.set(server, input.value)
   }
+  const statuses = new Map<string, TransientStatus>()
+  for (const status of panel.querySelectorAll<HTMLElement>('[data-wts-draft-status]')) {
+    const key = status.dataset.wtsDraftStatus
+    if (key !== undefined) statuses.set(key, readTransientStatus(status))
+  }
   const active = document.activeElement
   let focused: SettingsDrafts['focused'] = null
   if (active instanceof HTMLInputElement) {
@@ -1756,7 +1764,7 @@ const settingsDrafts = (panel: HTMLElement): SettingsDrafts => {
     }
   }
   const scrollTop = panel.querySelector<HTMLElement>('[data-wts-settings-scroll]')?.scrollTop ?? 0
-  return { serverUrl, accessCodes, focused, scrollTop }
+  return { serverUrl, accessCodes, statuses, focused, scrollTop }
 }
 
 const restoreSettingsDrafts = (panel: HTMLElement, drafts: SettingsDrafts): void => {
@@ -1765,6 +1773,11 @@ const restoreSettingsDrafts = (panel: HTMLElement, drafts: SettingsDrafts): void
   for (const input of panel.querySelectorAll<HTMLInputElement>('[data-wts-draft-code]')) {
     const value = input.dataset.wtsDraftCode
     if (value !== undefined) input.value = drafts.accessCodes.get(value) ?? ''
+  }
+  for (const status of panel.querySelectorAll<HTMLElement>('[data-wts-draft-status]')) {
+    const key = status.dataset.wtsDraftStatus
+    const saved = key === undefined ? undefined : drafts.statuses.get(key)
+    if (saved !== undefined) restoreTransientStatus(status, saved)
   }
   const scroller = panel.querySelector<HTMLElement>('[data-wts-settings-scroll]')
   if (scroller !== null) scroller.scrollTop = drafts.scrollTop

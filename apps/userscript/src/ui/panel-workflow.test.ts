@@ -10,7 +10,10 @@ import {
   IMPORT_ACCEPT,
   importedImageNextStep,
   once,
+  PAGE_TOAST_STYLE,
+  readTransientStatus,
   restoreConnectedFocus,
+  restoreTransientStatus,
   shouldDeferPanelRerender,
   shouldNavigateAfterImport,
   toastMount,
@@ -108,6 +111,39 @@ describe('panel workflow ownership', () => {
   it('mounts asynchronous notices on the page when the panel was closed', () => {
     const body = {}
     expect(toastMount(null, body)).toBe(body)
+  })
+
+  it('preserves a terminal form status across a deferred settings rebuild', () => {
+    const original = {
+      textContent: 'That code was not accepted.',
+      className: 'text-xs text-error',
+      style: { display: '' },
+      getAttribute: (name: string) => (name === 'role' ? 'alert' : 'assertive'),
+    }
+    const replacement = {
+      textContent: 'generic',
+      className: 'text-xs opacity-60',
+      style: { display: 'none' },
+      setAttribute: vi.fn(),
+    }
+
+    restoreTransientStatus(replacement, readTransientStatus(original))
+
+    expect(replacement).toEqual(
+      expect.objectContaining({
+        textContent: 'That code was not accepted.',
+        className: 'text-xs text-error',
+        style: { display: '' },
+      }),
+    )
+    expect(replacement.setAttribute).toHaveBeenCalledWith('role', 'alert')
+    expect(replacement.setAttribute).toHaveBeenCalledWith('aria-live', 'assertive')
+  })
+
+  it('keeps page-level notices bounded below the panel and host chrome', () => {
+    expect(Number(PAGE_TOAST_STYLE.zIndex)).toBeLessThan(30)
+    expect(PAGE_TOAST_STYLE.maxHeight).toBeTruthy()
+    expect(PAGE_TOAST_STYLE.overflow).toBe('auto')
   })
 
   it('runs a completed workflow closer only once', () => {
