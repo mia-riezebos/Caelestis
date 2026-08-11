@@ -268,6 +268,35 @@ describe('server state boundaries', () => {
     )
   })
 
+  it('publishes each stored-server refresh as soon as that server settles', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(manifest), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ nodes: [] }), { status: 200 })),
+    )
+    const { refreshStoredServers, setState } = await import('./state.js')
+    setState({
+      servers: [
+        {
+          url: 'https://example.com',
+          info: serverInfo,
+          token: null,
+          status: 'unreachable',
+          isAdmin: false,
+          season: null,
+        },
+      ],
+    })
+    const refreshed = vi.fn()
+
+    await refreshStoredServers(refreshed)
+
+    expect(refreshed).toHaveBeenCalledOnce()
+  })
+
   it('refreshes at most four stored servers concurrently', async () => {
     const pending: Array<(response: Response) => void> = []
     let active = 0
@@ -347,6 +376,58 @@ describe('server state boundaries', () => {
         isAdmin: false,
       }),
     )
+  })
+
+  it('marks any rejected credential stale without erasing it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(null, { status: 401 }))),
+    )
+    const { getState, renameNode, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: { ...serverInfo, auth: 'none' as const },
+      token: 'unexpected-but-retained',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+
+    await renameNode(server, NODE_A, 'Renamed')
+
+    expect(getState().servers[0]).toEqual(
+      expect.objectContaining({
+        token: 'unexpected-but-retained',
+        status: 'needs-token',
+        isAdmin: false,
+      }),
+    )
+  })
+
+  it('does not surface a non-string remote error as a UI message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify({ error: { nested: true } }), { status: 409 })),
+      ),
+    )
+    const { renameNode } = await import('./state.js')
+
+    await expect(
+      renameNode(
+        {
+          url: 'https://example.com',
+          info: serverInfo,
+          token: null,
+          status: 'connected',
+          isAdmin: true,
+          season: 0,
+        },
+        NODE_A,
+        'Renamed',
+      ),
+    ).resolves.toEqual({ ok: false, message: 'Server said 409.' })
   })
 
   it('distinguishes a failed node listing from a valid empty collection', async () => {

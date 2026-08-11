@@ -258,9 +258,10 @@ const manifestTileKey = (value: unknown): value is string => {
  * The userscript deliberately keeps Effect out of its browser bundle, so this mirrors the wire
  * boundary with the limits and relationships that protect its later tree/render consumers.
  */
-const manifestContentsValid = (value: Record<string, unknown>): boolean => {
-  const nodes = treeNodesFrom(value.nodes)
-  if (nodes === null) return false
+const manifestContentsValid = (
+  value: Record<string, unknown>,
+  nodes: readonly TreeNode[],
+): boolean => {
   const rawNodes = value.nodes as readonly unknown[]
   if (
     rawNodes.some(
@@ -343,7 +344,7 @@ const manifestContentsValid = (value: Record<string, unknown>): boolean => {
 const manifestProbeFrom = (
   value: unknown,
   expected: ServerInfo,
-): { season: number; server: ServerInfo } | null => {
+): { season: number; server: ServerInfo; nodes: readonly TreeNode[] } | null => {
   if (
     !isRecord(value) ||
     typeof value.version !== 'string' ||
@@ -354,8 +355,9 @@ const manifestProbeFrom = (
   if (!Number.isSafeInteger(value.season) || Number(value.season) < 0) return null
   const server = serverInfoFrom(value.server)
   if (server === null || server.id !== expected.id) return null
-  if (!manifestContentsValid(value)) return null
-  return { season: Number(value.season), server }
+  const nodes = treeNodesFrom(value.nodes)
+  if (nodes === null || !manifestContentsValid(value, nodes)) return null
+  return { season: Number(value.season), server, nodes }
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: the GM_* API only exists under a userscript manager
@@ -541,6 +543,36 @@ const fetchNodes = async (
   }
 }
 
+/** Establish admin scope without downloading the same tree a second time after the manifest. */
+const probeAdminScope = async (
+  base: string,
+  token: string | null,
+  season: number,
+  signal?: AbortSignal,
+): Promise<boolean> => {
+  const controller = new AbortController()
+  const forwardAbort = (): void => controller.abort(signal?.reason)
+  if (signal?.aborted) forwardAbort()
+  else signal?.addEventListener('abort', forwardAbort, { once: true })
+  const timeout = setTimeout(
+    () => controller.abort(new Error('request timed out')),
+    LARGE_TRANSFER_TIMEOUT_MS,
+  )
+  try {
+    const response = await fetch(`${base}/admin/nodes?season=${season}`, {
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
+    void response.body?.cancel()
+    return response.ok
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', forwardAbort)
+  }
+}
+
 const probedNodes = new WeakMap<ConnectedServer, readonly TreeNode[]>()
 
 /** Consume the node collection already downloaded while verifying admin scope. */
@@ -648,16 +680,16 @@ export const probeServer = async (
     }
     const manifest = manifestProbeFrom(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
-    const admin = await fetchNodes(base, token, manifest.season, signal)
+    const isAdmin = await probeAdminScope(base, token, manifest.season, signal)
     const connected: ConnectedServer = {
       url: base,
       info,
       token,
       status: 'connected',
-      isAdmin: admin.ok,
+      isAdmin,
       season: manifest.season,
     }
-    if (admin.ok) probedNodes.set(connected, admin.nodes)
+    probedNodes.set(connected, manifest.nodes)
     return connected
   } catch (error) {
     // A bad hostname, a refused connection, or a server without CORS all land here, and the
@@ -675,7 +707,7 @@ export const probeServer = async (
 }
 
 /** Revalidate persisted identity, auth and scope without allowing stale requests to resurrect rows. */
-export const refreshStoredServers = async (): Promise<void> => {
+export const refreshStoredServers = async (onRefreshed?: () => void): Promise<void> => {
   const snapshot = [...getState().servers]
   let cursor = 0
   const worker = async (): Promise<void> => {
@@ -685,6 +717,11 @@ export const refreshStoredServers = async (): Promise<void> => {
       const refreshed = await probeServer(server.url, server.token)
       if (getState().servers.find((candidate) => candidate.url === server.url) !== server) continue
       upsertServer(refreshed)
+      try {
+        onRefreshed?.()
+      } catch (error) {
+        warn('install', 'server refresh observer failed', String(error))
+      }
     }
   }
   await Promise.all(
@@ -747,20 +784,22 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
 
 const noteAuthFailure = (server: ConnectedServer, status: number): void => {
   if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
-  const needsToken = status === 401 && server.info?.auth === 'access_token'
+  const needsToken = status === 401
   upsertServer({
     ...server,
-    token: needsToken ? null : server.token,
+    token: server.token,
     status: needsToken ? 'needs-token' : 'connected',
     error: needsToken ? 'authorization expired' : 'admin access required',
     isAdmin: false,
   })
 }
 
-const failure = (response: Response, body: { error?: string } | null): string =>
+const failure = (response: Response, body: Record<string, unknown> | null): string =>
   response.status === 401 || response.status === 403
     ? 'That code cannot change this server — it needs admin access.'
-    : (body?.error ?? `Server said ${response.status}.`)
+    : typeof body?.error === 'string'
+      ? body.error
+      : `Server said ${response.status}.`
 
 export const renameNode = async (
   server: ConnectedServer,

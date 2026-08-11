@@ -13,7 +13,7 @@ import { log, warn } from './debug.js'
  */
 
 let owned: ReadonlySet<number> | null = null
-let loadedAt = 0
+let lastAttemptAt: number | null = null
 let loading: Promise<void> | null = null
 const listeners = new Set<() => void>()
 const ACCOUNT_TIMEOUT_MS = 10_000
@@ -62,7 +62,6 @@ export const ownedColours = (): ReadonlySet<number> | null => owned
 const replaceOwned = (next: ReadonlySet<number> | null): void => {
   if (owned === next || (owned === null && next === null)) return
   owned = next
-  loadedAt = next === null ? 0 : Date.now()
   for (const listener of listeners) listener()
 }
 
@@ -109,11 +108,12 @@ const fetchAccount = async (): Promise<void> => {
     warn('install', 'could not read /me', String(error))
   } finally {
     clearTimeout(timeout)
+    lastAttemptAt = Date.now()
   }
 }
 
 export const loadAccount = async (maxAgeMs = 60_000): Promise<void> => {
-  if (owned !== null && Date.now() - loadedAt < maxAgeMs) return
+  if (lastAttemptAt !== null && Date.now() - lastAttemptAt < maxAgeMs) return
   if (loading !== null) return loading
   loading = fetchAccount().finally(() => {
     loading = null

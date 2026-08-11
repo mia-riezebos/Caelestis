@@ -47,6 +47,8 @@ describe('wplace account state', () => {
     expect(ownedColours()).toBeNull()
 
     await loadAccount()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    await loadAccount(0)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(ownedColours()?.size).toBe(1)
   })
@@ -64,10 +66,21 @@ describe('wplace account state', () => {
     const { loadAccount, ownedColours } = await import('./wplace-account.js')
 
     await loadAccount()
-    await loadAccount()
+    await loadAccount(0)
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(ownedColours()).toBeNull()
+  })
+
+  it('negative-caches an unavailable account instead of refetching on every settings render', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { loadAccount } = await import('./wplace-account.js')
+
+    await loadAccount()
+    await loadAccount()
+
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('clears the previous account when the session becomes unauthorised', async () => {

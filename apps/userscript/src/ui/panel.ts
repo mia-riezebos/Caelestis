@@ -155,7 +155,7 @@ const rerenderWhenIdle = (): void => {
     panel.addEventListener('focusout', () => setTimeout(rerenderWhenIdle, 0), { once: true })
     return
   }
-  showView(currentView)
+  showView(currentView, true)
 }
 
 const rerenderAccountWhenRelevant = (): void => {
@@ -317,8 +317,8 @@ const treeView = (): HTMLElement => {
               (control) => control.getAttribute('aria-label') === focusLabel,
             )
       nextFocus?.focus({ preventScroll: true })
-      body.scrollTop = scrollTop
     }
+    body.scrollTop = scrollTop
   }
   let searchTimer: ReturnType<typeof setTimeout> | null = null
   searchInput.addEventListener('input', () => {
@@ -461,6 +461,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   codeRow.style.marginTop = '0.375rem'
   const code = document.createElement('input')
   code.type = 'password'
+  code.dataset.wtsDraftCode = server.url
   code.autocomplete = 'off'
   code.className = 'input input-sm input-bordered'
   code.style.flex = '1'
@@ -529,6 +530,7 @@ const settingsView = (): HTMLElement => {
   addRow.className = 'px-3 pb-2 flex gap-2'
   const url = document.createElement('input')
   url.type = 'url'
+  url.dataset.wtsDraftUrl = ''
   url.className = 'input input-sm input-bordered'
   url.style.flex = '1'
   url.style.minWidth = '0'
@@ -647,13 +649,25 @@ const refreshAfterMutation = async (
   return false
 }
 
+const ASTRAL = /[\u{10000}-\u{10FFFF}]/gu
+
+/** Keep generated names unique under the backend's derived-path rules, not only as display text. */
+const folderSlug = (name: string): string =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(ASTRAL, '-')
+    .replace(/[^\p{L}\p{N}.]+/gu, '-')
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .trim()
+
 /** A name nobody has to type: "New folder", then "New folder 2", and so on. */
 const freeFolderName = (taken: ReadonlySet<string>): string => {
   const base = 'New folder'
-  if (!taken.has(base.toLowerCase())) return base
+  if (!taken.has(folderSlug(base))) return base
   for (let n = 2; n < 500; n++) {
     const candidate = `${base} ${n}`
-    if (!taken.has(candidate.toLowerCase())) return candidate
+    if (!taken.has(folderSlug(candidate))) return candidate
   }
   return `${base} ${Date.now()}`
 }
@@ -685,7 +699,13 @@ const applyRename = async (
 ): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    if (!(await renameLocalTemplate(templateId, name))) {
+    let renamed = false
+    try {
+      renamed = await renameLocalTemplate(templateId, name)
+    } catch (error) {
+      warn('install', 'local rename failed', String(error))
+    }
+    if (!renamed) {
       toast(`Could not rename “${target.name}”.`, 'error')
     }
     rerender()
@@ -771,9 +791,15 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   if (templateId !== null) {
     if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
     const stoppedMove = stopMoveForDeletion(templateId)
-    if (!(await removeLocalTemplate(templateId))) {
+    let removed = false
+    try {
+      removed = await removeLocalTemplate(templateId)
+    } catch (error) {
+      warn('install', 'local delete failed', String(error))
+    }
+    if (!removed) {
       toast(`Could not delete “${target.name}”.`, 'error')
-      if (stoppedMove) beginMove(templateId, rerender)
+      if (stoppedMove !== null) beginMove(templateId, rerender, stoppedMove)
       return
     }
     removeCustomOrderKeys(new Set([target.key]))
@@ -1240,7 +1266,7 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
     new Set(
       existing.nodes
         .filter((node) => node.parentId === nodeId)
-        .map((node) => node.name.toLowerCase()),
+        .map((node) => folderSlug(node.name)),
     ),
   )
   const result = await createNode(server, name, nodeId, request.controller.signal)
@@ -1382,7 +1408,32 @@ const buildPanel = (): HTMLElement => {
   return panel
 }
 
-const showView = (view: View): void => {
+interface SettingsDrafts {
+  readonly serverUrl: string
+  readonly accessCodes: ReadonlyMap<string, string>
+}
+
+const settingsDrafts = (panel: HTMLElement): SettingsDrafts => {
+  const serverUrl = panel.querySelector<HTMLInputElement>('[data-wts-draft-url]')?.value ?? ''
+  const accessCodes = new Map<string, string>()
+  for (const input of panel.querySelectorAll<HTMLInputElement>('[data-wts-draft-code]')) {
+    const server = input.dataset.wtsDraftCode
+    if (server !== undefined) accessCodes.set(server, input.value)
+  }
+  return { serverUrl, accessCodes }
+}
+
+const restoreSettingsDrafts = (panel: HTMLElement, drafts: SettingsDrafts): void => {
+  const serverUrl = panel.querySelector<HTMLInputElement>('[data-wts-draft-url]')
+  if (serverUrl !== null) serverUrl.value = drafts.serverUrl
+  for (const input of panel.querySelectorAll<HTMLInputElement>('[data-wts-draft-code]')) {
+    const value = input.dataset.wtsDraftCode
+    if (value !== undefined) input.value = drafts.accessCodes.get(value) ?? ''
+  }
+}
+
+const showView = (view: View, preserveDrafts = false): void => {
+  document.querySelector('[data-wts-menu]')?.remove()
   if (view !== currentView) {
     cancelPanelRequests()
     cancelActiveConfirm?.()
@@ -1390,6 +1441,7 @@ const showView = (view: View): void => {
   }
   currentView = view
   const panel = document.getElementById(PANEL_ID)
+  const drafts = preserveDrafts && panel !== null ? settingsDrafts(panel) : null
   const body = panel?.querySelector('[data-wts-body]')
   const title = panel?.querySelector('h2')
   if (!body || !title) return
@@ -1397,6 +1449,7 @@ const showView = (view: View): void => {
   if (inSettings) void loadAccount()
   activeTreeRender = null
   body.replaceChildren(inSettings ? settingsView() : treeView())
+  if (drafts !== null && panel !== null) restoreSettingsDrafts(panel, drafts)
   title.textContent = inSettings ? 'Settings' : PANEL_TITLE
 
   const back = panel?.querySelector<HTMLElement>('[data-wts-back]')
@@ -1416,6 +1469,7 @@ const setOpen = (next: boolean): void => {
   syncRailButtonState()
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
+    document.querySelector('[data-wts-menu]')?.remove()
     cancelPanelRequests()
     activeTreeRender = null
     activeResizeCleanup?.()
@@ -1443,9 +1497,7 @@ export const installPanel = (): void => {
     accountObserverInstalled = true
     onAccountChange(rerenderAccountWhenRelevant)
   }
-  void refreshStoredServers().then(() => {
-    rerenderServersWhenRelevant()
-  })
+  void refreshStoredServers(rerenderServersWhenRelevant)
   installStyles()
   if (!viewportResizeInstalled) {
     viewportResizeInstalled = true

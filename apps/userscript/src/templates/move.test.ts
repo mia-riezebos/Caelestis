@@ -608,12 +608,22 @@ describe('template placement controls', () => {
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
 
-    expect(moves.stopMoveForDeletion('test')).toBe(true)
+    expect(moves.stopMoveForDeletion('test')).toEqual({ x: 10, y: 20 })
 
     expect(moves.isMoving()).toBe(false)
     expect(harness.clearLocalPreview).toHaveBeenCalledWith('test')
     expect(finished).toHaveBeenCalledOnce()
-    expect(moves.stopMoveForDeletion('other')).toBe(false)
+    expect(moves.stopMoveForDeletion('other')).toBeNull()
+  })
+
+  it('can restore the preview origin after a failed deletion', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn(), { x: 71, y: 82 })
+
+    const origin = moves.stopMoveForDeletion('test')
+    expect(origin).toEqual({ x: 71, y: 82 })
+    expect(moves.beginMove('test', vi.fn(), origin ?? undefined)).toBe(true)
+    expect(moves.movePreviewOrigin('test')).toEqual({ x: 71, y: 82 })
   })
 
   it('discards a fresh image import on its first cancel', async () => {

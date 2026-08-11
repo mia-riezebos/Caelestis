@@ -266,14 +266,18 @@ const listen = (on: boolean): void => {
   window[method]('auxclick', onAuxClick as EventListener, true)
 }
 
-export const beginMove = (id: string, finished: () => void): boolean => {
+export const beginMove = (
+  id: string,
+  finished: () => void,
+  restoredOrigin?: { readonly x: number; readonly y: number },
+): boolean => {
   if (session !== null) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
   if (template === undefined) return false
   session = {
     id,
-    x: template.originX,
-    y: template.originY,
+    x: restoredOrigin?.x ?? template.originX,
+    y: restoredOrigin?.y ?? template.originY,
     dragging: null,
   }
   onFinish = finished
@@ -305,11 +309,14 @@ const finish = (): void => {
 }
 
 /** Tear down placement ownership before its template is deleted through another surface. */
-export const stopMoveForDeletion = (id: string): boolean => {
-  if (session?.id !== id) return false
+export const stopMoveForDeletion = (
+  id: string,
+): { readonly x: number; readonly y: number } | null => {
+  if (session?.id !== id) return null
+  const origin = { x: session.x, y: session.y }
   clearLocalPreview(id)
   finish()
-  return true
+  return origin
 }
 
 const resumeAfterFailure = (action: string, error?: unknown): void => {

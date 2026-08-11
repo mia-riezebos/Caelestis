@@ -45,6 +45,7 @@ export interface TreeCallbacks {
 }
 
 const collapsed = new Set<string>()
+let activeTreeKey: string | null = null
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
 let renameDraft: { readonly key: string; value: string } | null = null
@@ -347,6 +348,8 @@ interface RowOptions {
   readonly meta?: string
   /** Containers accept a drop *into* them; leaves only reorder between siblings. */
   readonly container: boolean
+  /** Search reveals descendants without changing the user's durable collapsed state. */
+  readonly forceExpanded?: boolean | undefined
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
   /** Present only where the user can actually change things; absent means no rename affordance. */
   readonly onRename?: ((name: string) => void) | undefined
@@ -370,15 +373,17 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.style.marginRight = '0.5rem'
   row.style.minHeight = '2rem'
   row.draggable = draggable
-  row.tabIndex = 0
+  row.tabIndex = -1
   row.setAttribute('role', 'treeitem')
-  if (options.container) row.setAttribute('aria-expanded', String(isExpanded(options.key)))
+  row.setAttribute('aria-level', String(options.depth + 1))
+  const expanded = options.forceExpanded === true || isExpanded(options.key)
+  if (options.container) row.setAttribute('aria-expanded', String(expanded))
 
   if (options.container) {
     const glyph = icon('caret', 'size-4 opacity-60')
     glyph.style.flex = '0 0 auto'
     glyph.style.transition = 'transform 120ms ease-out'
-    glyph.style.transform = isExpanded(options.key) ? 'rotate(90deg)' : 'rotate(0deg)'
+    glyph.style.transform = expanded ? 'rotate(90deg)' : 'rotate(0deg)'
     row.appendChild(glyph)
   } else {
     // A leaf still needs the caret's width, or its name hangs left of every sibling's.
@@ -686,6 +691,7 @@ export const treeContents = (
         kind: isLocal ? 'folder' : 'server',
         depth: 0,
         container: true,
+        forceExpanded: needle !== '',
         siblings: ordered,
         rerender,
         onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
@@ -768,6 +774,7 @@ export const treeContents = (
                 kind: 'folder',
                 depth,
                 container: true,
+                forceExpanded: needle !== '',
                 siblings: siblingKeys,
                 rerender,
                 onContextMenu: canEdit
@@ -801,12 +808,12 @@ export const treeContents = (
           wrap.appendChild(
             childText(needle === '' ? 'No templates published yet.' : 'No matches.', 0),
           )
-        } else if (renderedRows === 0 && needle !== '') {
-          wrap.appendChild(childText('No matches.', 0))
         } else if (truncated) {
           wrap.appendChild(
             childText(`Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} server folders.`, 0),
           )
+        } else if (renderedRows === 0 && needle !== '') {
+          wrap.appendChild(childText('No matches.', 0))
         }
         continue
       }
@@ -846,10 +853,18 @@ export const treeContents = (
           rerender,
           checked: template.visible,
           onToggleChecked: (on) => {
-            void setLocalVisible(template.id, on).then((changed) => {
-              if (!changed) callbacks.onError(`Could not change visibility for “${template.name}”.`)
-              rerender()
-            })
+            void setLocalVisible(template.id, on)
+              .then((changed) => {
+                if (!changed)
+                  callbacks.onError(`Could not change visibility for “${template.name}”.`)
+                rerender()
+              })
+              .catch((error: unknown) => {
+                callbacks.onError(
+                  `Could not change visibility for “${template.name}”. ${String(error)}`,
+                )
+                rerender()
+              })
           },
           onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
           onRename: (value) => callbacks.onRename(templateTarget, value),
@@ -921,6 +936,65 @@ export const treeContents = (
     renaming = null
     renameDraft = null
   }
+
+  const rows = [...wrap.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+  const active = rows.find((row) => row.dataset.wtsKey === activeTreeKey) ?? rows[0]
+  const activate = (row: HTMLElement): void => {
+    for (const candidate of rows) {
+      candidate.tabIndex = candidate === row ? 0 : -1
+      for (const control of candidate.querySelectorAll<HTMLElement>('button,input')) {
+        control.tabIndex = candidate === row ? 0 : -1
+      }
+    }
+    activeTreeKey = row.dataset.wtsKey ?? null
+  }
+  if (active !== undefined) activate(active)
+  wrap.addEventListener('focusin', (event) => {
+    const row = (event.target as Element | null)?.closest<HTMLElement>('[role="treeitem"]')
+    if (row === null || row === undefined || !wrap.contains(row)) return
+    activate(row)
+  })
+  wrap.addEventListener('keydown', (event) => {
+    const row = (event.target as Element | null)?.closest<HTMLElement>('[role="treeitem"]')
+    if (row === null || row === undefined || event.target !== row) return
+    const index = rows.indexOf(row)
+    let next: HTMLElement | undefined
+    if (event.key === 'ArrowDown') next = rows[index + 1]
+    else if (event.key === 'ArrowUp') next = rows[index - 1]
+    else if (event.key === 'Home') next = rows[0]
+    else if (event.key === 'End') next = rows.at(-1)
+    else if (event.key === 'ArrowRight') {
+      if (row.getAttribute('aria-expanded') === 'false') {
+        event.preventDefault()
+        row.click()
+        return
+      }
+      const child = rows[index + 1]
+      if (
+        child !== undefined &&
+        Number(child.getAttribute('aria-level')) > Number(row.getAttribute('aria-level'))
+      ) {
+        next = child
+      }
+    } else if (event.key === 'ArrowLeft') {
+      if (row.getAttribute('aria-expanded') === 'true') {
+        event.preventDefault()
+        row.click()
+        return
+      }
+      const level = Number(row.getAttribute('aria-level'))
+      for (let candidate = index - 1; candidate >= 0; candidate--) {
+        const parent = rows[candidate]
+        if (parent !== undefined && Number(parent.getAttribute('aria-level')) < level) {
+          next = parent
+          break
+        }
+      }
+    }
+    if (next === undefined) return
+    event.preventDefault()
+    next.focus()
+  })
 
   return wrap
 }
