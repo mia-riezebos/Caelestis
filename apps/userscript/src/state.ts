@@ -83,6 +83,8 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const NODE_PATH = /^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u
 const MAX_TREE_NODES = 100_000
 const MAX_CUSTOM_ORDER = 200_000
+export const MAX_CONNECTED_SERVERS = 32
+const SERVER_REFRESH_CONCURRENCY = 4
 const REMOTE_TIMEOUT_MS = 10_000
 const SERVER_JSON_BYTES = 16 * 1024
 const TREE_JSON_BYTES = 64 * 1024 * 1024
@@ -320,6 +322,7 @@ export const loadState = (): State => {
           isAdmin: false,
           season: null,
         })
+        if (servers.length >= MAX_CONNECTED_SERVERS) break
       }
     }
     const customOrder = Array.isArray(stored.customOrder)
@@ -384,13 +387,15 @@ export const onStateChange = (listener: (next: State) => void): void => {
 }
 
 /** Replace one server in place, keyed by url, preserving the order of the rest. */
-export const upsertServer = (server: ConnectedServer): void => {
+export const upsertServer = (server: ConnectedServer): boolean => {
   const servers = getState().servers
   const index = servers.findIndex((s) => s.url === server.url)
+  if (index === -1 && servers.length >= MAX_CONNECTED_SERVERS) return false
   setState({
     servers:
       index === -1 ? [...servers, server] : servers.map((s, i) => (i === index ? server : s)),
   })
+  return true
 }
 
 export const removeServer = (url: string): void => {
@@ -577,12 +582,18 @@ export const probeServer = async (
 /** Revalidate persisted identity, auth and scope without allowing stale requests to resurrect rows. */
 export const refreshStoredServers = async (): Promise<void> => {
   const snapshot = [...getState().servers]
-  await Promise.all(
-    snapshot.map(async (server) => {
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    while (cursor < snapshot.length) {
+      const server = snapshot[cursor++]
+      if (server === undefined) return
       const refreshed = await probeServer(server.url, server.token)
-      if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+      if (getState().servers.find((candidate) => candidate.url === server.url) !== server) continue
       upsertServer(refreshed)
-    }),
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(SERVER_REFRESH_CONCURRENCY, snapshot.length) }, worker),
   )
 }
 

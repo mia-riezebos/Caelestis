@@ -95,8 +95,42 @@ export const forgetServer = async (url: string): Promise<void> => {
   await run('readwrite', (store) => store.delete(url))
 }
 
-export const loadServerCache = async (): Promise<readonly CachedServer[]> => {
-  const raw = (await run<unknown[]>('readonly', (store) => store.getAll())) ?? []
+const loadEntries = async (urls: readonly string[]): Promise<readonly unknown[]> => {
+  const unique = [...new Set(urls)]
+  if (unique.length === 0) return []
+  try {
+    const db = await open()
+    try {
+      return await new Promise<readonly unknown[]>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readonly')
+        const store = transaction.objectStore(STORE)
+        const entries: unknown[] = new Array(unique.length)
+        for (const [index, url] of unique.entries()) {
+          const request = store.get(url)
+          request.onsuccess = () => {
+            entries[index] = request.result
+          }
+          request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
+        }
+        transaction.oncomplete = () => resolve(entries)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+      })
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    warn('install', 'server cache unavailable', String(error))
+    return []
+  }
+}
+
+export const loadServerCache = async (
+  configuredUrls: readonly string[],
+): Promise<readonly CachedServer[]> => {
+  const raw = await loadEntries(configuredUrls)
   const valid: CachedServer[] = []
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) continue

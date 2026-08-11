@@ -16,6 +16,40 @@ let owned: ReadonlySet<number> | null = null
 let loadedAt = 0
 let loading: Promise<void> | null = null
 const listeners = new Set<() => void>()
+const ACCOUNT_TIMEOUT_MS = 10_000
+const ACCOUNT_JSON_BYTES = 16 * 1024
+
+const readBoundedJson = async (response: Response): Promise<unknown> => {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > ACCOUNT_JSON_BYTES) {
+    void response.body?.cancel()
+    throw new RangeError(`response exceeds ${ACCOUNT_JSON_BYTES} bytes`)
+  }
+  if (response.body === null) return null
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let text = ''
+  try {
+    while (true) {
+      const part = await reader.read()
+      if (part.done) break
+      bytes += part.value.byteLength
+      if (bytes > ACCOUNT_JSON_BYTES) {
+        await reader.cancel()
+        throw new RangeError(`response exceeds ${ACCOUNT_JSON_BYTES} bytes`)
+      }
+      text += decoder.decode(part.value, { stream: true })
+    }
+    text += decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
+  return text === '' ? null : JSON.parse(text)
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const premiumIndices = (): readonly number[] =>
   WPLACE_PALETTE.filter(
@@ -26,15 +60,29 @@ const premiumIndices = (): readonly number[] =>
 export const ownedColours = (): ReadonlySet<number> | null => owned
 
 const fetchAccount = async (): Promise<void> => {
+  const controller = new AbortController()
+  const timeout = setTimeout(
+    () => controller.abort(new Error('request timed out')),
+    ACCOUNT_TIMEOUT_MS,
+  )
   try {
-    const response = await fetch('https://backend.wplace.live/me', { credentials: 'include' })
+    const response = await fetch('https://backend.wplace.live/me', {
+      credentials: 'include',
+      signal: controller.signal,
+    })
     if (!response.ok) {
       log('install', `/me said ${response.status}; owned colours unavailable`)
       return
     }
-    const body = (await response.json()) as { extraColorsBitmap?: number }
+    const body = await readBoundedJson(response)
+    if (!isRecord(body)) return
     const mask = body.extraColorsBitmap
-    if (typeof mask !== 'number') return
+    if (
+      typeof mask !== 'number' ||
+      !Number.isSafeInteger(mask) ||
+      (mask !== -1 && (mask < 0 || mask > 0xffff_ffff))
+    )
+      return
 
     const set = new Set<number>()
     // -1 is all bits set, which is how wplace says "everything".
@@ -48,6 +96,8 @@ const fetchAccount = async (): Promise<void> => {
   } catch (error) {
     // Signed out, offline, or blocked. The preset simply stays unavailable.
     warn('install', 'could not read /me', String(error))
+  } finally {
+    clearTimeout(timeout)
   }
 }
 

@@ -16,7 +16,7 @@ describe('server cache persistence', () => {
     vi.stubGlobal('indexedDB', { open })
     const { loadServerCache } = await import('./server-cache.js')
 
-    const loading = loadServerCache()
+    const loading = loadServerCache(['https://example.com'])
     opening.onblocked?.(new Event('blocked') as IDBVersionChangeEvent)
     await expect(loading).resolves.toEqual([])
     expect(open).toHaveBeenCalledWith('caelestis', 3)
@@ -25,26 +25,31 @@ describe('server cache persistence', () => {
     expect(database.close).toHaveBeenCalledOnce()
   })
 
-  it('returns only validated trees after the read transaction commits and closes the database', async () => {
-    const request = {
-      result: [
-        {
-          url: 'https://example.com',
-          serverId: SERVER_ID,
-          season: 0,
-          fetchedAt: 10,
-          nodes: [{ id: NODE_ID, parentId: null, path: '/group', name: 'Group' }],
-        },
-        {
-          url: 'https://bad.example.com',
-          serverId: SERVER_ID,
-          season: 0,
-          fetchedAt: 20,
-          nodes: [{ id: NODE_ID, parentId: NODE_ID, path: '/loop', name: 'Loop' }],
-        },
-      ],
-    } as unknown as IDBRequest<unknown[]>
-    const store = { getAll: vi.fn(() => request) }
+  it('reads only configured servers, validates them after commit, and closes the database', async () => {
+    const entries: Record<string, unknown> = {
+      'https://example.com': {
+        url: 'https://example.com',
+        serverId: SERVER_ID,
+        season: 0,
+        fetchedAt: 10,
+        nodes: [{ id: NODE_ID, parentId: null, path: '/group', name: 'Group' }],
+      },
+      'https://bad.example.com': {
+        url: 'https://bad.example.com',
+        serverId: SERVER_ID,
+        season: 0,
+        fetchedAt: 20,
+        nodes: [{ id: NODE_ID, parentId: NODE_ID, path: '/loop', name: 'Loop' }],
+      },
+      'https://stale.example.com': { url: 'https://stale.example.com' },
+    }
+    const requests = new Map<string, IDBRequest<unknown>>()
+    const get = vi.fn((url: string) => {
+      const request = { result: entries[url] } as unknown as IDBRequest<unknown>
+      requests.set(url, request)
+      return request
+    })
+    const store = { get }
     const transaction = { objectStore: vi.fn(() => store) } as unknown as IDBTransaction
     const database = {
       transaction: vi.fn(() => transaction),
@@ -55,13 +60,17 @@ describe('server cache persistence', () => {
     const { loadServerCache } = await import('./server-cache.js')
     let settled = false
 
-    const loading = loadServerCache().then((value) => {
+    const loading = loadServerCache([
+      'https://example.com',
+      'https://bad.example.com',
+      'https://example.com',
+    ]).then((value) => {
       settled = true
       return value
     })
     opening.onsuccess?.(new Event('success'))
     await Promise.resolve()
-    request.onsuccess?.(new Event('success'))
+    for (const request of requests.values()) request.onsuccess?.(new Event('success'))
     await Promise.resolve()
     expect(settled).toBe(false)
 
@@ -76,5 +85,7 @@ describe('server cache persistence', () => {
       },
     ])
     expect(database.close).toHaveBeenCalledOnce()
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(get).not.toHaveBeenCalledWith('https://stale.example.com')
   })
 })

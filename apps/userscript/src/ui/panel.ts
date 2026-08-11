@@ -9,6 +9,7 @@ import {
   getState,
   listNodes,
   loadState,
+  MAX_CONNECTED_SERVERS,
   probeServer,
   refreshStoredServers,
   removeCustomOrderKeys,
@@ -483,6 +484,12 @@ const settingsView = (): HTMLElement => {
       status.textContent = 'That server is already connected.'
       return
     }
+    if (getState().servers.length >= MAX_CONNECTED_SERVERS) {
+      status.style.display = ''
+      status.className = 'text-xs px-3 pb-2 text-error'
+      status.textContent = `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`
+      return
+    }
     connecting = true
     add.disabled = true
     status.style.display = ''
@@ -501,7 +508,11 @@ const settingsView = (): HTMLElement => {
       status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
       return
     }
-    upsertServer(server)
+    if (!upsertServer(server)) {
+      status.className = 'text-xs px-3 pb-2 text-error'
+      status.textContent = `You can connect at most ${MAX_CONNECTED_SERVERS} servers.`
+      return
+    }
     url.value = ''
     // Re-render so the new server's row appears — it is what carries the status badge and, when the
     // server wants one, the access-code field. Without this the panel reported "needs a code" and
@@ -545,6 +556,16 @@ const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): vo
   el.textContent = message
   panel.appendChild(el)
   setTimeout(() => el.remove(), 6000)
+}
+
+const refreshAfterMutation = async (
+  server: ConnectedServer,
+  rerender: () => void,
+): Promise<boolean> => {
+  const refreshed = await refreshNodes(server, rerender, true)
+  if (refreshed.ok) return true
+  toast(`Saved, but the folder list could not refresh. ${refreshed.message}`, 'warning')
+  return false
 }
 
 /** A name nobody has to type: "New folder", then "New folder 2", and so on. */
@@ -607,7 +628,7 @@ const applyRename = async (
     rerender()
     return
   }
-  await refreshNodes(target.server, rerender, true)
+  await refreshAfterMutation(target.server, rerender)
 }
 
 /**
@@ -690,7 +711,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     return
   }
   forgetNodeOrder(target.server, target.nodeId)
-  await refreshNodes(target.server, rerender, true)
+  await refreshAfterMutation(target.server, rerender)
 }
 
 /**
@@ -906,7 +927,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   cancel.className = 'btn btn-xs btn-ghost'
   cancel.textContent = 'Cancel'
   const controllers: AbortController[] = []
+  let closed = false
   const closeCopy = (): void => {
+    closed = true
     for (const controller of controllers) controller.abort()
     box.remove()
     if (cancelActiveCopy === closeCopy) cancelActiveCopy = null
@@ -938,6 +961,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     return
   }
   let failedLoads = 0
+  const destinations: Array<{ readonly server: ConnectedServer; readonly nodeId: string }> = []
   for (const { server, result } of loaded) {
     if (!result.ok) {
       failedLoads++
@@ -946,8 +970,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     const nodes = result.nodes
     for (const node of nodes) {
       const option = document.createElement('option')
-      option.value = `${server.url}|${node.id}`
+      option.value = String(destinations.length)
       option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
+      destinations.push({ server, nodeId: node.id })
       chooser.appendChild(option)
     }
   }
@@ -968,9 +993,10 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   go.addEventListener('click', () => {
     if (uploading) return
     void (async () => {
-      const [url, nodeId] = (chooser.value ?? '').split('|')
-      const selected = targets.find((candidate) => candidate.url === url)
-      const server = getState().servers.find((candidate) => candidate.url === url)
+      const destination = destinations[Number(chooser.value)]
+      const selected = destination?.server
+      const nodeId = destination?.nodeId
+      const server = getState().servers.find((candidate) => candidate.url === selected?.url)
       if (
         selected === undefined ||
         server === undefined ||
@@ -989,6 +1015,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
       try {
         label.textContent = 'Encoding…'
         const png = await templateAsPng(template)
+        if (closed) return
         if (png === null) throw new Error('encoder returned no image')
         if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
           throw new Error('server connection changed while encoding')
@@ -1011,8 +1038,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         if (!result.ok) throw new Error(result.message)
         closeCopy()
         toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
-        await refreshNodes(server, rerender, true)
+        await refreshAfterMutation(server, rerender)
       } catch (error) {
+        if (closed) return
         toast(`Could not copy: ${String(error)}`, 'error')
         label.textContent = `Copy “${template.name}” to:`
         uploading = false
@@ -1069,7 +1097,7 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   // Refresh before rendering: the row we are about to put into rename mode does not exist in the
   // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
   startRenaming(nodeTreeKey(server, result.node.id))
-  await refreshNodes(server, rerender, true)
+  if (!(await refreshAfterMutation(server, rerender))) cancelRenaming()
 }
 
 const buildPanel = (): HTMLElement => {

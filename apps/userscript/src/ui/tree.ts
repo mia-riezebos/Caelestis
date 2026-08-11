@@ -50,6 +50,7 @@ let renaming: string | null = null
 let renameDraft: { readonly key: string; value: string } | null = null
 const TREE_DRAG_TYPE = 'application/x-caelestis-tree-key'
 const MAX_RENDERED_ROWS = 2_000
+const MAX_TOTAL_SERVER_NODES = 100_000
 
 /**
  * Nodes per server, fetched once and refreshed on demand.
@@ -67,7 +68,10 @@ interface ServerTree {
 const nodesByServer = new Map<string, ServerTree>()
 const refreshGeneration = new Map<string, number>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
-const refreshes = new WeakMap<ConnectedServer, Promise<void>>()
+export type NodeRefreshResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string }
+const refreshes = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
 
 const serverIdentity = (server: ConnectedServer): string | null =>
   server.info === null || server.season === null ? null : `${server.info.id}:${server.season}`
@@ -124,25 +128,42 @@ export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
   force = false,
-): Promise<void> => {
-  if (!server.isAdmin) return
+): Promise<NodeRefreshResult> => {
+  if (!server.isAdmin) return { ok: false, message: 'Admin access is required to refresh folders.' }
   const existing = refreshes.get(server)
   if (!force && existing !== undefined) {
-    await existing
+    const result = await existing
     queueMicrotask(rerender)
-    return
+    return result
   }
   const generation = (refreshGeneration.get(server.url) ?? 0) + 1
   refreshGeneration.set(server.url, generation)
-  const loading = Promise.resolve().then(async () => {
+  const loading = Promise.resolve().then(async (): Promise<NodeRefreshResult> => {
     const probed = takeProbedNodes(server)
     const result =
       probed === undefined ? await listNodes(server) : { ok: true as const, nodes: probed }
     refreshedConnections.add(server)
-    if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
-    if (refreshGeneration.get(server.url) !== generation || !result.ok) return
+    if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+      return { ok: false, message: 'The server connection changed during refresh.' }
+    }
+    if (refreshGeneration.get(server.url) !== generation) {
+      return { ok: false, message: 'A newer folder refresh replaced this one.' }
+    }
+    if (!result.ok) return result
     const identity = serverIdentity(server)
-    if (identity === null || server.info === null || server.season === null) return
+    if (identity === null || server.info === null || server.season === null) {
+      return { ok: false, message: 'The server identity is unavailable.' }
+    }
+    let retainedNodes = 0
+    for (const [url, entry] of nodesByServer) {
+      if (url !== server.url) retainedNodes += entry.nodes.length
+    }
+    if (retainedNodes + result.nodes.length > MAX_TOTAL_SERVER_NODES) {
+      return {
+        ok: false,
+        message: `Connected server folders exceed the ${MAX_TOTAL_SERVER_NODES.toLocaleString()}-node client limit.`,
+      }
+    }
     nodesByServer.set(server.url, {
       serverId: server.info.id,
       season: server.season,
@@ -155,11 +176,13 @@ export const refreshNodes = async (
       nodes: result.nodes,
       fetchedAt: Date.now(),
     })
+    return { ok: true }
   })
   refreshes.set(server, loading)
-  await loading
+  const result = await loading
   if (refreshes.get(server) === loading) refreshes.delete(server)
   queueMicrotask(rerender)
+  return result
 }
 
 /**
@@ -169,7 +192,8 @@ export const refreshNodes = async (
  * first impression and gets worse the more servers are connected.
  */
 export const primeFromCache = async (rerender: () => void): Promise<void> => {
-  for (const entry of await loadServerCache()) {
+  const configured = getState().servers.map((server) => server.url)
+  for (const entry of await loadServerCache(configured)) {
     const server = getState().servers.find((candidate) => candidate.url === entry.url)
     if (
       server?.info?.id !== entry.serverId ||
@@ -178,6 +202,11 @@ export const primeFromCache = async (rerender: () => void): Promise<void> => {
     ) {
       continue
     }
+    let retainedNodes = 0
+    for (const [url, retained] of nodesByServer) {
+      if (url !== entry.url) retainedNodes += retained.nodes.length
+    }
+    if (retainedNodes + entry.nodes.length > MAX_TOTAL_SERVER_NODES) continue
     nodesByServer.set(entry.url, entry)
   }
   rerender()

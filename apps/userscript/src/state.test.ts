@@ -64,6 +64,39 @@ describe('server state boundaries', () => {
     expect(loadState().customOrder).toEqual(['local:kept'])
   })
 
+  it('bounds persisted and newly connected servers', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() =>
+        JSON.stringify({
+          servers: Array.from({ length: 40 }, (_, index) => ({
+            url: `https://server-${index}.example.com`,
+          })),
+        }),
+      ),
+    )
+    const { getState, loadState, MAX_CONNECTED_SERVERS, upsertServer } = await import('./state.js')
+
+    expect(loadState().servers).toHaveLength(MAX_CONNECTED_SERVERS)
+    expect(
+      upsertServer({
+        url: 'https://overflow.example.com',
+        info: null,
+        token: null,
+        status: 'unreachable',
+        isAdmin: false,
+        season: null,
+      }),
+    ).toBe(false)
+    expect(getState().servers).toHaveLength(MAX_CONNECTED_SERVERS)
+
+    const first = getState().servers[0]
+    expect(first).toBeDefined()
+    if (first === undefined) throw new Error('expected a stored server')
+    expect(upsertServer({ ...first, error: 'updated' })).toBe(true)
+    expect(getState().servers[0]?.error).toBe('updated')
+  })
+
   it('rejects remote tree cycles before rendering them', async () => {
     const { validateTreeNodes } = await import('./state.js')
 
@@ -163,6 +196,58 @@ describe('server state boundaries', () => {
     await refreshing
 
     expect(getState().servers).toEqual([])
+  })
+
+  it('refreshes at most four stored servers concurrently', async () => {
+    const pending: Array<(response: Response) => void> = []
+    let active = 0
+    let peak = 0
+    let serverRequests = 0
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const url = String(input)
+      if (!url.endsWith('/server')) {
+        const response = url.includes('/manifest')
+          ? new Response(JSON.stringify(manifest), { status: 200 })
+          : new Response(JSON.stringify({ nodes: [] }), { status: 200 })
+        return Promise.resolve(response)
+      }
+      serverRequests++
+      active++
+      peak = Math.max(peak, active)
+      if (serverRequests > 4) {
+        active--
+        return Promise.resolve(new Response(JSON.stringify(serverInfo), { status: 200 }))
+      }
+      return new Promise<Response>((resolve) => {
+        pending.push((response) => {
+          active--
+          resolve(response)
+        })
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { refreshStoredServers, setState } = await import('./state.js')
+    setState({
+      servers: Array.from({ length: 9 }, (_, index) => ({
+        url: `https://server-${index}.example.com`,
+        info: serverInfo,
+        token: null,
+        status: 'unreachable' as const,
+        isAdmin: false,
+        season: null,
+      })),
+    })
+
+    const refreshing = refreshStoredServers()
+    await vi.waitFor(() => expect(pending).toHaveLength(4))
+    while (pending.length > 0) {
+      pending.shift()?.(new Response(JSON.stringify(serverInfo), { status: 200 }))
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+    await refreshing
+
+    expect(peak).toBe(4)
   })
 
   it('retains a valid read token when an admin operation returns forbidden', async () => {
