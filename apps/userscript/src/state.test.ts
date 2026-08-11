@@ -536,6 +536,40 @@ describe('server state boundaries', () => {
     )
   })
 
+  it('carries an unconsumed manifest tree across an admin-scope downgrade', async () => {
+    const nodes = [
+      {
+        id: NODE_A,
+        parentId: null,
+        path: '/public',
+        name: 'Public',
+        createdAt: 1_750_000_000_000,
+      },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...manifest, nodes }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(new Response(null, { status: 403 })),
+    )
+    const { getState, probeServer, renameNode, setState, takeProbedNodes } = await import(
+      './state.js'
+    )
+    const connected = await probeServer('https://example.com', 'read-code')
+    setState({ servers: [connected] })
+
+    await renameNode(connected, NODE_A, 'Renamed')
+    const downgraded = getState().servers[0]
+
+    expect(downgraded).toEqual(expect.objectContaining({ isAdmin: false, status: 'connected' }))
+    expect(downgraded === undefined ? undefined : takeProbedNodes(downgraded)).toEqual(nodes)
+  })
+
   it('marks any rejected credential stale without erasing it', async () => {
     vi.stubGlobal(
       'fetch',

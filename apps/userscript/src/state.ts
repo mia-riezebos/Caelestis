@@ -926,13 +926,16 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
 const noteAuthFailure = (server: ConnectedServer, status: number): void => {
   if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
   const needsToken = status === 401
-  upsertServer({
+  const replacement: ConnectedServer = {
     ...server,
     token: server.token,
     status: needsToken ? 'needs-token' : 'connected',
     error: needsToken ? 'authorization expired' : 'admin access required',
     isAdmin: false,
-  })
+  }
+  const pendingNodes = takeProbedNodes(server)
+  if (pendingNodes !== undefined) probedNodes.set(replacement, pendingNodes)
+  upsertServer(replacement)
 }
 
 const failure = (response: Response, body: Record<string, unknown> | null): string =>

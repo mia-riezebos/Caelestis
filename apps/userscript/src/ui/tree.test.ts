@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type ConnectedServer, getState, probeServer, setState } from '../state.js'
 import {
+  canRetryNodeRefresh,
   forgetServerTree,
+  localSiblingKeys,
   nodeSiblingItems,
   nodeTreeKey,
   orderedItems,
@@ -262,6 +264,59 @@ describe('tree identity and ordering', () => {
 
     expect(rerender).toHaveBeenCalledOnce()
     expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('bypasses the connect-time probe snapshot for a forced admin refresh', async () => {
+    const info = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(info), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              version: 'v1',
+              season: 0,
+              server: info,
+              nodes: [],
+              templates: [],
+              tiles: [],
+            }),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(new Response('[]', { status: 200 })),
+    )
+    const connected = await probeServer('https://example.com', null)
+    setState({ servers: [connected] })
+
+    await expect(refreshNodes(connected, vi.fn(), true)).resolves.toEqual({ ok: true })
+
+    expect(fetch).toHaveBeenCalledTimes(4)
+    expect(fetch).toHaveBeenLastCalledWith(
+      'https://example.com/admin/nodes?season=0',
+      expect.any(Object),
+    )
+  })
+
+  it('offers folder retry only to a connection that can perform it', () => {
+    expect(canRetryNodeRefresh(server(SERVER_ID, 0))).toBe(true)
+    expect(canRetryNodeRefresh({ ...server(SERVER_ID, 0), isAdmin: false })).toBe(false)
+  })
+
+  it('reorders only visible local siblings while search is active', () => {
+    expect(
+      localSiblingKeys(
+        [
+          { id: 'one', name: 'match one' },
+          { id: 'two', name: 'hidden' },
+          { id: 'three', name: 'match three' },
+        ],
+        'match',
+      ),
+    ).toEqual(['local:one', 'local:three'])
   })
 
   it('retains manifest folders for a connected server without admin scope', async () => {

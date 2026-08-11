@@ -41,7 +41,7 @@ export interface TreeCallbacks {
   readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
   /** Frame a local template on the map. */
   readonly onGoTo: (templateId: string) => void
-  readonly onCopyToServer: (templateId: string) => void
+  readonly onCopyToServer: (templateId: string, invoker: HTMLElement) => void
   readonly onError: (message: string) => void
 }
 
@@ -161,7 +161,8 @@ export const refreshNodes = async (
   // Every successful manifest probe already carries the public node tree. Consume that first: a
   // read-only or anonymous connection cannot call the admin route, but it still owns the manifest
   // folders it just verified.
-  const probed = takeProbedNodes(server)
+  const pendingProbe = takeProbedNodes(server)
+  const probed = force ? undefined : pendingProbe
   if (!server.isAdmin && probed === undefined) {
     return { ok: false, message: 'Admin access is required to refresh folders.' }
   }
@@ -288,6 +289,18 @@ export const nodeSiblingItems = (
     createdAt: node.createdAt,
     node,
   }))
+
+export const canRetryNodeRefresh = (server: ConnectedServer): boolean => server.isAdmin
+
+export const localSiblingKeys = (
+  templates: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+  needle: string,
+): readonly string[] => {
+  const folded = needle.toLocaleLowerCase()
+  return templates
+    .filter((template) => folded === '' || template.name.toLocaleLowerCase().includes(folded))
+    .map((template) => `local:${template.id}`)
+}
 
 /** @internal Pure ordering seam used to pin custom-order fallback behavior. */
 export const orderedItems = <T extends OrderedItem>(
@@ -442,7 +455,9 @@ interface RowOptions {
   readonly container: boolean
   /** Search reveals descendants without changing the user's durable collapsed state. */
   readonly forceExpanded?: boolean | undefined
-  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  readonly actions?:
+    | ReadonlyArray<{ icon: IconName; label: string; run: (invoker: HTMLElement) => void }>
+    | undefined
   /** Present only where the user can actually change things; absent means no rename affordance. */
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
@@ -551,6 +566,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
       renameDraft = null
       input.disabled = true
       for (const button of group.querySelectorAll('button')) button.disabled = true
+      row.focus({ preventScroll: true })
       if (value !== '' && value !== options.name) options.onRename?.(value)
       else options.rerender()
     }
@@ -558,6 +574,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
       if (submitted) return
       renaming = null
       renameDraft = null
+      row.focus({ preventScroll: true })
       options.rerender()
     }
     for (const [glyphName, label, run] of [
@@ -593,7 +610,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
       button.appendChild(icon(action.icon, 'size-4'))
       button.addEventListener('click', (event) => {
         event.stopPropagation()
-        action.run()
+        action.run(button)
       })
       group.appendChild(button)
     }
@@ -929,9 +946,11 @@ export const treeContents = (
         renderChildren(null, 1)
         if (server.status === 'connected' && nodeError !== undefined) {
           wrap.appendChild(
-            childRetry(`Could not refresh folders. ${nodeError}`, 0, () => {
-              void refreshNodes(server, backgroundRerender, true)
-            }),
+            canRetryNodeRefresh(server)
+              ? childRetry(`Could not refresh folders. ${nodeError}`, 0, () => {
+                  void refreshNodes(server, backgroundRerender, true)
+                })
+              : childText(`Could not refresh folders. ${nodeError}`, 0),
           )
         } else if (server.status === 'connected' && known.length === 0) {
           wrap.appendChild(
@@ -968,7 +987,10 @@ export const treeContents = (
         })),
         rank,
       )
-      const localKeys = orderedMine.map((item) => item.key)
+      const localKeys = localSiblingKeys(
+        orderedMine.map((item) => item.template),
+        needle,
+      )
       for (const item of orderedMine) {
         const { key, template } = item
         if (needle !== '' && !template.name.toLocaleLowerCase().includes(needle)) continue
@@ -1012,7 +1034,7 @@ export const treeContents = (
             {
               icon: 'uploadFile',
               label: 'Copy to a server',
-              run: () => callbacks.onCopyToServer(template.id),
+              run: (invoker) => callbacks.onCopyToServer(template.id, invoker),
             },
           ],
         })
@@ -1046,9 +1068,11 @@ export const treeContents = (
       wrap.appendChild(
         nodeError === undefined
           ? childText('Loading folders…', 0)
-          : childRetry(`Could not load folders. ${nodeError}`, 0, () => {
-              void refreshNodes(server, backgroundRerender, true)
-            }),
+          : canRetryNodeRefresh(server)
+            ? childRetry(`Could not load folders. ${nodeError}`, 0, () => {
+                void refreshNodes(server, backgroundRerender, true)
+              })
+            : childText(`Could not load folders. ${nodeError}`, 0),
       )
     } else if (server.status === 'needs-token') {
       wrap.appendChild(childText('Needs an access code — add it in settings.', 0))
