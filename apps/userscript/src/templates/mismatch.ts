@@ -30,7 +30,7 @@ import { forgetInWorker, hasWorker, scanInWorker } from './mismatch-worker.js'
  * ruinous to do sixty times a second, hence the cache.
  */
 
-/** x,y pairs in canvas pixels. Empty when the tile and template agree. */
+/** x,y,wanted-index triples in canvas pixels. Empty when the tile and template agree. */
 export type Mismatches = Float32Array
 
 interface Cached {
@@ -82,7 +82,7 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
   for (const [cacheKey, entry] of cache) {
     if (!cacheKey.startsWith(`${template.id}|`) || entry.key !== key) continue
     asserted += entry.asserted
-    unpainted += entry.unpainted.length / 2
+    unpainted += entry.unpainted.length / 3
   }
   if (asserted === 0) return false
   return unpainted / asserted <= appearance.unpaintedLimit
@@ -238,8 +238,8 @@ const store = (cacheKey: string, source: Uint8Array, key: string, outcome: ScanO
   const entry: Cached = { source, key, ...outcome, both: null }
   cache.set(cacheKey, entry)
   count('mismatch:tiles scanned')
-  count('mismatch:pixels marked', outcome.wrong.length / 2)
-  count('mismatch:pixels unpainted', outcome.unpainted.length / 2)
+  count('mismatch:pixels marked', outcome.wrong.length / 3)
+  count('mismatch:pixels unpainted', outcome.unpainted.length / 3)
   return entry
 }
 
@@ -377,7 +377,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
       !asserted || placed === wanted ? null : placed === UNPAINTED ? 'unpainted' : 'wrong'
 
     const listed = (marks: Mismatches): number => {
-      for (let i = 0; i < marks.length; i += 2) {
+      for (let i = 0; i < marks.length; i += 3) {
         if (marks[i] === x && marks[i + 1] === y) return i
       }
       return -1
@@ -388,16 +388,17 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
     if (already === belongs) continue
 
     const minus = (marks: Mismatches, at: number): Mismatches => {
-      const next = new Float32Array(marks.length - 2)
+      const next = new Float32Array(marks.length - 3)
       next.set(marks.subarray(0, at))
-      next.set(marks.subarray(at + 2), at)
+      next.set(marks.subarray(at + 3), at)
       return next
     }
     const plus = (marks: Mismatches): Mismatches => {
-      const next = new Float32Array(marks.length + 2)
+      const next = new Float32Array(marks.length + 3)
       next.set(marks)
       next[marks.length] = x
       next[marks.length + 1] = y
+      next[marks.length + 2] = wanted
       return next
     }
 

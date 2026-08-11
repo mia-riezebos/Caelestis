@@ -45,15 +45,6 @@ export interface Appearance {
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]
   /**
-   * Show only the colour wplace has selected, while its paint drawer is open.
-   *
-   * Scoped the same way the rest of this object is: it beats `hiddenColours` *beside* it and nothing
-   * else. The global mode governs overlays following the global defaults; this one governs the
-   * overlay that owns it. A global mode reaching into an overlay with a filter of its own would be
-   * the union rule again, one level up — the overlay would stop being able to say what it draws.
-   */
-  readonly onlySelectedColour: boolean
-  /**
    * Mark every pixel the canvas disagrees with.
    *
    * Not called "enhance", which is what the scripts this borrows from call it and which says nothing
@@ -84,6 +75,61 @@ export interface Appearance {
    * and this is where little enough falls.
    */
   readonly unpaintedLimit: number
+  /** The crosshair's colour, as hex. Not a palette colour: a marker must never read as a pixel. */
+  readonly markerColour: string
+  /** Its size in CSS pixels — the same size at every zoom, so this is the whole of it. */
+  readonly markerSize: number
+  /**
+   * Whether markers you cannot act on right now are drawn differently from the ones you can.
+   *
+   * A switch of its own rather than a value that happens to mean "off". It was reachable before only
+   * by pushing the fade to 1 and pressing "Same" — two controls, neither of which announces that
+   * together they are one behaviour, and no way to switch it off and keep the settings you had.
+   */
+  readonly dimOthers: boolean
+  /**
+   * How strongly to fade a marker whose colour is not the one in your hand, 0..1.
+   *
+   * Only means anything while follow-the-selection is on, which is the state where "could I fix
+   * this right now" has an answer.
+   */
+  readonly otherOpacity: number
+  /**
+   * A second colour for those same markers, or null to keep one colour throughout.
+   *
+   * Fading and recolouring are separate switches because they answer differently under load: a fade
+   * says "later", a second colour says "not this pass" while staying findable on dense artwork where
+   * a faded marker disappears entirely.
+   */
+  readonly otherColour: string | null
+}
+
+/**
+ * The three things a template can have opinions about, separately.
+ *
+ * One switch used to govern all of them, so wanting a template's own marker colour meant taking
+ * ownership of its shape and its colour filter as well — and then the global sliders stopped
+ * reaching it forever. Splitting them is what lets an overlay follow the defaults for everything it
+ * has no opinion about.
+ */
+export type AppearanceGroup = 'pixels' | 'colours' | 'markers'
+
+export const APPEARANCE_GROUPS: readonly AppearanceGroup[] = ['pixels', 'colours', 'markers']
+
+/** Which fields each group owns, so composing one from two sources is not a list of field names. */
+export const GROUP_FIELDS: Record<AppearanceGroup, readonly (keyof Appearance)[]> = {
+  pixels: ['size', 'radius', 'translateX', 'translateY', 'rotation', 'opacity'],
+  colours: ['hiddenColours'],
+  markers: [
+    'markMismatch',
+    'markUnpainted',
+    'unpaintedLimit',
+    'markerColour',
+    'markerSize',
+    'dimOthers',
+    'otherOpacity',
+    'otherColour',
+  ],
 }
 
 /**
@@ -94,9 +140,8 @@ export interface Appearance {
  */
 export const UNPAINTED_LIMIT_MAX = 0.2
 
-/** The limit as a control, so the settings page and the per-overlay menu read the same. */
+/** The limit's range, so the settings pane and the per-overlay menu step it identically. */
 export const UNPAINTED_LIMIT_CONTROL = {
-  label: 'Left to do',
   min: 0,
   max: UNPAINTED_LIMIT_MAX,
   step: 0.005,
@@ -111,10 +156,16 @@ export const DEFAULT_APPEARANCE: Appearance = {
   rotation: 0,
   opacity: 1,
   hiddenColours: [],
-  onlySelectedColour: false,
   markMismatch: false,
   markUnpainted: false,
   unpaintedLimit: 0.05,
+  // Magenta, deliberately not a palette colour: nothing wplace can paint should be mistaken for a
+  // marker. 9 CSS pixels was arrived at by looking at it on a Retina display.
+  markerColour: '#ff00ff',
+  markerSize: 9,
+  dimOthers: true,
+  otherOpacity: 0.35,
+  otherColour: null,
 }
 
 /**
@@ -147,17 +198,35 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     rotation: number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),
     opacity: number('opacity', DEFAULT_APPEARANCE.opacity, 0.05, 1),
     hiddenColours: hidden,
-    onlySelectedColour: source.onlySelectedColour === true,
+    // `onlySelectedColour` used to live here too. A stored one is simply dropped: the mode is one
+    // switch for the whole view now, so there is nothing per-overlay left for it to mean.
     markMismatch: source.markMismatch === true,
     markUnpainted: source.markUnpainted === true,
+    // Absent on anything stored before the switch existed, where the behaviour was always on.
+    dimOthers: source.dimOthers !== false,
     unpaintedLimit: number(
       'unpaintedLimit',
       DEFAULT_APPEARANCE.unpaintedLimit,
       0,
       UNPAINTED_LIMIT_MAX,
     ),
+    markerColour: colour(source.markerColour) ?? DEFAULT_APPEARANCE.markerColour,
+    markerSize: number('markerSize', DEFAULT_APPEARANCE.markerSize, 3, 33),
+    otherOpacity: number('otherOpacity', DEFAULT_APPEARANCE.otherOpacity, 0, 1),
+    otherColour: colour(source.otherColour),
   }
 }
+
+/** A stored colour, or null. Anything that is not `#rrggbb` is not a colour we wrote. */
+const colour = (raw: unknown): string | null =>
+  typeof raw === 'string' && /^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : null
+
+/** `#rrggbb` as the 0..1 triple the shaders want. */
+export const toRgbUnit = (hex: string): [number, number, number] => [
+  Number.parseInt(hex.slice(1, 3), 16) / 255,
+  Number.parseInt(hex.slice(3, 5), 16) / 255,
+  Number.parseInt(hex.slice(5, 7), 16) / 255,
+]
 
 /**
  * Whether this appearance is just the source pixels, untouched.

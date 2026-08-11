@@ -9,14 +9,19 @@ import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture } from './map-handle.js'
-import { loadState, onStateChange } from './state.js'
+import { shortcutFor } from './shortcuts.js'
+import { getState, loadState, onStateChange, setState } from './state.js'
 import {
+  appearanceOf,
   isTemplateVisible,
   localTemplates,
   onLocalChange,
+  ownsGroup,
   restoreLocalTemplates,
+  setAppearance,
 } from './templates/local-store.js'
 import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { templateAtCentre } from './templates/nearest.js'
 import { installServerSync } from './templates/server-sync.js'
 import {
   captureTilePixels,
@@ -25,10 +30,10 @@ import {
   reconcileDrafts,
   type TileFrame,
 } from './tile-transform.js'
-import { renderOverlayControls } from './ui/overlay-menu.js'
-import { installPanel } from './ui/panel.js'
+import { refreshOverlayMenu, renderOverlayControls, toggleOverlayMenu } from './ui/overlay-menu.js'
+import { installPanel, togglePanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
-import { onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
+import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 import { installColourPicker } from './wplace-picker.js'
 
 /**
@@ -135,6 +140,76 @@ const step = (what: string, run: () => void): void => {
   }
 }
 
+/**
+ * The keyboard shortcuts, such as they are.
+ *
+ * Deliberately few and deliberately not on letters wplace already use. Scanned across all 150 of
+ * their bundles, the only keys they compare against are MapLibre's own — arrows, `+`, `-`, `=`, `_`,
+ * `0`, `r`/`R` — plus Escape, Enter and Space. `C`, `S`, `T`, and `W` are free, and stay free of a
+ * modifier so they cost nothing to reach mid-brushstroke. A bare letter is only ours when nobody is
+ * typing and no modifier is held: `⌘S` remains the browser's, and a chat box or template name never
+ * loses a character to a shortcut.
+ *
+ * Anything acting on one template asks `templateAtCentre` which one that is, rather than deciding
+ * for itself — see the module for why the answer has to be shared.
+ */
+const installKeys = (): void => {
+  window.addEventListener('keydown', (event) => {
+    const shortcut = shortcutFor(event)
+    if (shortcut === null) return
+
+    if (shortcut === 'toggle-panel') {
+      event.preventDefault()
+      togglePanel()
+      return
+    }
+
+    if (shortcut === 'toggle-template-menu') {
+      const nearest = templateAtCentre()
+      if (nearest === null) return
+      event.preventDefault()
+      toggleOverlayMenu(nearest.id, redraw)
+      return
+    }
+
+    if (shortcut === 'toggle-colour') {
+      event.preventDefault()
+      setState({ onlySelectedColour: !getState().onlySelectedColour })
+      return
+    }
+
+    /**
+     * `W` for wrong: the markers on or off.
+     *
+     * Which switch it reaches depends on what the template nearest the centre has already said. One
+     * that answers for its own markers is toggled on its own; one following the defaults means the
+     * question was never about that template, so the global switch moves and every follower moves
+     * with it.
+     *
+     * The ambiguity is real and worth naming: with two templates on screen, which one is "nearest"
+     * is a judgement the interface makes and the keystroke does not show. It is tolerable here in a
+     * way it was not for the colour mode, because markers genuinely are per template — each asserts
+     * its own pixels — where the colour mode is a lens over the whole view.
+     */
+    if (shortcut === 'toggle-markers') {
+      event.preventDefault()
+      const nearest = templateAtCentre()
+      if (nearest !== null && ownsGroup(nearest, 'markers')) {
+        setAppearance(nearest.id, {
+          ...appearanceOf(nearest),
+          markMismatch: !appearanceOf(nearest).markMismatch,
+        })
+        // Its menu may be open on the switch this just moved, and it does not rebuild on a redraw.
+        refreshOverlayMenu()
+        return
+      }
+      setState({
+        appearance: { ...getState().appearance, markMismatch: !getState().appearance.markMismatch },
+      })
+    }
+  })
+}
+
 const main = (): void => {
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
   step('map capture', installMapCapture)
@@ -192,6 +267,7 @@ const main = (): void => {
   })
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
+  step('keyboard shortcuts', installKeys)
   // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
   // marker going away.
   step('mismatch repaint', () => onMismatchesChanged(redraw))
@@ -210,11 +286,15 @@ const main = (): void => {
    * is why a tile panned to answered in under a second while the ones already on screen took ten.
    */
   step('tile pixel capture', () => {
-    const sync = (): void => captureTilePixels(wantsTilePixels())
+    // The pipette fallback reads the exact pixel-art tile, so Paint itself is a pixel consumer even
+    // when mismatch markers are off. Starting at drawer-open gives visible tiles time to populate
+    // before the one-shot picker click; a miss is also chased on demand by `placedIndexAt`.
+    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen())
     sync()
     onStateChange(sync)
     onLocalChange(sync)
-    // And on every frame that carries tiles. The three above are the events that *should* cover it,
+    onPaintSelectionChange(sync)
+    // And on every frame that carries tiles. The four above are the events that *should* cover it,
     // and between them they missed the only one that mattered: at start-up nothing is restored yet,
     // so the first call answers "nothing wants this" and the restore that follows does not
     // necessarily announce itself. Asking again per frame costs a comparison and cannot be wrong.

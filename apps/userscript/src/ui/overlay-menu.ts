@@ -1,27 +1,39 @@
 import { TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { log } from '../debug.js'
+import { FADE_TRANSITION } from '../gl/fade.js'
 import { screenPointFor } from '../main.js'
 import {
   APPEARANCE_CONTROLS,
   type Appearance,
+  type AppearanceGroup,
   DEFAULT_APPEARANCE,
-  UNPAINTED_LIMIT_CONTROL,
 } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
   appearanceOf,
   isTemplateVisible,
   localTemplates,
+  ownsGroup,
   removeLocalTemplate,
   setAppearance,
   setLocalVisible,
+  setOwnsGroup,
 } from '../templates/local-store.js'
-import { beginMove } from '../templates/move.js'
+import {
+  abort as abortMove,
+  beginMove,
+  commit as commitMove,
+  isMoving,
+  movingId,
+} from '../templates/move.js'
 import { isDrawingTiles } from '../tile-transform.js'
 import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import { type IconName, icon } from './icons.js'
+import { mismatchSettings } from './marker-settings.js'
+import { EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { RAIL_BUTTON_CLASS } from './panel.js'
+import { slider } from './slider.js'
 
 /**
  * The per-overlay menu, anchored to the overlay it configures.
@@ -43,11 +55,6 @@ import { RAIL_BUTTON_CLASS } from './panel.js'
 
 const MENU_ID = 'wts-overlay-menu'
 let openFor: string | null = null
-
-/** Breathing room between these controls and whatever they are being kept clear of. */
-const GAP = 12
-/** Matches the panel's own `top: 1rem`, so our two floating surfaces start on the same line. */
-const TOP_MARGIN = 16
 
 /**
  * The leftmost edge of the chrome stacked against the right of the window.
@@ -75,49 +82,6 @@ const rightEdge = (): number => {
 }
 
 export const isOverlayMenuOpen = (id: string): boolean => openFor === id
-
-const slider = (
-  control: {
-    label: string
-    min: number
-    max: number
-    step: number
-    format: (value: number) => string
-  },
-  value: number,
-  onChange: (next: number) => void,
-): HTMLElement => {
-  const wrap = document.createElement('label')
-  wrap.className = 'flex items-center gap-2'
-  wrap.style.padding = '0.125rem 0'
-  const name = document.createElement('span')
-  name.className = 'text-xs opacity-70'
-  name.style.width = '4rem'
-  name.style.flex = '0 0 auto'
-  name.textContent = control.label
-  const input = document.createElement('input')
-  input.type = 'range'
-  input.className = 'range range-xs'
-  input.min = String(control.min)
-  input.max = String(control.max)
-  input.step = String(control.step)
-  input.value = String(value)
-  input.style.flex = '1'
-  input.style.minWidth = '0'
-  const readout = document.createElement('span')
-  readout.className = 'text-xs opacity-50'
-  readout.style.width = '2.5rem'
-  readout.style.flex = '0 0 auto'
-  readout.style.textAlign = 'right'
-  readout.textContent = control.format(value)
-  input.addEventListener('input', () => {
-    const next = Number(input.value)
-    readout.textContent = control.format(next)
-    onChange(next)
-  })
-  wrap.append(name, input, readout)
-  return wrap
-}
 
 /**
  * The settings pane's section header, at this menu's scale.
@@ -159,8 +123,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     // taken off — for the swatch grid's eight-column step. A hair narrower and the palette fell back
     // to four columns, which is the whole thing twice as tall for no gain.
     width: '19.5rem',
-    // 12px, the same as the panel and every other popout here.
-    borderRadius: '0.75rem',
+    borderRadius: SURFACE_RADIUS,
     padding: '0.75rem',
     color: 'var(--color-base-content, inherit)',
     maxHeight: '70vh',
@@ -206,10 +169,21 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
    * under the pointer. Leaving it ticked was worse than cosmetic, because the next click on it then
    * did the opposite of what it looked like it would do.
    */
-  let defaultsBox: HTMLInputElement | null = null
-  const update = (patch: Partial<Appearance>): void => {
+  const defaultsBoxes = new Map<AppearanceGroup, HTMLInputElement>()
+
+  /**
+   * Write a value, taking that group over on the way.
+   *
+   * Touching a control is the clearest statement there is that this overlay wants its own answer,
+   * so the switch above it comes off by itself rather than being a thing to remember first. Taking
+   * over copies what the group is *currently showing*, so nothing moves at that moment — the
+   * overlay looks identical and merely stops following.
+   */
+  const update = (group: AppearanceGroup, patch: Partial<Appearance>): void => {
+    void setOwnsGroup(id, group, true)
     void setAppearance(id, { ...current(), ...patch })
-    if (defaultsBox !== null) defaultsBox.checked = false
+    const box = defaultsBoxes.get(group)
+    if (box !== undefined) box.checked = false
   }
 
   const header = document.createElement('div')
@@ -222,47 +196,6 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   title.style.whiteSpace = 'nowrap'
   title.textContent = template?.name ?? 'Overlay'
 
-  const hide = document.createElement('button')
-  hide.className = visible ? 'btn btn-ghost btn-xs btn-circle' : 'btn btn-xs btn-circle btn-active'
-  hide.title = visible ? 'Hide this overlay' : 'Show this overlay'
-  hide.setAttribute('aria-label', hide.title)
-  hide.appendChild(icon(visible ? 'image' : 'close', 'size-4'))
-  hide.addEventListener('click', () => {
-    setLocalVisible(id, !visible)
-    rerender()
-  })
-
-  const move = document.createElement('button')
-  move.className = 'btn btn-ghost btn-xs btn-circle'
-  move.title = 'Move this overlay'
-  move.setAttribute('aria-label', 'Move this overlay')
-  move.appendChild(icon('move', 'size-4'))
-  move.addEventListener('click', () => {
-    closeOverlayMenu()
-    beginMove(id, rerender)
-  })
-
-  // Deleting from here rather than from a panel row, for the same reason Move is here: this menu is
-  // already about one specific template, so there is no doubt which one goes.
-  const remove = document.createElement('button')
-  remove.className = 'btn btn-ghost btn-xs btn-circle text-error'
-  remove.title = 'Delete this template'
-  remove.setAttribute('aria-label', 'Delete this template')
-  remove.appendChild(icon('trash', 'size-4'))
-  remove.addEventListener('click', () => {
-    void confirmDestructive({
-      title: 'Delete template?',
-      body: `${template?.name ?? 'This template'} will be permanently removed.`,
-      note: 'It is stored in this browser only.',
-      confirmLabel: 'Delete',
-    }).then((yes) => {
-      if (!yes) return
-      closeOverlayMenu()
-      void removeLocalTemplate(id)
-      rerender()
-    })
-  })
-
   const close = document.createElement('button')
   close.className = 'btn btn-ghost btn-xs btn-circle'
   close.title = 'Close'
@@ -273,92 +206,175 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
     rerender()
   })
 
-  header.append(title, hide, move, remove, close)
+  header.append(title, close)
   menu.appendChild(header)
 
-  const pixels = section('Pixels', 'tune')
-  pixels.className = `${pixels.className} flex items-center justify-between gap-2`
-  menu.appendChild(pixels)
-
   /**
-   * Whether this overlay is following the global appearance rather than carrying its own.
+   * The three things you do *to* a template, as targets rather than as chrome.
    *
-   * Every overlay starts this way, so the sliders in settings actually reach something. Touching any
-   * control here writes an explicit appearance and switches this off on its own — because `update`
-   * patches the *effective* values, the first change keeps everything else exactly as it looked and
-   * only the moved slider differs.
+   * They were in the header beside the close button, at the size a close button wants to be — which
+   * put Delete a few pixels from Close and made all three read as window furniture rather than as
+   * the actions the menu exists for. A row of large cells says they are the point, and being the
+   * only unlabelled controls here they can afford to be: the icons are a crossed-out picture, a move
+   * cross and a bin, and the tooltip carries the rest.
    */
-  const usingDefaults = template?.appearance == null
-  const defaults = document.createElement('label')
-  defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal'
-  // Inline, not `normal-case`: it inherits the section heading's uppercase, and wplace's Tailwind
-  // build is purged — a utility they never use is simply absent from their CSS, so the class did
-  // nothing and the label read "USE DEFAULTS".
-  defaults.style.textTransform = 'none'
-  defaults.style.letterSpacing = 'normal'
-  defaults.title = 'Follow the appearance set in settings'
-  defaultsBox = document.createElement('input')
-  defaultsBox.type = 'checkbox'
-  defaultsBox.className = 'checkbox checkbox-xs'
-  defaultsBox.checked = usingDefaults
-  defaultsBox.addEventListener('change', () => {
-    // Null puts it back on the global values; a copy of them is what it already shows, so the only
-    // thing that changes when switching *off* is that it stops following.
-    void setAppearance(id, defaultsBox?.checked === true ? null : { ...current() })
-    // Rebuild rather than reposition: the sliders have to show the values they now follow, and this
-    // menu deliberately never rebuilds itself on a redraw.
-    rebuildMenu()
-    rerender()
-  })
-  const defaultsText = document.createElement('span')
-  defaultsText.textContent = 'Use defaults'
-  defaults.append(defaultsBox, defaultsText)
-  pixels.appendChild(defaults)
+  const actions = document.createElement('div')
+  actions.className = 'grid gap-1'
+  actions.style.gridTemplateColumns = 'repeat(3, 1fr)'
+  actions.style.padding = '0.5rem 0 0.25rem'
 
-  /**
-   * Everything "use defaults" governs, so it can be switched off as one thing.
-   *
-   * While defaults are on, these controls describe values this overlay does not own. Leaving them
-   * live meant the only way to discover that was to move one and watch the tick come off by itself —
-   * the control worked, but not in the way it appeared to: it silently detached the overlay from the
-   * defaults as a side effect. Dimmed and inert, the tick reads as the switch it is.
-   */
-  const overrides = document.createElement('div')
-  Object.assign(overrides.style, { display: 'contents' })
-
-  for (const control of APPEARANCE_CONTROLS) {
-    overrides.appendChild(
-      slider(control, current()[control.key], (value) => update({ [control.key]: value })),
-    )
+  const action = (
+    glyph: IconName,
+    label: string,
+    extra: string,
+    run: () => void,
+  ): HTMLButtonElement => {
+    const button = document.createElement('button')
+    button.className = `btn ${extra}`
+    button.title = label
+    button.setAttribute('aria-label', label)
+    button.style.height = '2.75rem'
+    button.appendChild(icon(glyph, 'size-5'))
+    button.addEventListener('click', run)
+    return button
   }
 
-  overrides.appendChild(section('Mismatches', 'search'))
-  for (const [key, label] of [
-    ['markMismatch', 'Mark mismatched'],
-    ['markUnpainted', 'Count unpainted'],
-  ] as const) {
-    const row = document.createElement('label')
-    row.className = 'flex items-center gap-2 text-xs font-normal'
-    row.style.textTransform = 'none'
-    row.style.letterSpacing = 'normal'
+  actions.append(
+    action(visible ? 'imageOff' : 'image', visible ? 'Hide' : 'Show', 'btn-ghost', () => {
+      setLocalVisible(id, !visible)
+      rerender()
+    }),
+    action('move', 'Move', 'btn-ghost', () => {
+      closeOverlayMenu()
+      beginMove(id, rerender)
+    }),
+    // Deleting from here rather than from a panel row: this menu is already about one specific
+    // template, so there is no doubt which one goes.
+    action('trash', 'Delete', 'btn-ghost text-error', () => {
+      void confirmDestructive({
+        title: 'Delete template?',
+        body: `${template?.name ?? 'This template'} will be permanently removed.`,
+        note: 'It is stored in this browser only.',
+        confirmLabel: 'Delete',
+      }).then((yes) => {
+        if (!yes) return
+        closeOverlayMenu()
+        removeLocalTemplate(id)
+        rerender()
+      })
+    }),
+  )
+  menu.appendChild(actions)
+
+  // The heading and the switch that governs everything under it, on one line. The heading keeps its
+  // own layout — chip beside title — and only the pair of them is spread apart.
+  const pixels = document.createElement('div')
+  pixels.className = 'flex items-center justify-between gap-2'
+  /**
+   * One collapsible group, with the switch that decides whether it is this overlay's to set.
+   *
+   * Three of these rather than one for the whole menu, because they are three unrelated opinions:
+   * wanting a template's own marker colour used to mean taking over its shape and its colour filter
+   * as well, and then the global sliders stopped reaching it forever. Collapsed by default for the
+   * groups an overlay does not own — a wall of controls that belong to somewhere else is a wall to
+   * scroll past.
+   */
+  const groupBox = (
+    group: AppearanceGroup,
+    label: string,
+    glyph: IconName,
+  ): { body: HTMLElement; owned: boolean } => {
+    const owned = template !== undefined && ownsGroup(template, group)
+    const head = document.createElement('div')
+    head.className = 'flex items-center justify-between gap-2'
+
+    const left = document.createElement('button')
+    left.type = 'button'
+    left.className = 'flex items-center gap-2'
+    left.style.flex = '1'
+    left.style.minWidth = '0'
+    const caret = icon('caret', 'size-3 opacity-60')
+    caret.style.transition = 'transform 120ms ease-out'
+    left.append(caret, section(label, glyph))
+
+    const defaults = document.createElement('label')
+    defaults.className = 'flex items-center gap-2 text-xs opacity-70 font-normal'
+    defaults.style.textTransform = 'none'
+    defaults.style.letterSpacing = 'normal'
+    defaults.title = `Follow the ${label.toLowerCase()} set in settings`
     const box = document.createElement('input')
     box.type = 'checkbox'
-    box.className = 'checkbox checkbox-xs'
-    box.checked = current()[key]
-    box.addEventListener('change', () => update({ [key]: box.checked }))
-    const text = document.createElement('span')
-    text.textContent = label
-    row.append(box, text)
-    overrides.appendChild(row)
-  }
-  // How little may be left before "count unpainted" applies. Beside the switch it qualifies.
-  overrides.appendChild(
-    slider(UNPAINTED_LIMIT_CONTROL, current().unpaintedLimit, (value) =>
-      update({ unpaintedLimit: value }),
-    ),
-  )
+    // A switch, not a tick: it turns a whole group between two states rather than picking it out of
+    // a list, and that is what a switch means.
+    box.className = 'toggle toggle-xs'
+    box.checked = !owned
+    box.addEventListener('change', () => {
+      setOwnsGroup(id, group, !box.checked)
+      // Rebuild rather than reposition: every control under it has to show the values it now
+      // follows, and this menu deliberately never rebuilds itself on a redraw.
+      rebuildMenu()
+      rerender()
+    })
+    defaultsBoxes.set(group, box)
+    const defaultsText = document.createElement('span')
+    defaultsText.textContent = 'Use defaults'
+    defaults.append(box, defaultsText)
+    head.append(left, defaults)
+    menu.appendChild(head)
 
-  overrides.appendChild(section('Colours', 'palette'))
+    const body = document.createElement('div')
+    body.className = 'flex flex-col'
+    // Open where the overlay has something of its own to show, shut where it is only mirroring.
+    let open = owned
+    const apply = (): void => {
+      body.style.display = open ? '' : 'none'
+      caret.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)'
+      left.setAttribute('aria-expanded', String(open))
+    }
+    left.addEventListener('click', () => {
+      open = !open
+      apply()
+    })
+    apply()
+
+    if (!owned) {
+      // Dimmed *and* disabled. Pointer-events alone leaves every control in the tab order, reachable
+      // and operable by keyboard — and a control that works while claiming to be inert is worse than
+      // one that plainly is.
+      body.style.opacity = '0.7'
+      body.style.pointerEvents = 'none'
+    }
+    menu.appendChild(body)
+    return { body, owned }
+  }
+
+  const disableIfFollowing = (box: { body: HTMLElement; owned: boolean }): void => {
+    if (box.owned) return
+    for (const control of box.body.querySelectorAll('input, button, select')) {
+      if (control instanceof HTMLElement) control.setAttribute('disabled', '')
+    }
+  }
+
+  const pixelsGroup = groupBox('pixels', 'Pixels', 'tune')
+  for (const control of APPEARANCE_CONTROLS) {
+    pixelsGroup.body.appendChild(
+      slider(control, current()[control.key], (value) =>
+        update('pixels', { [control.key]: value }),
+      ),
+    )
+  }
+  disableIfFollowing(pixelsGroup)
+
+  const markersGroup = groupBox('markers', 'Mismatches', 'search')
+  markersGroup.body.appendChild(
+    mismatchSettings(current(), (patch) => update('markers', patch), rebuildMenu, {
+      compact: true,
+    }),
+  )
+  disableIfFollowing(markersGroup)
+
+  const coloursGroup = groupBox('colours', 'Colours', 'palette')
+  const overrides = coloursGroup.body
 
   const gridWrap = document.createElement('div')
   gridWrap.className = 'wts-swatches'
@@ -390,7 +406,8 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
       setSwatchState(element, !off.has(Number(element.dataset.index)))
     }
     // The preset row reads the same filter, so it goes stale in the same way and on the same events.
-    setPresetState(menu, current().hiddenColours, current().onlySelectedColour)
+    // The mode is not this overlay's to show, so it is always false here.
+    setPresetState(menu, current().hiddenColours, false)
   }
 
   // The same presets as settings, applied to this overlay's own filter. Reaching them should not
@@ -400,18 +417,13 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
       (next) => {
         // Same as the global row: the mode is left running. A preset says which colours this
         // overlay claims, which is a different question from which one is being looked at.
-        update({ hiddenColours: next })
+        update('colours', { hiddenColours: next })
         refreshSwatches()
       },
       rerender,
-      {
-        hidden: current().hiddenColours,
-        onlySelected: current().onlySelectedColour,
-        setOnlySelected: (next) => {
-          update({ onlySelectedColour: next })
-          refreshSwatches()
-        },
-      },
+      // No follow-the-selection switch here: it governs the whole view rather than this overlay,
+      // and offering it beside this overlay's filter would say otherwise.
+      { hidden: current().hiddenColours },
     ),
   )
 
@@ -426,7 +438,7 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
         const next = new Set(effective())
         if (next.has(colour.index)) next.delete(colour.index)
         else next.add(colour.index)
-        update({ hiddenColours: [...next], onlySelectedColour: false })
+        update('colours', { hiddenColours: [...next] })
         refreshSwatches()
         rerender()
       }),
@@ -435,21 +447,8 @@ const buildMenu = (id: string, visible: boolean, rerender: () => void): HTMLElem
   gridWrap.appendChild(grid)
   overrides.appendChild(gridWrap)
 
-  // `display: contents` leaves no box to fade, so the dimming goes on the children — which is also
-  // what keeps the "use defaults" row itself at full strength while everything it governs recedes.
-  for (const child of overrides.children) {
-    if (!(child instanceof HTMLElement)) continue
-    child.style.opacity = usingDefaults ? '0.7' : ''
-  }
-  if (usingDefaults) {
-    overrides.style.pointerEvents = 'none'
-    // Disabled as well as inert: pointer-events alone still leaves every slider and swatch in the
-    // tab order, reachable and operable by keyboard.
-    for (const control of overrides.querySelectorAll('input, button, select')) {
-      if (control instanceof HTMLElement) control.setAttribute('disabled', '')
-    }
-  }
-  menu.appendChild(overrides)
+  // Last, because the swatches are built above and `disabled` has to reach all of them.
+  disableIfFollowing(coloursGroup)
   return menu
 }
 
@@ -461,6 +460,28 @@ export const openOverlayMenu = (id: string, rerender: () => void): void => {
 
 export const closeOverlayMenu = (): void => {
   openFor = null
+  document.getElementById(MENU_ID)?.remove()
+}
+
+/** Open or close one template's local menu through the same path as its on-canvas button. */
+export const toggleOverlayMenu = (id: string, rerender: () => void): void => {
+  if (isOverlayMenuOpen(id)) {
+    closeOverlayMenu()
+    rerender()
+    return
+  }
+  openOverlayMenu(id, rerender)
+}
+
+/**
+ * Throw an open menu away so the next frame draws it from current values.
+ *
+ * For changes made from *outside* it — a keybind, most of all. This menu deliberately never rebuilds
+ * itself on a redraw, because doing so would take a slider out from under the pointer on every frame
+ * the map moves; the price is that anything changed elsewhere leaves its controls showing what was
+ * true when the menu was built.
+ */
+export const refreshOverlayMenu = (): void => {
   document.getElementById(MENU_ID)?.remove()
 }
 
@@ -521,13 +542,12 @@ export const renderOverlayControls = (rerender: () => void): void => {
       button.style.position = 'fixed'
       // Behind the panel too, for the same reason, and below the menu it opens.
       button.style.zIndex = '28'
-      // Matches the overlay's own ramp in `gl/layer.ts`, in both duration and curve.
-      button.style.transition = 'opacity 500ms ease-in-out'
+      // The overlay's own ramp, shared rather than restated: the same duration and the same control
+      // points, so the button and the template it belongs to leave together.
+      button.style.transition = FADE_TRANSITION
       button.addEventListener('click', (event) => {
         event.stopPropagation()
-        if (openFor === template.id) closeOverlayMenu()
-        else openOverlayMenu(template.id, rerender)
-        rerender()
+        toggleOverlayMenu(template.id, rerender)
       })
       document.body.appendChild(button)
     }
@@ -567,12 +587,51 @@ export const renderOverlayControls = (rerender: () => void): void => {
      * to end above such a template's bottom would drag it up off the top of the screen.
      */
     const topFor = (length: number): number => {
-      const sticky = Math.min(
-        Math.max(topLeft.y, TOP_MARGIN),
-        window.innerHeight - length - TOP_MARGIN,
-      )
+      const sticky = Math.min(Math.max(topLeft.y, EDGE), window.innerHeight - length - EDGE)
       const fitsWithin = bottomRight.y - topLeft.y >= length
       return fitsWithin ? Math.min(sticky, bottomRight.y - length) : sticky
+    }
+
+    /**
+     * While this template is being placed, its menu button becomes apply and cancel.
+     *
+     * In the same spot rather than a bar somewhere else, because that spot is already where this
+     * template's controls live — and a placement is a thing you finish, so the two ways to finish it
+     * belong under the hand that started it. The kebab goes for the duration: opening a menu about a
+     * template you are in the middle of moving is a question with no good answer.
+     */
+    const placing = isMoving() && movingId() === template.id
+    const barId = `wts-overlay-move-${template.id}`
+    let bar = document.getElementById(barId)
+    if (placing && bar === null) {
+      bar = document.createElement('div')
+      bar.id = barId
+      bar.className = 'flex items-center gap-1'
+      bar.style.position = 'fixed'
+      bar.style.zIndex = '29'
+      const make = (glyph: IconName, label: string, extra: string, run: () => void): void => {
+        const control = document.createElement('button')
+        control.className = `${RAIL_BUTTON_CLASS} ${extra}`
+        control.title = label
+        control.setAttribute('aria-label', label)
+        control.appendChild(icon(glyph))
+        control.addEventListener('click', (event) => {
+          event.stopPropagation()
+          run()
+        })
+        bar?.appendChild(control)
+      }
+      make('check', 'Apply placement', 'btn-primary', () => void commitMove().then(rerender))
+      make('close', 'Cancel placement', '', () => void abortMove().then(rerender))
+      document.body.appendChild(bar)
+    }
+    if (!placing) bar?.remove()
+    button.style.display = placing ? 'none' : ''
+
+    if (bar !== null && placing) {
+      const width = bar.getBoundingClientRect().width || size * 2 + 4
+      bar.style.left = `${leftFor(width)}px`
+      bar.style.top = `${topFor(size)}px`
     }
 
     button.style.left = `${leftFor(size)}px`

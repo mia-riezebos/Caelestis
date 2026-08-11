@@ -1,5 +1,4 @@
-import { canvasPixelToLatLng } from '@wts/shared'
-import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
+import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
@@ -43,10 +42,14 @@ import {
 import { beginMove } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { isPaintOpen } from '../wplace-paint.js'
+import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
+import { mismatchSettings } from './marker-settings.js'
+import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { type Destination, type Source, transplant } from './transplant.js'
@@ -162,7 +165,7 @@ const railButton = (): HTMLButtonElement => {
   button.setAttribute('aria-expanded', 'false')
   button.setAttribute('aria-controls', PANEL_ID)
   button.appendChild(icon('extension'))
-  button.addEventListener('click', () => setOpen(!open))
+  button.addEventListener('click', togglePanel)
   return button
 }
 
@@ -212,7 +215,7 @@ const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
   return row
 }
 
-const emptyState = (): HTMLElement => {
+const _emptyState = (): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'flex flex-col items-center text-center gap-3 py-10 px-4'
   const art = document.createElement('div')
@@ -280,8 +283,8 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
-          onDropOnNode: (target, draggedKey) =>
-            void dropOnServerNode(target, draggedKey, renderTree),
+          onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
+            void dropOnServerNode(server, nodeId, draggedKey, beforeKey, renderTree),
           onMoveLocal: (draggedKey, parentKey, beforeKey) => {
             // `local` is the root of the category; `lf:<id>` is a folder within it.
             const parentFolderId =
@@ -318,33 +321,38 @@ const treeView = (): HTMLElement => {
   // Paint what the servers said last time, then let a live fetch replace it.
   void primeFromCache(renderTree)
 
-  /**
-   * Redraw the tree when the store changes underneath it.
-   *
-   * The panel used to subscribe to nothing, so every row showed whatever was true when it was last
-   * drawn by an interaction. That was survivable while templates only ever appeared because someone
-   * in this panel imported one — and stopped being survivable the moment a background sync could
-   * add one: the canvas updated, the tree did not, and a template drew over the map with its own
-   * switch reading "off" because the row had been drawn before it existed. Clicking it then sent
-   * "on" and only the second click turned it off, which is exactly as baffling as it sounds.
-   *
-   * Skipped mid-gesture. A rename is an open text field and a drag is a row in flight; replacing
-   * the whole subtree under either takes it away from the pointer.
-   */
-  const refreshTree = (): void => {
-    if (!open || currentView !== 'tree') return
-    const root = document.getElementById(PANEL_ID)
-    if (root === null) return
-    if (root.querySelector('.wts-dragging') !== null) return
-    if (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
-      return
-    renderTree()
-  }
-  onLocalChange(refreshTree)
-  onStateChange(refreshTree)
-
   view.append(toolbar, body)
   return view
+}
+
+/**
+ * Redraw whatever the panel is showing when the state changes underneath it.
+ *
+ * The panel used to subscribe to nothing, so every row showed whatever was true when it was last
+ * drawn by an interaction. That was survivable while templates only ever appeared because someone
+ * in this panel imported one — and stopped being survivable the moment a background sync could add
+ * one: the canvas updated, the tree did not, and a template drew over the map with its own switch
+ * reading "off" because the row had been drawn before it existed.
+ *
+ * **Every view, not only the tree.** A keybind is a change from outside the panel by definition, so
+ * pressing `W` moved the markers and left the switch that claims to control them reading the
+ * opposite — and clicking it then did nothing visible, because it was already in the state it was
+ * being asked for.
+ *
+ * Skipped mid-gesture. A rename is an open text field, a drag is a row in flight, and a slider is
+ * held under the pointer; replacing any of those takes the thing away from the hand using it. The
+ * colour picker counts even though it is not in the panel — it is anchored to a swatch that is, and
+ * it writes a colour on every pointer move, so rebuilding would detach it from its own anchor.
+ */
+const refreshView = (): void => {
+  if (!open) return
+  if (isColourPickerOpen()) return
+  const root = document.getElementById(PANEL_ID)
+  if (root === null) return
+  if (root.querySelector('.wts-dragging') !== null) return
+  const active = document.activeElement
+  if (root.contains(active) && active instanceof HTMLInputElement) return
+  showView(currentView)
 }
 
 const settingRow = (label: string, hint: string | null, control: HTMLElement): HTMLElement => {
@@ -420,7 +428,7 @@ const select = (
       zIndex: '40',
       // The same radius as the panel and every other popout. This is the whole reason it is not a
       // native select.
-      borderRadius: '0.75rem',
+      borderRadius: SURFACE_RADIUS,
       padding: '0.25rem',
       width: '11rem',
       display: 'block',
@@ -465,7 +473,7 @@ const select = (
  * Sized to sit where a checkbox sits in a `settingRow`, so a switch and a limit line up as the pair
  * they are rather than as two unrelated rows.
  */
-const percentSlider = (value: number, onChange: (next: number) => void): HTMLElement => {
+const _percentSlider = (value: number, onChange: (next: number) => void): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'flex items-center gap-2'
   wrap.style.flex = '0 0 auto'
@@ -689,29 +697,21 @@ const appearanceView = (): HTMLElement => {
   const setAppearance = (patch: Partial<typeof state.appearance>): void => {
     setState({ appearance: { ...getState().appearance, ...patch } })
   }
-  view.appendChild(
-    settingRow(
-      'Mark mismatched pixels',
-      'A crosshair on every pixel the canvas disagrees with, the same size at any zoom',
-      checkbox(state.appearance.markMismatch, (next) => setAppearance({ markMismatch: next })),
+
+  // The same block the per-overlay menu shows, at this pane's density — one place that decides what
+  // these switches are called and which of them qualifies which.
+  const markers = document.createElement('div')
+  markers.className = 'px-3 pb-2'
+  markers.appendChild(
+    mismatchSettings(
+      { ...state.appearance, hiddenColours: state.hiddenColours },
+      (patch) => {
+        setAppearance(patch)
+      },
+      rerender,
     ),
   )
-  view.appendChild(
-    settingRow(
-      'Count unpainted as mismatched',
-      'Otherwise only pixels painted the wrong colour are marked',
-      checkbox(state.appearance.markUnpainted, (next) => setAppearance({ markUnpainted: next })),
-    ),
-  )
-  view.appendChild(
-    settingRow(
-      'Only once this much is left',
-      'Above this, an unbuilt template is nothing but crosshairs and says nothing',
-      percentSlider(state.appearance.unpaintedLimit, (next) =>
-        setAppearance({ unpaintedLimit: next }),
-      ),
-    ),
-  )
+  view.appendChild(markers)
 
   view.appendChild(sectionHeader('Colours', 'palette'))
   view.appendChild(coloursSection(rerender))
@@ -1185,12 +1185,15 @@ const copyServerTemplateToLocal = async (
 }
 
 const dropOnServerNode = async (
-  target: TreeTarget,
+  server: ConnectedServer,
+  nodeId: string | null,
   draggedKey: string,
+  beforeKey: string | null,
   rerender: () => void,
 ): Promise<void> => {
-  const { server, nodeId } = target
-  if (server === null) return
+  // Order is this browser's preference and is recorded whatever else happens — including for a drop
+  // that only reorders, where nothing below this does anything at all.
+  placeKey(draggedKey, beforeKey)
 
   // A folder is a branch, not a row: its structure and everything hanging off it must exist at the
   // destination before anything is taken off the source. `transplant` owns that ordering; this only
@@ -1405,7 +1408,7 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
     left: `${event.clientX}px`,
     top: `${event.clientY}px`,
     zIndex: '60',
-    borderRadius: '0.5rem',
+    borderRadius: SURFACE_RADIUS,
     padding: '0.25rem',
     width: '11rem',
   })
@@ -1682,11 +1685,11 @@ const buildPanel = (): HTMLElement => {
   // Layout inline: these must not depend on whether wplace happens to use the same utility.
   Object.assign(panel.style, {
     position: 'fixed',
-    // The rail is `absolute top-2 right-2` with 40px buttons: 8 + 40 = 48px occupied. Clear it with
-    // the same 12px rhythm the rail itself uses between buttons.
-    right: '3.75rem',
-    top: '1rem',
-    bottom: '1rem',
+    // Clear of the rail on the right, and starting on the same line as it — our surfaces are read
+    // together, so they begin together.
+    right: `${CLEAR_OF_RAIL}px`,
+    top: `${EDGE}px`,
+    bottom: `${EDGE}px`,
     // wplace's own chrome sits at z-40 (the rail) and z-50 (its overlay layer), and the map canvas
     // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
     // their rail and menus open over our panel rather than being trapped behind it.
@@ -1696,7 +1699,7 @@ const buildPanel = (): HTMLElement => {
     flexDirection: 'column',
     minHeight: '0',
     color: 'var(--color-base-content, inherit)',
-    borderRadius: '0.5rem',
+    borderRadius: SURFACE_RADIUS,
     overflow: 'hidden',
   } satisfies Partial<CSSStyleDeclaration>)
 
@@ -1845,35 +1848,119 @@ const setOpen = (next: boolean): void => {
   showView(currentView)
 }
 
+/** Open or close the main Caelestis panel through the same path as its rail button. */
+export const togglePanel = (): void => setOpen(!open)
+
+const RAIL_ID = 'wts-rail'
+
 /**
- * Keep the button on the rail.
+ * Our own rail, beneath wplace's when they have one and in its place when they do not.
  *
- * The rail is rendered by wplace's own Svelte app, which is free to re-render and drop anything we
- * appended. An observer costs nothing and turns "the button disappeared after I opened a menu" into
- * a non-event.
+ * Our button used to be appended *into* their rail, which looked native and disappeared with it —
+ * and it disappears exactly when the paint drawer opens, which is when these controls are most
+ * wanted. Owning the container decouples the two: it is positioned against theirs while theirs is on
+ * screen, so it still reads as part of the same stack, and simply stays put when theirs goes.
+ *
+ * Positioned rather than laid out, because their rail is Svelte-rendered and free to re-render at
+ * any moment. Anything we put inside it is on loan; anything we position against it is not.
+ */
+const railContainer = (): HTMLElement => {
+  const existing = document.getElementById(RAIL_ID)
+  if (existing !== null) return existing
+  const el = document.createElement('div')
+  el.id = RAIL_ID
+  el.className = 'flex flex-col items-center gap-3'
+  Object.assign(el.style, { position: 'fixed', zIndex: '30' })
+  document.body.appendChild(el)
+  return el
+}
+
+/**
+ * Keep our rail where wplace's is, and following it when it moves.
+ *
+ * Read from their rail's own box rather than from a copy of their Tailwind offsets: they own that
+ * layout and are free to change it, and a hardcoded corner would drift the moment they do. The
+ * fallback matters more than it looks — it is the paint-drawer case, where their rail is gone and
+ * there is nothing left to measure.
+ */
+const positionRail = (): void => {
+  const rail = railContainer()
+  const theirs = findRail()?.rail.getBoundingClientRect()
+  if (theirs !== undefined && theirs.width > 0) {
+    rail.style.left = `${theirs.left}px`
+    rail.style.top = `${theirs.bottom + GAP}px`
+    rail.style.right = ''
+    return
+  }
+  rail.style.left = ''
+  // Theirs is gone — the paint-drawer case — so ours takes its place at the same inset.
+  rail.style.right = `${EDGE}px`
+  rail.style.top = `${EDGE}px`
+}
+
+/**
+ * Follow the colour wplace has selected, for every overlay at once.
+ *
+ * On the rail rather than only in the panel because it is toggled constantly while painting, and
+ * opening a panel to reach it costs more than the mode saves. It says nothing while their drawer is
+ * shut — there is no selected colour then — which the tooltip carries.
+ */
+const colourModeButton = (): HTMLButtonElement => {
+  const existing = document.getElementById(COLOUR_MODE_ID)
+  if (existing !== null) return existing as HTMLButtonElement
+  const button = document.createElement('button')
+  button.id = COLOUR_MODE_ID
+  button.className = RAIL_BUTTON_CLASS
+  button.appendChild(icon('palette'))
+  button.addEventListener('click', () => {
+    setState({ onlySelectedColour: !getState().onlySelectedColour })
+    syncColourModeState()
+  })
+  return button
+}
+
+const COLOUR_MODE_ID = 'wts-colour-mode'
+
+export const syncColourModeState = (): void => {
+  const button = document.getElementById(COLOUR_MODE_ID)
+  if (button === null) return
+  const on = getState().onlySelectedColour
+  button.className = on ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
+  button.setAttribute('aria-pressed', String(on))
+  const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
+  // Says why nothing happened, at the moment it does not: the mode needs a colour to follow.
+  button.title = isPaintOpen() ? label : `${label} — open wplace's paint drawer to pick one`
+  button.setAttribute('aria-label', label)
+}
+
+/**
+ * Keep our rail on screen and our buttons in it.
+ *
+ * The rail is rendered by wplace's own Svelte app, which is free to re-render at any moment. Ours is
+ * separate, so the observer is only here to notice *their* rail moving or vanishing — not to rescue
+ * a button they threw away.
  */
 export const installPanel = (): void => {
   loadState()
   installStyles()
-  let warned = false
-  const attach = (): void => {
-    const existing = document.getElementById(BUTTON_ID)
-    const found = findRail()
-    if (found === null) {
-      if (!warned) {
-        warned = true
-        warn('install', `no "${ANCHOR_LABEL}" button on the page yet — watching for it`)
-      }
-      return
-    }
-    // Already in the right place, directly after the anchor.
-    if (existing !== null && existing.previousElementSibling === found.after) return
-    existing?.remove()
-    found.after.insertAdjacentElement('afterend', railButton())
-    syncRailButtonState()
-    log('install', 'rail button attached below Overlays')
-  }
+  const rail = railContainer()
+  rail.append(railButton(), colourModeButton())
+  syncRailButtonState()
+  syncColourModeState()
+  positionRail()
+  log('install', 'rail installed beside wplace’s')
 
-  attach()
-  new MutationObserver(attach).observe(document.body, { childList: true, subtree: true })
+  const sync = (): void => {
+    // Their re-render may have taken our buttons if anything ever moves them; put them back cheaply.
+    if (!rail.contains(railButton())) rail.append(railButton(), colourModeButton())
+    positionRail()
+  }
+  new MutationObserver(sync).observe(document.body, { childList: true, subtree: true })
+  window.addEventListener('resize', positionRail)
+  onStateChange(syncColourModeState)
+  // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a
+  // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per
+  // change.
+  onStateChange(refreshView)
+  onLocalChange(refreshView)
 }

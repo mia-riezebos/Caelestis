@@ -1,7 +1,9 @@
 import { TILE_SIZE } from '@wts/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
-import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
+import { getState } from '../state.js'
+import { toRgbUnit } from '../templates/appearance.js'
+import { appearanceOf, localTemplates, type PlacedTemplate } from '../templates/local-store.js'
 import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
 import {
   currentQuads,
@@ -9,7 +11,8 @@ import {
   registerDraftCanvas,
   type TileQuad,
 } from '../tile-transform.js'
-import { templateFade } from './fade.js'
+import { isPaintOpen, selectedColour } from '../wplace-paint.js'
+import { markerFades, templateFades } from './fade.js'
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -31,6 +34,8 @@ import { templateFade } from './fade.js'
 const VERTEX = `#version 300 es
 /** A marked pixel, in wplace canvas pixels. */
 in vec2 a_pixel;
+/** The palette index the template wants at that pixel. */
+in float a_wanted;
 
 /** The tile's top-left in canvas pixels, and where it landed on screen this frame. */
 uniform vec2 u_tileOrigin;
@@ -40,11 +45,14 @@ uniform vec2 u_tileScale;
 uniform vec2 u_buffer;
 uniform float u_size;
 
+flat out float v_wanted;
+
 void main() {
   // The centre of the pixel, not its corner, so the crosshair sits on the thing it marks.
   vec2 device = u_tileScreen + (a_pixel - u_tileOrigin + 0.5) * u_tileScale;
   gl_Position = vec4((2.0 * device.x) / u_buffer.x - 1.0, 1.0 - (2.0 * device.y) / u_buffer.y, 0.0, 1.0);
   gl_PointSize = u_size;
+  v_wanted = a_wanted;
 }
 `
 
@@ -54,7 +62,12 @@ precision highp float;
 uniform float u_size;
 uniform float u_thickness;
 uniform vec3 u_colour;
+uniform vec3 u_otherColour;
+uniform float u_otherOpacity;
+uniform float u_selected;
 uniform float u_fade;
+
+flat in float v_wanted;
 
 out vec4 fragColor;
 
@@ -64,8 +77,10 @@ void main() {
   float half_ = u_thickness * 0.5;
   // A cross, not a box: it has to be findable against dense art without hiding the pixel it marks.
   if (abs(offset.x) > half_ && abs(offset.y) > half_) discard;
-  float alpha = u_fade;
-  fragColor = vec4(u_colour * alpha, alpha);
+  bool other = u_selected >= 0.0 && round(v_wanted) != round(u_selected);
+  vec3 colour = other ? u_otherColour : u_colour;
+  float alpha = u_fade * (other ? u_otherOpacity : 1.0);
+  fragColor = vec4(colour * alpha, alpha);
 }
 `
 
@@ -117,7 +132,17 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
   const pixel = gl.getAttribLocation(program, 'a_pixel')
   gl.enableVertexAttribArray(pixel)
-  gl.vertexAttribPointer(pixel, 2, gl.FLOAT, false, 0, 0)
+  gl.vertexAttribPointer(pixel, 2, gl.FLOAT, false, 3 * Float32Array.BYTES_PER_ELEMENT, 0)
+  const wanted = gl.getAttribLocation(program, 'a_wanted')
+  gl.enableVertexAttribArray(wanted)
+  gl.vertexAttribPointer(
+    wanted,
+    1,
+    gl.FLOAT,
+    false,
+    3 * Float32Array.BYTES_PER_ELEMENT,
+    2 * Float32Array.BYTES_PER_ELEMENT,
+  )
   gl.bindVertexArray(null)
 }
 
@@ -132,10 +157,23 @@ export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
 }
 
 export interface MarkerStyle {
-  /** Both of these are **CSS pixels**; `drawMarkers` scales them to the device before drawing. */
+  /** CSS pixels; scaled to the device inside `drawMarkers`, as size already is. */
   readonly size: number
   readonly thickness: number
+  /** The marker colour, as 0..1 RGB. */
   readonly colour: readonly [number, number, number]
+  /**
+   * Drawn instead of `colour` for a mark whose wanted colour is not the selected one, when
+   * `dimColour` is on. Null means use `colour` for everything.
+   */
+  readonly otherColour: readonly [number, number, number] | null
+  /** Opacity multiplier for those same marks, 0..1. 1 means do not dim. */
+  readonly otherOpacity: number
+  /**
+   * The palette index currently selected in wplace, or -1 when nothing is selected or the mode that
+   * makes this meaningful is off. -1 must draw every mark at full strength in `colour`.
+   */
+  readonly selected: number
 }
 
 /**
@@ -161,9 +199,9 @@ const deviceScale = (gl: WebGL2RenderingContext): number => {
 /**
  * Draw one crosshair per marked pixel of one tile.
  *
- * `pixels` is x,y pairs in canvas coordinates. Placement comes from the tile's own on-screen rect,
- * the same rect the overlay itself is drawn on, so markers inherit whatever MapLibre did to place
- * that tile rather than being projected separately.
+ * `pixels` is x,y,wanted-index triples in canvas coordinates. Placement comes from the tile's own
+ * on-screen rect, the same rect the overlay itself is drawn on, so markers inherit whatever
+ * MapLibre did to place that tile rather than being projected separately.
  */
 export const drawMarkers = (
   gl: WebGL2RenderingContext,
@@ -189,9 +227,12 @@ export const drawMarkers = (
   gl.uniform1f(uniform(gl, 'u_size'), style.size * scale)
   gl.uniform1f(uniform(gl, 'u_thickness'), Math.max(1, Math.round(style.thickness * scale)))
   gl.uniform3f(uniform(gl, 'u_colour'), ...style.colour)
+  gl.uniform3f(uniform(gl, 'u_otherColour'), ...(style.otherColour ?? style.colour))
+  gl.uniform1f(uniform(gl, 'u_otherOpacity'), style.otherOpacity)
+  gl.uniform1f(uniform(gl, 'u_selected'), style.selected)
   gl.uniform1f(uniform(gl, 'u_fade'), fade)
 
-  gl.drawArrays(gl.POINTS, 0, pixels.length / 2)
+  gl.drawArrays(gl.POINTS, 0, pixels.length / 3)
   gl.bindVertexArray(null)
 }
 
@@ -279,22 +320,6 @@ export const keepMarkersAboveDrafts = (): void => {
 }
 
 /**
- * Same shape at every zoom, and the same *apparent* size on every display.
- *
- * Sized in cells it shrinks with the zoom, and the view where you are hunting for one wrong pixel in
- * a hundred thousand is exactly the view where a cell is a speck. So it is fixed — but fixed in CSS
- * pixels rather than device pixels, which is the correction here. `gl_PointSize` is device pixels,
- * so 9 of them is 9 physical dots: fine at 1x, and a 4.5pt speck on a Retina display, which is the
- * one place there was room to draw it properly.
- */
-const MARKER_STYLE: MarkerStyle = {
-  size: 9,
-  thickness: 2,
-  /** Deliberately not a palette colour: nothing wplace can paint should be mistaken for a marker. */
-  colour: [1, 0, 1],
-}
-
-/**
  * The soonest a deferred scan may ask for another frame.
  *
  * Asking from inside a render callback is asking for the next frame from the frame you are in, so a
@@ -309,9 +334,38 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   if (!isDrawingTiles()) return
   const tiles = currentQuads()
   if (tiles.length === 0) return
-  const wanted = localTemplates().filter(
-    (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
-  )
+  /**
+   * Everything whose markers are still worth anything, which is not the same as everything that
+   * asked for them.
+   *
+   * Switching markers off used to remove the template from this list, and every crosshair on it
+   * vanished between two frames. On dense artwork that is indistinguishable from the overlay
+   * breaking: a few thousand marks disappear at once and nothing says whether they were fixed,
+   * filtered, or lost. So the switch is a destination — the marks keep being drawn at falling
+   * opacity until the ramp runs out, and only then does the template drop off this list.
+   */
+  const now = performance.now()
+  let animating = false
+  const wanted: { template: PlacedTemplate; fade: number }[] = []
+  for (const template of localTemplates()) {
+    const { value, done } = markerFades.advance(
+      template.id,
+      appearanceOf(template).markMismatch ? 1 : 0,
+      now,
+    )
+    if (!done) animating = true
+    // Multiplied by the template's own ramp: markers belong to it, so one arriving with its markers
+    // on brings them with it rather than laying them over a template that is not there yet.
+    // Hiding the template is already in there: its own ramp is on its way to zero, and the markers
+    // leave with it rather than a step ahead of it.
+    const fade = value * templateFades.value(template.id)
+    if (fade > 0) wanted.push({ template, fade })
+  }
+  markerFades.prune(new Set(localTemplates().map((template) => template.id)))
+  if (animating) {
+    const map = getMap() as { triggerRepaint?: () => void } | null
+    map?.triggerRepaint?.()
+  }
   if (wanted.length === 0) return
 
   count('marker:layer rendered')
@@ -319,7 +373,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
 
   // Only the tiles a template covers. Asking about a tile is not free — one whose pixels have not
   // been captured triggers a fetch and a 1000x1000 `getImageData`.
-  const covers = (template: (typeof wanted)[number], tile: TileQuad): boolean => {
+  const covers = (template: PlacedTemplate, tile: TileQuad): boolean => {
     const left = tile.tile.x * TILE_SIZE
     const top = tile.tile.y * TILE_SIZE
     if (template.originX >= left + TILE_SIZE || template.originX + template.width <= left)
@@ -329,16 +383,29 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     return true
   }
 
-  const work: { tile: TileQuad; marks: Float32Array; fade: number }[] = []
+  const work: { tile: TileQuad; marks: Float32Array; style: MarkerStyle; fade: number }[] = []
   let deferred = false
-  for (const template of wanted) {
-    const fade = templateFade(template.id)
-    if (fade <= 0) continue
+  const selected = getState().onlySelectedColour && isPaintOpen() ? (selectedColour() ?? -1) : -1
+  for (const { template, fade } of wanted) {
+    const appearance = appearanceOf(template)
+    const style: MarkerStyle = {
+      size: appearance.markerSize,
+      thickness: 2,
+      colour: toRgbUnit(appearance.markerColour),
+      // One switch above both: off means every marker is drawn the same, and the fade and the second
+      // colour keep their values for whenever it goes back on.
+      otherColour:
+        !appearance.dimOthers || appearance.otherColour === null
+          ? null
+          : toRgbUnit(appearance.otherColour),
+      otherOpacity: appearance.dimOthers ? appearance.otherOpacity : 1,
+      selected,
+    }
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
       const marks = mismatchesIn(template, tile.tile)
       if (marks === null) deferred = true
-      else if (marks.length > 0) work.push({ tile, marks, fade })
+      else if (marks.length > 0) work.push({ tile, marks, style, fade })
     }
   }
   count('marker:tiles with marks', work.length)
@@ -350,14 +417,13 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   gl.enable(gl.BLEND)
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
 
-  for (const one of work) drawMarkers(gl, one.tile, one.marks, MARKER_STYLE, one.fade)
+  for (const one of work) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
 
   gl.bindVertexArray(previousVao)
   gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
   gl.useProgram(previousProgram)
   if (!hadBlend) gl.disable(gl.BLEND)
 
-  const now = performance.now()
   if (deferred && now >= nextRetry) {
     nextRetry = now + RETRY_MS
     const map = getMap() as { triggerRepaint?: () => void } | null
