@@ -7,7 +7,7 @@ const NODE_B = '019fed50-87a1-7523-a88c-bdeafad49683'
 const serverInfo = { id: SERVER_ID, name: 'Caelestis', auth: 'none' as const }
 const manifest = {
   version: '3b7f6148884517e03bb2807e18116677',
-  season: 7,
+  season: 0,
   server: serverInfo,
   nodes: [],
   templates: [],
@@ -72,7 +72,7 @@ describe('server state boundaries', () => {
     ).toBeNull()
   })
 
-  it('uses the validated manifest season for admin probes', async () => {
+  it('accepts season zero and uses the validated manifest season for admin probes', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
@@ -85,11 +85,11 @@ describe('server state boundaries', () => {
       expect.objectContaining({
         url: 'https://example.com',
         status: 'connected',
-        season: 7,
+        season: 0,
         isAdmin: true,
       }),
     )
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=7')
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
   })
 
   it('does not resurrect a server removed while its refresh is in flight', async () => {

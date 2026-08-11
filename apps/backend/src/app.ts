@@ -82,7 +82,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.route('/server', createServerRoutes(server))
   app.route(
     '/manifest',
-    createManifestRoutes(ports, auth, { server, currentSeason: options.currentSeason ?? 1 }),
+    createManifestRoutes(ports, auth, { server, currentSeason: options.currentSeason ?? 0 }),
   )
 
   app.route('/admin/tokens', createTokenRoutes(auth))

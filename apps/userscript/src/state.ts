@@ -40,7 +40,7 @@ export interface ConnectedServer {
    * will only ever get a 403 is worse than not offering them.
    */
   readonly isAdmin: boolean
-  /** Positive season advertised by the validated manifest. */
+  /** Non-negative season advertised by the validated manifest. */
   readonly season: number | null
 }
 
@@ -192,7 +192,7 @@ const manifestProbeFrom = (
     value.version.length > 256
   )
     return null
-  if (!Number.isSafeInteger(value.season) || Number(value.season) < 1) return null
+  if (!Number.isSafeInteger(value.season) || Number(value.season) < 0) return null
   const server = serverInfoFrom(value.server)
   if (server === null || server.id !== expected.id) return null
   if (
