@@ -79,8 +79,17 @@ export const screenPointForIn = (
   }
 }
 
-/** Device pixels occupied by one wplace pixel in this frame. */
-export const pixelsPerCanvasPixelIn = (frame: TileFrame | null): number => {
+/** CSS pixels occupied by one wplace pixel in this frame. Pointer events use this coordinate
+ * space, so the canvas backing-store/device-pixel ratio must be removed. */
+export const cssPixelsPerCanvasPixelIn = (frame: TileFrame | null): { x: number; y: number } => {
   const quad = frame?.quads[0]
-  return quad === undefined ? 1 : quad.width / TILE_SIZE
+  if (quad === undefined || frame === null) return { x: 1, y: 1 }
+  const box = frame.canvas.getBoundingClientRect()
+  if (box.width <= 0 || box.height <= 0 || frame.canvas.width <= 0 || frame.canvas.height <= 0) {
+    return { x: 1, y: 1 }
+  }
+  return {
+    x: quad.width / TILE_SIZE / (frame.canvas.width / box.width),
+    y: quad.height / TILE_SIZE / (frame.canvas.height / box.height),
+  }
 }

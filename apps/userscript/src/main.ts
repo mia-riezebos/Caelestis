@@ -1,13 +1,22 @@
-import { TILE_SIZE } from '@wts/shared'
+import { TILE_SIZE, tileKey } from '@wts/shared'
 import {
   canvasPixelAtIn,
-  pixelsPerCanvasPixelIn,
+  cssPixelsPerCanvasPixelIn,
   screenPointForIn,
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, log, warn } from './debug.js'
 import { installMapCapture } from './map-handle.js'
 import { type FramePainter, paintFrame } from './paint.js'
+import { DEFAULT_APPEARANCE } from './templates/appearance.js'
+import {
+  levelFor,
+  localTemplates,
+  onLocalChange,
+  previewOriginFor,
+  restoreLocalTemplates,
+  stampTile,
+} from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
 
 /**
@@ -18,8 +27,7 @@ import { install, onTileFrame, type TileFrame } from './tile-transform.js'
  * showing — nothing is composited into wplace's own tiles, so per-colour filters and view modes
  * stay possible for whatever draws here later.
  *
- * This module owns the canvas and the screen/canvas coordinate conversions. It does not know what
- * gets drawn on it.
+ * This module owns the canvas, painter registration, and the screen/canvas coordinate conversions.
  */
 
 let retainedOverlayCanvas: HTMLCanvasElement | null = null
@@ -97,6 +105,20 @@ export const canvasPixelAt = (
   return lastFrame === null ? null : canvasPixelAtIn(lastFrame, clientX, clientY)
 }
 
+/** Whether a captured page event actually originated inside the active map surface. */
+export const isMapInteractionTarget = (target: EventTarget | null): boolean => {
+  if (lastFrame === null || target === null) return false
+  const mapCanvas = lastFrame.canvas
+  const mapContainer = mapCanvas.parentElement
+  if (target === mapCanvas || target === mapContainer) return true
+  if (mapContainer === null) return false
+  try {
+    return mapContainer.contains(target as Node)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Where a canvas pixel currently sits on screen, in client coordinates.
  *
@@ -107,9 +129,9 @@ export const screenPointFor = (x: number, y: number): { x: number; y: number } |
   return lastFrame === null ? null : screenPointForIn(lastFrame, x, y)
 }
 
-/** Screen scale: how many device pixels one canvas pixel currently occupies. */
-export const pixelsPerCanvasPixel = (): number => {
-  return pixelsPerCanvasPixelIn(lastFrame)
+/** Screen scale: how many CSS pixels one canvas pixel currently occupies. */
+export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
+  return cssPixelsPerCanvasPixelIn(lastFrame)
 }
 
 /**
@@ -119,6 +141,95 @@ export const pixelsPerCanvasPixel = (): number => {
  * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
  * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
  */
+/** Draws every visible template over the tiles wplace is currently showing. */
+const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
+  const visible = localTemplates().filter((template) => template.visible)
+  if (visible.length === 0) return
+
+  let drawn = 0
+  let smoothing: boolean | null = null
+  for (const quad of frame.quads) {
+    const key = tileKey(quad.tile)
+    for (const template of visible) {
+      const appearance = template.appearance ?? DEFAULT_APPEARANCE
+      const preview = previewOriginFor(template.id)
+      if (preview !== null && (preview.x !== template.originX || preview.y !== template.originY)) {
+        const offsetX = preview.x - template.originX
+        const offsetY = preview.y - template.originY
+        const destinationLeft = quad.tile.x * TILE_SIZE
+        const destinationTop = quad.tile.y * TILE_SIZE
+        const sourceLeft = destinationLeft - offsetX
+        const sourceTop = destinationTop - offsetY
+        const firstSourceX = Math.floor(sourceLeft / TILE_SIZE)
+        const lastSourceX = Math.floor((sourceLeft + TILE_SIZE - 1) / TILE_SIZE)
+        const firstSourceY = Math.floor(sourceTop / TILE_SIZE)
+        const lastSourceY = Math.floor((sourceTop + TILE_SIZE - 1) / TILE_SIZE)
+        for (let sourceY = firstSourceY; sourceY <= lastSourceY; sourceY++) {
+          for (let sourceX = firstSourceX; sourceX <= lastSourceX; sourceX++) {
+            const sourceKey = `${sourceX}/${sourceY}`
+            const tile = stampTile(template, sourceKey, appearance, quad.width)
+            if (tile === undefined) continue
+            const bitmap = levelFor(tile, quad.width)
+            const targetLeft = sourceX * TILE_SIZE + offsetX
+            const targetTop = sourceY * TILE_SIZE + offsetY
+            const left = Math.max(destinationLeft, targetLeft)
+            const top = Math.max(destinationTop, targetTop)
+            const right = Math.min(destinationLeft + TILE_SIZE, targetLeft + TILE_SIZE)
+            const bottom = Math.min(destinationTop + TILE_SIZE, targetTop + TILE_SIZE)
+            if (right <= left || bottom <= top) continue
+            const bitmapScaleX = bitmap.width / TILE_SIZE
+            const bitmapScaleY = bitmap.height / TILE_SIZE
+            const minifying = bitmap.width > quad.width || bitmap.height > quad.height
+            if (smoothing !== minifying) {
+              smoothing = minifying
+              context.imageSmoothingEnabled = minifying
+              if (minifying) context.imageSmoothingQuality = 'high'
+            }
+            context.globalAlpha = appearance.opacity
+            context.drawImage(
+              bitmap,
+              (left - targetLeft) * bitmapScaleX,
+              (top - targetTop) * bitmapScaleY,
+              (right - left) * bitmapScaleX,
+              (bottom - top) * bitmapScaleY,
+              quad.x + ((left - destinationLeft) / TILE_SIZE) * quad.width,
+              quad.y + ((top - destinationTop) / TILE_SIZE) * quad.height,
+              ((right - left) / TILE_SIZE) * quad.width,
+              ((bottom - top) / TILE_SIZE) * quad.height,
+            )
+            context.globalAlpha = 1
+            drawn++
+          }
+        }
+        continue
+      }
+      // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
+      // per frame; the stamp is rebuilt only when the appearance changes.
+      const tile = stampTile(template, key, appearance, quad.width)
+      if (tile === undefined) continue
+      context.globalAlpha = appearance.opacity
+      // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
+      // than 2x. One drawImage per tile per template, whatever the template's size.
+      const bitmap = levelFor(tile, quad.width)
+      // Match wplace's texture filtering against the actual selected source level. Stamped tiles
+      // need not be TILE_SIZE wide, so comparing only the destination to TILE_SIZE can classify a
+      // real minification as magnification and drop source rows/columns.
+      const minifying = bitmap.width > quad.width || bitmap.height > quad.height
+      if (smoothing !== minifying) {
+        smoothing = minifying
+        context.imageSmoothingEnabled = minifying
+        if (minifying) context.imageSmoothingQuality = 'high'
+      }
+      // Use MapLibre's exact fractional quad. Snapping each quad independently changes both origin
+      // and scale relative to the underlying WebGL tile, visibly distorting the internal pixel grid.
+      context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
+      context.globalAlpha = 1
+      drawn++
+    }
+  }
+  if (drawn > 0) log('draw', `painted ${drawn} template tiles`, { quads: frame.quads.length })
+}
+
 let marked: { x: number; y: number } | null = null
 
 const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
@@ -154,8 +265,13 @@ const main = (): void => {
   } catch {
     // Browser hooks are best-effort around page-owned surfaces.
   }
+  // Templates outlive a page load, which is what makes navigating to one survivable at all.
+  void restoreLocalTemplates()
+  onPaint(paintTemplates)
   onPaint(paintMark)
   onTileFrame(draw)
+  // A template appearing or moving has to repaint even if MapLibre is idle.
+  onLocalChange(repaint)
   try {
     console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
   } catch {
