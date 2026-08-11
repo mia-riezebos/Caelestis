@@ -37,6 +37,11 @@ import { installStyles } from './styles.js'
  * changes. Holding a snapshot instead means the second edit silently reverts the first — and
  * reading the *store* alone is not enough either, because a write only becomes visible there once
  * IndexedDB has acknowledged it, which is several clicks later at human speed.
+ *
+ * **Everything asynchronous is tied to the template that asked for it.** There is one menu element
+ * for the whole map, so a completion that assumes it still belongs to the menu currently on screen
+ * will happily report template A's failure inside template B's menu, or delete A from under B's
+ * heading. Every deferred path re-checks the id it was started for.
  */
 
 const MENU_ID = 'wts-overlay-menu'
@@ -58,10 +63,28 @@ let focusOnBuild = false
  * durable write, so between a click and its acknowledgement the store still reports the old value.
  * Editing from the store alone therefore loses every update made inside that window — pick Dot,
  * click a swatch before the write lands, and the swatch's spread puts the shape back to `full`.
- * Intent is recorded here synchronously and released once the store agrees or the write is refused.
+ *
+ * `seq` is what releases it: the *latest* request owns the intent, so an earlier one completing
+ * cannot clear a later one's. Comparing the value instead makes hide → show → hide drop the third
+ * request's intent, because it reads the same `false` the first one wrote.
  */
-const pendingAppearance = new Map<string, Appearance>()
-const pendingVisible = new Map<string, boolean>()
+interface Intent {
+  readonly seq: number
+  readonly appearance?: Appearance | undefined
+  readonly visible?: boolean | undefined
+}
+const intents = new Map<string, Intent>()
+let sequence = 0
+
+/**
+ * One write at a time per template, with the payload composed at dispatch.
+ *
+ * `setAppearance` takes a whole `Appearance`, so a queued edit carries a snapshot of everything —
+ * including fields it never touched. If an earlier write conflicts and reconciles another tab's
+ * change in between, a snapshot taken before that would put the old value straight back. Composing
+ * against the store at the moment the write actually goes out keeps the patch to what was clicked.
+ */
+const queues = new Map<string, Promise<unknown>>()
 
 /**
  * Our own buttons, by template id.
@@ -75,13 +98,44 @@ const buttons = new Map<string, HTMLElement>()
 const templateFor = (id: string): PlacedTemplate | undefined =>
   localTemplates().find((candidate) => candidate.id === id)
 
+const storedAppearance = (id: string): Appearance =>
+  templateFor(id)?.appearance ?? DEFAULT_APPEARANCE
+
 const appearanceFor = (id: string): Appearance =>
-  pendingAppearance.get(id) ?? templateFor(id)?.appearance ?? DEFAULT_APPEARANCE
+  intents.get(id)?.appearance ?? storedAppearance(id)
 
 const visibleFor = (id: string): boolean =>
-  pendingVisible.get(id) ?? templateFor(id)?.visible ?? false
+  intents.get(id)?.visible ?? templateFor(id)?.visible ?? false
+
+/** Record the latest intent for `id`, keeping whichever field this action did not touch. */
+const intend = (id: string, next: Omit<Intent, 'seq'>): number => {
+  const seq = ++sequence
+  const current = intents.get(id)
+  intents.set(id, { seq, appearance: current?.appearance, visible: current?.visible, ...next })
+  return seq
+}
+
+/** Release the intent, unless a later action has already taken ownership of it. */
+const releaseIntent = (id: string, seq: number): boolean => {
+  if (intents.get(id)?.seq !== seq) return false
+  intents.delete(id)
+  return true
+}
+
+const enqueue = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
+  const previous = queues.get(id) ?? Promise.resolve()
+  const next = previous.then(run, run)
+  queues.set(
+    id,
+    next.catch(() => undefined),
+  )
+  return await next
+}
 
 const menuElement = (): HTMLElement | null => document.getElementById(MENU_ID)
+
+/** The menu, but only while it still belongs to `id`. */
+const menuFor = (id: string): HTMLElement | null => (openFor === id ? menuElement() : null)
 
 /**
  * What the menu's structure and labels are drawn from, as one comparable string.
@@ -102,17 +156,21 @@ const menuSignature = (template: PlacedTemplate): string => {
   ].join('|')
 }
 
+const deleteQuestion = (name: string): string => `Delete “${name}”? This cannot be undone.`
+
 /**
  * Say so in the menu when a write is refused.
  *
  * The panel's `toast` mounts inside the panel and does nothing while it is closed — and this menu
  * is reachable with the panel shut, which is exactly when the failure would go unmentioned.
  *
- * Looked up rather than captured: the menu is rebuilt whenever its signature changes, so a handler
- * holding the node it was built with would report a failure into a detached element.
+ * Looked up by id rather than captured, for two reasons: the menu is rebuilt whenever its signature
+ * changes, so a handler holding the node it was built with would report into a detached element;
+ * and a write started for one template can complete while another's menu is open, which must not
+ * put "Could not update A" under B's heading.
  */
-const reportFailure = (message: string): void => {
-  const menu = menuElement()
+const reportFailure = (id: string, message: string): void => {
+  const menu = menuFor(id)
   if (menu === null) return
   menu.querySelector('[data-wts-error]')?.remove()
   const el = document.createElement('div')
@@ -124,8 +182,8 @@ const reportFailure = (message: string): void => {
   menu.querySelector('[data-wts-header]')?.after(el)
 }
 
-const clearFailure = (): void => {
-  menuElement()?.querySelector('[data-wts-error]')?.remove()
+const clearFailure = (id: string): void => {
+  menuFor(id)?.querySelector('[data-wts-error]')?.remove()
 }
 
 const slider = (
@@ -155,6 +213,15 @@ const slider = (
   readout.style.width = '2.5rem'
   readout.style.textAlign = 'right'
   readout.textContent = `${Math.round(value * 100)}%`
+  // Only an *in-progress* gesture blocks a refresh. Using focus for that leaves a refused commit,
+  // or another tab's change, sitting on a thumb that stays focused long after the drag ended.
+  const holding = (held: boolean) => () => {
+    if (held) input.dataset.wtsHeld = 'true'
+    else delete input.dataset.wtsHeld
+  }
+  input.addEventListener('pointerdown', holding(true))
+  input.addEventListener('keydown', holding(true))
+  input.addEventListener('blur', holding(false))
   // The readout follows the thumb; the write waits for the release. Every `input` event used to be
   // a durable IndexedDB write, and `size` is part of the stamped-tile cache key, so a one-second
   // drag meant dozens of serialised transactions each throwing away every stamped tile and
@@ -162,7 +229,10 @@ const slider = (
   input.addEventListener('input', () => {
     readout.textContent = `${Math.round(Number(input.value) * 100)}%`
   })
-  input.addEventListener('change', () => onCommit(Number(input.value)))
+  input.addEventListener('change', () => {
+    delete input.dataset.wtsHeld
+    onCommit(Number(input.value))
+  })
   wrap.append(name, input, readout)
   return wrap
 }
@@ -240,13 +310,16 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   const visible = visibleFor(id)
   const menu = document.createElement('div')
   menu.id = MENU_ID
+  menu.dataset.wtsTemplate = id
   menu.className = 'bg-base-100 shadow-2xl'
   menu.setAttribute('role', 'dialog')
   menu.setAttribute('aria-label', `${name} display options`)
   Object.assign(menu.style, {
     position: 'fixed',
     zIndex: MENU_Z,
-    width: '15rem',
+    // A fixed 15rem cannot be clamped into a viewport narrower than it is; on a phone, or at a
+    // browser zoom that shrinks the viewport below it, the clamp would just push it off the edge.
+    width: 'min(15rem, calc(100vw - 1rem))',
     borderRadius: '0.5rem',
     padding: '0.5rem 0.625rem 0.625rem',
     color: 'var(--color-base-content, inherit)',
@@ -258,18 +331,22 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
    * Edit from what the user has asked for, not from what IndexedDB has caught up to.
    *
    * Intent is recorded before the write starts so the next click builds on it, and released only
-   * once the store agrees — or, on a refusal, dropped so the menu snaps back to the truth.
+   * once this request is the last one outstanding — or, on a refusal, dropped so the menu snaps
+   * back to the truth.
    */
   const edit = (patch: Partial<Appearance>): void => {
-    clearFailure()
-    const next: Appearance = { ...appearanceFor(id), ...patch }
-    pendingAppearance.set(id, next)
+    clearFailure(id)
+    const seq = intend(id, { appearance: { ...appearanceFor(id), ...patch } })
     rerender()
-    void setAppearance(id, next).then((saved) => {
-      if (pendingAppearance.get(id) === next) pendingAppearance.delete(id)
-      if (!saved) reportFailure(`Could not update “${name}”.`)
-      rerender()
-    })
+    void enqueue(id, async () => await setAppearance(id, { ...storedAppearance(id), ...patch }))
+      .then((saved) => {
+        // An older request must not overwrite a newer one's banner: if this is no longer the latest,
+        // whatever it has to say about the state is already out of date.
+        if (!releaseIntent(id, seq)) return
+        if (saved) clearFailure(id)
+        else reportFailure(id, `Could not update “${name}”.`)
+      })
+      .finally(rerender)
   }
 
   const header = document.createElement('div')
@@ -293,15 +370,17 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   hide.setAttribute('aria-label', hide.title)
   hide.appendChild(icon('image', 'size-4'))
   hide.addEventListener('click', () => {
-    clearFailure()
+    clearFailure(id)
     const next = !visibleFor(id)
-    pendingVisible.set(id, next)
+    const seq = intend(id, { visible: next })
     rerender()
-    void setLocalVisible(id, next).then((changed) => {
-      if (pendingVisible.get(id) === next) pendingVisible.delete(id)
-      if (!changed) reportFailure(`Could not change visibility for “${name}”.`)
-      rerender()
-    })
+    void enqueue(id, async () => await setLocalVisible(id, next))
+      .then((changed) => {
+        if (!releaseIntent(id, seq)) return
+        if (changed) clearFailure(id)
+        else reportFailure(id, `Could not change visibility for “${name}”.`)
+      })
+      .finally(rerender)
   })
 
   const move = document.createElement('button')
@@ -312,16 +391,20 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   move.setAttribute('aria-label', 'Move this overlay')
   move.appendChild(icon('move', 'size-4'))
   move.addEventListener('click', () => {
-    clearFailure()
+    clearFailure(id)
     // `beginMove` refuses while another placement is running. It is the only action here that can
     // refuse without saying anything, and closing first would throw away the one surface able to
     // report it.
     if (isMoving()) {
-      reportFailure('Finish the placement already in progress first.')
+      reportFailure(id, 'Finish the placement already in progress first.')
+      // The banner is extra height, and the clamp was measured without it.
+      rerender()
       return
     }
     closeOverlayMenu()
     beginMove(id, rerender)
+    // Otherwise the gear keeps advertising a dialog that is gone until the next map frame.
+    rerender()
   })
 
   // Deleting from here rather than from a panel row, for the same reason Move is here: this menu is
@@ -338,44 +421,61 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   remove.setAttribute('aria-label', 'Delete this template')
   remove.appendChild(icon('trash', 'size-4'))
   remove.addEventListener('click', () => {
-    clearFailure()
-    const host = menuElement()
+    clearFailure(id)
+    const host = menuFor(id)
     if (host === null) return
     host.querySelector('[data-wts-confirm]')?.remove()
     const box = document.createElement('div')
     box.setAttribute('data-wts-confirm', '')
+    // Announced as a whole, so the focused Delete button is not read as a bare "Delete".
+    box.setAttribute('role', 'alertdialog')
+    box.setAttribute('aria-label', deleteQuestion(name))
     box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
     Object.assign(box.style, { padding: '0.5rem 0.625rem' })
     const text = document.createElement('span')
+    text.setAttribute('data-wts-confirm-text', '')
     // Name the thing rather than asking "are you sure", so the answer does not depend on
     // remembering which template's menu this is.
-    text.textContent = `Delete “${name}”? This cannot be undone.`
+    text.textContent = deleteQuestion(name)
     const buttonRow = document.createElement('div')
     buttonRow.className = 'flex gap-2 justify-end'
     const cancel = document.createElement('button')
     cancel.type = 'button'
     cancel.className = 'btn btn-xs btn-ghost'
     cancel.textContent = 'Cancel'
-    cancel.addEventListener('click', () => box.remove())
+    cancel.addEventListener('click', () => {
+      box.remove()
+      // Back to the control that raised the question, rather than dropping to the document.
+      const raiser = menuFor(id)?.querySelector('[data-wts-key="delete"]')
+      if (raiser instanceof HTMLElement) raiser.focus()
+      rerender()
+    })
     const confirm = document.createElement('button')
     confirm.type = 'button'
     confirm.dataset.wtsKey = 'confirm-delete'
     confirm.className = 'btn btn-xs btn-error'
     confirm.textContent = 'Delete'
     confirm.addEventListener('click', () => {
+      // Both, not just Delete: a still-live Cancel takes the question away and reads as though it
+      // stopped something, while the delete carries on regardless.
       confirm.disabled = true
+      cancel.disabled = true
       // Close only once it is actually gone. Closing first turns a refused delete into a template
       // that looks deleted and is not.
-      void removeLocalTemplate(id).then((removed) => {
+      void enqueue(id, async () => await removeLocalTemplate(id)).then((removed) => {
         if (!removed) {
           confirm.disabled = false
-          reportFailure(`Could not delete “${name}”.`)
+          cancel.disabled = false
+          reportFailure(id, `Could not delete “${name}”.`)
+          rerender()
           return
         }
         // The panel's delete path drops the ordering key too; leaving it behind accumulates
         // entries for templates that no longer exist in persisted state.
         removeCustomOrderKeys(new Set([`local:${id}`]))
-        closeOverlayMenu()
+        // Only if this template's menu is still the one on screen. A delete that completes while
+        // another template's menu is open must not close that one.
+        if (openFor === id) closeOverlayMenu()
         rerender()
       })
     })
@@ -385,6 +485,8 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     // that scrolls past 70vh can put the question off-screen from the answer.
     host.querySelector('[data-wts-header]')?.after(box)
     confirm.focus()
+    // The question is extra height, and the viewport clamp was measured without it.
+    rerender()
   })
 
   const close = document.createElement('button')
@@ -396,6 +498,8 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   close.appendChild(icon('close', 'size-4'))
   close.addEventListener('click', () => {
     closeOverlayMenu()
+    // Back to the gear that opened it, rather than to the top of wplace's document.
+    buttons.get(id)?.focus()
     rerender()
   })
 
@@ -495,18 +599,18 @@ const sweepControls = (live: ReadonlySet<string>): void => {
     if (live.has(id)) continue
     button.remove()
     buttons.delete(id)
-    pendingAppearance.delete(id)
-    pendingVisible.delete(id)
+    intents.delete(id)
+    queues.delete(id)
   }
   if (openFor !== null && !live.has(openFor)) closeOverlayMenu()
 }
 
 /**
- * Move the size and opacity sliders to the stored values without disturbing a drag.
+ * Move the size and opacity sliders to the intended values without disturbing a gesture.
  *
- * They sit outside the rebuild signature so the pointer keeps its grip, which would otherwise
- * leave them showing whatever they showed when the menu opened — a change made in another tab, or
- * a conflict reconciliation, would never reach them.
+ * They sit outside the rebuild signature so the pointer keeps its grip, which would otherwise leave
+ * them showing whatever they showed when the menu opened — a change made in another tab, a refused
+ * commit, or a conflict reconciliation would never reach them.
  */
 const refreshSliders = (menu: HTMLElement, appearance: Appearance): void => {
   for (const [key, value] of [
@@ -514,7 +618,7 @@ const refreshSliders = (menu: HTMLElement, appearance: Appearance): void => {
     ['opacity', appearance.opacity],
   ] as const) {
     const input = menu.querySelector(`input[data-wts-key="${key}"]`)
-    if (!(input instanceof HTMLInputElement) || input === document.activeElement) continue
+    if (!(input instanceof HTMLInputElement) || input.dataset.wtsHeld === 'true') continue
     if (Number(input.value) === value) continue
     input.value = String(value)
     const readout = input.nextElementSibling
@@ -541,6 +645,28 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
   if (bottomRight.y < 0 || topLeft.y > window.innerHeight) return null
   // Top-right of the overlay, just outside it, so template pixels are never covered.
   return { x: bottomRight.x, y: topLeft.y }
+}
+
+/**
+ * Carry the in-progress interaction across a rebuild — but only within one template.
+ *
+ * A half-answered delete question and a fresh failure both belong to the template that raised them,
+ * and their handlers close over that id. Moving them into another template's menu puts "Could not
+ * update A" under B's heading and, far worse, a Delete button that removes A under a question
+ * naming B.
+ */
+const carryOver = (previous: HTMLElement | null, id: string, name: string): Element[] => {
+  if (previous === null || previous.dataset.wtsTemplate !== id) return []
+  const confirm = previous.querySelector('[data-wts-confirm]')
+  // The name can have changed underneath an open question.
+  if (confirm !== null) {
+    confirm.setAttribute('aria-label', deleteQuestion(name))
+    const text = confirm.querySelector('[data-wts-confirm-text]')
+    if (text !== null) text.textContent = deleteQuestion(name)
+  }
+  return [confirm, previous.querySelector('[data-wts-error]')].filter(
+    (node): node is Element => node !== null,
+  )
 }
 
 /**
@@ -616,12 +742,7 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
       // has no Size or Anchor — so refreshing labels in place would not be enough.
       const previous = menu
       const scrollTop = previous?.scrollTop ?? 0
-      // A rebuild must not answer the question the user is halfway through, lose the failure it
-      // just reported, or drop the keyboard where it stands.
-      const carried = [
-        previous?.querySelector('[data-wts-confirm]'),
-        previous?.querySelector('[data-wts-error]'),
-      ].filter((node): node is Element => node != null)
+      const carried = carryOver(previous, template.id, template.name)
       const focusedKey = previous?.contains(document.activeElement)
         ? ((document.activeElement as HTMLElement | null)?.dataset.wtsKey ?? null)
         : null
