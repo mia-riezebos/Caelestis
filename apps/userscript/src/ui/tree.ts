@@ -40,7 +40,6 @@ export interface TreeCallbacks {
   readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
   /** Frame a local template on the map. */
   readonly onGoTo: (templateId: string) => void
-  readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
   readonly onError: (message: string) => void
 }
@@ -48,6 +47,7 @@ export interface TreeCallbacks {
 const collapsed = new Set<string>()
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
+let renameDraft: { readonly key: string; value: string } | null = null
 const TREE_DRAG_TYPE = 'application/x-caelestis-tree-key'
 const MAX_RENDERED_ROWS = 2_000
 
@@ -67,6 +67,7 @@ interface ServerTree {
 const nodesByServer = new Map<string, ServerTree>()
 const refreshGeneration = new Map<string, number>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
+const refreshes = new WeakMap<ConnectedServer, Promise<void>>()
 
 const serverIdentity = (server: ConnectedServer): string | null =>
   server.info === null || server.season === null ? null : `${server.info.id}:${server.season}`
@@ -122,36 +123,43 @@ export const forgetNodeOrder = (server: ConnectedServer, nodeId: string): void =
 export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
+  force = false,
 ): Promise<void> => {
   if (!server.isAdmin) return
+  const existing = refreshes.get(server)
+  if (!force && existing !== undefined) {
+    await existing
+    queueMicrotask(rerender)
+    return
+  }
   const generation = (refreshGeneration.get(server.url) ?? 0) + 1
   refreshGeneration.set(server.url, generation)
-  const probed = takeProbedNodes(server)
-  const result =
-    probed === undefined ? await listNodes(server) : { ok: true as const, nodes: probed }
-  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
-    rerender()
-    return
-  }
-  if (refreshGeneration.get(server.url) !== generation || !result.ok) {
-    rerender()
-    return
-  }
-  const identity = serverIdentity(server)
-  if (identity === null || server.info === null || server.season === null) return
-  nodesByServer.set(server.url, {
-    serverId: server.info.id,
-    season: server.season,
-    nodes: result.nodes,
+  const loading = Promise.resolve().then(async () => {
+    const probed = takeProbedNodes(server)
+    const result =
+      probed === undefined ? await listNodes(server) : { ok: true as const, nodes: probed }
+    refreshedConnections.add(server)
+    if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+    if (refreshGeneration.get(server.url) !== generation || !result.ok) return
+    const identity = serverIdentity(server)
+    if (identity === null || server.info === null || server.season === null) return
+    nodesByServer.set(server.url, {
+      serverId: server.info.id,
+      season: server.season,
+      nodes: result.nodes,
+    })
+    void cacheServer({
+      url: server.url,
+      serverId: server.info.id,
+      season: server.season,
+      nodes: result.nodes,
+      fetchedAt: Date.now(),
+    })
   })
-  void cacheServer({
-    url: server.url,
-    serverId: server.info.id,
-    season: server.season,
-    nodes: result.nodes,
-    fetchedAt: Date.now(),
-  })
-  rerender()
+  refreshes.set(server, loading)
+  await loading
+  if (refreshes.get(server) === loading) refreshes.delete(server)
+  queueMicrotask(rerender)
 }
 
 /**
@@ -177,9 +185,11 @@ export const primeFromCache = async (rerender: () => void): Promise<void> => {
 
 export const startRenaming = (key: string): void => {
   renaming = key
+  renameDraft = null
 }
 export const cancelRenaming = (): void => {
   renaming = null
+  renameDraft = null
 }
 const disabled = new Set<string>()
 
@@ -194,6 +204,12 @@ interface OrderedItem {
   readonly key: string
   readonly name: string
 }
+
+export const nodeSiblingItems = (
+  server: ConnectedServer,
+  nodes: readonly TreeNode[],
+): ReadonlyArray<OrderedItem & { readonly node: TreeNode }> =>
+  nodes.map((node) => ({ key: nodeTreeKey(server, node.id), name: node.name, node }))
 
 const orderedItems = <T extends OrderedItem>(
   items: readonly T[],
@@ -320,18 +336,25 @@ const treeRow = (options: RowOptions): HTMLElement => {
   const input = document.createElement('input')
   const name = document.createElement('span')
   if (editing) {
+    const startingRename = renameDraft?.key !== options.key
+    if (startingRename) renameDraft = { key: options.key, value: options.name }
     input.type = 'text'
     input.dataset.wtsRename = ''
     input.className = 'input input-xs input-bordered'
-    input.value = options.name
+    input.value = renameDraft?.value ?? options.name
     input.style.flex = '1'
     input.style.minWidth = '0'
     input.addEventListener('click', (event) => event.stopPropagation())
-    row.appendChild(input)
-    requestAnimationFrame(() => {
-      input.focus()
-      input.select()
+    input.addEventListener('input', () => {
+      if (renameDraft?.key === options.key) renameDraft.value = input.value
     })
+    row.appendChild(input)
+    if (startingRename) {
+      requestAnimationFrame(() => {
+        input.focus()
+        input.select()
+      })
+    }
   } else {
     name.className = 'wts-name text-sm'
     name.textContent = options.name
@@ -363,11 +386,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     const commit = (): void => {
       const value = input.value.trim()
       renaming = null
+      renameDraft = null
       if (value !== '' && value !== options.name) options.onRename?.(value)
       else options.rerender()
     }
     const cancel = (): void => {
       renaming = null
+      renameDraft = null
       options.rerender()
     }
     for (const [glyphName, label, run] of [
@@ -530,6 +555,7 @@ export const treeContents = (
   callbacks: TreeCallbacks,
   rerender: () => void,
   query = '',
+  backgroundRerender = rerender,
 ): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.setAttribute('role', 'tree')
@@ -607,13 +633,11 @@ export const treeContents = (
       if (known === undefined) {
         // First sight of this server: kick off the fetch, draw nothing extra this pass.
         if (!refreshedConnections.has(server)) {
-          refreshedConnections.add(server)
-          void refreshNodes(server, rerender)
+          void refreshNodes(server, backgroundRerender)
         }
       } else {
         if (!refreshedConnections.has(server)) {
-          refreshedConnections.add(server)
-          void refreshNodes(server, rerender)
+          void refreshNodes(server, backgroundRerender)
         }
         const byParent = new Map<string | null, TreeNode[]>()
         for (const node of known) {
@@ -636,10 +660,7 @@ export const treeContents = (
         const renderChildren = (parentId: string | null, depth: number): void => {
           if (renderedRows >= MAX_RENDERED_ROWS) return
           const siblings = byParent.get(parentId) ?? []
-          const orderedSiblings = orderedItems(
-            siblings.map((node) => ({ key: `node:${node.id}`, name: node.name, node })),
-            rank,
-          )
+          const orderedSiblings = orderedItems(nodeSiblingItems(server, siblings), rank)
           const siblingKeys = orderedSiblings.map((item) => item.key)
           for (const item of orderedSiblings) {
             if (renderedRows >= MAX_RENDERED_ROWS) break
@@ -794,7 +815,10 @@ export const treeContents = (
   addWrap.appendChild(add)
   wrap.appendChild(addWrap)
 
-  if (renaming !== null && wrap.querySelector('[data-wts-rename]') === null) renaming = null
+  if (renaming !== null && wrap.querySelector('[data-wts-rename]') === null) {
+    renaming = null
+    renameDraft = null
+  }
 
   return wrap
 }

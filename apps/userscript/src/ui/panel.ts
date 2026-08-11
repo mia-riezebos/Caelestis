@@ -244,6 +244,15 @@ const treeView = (): HTMLElement => {
 
   const body = document.createElement('div')
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
+  const backgroundRenderTree = (): void => {
+    if (!body.isConnected) return
+    const focused = document.activeElement
+    if (focused !== null && body.contains(focused) && focused.matches('[data-wts-rename]')) {
+      body.addEventListener('focusout', () => queueMicrotask(backgroundRenderTree), { once: true })
+      return
+    }
+    renderTree()
+  }
   const renderTree = (): void => {
     body.replaceChildren(
       treeContents(
@@ -255,12 +264,12 @@ const treeView = (): HTMLElement => {
           onDelete: (target) => void applyDelete(target, renderTree),
           onContextMenu: (target, event) => openContextMenu(target, event, renderTree),
           onGoTo: goTo,
-          onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
           onError: (message) => toast(message, 'error'),
         },
         renderTree,
         searchQuery,
+        backgroundRenderTree,
       ),
     )
   }
@@ -598,7 +607,7 @@ const applyRename = async (
     rerender()
     return
   }
-  await refreshNodes(target.server, rerender)
+  await refreshNodes(target.server, rerender, true)
 }
 
 /**
@@ -681,7 +690,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
     return
   }
   forgetNodeOrder(target.server, target.nodeId)
-  await refreshNodes(target.server, rerender)
+  await refreshNodes(target.server, rerender, true)
 }
 
 /**
@@ -736,7 +745,18 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
         ]
       : [
           ['search', 'Go to', () => void goTo(templateId)],
-          ['move', 'Move', () => beginMove(templateId, rerender)],
+          [
+            'move',
+            'Move',
+            () => {
+              if (!beginMove(templateId, rerender)) {
+                toast(
+                  'Finish the placement already in progress, then move this template.',
+                  'warning',
+                )
+              }
+            },
+          ],
           ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
           rename,
           remove,
@@ -991,7 +1011,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         if (!result.ok) throw new Error(result.message)
         closeCopy()
         toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
-        await refreshNodes(server, rerender)
+        await refreshNodes(server, rerender, true)
       } catch (error) {
         toast(`Could not copy: ${String(error)}`, 'error')
         label.textContent = `Copy “${template.name}” to:`
@@ -1049,7 +1069,7 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   // Refresh before rendering: the row we are about to put into rename mode does not exist in the
   // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
   startRenaming(nodeTreeKey(server, result.node.id))
-  await refreshNodes(server, rerender)
+  await refreshNodes(server, rerender, true)
 }
 
 const buildPanel = (): HTMLElement => {
