@@ -37,6 +37,7 @@ vi.mock('./tile-transform.js', () => ({
     harness.draw = draw
   }),
 }))
+vi.mock('./ui/panel.js', () => ({ installPanel: vi.fn() }))
 
 afterEach(() => {
   vi.resetModules()
