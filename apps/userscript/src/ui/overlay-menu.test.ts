@@ -138,12 +138,16 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
   it('builds the next edit on one the store has not acknowledged yet', async () => {
     // The store only publishes after the durable write resolves. Two clicks inside that window is
     // ordinary human speed, and reading the store would hand the second one a pre-Dot base.
-    let acknowledge = (_saved: boolean): void => {}
-    harness.setAppearance.mockReturnValueOnce(
-      new Promise<boolean>((resolve) => {
-        acknowledge = resolve
-      }),
-    )
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let call = 0
+    harness.setAppearance.mockImplementation(async (_id, appearance) => {
+      if (++call === 1) await held
+      harness.localTemplates.mockReturnValue([template({ appearance })])
+      return true
+    })
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -152,10 +156,42 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     byText(menu(), 'Dot').click()
     rerender()
     byKey('swatch:1').click()
+    release()
     await settle()
 
-    expect(appearanceWritten(1).shape).toBe('circle')
-    acknowledge(true)
+    // The second write must carry the first one's shape, not put it back to `full`.
+    expect(appearanceWritten(1)).toMatchObject({ shape: 'circle', hiddenColours: [1] })
+  })
+
+  it('composes a queued edit against the store the earlier write left behind', async () => {
+    // Each write sends a whole Appearance. A queued snapshot taken before an earlier write
+    // reconciled another tab's change would put that change straight back.
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let call = 0
+    harness.setAppearance.mockImplementation(async (_id, _appearance) => {
+      if (++call === 1) {
+        await held
+        // The first write conflicts and reconciliation lands another tab's opacity.
+        harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.25 } })])
+        return false
+      }
+      return true
+    })
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byText(menu(), 'Dot').click()
+    byKey('swatch:1').click()
+    release()
+    await settle()
+
+    // Only the colour was clicked, so only the colour may change.
+    expect(appearanceWritten(1)).toMatchObject({ opacity: 0.25, hiddenColours: [1] })
   })
 
   it('accumulates hidden colours across successive swatch clicks', async () => {
@@ -569,5 +605,216 @@ describe('placement and geometry', () => {
     // The panel mounts at z-30 and is the focused surface while it is open.
     expect(Number(gear('a').style.zIndex)).toBeLessThan(30)
     expect(Number(menu().style.zIndex)).toBeLessThan(30)
+  })
+})
+
+describe('deferred work stays tied to the template that asked for it', () => {
+  const twoTemplates = () => [template(), template({ id: 'b', name: 'beta.png' })]
+
+  it('does not carry a delete question into another template’s menu', () => {
+    harness.localTemplates.mockReturnValue(twoTemplates())
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+
+    gear('b').click()
+    rerender()
+
+    // Its Delete button still closes over template A. Under B's heading, that deletes the wrong one.
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+  })
+
+  it('does not carry a failure into another template’s menu', async () => {
+    harness.localTemplates.mockReturnValue(twoTemplates())
+    harness.setLocalVisible.mockResolvedValue(false)
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    expect(errorText()).toContain('Could not change')
+
+    gear('b').click()
+    rerender()
+
+    expect(errorText()).toBeNull()
+  })
+
+  it('reports a late failure only while its own menu is open', async () => {
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    harness.setLocalVisible.mockImplementation(async () => {
+      await held
+      return false
+    })
+    harness.localTemplates.mockReturnValue(twoTemplates())
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+
+    gear('b').click()
+    rerender()
+    release()
+    await settle()
+
+    // "Could not change visibility for alpha.png" under beta.png's heading is worse than silence.
+    expect(errorText()).toBeNull()
+  })
+
+  it('does not close another template’s menu when a delete completes', async () => {
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    harness.removeLocalTemplate.mockImplementation(async () => {
+      await held
+      return true
+    })
+    harness.localTemplates.mockReturnValue(twoTemplates())
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    byKey('confirm-delete').click()
+
+    gear('b').click()
+    rerender()
+    release()
+    await settle()
+
+    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    expect(menu().dataset.wtsTemplate).toBe('b')
+  })
+
+  it('stops offering Cancel once the delete is under way', () => {
+    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    byKey('confirm-delete').click()
+
+    // A live Cancel takes the question away and reads as though it stopped something.
+    const cancel = byText(menu(), 'Cancel')
+    expect(cancel.disabled).toBe(true)
+  })
+
+  it('keeps a carried delete question naming the template as it is now', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+
+    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
+    rerender()
+
+    expect(menu().querySelector('[data-wts-confirm]')?.textContent).toContain('renamed.png')
+  })
+
+  it('lets the latest visibility request own the intent through an ABA sequence', async () => {
+    const settled: Array<() => void> = []
+    harness.setLocalVisible.mockImplementation(
+      async () =>
+        await new Promise<boolean>((resolve) => {
+          settled.push(() => resolve(true))
+        }),
+    )
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('hide').click() // hide
+    byKey('hide').click() // show
+    byKey('hide').click() // hide
+    settled[0]?.()
+    await settle()
+
+    // The first request's `false` matches the third's, so releasing intent by value would hand
+    // ownership back to the store and the menu would flip to "Hide" while a hide is still pending.
+    expect(harness.setLocalVisible.mock.calls[0]?.[1]).toBe(false)
+    expect(byKey('hide').getAttribute('aria-label')).toBe('Show this overlay')
+  })
+
+  it('clears a stale failure once a later write succeeds', async () => {
+    let call = 0
+    harness.setAppearance.mockImplementation(async () => (++call === 1 ? false : true))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byText(menu(), 'Dot').click()
+    byKey('swatch:1').click()
+    await settle()
+
+    // The saved state is correct; a leftover banner says otherwise.
+    expect(errorText()).toBeNull()
+  })
+
+  it('puts a refused slider back where the store still is', async () => {
+    harness.setAppearance.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    // Focused, but the gesture is over: `change` has fired. Guarding the refresh on focus rather
+    // than on an in-progress gesture leaves the refused value sitting on the thumb indefinitely.
+    opacity.focus()
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.9'
+    opacity.dispatchEvent(new Event('change'))
+    await settle()
+
+    // The map reverted; a thumb left at the refused value says the change took.
+    expect(opacity.value).toBe('0.4')
+  })
+})
+
+describe('focus goes somewhere deliberate', () => {
+  it('returns to the gear when the menu is closed', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('close').click()
+    rerender()
+
+    expect(document.activeElement).toBe(gear('a'))
+  })
+
+  it('returns to Delete when the question is cancelled', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+
+    byText(menu(), 'Cancel').click()
+    rerender()
+
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsKey).toBe('delete')
+  })
+
+  it('announces the destructive question rather than a bare Delete', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('delete').click()
+
+    const box = menu().querySelector('[data-wts-confirm]')
+    expect(box?.getAttribute('role')).toBe('alertdialog')
+    expect(box?.getAttribute('aria-label')).toContain('This cannot be undone')
   })
 })
