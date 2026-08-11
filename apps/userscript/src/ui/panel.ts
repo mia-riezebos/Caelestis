@@ -40,6 +40,12 @@ import { loadAccount, onAccountChange } from '../wplace-account.js'
 import { coloursSection } from './colours.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
+import {
+  cancelViewOwnedWork,
+  createResizeCommitter,
+  finalImportNotice,
+  importedImageNextStep,
+} from './panel-workflow.js'
 import { type SortOrder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import {
@@ -1097,19 +1103,21 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
         }
         const first = imported[0]
         if (first?.source === 'image') {
-          if (!stillOwned()) return
-          const reservation = reserveMove()
-          if (reservation === null) {
+          const ownedBeforePersist = stillOwned()
+          const reservation = ownedBeforePersist ? reserveMove() : null
+          if (ownedBeforePersist && reservation === null) {
             toast('Finish the current placement, then import this image again.', 'warning')
             return
           }
           try {
             await addLocalTemplate(first)
-            if (!stillOwned()) {
-              await removeLocalTemplate(first.id)
+            rerender()
+            if (importedImageNextStep(stillOwned(), reservation !== null) === 'keep') {
+              const notice = finalImportNotice(first, 1, 1, null)
+              toast(`${notice.message} — open Templates to place it`)
               return
             }
-            if (!reservation.start(first.id, rerender)) {
+            if (reservation === null || !reservation.start(first.id, rerender)) {
               const discarded = await removeLocalTemplate(first.id)
               rerender()
               toast(
@@ -1120,13 +1128,10 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
               )
               return
             }
-            rerender()
-            toast(
-              `Imported ${first.name} — ${first.width}x${first.height}` +
-                (first.moved > 0 ? `, ${first.moved.toLocaleString()} pixels quantised` : ''),
-            )
+            const notice = finalImportNotice(first, 1, 1, null)
+            toast(notice.message, notice.tone)
           } finally {
-            reservation.release()
+            reservation?.release()
           }
           return
         }
@@ -1144,24 +1149,14 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
         if (stillOwned()) rerender()
 
         if (failure !== null) {
-          if (stillOwned()) {
-            toast(
-              added === 0
-                ? `Could not import: ${String(failure)}`
-                : `Imported ${added} of ${imported.length}; the rest could not be added: ${String(failure)}`,
-              'error',
-            )
-          }
+          if (added === 0 && stillOwned()) toast(`Could not import: ${String(failure)}`, 'error')
           if (added === 0) return
         }
 
         const firstPlaced = imported[0]
         if (firstPlaced === undefined || !stillOwned()) return
-        const moved = firstPlaced.moved
-        toast(
-          `Imported ${firstPlaced.name} — ${firstPlaced.width}x${firstPlaced.height}` +
-            (moved > 0 ? `, ${moved.toLocaleString()} pixels quantised` : ''),
-        )
+        const notice = finalImportNotice(firstPlaced, added, imported.length, failure)
+        toast(notice.message, notice.tone)
         // Non-image formats already know where they belong, so go and look at the first one —
         // centred on the template and zoomed to fit it, in-game. Changing the URL would reload and
         // throw the import away.
@@ -1531,6 +1526,8 @@ const buildPanel = (): HTMLElement => {
   handle.setAttribute('aria-orientation', 'vertical')
   handle.tabIndex = 0
   updateResizeValue(handle, panelWidthForViewport(getState().panelWidth))
+  const keyboardResize = createResizeCommitter((width) => setState({ panelWidth: width }))
+  const resizeKeys = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End'])
   handle.addEventListener('keydown', (event) => {
     const current = panel.getBoundingClientRect().width
     const step = event.shiftKey ? 50 : 10
@@ -1549,8 +1546,12 @@ const buildPanel = (): HTMLElement => {
     const next = panelWidthForViewport(wanted)
     panel.style.width = `${next}px`
     updateResizeValue(handle, next)
-    setState({ panelWidth: Math.round(next) })
+    keyboardResize.stage(Math.round(next))
   })
+  handle.addEventListener('keyup', (event) => {
+    if (resizeKeys.has(event.key)) keyboardResize.commit()
+  })
+  handle.addEventListener('blur', keyboardResize.commit)
   handle.addEventListener('pointerdown', (event) => {
     if (!event.isPrimary || event.button !== 0 || activeResizeCleanup !== null) return
     event.preventDefault()
@@ -1720,8 +1721,7 @@ const showView = (view: View, preserveDrafts = false): void => {
   closeActiveContextMenu?.(false)
   if (view !== currentView) {
     panelOwnerGeneration++
-    cancelPanelRequests()
-    cancelActiveConfirm?.()
+    cancelViewOwnedWork(cancelPanelRequests, cancelActiveConfirm, cancelActiveCopy)
   }
   currentView = view
   const panel = document.getElementById(PANEL_ID)
