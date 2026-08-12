@@ -267,6 +267,9 @@ const showingToMove = new Set<string>()
 const shownForMove = new Set<string>()
 /** Placements we have asked to stop, so the ask is not repeated every frame while it settles. */
 const aborting = new Set<string>()
+/** Attempts to stop a hidden placement. A revert that keeps failing must not be retried forever. */
+const abortAttempts = new Map<string, number>()
+const MAX_ABORT_ATTEMPTS = 2
 const deleting = new Set<string>()
 
 /**
@@ -1263,6 +1266,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
           shownForMove.add(id)
           beginMove(id, () => {
             shownForMove.delete(id)
+            abortAttempts.delete(id)
           })
           // Refused for some other reason — the watch belongs to a placement that never started.
           if (!isMoving()) shownForMove.delete(id)
@@ -1284,6 +1288,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     shownForMove.add(id)
     beginMove(id, () => {
       shownForMove.delete(id)
+      abortAttempts.delete(id)
     })
     // The gear is held by reference, so focusing it needs no repaint of its own. One click, one paint.
     buttons.get(id)?.focus()
@@ -1750,7 +1755,26 @@ const renderControls = (
     const stopping = placing
     void abortMove().then(() => {
       aborting.delete(stopping)
-      if (isMoving()) return
+      if (isMoving()) {
+        // The revert failed and `move.ts` resumed the same session, so the placement is still live
+        // over an overlay nobody can see. Nothing else is guaranteed to bring us back here — a
+        // static map produces no frames — so ask for one, up to a limit: a revert that keeps
+        // failing must end in something the user can act on, not a loop.
+        if ((abortAttempts.get(stopping) ?? 0) < MAX_ABORT_ATTEMPTS) {
+          abortAttempts.set(stopping, (abortAttempts.get(stopping) ?? 0) + 1)
+        } else {
+          shownForMove.delete(stopping)
+          recordFailure(
+            stopping,
+            'move-stopped',
+            (name) =>
+              `“${name}” is hidden and its placement could not be stopped. Cancel it to undo.`,
+          )
+        }
+        lastRerender?.()
+        return
+      }
+      abortAttempts.delete(stopping)
       shownForMove.delete(stopping)
       recordFailure(
         stopping,
