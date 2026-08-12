@@ -118,15 +118,13 @@ let installed: HTMLStyleElement | null = null
 
 export const installStyles = (): void => {
   if (installed?.isConnected === true) return
-  const existing = document.getElementById(STYLE_ID)
-  if (existing instanceof HTMLStyleElement) {
-    installed = existing
-    return
-  }
-  // Whatever is sitting on our id is not a stylesheet of ours; it does not get to stand in for one.
-  existing?.remove()
+  // The id is a convenience for anyone reading the DOM, never an identity check. An element the
+  // page put there is not ours whatever it is called — an empty `<style id="wts-styles">` would
+  // otherwise stand in for the real one and every swatch would collapse — and it is not ours to
+  // delete either, so we simply add our own alongside it.
   const style = document.createElement('style')
   style.id = STYLE_ID
+  style.dataset.wtsStyles = ''
   style.textContent = CSS
   document.head.appendChild(style)
   installed = style
