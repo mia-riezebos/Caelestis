@@ -1035,7 +1035,7 @@ describe('a delete already under way cannot be re-asked', () => {
 
     // Disabling the question's own buttons is not enough while this one can raise a new question
     // with a fresh, live Cancel over a delete that is already running.
-    expect((byKey('delete') as HTMLButtonElement).disabled).toBe(true)
+    expect(byKey('delete').getAttribute('aria-disabled')).toBe('true')
     expect(byKey('cancel-delete').getAttribute('aria-disabled')).toBe('true')
     expect(byKey('confirm-delete').textContent).toBe('Deleting…')
   })
@@ -1177,8 +1177,8 @@ describe('a delete under way owns the template', () => {
     rerender()
 
     // Starting a placement for a record that is about to stop existing strands the placement bar.
-    expect((byKey('move') as HTMLButtonElement).disabled).toBe(true)
-    expect((byKey('hide') as HTMLButtonElement).disabled).toBe(true)
+    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
+    expect(byKey('hide').getAttribute('aria-disabled')).toBe('true')
   })
 
   it('forgets a template deleted while it was off screen', async () => {
@@ -1438,9 +1438,9 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     rerender()
 
     // The store refuses these anyway, leaving a meaningless banner beside "Deleting…".
-    expect((byKey('Shape:full') as HTMLButtonElement).disabled).toBe(true)
-    expect((byKey('opacity') as HTMLInputElement).disabled).toBe(true)
-    expect((byKey('swatch:1') as HTMLButtonElement).disabled).toBe(true)
+    expect(byKey('Shape:full').getAttribute('aria-disabled')).toBe('true')
+    expect((byKey('opacity') as HTMLInputElement).readOnly).toBe(true)
+    expect(byKey('swatch:1').getAttribute('aria-disabled')).toBe('true')
   })
 })
 
@@ -1594,8 +1594,8 @@ describe('a delete owns the template whichever surface started it', () => {
 
     // The panel's delete sets the store's terminal guard and then does its IndexedDB work with the
     // record still present. Reading only our own flag starts a placement for a doomed template.
-    expect((byKey('move') as HTMLButtonElement).disabled).toBe(true)
-    expect((byKey('delete') as HTMLButtonElement).disabled).toBe(true)
+    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
+    expect(byKey('delete').getAttribute('aria-disabled')).toBe('true')
   })
 
   it('keeps the progress box when the menu is closed mid-delete', () => {
@@ -1711,15 +1711,15 @@ describe('a delete that becomes terminal after the menu exists', () => {
     rerender()
     gear('a').click()
     rerender()
-    expect((byKey('move') as HTMLButtonElement).disabled).toBe(false)
+    expect(byKey('move').getAttribute('aria-disabled')).toBe('false')
 
     // The panel's delete sets the store's guard and then does its IndexedDB work with the record
     // still present and byte-identical — so nothing else in the signature moves.
     harness.isDeletingLocal.mockReturnValue(true)
     rerender()
 
-    expect((byKey('move') as HTMLButtonElement).disabled).toBe(true)
-    expect((byKey('hide') as HTMLButtonElement).disabled).toBe(true)
+    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
+    expect(byKey('hide').getAttribute('aria-disabled')).toBe('true')
   })
 
   it('refuses the action even from a menu built before the delete', () => {
@@ -1835,5 +1835,155 @@ describe('a refusal retires when its subject moves on', () => {
     rerender()
 
     expect(errorText()).toBeNull()
+  })
+})
+
+describe('a pointer drag in the order a browser actually fires it', () => {
+  it('commits the dragged value when change follows pointerup', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    // Chromium dispatches a range's `change` from its stop-dragging work, *after* pointerup
+    // handlers. Every earlier test fired `change` first, which is the one order that hides this.
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.9'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new Event('change'))
+    await settle()
+
+    expect(appearanceWritten(0).opacity).toBe(0.9)
+  })
+
+  it('is not poisoned by tabbing away from the thumb', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    // Tab does not move the thumb, and its keyup lands on whatever it focused next.
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.7'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new Event('change'))
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).opacity).toBe(0.7)
+  })
+})
+
+describe('a held slider holds its own menu, not the next one', () => {
+  it('still switches templates while a slider is held', () => {
+    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
+    rerender()
+    gear('a').click()
+    rerender()
+    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(new Event('pointerdown'))
+
+    gear('b').click()
+    rerender()
+
+    // Two touches: one holding A's thumb, one tapping B's gear. Keeping A's menu would park A's
+    // handlers beside B — the wrong-template failure this relay opened with.
+    expect(menu().dataset.wtsTemplate).toBe('b')
+    expect(menu().textContent).toContain('beta.png')
+  })
+
+  it('rebuilds a menu the page has torn off even while held', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(new Event('pointerdown'))
+
+    // A hostile or careless host removes it; the detached control may never see another event.
+    menu().remove()
+    rerender()
+
+    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+  })
+})
+
+describe('a refusal retires only when its own subject is satisfied', () => {
+  it('keeps a refused shape while an unrelated write succeeds', async () => {
+    let call = 0
+    harness.setAppearance.mockImplementation(async () => ++call !== 1)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byText(menu(), 'Dot').click()
+    await settle()
+    expect(errorText()).toContain('Could not change shape')
+
+    // A different property succeeds and the revision moves. It says nothing about the shape.
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.6'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new Event('change'))
+    await settle()
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.6 } })])
+    rerender()
+
+    expect(errorText()).toContain('Could not change shape')
+  })
+
+  it('retires it when the shape reaches what was asked, from anywhere', async () => {
+    harness.setAppearance.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byText(menu(), 'Dot').click()
+    await settle()
+    expect(errorText()).toContain('Could not change shape')
+
+    // Another tab sets the very shape this refusal was about. Revision is irrelevant — a pending
+    // image never persists one at all.
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+
+    expect(errorText()).toBeNull()
+  })
+})
+
+describe('a delete started elsewhere explains itself', () => {
+  it('shows the progress box for a delete this menu did not start', () => {
+    harness.isDeletingLocal.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+
+    gear('a').click()
+    rerender()
+
+    // Locking every control with no explanation is worse than the question.
+    expect(menu().querySelector('[data-wts-confirm]')).not.toBeNull()
+    expect(byKey('confirm-delete').textContent).toBe('Deleting…')
+  })
+
+  it('does not lock the controls natively, so a cleared guard is recoverable', () => {
+    harness.isDeletingLocal.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
+
+    // A failed panel delete drops the store's guard and notifies nobody. On a static map no frame
+    // arrives, so a native `disabled` would leave the menu dead until the map next moved.
+    harness.isDeletingLocal.mockReturnValue(false)
+    byKey('move').click()
+
+    expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
   })
 })

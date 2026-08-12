@@ -176,10 +176,10 @@ describe('overlay canvas lifecycle', () => {
     const painters = harness.paintFrame.mock.calls[0]?.[2] as
       | Array<(context: unknown, frame: unknown) => void>
       | undefined
-    // Pinned, because this test selects its painter by position: templates, mark, then the overlay
-    // controls. Inserting a painter above the mark silently redirects every assertion below to the
-    // wrong function, which is exactly how it broke once already.
-    expect(painters).toHaveLength(3)
+    // Pinned, because this test selects its painter by position: templates, then mark. Inserting a
+    // painter above the mark silently redirects every assertion below to the wrong function, which
+    // is exactly how it broke once already.
+    expect(painters).toHaveLength(2)
     if (painters?.[1] === undefined) throw new Error('main must register its mark painter')
 
     painters[1](context, frame)
@@ -202,13 +202,27 @@ describe('overlay canvas lifecycle', () => {
     const canvas = { width: 100, height: 50, parentElement: null }
     draw({ canvas, quads: [] })
 
-    const painters = harness.paintFrame.mock.calls[0]?.[2] as
-      | Array<(context: unknown, frame: unknown) => void>
-      | undefined
-    painters?.[2]?.({}, { canvas, quads: [] })
-
     // Not a CSS-class lookup: the class is wplace's to rename, and guessing it wrong sweeps every
     // control off a frame that painted the overlay perfectly well.
+    expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
+  })
+
+  it('still mounts the overlay controls when no 2D context can be had', async () => {
+    vi.stubGlobal('document', {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => ({ dataset: {}, style: {}, getContext: () => null })),
+      readyState: 'complete',
+      addEventListener: vi.fn(),
+    })
+    await import('./main.js')
+    const draw = harness.draw
+    if (draw === null) throw new Error('main must register its tile-frame listener')
+    const canvas = { width: 100, height: 50, parentElement: null }
+    draw({ canvas, quads: [] })
+
+    // They are DOM, not canvas. Registering them as a painter made them conditional on a context
+    // this very suite has a test for failing to acquire — stranding every button and menu.
+    expect(harness.paintFrame).not.toHaveBeenCalled()
     expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
   })
 
