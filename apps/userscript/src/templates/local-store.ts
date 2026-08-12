@@ -1226,6 +1226,16 @@ export const renameLocalTemplate = async (id: string, name: string): Promise<boo
   })
 }
 
+/**
+ * Whether a delete has been made terminal for this id, from any surface.
+ *
+ * `deleting` is set synchronously by {@link removeLocalTemplate} and outlives the IndexedDB work,
+ * during which the record is still present in `localTemplates()`. A UI that reads only its own
+ * "am I deleting this" flag will happily start a move, or offer a second delete, for a template
+ * another surface has already condemned.
+ */
+export const isDeletingLocal = (id: string): boolean => deleting.has(id)
+
 export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
   if (existing === undefined || deleting.has(id)) return false
