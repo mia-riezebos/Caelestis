@@ -97,12 +97,19 @@ let stylesInstalled = false
  * cannot clear a later one's. Comparing the value instead makes hide → show → hide drop the third
  * request's intent, because it reads the same `false` the first one wrote.
  */
-interface Intent {
+interface Intent<T> {
   readonly seq: number
-  readonly appearance?: Appearance | undefined
-  readonly visible?: boolean | undefined
+  readonly value: T
 }
-const intents = new Map<string, Intent>()
+/**
+ * Per field, not one record for both.
+ *
+ * A single intent released only by its latest owner means a refused shape keeps asserting itself
+ * for as long as *any* later write is outstanding — the radio reads `aria-checked` on Dot while the
+ * banner underneath says the change was refused, and if that later write hangs it never resolves.
+ */
+const appearanceIntents = new Map<string, Intent<Appearance>>()
+const visibleIntents = new Map<string, Intent<boolean>>()
 let sequence = 0
 
 /**
@@ -148,22 +155,21 @@ const storedAppearance = (id: string): Appearance =>
   templateFor(id)?.appearance ?? DEFAULT_APPEARANCE
 
 const appearanceFor = (id: string): Appearance =>
-  intents.get(id)?.appearance ?? storedAppearance(id)
+  appearanceIntents.get(id)?.value ?? storedAppearance(id)
 
 const visibleFor = (id: string): boolean =>
-  intents.get(id)?.visible ?? templateFor(id)?.visible ?? false
+  visibleIntents.get(id)?.value ?? templateFor(id)?.visible ?? false
 
-/** Record the latest intent for `id`, keeping whichever field this action did not touch. */
-const intend = (id: string, next: Omit<Intent, 'seq'>): number => {
+/** Record the latest intent for one field, and hand back the token that may release it. */
+const intend = <T>(store: Map<string, Intent<T>>, id: string, value: T): number => {
   const seq = ++sequence
-  const current = intents.get(id)
-  intents.set(id, { seq, appearance: current?.appearance, visible: current?.visible, ...next })
+  store.set(id, { seq, value })
   return seq
 }
 
-/** Release the intent, unless a later action has already taken ownership of it. */
-const releaseIntent = (id: string, seq: number): void => {
-  if (intents.get(id)?.seq === seq) intents.delete(id)
+/** Release it, unless a later action on the same field has taken ownership. */
+const releaseIntent = <T>(store: Map<string, Intent<T>>, id: string, seq: number): void => {
+  if (store.get(id)?.seq === seq) store.delete(id)
 }
 
 const recordFailure = (id: string, key: FailureKey, message: (name: string) => string): void => {
@@ -184,7 +190,8 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
 }
 
 const forget = (id: string): void => {
-  intents.delete(id)
+  appearanceIntents.delete(id)
+  visibleIntents.delete(id)
   queues.delete(id)
   failures.delete(id)
   announced.delete(id)
@@ -196,9 +203,11 @@ const forget = (id: string): void => {
 const remembered = (): Set<string> =>
   new Set([
     ...buttons.keys(),
-    ...intents.keys(),
+    ...appearanceIntents.keys(),
+    ...visibleIntents.keys(),
     ...queues.keys(),
     ...failures.keys(),
+    ...announced.keys(),
     ...confirming,
     ...deleting,
   ])
@@ -224,32 +233,36 @@ const enqueue = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
  * regardless of what has been clicked since, and tying the two together makes any second click
  * silence the first one's failure.
  */
-const commit = (
+const commit = <T>(
+  store: Map<string, Intent<T>>,
   id: string,
+  value: T,
   keys: readonly FailureKey[],
-  intent: Omit<Intent, 'seq'>,
   run: () => Promise<boolean>,
-  refused: (name: string) => string,
+  refused: (name: string, key: FailureKey) => string,
   rerender: () => void,
 ): void => {
-  const seq = intend(id, intent)
+  const seq = intend(store, id, value)
   clearFailure(id, ...keys)
   rerender()
+  const fail = (): void => {
+    for (const key of keys) recordFailure(id, key, (name) => refused(name, key))
+  }
   void enqueue(id, run)
     .then(
       (saved) => {
         if (saved) clearFailure(id, ...keys)
-        else for (const key of keys) recordFailure(id, key, refused)
+        else fail()
       },
       (error: unknown) => {
         // Without this the intent is never released and the menu asserts, indefinitely, a state
         // that was never saved.
         warn('install', `${keys.join(', ')} for ${nameFor(id)} threw`, error)
-        for (const key of keys) recordFailure(id, key, refused)
+        fail()
       },
     )
     .finally(() => {
-      releaseIntent(id, seq)
+      releaseIntent(store, id, seq)
       rerender()
     })
 }
@@ -284,7 +297,9 @@ const slider = (
   key: string,
   label: string,
   value: number,
+  locked: boolean,
   onCommit: (next: number) => void,
+  rerender: () => void,
 ): HTMLElement => {
   const wrap = document.createElement('label')
   wrap.className = 'flex items-center gap-2'
@@ -305,6 +320,7 @@ const slider = (
   input.max = '1'
   input.step = 'any'
   input.value = String(value)
+  input.disabled = locked
   input.style.flex = '1'
   const readout = document.createElement('span')
   readout.className = 'text-xs opacity-50'
@@ -315,7 +331,12 @@ const slider = (
   // or another tab's change, sitting on a thumb that stays focused long after the drag ended — and
   // every way a gesture can end has to release it, or the slider freezes for the session.
   const release = (): void => {
+    if (input.dataset.wtsHeld === undefined) return
     delete input.dataset.wtsHeld
+    // A held slider blocks rebuilds, so anything that happened during the hold — a refusal landing,
+    // another tab's change — is sitting in state undrawn. Releasing has to let it through, or on a
+    // static map it waits for an unrelated frame that may never come.
+    rerender()
   }
   const hold = (): void => {
     input.dataset.wtsHeld = 'true'
@@ -363,6 +384,7 @@ const radioGroup = <T extends string>(
   label: string,
   options: ReadonlyArray<{ id: T; label: string; hint?: string; text: boolean }>,
   selected: T,
+  locked: boolean,
   onSelect: (id: T) => void,
   className: (chosen: boolean) => string,
 ): HTMLElement => {
@@ -381,6 +403,7 @@ const radioGroup = <T extends string>(
     cell.setAttribute('aria-label', option.label)
     cell.setAttribute('role', 'radio')
     cell.setAttribute('aria-checked', String(chosen))
+    cell.disabled = locked
     // One tab stop for the group, as the role promises; arrows move within it.
     cell.tabIndex = chosen ? 0 : -1
     cell.addEventListener('click', () => onSelect(option.id))
@@ -414,7 +437,7 @@ const radioGroup = <T extends string>(
   return group
 }
 
-/** The refused writes for this template, newest concern first, rebuilt from state every time. */
+/** The refused writes for this template, oldest first, rebuilt from state on every render. */
 const failureBanners = (id: string): HTMLElement[] => {
   const forTemplate = failures.get(id)
   if (forTemplate === undefined) return []
@@ -477,8 +500,12 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
   // template, and `setLocalVisible` can be rebuilding source bitmaps. Say so rather than presenting
   // a dead button.
   confirm.textContent = running ? 'Deleting…' : 'Delete'
-  confirm.disabled = running
+  // `aria-disabled`, not `disabled`: a disabled button cannot hold focus, so confirming from the
+  // keyboard would drop it to the document at the exact moment the user is watching a destructive
+  // action. The click guard below is what actually makes it inert.
+  confirm.setAttribute('aria-disabled', String(running))
   confirm.addEventListener('click', () => {
+    if (deleting.has(id)) return
     deleting.add(id)
     clearFailure(id, 'delete')
     rerender()
@@ -545,21 +572,41 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   menu.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
     event.preventDefault()
+    // Innermost dialog first: with the question up, Escape answers *it*, not the menu around it.
+    if (confirming.has(id) && !deleting.has(id)) {
+      confirming.delete(id)
+      focusRequest = 'delete'
+      rerender()
+      return
+    }
     closeOverlayMenu()
     buttons.get(id)?.focus()
     rerender()
   })
 
-  const edit = (patch: Partial<Appearance>): void => {
+  /**
+   * `patch` is a function of the base it will be applied to, not an already-resolved object.
+   *
+   * A colour toggle resolved at click time carries the whole `hiddenColours` array, so a
+   * reconciliation landing before it dispatches gets overwritten wholesale — the one field
+   * compose-at-dispatch could not protect, because there the patch *was* the field.
+   */
+  const edit = (
+    properties: readonly (keyof Appearance)[],
+    patch: (base: Appearance) => Partial<Appearance>,
+  ): void => {
     commit(
+      appearanceIntents,
       id,
+      { ...appearanceFor(id), ...patch(appearanceFor(id)) },
       // Keyed by what this patch actually changes, so a colour success cannot clear a refused shape.
-      Object.keys(patch).map((property): FailureKey => `appearance:${property}`),
-      { appearance: { ...appearanceFor(id), ...patch } },
-      // Composed at dispatch, so a reconciliation that landed while this waited is not overwritten
-      // by a snapshot taken before it.
-      async () => await setAppearance(id, { ...storedAppearance(id), ...patch }),
-      (name) => `Could not update “${name}”.`,
+      properties.map((property): FailureKey => `appearance:${property}`),
+      async () => {
+        const base = storedAppearance(id)
+        return await setAppearance(id, { ...base, ...patch(base) })
+      },
+      // Named, so two refusals are not two identical banners neither of which owns a control.
+      (name, key) => `Could not change ${key.slice('appearance:'.length)} for “${name}”.`,
       rerender,
     )
   }
@@ -588,9 +635,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   hide.addEventListener('click', () => {
     const next = !visibleFor(id)
     commit(
+      visibleIntents,
       id,
+      next,
       ['visible'],
-      { visible: next },
       async () => await setLocalVisible(id, next),
       (name) => `Could not change visibility for “${name}”.`,
       rerender,
@@ -613,11 +661,16 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     // report it.
     if (isMoving()) {
       // Its own key, so a later visibility change cannot clear this and a visibility failure
-      // cannot be overwritten by it.
+      // cannot be overwritten by it. Un-announced first: pressing Move again is a deliberate action
+      // and deserves an answer, even though the banner text has not changed.
+      announced.get(id)?.delete('move')
       recordFailure(id, 'move', () => 'Finish the placement already in progress first.')
       rerender()
       return
     }
+    // Nothing else ever clears this one, and a stale "finish the placement first" outlives the
+    // placement it was about.
+    clearFailure(id, 'move')
     closeOverlayMenu()
     beginMove(id, rerender)
     // Back to the gear, which is about to become the only control left.
@@ -674,23 +727,37 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   for (const banner of failureBanners(id)) menu.appendChild(banner)
 
   menu.appendChild(section('Shape'))
+  // Nothing that mutates appearance is offered while the record is being deleted; the store would
+  // refuse it anyway and leave a meaningless banner beside "Deleting…".
+  const locked = deleting.has(id)
   const shapes = radioGroup(
     'Shape',
     SHAPES.map((shape) => ({ id: shape.id, label: shape.label, hint: shape.hint, text: true })),
     appearance.shape,
-    (shape) => edit({ shape }),
+    locked,
+    (shape) => edit(['shape'], () => ({ shape })),
     (chosen) => (chosen ? 'btn btn-xs join-item btn-active' : 'btn btn-xs join-item'),
   )
   shapes.className = 'join'
   menu.appendChild(shapes)
 
   if (appearance.shape !== 'full') {
-    menu.appendChild(slider('size', 'Size', appearance.size, (size) => edit({ size })))
+    menu.appendChild(
+      slider(
+        'size',
+        'Size',
+        appearance.size,
+        locked,
+        (size) => edit(['size'], () => ({ size })),
+        rerender,
+      ),
+    )
     const anchors = radioGroup(
       'Anchor',
       ANCHORS.map((anchor) => ({ id: anchor.id, label: anchor.label, text: false })),
       appearance.anchor,
-      (anchor) => edit({ anchor }),
+      locked,
+      (anchor) => edit(['anchor'], () => ({ anchor })),
       (chosen) => (chosen ? 'btn btn-xs btn-active' : 'btn btn-xs btn-ghost'),
     )
     Object.assign(anchors.style, {
@@ -708,7 +775,16 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     menu.appendChild(anchors)
   }
 
-  menu.appendChild(slider('opacity', 'Opacity', appearance.opacity, (opacity) => edit({ opacity })))
+  menu.appendChild(
+    slider(
+      'opacity',
+      'Opacity',
+      appearance.opacity,
+      locked,
+      (opacity) => edit(['opacity'], () => ({ opacity })),
+      rerender,
+    ),
+  )
 
   menu.appendChild(section('Colours'))
   const grid = document.createElement('div')
@@ -729,11 +805,15 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     swatch.title = `${colour.name} · ${colour.kind}`
     swatch.setAttribute('aria-label', `${colour.name}, ${colour.kind}`)
     swatch.setAttribute('aria-pressed', String(on))
+    swatch.disabled = locked
     swatch.addEventListener('click', () => {
-      const next = new Set(appearanceFor(id).hiddenColours)
-      if (next.has(colour.index)) next.delete(colour.index)
-      else next.add(colour.index)
-      edit({ hiddenColours: [...next] })
+      // The toggle, not the resolved list: applied to whatever the base turns out to be at dispatch.
+      edit(['hiddenColours'], (base) => {
+        const next = new Set(base.hiddenColours)
+        if (next.has(colour.index)) next.delete(colour.index)
+        else next.add(colour.index)
+        return { hiddenColours: [...next] }
+      })
     })
     grid.appendChild(swatch)
   }
@@ -749,6 +829,9 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
 }
 
 const closeOverlayMenu = (): void => {
+  // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
+  // gear puts a live Delete button back up that the user thought they had dismissed.
+  if (openFor !== null) confirming.delete(openFor)
   openFor = null
   focusRequest = null
   menuNode?.remove()
@@ -820,6 +903,13 @@ const controlIn = (menu: HTMLElement, key: string): HTMLElement | null => {
 
 /** Where the overlay's top-right corner sits on screen, or null when none of it is in view. */
 const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | null => {
+  // A hidden overlay draws nothing, so its gear is a 28px hole in the map with nothing visible to
+  // explain it — and hiding an overlay is usually how you clear a spot in order to paint there.
+  //
+  // Its own menu is the exception, and has to be: Hide lives in there, so culling the control the
+  // moment it is used would make hiding a one-way trip from the map. Open, it stays; closed, the
+  // panel is where a hidden overlay is found again.
+  if (!visibleFor(template.id) && openFor !== template.id) return null
   // Follow the placement preview while one is running: the overlay is painted at the preview
   // origin, and a button left at the durable origin points at nothing.
   const preview = previewOriginFor(template.id)
@@ -870,8 +960,13 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
   }
   sweepControls(new Set(templates.map((template) => template.id)))
 
-  for (const template of templates) {
-    const corner = cornerOnScreen(template)
+  // Every projection bottoms out in `getBoundingClientRect`, and the loop below writes `style.left`
+  // and `style.top`. Interleaving them makes each template's reads force a layout recalc that the
+  // previous template's writes invalidated — two synchronous reflows per template per frame, inside
+  // a painter. Read everything first, then write.
+  const placements = templates.map((template) => ({ template, corner: cornerOnScreen(template) }))
+
+  for (const { template, corner } of placements) {
     let button = buttons.get(template.id)
     if (button !== undefined && !button.isConnected) {
       buttons.delete(template.id)
@@ -940,7 +1035,17 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
       menuNode.scrollTop = scrollTop
       const wanted = focusRequest ?? focusedKey
       const restore = wanted === null ? null : controlIn(menuNode, wanted)
-      if (restore !== null) restore.focus()
+      if (restore !== null) {
+        // A fresh group recomputes `tabindex` from what is selected, so focus would land on a cell
+        // the tab stop had moved away from — and Shift+Tab would drop back inside the group.
+        const group = restore.closest('[role="radiogroup"]')
+        if (group !== null) {
+          for (const cell of group.querySelectorAll('[role="radio"]')) {
+            if (cell instanceof HTMLElement) cell.tabIndex = cell === restore ? 0 : -1
+          }
+        }
+        restore.focus()
+      }
       focusRequest = null
       const box = menuNode.getBoundingClientRect()
       menuBox = { width: box.width, height: box.height }
