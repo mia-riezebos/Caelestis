@@ -120,6 +120,11 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
+  // Close anything still open *before* discarding the module: an open menu holds a window-level
+  // Escape listener, and a discarded instance's listener keeps firing against stale state.
+  const open = document.getElementById('wts-overlay-menu')
+  const close = open?.querySelector('[data-wts-control="close"]')
+  if (close instanceof HTMLElement) close.click()
   vi.resetModules()
   vi.clearAllMocks()
   harness.localTemplates.mockReturnValue([])
@@ -2704,5 +2709,142 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
     // ...but `shape` is the stamped-tile cache key, so the durable write waits for the release.
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
     expect(appearanceWritten(0).shape).toBe('square')
+  })
+})
+
+describe('an action waits for the state it depends on', () => {
+  it('does not start placing until the overlay is actually shown', async () => {
+    let release = (): void => {}
+    const shown = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    harness.setLocalVisible.mockImplementation(async () => {
+      await shown
+      return true
+    })
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+
+    byKey('move').click()
+    await settle()
+    // Painting still filters on the durable `visible`, so placing now is placing nothing.
+    expect(harness.beginMove).not.toHaveBeenCalled()
+
+    release()
+    await settle()
+
+    expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
+  })
+
+  it('says so and does not place when showing is refused', async () => {
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.setLocalVisible.mockResolvedValue(false)
+
+    byKey('move').click()
+    await settle()
+    rerender()
+
+    expect(harness.beginMove).not.toHaveBeenCalled()
+    expect(errorText()).toContain('Could not show')
+  })
+
+  it('commits an arrow selection on key release, not while focus is moving', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // Focused first, so `next.focus()` really does blur this cell — which is what a browser does
+    // and what makes the blur handler fire mid-keydown.
+    byKey('Shape:full').focus()
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    await settle()
+
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('Shape:square')
+
+    byKey('Shape:square').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    await settle()
+
+    expect(appearanceWritten(0).shape).toBe('square')
+  })
+
+  it('answers the delete question first on Escape from outside the menu', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    rerender()
+
+    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+  })
+
+  it('still exits when another page listener prevented the Escape', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+    // Something else on the page prevents it first; that is not our marker.
+    window.addEventListener('keydown', (e) => e.preventDefault(), { once: true })
+    window.dispatchEvent(event)
+    rerender()
+
+    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+  })
+
+  it('takes the abandoned gear away rather than leaving a live twin', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    const original = gear('a')
+
+    const hidden = document.createElement('div')
+    document.body.appendChild(hidden)
+    hidden.appendChild(original)
+    rerender()
+
+    // Left in place it is a second control with our id and our handlers, outliving its template.
+    expect(hidden.contains(original)).toBe(false)
+    expect(document.querySelectorAll('#wts-overlay-button-a')).toHaveLength(1)
+  })
+
+  it('rebuilds when a control is swapped for an impostor with the same attribute', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const close = byKey('close')
+
+    const impostor = document.createElement('button')
+    impostor.dataset.wtsControl = 'close'
+    close.replaceWith(impostor)
+    rerender()
+
+    // The count is identical, so only identity catches this.
+    expect(byKey('close')).not.toBe(impostor)
   })
 })

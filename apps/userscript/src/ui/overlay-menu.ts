@@ -82,6 +82,8 @@ let openFor: string | null = null
 let menuNode: HTMLElement | null = null
 /** Measured once per rebuild — the contents only change when the menu is rebuilt. */
 let menuBox: { width: number; height: number } = { width: 0, height: 0 }
+/** The controls the last build produced, so a host swapping or removing one is a rebuild. */
+let builtControls = new Set<HTMLElement>()
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
 let focusRequest: string | null = null
 /**
@@ -118,7 +120,12 @@ const heldWithin = (root: HTMLElement | null): boolean =>
     ? true
     : [...heldPointers.values()].some((slider) => root.contains(slider)))
 
+/** Window-level releases installed when pointer capture was unavailable. */
+const captureFallbacks = new Set<() => void>()
+
 const releaseAllHolds = (): void => {
+  for (const drop of captureFallbacks) drop()
+  captureFallbacks.clear()
   heldPointers.clear()
   heldByKey = null
 }
@@ -321,6 +328,15 @@ const inOurDocument = (node: Node | null | undefined): boolean =>
  * true of a slider inside its own label, and true of a gear a host has reparented under a hidden
  * container of its own, where it is connected, rooted here, and permanently unreachable.
  */
+/** The focused element in whatever root `node` lives in — a shadow host hides the real one. */
+const activeIn = (node: Node | null | undefined): Element | null => {
+  const root = node?.getRootNode()
+  const active = root instanceof Document || root instanceof ShadowRoot ? root.activeElement : null
+  return active?.shadowRoot?.activeElement instanceof Element
+    ? active.shadowRoot.activeElement
+    : active
+}
+
 const stillMounted = (node: Element | null | undefined): boolean =>
   inOurDocument(node) && node?.parentElement === document.body
 
@@ -673,15 +689,22 @@ const slider = (
     } catch {
       // Capture unavailable, so the release will not come back to this element. Listen where it
       // will: without this the hold stays registered and rebuilds stay suppressed for good.
-      const ended = (release: Event): void => {
-        if ((release as PointerEvent).pointerId !== event.pointerId) return
+      const drop = (): void => {
         window.removeEventListener('pointerup', ended, true)
         window.removeEventListener('pointercancel', ended, true)
+        captureFallbacks.delete(drop)
+      }
+      const ended = (release: Event): void => {
+        if ((release as PointerEvent).pointerId !== event.pointerId) return
+        drop()
         heldPointers.delete(event.pointerId)
         if (![...heldPointers.values()].includes(input)) settleGesture()
       }
       window.addEventListener('pointerup', ended, true)
       window.addEventListener('pointercancel', ended, true)
+      // Dropped by any teardown too: a listener that outlives its menu will happily settle a later
+      // gesture with a draft that was never its own.
+      captureFallbacks.add(drop)
     }
   })
   input.addEventListener('keydown', (event) => {
@@ -814,8 +837,13 @@ const radioGroup = <T extends string>(
       pending = null
       onSelect(chosen)
     })
-    cell.addEventListener('blur', () => {
+    cell.addEventListener('blur', (event) => {
+      // Only when focus actually leaves the group. `next.focus()` during arrow navigation blurs the
+      // cell we came from, and committing there writes on *keydown* — then the repaint rebuilds the
+      // menu while `focus()` is still running and the destination cell is gone.
       if (pending === null) return
+      const to = (event as FocusEvent).relatedTarget
+      if (to instanceof Node && group.contains(to)) return
       const chosen = pending
       pending = null
       onSelect(chosen)
@@ -962,6 +990,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   menu.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
     event.preventDefault()
+    escapeHandled = event
     // Innermost dialog first: with the question up, Escape answers *it*, not the menu around it.
     if (confirming.has(id) && !isDoomed(id)) {
       confirming.delete(id)
@@ -1079,10 +1108,45 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     // placement it was about.
     clearFailure(id, 'move')
     // Placing an overlay you cannot see is not placing it, and the menu stays open after Hide on
-    // purpose — so Hide → Move is one click, and the hidden template is not painted at all.
-    if (!visibleFor(id)) commitVisible(id, true, rerender)
+    // purpose — so Hide → Move is one click, and a hidden template is not painted at all.
+    //
+    // Awaited, because visibility is published only after slicing and persistence succeed: starting
+    // the placement first means positioning nothing, and a refused show means positioning nothing
+    // for the whole session.
+    if (!visibleFor(id)) {
+      const seq = intend(visibleIntents, id, true)
+      clearFailure(id, 'visible')
+      rerender()
+      void setLocalVisible(id, true).then(
+        (shown) => {
+          releaseIntent(visibleIntents, id, seq)
+          if (!shown) {
+            recordFailure(
+              id,
+              'visible',
+              (name) => `Could not show “${name}” to move it.`,
+              () => templateFor(id)?.visible === true,
+            )
+            rerender()
+            return
+          }
+          closeOverlayMenu()
+          // `finish()` repaints for us, so the completion callback does not need to.
+          beginMove(id, () => {})
+          rerender()
+        },
+        () => {
+          releaseIntent(visibleIntents, id, seq)
+          recordFailure(id, 'visible', (name) => `Could not show “${name}” to move it.`)
+          rerender()
+        },
+      )
+      return
+    }
     closeOverlayMenu()
-    beginMove(id, rerender)
+    // Z9: `finish()` repaints, so passing `rerender` here paints the whole thing twice.
+    beginMove(id, () => {})
+    rerender()
     // Back to the gear, which is about to become the only control left.
     buttons.get(id)?.focus()
     rerender()
@@ -1260,6 +1324,8 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
  * you just changed.
  */
 let escapeListener: ((event: KeyboardEvent) => void) | null = null
+/** The Escape this menu has already answered, so the window listener does not answer it twice. */
+let escapeHandled: KeyboardEvent | null = null
 
 const openOverlayMenu = (id: string, rerender: () => void): void => {
   // Walking away from a destructive question retracts it, whichever way you walk — ✕ and Escape go
@@ -1273,11 +1339,18 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
     escapeListener = (event: KeyboardEvent): void => {
       // The menu's own handler answers the inner question first; this one is for everywhere else.
       if (event.key !== 'Escape' || openFor === null) return
-      // The menu's own handler answers the inner dialog first and marks the event; without this the
-      // rebuild it causes detaches the target, so `contains` says no and this closes the menu too.
-      if (event.defaultPrevented) return
+      // Our own marker, not `defaultPrevented` — any other page listener preventing Escape would
+      // otherwise read as "this menu handled it" and disable the exit entirely.
+      if (escapeHandled === event) return
       if (menuNode?.contains(event.target as Node) === true) return
       const id = openFor
+      // The innermost dialog first, exactly as the menu-local handler does.
+      if (confirming.has(id) && !isDoomed(id)) {
+        confirming.delete(id)
+        focusRequest = 'delete'
+        rerender()
+        return
+      }
       closeOverlayMenu()
       buttons.get(id)?.focus()
       rerender()
@@ -1479,9 +1552,12 @@ const renderControls = (
     let button = buttons.get(template.id)
     if (button !== undefined && !stillMounted(button)) {
       // Remembered before it goes: the replacement should get the keyboard back.
-      if (button === document.activeElement || button.contains(document.activeElement)) {
+      if (button === activeIn(button) || button.contains(activeIn(button))) {
         focusedGear = template.id
       }
+      // Removed, not merely forgotten. Left in place it is a second live control with our id and
+      // our handlers, and it outlives the template it belongs to.
+      button.remove()
       buttons.delete(template.id)
       button = undefined
     }
@@ -1553,10 +1629,11 @@ const renderControls = (
     // removed could never be rebuilt at all while its slider stayed held.
     // Every control the menu builds, so a host that removes one of them is a reason to rebuild —
     // the outer node is untouched and the signature has not moved, so nothing else would notice.
+    // Identity, not a count: a host swapping Close for an inert element carrying the same
+    // attribute, or removing one control while adding another, keeps the count identical.
     const gutted =
       menuNode !== null &&
-      menuNode.dataset.wtsControls !==
-        String(menuNode.querySelectorAll('[data-wts-control]').length)
+      [...builtControls].some((control) => menuNode?.contains(control) !== true)
     const stale = menuNode === null || !stillMounted(menuNode) || gutted
     // The value survives — it is in `drafts` — but the element that would have delivered the
     // gesture's release does not, so the gesture ends here. That covers the page tearing the menu
@@ -1580,14 +1657,8 @@ const renderControls = (
       const previous = menuNode
       // Sampled before anything is discarded: once an adopted node is dropped, this document's
       // active element has already fallen back to the body and the key is gone.
-      if (
-        previous !== null &&
-        !stillMounted(previous) &&
-        previous.contains(previous.ownerDocument.activeElement)
-      ) {
-        focusRestore =
-          (previous.ownerDocument.activeElement as HTMLElement | null)?.dataset[CONTROL] ??
-          focusRestore
+      if (previous !== null && !stillMounted(previous) && previous.contains(activeIn(previous))) {
+        focusRestore = (activeIn(previous) as HTMLElement | null)?.dataset[CONTROL] ?? focusRestore
       }
       const scrollTop = previous?.scrollTop ?? 0
       const focusedKey =
@@ -1597,7 +1668,11 @@ const renderControls = (
       previous?.remove()
       menuNode = buildMenu(template, rerender)
       menuNode.dataset.wtsSignature = signature
-      menuNode.dataset.wtsControls = String(menuNode.querySelectorAll('[data-wts-control]').length)
+      builtControls = new Set(
+        [...menuNode.querySelectorAll('[data-wts-control]')].filter(
+          (node): node is HTMLElement => node instanceof HTMLElement,
+        ),
+      )
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
       const abandoned = document.activeElement === null || document.activeElement === document.body

@@ -119,7 +119,17 @@ let installed: HTMLStyleElement | null = null
 export const installStyles = (): void => {
   // `isConnected` alone stays true for a node the host has adopted into an iframe or moved into a
   // shadow root, where its rules no longer reach our body-mounted controls.
-  if (installed?.isConnected === true && installed.getRootNode() === document) return
+  // Connected, ours, *and* still doing its job: a host can empty the text or disable the sheet
+  // without moving the node, and the swatches lose their sizing exactly as if it were gone.
+  if (
+    installed?.isConnected === true &&
+    installed.getRootNode() === document &&
+    installed.textContent === CSS &&
+    installed.sheet?.disabled !== true
+  ) {
+    return
+  }
+  installed?.remove()
   // The id is a convenience for anyone reading the DOM, never an identity check. An element the
   // page put there is not ours whatever it is called — an empty `<style id="wts-styles">` would
   // otherwise stand in for the real one and every swatch would collapse — and it is not ours to
