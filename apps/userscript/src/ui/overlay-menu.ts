@@ -86,7 +86,6 @@ let menuBox: { width: number; height: number } = { width: 0, height: 0 }
 let focusRequest: string | null = null
 /** A gear to focus once the map comes back and it exists again. */
 let focusedGear: string | null = null
-let stylesInstalled = false
 
 /**
  * What the user has asked for but IndexedDB has not acknowledged yet.
@@ -116,7 +115,7 @@ interface Intent<T> {
  * of the second discarding the first.
  */
 type Updater = (base: Appearance) => Partial<Appearance>
-const appearanceIntents = new Map<string, Map<string, Intent<Updater>>>()
+const appearanceIntents = new Map<string, Map<string, Map<number, Updater>>>()
 const visibleIntents = new Map<string, Intent<boolean>>()
 let sequence = 0
 
@@ -130,6 +129,8 @@ let sequence = 0
 const failures = new Map<string, Map<FailureKey, (name: string) => string>>()
 /** Which failures a screen reader has already been told about, so a rebuild does not repeat them. */
 const announced = new Map<string, Set<FailureKey>>()
+/** The template revision each refusal was about, so a later success anywhere retires it. */
+const failedAt = new Map<string, number>()
 /** Templates whose delete question is up, and those whose delete is actually running. */
 const confirming = new Set<string>()
 const deleting = new Set<string>()
@@ -178,9 +179,13 @@ const storedAppearance = (id: string): Appearance =>
 const appearanceFor = (id: string): Appearance => {
   const pending = appearanceIntents.get(id)
   let composed = storedAppearance(id)
-  if (pending !== undefined) {
-    for (const { value } of pending.values()) composed = { ...composed, ...value(composed) }
-  }
+  if (pending === undefined) return composed
+  // In the order they were asked for, across properties *and* within one. Latest-wins is right for
+  // a setter; the colour updaters are toggles, so replacing red's first click with its second makes
+  // the pair read as one — the menu says hidden while the writes compose back to visible.
+  const ordered = [...pending.values()].flatMap((bySeq) => [...bySeq])
+  ordered.sort(([a], [b]) => a - b)
+  for (const [, updater] of ordered) composed = { ...composed, ...updater(composed) }
   return composed
 }
 
@@ -201,8 +206,12 @@ const releaseIntent = <T>(store: Map<string, Intent<T>>, id: string, seq: number
 
 const intendAppearance = (id: string, properties: readonly string[], value: Updater): number => {
   const seq = ++sequence
-  const pending = appearanceIntents.get(id) ?? new Map<string, Intent<Updater>>()
-  for (const property of properties) pending.set(property, { seq, value })
+  const pending = appearanceIntents.get(id) ?? new Map<string, Map<number, Updater>>()
+  for (const property of properties) {
+    const bySeq = pending.get(property) ?? new Map<number, Updater>()
+    bySeq.set(seq, value)
+    pending.set(property, bySeq)
+  }
   appearanceIntents.set(id, pending)
   return seq
 }
@@ -211,7 +220,10 @@ const releaseAppearance = (id: string, properties: readonly string[], seq: numbe
   const pending = appearanceIntents.get(id)
   if (pending === undefined) return
   for (const property of properties) {
-    if (pending.get(property)?.seq === seq) pending.delete(property)
+    const bySeq = pending.get(property)
+    if (bySeq === undefined) continue
+    bySeq.delete(seq)
+    if (bySeq.size === 0) pending.delete(property)
   }
   if (pending.size === 0) appearanceIntents.delete(id)
 }
@@ -220,6 +232,20 @@ const recordFailure = (id: string, key: FailureKey, message: (name: string) => s
   const forTemplate = failures.get(id) ?? new Map<FailureKey, (name: string) => string>()
   forTemplate.set(key, message)
   failures.set(id, forTemplate)
+  // The revision this refusal is *about*. Any surface committing anything for this template moves
+  // it on, and a message about a state that no longer exists is a lie — the tree's own visibility
+  // checkbox and another tab's reconciliation both write here without going through this module.
+  failedAt.set(`${id}|${key}`, templateFor(id)?.revision ?? -1)
+}
+
+/** Retire failures whose subject has since changed, whoever changed it. */
+const expireFailures = (id: string): void => {
+  const forTemplate = failures.get(id)
+  if (forTemplate === undefined) return
+  const revision = templateFor(id)?.revision ?? -1
+  for (const key of [...forTemplate.keys()]) {
+    if (key !== 'move' && failedAt.get(`${id}|${key}`) !== revision) clearFailure(id, key)
+  }
 }
 
 /** Clear only these keys: a successful colour change says nothing about a refused hide or shape. */
@@ -229,6 +255,7 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
   for (const key of keys) {
     forTemplate.delete(key)
     announced.get(id)?.delete(key)
+    failedAt.delete(`${id}|${key}`)
   }
   if (forTemplate.size === 0) failures.delete(id)
 }
@@ -257,6 +284,8 @@ const remembered = (): Set<string> =>
     ...announced.keys(),
     ...confirming,
     ...deleting,
+    ...[...heldValues.keys()].map((key) => key.slice(0, key.lastIndexOf(':'))),
+    ...(focusedGear === null ? [] : [focusedGear]),
   ])
 
 const enqueue = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
@@ -317,6 +346,9 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
   settle(
     id,
     ['visible'],
+    // Not through `enqueue`: `writeInOrder` already serialises by id, and queueing behind our own
+    // appearance writes means a tree-row toggle made *after* this click can be applied *before* it
+    // and then overwritten — the more recent action losing.
     async () => await setLocalVisible(id, next),
     (name) => `Could not change visibility for “${name}”.`,
     () => releaseIntent(visibleIntents, id, seq),
@@ -343,7 +375,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     appearance.anchor,
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
     confirming.has(id),
-    deleting.has(id),
+    isDoomed(id),
     [...(failures.get(id) ?? [])].map(([key, text]) => `${key}=${text(template.name)}`).join(','),
   ].join('|')
 }
@@ -387,6 +419,8 @@ const slider = (
   // Only an *in-progress* gesture blocks a refresh. Using focus for that leaves a refused commit,
   // or another tab's change, sitting on a thumb that stays focused long after the drag ended — and
   // every way a gesture can end has to release it, or the slider freezes for the session.
+  let keyHeld = false
+  let deferred: number | null = null
   const release = (): void => {
     if (input.dataset.wtsHeld === undefined) return
     delete input.dataset.wtsHeld
@@ -399,8 +433,23 @@ const slider = (
     input.dataset.wtsHeld = 'true'
   }
   input.addEventListener('pointerdown', hold)
-  input.addEventListener('keydown', hold)
-  for (const ending of ['pointerup', 'pointercancel', 'keyup', 'blur']) {
+  input.addEventListener('keydown', () => {
+    keyHeld = true
+    hold()
+  })
+  // A range fires `change` on *every* arrow keypress, so holding the key would queue one durable
+  // write per OS repeat — and `size` is in the stamped-tile cache key, so each one re-stamps the
+  // viewport at scale 3. The pointer path is already protected by waiting for the release; the
+  // keyboard path waits for the key to come back up.
+  input.addEventListener('keyup', () => {
+    keyHeld = false
+    release()
+    if (deferred === null) return
+    const value = deferred
+    deferred = null
+    onCommit(value)
+  })
+  for (const ending of ['pointerup', 'pointercancel', 'blur']) {
     input.addEventListener(ending, release)
   }
   // The readout follows the thumb; the write waits for the release. Every `input` event used to be
@@ -414,6 +463,10 @@ const slider = (
     // Read first. `release()` repaints, and the repaint puts the *stored* value back into this very
     // input — so releasing before reading commits the value the user just changed away from.
     const chosen = Number(input.value)
+    if (keyHeld) {
+      deferred = chosen
+      return
+    }
     release()
     onCommit(chosen)
   })
@@ -544,8 +597,9 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
   cancel.textContent = 'Cancel'
   // A live Cancel next to a delete already in flight takes the question away and reads as though it
   // stopped something.
-  cancel.disabled = running
+  cancel.setAttribute('aria-disabled', String(running))
   cancel.addEventListener('click', () => {
+    if (isDoomed(id)) return
     confirming.delete(id)
     // Back to the control that raised the question, rather than dropping to the document.
     focusRequest = 'delete'
@@ -652,6 +706,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
    * compose-at-dispatch could not protect, because there the patch *was* the field.
    */
   const edit = (properties: readonly string[], label: string, patch: Updater): void => {
+    if (isDoomed(id)) return
     const seq = intendAppearance(id, properties, patch)
     settle(
       id,
@@ -691,6 +746,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   hide.appendChild(icon('image', 'size-4'))
   hide.disabled = isDoomed(id)
   hide.addEventListener('click', () => {
+    if (isDoomed(id)) return
     const next = !visibleFor(id)
     commitVisible(id, next, rerender)
   })
@@ -706,6 +762,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // about to stop existing.
   move.disabled = isDoomed(id)
   move.addEventListener('click', () => {
+    // Re-checked, not trusted from build time: a menu can outlive the state it was built from —
+    // the rebuild is skipped under a held slider, and a delete from another surface changes nothing
+    // this render loop can see until a frame happens to arrive.
+    if (isDoomed(id)) return
     // `beginMove` refuses while another placement is running. It is the only action here that can
     // refuse without saying anything, and closing first would throw away the one surface able to
     // report it.
@@ -745,6 +805,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // with a fresh enabled Cancel, over a delete that is already running.
   remove.disabled = isDoomed(id)
   remove.addEventListener('click', () => {
+    if (isDoomed(id)) return
     // Only when this actually opens the question. Setting it again changes no signature, so no
     // rebuild consumes it, and the next unrelated one — a rename, a refusal — would move focus onto
     // a destructive button the user never asked for.
@@ -891,10 +952,13 @@ const closeOverlayMenu = (): void => {
   menuNode = null
 }
 
-/** Take the controls off the page without forgetting anything about the templates. */
-const detachControls = (): void => {
-  // `openFor` survives a detach, so the menu comes back when the map does — and it should come back
-  // with the keyboard where the user left it, whether that was inside the menu or on a gear.
+/**
+ * Remember what an interaction was in the middle of, before the DOM holding it goes away.
+ *
+ * Both teardown paths need this — the map disappearing and a single overlay leaving the viewport —
+ * and the second one used to do none of it.
+ */
+const stashInteraction = (): void => {
   const active = document.activeElement
   if (menuNode?.contains(active) === true) {
     focusRequest = (active as HTMLElement | null)?.dataset[CONTROL] ?? focusRequest
@@ -910,6 +974,13 @@ const detachControls = (): void => {
       if (key !== undefined) heldValues.set(`${openFor}:${key}`, input.value)
     }
   }
+}
+
+/** Take the controls off the page without forgetting anything about the templates. */
+const detachControls = (): void => {
+  // `openFor` survives a detach, so the menu comes back when the map does — and it should come back
+  // with the keyboard where the user left it, whether that was inside the menu or on a gear.
+  stashInteraction()
   for (const [, button] of buttons) button.remove()
   buttons.clear()
   menuNode?.remove()
@@ -944,11 +1015,6 @@ const sweepControls = (live: ReadonlySet<string>): void => {
  * them showing whatever they showed when the menu opened — a change made in another tab, a refused
  * commit, or a conflict reconciliation would never reach them.
  */
-/** Retire a Move refusal once the placement it was about has finished. */
-const expireMoveFailure = (id: string): void => {
-  if (!isMoving() && failures.get(id)?.has('move') === true) clearFailure(id, 'move')
-}
-
 const refreshSliders = (menu: HTMLElement, appearance: Appearance): void => {
   for (const [key, value] of [
     ['size', appearance.size],
@@ -969,6 +1035,11 @@ const controlIn = (menu: HTMLElement, key: string): HTMLElement | null => {
     if (candidate instanceof HTMLElement && candidate.dataset[CONTROL] === key) return candidate
   }
   return null
+}
+
+/** Retire a Move refusal once the placement it was about has finished. */
+const expireMoveFailure = (id: string): void => {
+  if (!isMoving() && failures.get(id)?.has('move') === true) clearFailure(id, 'move')
 }
 
 /** Where the overlay's top-right corner sits on screen, or null when none of it is in view. */
@@ -1021,13 +1092,12 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  * the overlay perfectly well.
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
-  if (!stylesInstalled) {
-    // The swatches are styled by the shared stylesheet, which only `installPanel` used to install —
-    // and these controls are driven by the map frame, an entirely independent trigger. Without it
-    // `.wts-swatch` loses its `aspect-ratio` and the colour toggles collapse to nothing.
-    installStyles()
-    stylesInstalled = true
-  }
+  // The swatches are styled by the shared stylesheet, which only `installPanel` used to install —
+  // and these controls are driven by the map frame, an entirely independent trigger. Without it
+  // `.wts-swatch` loses its `aspect-ratio` and the colour toggles collapse to nothing.
+  // `installStyles` holds its own node, so this is a null check rather than a document lookup, and
+  // it re-installs if the page removes ours.
+  installStyles()
   const templates = localTemplates()
   const live = new Set(templates.map((template) => template.id))
   // Forget what has genuinely gone even on a frame with no map: returning early leaves a deleted
@@ -1049,6 +1119,7 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
 
   for (const { template, corner } of placements) {
     expireMoveFailure(template.id)
+    expireFailures(template.id)
     let button = buttons.get(template.id)
     if (button !== undefined && !button.isConnected) {
       buttons.delete(template.id)
@@ -1056,12 +1127,19 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
     }
 
     if (corner === null) {
+      // The same teardown the map disappearing gets: the overlay leaving the viewport is the
+      // ordinary way to look at the map while its menu is open, so it must not cost the keyboard
+      // its place or a drag its value — and a rebuild is still refused under a held slider.
+      if (openFor === template.id && menuNode !== null) {
+        if (menuNode.querySelector('input[data-wts-held="true"]') !== null) continue
+        stashInteraction()
+        menuNode.remove()
+        menuNode = null
+      } else if (button === document.activeElement) {
+        focusedGear = template.id
+      }
       button?.remove()
       buttons.delete(template.id)
-      if (openFor === template.id) {
-        menuNode?.remove()
-        menuNode = null
-      }
       continue
     }
     if (button === undefined) {
@@ -1072,6 +1150,11 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
       button.style.zIndex = BUTTON_Z
       button.setAttribute('aria-haspopup', 'dialog')
       button.appendChild(icon('settings', 'size-3'))
+      // A hidden overlay's gear is kept alive only while it holds focus. Nothing else would repaint
+      // when focus leaves, so with the panel shut and the map idle it would sit there indefinitely.
+      button.addEventListener('blur', () => {
+        if (!visibleFor(template.id)) rerender()
+      })
       button.addEventListener('click', () => {
         if (openFor === template.id) {
           closeOverlayMenu()
@@ -1120,7 +1203,13 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
       const wanted = focusRequest ?? focusedKey
-      const restore = wanted === null ? null : controlIn(menuNode, wanted)
+      // Size and Anchor exist only for a sub-pixel shape, so another tab setting Full takes the
+      // control the keyboard was on. The header close button is always there and never disabled.
+      const restore =
+        wanted === null
+          ? null
+          : (controlIn(menuNode, wanted) ??
+            (focusedKey === null ? null : controlIn(menuNode, 'close')))
       if (restore !== null) {
         // A fresh group recomputes `tabindex` from what is selected, so focus would land on a cell
         // the tab stop had moved away from — and Shift+Tab would drop back inside the group.
