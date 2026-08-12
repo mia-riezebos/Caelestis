@@ -296,7 +296,15 @@ const finish = (): void => {
   // The placement ending is state other surfaces render from — the overlay menu retires its
   // "finish the placement first" refusal off `isMoving()`. A move started from the panel only calls
   // back into the panel, so without this the refusal outlives the placement on a static map.
-  repaint()
+  //
+  // Caught, like the completion callback below: a throw from page-owned canvas work would otherwise
+  // reach `commit()`'s handler and be treated as a failed placement, re-arming capture listeners
+  // for a session that has already been cleared and saved.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after placement failed', error)
+  }
   finishing = false
   suppressMiddleAuxClickFor = null
   const finished = onFinish
