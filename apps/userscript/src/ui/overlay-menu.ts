@@ -12,7 +12,13 @@ import {
   setAppearance,
   setLocalVisible,
 } from '../templates/local-store.js'
-import { abort as abortMove, beginMove, isMoving, movingId } from '../templates/move.js'
+import {
+  abort as abortMove,
+  beginMove,
+  isFinishing,
+  isMoving,
+  movingId,
+} from '../templates/move.js'
 import { icon } from './icons.js'
 import { installStyles } from './styles.js'
 
@@ -267,7 +273,12 @@ const showingToMove = new Set<string>()
 const shownForMove = new Set<string>()
 /** Placements we have asked to stop, so the ask is not repeated every frame while it settles. */
 const aborting = new Set<string>()
-/** Attempts to stop a hidden placement. A revert that keeps failing must not be retried forever. */
+/**
+ * Cancellations we drove ourselves for a hidden placement.
+ *
+ * A revert that keeps failing must not be retried forever, and the budget is per *hidden spell*:
+ * showing the overlay again restores it, so a transient failure never permanently disarms the watch.
+ */
 const abortAttempts = new Map<string, number>()
 const MAX_ABORT_ATTEMPTS = 2
 const deleting = new Set<string>()
@@ -299,6 +310,10 @@ const buttons = new Map<string, HTMLElement>()
  * old behaviour: the menu showed 85% while the overlay stayed at 40%, indefinitely.
  */
 let lastRerender: (() => void) | null = null
+/** A render is on the stack; anything that repaints from inside one asks for another pass instead. */
+let rendering = false
+let renderAgain = false
+const MAX_RENDER_PASSES = 3
 
 /**
  * Write out every draft for `id`, because the gesture that would have committed them is over.
@@ -1683,9 +1698,30 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   lastRerender = rerender
-  withFrameTemplates(localTemplates(), (templates) => {
-    renderControls(rerender, mapCanvas, templates)
-  })
+  // A render can reach back into itself: settling a flushed draft or selection repaints, and
+  // `repaint` calls `draw` straight through. The nested pass would build a menu the outer pass then
+  // removes, and stamp it with a signature sampled before the flush — so the work is deferred to a
+  // second pass here instead, where it sees the state the flush produced.
+  if (rendering) {
+    renderAgain = true
+    return
+  }
+  rendering = true
+  try {
+    let passes = 0
+    do {
+      renderAgain = false
+      withFrameTemplates(localTemplates(), (templates) => {
+        renderControls(rerender, mapCanvas, templates)
+      })
+      passes += 1
+      // Two settled passes are enough to reach a fixed point; a third means something is repainting
+      // itself, and one frame is not the place to find out.
+    } while (renderAgain && passes < MAX_RENDER_PASSES)
+  } finally {
+    rendering = false
+    renderAgain = false
+  }
 }
 
 const renderControls = (
@@ -1742,47 +1778,60 @@ const renderControls = (
   // A hide that was already queued elsewhere lands after the placement has started, leaving the
   // user positioning something invisible. The later action wins: the placement is abandoned.
   const placing = movingId()
-  if (
-    placing !== null &&
-    shownForMove.has(placing) &&
-    templateFor(placing)?.visible === false &&
-    !aborting.has(placing)
-  ) {
-    // Reported only once it has actually stopped. `abort()` returns immediately while `move.ts` is
-    // already finishing, so announcing first turns a save that succeeded into a false "stopped" —
-    // and a save that failed resumes the placement with nobody left watching it.
-    aborting.add(placing)
+  if (placing !== null && shownForMove.has(placing)) {
     const stopping = placing
-    void abortMove().then(() => {
-      aborting.delete(stopping)
-      if (isMoving()) {
-        // The revert failed and `move.ts` resumed the same session, so the placement is still live
-        // over an overlay nobody can see. Nothing else is guaranteed to bring us back here — a
-        // static map produces no frames — so ask for one, up to a limit: a revert that keeps
-        // failing must end in something the user can act on, not a loop.
-        if ((abortAttempts.get(stopping) ?? 0) < MAX_ABORT_ATTEMPTS) {
-          abortAttempts.set(stopping, (abortAttempts.get(stopping) ?? 0) + 1)
-        } else {
+    if (templateFor(stopping)?.visible !== false) {
+      // Visible again, so whatever failed before is behind us and the next hide starts fresh.
+      abortAttempts.delete(stopping)
+    } else if (
+      !aborting.has(stopping) &&
+      // An Apply already saving owns the ending: `abort()` is a no-op while `move.ts` is finishing,
+      // so attempting one here would spend the budget on calls that never ran and then blame the
+      // revert. Its completion callback clears the watch; a failure resumes the session and this
+      // reconciliation comes back around with the budget untouched.
+      !isFinishing() &&
+      (abortAttempts.get(stopping) ?? 0) < MAX_ABORT_ATTEMPTS
+    ) {
+      aborting.add(stopping)
+      // Counted before the call, so the bound is the number of cancellations actually performed.
+      abortAttempts.set(stopping, (abortAttempts.get(stopping) ?? 0) + 1)
+      void abortMove().then(() => {
+        aborting.delete(stopping)
+        if (!isMoving()) {
+          abortAttempts.delete(stopping)
           shownForMove.delete(stopping)
           recordFailure(
             stopping,
             'move-stopped',
-            (name) =>
-              `“${name}” is hidden and its placement could not be stopped. Cancel it to undo.`,
+            (name) => `“${name}” was hidden, so its placement stopped.`,
+            // The message is about a placement that ended over a hidden overlay; showing it again,
+            // or starting another placement, is the user having moved past it.
+            () => templateFor(stopping)?.visible !== false || movingId() === stopping,
           )
+          lastRerender?.()
+          return
         }
+        // The revert failed and `move.ts` resumed the same session, so the placement is still live
+        // over an overlay nobody can see. Nothing else is guaranteed to bring us back here — a
+        // static map produces no frames — so ask for one while the budget lasts.
+        if ((abortAttempts.get(stopping) ?? 0) < MAX_ABORT_ATTEMPTS) {
+          lastRerender?.()
+          return
+        }
+        // Out of self-driven attempts. The watch stays armed — a later hide, or the same one after
+        // the overlay is shown again, must still be able to stop this — and what is left is a
+        // message the user can act on rather than a loop.
+        recordFailure(
+          stopping,
+          'move-stopped',
+          (name) =>
+            `“${name}” is hidden and its placement could not be stopped. Cancel it to undo.`,
+          // It claims a live placement over a hidden overlay. Either half becoming false retires it.
+          () => movingId() !== stopping || templateFor(stopping)?.visible !== false,
+        )
         lastRerender?.()
-        return
-      }
-      abortAttempts.delete(stopping)
-      shownForMove.delete(stopping)
-      recordFailure(
-        stopping,
-        'move-stopped',
-        (name) => `“${name}” was hidden, so its placement stopped.`,
-      )
-      lastRerender?.()
-    })
+      })
+    }
   }
   // A pending Anchor choice outlives its group when a reconciliation switches the shape to `full`:
   // keyup has nothing to reach, and the entry would be resurrected the next time a shape brings the

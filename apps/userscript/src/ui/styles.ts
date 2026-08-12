@@ -129,13 +129,14 @@ export const installStyles = (): void => {
     // A host can point `media` somewhere that never matches, or delete the rules through CSSOM,
     // and neither shows up in the text or the `disabled` flag.
     installed.media === '' &&
-    // The rule we actually depend on, not merely *a* rule: deleting `.wts-swatch` through CSSOM
-    // leaves the text, the media, the enabled flag and most of the rules exactly as they were.
-    // The base rule specifically. Its `[data-on]` siblings also mention the class, so a host that
-    // deletes only `.wts-swatch { aspect-ratio: 1 }` still satisfies a substring test while the
-    // swatches collapse.
+    // The declaration we actually depend on, not merely *a* rule mentioning the class: the text,
+    // the media, the enabled flag, the rule count and even the selector all survive a host calling
+    // `rule.style.removeProperty('aspect-ratio')`, while every colour toggle collapses to nothing.
     [...(installed.sheet?.cssRules ?? [])].some(
-      (rule) => rule instanceof CSSStyleRule && rule.selectorText === '.wts-swatch',
+      (rule) =>
+        rule instanceof CSSStyleRule &&
+        rule.selectorText === '.wts-swatch' &&
+        rule.style.getPropertyValue('aspect-ratio') !== '',
     )
   ) {
     return

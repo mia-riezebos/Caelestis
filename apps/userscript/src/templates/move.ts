@@ -51,6 +51,8 @@ let suppressMiddleAuxClickFor: number | null = null
 
 export const isMoving = (): boolean => session !== null
 export const movingId = (): string | null => session?.id ?? null
+/** A commit or revert is already under way, so `commit`/`abort` are no-ops until it settles. */
+export const isFinishing = (): boolean => finishing
 
 /** Where the template currently sits during a move, so the renderer can draw it there. */
 export const movePreviewOrigin = (id: string): { x: number; y: number } | null =>
