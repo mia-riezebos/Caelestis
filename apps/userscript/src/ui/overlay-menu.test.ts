@@ -92,6 +92,15 @@ const byText = (root: ParentNode, text: string): HTMLButtonElement => {
   return el as HTMLButtonElement
 }
 
+/** A pointer drag, in the order a browser fires it: press, input, release, then change. */
+const drag = (input: HTMLInputElement, to: string): void => {
+  input.dispatchEvent(new Event('pointerdown'))
+  input.value = to
+  input.dispatchEvent(new Event('input'))
+  input.dispatchEvent(new Event('pointerup'))
+  input.dispatchEvent(new Event('change'))
+}
+
 const errorText = (): string | null => menu().querySelector('[data-wts-error]')?.textContent ?? null
 
 let mapCanvas: HTMLCanvasElement
@@ -136,8 +145,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.value = '0.5'
-    opacity.dispatchEvent(new Event('change'))
+    drag(opacity, '0.5')
     await settle()
 
     expect(appearanceWritten(1)).toMatchObject({ shape: 'circle', opacity: 0.5 })
@@ -287,12 +295,13 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     rerender()
     gear('a').click()
     rerender()
-    const before = byKey('opacity')
+    const before = byKey('opacity') as HTMLInputElement
+    before.dispatchEvent(new Event('pointerdown'))
 
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.45 } })])
     rerender()
 
-    // Opacity is outside the rebuild signature precisely so the pointer keeps its grip.
+    // The element is not replaced under the pointer; the value it holds is in `drafts` either way.
     expect(byKey('opacity')).toBe(before)
   })
 
@@ -819,8 +828,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
     // than on an in-progress gesture leaves the refused value sitting on the thumb indefinitely.
     opacity.focus()
     opacity.dispatchEvent(new Event('pointerdown'))
-    opacity.value = '0.9'
-    opacity.dispatchEvent(new Event('change'))
+    drag(opacity, '0.9')
     await settle()
 
     // The map reverted; a thumb left at the refused value says the change took. Re-queried
@@ -1544,8 +1552,7 @@ describe('an edit carries the change, not a resolved snapshot', () => {
     byText(menu(), 'Full').click()
     await settle()
     const size = byKey('size') as HTMLInputElement
-    size.value = '0.5'
-    size.dispatchEvent(new Event('change'))
+    drag(size, '0.5')
     await settle()
 
     const messages = [...menu().querySelectorAll('[data-wts-error]')].map((el) => el.textContent)
@@ -1563,8 +1570,7 @@ describe('a real gesture commits what the user chose', () => {
 
     const opacity = byKey('opacity') as HTMLInputElement
     opacity.dispatchEvent(new Event('pointerdown'))
-    opacity.value = '0.9'
-    opacity.dispatchEvent(new Event('change'))
+    drag(opacity, '0.9')
     await settle()
 
     // Releasing the hold repaints, and the repaint puts the stored value back into this very input.
@@ -1668,6 +1674,7 @@ describe('a transient detach costs nothing', () => {
     const opacity = byKey('opacity') as HTMLInputElement
     opacity.dispatchEvent(new Event('pointerdown'))
     opacity.value = '0.85'
+    opacity.dispatchEvent(new Event('input'))
 
     const host = mapCanvas.parentElement
     mapCanvas.remove()
@@ -1676,8 +1683,7 @@ describe('a transient detach costs nothing', () => {
     rerender()
     await settle()
 
-    // The pointer capture died with the node, so no `change` is ever coming — displaying it and
-    // hoping left the menu showing 85% while the overlay stayed at 40%.
+    // The element that would have delivered the release is gone, so the teardown ends the gesture.
     expect(appearanceWritten(0).opacity).toBe(0.85)
   })
 
@@ -1777,6 +1783,7 @@ describe('repeating an action is never silently a no-op', () => {
     size.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
     for (const value of ['0.4', '0.45', '0.5']) {
       size.value = value
+      size.dispatchEvent(new Event('input'))
       size.dispatchEvent(new Event('change'))
     }
     await settle()
@@ -1856,11 +1863,7 @@ describe('a pointer drag in the order a browser actually fires it', () => {
 
     // Chromium dispatches a range's `change` from its stop-dragging work, *after* pointerup
     // handlers. Every earlier test fired `change` first, which is the one order that hides this.
-    opacity.dispatchEvent(new Event('pointerdown'))
-    opacity.value = '0.9'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('pointerup'))
-    opacity.dispatchEvent(new Event('change'))
+    drag(opacity, '0.9')
     await settle()
 
     expect(appearanceWritten(0).opacity).toBe(0.9)
@@ -1875,11 +1878,7 @@ describe('a pointer drag in the order a browser actually fires it', () => {
 
     // Tab does not move the thumb, and its keyup lands on whatever it focused next.
     opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))
-    opacity.dispatchEvent(new Event('pointerdown'))
-    opacity.value = '0.7'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('pointerup'))
-    opacity.dispatchEvent(new Event('change'))
+    drag(opacity, '0.7')
     await settle()
 
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
@@ -1913,6 +1912,7 @@ describe('a held slider holds its own menu, not the next one', () => {
 
     // A hostile or careless host removes it; the detached control may never see another event.
     const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
     opacity.value = '0.62'
     opacity.dispatchEvent(new Event('input'))
     menu().remove()
@@ -1940,11 +1940,7 @@ describe('a refusal retires only when its own subject is satisfied', () => {
 
     // A different property succeeds and the revision moves. It says nothing about the shape.
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
-    opacity.value = '0.6'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('pointerup'))
-    opacity.dispatchEvent(new Event('change'))
+    drag(opacity, '0.6')
     await settle()
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.6 } })])
     rerender()
@@ -2018,27 +2014,6 @@ describe('a slider keeps tracking the store after every kind of gesture', () => 
     opacity.dispatchEvent(new Event('change'))
     opacity.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
     await settle()
-
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
-    rerender()
-
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
-  })
-
-  it('is not frozen by a drag that returned to where it started', () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-
-    // Chromium fires no `change` when the value is unchanged across the gesture.
-    opacity.dispatchEvent(new Event('pointerdown'))
-    opacity.value = '0.7'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.value = '0.4'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('pointerup'))
 
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     rerender()
@@ -2199,7 +2174,7 @@ describe('a locked slider arms nothing', () => {
     expect(menu().textContent).toContain('renamed.png')
   })
 
-  it('keeps tracking the store after a drag back to its origin, even if the store moved', () => {
+  it('commits a drag that returned to its origin rather than losing it', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
     gear('a').click()
@@ -2207,22 +2182,17 @@ describe('a locked slider arms nothing', () => {
     const opacity = byKey('opacity') as HTMLInputElement
 
     opacity.dispatchEvent(new Event('pointerdown'))
-    // Another tab moves the store mid-drag.
+    // Another tab moves the store mid-drag; the user still ends where they began.
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     opacity.value = '0.7'
     opacity.dispatchEvent(new Event('input'))
     opacity.value = '0.4'
     opacity.dispatchEvent(new Event('input'))
-    // Ends where it began, so Chromium fires no `change` — and the thumb no longer equals the store.
     opacity.dispatchEvent(new Event('pointerup'))
+    await settle()
 
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        rerender()
-        expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
-        resolve()
-      }, 0)
-    })
+    // The gesture is what the user asked for, whatever the store did underneath it.
+    expect(appearanceWritten(0).opacity).toBe(0.4)
   })
 })
 
@@ -2264,5 +2234,129 @@ describe('focus saved across a teardown is not focus demanded', () => {
     rerender()
 
     expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('close')
+  })
+})
+
+describe('a gesture is what the user did, not what the element held', () => {
+  it('does not write a stale value for a press that moved nothing', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // Press the thumb and never move it, while another tab changes the store.
+    byKey('opacity').dispatchEvent(new Event('pointerdown'))
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    host?.appendChild(mapCanvas)
+    rerender()
+    await settle()
+
+    // Committing the element's value here would put 0.4 over the remote 0.9.
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+  })
+
+  it('commits the first template’s edit when a second touch opens another menu', async () => {
+    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.55'
+    opacity.dispatchEvent(new Event('input'))
+
+    gear('b').click()
+    rerender()
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ opacity: 0.55 }),
+    )
+  })
+
+  it('commits a keyboard edit interrupted by closing the menu', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.value = '0.5'
+    opacity.dispatchEvent(new Event('input'))
+    // Escape before the key comes back up: removing the focused input sends its keyup elsewhere.
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    rerender()
+    await settle()
+
+    expect(appearanceWritten(0).opacity).toBe(0.5)
+  })
+
+  it('stops showing a keyboard value the user tabbed away from', () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.value = '0.8'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('blur'))
+    rerender()
+
+    // The thumb kept showing the discarded value while the overlay used the stored one.
+    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.4')
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+  })
+})
+
+describe('refusals track the world, not our own render schedule', () => {
+  it('announces a repeated Move refusal', () => {
+    harness.isMoving.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('move').click()
+    rerender()
+    const first = menu().querySelector('[data-wts-error]')
+    byKey('move').click()
+    rerender()
+
+    // Identical text with an unchanged attempt count leaves the signature still, so nothing is
+    // rebuilt and no live region fires.
+    expect(menu().querySelector('[data-wts-error]')).not.toBe(first)
+    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+  })
+
+  it('drops a hidden overlay’s gear on the render that retires its last failure', async () => {
+    harness.setAppearance.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byText(menu(), 'Dot').click()
+    await settle()
+    byKey('close').click()
+    // Closing puts focus on the gear, which keeps it alive on its own; this is about the refusal.
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    // Hidden, and kept reachable only by the refusal.
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    expect(document.getElementById('wts-overlay-button-a')).not.toBeNull()
+
+    // Another surface sets the very shape that was refused, on this render.
+    harness.localTemplates.mockReturnValue([
+      template({ visible: false, appearance: { shape: 'circle' } }),
+    ])
+    rerender()
+
+    expect(document.getElementById('wts-overlay-button-a')).toBeNull()
   })
 })
