@@ -106,10 +106,28 @@ const CSS = `
 }
 `
 
+/**
+ * Ours, kept by reference.
+ *
+ * Looking the stylesheet up by id trusts the page not to have minted an element under it — and the
+ * page owns the document. A planted `<div id="wts-styles">` turned the install into a no-op, which
+ * costs `.wts-swatch` its `aspect-ratio` and collapses every colour toggle to zero height while the
+ * rest of the UI looks perfect. Holding the node also makes this cheap enough to call every frame.
+ */
+let installed: HTMLStyleElement | null = null
+
 export const installStyles = (): void => {
-  if (document.getElementById(STYLE_ID) !== null) return
+  if (installed?.isConnected === true) return
+  const existing = document.getElementById(STYLE_ID)
+  if (existing instanceof HTMLStyleElement) {
+    installed = existing
+    return
+  }
+  // Whatever is sitting on our id is not a stylesheet of ours; it does not get to stand in for one.
+  existing?.remove()
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = CSS
   document.head.appendChild(style)
+  installed = style
 }
