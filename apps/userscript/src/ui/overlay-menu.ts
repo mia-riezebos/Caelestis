@@ -275,6 +275,27 @@ let lastRerender: (() => void) | null = null
  * One place, reached by every teardown, rather than each of them knowing how to get a value out of
  * an element it is about to remove.
  */
+/** How to commit a pending selection for the open template, set by the build that made the group. */
+let commitSelection: ((group: string, option: string) => void) | null = null
+
+/**
+ * Commit any arrow-key selection whose keyup is never coming.
+ *
+ * The selection is module state so it survives a rebuild — but surviving is not the same as being
+ * saved, and every path that takes the element away (close, detach, off-screen, owner change) has
+ * to end the gesture, exactly as it does for a slider draft.
+ */
+const flushSelections = (id: string): void => {
+  const forTemplate = selections.get(id)
+  if (forTemplate === undefined || commitSelection === null) return
+  const commit: (group: string, option: string) => void = commitSelection
+  const pending = [...forTemplate]
+  selections.delete(id)
+  for (const [group, option] of pending) {
+    commit(group, option)
+  }
+}
+
 const flushDrafts = (id: string): void => {
   const forTemplate = drafts.get(id)
   const rerender = lastRerender
@@ -544,7 +565,8 @@ const settle = (
   satisfied: () => boolean,
   serialise = true,
 ): void => {
-  clearFailure(id, ...keys)
+  // Not cleared up front: a retry that stalls would take the banner away and show optimistic state
+  // indefinitely, when what the user knows so far is still that the last attempt was refused.
   rerender()
   const fail = (): void => {
     for (const key of keys) recordFailure(id, key, (name) => refused(name, key), satisfied)
@@ -835,8 +857,15 @@ const radioGroup = <T extends string>(
     cell.setAttribute('aria-disabled', String(locked))
     // One tab stop for the group, as the role promises; arrows move within it.
     cell.tabIndex = chosen ? 0 : -1
-    cell.addEventListener('click', () => onSelect(option.id))
+    cell.addEventListener('click', () => {
+      // The later, explicit choice wins: leaving the arrow's pending selection in place lets its
+      // keyup land afterwards and overwrite this one.
+      clearSelection(id, label)
+      onSelect(option.id)
+    })
     cell.addEventListener('keydown', (event) => {
+      // A group marked `aria-disabled` must not move, restyle or claim a selection it cannot save.
+      if (locked) return
       const step =
         event.key === 'ArrowRight' || event.key === 'ArrowDown'
           ? 1
@@ -1148,7 +1177,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     // Move again, press Hide, open another template's menu, or start a placement from the panel
     // while the bitmaps are being built.
     if (showingToMove.has(id)) return
-    if (!templateFor(id)?.visible) {
+    // Both, because they disagree in opposite directions: a hide that has not persisted yet leaves
+    // the durable value `true`, and an optimistic show leaves the intent `true` — either one alone
+    // starts a placement for something that is about to be, or still is, invisible.
+    if (!templateFor(id)?.visible || !visibleFor(id)) {
       showingToMove.add(id)
       const seq = intend(visibleIntents, id, true)
       clearFailure(id, 'visible')
@@ -1160,7 +1192,11 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
           releaseIntent(visibleIntents, id, seq)
           // Asked for again in the meantime — a later Hide, or a hide queued behind this show —
           // means the user no longer wants it visible, so there is nothing to place.
-          const wanted = visibleIntents.get(id)?.value ?? shown
+          // The durable value as well as our intent: the tree row writes straight through
+          // `setLocalVisible` and never touches `visibleIntents`, so a panel hide queued behind this
+          // show is invisible to the intent alone.
+          const wanted =
+            (visibleIntents.get(id)?.value ?? true) && templateFor(id)?.visible === true
           if (!shown || !wanted) {
             if (!shown)
               recordFailure(id, 'visible', refused, () => templateFor(id)?.visible === true)
@@ -1174,8 +1210,15 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
             rerender()
             return
           }
-          // Only our own menu, and only if it is still ours to close.
-          if (openFor === id) closeOverlayMenu()
+          // The user has opened another template's menu since. Starting a placement behind it
+          // leaves that dialog as the active surface — and `move.ts` treats dialog controls as page
+          // controls, so the placement's own Enter and Escape would be ignored.
+          if (openFor !== null && openFor !== id) {
+            recordFailure(id, 'move', (name) => `“${name}” is ready to move — press Move again.`)
+            rerender()
+            return
+          }
+          closeOverlayMenu()
           beginMove(id, () => {})
           buttons.get(id)?.focus()
           rerender()
@@ -1256,6 +1299,11 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // Nothing that mutates appearance is offered while the record is being deleted; the store would
   // refuse it anyway and leave a meaningless banner beside "Deleting…".
   const locked = isDoomed(id)
+  commitSelection = (group, option): void => {
+    if (group === 'Shape')
+      edit(['shape'], 'shape', () => ({ shape: option as Appearance['shape'] }))
+    else edit(['anchor'], 'anchor', () => ({ anchor: option as Appearance['anchor'] }))
+  }
   const shapes = radioGroup(
     id,
     'Shape',
@@ -1418,7 +1466,10 @@ const closeOverlayMenu = (): void => {
   releaseAllHolds()
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
   // sends that release somewhere else.
-  if (openFor !== null) flushDrafts(openFor)
+  if (openFor !== null) {
+    flushDrafts(openFor)
+    flushSelections(openFor)
+  }
   // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
   // gear puts a live Delete button back up that the user thought they had dismissed — but not once
   // the delete is actually running, where that box is the only progress the user has.
@@ -1448,7 +1499,10 @@ const rememberFocus = (): void => {
   // remembered by template instead.
   for (const [id, button] of buttons) if (button === active) focusedGear = id
   releaseAllHolds()
-  if (openFor !== null) flushDrafts(openFor)
+  if (openFor !== null) {
+    flushDrafts(openFor)
+    flushSelections(openFor)
+  }
 }
 
 /** Take the controls off the page without forgetting anything about the templates. */
@@ -1586,8 +1640,18 @@ const renderControls = (
     // whatever draft the replacement control has by then.
     for (const drop of captureFallbacks) drop()
   }
-  if (heldByKey !== null && !inOurDocument(heldByKey)) heldByKey = null
+  const keyboardGone = heldByKey !== null && !inOurDocument(heldByKey)
+  if (keyboardGone) heldByKey = null
+  // Only when a gesture's own control has gone. Flushing on every frame would commit an arrow-key
+  // selection the instant it was made, which is the opposite of waiting for the release.
   if (openFor !== null && menuNode !== null && !heldWithin(menuNode)) flushDrafts(openFor)
+  if (openFor !== null && keyboardGone) flushSelections(openFor)
+  // A pending Anchor choice outlives its group when a reconciliation switches the shape to `full`:
+  // keyup has nothing to reach, and the entry would be resurrected the next time a shape brings the
+  // group back.
+  for (const [id, groups] of selections) {
+    if (groups.has('Anchor') && appearanceFor(id).shape === 'full') clearSelection(id, 'Anchor')
+  }
   // Retired first, because `cornerOnScreen` keeps a hidden overlay's gear alive for an unresolved
   // failure — deciding that before expiring them leaves a gear behind for a message that is gone.
   for (const template of templates) {
@@ -1696,7 +1760,10 @@ const renderControls = (
     const previousOwner = menuNode?.dataset.wtsTemplate
     if (heldWithin(menuNode) && (stale || previousOwner !== template.id)) {
       releaseAllHolds()
-      if (previousOwner !== undefined) flushDrafts(previousOwner)
+      if (previousOwner !== undefined) {
+        flushDrafts(previousOwner)
+        flushSelections(previousOwner)
+      }
     }
     const dragging =
       !stale &&

@@ -2623,6 +2623,11 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
   })
 
   it('shows an overlay it is about to let you place', async () => {
+    // A show that succeeds publishes, which is what the store does and what Move now waits for.
+    harness.setLocalVisible.mockImplementation(async (_id, visible) => {
+      harness.localTemplates.mockReturnValue([template({ visible })])
+      return true
+    })
     harness.localTemplates.mockReturnValue([template({ visible: false })])
     rerender()
     harness.localTemplates.mockReturnValue([template()])
@@ -2718,8 +2723,9 @@ describe('an action waits for the state it depends on', () => {
     const shown = new Promise<void>((resolve) => {
       release = resolve
     })
-    harness.setLocalVisible.mockImplementation(async () => {
+    harness.setLocalVisible.mockImplementation(async (_id, visible) => {
       await shown
+      harness.localTemplates.mockReturnValue([template({ visible })])
       return true
     })
     harness.localTemplates.mockReturnValue([template({ visible: false })])
@@ -2905,9 +2911,12 @@ describe('showing an overlay in order to move it', () => {
   it('says so when the placement slot was taken while it was showing', async () => {
     let release = (): void => {}
     harness.setLocalVisible.mockImplementation(
-      async () =>
+      async (_id, visible) =>
         await new Promise<boolean>((resolve) => {
-          release = () => resolve(true)
+          release = () => {
+            harness.localTemplates.mockReturnValue([template({ visible })])
+            resolve(true)
+          }
         }),
     )
     await hiddenWithMenu()
@@ -3001,5 +3010,146 @@ describe('a control the host pulls out of the menu stops being live', () => {
 
     // Still connected and still carrying our handler: able to delete this template with no menu.
     expect(extracted.isConnected).toBe(false)
+  })
+})
+
+describe('a selection is not saved by surviving', () => {
+  it('commits an arrow choice the menu was closed on', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').focus()
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    // Escape before the key comes up: removing a focused element fires no blur.
+    byKey('Shape:square').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    )
+    rerender()
+    await settle()
+
+    expect(appearanceWritten(0).shape).toBe('square')
+  })
+
+  it('lets a later click beat a held arrow', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').focus()
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    byText(menu(), 'Dot').click()
+    await settle()
+    // The arrow comes up afterwards; it must not overwrite the explicit choice.
+    byKey('Shape:circle').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).shape).toBe('circle')
+  })
+
+  it('does not navigate a group that is locked', () => {
+    harness.isDeletingLocal.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+
+    // It cannot save the change, so it must not claim it either.
+    expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
+    expect(byKey('Shape:square').getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('forgets an anchor choice whose group has gone', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Anchor:tl').focus()
+    byKey('Anchor:tl').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    // Another surface sets Full, which takes the Anchor group away before keyup.
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+
+    // Resurrecting it here would apply a choice the user never completed; the stored anchor wins.
+    const checked = [...menu().querySelectorAll('[role="radio"][aria-checked="true"]')].map(
+      (el) => (el as HTMLElement).dataset.wtsControl,
+    )
+    expect(checked).toContain('Anchor:c')
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+  })
+
+  it('keeps a refusal on screen while the retry is still in flight', async () => {
+    harness.setLocalVisible.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    expect(errorText()).toContain('Could not change visibility')
+
+    harness.setLocalVisible.mockImplementation(() => new Promise<boolean>(() => {}))
+    byKey('hide').click()
+    rerender()
+
+    // What the user knows so far is still that the last attempt was refused.
+    expect(errorText()).toContain('Could not change visibility')
+  })
+})
+
+describe('a Move that lands late does not barge in', () => {
+  it('does not start placing behind another template’s menu', async () => {
+    let release = (): void => {}
+    harness.setLocalVisible.mockImplementation(
+      async (_id, visible) =>
+        await new Promise<boolean>((resolve) => {
+          release = () => {
+            harness.localTemplates.mockReturnValue([
+              template({ visible }),
+              template({ id: 'b', name: 'beta.png' }),
+            ])
+            resolve(true)
+          }
+        }),
+    )
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    harness.localTemplates.mockReturnValue([
+      template({ visible: false }),
+      template({ id: 'b', name: 'beta.png' }),
+    ])
+    rerender()
+    byKey('move').click()
+
+    gear('b').click()
+    rerender()
+    release()
+    await settle()
+
+    // `move.ts` treats dialog controls as page controls, so a placement behind B's open menu would
+    // have its own Enter and Escape ignored.
+    expect(harness.beginMove).not.toHaveBeenCalled()
+    expect(menu().dataset.wtsTemplate).toBe('b')
   })
 })
