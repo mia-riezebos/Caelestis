@@ -79,6 +79,10 @@ export const repaint = (): void => {
 const draw = (frame: TileFrame): void => {
   lastFrame = frame
   const { canvas: mapCanvas, quads } = frame
+  // Before the canvas work, and deliberately not a painter: these are DOM controls, and registering
+  // them as one made them conditional on acquiring a 2D context. A context failure would otherwise
+  // strand every button and menu — never mounted, or never repositioned or swept again.
+  renderOverlayControls(repaint, mapCanvas)
   const canvas = overlayCanvas()
   const mapParent = mapCanvas.parentElement
   if (mapParent !== null && canvas.parentElement !== mapParent) mapParent.appendChild(canvas)
@@ -281,11 +285,6 @@ const main = (): void => {
   void loadAccount()
   onPaint(paintTemplates)
   onPaint(paintMark)
-  // The buttons ride with the overlay, so they are repositioned on the same frame the map moved.
-  // Last, because they are DOM rather than canvas: nothing painted after them depends on the order,
-  // and inserting them earlier would shift the canvas painters other code indexes by position.
-  // Handed the frame's own canvas rather than letting it guess wplace's class name.
-  onPaint((_context, frame) => renderOverlayControls(repaint, frame.canvas))
   onTileFrame(draw)
   // A template appearing or moving has to repaint even if MapLibre is idle.
   onLocalChange(repaint)

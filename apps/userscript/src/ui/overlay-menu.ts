@@ -129,8 +129,8 @@ let sequence = 0
 const failures = new Map<string, Map<FailureKey, (name: string) => string>>()
 /** Which failures a screen reader has already been told about, so a rebuild does not repeat them. */
 const announced = new Map<string, Set<FailureKey>>()
-/** The template revision each refusal was about, so a later success anywhere retires it. */
-const failedAt = new Map<string, number>()
+/** For each refusal, the test that says its subject has since become what was asked for. */
+const wants = new Map<string, () => boolean>()
 /** Templates whose delete question is up, and those whose delete is actually running. */
 const confirming = new Set<string>()
 const deleting = new Set<string>()
@@ -167,8 +167,33 @@ const heldValues = new Map<string, string>()
  */
 const isDoomed = (id: string): boolean => deleting.has(id) || isDeletingLocal(id)
 
+/**
+ * The frame's own view of the store.
+ *
+ * `localTemplates()` allocates and sorts the whole store on every call, and the render loop reaches
+ * it through `visibleFor` → `templateFor` for every template it walks — up to 64 full sorts a frame,
+ * every one of them of the array it was already handed.
+ */
+let frameTemplates: Map<string, PlacedTemplate> | null = null
+
+/**
+ * Only for the duration of one render.
+ *
+ * A write dispatched later composes against `storedAppearance`, and it must see the store as it is
+ * *then* — holding a frame's snapshot past the frame would hand it the values from whenever the map
+ * last moved.
+ */
+const withFrameTemplates = <T>(templates: readonly PlacedTemplate[], run: () => T): T => {
+  frameTemplates = new Map(templates.map((template) => [template.id, template]))
+  try {
+    return run()
+  } finally {
+    frameTemplates = null
+  }
+}
+
 const templateFor = (id: string): PlacedTemplate | undefined =>
-  localTemplates().find((candidate) => candidate.id === id)
+  frameTemplates?.get(id) ?? localTemplates().find((candidate) => candidate.id === id)
 
 /** The template's name as it is *now* — a name captured at build time goes stale on a rename. */
 const nameFor = (id: string): string => templateFor(id)?.name ?? 'this template'
@@ -232,19 +257,27 @@ const recordFailure = (id: string, key: FailureKey, message: (name: string) => s
   const forTemplate = failures.get(id) ?? new Map<FailureKey, (name: string) => string>()
   forTemplate.set(key, message)
   failures.set(id, forTemplate)
-  // The revision this refusal is *about*. Any surface committing anything for this template moves
-  // it on, and a message about a state that no longer exists is a lie — the tree's own visibility
-  // checkbox and another tab's reconciliation both write here without going through this module.
-  failedAt.set(`${id}|${key}`, templateFor(id)?.revision ?? -1)
 }
 
-/** Retire failures whose subject has since changed, whoever changed it. */
+/**
+ * Retire failures whose subject has reached what was asked for, whoever got it there.
+ *
+ * Not "the revision moved": a refused shape followed by a successful opacity change bumps the
+ * revision and says nothing about the shape, and a pending image never persists so its revision
+ * never moves at all. What retires a refusal is the thing it was about actually being true now —
+ * the tree's checkbox and another tab's reconciliation both write here without passing through us.
+ */
 const expireFailures = (id: string): void => {
   const forTemplate = failures.get(id)
   if (forTemplate === undefined) return
-  const revision = templateFor(id)?.revision ?? -1
-  for (const key of [...forTemplate.keys()]) {
-    if (key !== 'move' && failedAt.get(`${id}|${key}`) !== revision) clearFailure(id, key)
+  for (const [key, wanted] of [...wants]) {
+    if (!key.startsWith(`${id}|`)) continue
+    const failureKey = key.slice(id.length + 1) as FailureKey
+    if (!forTemplate.has(failureKey)) {
+      wants.delete(key)
+      continue
+    }
+    if (wanted()) clearFailure(id, failureKey)
   }
 }
 
@@ -255,12 +288,13 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
   for (const key of keys) {
     forTemplate.delete(key)
     announced.get(id)?.delete(key)
-    failedAt.delete(`${id}|${key}`)
+    wants.delete(`${id}|${key}`)
   }
   if (forTemplate.size === 0) failures.delete(id)
 }
 
 const forget = (id: string): void => {
+  for (const key of [...wants.keys()]) if (key.startsWith(`${id}|`)) wants.delete(key)
   if (focusedGear === id) focusedGear = null
   heldValues.delete(`${id}:size`)
   heldValues.delete(`${id}:opacity`)
@@ -316,13 +350,19 @@ const settle = (
   refused: (name: string, key: FailureKey) => string,
   release: () => void,
   rerender: () => void,
+  /** Has the thing this write asked for become true, by any route? */
+  satisfied: () => boolean,
+  serialise = true,
 ): void => {
   clearFailure(id, ...keys)
   rerender()
   const fail = (): void => {
-    for (const key of keys) recordFailure(id, key, (name) => refused(name, key))
+    for (const key of keys) {
+      recordFailure(id, key, (name) => refused(name, key))
+      wants.set(`${id}|${key}`, satisfied)
+    }
   }
-  void enqueue(id, run)
+  void (serialise ? enqueue(id, run) : run())
     .then(
       (saved) => {
         if (saved) clearFailure(id, ...keys)
@@ -346,13 +386,15 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
   settle(
     id,
     ['visible'],
-    // Not through `enqueue`: `writeInOrder` already serialises by id, and queueing behind our own
-    // appearance writes means a tree-row toggle made *after* this click can be applied *before* it
-    // and then overwritten — the more recent action losing.
     async () => await setLocalVisible(id, next),
     (name) => `Could not change visibility for “${name}”.`,
     () => releaseIntent(visibleIntents, id, seq),
     rerender,
+    () => templateFor(id)?.visible === next,
+    // Not through `enqueue`: `writeInOrder` already serialises by id, and queueing behind our own
+    // appearance writes means a tree-row toggle made *after* this click can be applied *before* it
+    // and then overwritten — the more recent action losing.
+    false,
   )
 }
 
@@ -409,7 +451,8 @@ const slider = (
   input.max = '1'
   input.step = 'any'
   input.value = String(value)
-  input.disabled = locked
+  input.setAttribute('aria-disabled', String(locked))
+  input.readOnly = locked
   input.style.flex = '1'
   const readout = document.createElement('span')
   readout.className = 'text-xs opacity-50'
@@ -433,7 +476,21 @@ const slider = (
     input.dataset.wtsHeld = 'true'
   }
   input.addEventListener('pointerdown', hold)
-  input.addEventListener('keydown', () => {
+  const MOVES_THE_THUMB = new Set([
+    'ArrowLeft',
+    'ArrowRight',
+    'ArrowUp',
+    'ArrowDown',
+    'Home',
+    'End',
+    'PageUp',
+    'PageDown',
+  ])
+  input.addEventListener('keydown', (event) => {
+    // Tab does not move the thumb, and its `keyup` lands on whatever it moved focus *to* — so
+    // treating every key as held leaves this closure stuck waiting for a keyup that never comes,
+    // and the next pointer commit sits in `deferred` for ever.
+    if (!MOVES_THE_THUMB.has(event.key)) return
     keyHeld = true
     hold()
   })
@@ -449,7 +506,11 @@ const slider = (
     deferred = null
     onCommit(value)
   })
-  for (const ending of ['pointerup', 'pointercancel', 'blur']) {
+  input.addEventListener('blur', () => {
+    keyHeld = false
+    release()
+  })
+  for (const ending of ['pointerup', 'pointercancel']) {
     input.addEventListener(ending, release)
   }
   // The readout follows the thumb; the write waits for the release. Every `input` event used to be
@@ -457,6 +518,7 @@ const slider = (
   // drag meant dozens of serialised transactions each throwing away every stamped tile and
   // re-stamping the visible ones at scale 3.
   input.addEventListener('input', () => {
+    input.dataset.wtsDirty = 'true'
     readout.textContent = `${Math.round(Number(input.value) * 100)}%`
   })
   input.addEventListener('change', () => {
@@ -467,6 +529,7 @@ const slider = (
       deferred = chosen
       return
     }
+    delete input.dataset.wtsDirty
     release()
     onCommit(chosen)
   })
@@ -516,7 +579,7 @@ const radioGroup = <T extends string>(
     cell.setAttribute('aria-label', option.label)
     cell.setAttribute('role', 'radio')
     cell.setAttribute('aria-checked', String(chosen))
-    cell.disabled = locked
+    cell.setAttribute('aria-disabled', String(locked))
     // One tab stop for the group, as the role promises; arrows move within it.
     cell.tabIndex = chosen ? 0 : -1
     cell.addEventListener('click', () => onSelect(option.id))
@@ -705,7 +768,12 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
    * reconciliation landing before it dispatches gets overwritten wholesale — the one field
    * compose-at-dispatch could not protect, because there the patch *was* the field.
    */
-  const edit = (properties: readonly string[], label: string, patch: Updater): void => {
+  const edit = (
+    properties: readonly string[],
+    label: string,
+    patch: Updater,
+    satisfied?: () => boolean,
+  ): void => {
     if (isDoomed(id)) return
     const seq = intendAppearance(id, properties, patch)
     settle(
@@ -721,6 +789,17 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       (name) => `Could not change ${label} for “${name}”.`,
       () => releaseAppearance(id, properties, seq),
       rerender,
+      satisfied ??
+        (() => {
+          // Whatever this patch asked for, is it what the store now holds? Compared over the
+          // properties it actually touched, so an unrelated success cannot retire it.
+          const stored = storedAppearance(id)
+          const asked = { ...stored, ...patch(stored) }
+          return properties.every((property) => {
+            const field = property.split(':')[0] as keyof Appearance
+            return JSON.stringify(stored[field]) === JSON.stringify(asked[field])
+          })
+        }),
     )
   }
 
@@ -744,7 +823,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // overlay, pressed", which reads as though showing were already on.
   hide.setAttribute('aria-label', hide.title)
   hide.appendChild(icon('image', 'size-4'))
-  hide.disabled = isDoomed(id)
+  hide.setAttribute('aria-disabled', String(isDoomed(id)))
   hide.addEventListener('click', () => {
     if (isDoomed(id)) return
     const next = !visibleFor(id)
@@ -760,7 +839,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   move.appendChild(icon('move', 'size-4'))
   // Placing a template that is being deleted leaves the placement bar bound to a record that is
   // about to stop existing.
-  move.disabled = isDoomed(id)
+  move.setAttribute('aria-disabled', String(isDoomed(id)))
   move.addEventListener('click', () => {
     // Re-checked, not trusted from build time: a menu can outlive the state it was built from —
     // the rebuild is skipped under a held slider, and a delete from another surface changes nothing
@@ -803,7 +882,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   remove.appendChild(icon('trash', 'size-4'))
   // Disabling both the question's buttons is not enough while this one can raise a fresh question,
   // with a fresh enabled Cancel, over a delete that is already running.
-  remove.disabled = isDoomed(id)
+  // `aria-disabled`, never `disabled`. Nothing notifies us when the store's guard clears — a failed
+  // panel delete just drops it — so a native lock taken on a stale read stays dead until the map
+  // next moves. The handlers re-check, which is what actually makes these inert.
+  remove.setAttribute('aria-disabled', String(isDoomed(id)))
   remove.addEventListener('click', () => {
     if (isDoomed(id)) return
     // Only when this actually opens the question. Setting it again changes no signature, so no
@@ -834,7 +916,9 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
 
   // Directly under the header, next to the buttons that raised them. Appending to the end of a menu
   // that scrolls past 70vh can put the question off-screen from the answer.
-  if (confirming.has(id)) menu.appendChild(deleteConfirm(id, rerender))
+  // Also when the delete came from somewhere else: locking every control with no explanation is
+  // worse than the question, and this box is the only progress there is.
+  if (confirming.has(id) || isDoomed(id)) menu.appendChild(deleteConfirm(id, rerender))
   for (const banner of failureBanners(id)) menu.appendChild(banner)
 
   menu.appendChild(section('Shape'))
@@ -916,15 +1000,23 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     swatch.title = `${colour.name} · ${colour.kind}`
     swatch.setAttribute('aria-label', `${colour.name}, ${colour.kind}`)
     swatch.setAttribute('aria-pressed', String(on))
-    swatch.disabled = locked
+    swatch.setAttribute('aria-disabled', String(locked))
     swatch.addEventListener('click', () => {
       // The toggle, not the resolved list: applied to whatever the base turns out to be at dispatch.
-      edit([`hiddenColours:${colour.index}`], `the ${colour.name} filter`, (base) => {
-        const next = new Set(base.hiddenColours)
-        if (next.has(colour.index)) next.delete(colour.index)
-        else next.add(colour.index)
-        return { hiddenColours: [...next] }
-      })
+      // What this click asks for, decided now: the generic "does the store match the patch" test
+      // cannot answer it, because a toggle applied to the store always differs from it.
+      const wantHidden = !appearanceFor(id).hiddenColours.includes(colour.index)
+      edit(
+        [`hiddenColours:${colour.index}`],
+        `the ${colour.name} filter`,
+        (base) => {
+          const next = new Set(base.hiddenColours)
+          if (next.has(colour.index)) next.delete(colour.index)
+          else next.add(colour.index)
+          return { hiddenColours: [...next] }
+        },
+        () => storedAppearance(id).hiddenColours.includes(colour.index) === wantHidden,
+      )
     })
     grid.appendChild(swatch)
   }
@@ -945,7 +1037,7 @@ const closeOverlayMenu = (): void => {
   // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
   // gear puts a live Delete button back up that the user thought they had dismissed — but not once
   // the delete is actually running, where that box is the only progress the user has.
-  if (openFor !== null && !deleting.has(openFor)) confirming.delete(openFor)
+  if (openFor !== null && !isDoomed(openFor)) confirming.delete(openFor)
   openFor = null
   focusRequest = null
   menuNode?.remove()
@@ -1021,7 +1113,12 @@ const refreshSliders = (menu: HTMLElement, appearance: Appearance): void => {
     ['opacity', appearance.opacity],
   ] as const) {
     const input = menu.querySelector(`input[data-wts-control="${key}"]`)
-    if (!(input instanceof HTMLInputElement) || input.dataset.wtsHeld === 'true') continue
+    // `dirty` outlives the gesture, which `held` does not. Chromium dispatches a range's `change`
+    // from its stop-dragging work *after* pointerup handlers, so a repaint triggered by the release
+    // would otherwise restore the stored value into this input and the change handler would then
+    // read that back — committing the value the user had just dragged away from.
+    if (!(input instanceof HTMLInputElement)) continue
+    if (input.dataset.wtsHeld === 'true' || input.dataset.wtsDirty === 'true') continue
     if (Number(input.value) === value) continue
     input.value = String(value)
     const readout = input.nextElementSibling
@@ -1092,6 +1189,12 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  * the overlay perfectly well.
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
+  withFrameTemplates(localTemplates(), () => {
+    renderControls(rerender, mapCanvas)
+  })
+}
+
+const renderControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   // The swatches are styled by the shared stylesheet, which only `installPanel` used to install —
   // and these controls are driven by the map frame, an entirely independent trigger. Without it
   // `.wts-swatch` loses its `aspect-ratio` and the colour toggles collapse to nothing.
@@ -1183,11 +1286,16 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
     // A drag in progress outranks a rebuild. The range element would be replaced before it ever
     // fired `change`, so the value the user was setting is simply lost — and a refusal landing
     // elsewhere, or another tab renaming the template, is enough to trigger it.
-    const dragging = menuNode?.querySelector('input[data-wts-held="true"]') != null
-    if (
-      !dragging &&
-      (menuNode === null || !menuNode.isConnected || menuNode.dataset.wtsSignature !== signature)
-    ) {
+    // Only a drag *in this template's own menu* outranks a rebuild, and only while that menu is
+    // still on the page. Holding A's slider with one finger and tapping B's gear with another
+    // otherwise keeps A's menu — and A's handlers — parked beside B; and a menu the host has
+    // removed could never be rebuilt at all while its slider stayed held.
+    const stale = menuNode === null || !menuNode.isConnected
+    const dragging =
+      !stale &&
+      menuNode?.dataset.wtsTemplate === template.id &&
+      menuNode.querySelector('input[data-wts-held="true"]') !== null
+    if (!dragging && (stale || menuNode?.dataset.wtsSignature !== signature)) {
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
       // re-parented under a different template.
