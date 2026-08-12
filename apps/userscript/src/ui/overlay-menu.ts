@@ -86,6 +86,14 @@ let menuBox: { width: number; height: number } = { width: 0, height: 0 }
 let focusRequest: string | null = null
 /** A gear to focus once the map comes back and it exists again. */
 let focusedGear: string | null = null
+/**
+ * The slider currently under a gesture, held by reference.
+ *
+ * Not an attribute lookup: the drag guard blocks rebuilds, so a page-planted
+ * `<input data-wts-held="true">` inside our menu would freeze it — the delete question, the lock
+ * state and every banner would stop tracking state while the menu looked perfectly correct.
+ */
+let heldSlider: HTMLInputElement | null = null
 
 /**
  * What the user has asked for but IndexedDB has not acknowledged yet.
@@ -131,6 +139,8 @@ const failures = new Map<string, Map<FailureKey, (name: string) => string>>()
 const announced = new Map<string, Set<FailureKey>>()
 /** For each refusal, the test that says its subject has since become what was asked for. */
 const wants = new Map<string, () => boolean>()
+/** How many times each refusal has been raised, so a repeat is a render input of its own. */
+const attempts = new Map<string, number>()
 /** Templates whose delete question is up, and those whose delete is actually running. */
 const confirming = new Set<string>()
 const deleting = new Set<string>()
@@ -183,10 +193,13 @@ let frameTemplates: Map<string, PlacedTemplate> | null = null
  * *then* — holding a frame's snapshot past the frame would hand it the values from whenever the map
  * last moved.
  */
-const withFrameTemplates = <T>(templates: readonly PlacedTemplate[], run: () => T): T => {
+const withFrameTemplates = <T>(
+  templates: readonly PlacedTemplate[],
+  run: (templates: readonly PlacedTemplate[]) => T,
+): T => {
   frameTemplates = new Map(templates.map((template) => [template.id, template]))
   try {
-    return run()
+    return run(templates)
   } finally {
     frameTemplates = null
   }
@@ -255,6 +268,10 @@ const releaseAppearance = (id: string, properties: readonly string[], seq: numbe
 
 const recordFailure = (id: string, key: FailureKey, message: (name: string) => string): void => {
   const forTemplate = failures.get(id) ?? new Map<FailureKey, (name: string) => string>()
+  // A repeat of the same refusal produces identical text, so without this the signature does not
+  // move, no rebuild happens, and there is no new node for a live region to read — while the
+  // `announced` reset quietly arms the *next* unrelated rebuild to read the stale one out.
+  attempts.set(`${id}|${key}`, (attempts.get(`${id}|${key}`) ?? 0) + 1)
   forTemplate.set(key, message)
   failures.set(id, forTemplate)
 }
@@ -289,12 +306,14 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
     forTemplate.delete(key)
     announced.get(id)?.delete(key)
     wants.delete(`${id}|${key}`)
+    attempts.delete(`${id}|${key}`)
   }
   if (forTemplate.size === 0) failures.delete(id)
 }
 
 const forget = (id: string): void => {
   for (const key of [...wants.keys()]) if (key.startsWith(`${id}|`)) wants.delete(key)
+  for (const key of [...attempts.keys()]) if (key.startsWith(`${id}|`)) attempts.delete(key)
   if (focusedGear === id) focusedGear = null
   heldValues.delete(`${id}:size`)
   heldValues.delete(`${id}:opacity`)
@@ -418,7 +437,9 @@ const menuSignature = (template: PlacedTemplate): string => {
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
     confirming.has(id),
     isDoomed(id),
-    [...(failures.get(id) ?? [])].map(([key, text]) => `${key}=${text(template.name)}`).join(','),
+    [...(failures.get(id) ?? [])]
+      .map(([key, text]) => `${key}#${attempts.get(`${id}|${key}`) ?? 0}=${text(template.name)}`)
+      .join(','),
   ].join('|')
 }
 
@@ -452,7 +473,13 @@ const slider = (
   input.step = 'any'
   input.value = String(value)
   input.setAttribute('aria-disabled', String(locked))
-  input.readOnly = locked
+  // `readonly` does not apply to `type="range"` in any browser, so a locked slider still dragged,
+  // still reported a new percentage, and still changed nothing — silently. Refuse the gesture.
+  if (locked) {
+    for (const gesture of ['pointerdown', 'keydown']) {
+      input.addEventListener(gesture, (event) => event.preventDefault())
+    }
+  }
   input.style.flex = '1'
   const readout = document.createElement('span')
   readout.className = 'text-xs opacity-50'
@@ -465,15 +492,15 @@ const slider = (
   let keyHeld = false
   let deferred: number | null = null
   const release = (): void => {
-    if (input.dataset.wtsHeld === undefined) return
-    delete input.dataset.wtsHeld
+    if (heldSlider !== input) return
+    heldSlider = null
     // A held slider blocks rebuilds, so anything that happened during the hold — a refusal landing,
     // another tab's change — is sitting in state undrawn. Releasing has to let it through, or on a
     // static map it waits for an unrelated frame that may never come.
     rerender()
   }
   const hold = (): void => {
-    input.dataset.wtsHeld = 'true'
+    heldSlider = input
   }
   input.addEventListener('pointerdown', hold)
   const MOVES_THE_THUMB = new Set([
@@ -498,16 +525,22 @@ const slider = (
   // write per OS repeat — and `size` is in the stamped-tile cache key, so each one re-stamps the
   // viewport at scale 3. The pointer path is already protected by waiting for the release; the
   // keyboard path waits for the key to come back up.
-  input.addEventListener('keyup', () => {
+  input.addEventListener('keyup', (event) => {
+    // Filtered the same way `keydown` is. An unfiltered keyup lets Tab, Enter or Escape commit a
+    // value parked by an arrow-key gesture the user walked away from minutes ago.
+    if (!MOVES_THE_THUMB.has(event.key)) return
     keyHeld = false
     release()
     if (deferred === null) return
     const value = deferred
     deferred = null
+    delete input.dataset.wtsDirty
     onCommit(value)
   })
   input.addEventListener('blur', () => {
     keyHeld = false
+    // Dropped, not committed: a value parked by a gesture the user abandoned is not an instruction.
+    deferred = null
     release()
   })
   for (const ending of ['pointerup', 'pointercancel']) {
@@ -750,7 +783,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     if (event.key !== 'Escape') return
     event.preventDefault()
     // Innermost dialog first: with the question up, Escape answers *it*, not the menu around it.
-    if (confirming.has(id) && !deleting.has(id)) {
+    if (confirming.has(id) && !isDoomed(id)) {
       confirming.delete(id)
       focusRequest = 'delete'
       rerender()
@@ -1010,6 +1043,11 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
         [`hiddenColours:${colour.index}`],
         `the ${colour.name} filter`,
         (base) => {
+          // Idempotent on purpose. `setAppearance` publishes and repaints from inside its own
+          // transaction, before the promise resolves and the intent is released — so for one render
+          // the store already holds the toggle *and* the pending updater is still applied, flipping
+          // the swatch back to its old state and rebuilding the whole menu around it.
+          if (base.hiddenColours.includes(colour.index) === wantHidden) return {}
           const next = new Set(base.hiddenColours)
           if (next.has(colour.index)) next.delete(colour.index)
           else next.add(colour.index)
@@ -1025,6 +1063,9 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
 }
 
 const openOverlayMenu = (id: string, rerender: () => void): void => {
+  // Walking away from a destructive question retracts it, whichever way you walk — ✕ and Escape go
+  // through `closeOverlayMenu`, and opening another template's gear does not.
+  if (openFor !== null && openFor !== id && !isDoomed(openFor)) confirming.delete(openFor)
   openFor = id
   // Hide is disabled while a delete runs, and a disabled control cannot take focus — so reopening a
   // condemned template's menu would leave the keyboard outside the dialog it just opened.
@@ -1059,13 +1100,12 @@ const stashInteraction = (): void => {
   // remembered by template instead.
   for (const [id, button] of buttons) if (button === active) focusedGear = id
   // A half-finished drag lives only in the DOM node about to be removed.
-  if (menuNode !== null && openFor !== null) {
-    for (const input of menuNode.querySelectorAll('input[data-wts-held="true"]')) {
-      if (!(input instanceof HTMLInputElement)) continue
-      const key = input.dataset[CONTROL]
-      if (key !== undefined) heldValues.set(`${openFor}:${key}`, input.value)
-    }
+  const owner = menuNode?.dataset.wtsTemplate
+  if (heldSlider !== null && owner !== undefined && menuNode?.contains(heldSlider) === true) {
+    const key = heldSlider.dataset[CONTROL]
+    if (key !== undefined) heldValues.set(`${owner}:${key}`, heldSlider.value)
   }
+  heldSlider = null
 }
 
 /** Take the controls off the page without forgetting anything about the templates. */
@@ -1118,8 +1158,15 @@ const refreshSliders = (menu: HTMLElement, appearance: Appearance): void => {
     // would otherwise restore the stored value into this input and the change handler would then
     // read that back — committing the value the user had just dragged away from.
     if (!(input instanceof HTMLInputElement)) continue
-    if (input.dataset.wtsHeld === 'true' || input.dataset.wtsDirty === 'true') continue
-    if (Number(input.value) === value) continue
+    if (Number(input.value) === value) {
+      // Nothing pending: whatever gesture set the marker ended where the store already is. Two
+      // ordinary gestures never produce a `change` — an arrow press while the key is still held,
+      // and a drag that returns to its starting value — so without this the marker sticks and the
+      // slider stops tracking the store for the life of the menu.
+      delete input.dataset.wtsDirty
+      continue
+    }
+    if (heldSlider === input || input.dataset.wtsDirty === 'true') continue
     input.value = String(value)
     const readout = input.nextElementSibling
     if (readout !== null) readout.textContent = `${Math.round(value * 100)}%`
@@ -1189,19 +1236,22 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  * the overlay perfectly well.
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
-  withFrameTemplates(localTemplates(), () => {
-    renderControls(rerender, mapCanvas)
+  withFrameTemplates(localTemplates(), (templates) => {
+    renderControls(rerender, mapCanvas, templates)
   })
 }
 
-const renderControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
+const renderControls = (
+  rerender: () => void,
+  mapCanvas: HTMLCanvasElement,
+  templates: readonly PlacedTemplate[],
+): void => {
   // The swatches are styled by the shared stylesheet, which only `installPanel` used to install —
   // and these controls are driven by the map frame, an entirely independent trigger. Without it
   // `.wts-swatch` loses its `aspect-ratio` and the colour toggles collapse to nothing.
   // `installStyles` holds its own node, so this is a null check rather than a document lookup, and
   // it re-installs if the page removes ours.
   installStyles()
-  const templates = localTemplates()
   const live = new Set(templates.map((template) => template.id))
   // Forget what has genuinely gone even on a frame with no map: returning early leaves a deleted
   // template's delete question and failures behind, ready to be handed to the next record that
@@ -1234,7 +1284,7 @@ const renderControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): voi
       // ordinary way to look at the map while its menu is open, so it must not cost the keyboard
       // its place or a drag its value — and a rebuild is still refused under a held slider.
       if (openFor === template.id && menuNode !== null) {
-        if (menuNode.querySelector('input[data-wts-held="true"]') !== null) continue
+        if (heldSlider !== null && menuNode.contains(heldSlider)) continue
         stashInteraction()
         menuNode.remove()
         menuNode = null
@@ -1268,7 +1318,11 @@ const renderControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): voi
       buttons.set(template.id, button)
       if (focusedGear === template.id) {
         focusedGear = null
-        button.focus()
+        // Only if the keyboard is still where it was abandoned. Panning to look at the map is the
+        // deliberate thing to do here, and the user may well have clicked into the panel since.
+        if (document.activeElement === null || document.activeElement === document.body) {
+          button.focus()
+        }
       }
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
@@ -1294,7 +1348,8 @@ const renderControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): voi
     const dragging =
       !stale &&
       menuNode?.dataset.wtsTemplate === template.id &&
-      menuNode.querySelector('input[data-wts-held="true"]') !== null
+      heldSlider !== null &&
+      menuNode.contains(heldSlider)
     if (!dragging && (stale || menuNode?.dataset.wtsSignature !== signature)) {
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
@@ -1344,6 +1399,9 @@ const renderControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): voi
       const input = menuNode.querySelector(`input[data-wts-control="${key}"]`)
       if (!(input instanceof HTMLInputElement)) continue
       input.value = stashed
+      // Marked pending: it is not in the store, and the pointer capture died with the old node, so
+      // no `change` is ever coming for it. Without this the next frame puts the stored value back.
+      input.dataset.wtsDirty = 'true'
       const readout = input.nextElementSibling
       if (readout !== null) readout.textContent = `${Math.round(Number(stashed) * 100)}%`
     }

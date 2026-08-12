@@ -82,7 +82,14 @@ const draw = (frame: TileFrame): void => {
   // Before the canvas work, and deliberately not a painter: these are DOM controls, and registering
   // them as one made them conditional on acquiring a 2D context. A context failure would otherwise
   // strand every button and menu — never mounted, or never repositioned or swept again.
-  renderOverlayControls(repaint, mapCanvas)
+  //
+  // Caught, because `paintFrame` used to do this for us: a throw here would otherwise take the whole
+  // frame with it — no canvas resize, no template pixels — and the page is not ours to trust.
+  try {
+    renderOverlayControls(repaint, mapCanvas)
+  } catch (error) {
+    warn('frame', 'overlay controls failed', String(error))
+  }
   const canvas = overlayCanvas()
   const mapParent = mapCanvas.parentElement
   if (mapParent !== null && canvas.parentElement !== mapParent) mapParent.appendChild(canvas)
