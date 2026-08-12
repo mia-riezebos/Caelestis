@@ -1,6 +1,6 @@
 import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
 import { log, warn } from '../debug.js'
-import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget } from '../main.js'
+import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget, repaint } from '../main.js'
 import { icon } from '../ui/icons.js'
 import {
   clearLocalPreview,
@@ -293,6 +293,10 @@ const finish = (): void => {
   listen(false)
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
+  // The placement ending is state other surfaces render from — the overlay menu retires its
+  // "finish the placement first" refusal off `isMoving()`. A move started from the panel only calls
+  // back into the panel, so without this the refusal outlives the placement on a static map.
+  repaint()
   finishing = false
   suppressMiddleAuxClickFor = null
   const finished = onFinish

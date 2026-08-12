@@ -5,6 +5,7 @@ const harness = vi.hoisted(() => ({
   cssPixelsPerCanvasPixel: vi.fn(() => ({ x: 1, y: 1 })),
   isDeletingLocal: vi.fn((_id: string) => false),
   clearLocalPreview: vi.fn(() => true),
+  repaint: vi.fn(),
   isMapInteractionTarget: vi.fn(() => true),
   localTemplates: vi.fn(),
   placeLocalTemplate: vi.fn(async () => true),
@@ -17,6 +18,7 @@ vi.mock('../main.js', () => ({
   canvasPixelAt: harness.canvasPixelAt,
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
   isMapInteractionTarget: harness.isMapInteractionTarget,
+  repaint: harness.repaint,
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
