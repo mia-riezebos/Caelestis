@@ -117,7 +117,9 @@ const CSS = `
 let installed: HTMLStyleElement | null = null
 
 export const installStyles = (): void => {
-  if (installed?.isConnected === true) return
+  // `isConnected` alone stays true for a node the host has adopted into an iframe or moved into a
+  // shadow root, where its rules no longer reach our body-mounted controls.
+  if (installed?.isConnected === true && installed.getRootNode() === document) return
   // The id is a convenience for anyone reading the DOM, never an identity check. An element the
   // page put there is not ours whatever it is called — an empty `<style id="wts-styles">` would
   // otherwise stand in for the real one and every swatch would collapse — and it is not ours to

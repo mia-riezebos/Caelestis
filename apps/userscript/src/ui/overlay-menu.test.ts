@@ -2524,3 +2524,72 @@ describe('a pointer gesture ends wherever the pointer does', () => {
     expect(appearanceWritten(0).opacity).toBe(0.5)
   })
 })
+
+describe('identity cannot be forged by data or by the host', () => {
+  it('tells apart two templates whose fields collide on a separator', () => {
+    // Both are legal: ids and names are arbitrary strings.
+    const first = { ...template({ id: 'a|b', name: 'c' }) }
+    const second = { ...template({ id: 'a', name: 'b|c' }) }
+    harness.localTemplates.mockReturnValue([first, second])
+    rerender()
+    gear('a|b').click()
+    rerender()
+    expect(menu().dataset.wtsTemplate).toBe('a|b')
+
+    gear('a').click()
+    rerender()
+
+    // A joined signature makes these one string, so the old menu is reused — with its Delete still
+    // pointed at the first template.
+    expect(menu().dataset.wtsTemplate).toBe('a')
+  })
+
+  it('replaces a gear the host has adopted into another document', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    const original = gear('a')
+
+    // Still `isConnected`, and no longer ours.
+    const elsewhere = document.implementation.createHTMLDocument('host')
+    elsewhere.body.appendChild(elsewhere.adoptNode(original))
+    rerender()
+
+    const replacement = document.getElementById('wts-overlay-button-a')
+    expect(replacement).not.toBeNull()
+    expect(replacement).not.toBe(original)
+  })
+
+  it('rebuilds a menu the host has adopted away', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const original = menu()
+
+    const elsewhere = document.implementation.createHTMLDocument('host')
+    elsewhere.body.appendChild(elsewhere.adoptNode(original))
+    rerender()
+
+    const rebuilt = document.getElementById('wts-overlay-menu')
+    expect(rebuilt).not.toBeNull()
+    expect(rebuilt).not.toBe(original)
+  })
+
+  it('ends a gesture whose control the host removed on its own', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.value = '0.72'
+    opacity.dispatchEvent(new Event('input'))
+    // Only the range is taken, so the menu is untouched and neither teardown path notices.
+    opacity.remove()
+    rerender()
+    await settle()
+
+    expect(appearanceWritten(0).opacity).toBe(0.72)
+  })
+})

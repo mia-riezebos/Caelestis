@@ -112,9 +112,6 @@ const heldPointers = new Map<number, HTMLInputElement>()
 /** The keyboard's gesture, which has no pointer id. */
 let heldByKey: HTMLInputElement | null = null
 
-const isHeld = (input: HTMLInputElement): boolean =>
-  heldByKey === input || [...heldPointers.values()].includes(input)
-
 const heldWithin = (root: HTMLElement | null): boolean =>
   root !== null &&
   (heldByKey !== null && root.contains(heldByKey)
@@ -306,6 +303,16 @@ const withFrameTemplates = <T>(
     frameTemplates = null
   }
 }
+
+/**
+ * Still in *our* document, not merely attached to something.
+ *
+ * `isConnected` stays true for a node the host has adopted into an iframe or moved into a shadow
+ * root, where it is neither reachable nor styled by us — so ownership has to ask which root it is
+ * in, not just whether it has one.
+ */
+const inOurDocument = (node: Node | null | undefined): boolean =>
+  node?.isConnected === true && node.getRootNode() === document
 
 const templateFor = (id: string): PlacedTemplate | undefined =>
   frameTemplates?.get(id) ?? localTemplates().find((candidate) => candidate.id === id)
@@ -534,7 +541,10 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
 const menuSignature = (template: PlacedTemplate): string => {
   const id = template.id
   const appearance = appearanceFor(id)
-  return [
+  // Serialised, not joined on a separator. Ids and names are arbitrary strings, so a `|` they can
+  // both contain lets two different templates produce one signature — `{id:"a|b", name:"c"}` and
+  // `{id:"a", name:"b|c"}` — and the menu is then reused for the wrong one, handlers and all.
+  return JSON.stringify([
     id,
     template.name,
     visibleFor(id),
@@ -554,7 +564,7 @@ const menuSignature = (template: PlacedTemplate): string => {
           `${key}#${refusals.get(id)?.get(key)?.attempts ?? 0}=${text(template.name)}`,
       )
       .join(','),
-  ].join('|')
+  ])
 }
 
 const deleteQuestion = (name: string): string => `Delete “${name}”? This cannot be undone.`
@@ -1372,6 +1382,13 @@ const renderControls = (
     return
   }
 
+  // A held control the host has taken out of our document will never deliver its release, and
+  // neither teardown path notices, because the menu around it is untouched.
+  for (const [pointerId, slider] of [...heldPointers]) {
+    if (!inOurDocument(slider)) heldPointers.delete(pointerId)
+  }
+  if (heldByKey !== null && !inOurDocument(heldByKey)) heldByKey = null
+  if (openFor !== null && menuNode !== null && !heldWithin(menuNode)) flushDrafts(openFor)
   // Retired first, because `cornerOnScreen` keeps a hidden overlay's gear alive for an unresolved
   // failure — deciding that before expiring them leaves a gear behind for a message that is gone.
   for (const template of templates) {
@@ -1386,7 +1403,7 @@ const renderControls = (
 
   for (const { template, corner } of placements) {
     let button = buttons.get(template.id)
-    if (button !== undefined && !button.isConnected) {
+    if (button !== undefined && !inOurDocument(button)) {
       buttons.delete(template.id)
       button = undefined
     }
@@ -1456,7 +1473,7 @@ const renderControls = (
     // still on the page. Holding A's slider with one finger and tapping B's gear with another
     // otherwise keeps A's menu — and A's handlers — parked beside B; and a menu the host has
     // removed could never be rebuilt at all while its slider stayed held.
-    const stale = menuNode === null || !menuNode.isConnected
+    const stale = menuNode === null || !inOurDocument(menuNode)
     // The value survives — it is in `drafts` — but the element that would have delivered the
     // gesture's release does not, so the gesture ends here. That covers the page tearing the menu
     // off, and a second touch opening another template's menu while the first is still being
