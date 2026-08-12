@@ -1257,22 +1257,6 @@ describe('interaction outranks a repaint', () => {
     expect((byKey('Shape:full') as HTMLButtonElement).tabIndex).toBe(-1)
   })
 
-  it('keeps the keyboard across a transient map detach', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('swatch:5').focus()
-
-    const host = mapCanvas.parentElement
-    mapCanvas.remove()
-    rerender()
-    host?.appendChild(mapCanvas)
-    rerender()
-
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('swatch:5')
-  })
-
   it('does not arm a focus jump when the question is already open', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1697,20 +1681,6 @@ describe('a transient detach costs nothing', () => {
     expect(appearanceWritten(0).opacity).toBe(0.85)
   })
 
-  it('keeps focus that was on a gear rather than in the menu', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').focus()
-
-    const host = mapCanvas.parentElement
-    mapCanvas.remove()
-    rerender()
-    host?.appendChild(mapCanvas)
-    rerender()
-
-    expect(document.activeElement).toBe(gear('a'))
-  })
-
   it('retires a Move refusal once the placement it was about ends', () => {
     harness.isMoving.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
@@ -1809,23 +1779,6 @@ describe('repeating an action is never silently a no-op', () => {
 })
 
 describe('an overlay leaving the viewport costs nothing either', () => {
-  it('keeps the keyboard and the drag when the overlay is panned away', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('swatch:5').focus()
-
-    // Panning to look at the map is the ordinary thing to do with this menu open — it deliberately
-    // does not dismiss on outside clicks.
-    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('swatch:5')
-  })
-
   it('does not tear the menu down under a held slider', () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
@@ -2147,26 +2100,6 @@ describe('a condemned template is condemned everywhere', () => {
 
     expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
   })
-
-  it('keeps a hidden overlay reachable while it still has something to say', async () => {
-    harness.setLocalVisible.mockResolvedValue(false)
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    // Reached the hidden state through its own menu, which is the only way in.
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    byKey('close').click()
-    rerender()
-
-    // Culling the gear would leave the refusal recorded with no control left to open it.
-    expect(document.getElementById('wts-overlay-button-a')).not.toBeNull()
-  })
 })
 
 describe('a locked slider arms nothing', () => {
@@ -2231,25 +2164,6 @@ describe('focus saved across a teardown is not focus demanded', () => {
     rerender()
 
     expect(document.activeElement).toBe(elsewhere)
-  })
-
-  it('falls back to Close when the saved control no longer exists', () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('size').focus()
-
-    const host = mapCanvas.parentElement
-    mapCanvas.remove()
-    rerender()
-    ;(document.activeElement as HTMLElement | null)?.blur()
-    // Another tab sets Full, so Size and Anchor are gone when the menu comes back.
-    harness.localTemplates.mockReturnValue([template()])
-    host?.appendChild(mapCanvas)
-    rerender()
-
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('close')
   })
 })
 

@@ -116,19 +116,6 @@ const CSS = `
  */
 let installed: HTMLStyleElement | null = null
 
-/** Every rule in our own sheet that styles a swatch, in cascade order. */
-const swatchRules = (sheet: CSSStyleSheet | null | undefined): CSSStyleRule[] =>
-  [...(sheet?.cssRules ?? [])].filter(
-    (rule): rule is CSSStyleRule =>
-      rule instanceof CSSStyleRule && rule.selectorText === '.wts-swatch',
-  )
-
-/** Is this `aspect-ratio` square? `1`, `1 / 1` and `2/2` all are; `auto` and `16 / 9` are not. */
-const isSquare = (value: string): boolean => {
-  const [width, height = '1'] = value.split('/').map((part) => Number(part.trim()))
-  return Number.isFinite(width) && Number.isFinite(height) && height !== 0 && width === height
-}
-
 export const installStyles = (): void => {
   // `isConnected` alone stays true for a node the host has adopted into an iframe or moved into a
   // shadow root, where its rules no longer reach our body-mounted controls.
@@ -139,21 +126,14 @@ export const installStyles = (): void => {
     installed.getRootNode() === document &&
     installed.textContent === CSS &&
     installed.sheet?.disabled !== true &&
-    // A host can point `media` somewhere that never matches, or delete the rules through CSSOM,
-    // and neither shows up in the text or the `disabled` flag.
-    installed.media === '' &&
-    // The declaration we actually depend on, not merely *a* rule mentioning the class: the text,
-    // the media, the enabled flag, the rule count and even the selector all survive a host calling
-    // `rule.style.removeProperty('aspect-ratio')`, while every colour toggle collapses to nothing.
-    swatchRules(installed.sheet).length > 0 &&
-    // *Every* one of them, not merely one: a host appending `.wts-swatch { aspect-ratio: auto }`
-    // leaves the square rule standing and the text unchanged while winning the cascade.
-    swatchRules(installed.sheet).every((rule) =>
-      // The value, not merely the presence: `setProperty('aspect-ratio', 'auto')` leaves the
-      // declaration standing and the swatches just as collapsed as deleting it. Compared as a
-      // ratio rather than as text, because CSSOM serialises `1` back as `1 / 1`.
-      isSquare(rule.style.getPropertyValue('aspect-ratio')),
-    )
+    // A host can point `media` somewhere that never matches, and that shows up in neither the text
+    // nor the `disabled` flag.
+    //
+    // Nothing here reads individual rules. The text is our own constant and is compared whole, so
+    // any edit to what this sheet *says* is already caught; a rule-level check would only add a
+    // guard against the page walking our `cssRules` and rewriting them, which no host does by
+    // accident. This runs every frame, so it pays for what can actually happen.
+    installed.media === ''
   ) {
     return
   }

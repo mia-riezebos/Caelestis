@@ -119,18 +119,6 @@ let builtControls = new Set<HTMLElement>()
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
 let focusRequest: string | null = null
 /**
- * Where the keyboard was when a teardown took its control away.
- *
- * Kept apart from {@link focusRequest} on purpose: this one is only still wanted if the keyboard has
- * not moved on since. Panning to look at the map is the deliberate thing to do with this menu open,
- * and the user may well have clicked into the panel while the overlay was away.
- */
-let focusRestore: string | null = null
-/** A gear to focus once the map comes back and it exists again. */
-let focusedGear: string | null = null
-/** The frame that held the keyboard when we let go of it — not merely "an iframe is focused". */
-let focusHost: Element | null = null
-/**
  * The slider currently under a gesture, held by reference.
  *
  * Not an attribute lookup: the drag guard blocks rebuilds, so a page-planted
@@ -436,25 +424,6 @@ const activeIn = (node: Node | null | undefined): Element | null => {
     : active
 }
 
-/**
- * Where the keyboard is, asked of this node's own root and then of the document.
- *
- * A node the host adopted into a shadow root holds focus in *that* root, where the main document
- * reports only the shadow host — and a root that is neither answers for neither, which is the
- * ordinary case and the document's to answer.
- */
-const keyboardOn = (node: Node | null | undefined): Element | null =>
-  activeIn(node) ?? document.activeElement
-
-/**
- * The frame our focus went out to, if the host adopted this node into one.
- *
- * `document.activeElement` is that frame, not our control — but so is *any* iframe the user clicks
- * into afterwards, and the two are only distinguishable by which frame is holding our node.
- */
-const holdingFrame = (node: Node | null | undefined): Element | null =>
-  node?.ownerDocument?.defaultView?.frameElement ?? null
-
 const stillMounted = (node: Element | null | undefined): boolean =>
   inOurDocument(node) && node?.parentElement === document.body
 
@@ -577,7 +546,6 @@ const forget = (id: string): void => {
   drafts.delete(id)
   selections.delete(id)
   refusals.delete(id)
-  if (focusedGear === id) focusedGear = null
   appearanceIntents.delete(id)
   visibleIntents.delete(id)
   queues.delete(id)
@@ -601,7 +569,6 @@ const remembered = (): Set<string> =>
     ...selections.keys(),
     ...confirming,
     ...deleting,
-    ...(focusedGear === null ? [] : [focusedGear]),
   ])
 
 const enqueue = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
@@ -1542,12 +1509,7 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
         return
       }
       closeOverlayMenu()
-      const gear = buttons.get(id)
-      gear?.focus()
-      // Escape returns the keyboard to the gear. With the map detached there is no gear to return
-      // it to, so the intent is kept instead and the rebuild honours it — `closeOverlayMenu` has
-      // just cleared `focusRestore`, which was the menu's, not this.
-      if (gear === undefined) focusedGear = id
+      buttons.get(id)?.focus()
       rerender()
     }
     window.addEventListener('keydown', escapeListener)
@@ -1576,7 +1538,6 @@ const closeOverlayMenu = (): void => {
     window.removeEventListener('keydown', escapeListener)
     escapeListener = null
   }
-  focusRestore = null
   releaseAllHolds()
   // Closed before anything is flushed: settling a draft or a selection repaints synchronously, and
   // a menu still claiming to be open is rebuilt by that repaint for an appearance it is about to
@@ -1609,27 +1570,13 @@ const closeOverlayMenu = (): void => {
 }
 
 /**
- * Remember where the keyboard was, and end any gesture, before the DOM holding them goes away.
+ * End any gesture before the DOM carrying it goes away.
  *
  * Slider values are deliberately not rescued here: an in-progress value lives in {@link drafts}, so
  * it survives every teardown by never having been in the element to begin with. What the teardown
  * does own is that the gesture is over — the thing that would have delivered its release is going.
  */
-const rememberFocus = (): void => {
-  // Asked of the node's own root: focus inside a shadow root the host adopted our menu into leaves
-  // the main document's active element as the shadow *host*, and neither branch below would match.
-  const inMenu = keyboardOn(menuNode)
-  if (menuNode?.contains(inMenu) === true) {
-    focusRestore = (inMenu as HTMLElement | null)?.dataset[CONTROL] ?? focusRestore
-    focusHost = holdingFrame(menuNode)
-  }
-  // Gears carry no control key — they are not menu contents — so the keyboard's place on one is
-  // remembered by template instead.
-  for (const [id, button] of buttons) {
-    if (button !== keyboardOn(button)) continue
-    focusedGear = id
-    focusHost = holdingFrame(button)
-  }
+const endGestures = (): void => {
   releaseAllHolds()
   if (openFor !== null) {
     flushDrafts(openFor)
@@ -1639,9 +1586,8 @@ const rememberFocus = (): void => {
 
 /** Take the controls off the page without forgetting anything about the templates. */
 const detachControls = (): void => {
-  // `openFor` survives a detach, so the menu comes back when the map does — and it should come back
-  // with the keyboard where the user left it, whether that was inside the menu or on a gear.
-  rememberFocus()
+  // `openFor` survives a detach, so the menu comes back when the map does.
+  endGestures()
   for (const [, button] of buttons) button.remove()
   buttons.clear()
   dropExtractedControls()
@@ -1699,10 +1645,6 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
     // Mid-teardown its menu is already disowned, but the gear is where the keyboard is going.
     closingFor !== template.id &&
     buttons.get(template.id) !== activeIn(buttons.get(template.id)) &&
-    // A gear the host has adopted holds focus in *its* root, so the main document's active element
-    // is the iframe or host — culling here would run before ownership repair and no replacement
-    // would ever be made.
-    focusedGear !== template.id &&
     // A gear that does not exist yet, or is still properly mounted, is safe to cull; one the host
     // has moved is not, because the repair that would replace it runs later in this same pass.
     (buttons.get(template.id) === undefined || stillMounted(buttons.get(template.id))) &&
@@ -1882,10 +1824,6 @@ const renderControls = (
   for (const { template, corner } of placements) {
     let button = buttons.get(template.id)
     if (button !== undefined && !stillMounted(button)) {
-      // Remembered before it goes: the replacement should get the keyboard back.
-      if (button === activeIn(button) || button.contains(activeIn(button))) {
-        focusedGear = template.id
-      }
       // Removed, not merely forgotten. Left in place it is a second live control with our id and
       // our handlers, and it outlives the template it belongs to.
       button.remove()
@@ -1895,17 +1833,15 @@ const renderControls = (
 
     if (corner === null) {
       // The same teardown the map disappearing gets: the overlay leaving the viewport is the
-      // ordinary way to look at the map while its menu is open, so it must not cost the keyboard
-      // its place or a drag its value — and a rebuild is still refused under a held slider.
+      // ordinary way to look at the map while its menu is open, so it must not cost a drag its
+      // value — and a rebuild is still refused under a held slider.
       if (openFor === template.id && menuNode !== null) {
         if (heldWithin(menuNode)) continue
-        rememberFocus()
+        endGestures()
         dropExtractedControls()
         menuNode.remove()
         menuNode = null
         menuOwner = null
-      } else if (button === document.activeElement) {
-        focusedGear = template.id
       }
       button?.remove()
       buttons.delete(template.id)
@@ -1932,18 +1868,6 @@ const renderControls = (
       })
       document.body.appendChild(button)
       buttons.set(template.id, button)
-      if (focusedGear === template.id) {
-        focusedGear = null
-        // Only if the keyboard is still where it was abandoned. Panning to look at the map is the
-        // deliberate thing to do here, and the user may well have clicked into the panel since —
-        // but an iframe holding it is the adoption case this exists to recover from.
-        const active = document.activeElement
-        const host = focusHost
-        focusHost = null
-        if (active === null || active === document.body || (host !== null && active === host)) {
-          button.focus()
-        }
-      }
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
     button.title = `${template.name} — display options`
@@ -2009,10 +1933,6 @@ const renderControls = (
       const previous = menuNode
       // Sampled before anything is discarded: once an adopted node is dropped, this document's
       // active element has already fallen back to the body and the key is gone.
-      if (previous !== null && !stillMounted(previous) && previous.contains(activeIn(previous))) {
-        focusRestore = (activeIn(previous) as HTMLElement | null)?.dataset[CONTROL] ?? focusRestore
-        focusHost = holdingFrame(previous)
-      }
       const scrollTop = previous?.scrollTop ?? 0
       const focusedKey =
         previous?.contains(document.activeElement) === true
@@ -2032,11 +1952,7 @@ const renderControls = (
       // An adopted node's focus counts as abandoned: the host's iframe holding it is precisely the
       // case the restore exists for, and `document.activeElement` is that iframe, not our control.
       // *That* iframe, though — one the user has since clicked into is where they want to be.
-      const abandoned =
-        document.activeElement === null ||
-        document.activeElement === document.body ||
-        (focusHost !== null && document.activeElement === focusHost)
-      const wanted = focusRequest ?? focusedKey ?? (abandoned ? focusRestore : null)
+      const wanted = focusRequest ?? focusedKey
       // Size and Anchor exist only for a sub-pixel shape, so another tab setting Full takes the
       // control the keyboard was on. The header close button is always there and never disabled.
       const restore =
@@ -2053,7 +1969,6 @@ const renderControls = (
         restore.focus()
       }
       focusRequest = null
-      focusRestore = null
       const box = menuNode.getBoundingClientRect()
       menuBox = { width: box.width, height: box.height }
     }
