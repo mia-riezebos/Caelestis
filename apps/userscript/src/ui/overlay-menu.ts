@@ -82,8 +82,16 @@ let openFor: string | null = null
 let menuNode: HTMLElement | null = null
 /** Measured once per rebuild — the contents only change when the menu is rebuilt. */
 let menuBox: { width: number; height: number } = { width: 0, height: 0 }
-/** A control to focus once the next build has produced it. */
+/** A control an action in this turn has asked for — always honoured once the build produces it. */
 let focusRequest: string | null = null
+/**
+ * Where the keyboard was when a teardown took its control away.
+ *
+ * Kept apart from {@link focusRequest} on purpose: this one is only still wanted if the keyboard has
+ * not moved on since. Panning to look at the map is the deliberate thing to do with this menu open,
+ * and the user may well have clicked into the panel while the overlay was away.
+ */
+let focusRestore: string | null = null
 /** A gear to focus once the map comes back and it exists again. */
 let focusedGear: string | null = null
 /**
@@ -137,10 +145,19 @@ let sequence = 0
 const failures = new Map<string, Map<FailureKey, (name: string) => string>>()
 /** Which failures a screen reader has already been told about, so a rebuild does not repeat them. */
 const announced = new Map<string, Set<FailureKey>>()
-/** For each refusal, the test that says its subject has since become what was asked for. */
-const wants = new Map<string, () => boolean>()
-/** How many times each refusal has been raised, so a repeat is a render input of its own. */
-const attempts = new Map<string, number>()
+/**
+ * Per refusal: the test that says its subject has since become what was asked for, and how many
+ * times it has been raised (a repeat is a render input of its own).
+ *
+ * Nested by template rather than keyed `${id}|${key}`. Persisted ids are validated only as non-empty
+ * strings, so `a` and `a|b` are both legal — and a flat keyspace sharing its separator with the id
+ * domain lets `a`'s expiry pass claim and delete `a|b`'s entries.
+ */
+interface Refusal {
+  readonly satisfied: () => boolean
+  attempts: number
+}
+const refusals = new Map<string, Map<FailureKey, Refusal>>()
 /** Templates whose delete question is up, and those whose delete is actually running. */
 const confirming = new Set<string>()
 const deleting = new Set<string>()
@@ -164,8 +181,31 @@ const queues = new Map<string, Promise<unknown>>()
  */
 const buttons = new Map<string, HTMLElement>()
 
-/** Slider values a gesture had reached but not committed when the map went away, by `id:control`. */
-const heldValues = new Map<string, string>()
+/**
+ * The last render's repaint callback, so a teardown can still finish a write.
+ *
+ * A gesture interrupted by the map going away — or by the page tearing the menu off — has a value
+ * the user chose and no element left to deliver a `change` from. Displaying it and hoping was the
+ * old behaviour: the menu showed 85% while the overlay stayed at 40%, indefinitely.
+ */
+let lastRerender: (() => void) | null = null
+
+/** Finish a write whose gesture was interrupted by its own element being removed. */
+const commitInterrupted = (id: string, property: 'size' | 'opacity', value: number): void => {
+  const rerender = lastRerender
+  if (rerender === null) return
+  const patch = (): Partial<Appearance> => ({ [property]: value })
+  const seq = intendAppearance(id, [property], patch)
+  settle(
+    id,
+    [`appearance:${property}`],
+    async () => await setAppearance(id, { ...storedAppearance(id), ...patch() }),
+    (name) => `Could not change ${property} for “${name}”.`,
+    () => releaseAppearance(id, [property], seq),
+    rerender,
+    () => storedAppearance(id)[property] === value,
+  )
+}
 
 /**
  * Is this template condemned, by any surface?
@@ -268,10 +308,6 @@ const releaseAppearance = (id: string, properties: readonly string[], seq: numbe
 
 const recordFailure = (id: string, key: FailureKey, message: (name: string) => string): void => {
   const forTemplate = failures.get(id) ?? new Map<FailureKey, (name: string) => string>()
-  // A repeat of the same refusal produces identical text, so without this the signature does not
-  // move, no rebuild happens, and there is no new node for a live region to read — while the
-  // `announced` reset quietly arms the *next* unrelated rebuild to read the stale one out.
-  attempts.set(`${id}|${key}`, (attempts.get(`${id}|${key}`) ?? 0) + 1)
   forTemplate.set(key, message)
   failures.set(id, forTemplate)
 }
@@ -286,15 +322,14 @@ const recordFailure = (id: string, key: FailureKey, message: (name: string) => s
  */
 const expireFailures = (id: string): void => {
   const forTemplate = failures.get(id)
-  if (forTemplate === undefined) return
-  for (const [key, wanted] of [...wants]) {
-    if (!key.startsWith(`${id}|`)) continue
-    const failureKey = key.slice(id.length + 1) as FailureKey
-    if (!forTemplate.has(failureKey)) {
-      wants.delete(key)
+  const forRefusals = refusals.get(id)
+  if (forTemplate === undefined || forRefusals === undefined) return
+  for (const [key, refusal] of [...forRefusals]) {
+    if (!forTemplate.has(key)) {
+      forRefusals.delete(key)
       continue
     }
-    if (wanted()) clearFailure(id, failureKey)
+    if (refusal.satisfied()) clearFailure(id, key)
   }
 }
 
@@ -305,18 +340,14 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
   for (const key of keys) {
     forTemplate.delete(key)
     announced.get(id)?.delete(key)
-    wants.delete(`${id}|${key}`)
-    attempts.delete(`${id}|${key}`)
+    refusals.get(id)?.delete(key)
   }
   if (forTemplate.size === 0) failures.delete(id)
 }
 
 const forget = (id: string): void => {
-  for (const key of [...wants.keys()]) if (key.startsWith(`${id}|`)) wants.delete(key)
-  for (const key of [...attempts.keys()]) if (key.startsWith(`${id}|`)) attempts.delete(key)
+  refusals.delete(id)
   if (focusedGear === id) focusedGear = null
-  heldValues.delete(`${id}:size`)
-  heldValues.delete(`${id}:opacity`)
   appearanceIntents.delete(id)
   visibleIntents.delete(id)
   queues.delete(id)
@@ -335,9 +366,9 @@ const remembered = (): Set<string> =>
     ...queues.keys(),
     ...failures.keys(),
     ...announced.keys(),
+    ...refusals.keys(),
     ...confirming,
     ...deleting,
-    ...[...heldValues.keys()].map((key) => key.slice(0, key.lastIndexOf(':'))),
     ...(focusedGear === null ? [] : [focusedGear]),
   ])
 
@@ -378,7 +409,12 @@ const settle = (
   const fail = (): void => {
     for (const key of keys) {
       recordFailure(id, key, (name) => refused(name, key))
-      wants.set(`${id}|${key}`, satisfied)
+      const forTemplate = refusals.get(id) ?? new Map<FailureKey, Refusal>()
+      // A repeat produces identical text, so the attempt count is what moves the signature and
+      // gets it announced again — while the `announced` reset alone would quietly arm the *next*
+      // unrelated rebuild to read the stale one out.
+      forTemplate.set(key, { satisfied, attempts: (forTemplate.get(key)?.attempts ?? 0) + 1 })
+      refusals.set(id, forTemplate)
     }
   }
   void (serialise ? enqueue(id, run) : run())
@@ -438,7 +474,10 @@ const menuSignature = (template: PlacedTemplate): string => {
     confirming.has(id),
     isDoomed(id),
     [...(failures.get(id) ?? [])]
-      .map(([key, text]) => `${key}#${attempts.get(`${id}|${key}`) ?? 0}=${text(template.name)}`)
+      .map(
+        ([key, text]) =>
+          `${key}#${refusals.get(id)?.get(key)?.attempts ?? 0}=${text(template.name)}`,
+      )
       .join(','),
   ].join('|')
 }
@@ -476,6 +515,9 @@ const slider = (
   // `readonly` does not apply to `type="range"` in any browser, so a locked slider still dragged,
   // still reported a new percentage, and still changed nothing — silently. Refuse the gesture.
   if (locked) {
+    // Refused *and* inert: preventing the default alone left the `hold()` listener below to arm the
+    // rebuild lock, and a prevented native range gesture takes no pointer capture — so releasing
+    // outside the input delivered no `pointerup` and the lock was never disarmed.
     for (const gesture of ['pointerdown', 'keydown']) {
       input.addEventListener(gesture, (event) => event.preventDefault())
     }
@@ -494,12 +536,22 @@ const slider = (
   const release = (): void => {
     if (heldSlider !== input) return
     heldSlider = null
+    // A gesture that produced no `change` — one that ended where it began — leaves nothing pending,
+    // whatever the store has done in the meantime. Checked after the current task so a `change`
+    // dispatched from the browser's own stop-dragging work gets there first.
+    setTimeout(() => {
+      if (heldSlider !== input && deferred === null) delete input.dataset.wtsDirty
+    }, 0)
     // A held slider blocks rebuilds, so anything that happened during the hold — a refusal landing,
     // another tab's change — is sitting in state undrawn. Releasing has to let it through, or on a
     // static map it waits for an unrelated frame that may never come.
     rerender()
   }
   const hold = (): void => {
+    // Never while locked. Preventing the default alone left this to arm the rebuild lock, and a
+    // prevented native range gesture takes no pointer capture — so releasing outside the input
+    // delivered no `pointerup` and the lock was never disarmed.
+    if (locked) return
     heldSlider = input
   }
   input.addEventListener('pointerdown', hold)
@@ -1075,10 +1127,14 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
 }
 
 const closeOverlayMenu = (): void => {
+  focusRestore = null
   // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
   // gear puts a live Delete button back up that the user thought they had dismissed — but not once
   // the delete is actually running, where that box is the only progress the user has.
-  if (openFor !== null && !isDoomed(openFor)) confirming.delete(openFor)
+  // Our own running delete keeps its question, because that box is the only progress it has. An
+  // external one renders its box from `isDoomed` and needs no help — and preserving `confirming` for
+  // it means a panel delete that later *fails* resurrects a question ✕ had already dismissed.
+  if (openFor !== null && !deleting.has(openFor)) confirming.delete(openFor)
   openFor = null
   focusRequest = null
   menuNode?.remove()
@@ -1094,18 +1150,29 @@ const closeOverlayMenu = (): void => {
 const stashInteraction = (): void => {
   const active = document.activeElement
   if (menuNode?.contains(active) === true) {
-    focusRequest = (active as HTMLElement | null)?.dataset[CONTROL] ?? focusRequest
+    focusRestore = (active as HTMLElement | null)?.dataset[CONTROL] ?? focusRestore
   }
   // Gears carry no control key — they are not menu contents — so the keyboard's place on one is
   // remembered by template instead.
   for (const [id, button] of buttons) if (button === active) focusedGear = id
   // A half-finished drag lives only in the DOM node about to be removed.
   const owner = menuNode?.dataset.wtsTemplate
-  if (heldSlider !== null && owner !== undefined && menuNode?.contains(heldSlider) === true) {
-    const key = heldSlider.dataset[CONTROL]
-    if (key !== undefined) heldValues.set(`${owner}:${key}`, heldSlider.value)
-  }
+  const interrupted =
+    heldSlider !== null && owner !== undefined && menuNode?.contains(heldSlider) === true
+      ? { owner, key: heldSlider.dataset[CONTROL], value: Number(heldSlider.value) }
+      : null
+  // Cleared *before* the write, because `settle` repaints synchronously and that repaint comes
+  // straight back through here — a held slider still set would stash itself for ever.
   heldSlider = null
+  if (
+    interrupted !== null &&
+    (interrupted.key === 'size' || interrupted.key === 'opacity') &&
+    Number.isFinite(interrupted.value)
+  ) {
+    // Committed, not stashed. The pointer capture dies with the node, so no `change` is ever coming
+    // for this value — and the user did choose it.
+    commitInterrupted(interrupted.owner, interrupted.key, interrupted.value)
+  }
 }
 
 /** Take the controls off the page without forgetting anything about the templates. */
@@ -1159,10 +1226,6 @@ const refreshSliders = (menu: HTMLElement, appearance: Appearance): void => {
     // read that back — committing the value the user had just dragged away from.
     if (!(input instanceof HTMLInputElement)) continue
     if (Number(input.value) === value) {
-      // Nothing pending: whatever gesture set the marker ended where the store already is. Two
-      // ordinary gestures never produce a `change` — an arrow press while the key is still held,
-      // and a drag that returns to its starting value — so without this the marker sticks and the
-      // slider stops tracking the store for the life of the menu.
       delete input.dataset.wtsDirty
       continue
     }
@@ -1198,7 +1261,9 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
   if (
     !visibleFor(template.id) &&
     openFor !== template.id &&
-    buttons.get(template.id) !== document.activeElement
+    buttons.get(template.id) !== document.activeElement &&
+    // A refusal with no control left to open it is a message nobody can ever read.
+    !failures.has(template.id)
   ) {
     return null
   }
@@ -1236,6 +1301,7 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  * the overlay perfectly well.
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
+  lastRerender = rerender
   withFrameTemplates(localTemplates(), (templates) => {
     renderControls(rerender, mapCanvas, templates)
   })
@@ -1345,6 +1411,8 @@ const renderControls = (
     // otherwise keeps A's menu — and A's handlers — parked beside B; and a menu the host has
     // removed could never be rebuilt at all while its slider stayed held.
     const stale = menuNode === null || !menuNode.isConnected
+    // Torn off by the page mid-gesture: the value exists only in the node about to be replaced.
+    if (stale && heldSlider !== null) stashInteraction()
     const dragging =
       !stale &&
       menuNode?.dataset.wtsTemplate === template.id &&
@@ -1365,14 +1433,12 @@ const renderControls = (
       menuNode.dataset.wtsSignature = signature
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
-      const wanted = focusRequest ?? focusedKey
+      const abandoned = document.activeElement === null || document.activeElement === document.body
+      const wanted = focusRequest ?? focusedKey ?? (abandoned ? focusRestore : null)
       // Size and Anchor exist only for a sub-pixel shape, so another tab setting Full takes the
       // control the keyboard was on. The header close button is always there and never disabled.
       const restore =
-        wanted === null
-          ? null
-          : (controlIn(menuNode, wanted) ??
-            (focusedKey === null ? null : controlIn(menuNode, 'close')))
+        wanted === null ? null : (controlIn(menuNode, wanted) ?? controlIn(menuNode, 'close'))
       if (restore !== null) {
         // A fresh group recomputes `tabindex` from what is selected, so focus would land on a cell
         // the tab stop had moved away from — and Shift+Tab would drop back inside the group.
@@ -1385,26 +1451,14 @@ const renderControls = (
         restore.focus()
       }
       focusRequest = null
+      focusRestore = null
       const box = menuNode.getBoundingClientRect()
       menuBox = { width: box.width, height: box.height }
     }
     if (menuNode === null) continue
+    // No restore pass: an interrupted gesture was committed at teardown, so the intent it created
+    // is what `refreshSliders` already draws.
     refreshSliders(menuNode, appearanceFor(template.id))
-    // After the refresh, not before: a value the user had dragged to before the map went away is
-    // not in the store, so refreshing would put the stored one straight back over it.
-    for (const key of ['size', 'opacity']) {
-      const stashed = heldValues.get(`${template.id}:${key}`)
-      if (stashed === undefined) continue
-      heldValues.delete(`${template.id}:${key}`)
-      const input = menuNode.querySelector(`input[data-wts-control="${key}"]`)
-      if (!(input instanceof HTMLInputElement)) continue
-      input.value = stashed
-      // Marked pending: it is not in the store, and the pointer capture died with the old node, so
-      // no `change` is ever coming for it. Without this the next frame puts the stored value back.
-      input.dataset.wtsDirty = 'true'
-      const readout = input.nextElementSibling
-      if (readout !== null) readout.textContent = `${Math.round(Number(stashed) * 100)}%`
-    }
     // Keep it on screen when the overlay is near an edge, on both sides: a template hanging off
     // the left keeps a clamped, reachable button, and its menu has to be reachable too. It also has
     // to stay below its own gear, which has a lower z-index and would otherwise be buried by it.
