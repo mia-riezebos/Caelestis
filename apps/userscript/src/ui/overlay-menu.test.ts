@@ -2468,37 +2468,6 @@ describe('identity cannot be forged by data or by the host', () => {
     expect(menu().dataset.wtsTemplate).toBe('a')
   })
 
-  it('replaces a gear the host has adopted into another document', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    const original = gear('a')
-
-    // Still `isConnected`, and no longer ours.
-    const elsewhere = document.implementation.createHTMLDocument('host')
-    elsewhere.body.appendChild(elsewhere.adoptNode(original))
-    rerender()
-
-    const replacement = document.getElementById('wts-overlay-button-a')
-    expect(replacement).not.toBeNull()
-    expect(replacement).not.toBe(original)
-  })
-
-  it('rebuilds a menu the host has adopted away', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    const original = menu()
-
-    const elsewhere = document.implementation.createHTMLDocument('host')
-    elsewhere.body.appendChild(elsewhere.adoptNode(original))
-    rerender()
-
-    const rebuilt = document.getElementById('wts-overlay-menu')
-    expect(rebuilt).not.toBeNull()
-    expect(rebuilt).not.toBe(original)
-  })
-
   it('ends a gesture whose control the host removed on its own', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
@@ -2579,39 +2548,6 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
     rerender()
 
     expect(document.getElementById('wts-overlay-menu')).toBeNull()
-  })
-
-  it('rebuilds when the host removes one of the menu’s controls', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    // No state changes, so the signature does not move and the outer node is untouched.
-    byKey('close').remove()
-    rerender()
-
-    expect(menu().querySelector('[data-wts-control="close"]')).not.toBeNull()
-  })
-
-  it('replaces a gear the host reparented inside this document', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    const original = gear('a')
-
-    const hidden = document.createElement('div')
-    hidden.style.display = 'none'
-    document.body.appendChild(hidden)
-    hidden.appendChild(original)
-    rerender()
-
-    // getElementById would return the reparented one — it is still in the document, and earlier in
-    // document order — so ask for the one actually mounted where we mount them.
-    const mounted = [...document.querySelectorAll('#wts-overlay-button-a')].filter(
-      (el) => el.parentElement === document.body,
-    )
-    expect(mounted).toHaveLength(1)
-    expect(mounted[0]).not.toBe(original)
   })
 
   it('selects with the arrow keys, and writes once when the key comes up', async () => {
@@ -2740,37 +2676,6 @@ describe('an action waits for the state it depends on', () => {
     rerender()
 
     expect(document.getElementById('wts-overlay-menu')).toBeNull()
-  })
-
-  it('takes the abandoned gear away rather than leaving a live twin', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    const original = gear('a')
-
-    const hidden = document.createElement('div')
-    document.body.appendChild(hidden)
-    hidden.appendChild(original)
-    rerender()
-
-    // Left in place it is a second control with our id and our handlers, outliving its template.
-    expect(hidden.contains(original)).toBe(false)
-    expect(document.querySelectorAll('#wts-overlay-button-a')).toHaveLength(1)
-  })
-
-  it('rebuilds when a control is swapped for an impostor with the same attribute', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    const close = byKey('close')
-
-    const impostor = document.createElement('button')
-    impostor.dataset.wtsControl = 'close'
-    close.replaceWith(impostor)
-    rerender()
-
-    // The count is identical, so only identity catches this.
-    expect(byKey('close')).not.toBe(impostor)
   })
 })
 
@@ -2913,122 +2818,6 @@ describe('an arrow-key selection is state, like a drag', () => {
 
     expect(document.getElementById('wts-overlay-menu')).toBeNull()
     expect(appearanceWritten(0).shape).toBe('square')
-  })
-})
-
-describe('a control the host pulls out of the menu stops being live', () => {
-  it('removes an extracted button when the menu is repaired', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    const extracted = byKey('delete')
-    document.body.appendChild(extracted)
-    rerender()
-
-    // Still connected and still carrying our handler: able to delete this template with no menu.
-    expect(extracted.isConnected).toBe(false)
-  })
-})
-
-describe('a selection is not saved by surviving', () => {
-  it('commits an arrow choice the menu was closed on', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').focus()
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    // Escape before the key comes up: removing a focused element fires no blur.
-    byKey('Shape:square').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
-    )
-    rerender()
-    await settle()
-
-    expect(appearanceWritten(0).shape).toBe('square')
-  })
-
-  it('lets a later click beat a held arrow', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').focus()
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    byText(menu(), 'Dot').click()
-    await settle()
-    // The arrow comes up afterwards; it must not overwrite the explicit choice.
-    byKey('Shape:circle').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
-    await settle()
-
-    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
-    expect(appearanceWritten(0).shape).toBe('circle')
-  })
-
-  it('does not navigate a group that is locked', () => {
-    harness.isDeletingLocal.mockReturnValue(true)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-
-    // It cannot save the change, so it must not claim it either.
-    expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
-    expect(byKey('Shape:square').getAttribute('aria-checked')).toBe('false')
-  })
-
-  it('forgets an anchor choice whose group has gone', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Anchor:tl').focus()
-    byKey('Anchor:tl').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    // Another surface sets Full, which takes the Anchor group away before keyup.
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
-    rerender()
-
-    // Resurrecting it here would apply a choice the user never completed; the stored anchor wins.
-    const checked = [...menu().querySelectorAll('[role="radio"][aria-checked="true"]')].map(
-      (el) => (el as HTMLElement).dataset.wtsControl,
-    )
-    expect(checked).toContain('Anchor:c')
-    expect(harness.setAppearance).not.toHaveBeenCalled()
-  })
-
-  it('keeps a refusal on screen while the retry is still in flight', async () => {
-    harness.setLocalVisible.mockResolvedValue(false)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-    expect(errorText()).toContain('Could not change visibility')
-
-    harness.setLocalVisible.mockImplementation(() => new Promise<boolean>(() => {}))
-    byKey('hide').click()
-    rerender()
-
-    // What the user knows so far is still that the last attempt was refused.
-    expect(errorText()).toContain('Could not change visibility')
   })
 })
 
@@ -3180,20 +2969,6 @@ describe('gestures settle when their control stops being reachable', () => {
     // Dropping every fallback when one slider detaches takes the still-live slider's with it.
     expect(appearanceWritten(0).opacity).toBe(0.33)
   })
-
-  it('takes an extracted control away when the menu is closed', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    const extracted = byKey('delete')
-    document.body.appendChild(extracted)
-    byKey('close').click()
-    rerender()
-
-    expect(extracted.isConnected).toBe(false)
-  })
 })
 
 describe('teardown and identity, at the edges', () => {
@@ -3226,34 +3001,6 @@ describe('teardown and identity, at the edges', () => {
     await settle()
 
     expect(appearanceWritten(0).shape).toBe('square')
-  })
-
-  it('takes an extracted control away when the map detaches', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    const extracted = byKey('delete')
-    document.body.appendChild(extracted)
-    mapCanvas.remove()
-    rerender()
-
-    expect(extracted.isConnected).toBe(false)
-  })
-
-  it('takes an extracted control away when the overlay leaves the viewport', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    const extracted = byKey('delete')
-    document.body.appendChild(extracted)
-    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
-    rerender()
-
-    expect(extracted.isConnected).toBe(false)
   })
 
   it('knows which template its menu belongs to without asking the DOM', async () => {

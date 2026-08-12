@@ -109,34 +109,17 @@ const CSS = `
 /**
  * Ours, kept by reference.
  *
- * Looking the stylesheet up by id trusts the page not to have minted an element under it — and the
- * page owns the document. A planted `<div id="wts-styles">` turned the install into a no-op, which
- * costs `.wts-swatch` its `aspect-ratio` and collapses every colour toggle to zero height while the
- * rest of the UI looks perfect. Holding the node also makes this cheap enough to call every frame.
+ * Looking the stylesheet up by id every frame would be both slower and less certain than holding
+ * the node we created, which is the same rule the controls follow: identity is ours to keep.
  */
 let installed: HTMLStyleElement | null = null
 
 export const installStyles = (): void => {
-  // `isConnected` alone stays true for a node the host has adopted into an iframe or moved into a
-  // shadow root, where its rules no longer reach our body-mounted controls.
-  // Connected, ours, *and* still doing its job: a host can empty the text or disable the sheet
-  // without moving the node, and the swatches lose their sizing exactly as if it were gone.
-  if (
-    installed?.isConnected === true &&
-    installed.getRootNode() === document &&
-    installed.textContent === CSS &&
-    installed.sheet?.disabled !== true &&
-    // A host can point `media` somewhere that never matches, and that shows up in neither the text
-    // nor the `disabled` flag.
-    //
-    // Nothing here reads individual rules. The text is our own constant and is compared whole, so
-    // any edit to what this sheet *says* is already caught; a rule-level check would only add a
-    // guard against the page walking our `cssRules` and rewriting them, which no host does by
-    // accident. This runs every frame, so it pays for what can actually happen.
-    installed.media === ''
-  ) {
-    return
-  }
+  // Ours, by reference, and still on the page. Anything finer — which root it is in, whether the
+  // text still matches, whether the sheet was disabled — asks whether the page rewrote our
+  // stylesheet on purpose, which is not a thing wplace does. A node that simply went away is what
+  // actually happens, and `isConnected` is what says so.
+  if (installed?.isConnected === true) return
   installed?.remove()
   // The id is a convenience for anyone reading the DOM, never an identity check. An element the
   // page put there is not ours whatever it is called — an empty `<style id="wts-styles">` would

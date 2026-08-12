@@ -102,7 +102,7 @@ let openFor: string | null = null
  * keyboard back on it.
  */
 let closingFor: string | null = null
-/** The menu we built. Never `getElementById`: the page can mint an element under our id. */
+/** The menu we built, held by reference — identity is ours to keep, not to look up by id. */
 let menuNode: HTMLElement | null = null
 /**
  * Which template {@link menuNode} was built for.
@@ -115,15 +115,13 @@ let menuOwner: string | null = null
 /** Measured once per rebuild — the contents only change when the menu is rebuilt. */
 let menuBox: { width: number; height: number } = { width: 0, height: 0 }
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
-let builtControls = new Set<HTMLElement>()
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
 let focusRequest: string | null = null
 /**
  * The slider currently under a gesture, held by reference.
  *
- * Not an attribute lookup: the drag guard blocks rebuilds, so a page-planted
- * `<input data-wts-held="true">` inside our menu would freeze it — the delete question, the lock
- * state and every banner would stop tracking state while the menu looked perfectly correct.
+ * By reference rather than by attribute, for the same reason as everything else here: what this
+ * module knows lives in this module, and the DOM is what it draws.
  */
 /**
  * Active pointer gestures on a range, by `pointerId`.
@@ -399,33 +397,13 @@ const withFrameTemplates = <T>(
 }
 
 /**
- * Still in *our* document, not merely attached to something.
+ * Still on the page.
  *
- * `isConnected` stays true for a node the host has adopted into an iframe or moved into a shadow
- * root, where it is neither reachable nor styled by us — so ownership has to ask which root it is
- * in, not just whether it has one.
+ * Not "in our root", not "parented where we put it": those ask whether the host adopted our node
+ * into an iframe or reparented it under a container of its own, which is deliberate behaviour no
+ * page has. A node the page removed — a re-render, a route change — is what actually happens.
  */
-const inOurDocument = (node: Node | null | undefined): boolean =>
-  node?.isConnected === true && node.getRootNode() === document
-
-/**
- * A top-level control still where we mounted it.
- *
- * Separate from {@link inOurDocument}, which asks only whether a node is still in this document —
- * true of a slider inside its own label, and true of a gear a host has reparented under a hidden
- * container of its own, where it is connected, rooted here, and permanently unreachable.
- */
-/** The focused element in whatever root `node` lives in — a shadow host hides the real one. */
-const activeIn = (node: Node | null | undefined): Element | null => {
-  const root = node?.getRootNode()
-  const active = root instanceof Document || root instanceof ShadowRoot ? root.activeElement : null
-  return active?.shadowRoot?.activeElement instanceof Element
-    ? active.shadowRoot.activeElement
-    : active
-}
-
-const stillMounted = (node: Element | null | undefined): boolean =>
-  inOurDocument(node) && node?.parentElement === document.body
+const onPage = (node: Node | null | undefined): boolean => node?.isConnected === true
 
 const templateFor = (id: string): PlacedTemplate | undefined =>
   frameTemplates?.get(id) ?? localTemplates().find((candidate) => candidate.id === id)
@@ -1518,22 +1496,7 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
   log('install', `overlay menu opened for ${id}`)
 }
 
-/**
- * Drop any control the host pulled out of the menu.
- *
- * Every path that takes the menu away has to do this — Close, Escape, a map detach, the overlay
- * leaving the viewport — because an extracted Delete button keeps its handler and can destroy the
- * template with nothing on screen to show for it.
- */
-const dropExtractedControls = (): void => {
-  for (const control of builtControls) {
-    if (menuNode?.contains(control) !== true) control.remove()
-  }
-  builtControls = new Set()
-}
-
 const closeOverlayMenu = (): void => {
-  dropExtractedControls()
   if (escapeListener !== null) {
     window.removeEventListener('keydown', escapeListener)
     escapeListener = null
@@ -1563,7 +1526,6 @@ const closeOverlayMenu = (): void => {
   // it means a panel delete that later *fails* resurrects a question ✕ had already dismissed.
   if (closing !== null && !deleting.has(closing)) confirming.delete(closing)
   focusRequest = null
-  dropExtractedControls()
   menuNode?.remove()
   menuNode = null
   menuOwner = null
@@ -1590,7 +1552,6 @@ const detachControls = (): void => {
   endGestures()
   for (const [, button] of buttons) button.remove()
   buttons.clear()
-  dropExtractedControls()
   menuNode?.remove()
   menuNode = null
   menuOwner = null
@@ -1644,10 +1605,10 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
     openFor !== template.id &&
     // Mid-teardown its menu is already disowned, but the gear is where the keyboard is going.
     closingFor !== template.id &&
-    buttons.get(template.id) !== activeIn(buttons.get(template.id)) &&
+    buttons.get(template.id) !== document.activeElement &&
     // A gear that does not exist yet, or is still properly mounted, is safe to cull; one the host
     // has moved is not, because the repair that would replace it runs later in this same pass.
-    (buttons.get(template.id) === undefined || stillMounted(buttons.get(template.id))) &&
+    (buttons.get(template.id) === undefined || onPage(buttons.get(template.id))) &&
     // A refusal with no control left to open it is a message nobody can ever read.
     !failures.has(template.id)
   ) {
@@ -1716,16 +1677,16 @@ const renderControls = (
     return
   }
 
-  // A held control the host has taken out of our document will never deliver its release, and
+  // A held control that has left the page will never deliver its release, and
   // neither teardown path notices, because the menu around it is untouched.
   for (const [pointerId, slider] of [...heldPointers]) {
-    if (inOurDocument(slider)) continue
+    if (onPage(slider)) continue
     heldPointers.delete(pointerId)
     // Only this pointer's own fallback: dropping them all takes the listeners belonging to sliders
     // that are still connected and still being dragged, so their release would never arrive.
     captureFallbacks.get(pointerId)?.()
   }
-  const keyboardGone = heldByKey !== null && !inOurDocument(heldByKey)
+  const keyboardGone = heldByKey !== null && !onPage(heldByKey)
   if (keyboardGone) heldByKey = null
   // Only when a gesture's own control has gone. Flushing on every frame would commit an arrow-key
   // selection the instant it was made, which is the opposite of waiting for the release.
@@ -1740,7 +1701,7 @@ const renderControls = (
       ([group, option]) =>
         // A detached menu still *contains* its cells; reachable is the question, not present.
         menuNode === null ||
-        !stillMounted(menuNode) ||
+        !onPage(menuNode) ||
         controlIn(menuNode, `${group}:${option}`) === null,
     )
   if (openFor !== null && (keyboardGone || groupsGone)) flushSelections(openFor)
@@ -1823,7 +1784,7 @@ const renderControls = (
 
   for (const { template, corner } of placements) {
     let button = buttons.get(template.id)
-    if (button !== undefined && !stillMounted(button)) {
+    if (button !== undefined && !onPage(button)) {
       // Removed, not merely forgotten. Left in place it is a second live control with our id and
       // our handlers, and it outlives the template it belongs to.
       button.remove()
@@ -1838,7 +1799,6 @@ const renderControls = (
       if (openFor === template.id && menuNode !== null) {
         if (heldWithin(menuNode)) continue
         endGestures()
-        dropExtractedControls()
         menuNode.remove()
         menuNode = null
         menuOwner = null
@@ -1886,16 +1846,9 @@ const renderControls = (
     // elsewhere, or another tab renaming the template, is enough to trigger it.
     // Only a drag *in this template's own menu* outranks a rebuild, and only while that menu is
     // still on the page. Holding A's slider with one finger and tapping B's gear with another
-    // otherwise keeps A's menu — and A's handlers — parked beside B; and a menu the host has
+    // otherwise keeps A's menu — and A's handlers — parked beside B; and a menu the page has
     // removed could never be rebuilt at all while its slider stayed held.
-    // Every control the menu builds, so a host that removes one of them is a reason to rebuild —
-    // the outer node is untouched and the signature has not moved, so nothing else would notice.
-    // Identity, not a count: a host swapping Close for an inert element carrying the same
-    // attribute, or removing one control while adding another, keeps the count identical.
-    const gutted =
-      menuNode !== null &&
-      [...builtControls].some((control) => menuNode?.contains(control) !== true)
-    const stale = menuNode === null || !stillMounted(menuNode) || gutted
+    const stale = menuNode === null || !onPage(menuNode)
     // The value survives — it is in `drafts` — but the element that would have delivered the
     // gesture's release does not, so the gesture ends here. That covers the page tearing the menu
     // off, and a second touch opening another template's menu while the first is still being
@@ -1922,17 +1875,11 @@ const renderControls = (
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
       // re-parented under a different template.
-      // Any control the host pulled out of the menu goes too: still connected, still carrying our
-      // handler, still able to delete A or close B long after its menu was replaced.
-      for (const control of builtControls) {
-        if (menuNode?.contains(control) !== true) control.remove()
-      }
       // The rebuild is what takes the chosen cell away, and a browser does not retarget a pending
       // keyup to its replacement — so the selection settles here, before it is replaced.
       if (menuOwner !== null) flushSelections(menuOwner)
       const previous = menuNode
-      // Sampled before anything is discarded: once an adopted node is dropped, this document's
-      // active element has already fallen back to the body and the key is gone.
+      // Sampled before anything is discarded: removing the node takes the keyboard with it.
       const scrollTop = previous?.scrollTop ?? 0
       const focusedKey =
         previous?.contains(document.activeElement) === true
@@ -1942,16 +1889,8 @@ const renderControls = (
       menuNode = buildMenu(template, rerender)
       menuNode.dataset.wtsSignature = signature
       menuOwner = template.id
-      builtControls = new Set(
-        [...menuNode.querySelectorAll('[data-wts-control]')].filter(
-          (node): node is HTMLElement => node instanceof HTMLElement,
-        ),
-      )
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
-      // An adopted node's focus counts as abandoned: the host's iframe holding it is precisely the
-      // case the restore exists for, and `document.activeElement` is that iframe, not our control.
-      // *That* iframe, though — one the user has since clicked into is where they want to be.
       const wanted = focusRequest ?? focusedKey
       // Size and Anchor exist only for a sub-pixel shape, so another tab setting Full takes the
       // control the keyboard was on. The header close button is always there and never disabled.
