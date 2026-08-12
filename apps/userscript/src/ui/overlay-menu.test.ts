@@ -1439,7 +1439,12 @@ describe('nothing is stranded by a held slider or a running delete', () => {
 
     // The store refuses these anyway, leaving a meaningless banner beside "Deleting…".
     expect(byKey('Shape:full').getAttribute('aria-disabled')).toBe('true')
-    expect((byKey('opacity') as HTMLInputElement).readOnly).toBe(true)
+    // `readonly` does nothing to a range in any browser, so the lock has to refuse the gesture.
+    const opacity = byKey('opacity') as HTMLInputElement
+    expect(opacity.getAttribute('aria-disabled')).toBe('true')
+    const press = new Event('pointerdown', { cancelable: true })
+    opacity.dispatchEvent(press)
+    expect(press.defaultPrevented).toBe(true)
     expect(byKey('swatch:1').getAttribute('aria-disabled')).toBe('true')
   })
 })
@@ -1985,5 +1990,127 @@ describe('a delete started elsewhere explains itself', () => {
     byKey('move').click()
 
     expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
+  })
+})
+
+describe('a slider keeps tracking the store after every kind of gesture', () => {
+  it('is not frozen by an arrow press that never produced a change', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    // A range fires input then change on each arrow press, and `change` under a held key parks the
+    // value and returns *before* the dirty marker is cleared.
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.value = '0.45'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('change'))
+    opacity.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    await settle()
+
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
+    rerender()
+
+    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
+  })
+
+  it('is not frozen by a drag that returned to where it started', () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    // Chromium fires no `change` when the value is unchanged across the gesture.
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.7'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.value = '0.4'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('pointerup'))
+
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
+    rerender()
+
+    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
+  })
+
+  it('drops a value parked by an abandoned arrow gesture', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.value = '0.75'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('change'))
+    opacity.dispatchEvent(new Event('blur'))
+    // Any later keypress on the same input must not commit the abandoned value.
+    opacity.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab' }))
+    await settle()
+
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+  })
+})
+
+describe('the menu belongs to us, and to one template at a time', () => {
+  it('ignores an input the page planted to look like a live drag', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const impostor = document.createElement('input')
+    impostor.type = 'range'
+    impostor.dataset.wtsHeld = 'true'
+    menu().appendChild(impostor)
+    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
+    rerender()
+
+    // Blocking rebuilds on an attribute would let a host freeze the menu — question, locks, banners
+    // and all — while it went on looking correct.
+    expect(menu().textContent).toContain('renamed.png')
+  })
+
+  it('retracts a delete question when another template is opened', () => {
+    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+
+    gear('b').click()
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // ✕ and Escape both retract it; walking away via another gear must not be the one that leaves
+    // a live destructive button waiting.
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+  })
+
+  it('does not flip a swatch back while its own write is landing', async () => {
+    // `setAppearance` publishes and repaints from inside its transaction, before the promise
+    // resolves and the intent is released.
+    harness.setAppearance.mockImplementation(async (_id, appearance) => {
+      harness.localTemplates.mockReturnValue([template({ appearance })])
+      rerender()
+      return true
+    })
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('swatch:1').click()
+    await settle()
+    rerender()
+
+    expect(byKey('swatch:1').dataset.on).toBe('false')
   })
 })
