@@ -21,6 +21,7 @@ import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
   localTemplates as allLocal,
+  isDeletingLocal,
   localTemplates,
   removeLocalTemplate,
   renameLocalTemplate,
@@ -546,6 +547,10 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
   const templateId = localTemplateId(target)
   if (templateId !== null) {
     if (!(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`))) return
+    // Already on its way out from somewhere else — the overlay menu, most likely. `removeLocalTemplate`
+    // returns `false` for that as well as for a genuine failure, and reporting it would put "could
+    // not delete" over a delete that is succeeding.
+    if (isDeletingLocal(templateId)) return
     if (!(await removeLocalTemplate(templateId))) {
       toast(`Could not delete “${target.name}”.`, 'error')
       return

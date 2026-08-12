@@ -1242,6 +1242,10 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
   // behind this delete and resurrect the record.
   deleting.add(id)
+  // The guard is state, and other surfaces render from it — an open overlay menu locks its controls
+  // and shows progress off this. Announcing it only once the record is gone leaves every one of them
+  // stale for the whole IndexedDB round trip, and on a static map indefinitely.
+  notify()
   let removed = false
   try {
     removed = await writeInOrder(id, async () => {
@@ -1268,6 +1272,9 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
     })
   } finally {
     deleting.delete(id)
+    // Clearing it is a state change too. A refused delete otherwise leaves every surface that
+    // rendered from the guard locked, with nothing to tell them it lifted.
+    if (!removed) notify()
   }
   if (!removed) {
     warn('install', `deletion of ${existing.name} was not saved`)

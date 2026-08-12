@@ -4,6 +4,7 @@ import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget } from '
 import { icon } from '../ui/icons.js'
 import {
   clearLocalPreview,
+  isDeletingLocal,
   localTemplates,
   onLocalReconciliation,
   placeLocalTemplate,
@@ -268,6 +269,10 @@ const listen = (on: boolean): void => {
 
 export const beginMove = (id: string, finished: () => void): void => {
   if (session !== null) return
+  // A condemned template is still in the store for the whole of its delete, so every surface that
+  // has not re-rendered still offers Move for it. Refusing here covers all of them at once, rather
+  // than each caller having to remember.
+  if (isDeletingLocal(id)) return
   const template = localTemplates().find((candidate) => candidate.id === id)
   if (template === undefined) return
   session = {
