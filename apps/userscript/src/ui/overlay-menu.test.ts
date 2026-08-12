@@ -94,10 +94,10 @@ const byText = (root: ParentNode, text: string): HTMLButtonElement => {
 
 /** A pointer drag, in the order a browser fires it: press, input, release, then change. */
 const drag = (input: HTMLInputElement, to: string): void => {
-  input.dispatchEvent(new Event('pointerdown'))
+  input.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
   input.value = to
   input.dispatchEvent(new Event('input'))
-  input.dispatchEvent(new Event('pointerup'))
+  input.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
   input.dispatchEvent(new Event('change'))
 }
 
@@ -296,7 +296,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
     const before = byKey('opacity') as HTMLInputElement
-    before.dispatchEvent(new Event('pointerdown'))
+    before.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
 
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.45 } })])
     rerender()
@@ -827,7 +827,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
     // Focused, but the gesture is over: `change` has fired. Guarding the refresh on focus rather
     // than on an in-progress gesture leaves the refused value sitting on the thumb indefinitely.
     opacity.focus()
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     drag(opacity, '0.9')
     await settle()
 
@@ -1073,8 +1073,8 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     const opacity = byKey('opacity') as HTMLInputElement
 
     // Click the thumb without moving it: no `change` fires, and a range input keeps focus.
-    opacity.dispatchEvent(new Event('pointerdown'))
-    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     rerender()
 
@@ -1220,7 +1220,7 @@ describe('interaction outranks a repaint', () => {
     gear('a').click()
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
 
     // Something rebuilds the menu mid-drag: a rename here, a refusal elsewhere.
     harness.localTemplates.mockReturnValue([
@@ -1365,13 +1365,13 @@ describe('nothing is stranded by a held slider or a running delete', () => {
 
     // Press and hold the thumb; the hold blocks rebuilds, so the refusal has nowhere to land.
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     release()
     await settle()
     expect(errorText()).toBeNull()
 
     // Letting go has to let it through: on a static map no other frame is coming.
-    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
 
     expect(errorText()).toContain('Could not change visibility')
   })
@@ -1450,7 +1450,7 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     // `readonly` does nothing to a range in any browser, so the lock has to refuse the gesture.
     const opacity = byKey('opacity') as HTMLInputElement
     expect(opacity.getAttribute('aria-disabled')).toBe('true')
-    const press = new Event('pointerdown', { cancelable: true })
+    const press = new PointerEvent('pointerdown', { pointerId: 1, cancelable: true })
     opacity.dispatchEvent(press)
     expect(press.defaultPrevented).toBe(true)
     expect(byKey('swatch:1').getAttribute('aria-disabled')).toBe('true')
@@ -1569,7 +1569,7 @@ describe('a real gesture commits what the user chose', () => {
     rerender()
 
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     drag(opacity, '0.9')
     await settle()
 
@@ -1672,7 +1672,7 @@ describe('a transient detach costs nothing', () => {
     gear('a').click()
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     opacity.value = '0.85'
     opacity.dispatchEvent(new Event('input'))
 
@@ -1822,7 +1822,7 @@ describe('an overlay leaving the viewport costs nothing either', () => {
     gear('a').click()
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
 
     // Pan inertia after a flick is enough to deliver this frame mid-drag.
     harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
@@ -1892,7 +1892,9 @@ describe('a held slider holds its own menu, not the next one', () => {
     rerender()
     gear('a').click()
     rerender()
-    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(new Event('pointerdown'))
+    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1 }),
+    )
 
     gear('b').click()
     rerender()
@@ -1908,11 +1910,13 @@ describe('a held slider holds its own menu, not the next one', () => {
     rerender()
     gear('a').click()
     rerender()
-    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(new Event('pointerdown'))
+    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1 }),
+    )
 
     // A hostile or careless host removes it; the detached control may never see another event.
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     opacity.value = '0.62'
     opacity.dispatchEvent(new Event('input'))
     menu().remove()
@@ -2021,7 +2025,7 @@ describe('a slider keeps tracking the store after every kind of gesture', () => 
     expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
   })
 
-  it('drops a value parked by an abandoned arrow gesture', async () => {
+  it('commits an arrow-key edit when focus leaves the thumb', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
     gear('a').click()
@@ -2033,11 +2037,11 @@ describe('a slider keeps tracking the store after every kind of gesture', () => 
     opacity.dispatchEvent(new Event('input'))
     opacity.dispatchEvent(new Event('change'))
     opacity.dispatchEvent(new Event('blur'))
-    // Any later keypress on the same input must not commit the abandoned value.
-    opacity.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab' }))
     await settle()
 
-    expect(harness.setAppearance).not.toHaveBeenCalled()
+    // A real click on Close or another gear blurs the range *before* the destination's click, so
+    // discarding here threw the edit away before any teardown could flush it.
+    expect(appearanceWritten(0).opacity).toBe(0.75)
   })
 })
 
@@ -2165,7 +2169,9 @@ describe('a locked slider arms nothing', () => {
 
     // A prevented native range gesture takes no pointer capture, so releasing outside the input
     // never delivers a `pointerup` here.
-    byKey('opacity').dispatchEvent(new Event('pointerdown', { cancelable: true }))
+    byKey('opacity').dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, cancelable: true }),
+    )
     harness.localTemplates.mockReturnValue([
       template({ name: 'renamed.png', appearance: { shape: 'circle' } }),
     ])
@@ -2181,14 +2187,14 @@ describe('a locked slider arms nothing', () => {
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
 
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     // Another tab moves the store mid-drag; the user still ends where they began.
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     opacity.value = '0.7'
     opacity.dispatchEvent(new Event('input'))
     opacity.value = '0.4'
     opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
     await settle()
 
     // The gesture is what the user asked for, whatever the store did underneath it.
@@ -2245,7 +2251,7 @@ describe('a gesture is what the user did, not what the element held', () => {
     rerender()
 
     // Press the thumb and never move it, while another tab changes the store.
-    byKey('opacity').dispatchEvent(new Event('pointerdown'))
+    byKey('opacity').dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     const host = mapCanvas.parentElement
     mapCanvas.remove()
@@ -2264,7 +2270,7 @@ describe('a gesture is what the user did, not what the element held', () => {
     gear('a').click()
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     opacity.value = '0.55'
     opacity.dispatchEvent(new Event('input'))
 
@@ -2296,7 +2302,7 @@ describe('a gesture is what the user did, not what the element held', () => {
     expect(appearanceWritten(0).opacity).toBe(0.5)
   })
 
-  it('stops showing a keyboard value the user tabbed away from', () => {
+  it('leaves the thumb agreeing with what it committed on blur', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
     gear('a').click()
@@ -2307,11 +2313,14 @@ describe('a gesture is what the user did, not what the element held', () => {
     opacity.value = '0.8'
     opacity.dispatchEvent(new Event('input'))
     opacity.dispatchEvent(new Event('blur'))
+    await settle()
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.8 } })])
     rerender()
 
-    // The thumb kept showing the discarded value while the overlay used the stored one.
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.4')
-    expect(harness.setAppearance).not.toHaveBeenCalled()
+    // The thumb and the store agree either way; what must not happen is one of them keeping a
+    // value the other never got.
+    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.8')
+    expect(appearanceWritten(0).opacity).toBe(0.8)
   })
 })
 
@@ -2370,19 +2379,19 @@ describe('more than one thing can be happening at once', () => {
     const size = byKey('size') as HTMLInputElement
     const opacity = byKey('opacity') as HTMLInputElement
 
-    size.dispatchEvent(new Event('pointerdown'))
+    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     size.value = '0.6'
     size.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2 }))
     opacity.value = '0.3'
     opacity.dispatchEvent(new Event('input'))
     // Two touches; the second one lifts first.
-    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2 }))
     await settle()
 
     // Rebuilding here would remove the size input mid-gesture, and its release would never come.
     expect(byKey('size')).toBe(size)
-    size.dispatchEvent(new Event('pointerup'))
+    size.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
     await settle()
     expect(harness.setAppearance).toHaveBeenCalledWith('a', expect.objectContaining({ size: 0.6 }))
   })
@@ -2394,7 +2403,7 @@ describe('more than one thing can be happening at once', () => {
     rerender()
     const size = byKey('size') as HTMLInputElement
     const opacity = byKey('opacity') as HTMLInputElement
-    size.dispatchEvent(new Event('pointerdown'))
+    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     size.value = '0.6'
     size.dispatchEvent(new Event('input'))
     opacity.value = '0.3'
@@ -2419,13 +2428,13 @@ describe('more than one thing can be happening at once', () => {
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
 
-    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
     opacity.value = '0.7'
     opacity.dispatchEvent(new Event('input'))
     // The panel starts a delete; the drag guard has been suppressing rebuilds throughout.
     harness.isDeletingLocal.mockReturnValue(true)
     rerender()
-    opacity.dispatchEvent(new Event('pointerup'))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
     await settle()
 
     expect(byKey('confirm-delete').textContent).toBe('Deleting…')
@@ -2447,5 +2456,71 @@ describe('more than one thing can be happening at once', () => {
     // Only Move used to get a second announcement; a deliberate retry of anything deserves one.
     expect(menu().querySelector('[data-wts-error]')).not.toBe(first)
     expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+  })
+})
+
+describe('a pointer gesture ends wherever the pointer does', () => {
+  it('ends a drag released outside the control', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.value = '0.65'
+    opacity.dispatchEvent(new Event('input'))
+    // A mouse drag that leaves the range: without pointer capture the release never comes back
+    // here, and the gesture — with the rebuild suppression it holds — never ends.
+    opacity.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }))
+    await settle()
+
+    expect(appearanceWritten(0).opacity).toBe(0.65)
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.65 } })])
+    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
+    rerender()
+    expect(menu().textContent).toContain('renamed.png')
+  })
+
+  it('waits for every pointer on one slider before ending the gesture', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    // Two pointers on the *same* range. Tracking holds per element makes the first release look
+    // like the end of both.
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2 }))
+    opacity.value = '0.55'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    await settle()
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2 }))
+    await settle()
+
+    expect(appearanceWritten(0).opacity).toBe(0.55)
+  })
+
+  it('commits a keyboard edit through the blur a real Close click causes', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.value = '0.5'
+    opacity.dispatchEvent(new Event('input'))
+    // The browser blurs the range before the destination button's click runs.
+    opacity.dispatchEvent(new Event('blur'))
+    byKey('close').click()
+    rerender()
+    await settle()
+
+    expect(appearanceWritten(0).opacity).toBe(0.5)
   })
 })

@@ -101,7 +101,30 @@ let focusedGear: string | null = null
  * `<input data-wts-held="true">` inside our menu would freeze it — the delete question, the lock
  * state and every banner would stop tracking state while the menu looked perfectly correct.
  */
-const heldSliders = new Set<HTMLInputElement>()
+/**
+ * Active pointer gestures on a range, by `pointerId`.
+ *
+ * Keyed by pointer rather than by element because two pointers can be down on the *same* slider,
+ * and a set of elements makes the first release look like the end of both — taking the second
+ * pointer's live control away mid-gesture.
+ */
+const heldPointers = new Map<number, HTMLInputElement>()
+/** The keyboard's gesture, which has no pointer id. */
+let heldByKey: HTMLInputElement | null = null
+
+const isHeld = (input: HTMLInputElement): boolean =>
+  heldByKey === input || [...heldPointers.values()].includes(input)
+
+const heldWithin = (root: HTMLElement | null): boolean =>
+  root !== null &&
+  (heldByKey !== null && root.contains(heldByKey)
+    ? true
+    : [...heldPointers.values()].some((slider) => root.contains(slider)))
+
+const releaseAllHolds = (): void => {
+  heldPointers.clear()
+  heldByKey = null
+}
 /**
  * A slider value the user has moved to but not committed, by template then property.
  *
@@ -605,7 +628,7 @@ const slider = (
 
   /** End the gesture: commit the draft if there is one, and let the map catch up either way. */
   const settleGesture = (): void => {
-    heldSliders.delete(input)
+    heldByKey = heldByKey === input ? null : heldByKey
     keyHeld = false
     const draft = draftFor(id, property)
     if (draft === undefined) {
@@ -620,15 +643,23 @@ const slider = (
     onCommit(draft)
   }
 
-  input.addEventListener('pointerdown', () => {
-    heldSliders.add(input)
+  input.addEventListener('pointerdown', (event) => {
+    heldPointers.set(event.pointerId, input)
+    // Captured, so the release comes back here even when the pointer leaves the control. A mouse
+    // drag that ends outside the range otherwise never delivers `pointerup` to it at all, and the
+    // gesture — and the rebuild suppression that goes with it — never ends.
+    try {
+      input.setPointerCapture(event.pointerId)
+    } catch {
+      // Not every environment implements capture; the window-level fallback below covers it.
+    }
   })
   input.addEventListener('keydown', (event) => {
     // Tab does not move the thumb, and its `keyup` lands on whatever it moved focus *to*, so
     // treating every key as held waits for a keyup that never arrives.
     if (!MOVES_THE_THUMB.has(event.key)) return
     keyHeld = true
-    heldSliders.add(input)
+    heldByKey = input
   })
   // Every `input` is a draft, never a write: a one-second drag would otherwise be dozens of
   // serialised IndexedDB transactions, each clearing the stamped-tile cache and re-stamping.
@@ -639,8 +670,13 @@ const slider = (
   // The pointer release always ends the gesture, and a `change` after it finds no draft left and
   // just repaints. Waiting for `change` instead loses a drag that returns to its starting value,
   // which Chromium fires no `change` for at all.
-  for (const ending of ['pointerup', 'pointercancel']) {
-    input.addEventListener(ending, settleGesture)
+  for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    input.addEventListener(ending, (event) => {
+      heldPointers.delete((event as PointerEvent).pointerId)
+      // Only once every pointer on this control has finished: two can be down on one slider, and
+      // ending the gesture on the first would take the second one's element away under it.
+      if (![...heldPointers.values()].includes(input)) settleGesture()
+    })
   }
   // Under a held key `change` fires once per repeat, so that path waits for the key to come up.
   input.addEventListener('change', () => {
@@ -652,9 +688,10 @@ const slider = (
     settleGesture()
   })
   input.addEventListener('blur', () => {
-    // Abandoned rather than committed: a value the user tabbed away from mid-keypress is not an
-    // instruction, and the draft has to go or the menu keeps rendering it.
-    if (keyHeld) clearDraft(id, property)
+    // Committed, not discarded. A real click on Close, on the gear, or on another template's gear
+    // blurs this range *before* the destination's `click` runs, so discarding here threw the edit
+    // away before any teardown could flush it — and an arrow-key adjustment is as deliberate as a
+    // drag whichever way focus leaves afterwards.
     settleGesture()
   })
   return wrap
@@ -1173,7 +1210,7 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
 
 const closeOverlayMenu = (): void => {
   focusRestore = null
-  heldSliders.clear()
+  releaseAllHolds()
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
   // sends that release somewhere else.
   if (openFor !== null) flushDrafts(openFor)
@@ -1205,7 +1242,7 @@ const rememberFocus = (): void => {
   // Gears carry no control key — they are not menu contents — so the keyboard's place on one is
   // remembered by template instead.
   for (const [id, button] of buttons) if (button === active) focusedGear = id
-  heldSliders.clear()
+  releaseAllHolds()
   if (openFor !== null) flushDrafts(openFor)
 }
 
@@ -1359,7 +1396,7 @@ const renderControls = (
       // ordinary way to look at the map while its menu is open, so it must not cost the keyboard
       // its place or a drag its value — and a rebuild is still refused under a held slider.
       if (openFor === template.id && menuNode !== null) {
-        if ([...heldSliders].some((slider) => menuNode?.contains(slider) === true)) continue
+        if (heldWithin(menuNode)) continue
         rememberFocus()
         menuNode.remove()
         menuNode = null
@@ -1425,8 +1462,8 @@ const renderControls = (
     // off, and a second touch opening another template's menu while the first is still being
     // dragged, where the draft belongs to whoever the menu was for a moment ago.
     const previousOwner = menuNode?.dataset.wtsTemplate
-    if (heldSliders.size > 0 && (stale || previousOwner !== template.id)) {
-      heldSliders.clear()
+    if (heldWithin(menuNode) && (stale || previousOwner !== template.id)) {
+      releaseAllHolds()
       if (previousOwner !== undefined) flushDrafts(previousOwner)
     }
     const dragging =
@@ -1434,7 +1471,7 @@ const renderControls = (
       menuNode?.dataset.wtsTemplate === template.id &&
       // *Any* of them: two pointers can be down at once on a touch device, and rebuilding when the
       // first is released takes the second one's element away mid-gesture.
-      [...heldSliders].some((slider) => menuNode?.contains(slider) === true)
+      heldWithin(menuNode)
     if (!dragging && (stale || menuNode?.dataset.wtsSignature !== signature)) {
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
