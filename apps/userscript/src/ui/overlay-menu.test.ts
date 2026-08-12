@@ -729,9 +729,9 @@ describe('deferred work stays tied to the template that asked for it', () => {
     byKey('delete').click()
     byKey('confirm-delete').click()
 
-    // A live Cancel takes the question away and reads as though it stopped something.
-    const cancel = byText(menu(), 'Cancel')
-    expect(cancel.disabled).toBe(true)
+    // A live Cancel takes the question away and reads as though it stopped something. Marked
+    // rather than `disabled`, for the same reason Delete is: a disabled button cannot hold focus.
+    expect(byText(menu(), 'Cancel').getAttribute('aria-disabled')).toBe('true')
   })
 
   it('keeps a carried delete question naming the template as it is now', () => {
@@ -774,7 +774,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
 
   it('keeps a refused shape reported when a colour change succeeds', async () => {
     let call = 0
-    harness.setAppearance.mockImplementation(async () => (++call === 1 ? false : true))
+    harness.setAppearance.mockImplementation(async () => ++call !== 1)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -792,7 +792,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
 
   it('clears a refused write once the same property succeeds', async () => {
     let call = 0
-    harness.setAppearance.mockImplementation(async () => (++call === 1 ? false : true))
+    harness.setAppearance.mockImplementation(async () => ++call !== 1)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -1036,7 +1036,7 @@ describe('a delete already under way cannot be re-asked', () => {
     // Disabling the question's own buttons is not enough while this one can raise a new question
     // with a fresh, live Cancel over a delete that is already running.
     expect((byKey('delete') as HTMLButtonElement).disabled).toBe(true)
-    expect((byKey('cancel-delete') as HTMLButtonElement).disabled).toBe(true)
+    expect(byKey('cancel-delete').getAttribute('aria-disabled')).toBe('true')
     expect(byKey('confirm-delete').textContent).toBe('Deleting…')
   })
 
@@ -1699,6 +1699,139 @@ describe('a transient detach costs nothing', () => {
 
     // The other template's placement finishes; nobody pressed Move again.
     harness.isMoving.mockReturnValue(false)
+    rerender()
+
+    expect(errorText()).toBeNull()
+  })
+})
+
+describe('a delete that becomes terminal after the menu exists', () => {
+  it('rebuilds when the store condemns a template the menu is already showing', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    expect((byKey('move') as HTMLButtonElement).disabled).toBe(false)
+
+    // The panel's delete sets the store's guard and then does its IndexedDB work with the record
+    // still present and byte-identical — so nothing else in the signature moves.
+    harness.isDeletingLocal.mockReturnValue(true)
+    rerender()
+
+    expect((byKey('move') as HTMLButtonElement).disabled).toBe(true)
+    expect((byKey('hide') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('refuses the action even from a menu built before the delete', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const move = byKey('move')
+    const hide = byKey('hide')
+
+    // No repaint: the map is idle, so these are the elements the user still has in front of them.
+    harness.isDeletingLocal.mockReturnValue(true)
+    move.click()
+    hide.click()
+
+    expect(harness.beginMove).not.toHaveBeenCalled()
+    expect(harness.setLocalVisible).not.toHaveBeenCalled()
+  })
+})
+
+describe('repeating an action is never silently a no-op', () => {
+  it('composes two clicks of the same swatch instead of replacing one with the other', async () => {
+    harness.setAppearance.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('swatch:1').click()
+    rerender()
+    expect(byKey('swatch:1').dataset.on).toBe('false')
+    byKey('swatch:1').click()
+    rerender()
+
+    // The updater is a toggle. Latest-wins makes the second click read as no change at all, while
+    // the queued writes compose back to visible — the menu and the map disagreeing.
+    expect(byKey('swatch:1').dataset.on).toBe('true')
+  })
+
+  it('writes once for a held arrow key, not once per repeat', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const size = byKey('size') as HTMLInputElement
+
+    size.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    for (const value of ['0.4', '0.45', '0.5']) {
+      size.value = value
+      size.dispatchEvent(new Event('change'))
+    }
+    await settle()
+    // `size` is in the stamped-tile cache key, so one write per key repeat re-stamps at scale 3.
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+
+    size.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).size).toBe(0.5)
+  })
+})
+
+describe('an overlay leaving the viewport costs nothing either', () => {
+  it('keeps the keyboard and the drag when the overlay is panned away', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('swatch:5').focus()
+
+    // Panning to look at the map is the ordinary thing to do with this menu open — it deliberately
+    // does not dismiss on outside clicks.
+    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('swatch:5')
+  })
+
+  it('does not tear the menu down under a held slider', () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
+
+    // Pan inertia after a flick is enough to deliver this frame mid-drag.
+    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
+    rerender()
+
+    expect(byKey('opacity')).toBe(opacity)
+  })
+})
+
+describe('a refusal retires when its subject moves on', () => {
+  it('clears once another surface changes the same template', async () => {
+    harness.setLocalVisible.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    expect(errorText()).toContain('Could not change visibility')
+
+    // The tree's own checkbox writes visibility directly, and the write lands.
+    harness.localTemplates.mockReturnValue([
+      { ...template({ visible: false }), revision: 2 } as unknown as ReturnType<typeof template>,
+    ])
     rerender()
 
     expect(errorText()).toBeNull()
