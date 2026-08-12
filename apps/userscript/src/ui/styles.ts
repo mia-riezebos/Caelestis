@@ -125,7 +125,11 @@ export const installStyles = (): void => {
     installed?.isConnected === true &&
     installed.getRootNode() === document &&
     installed.textContent === CSS &&
-    installed.sheet?.disabled !== true
+    installed.sheet?.disabled !== true &&
+    // A host can point `media` somewhere that never matches, or delete the rules through CSSOM,
+    // and neither shows up in the text or the `disabled` flag.
+    installed.media === '' &&
+    (installed.sheet?.cssRules.length ?? 0) > 0
   ) {
     return
   }

@@ -12,7 +12,7 @@ import {
   setAppearance,
   setLocalVisible,
 } from '../templates/local-store.js'
-import { beginMove, isMoving } from '../templates/move.js'
+import { abort as abortMove, beginMove, isMoving, movingId } from '../templates/move.js'
 import { icon } from './icons.js'
 import { installStyles } from './styles.js'
 
@@ -75,7 +75,17 @@ const CONTROL = 'wtsControl'
  * a shape change refused moments earlier — the overlay ends up without the shape and without a word
  * about it — so an appearance write is keyed by the properties it actually patched.
  */
-type FailureKey = 'delete' | 'visible' | 'move' | `appearance:${string}`
+/**
+ * `move` is the only key `expireMoveFailure` clears, and it clears it whenever no placement is
+ * running — so any message *about* there being no placement needs a key of its own.
+ */
+type FailureKey =
+  | 'delete'
+  | 'visible'
+  | 'move'
+  | 'move-ready'
+  | 'move-stopped'
+  | `appearance:${string}`
 
 let openFor: string | null = null
 /** The menu we built. Never `getElementById`: the page can mint an element under our id. */
@@ -120,11 +130,11 @@ const heldWithin = (root: HTMLElement | null): boolean =>
     ? true
     : [...heldPointers.values()].some((slider) => root.contains(slider)))
 
-/** Window-level releases installed when pointer capture was unavailable. */
-const captureFallbacks = new Set<() => void>()
+/** Window-level releases installed when pointer capture was unavailable, by pointer. */
+const captureFallbacks = new Map<number, () => void>()
 
 const releaseAllHolds = (): void => {
-  for (const drop of captureFallbacks) drop()
+  for (const drop of [...captureFallbacks.values()]) drop()
   captureFallbacks.clear()
   heldPointers.clear()
   heldByKey = null
@@ -239,6 +249,14 @@ const refusals = new Map<string, Map<FailureKey, Refusal>>()
 const confirming = new Set<string>()
 /** Templates being made visible so they can be placed — one such request at a time each. */
 const showingToMove = new Set<string>()
+/**
+ * Templates we made visible *in order to* place them.
+ *
+ * `writeInOrder` serialises writes but publishes no queue, so a Hide the tree row already had in
+ * flight is invisible to any check made before the placement starts. Watching for it afterwards is
+ * the only reliable answer: if the overlay we are placing goes away, the placement goes with it.
+ */
+const shownForMove = new Set<string>()
 const deleting = new Set<string>()
 
 /**
@@ -745,7 +763,7 @@ const slider = (
       const drop = (): void => {
         window.removeEventListener('pointerup', ended, true)
         window.removeEventListener('pointercancel', ended, true)
-        captureFallbacks.delete(drop)
+        captureFallbacks.delete(event.pointerId)
       }
       const ended = (release: Event): void => {
         if ((release as PointerEvent).pointerId !== event.pointerId) return
@@ -757,7 +775,7 @@ const slider = (
       window.addEventListener('pointercancel', ended, true)
       // Dropped by any teardown too: a listener that outlives its menu will happily settle a later
       // gesture with a draft that was never its own.
-      captureFallbacks.add(drop)
+      captureFallbacks.set(event.pointerId, drop)
     }
   })
   input.addEventListener('keydown', (event) => {
@@ -1166,7 +1184,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     }
     // Nothing else ever clears this one, and a stale "finish the placement first" outlives the
     // placement it was about.
-    clearFailure(id, 'move')
+    clearFailure(id, 'move', 'move-ready', 'move-stopped')
     // Placing an overlay you cannot see is not placing it, and the menu stays open after Hide on
     // purpose — so Hide → Move is one click, and a hidden template is not painted at all.
     //
@@ -1214,12 +1232,21 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
           // leaves that dialog as the active surface — and `move.ts` treats dialog controls as page
           // controls, so the placement's own Enter and Escape would be ignored.
           if (openFor !== null && openFor !== id) {
-            recordFailure(id, 'move', (name) => `“${name}” is ready to move — press Move again.`)
+            // Its own key: `expireMoveFailure` clears `move` whenever no placement is running,
+            // which is exactly the state this message describes.
+            recordFailure(
+              id,
+              'move-ready',
+              (name) => `“${name}” is ready to move — press Move again.`,
+            )
             rerender()
             return
           }
           closeOverlayMenu()
-          beginMove(id, () => {})
+          shownForMove.add(id)
+          beginMove(id, () => {
+            shownForMove.delete(id)
+          })
           buttons.get(id)?.focus()
           rerender()
         },
@@ -1458,6 +1485,12 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
 }
 
 const closeOverlayMenu = (): void => {
+  // Anything the host pulled out of the menu goes with it. Cleaning only during the open-menu
+  // repair leaves an extracted Delete button live in the page the moment ✕ or Escape runs.
+  for (const control of builtControls) {
+    if (menuNode?.contains(control) !== true) control.remove()
+  }
+  builtControls = new Set()
   if (escapeListener !== null) {
     window.removeEventListener('keydown', escapeListener)
     escapeListener = null
@@ -1562,7 +1595,14 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
   if (
     !visibleFor(template.id) &&
     openFor !== template.id &&
-    buttons.get(template.id) !== document.activeElement &&
+    buttons.get(template.id) !== activeIn(buttons.get(template.id)) &&
+    // A gear the host has adopted holds focus in *its* root, so the main document's active element
+    // is the iframe or host — culling here would run before ownership repair and no replacement
+    // would ever be made.
+    focusedGear !== template.id &&
+    // A gear that does not exist yet, or is still properly mounted, is safe to cull; one the host
+    // has moved is not, because the repair that would replace it runs later in this same pass.
+    (buttons.get(template.id) === undefined || stillMounted(buttons.get(template.id))) &&
     // A refusal with no control left to open it is a message nobody can ever read.
     !failures.has(template.id)
   ) {
@@ -1636,16 +1676,35 @@ const renderControls = (
   for (const [pointerId, slider] of [...heldPointers]) {
     if (inOurDocument(slider)) continue
     heldPointers.delete(pointerId)
-    // Its window-level release, if capture was unavailable, would otherwise outlive it and settle
-    // whatever draft the replacement control has by then.
-    for (const drop of captureFallbacks) drop()
+    // Only this pointer's own fallback: dropping them all takes the listeners belonging to sliders
+    // that are still connected and still being dragged, so their release would never arrive.
+    captureFallbacks.get(pointerId)?.()
   }
   const keyboardGone = heldByKey !== null && !inOurDocument(heldByKey)
   if (keyboardGone) heldByKey = null
   // Only when a gesture's own control has gone. Flushing on every frame would commit an arrow-key
   // selection the instant it was made, which is the opposite of waiting for the release.
   if (openFor !== null && menuNode !== null && !heldWithin(menuNode)) flushDrafts(openFor)
-  if (openFor !== null && keyboardGone) flushSelections(openFor)
+  // Its own control gone — removed by the host, or replaced before keyup — is the same thing as the
+  // keyboard hold going: nothing is coming to settle it.
+  const groupsGone =
+    openFor !== null &&
+    [...(selections.get(openFor)?.keys() ?? [])].some(
+      (group) => menuNode?.querySelector(`[role="radiogroup"][aria-label="${group}"]`) == null,
+    )
+  if (openFor !== null && (keyboardGone || groupsGone)) flushSelections(openFor)
+  // A hide that was already queued elsewhere lands after the placement has started, leaving the
+  // user positioning something invisible. The later action wins: the placement is abandoned.
+  const placing = movingId()
+  if (placing !== null && shownForMove.has(placing) && templateFor(placing)?.visible === false) {
+    shownForMove.delete(placing)
+    recordFailure(
+      placing,
+      'move-stopped',
+      (name) => `“${name}” was hidden, so its placement was stopped.`,
+    )
+    void abortMove()
+  }
   // A pending Anchor choice outlives its group when a reconciliation switches the shape to `full`:
   // keyup has nothing to reach, and the entry would be resurrected the next time a shape brings the
   // group back.
@@ -1758,12 +1817,16 @@ const renderControls = (
     // off, and a second touch opening another template's menu while the first is still being
     // dragged, where the draft belongs to whoever the menu was for a moment ago.
     const previousOwner = menuNode?.dataset.wtsTemplate
-    if (heldWithin(menuNode) && (stale || previousOwner !== template.id)) {
+    // The owner changing settles the previous owner's gestures whether or not a slider was held: a
+    // touch browser need not focus a button, so switching menus can produce no blur at all.
+    if (previousOwner !== undefined && previousOwner !== template.id) {
       releaseAllHolds()
-      if (previousOwner !== undefined) {
-        flushDrafts(previousOwner)
-        flushSelections(previousOwner)
-      }
+      flushDrafts(previousOwner)
+      flushSelections(previousOwner)
+    } else if (stale && heldWithin(menuNode)) {
+      releaseAllHolds()
+      flushDrafts(template.id)
+      flushSelections(template.id)
     }
     const dragging =
       !stale &&

@@ -5,6 +5,8 @@ import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 const harness = vi.hoisted(() => ({
   beginMove: vi.fn(),
   isMoving: vi.fn(() => false),
+  movingId: vi.fn(() => null as string | null),
+  abortMove: vi.fn(async () => {}),
   localTemplates: vi.fn(() => [] as unknown[]),
   previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
   removeCustomOrderKeys: vi.fn(),
@@ -33,8 +35,10 @@ vi.mock('../templates/local-store.js', () => ({
   setLocalVisible: harness.setLocalVisible,
 }))
 vi.mock('../templates/move.js', () => ({
+  abort: harness.abortMove,
   beginMove: harness.beginMove,
   isMoving: harness.isMoving,
+  movingId: harness.movingId,
 }))
 
 /** The appearance handed to the nth `setAppearance` call, or a failure naming the missing call. */
@@ -132,6 +136,7 @@ afterEach(() => {
   harness.screenPointFor.mockImplementation((x: number, y: number) => ({ x, y }))
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
   harness.isMoving.mockReturnValue(false)
+  harness.movingId.mockReturnValue(null)
   harness.isDeletingLocal.mockReturnValue(false)
   harness.removeLocalTemplate.mockResolvedValue(true)
   harness.setAppearance.mockImplementation(async () => true)
@@ -3151,5 +3156,159 @@ describe('a Move that lands late does not barge in', () => {
     // have its own Enter and Escape ignored.
     expect(harness.beginMove).not.toHaveBeenCalled()
     expect(menu().dataset.wtsTemplate).toBe('b')
+  })
+})
+
+describe('a placement only survives while its overlay does', () => {
+  it('abandons the placement when a queued hide lands after it started', async () => {
+    harness.setLocalVisible.mockImplementation(async (_id, visible) => {
+      harness.localTemplates.mockReturnValue([template({ visible })])
+      return true
+    })
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    byKey('move').click()
+    await settle()
+    expect(harness.beginMove).toHaveBeenCalled()
+
+    // A hide the tree row already had in flight publishes now. `writeInOrder` serialises writes but
+    // exposes no queue, so nothing before the placement could have seen it.
+    harness.movingId.mockReturnValue('a')
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+
+    expect(harness.abortMove).toHaveBeenCalled()
+    // Move closed the menu; the gear survives because the template now has something to say.
+    gear('a').click()
+    rerender()
+    expect(errorText()).toContain('was hidden')
+  })
+
+  it('keeps the ready-to-move message on screen', async () => {
+    let release = (): void => {}
+    harness.setLocalVisible.mockImplementation(
+      async (_id, visible) =>
+        await new Promise<boolean>((resolve) => {
+          release = () => {
+            harness.localTemplates.mockReturnValue([
+              template({ visible }),
+              template({ id: 'b', name: 'beta.png' }),
+            ])
+            resolve(true)
+          }
+        }),
+    )
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    harness.localTemplates.mockReturnValue([
+      template({ visible: false }),
+      template({ id: 'b', name: 'beta.png' }),
+    ])
+    rerender()
+    byKey('move').click()
+    gear('b').click()
+    rerender()
+    release()
+    await settle()
+    rerender()
+
+    gear('a').click()
+    rerender()
+    // `expireMoveFailure` clears a `move` refusal whenever no placement is running — which is
+    // exactly the state this message describes, so it needed a key of its own.
+    expect(errorText()).toContain('ready to move')
+  })
+})
+
+describe('gestures settle when their control stops being reachable', () => {
+  it('commits a radio choice when the owner changes with no blur', async () => {
+    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    // A touch browser need not focus a button, so switching menus can produce no blur at all.
+    gear('b').click()
+    rerender()
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ shape: 'square' }),
+    )
+  })
+
+  it('commits a radio choice when the host removes its group', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    menu().querySelector('[role="radiogroup"][aria-label="Shape"]')?.remove()
+    rerender()
+    await settle()
+
+    expect(appearanceWritten(0).shape).toBe('square')
+  })
+
+  it('does not drop another slider’s fallback when one is detached', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const size = byKey('size') as HTMLInputElement
+    const opacity = byKey('opacity') as HTMLInputElement
+    // Capture unavailable, so both fall back to window-level releases.
+    for (const input of [size, opacity]) {
+      Object.defineProperty(input, 'setPointerCapture', {
+        value: () => {
+          throw new Error('unsupported')
+        },
+      })
+    }
+    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2 }))
+    opacity.value = '0.33'
+    opacity.dispatchEvent(new Event('input'))
+    size.remove()
+    rerender()
+
+    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2 }))
+    await settle()
+
+    // Dropping every fallback when one slider detaches takes the still-live slider's with it.
+    expect(appearanceWritten(0).opacity).toBe(0.33)
+  })
+
+  it('takes an extracted control away when the menu is closed', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const extracted = byKey('delete')
+    document.body.appendChild(extracted)
+    byKey('close').click()
+    rerender()
+
+    expect(extracted.isConnected).toBe(false)
   })
 })
