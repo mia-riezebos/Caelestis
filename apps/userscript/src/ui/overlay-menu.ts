@@ -314,6 +314,16 @@ const withFrameTemplates = <T>(
 const inOurDocument = (node: Node | null | undefined): boolean =>
   node?.isConnected === true && node.getRootNode() === document
 
+/**
+ * A top-level control still where we mounted it.
+ *
+ * Separate from {@link inOurDocument}, which asks only whether a node is still in this document —
+ * true of a slider inside its own label, and true of a gear a host has reparented under a hidden
+ * container of its own, where it is connected, rooted here, and permanently unreachable.
+ */
+const stillMounted = (node: Element | null | undefined): boolean =>
+  inOurDocument(node) && node?.parentElement === document.body
+
 const templateFor = (id: string): PlacedTemplate | undefined =>
   frameTemplates?.get(id) ?? localTemplates().find((candidate) => candidate.id === id)
 
@@ -661,7 +671,17 @@ const slider = (
     try {
       input.setPointerCapture(event.pointerId)
     } catch {
-      // Not every environment implements capture; the window-level fallback below covers it.
+      // Capture unavailable, so the release will not come back to this element. Listen where it
+      // will: without this the hold stays registered and rebuilds stay suppressed for good.
+      const ended = (release: Event): void => {
+        if ((release as PointerEvent).pointerId !== event.pointerId) return
+        window.removeEventListener('pointerup', ended, true)
+        window.removeEventListener('pointercancel', ended, true)
+        heldPointers.delete(event.pointerId)
+        if (![...heldPointers.values()].includes(input)) settleGesture()
+      }
+      window.addEventListener('pointerup', ended, true)
+      window.addEventListener('pointercancel', ended, true)
     }
   })
   input.addEventListener('keydown', (event) => {
@@ -698,12 +718,11 @@ const slider = (
     settleGesture()
   })
   input.addEventListener('blur', () => {
-    // Committed, not discarded. A real click on Close, on the gear, or on another template's gear
-    // blurs this range *before* the destination's `click` runs, so discarding here threw the edit
-    // away before any teardown could flush it — and an arrow-key adjustment is as deliberate as a
-    // drag whichever way focus leaves afterwards.
-    settleGesture()
+    // Deferred out of the blur. Committing synchronously rebuilds the menu, which removes the very
+    // element the user is mid-click on — the edit lands and the button they pressed never fires.
+    setTimeout(() => settleGesture(), 0)
   })
+
   return wrap
 }
 
@@ -734,10 +753,15 @@ const radioGroup = <T extends string>(
   onSelect: (id: T) => void,
   className: (chosen: boolean) => string,
 ): HTMLElement => {
+  const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'])
   const group = document.createElement('div')
   group.setAttribute('role', 'radiogroup')
   group.setAttribute('aria-label', label)
   const cells: HTMLButtonElement[] = []
+  // Selection follows focus, as `radiogroup` announces — but the write waits for the key to come
+  // back up. `shape` is part of the stamped-tile cache key, so one durable write per OS key repeat
+  // re-stamps the viewport at scale 3.
+  let pending: T | null = null
   options.forEach((option, index) => {
     const chosen = option.id === selected
     const cell = document.createElement('button')
@@ -771,11 +795,30 @@ const radioGroup = <T extends string>(
       if (target === -1) return
       event.preventDefault()
       const next = cells[target]
-      if (next === undefined) return
+      const picked = options[target]
+      if (next === undefined || picked === undefined) return
+      pending = picked.id
+      for (const cell of cells) {
+        const chosenNow = cell === next
+        cell.setAttribute('aria-checked', String(chosenNow))
+        cell.className = className(chosenNow)
+      }
       // The tab stop moves with focus. Leaving it on the selected option makes Shift+Tab land back
       // inside the group instead of leaving it.
       for (const other of cells) other.tabIndex = other === next ? 0 : -1
       next.focus()
+    })
+    cell.addEventListener('keyup', (event) => {
+      if (!ARROWS.has(event.key) || pending === null) return
+      const chosen = pending
+      pending = null
+      onSelect(chosen)
+    })
+    cell.addEventListener('blur', () => {
+      if (pending === null) return
+      const chosen = pending
+      pending = null
+      onSelect(chosen)
     })
     cells.push(cell)
     group.appendChild(cell)
@@ -1035,6 +1078,9 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     // Nothing else ever clears this one, and a stale "finish the placement first" outlives the
     // placement it was about.
     clearFailure(id, 'move')
+    // Placing an overlay you cannot see is not placing it, and the menu stays open after Hide on
+    // purpose — so Hide → Move is one click, and the hidden template is not painted at all.
+    if (!visibleFor(id)) commitVisible(id, true, rerender)
     closeOverlayMenu()
     beginMove(id, rerender)
     // Back to the gear, which is about to become the only control left.
@@ -1206,6 +1252,15 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   return menu
 }
 
+/**
+ * Escape closes the menu wherever focus is.
+ *
+ * Listening only on the menu means the documented keyboard exit stops working after the one
+ * interaction the acceptance criteria insist the menu survives: clicking the map to look at what
+ * you just changed.
+ */
+let escapeListener: ((event: KeyboardEvent) => void) | null = null
+
 const openOverlayMenu = (id: string, rerender: () => void): void => {
   // Walking away from a destructive question retracts it, whichever way you walk — ✕ and Escape go
   // through `closeOverlayMenu`, and opening another template's gear does not.
@@ -1214,11 +1269,30 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
   // Hide is disabled while a delete runs, and a disabled control cannot take focus — so reopening a
   // condemned template's menu would leave the keyboard outside the dialog it just opened.
   focusRequest = isDoomed(id) ? 'close' : 'hide'
+  if (escapeListener === null) {
+    escapeListener = (event: KeyboardEvent): void => {
+      // The menu's own handler answers the inner question first; this one is for everywhere else.
+      if (event.key !== 'Escape' || openFor === null) return
+      // The menu's own handler answers the inner dialog first and marks the event; without this the
+      // rebuild it causes detaches the target, so `contains` says no and this closes the menu too.
+      if (event.defaultPrevented) return
+      if (menuNode?.contains(event.target as Node) === true) return
+      const id = openFor
+      closeOverlayMenu()
+      buttons.get(id)?.focus()
+      rerender()
+    }
+    window.addEventListener('keydown', escapeListener)
+  }
   rerender()
   log('install', `overlay menu opened for ${id}`)
 }
 
 const closeOverlayMenu = (): void => {
+  if (escapeListener !== null) {
+    window.removeEventListener('keydown', escapeListener)
+    escapeListener = null
+  }
   focusRestore = null
   releaseAllHolds()
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
@@ -1403,7 +1477,11 @@ const renderControls = (
 
   for (const { template, corner } of placements) {
     let button = buttons.get(template.id)
-    if (button !== undefined && !inOurDocument(button)) {
+    if (button !== undefined && !stillMounted(button)) {
+      // Remembered before it goes: the replacement should get the keyboard back.
+      if (button === document.activeElement || button.contains(document.activeElement)) {
+        focusedGear = template.id
+      }
       buttons.delete(template.id)
       button = undefined
     }
@@ -1473,7 +1551,13 @@ const renderControls = (
     // still on the page. Holding A's slider with one finger and tapping B's gear with another
     // otherwise keeps A's menu — and A's handlers — parked beside B; and a menu the host has
     // removed could never be rebuilt at all while its slider stayed held.
-    const stale = menuNode === null || !inOurDocument(menuNode)
+    // Every control the menu builds, so a host that removes one of them is a reason to rebuild —
+    // the outer node is untouched and the signature has not moved, so nothing else would notice.
+    const gutted =
+      menuNode !== null &&
+      menuNode.dataset.wtsControls !==
+        String(menuNode.querySelectorAll('[data-wts-control]').length)
+    const stale = menuNode === null || !stillMounted(menuNode) || gutted
     // The value survives — it is in `drafts` — but the element that would have delivered the
     // gesture's release does not, so the gesture ends here. That covers the page tearing the menu
     // off, and a second touch opening another template's menu while the first is still being
@@ -1494,6 +1578,17 @@ const renderControls = (
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
       // re-parented under a different template.
       const previous = menuNode
+      // Sampled before anything is discarded: once an adopted node is dropped, this document's
+      // active element has already fallen back to the body and the key is gone.
+      if (
+        previous !== null &&
+        !stillMounted(previous) &&
+        previous.contains(previous.ownerDocument.activeElement)
+      ) {
+        focusRestore =
+          (previous.ownerDocument.activeElement as HTMLElement | null)?.dataset[CONTROL] ??
+          focusRestore
+      }
       const scrollTop = previous?.scrollTop ?? 0
       const focusedKey =
         previous?.contains(document.activeElement) === true
@@ -1502,6 +1597,7 @@ const renderControls = (
       previous?.remove()
       menuNode = buildMenu(template, rerender)
       menuNode.dataset.wtsSignature = signature
+      menuNode.dataset.wtsControls = String(menuNode.querySelectorAll('[data-wts-control]').length)
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
       const abandoned = document.activeElement === null || document.activeElement === document.body

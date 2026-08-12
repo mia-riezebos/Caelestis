@@ -1483,7 +1483,7 @@ describe('the delete question is retracted by the gestures that dismiss it', () 
     rerender()
 
     byKey('confirm-delete').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
     )
     rerender()
 
@@ -2591,5 +2591,118 @@ describe('identity cannot be forged by data or by the host', () => {
     await settle()
 
     expect(appearanceWritten(0).opacity).toBe(0.72)
+  })
+})
+
+describe('an interaction is not swallowed by the edit it interrupts', () => {
+  it('lets the click that blurred a slider still reach its button', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.value = '0.6'
+    opacity.dispatchEvent(new Event('input'))
+    // The browser blurs the range on pointerdown, before the click lands.
+    const close = byKey('close')
+    opacity.dispatchEvent(new Event('blur'))
+    close.click()
+    rerender()
+    await settle()
+
+    // Committing synchronously on blur rebuilds the menu and removes the button mid-click.
+    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+    expect(appearanceWritten(0).opacity).toBe(0.6)
+  })
+
+  it('shows an overlay it is about to let you place', async () => {
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+
+    byKey('move').click()
+    await settle()
+
+    // The menu stays open after Hide on purpose, so Hide → Move is one click — and a hidden
+    // template is not painted, which leaves you positioning nothing.
+    expect(harness.setLocalVisible).toHaveBeenLastCalledWith('a', true)
+    expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
+  })
+
+  it('closes on Escape after a click on the map', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // The menu deliberately survives this, per the acceptance criteria.
+    mapCanvas.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    rerender()
+
+    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+  })
+
+  it('rebuilds when the host removes one of the menu’s controls', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // No state changes, so the signature does not move and the outer node is untouched.
+    byKey('close').remove()
+    rerender()
+
+    expect(menu().querySelector('[data-wts-control="close"]')).not.toBeNull()
+  })
+
+  it('replaces a gear the host reparented inside this document', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    const original = gear('a')
+
+    const hidden = document.createElement('div')
+    hidden.style.display = 'none'
+    document.body.appendChild(hidden)
+    hidden.appendChild(original)
+    rerender()
+
+    // getElementById would return the reparented one — it is still in the document, and earlier in
+    // document order — so ask for the one actually mounted where we mount them.
+    const mounted = [...document.querySelectorAll('#wts-overlay-button-a')].filter(
+      (el) => el.parentElement === document.body,
+    )
+    expect(mounted).toHaveLength(1)
+    expect(mounted[0]).not.toBe(original)
+  })
+
+  it('selects with the arrow keys, and writes once when the key comes up', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    // The role announces selection-follows-focus, so it has to actually select.
+    expect(byKey('Shape:square').getAttribute('aria-checked')).toBe('true')
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+
+    byKey('Shape:square').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    await settle()
+
+    // ...but `shape` is the stamped-tile cache key, so the durable write waits for the release.
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).shape).toBe('square')
   })
 })
