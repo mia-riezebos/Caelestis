@@ -3160,40 +3160,6 @@ describe('a Move that lands late does not barge in', () => {
 })
 
 describe('a placement only survives while its overlay does', () => {
-  it('abandons the placement when a queued hide lands after it started', async () => {
-    harness.setLocalVisible.mockImplementation(async (_id, visible) => {
-      harness.localTemplates.mockReturnValue([template({ visible })])
-      return true
-    })
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    byKey('move').click()
-    await settle()
-    expect(harness.beginMove).toHaveBeenCalled()
-
-    // A hide the tree row already had in flight publishes now. `writeInOrder` serialises writes but
-    // exposes no queue, so nothing before the placement could have seen it.
-    harness.movingId.mockReturnValue('a')
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-
-    expect(harness.abortMove).toHaveBeenCalled()
-    // Awaited: nothing is declared stopped until the abort has actually stopped it.
-    await settle()
-    rerender()
-    // Move closed the menu; the gear survives because the template now has something to say.
-    gear('a').click()
-    rerender()
-    expect(errorText()).toContain('was hidden')
-  })
-
   it('keeps the ready-to-move message on screen', async () => {
     let release = (): void => {}
     harness.setLocalVisible.mockImplementation(

@@ -131,7 +131,12 @@ export const installStyles = (): void => {
     installed.media === '' &&
     // The rule we actually depend on, not merely *a* rule: deleting `.wts-swatch` through CSSOM
     // leaves the text, the media, the enabled flag and most of the rules exactly as they were.
-    [...(installed.sheet?.cssRules ?? [])].some((rule) => rule.cssText.includes('.wts-swatch'))
+    // The base rule specifically. Its `[data-on]` siblings also mention the class, so a host that
+    // deletes only `.wts-swatch { aspect-ratio: 1 }` still satisfies a substring test while the
+    // swatches collapse.
+    [...(installed.sheet?.cssRules ?? [])].some(
+      (rule) => rule instanceof CSSStyleRule && rule.selectorText === '.wts-swatch',
+    )
   ) {
     return
   }

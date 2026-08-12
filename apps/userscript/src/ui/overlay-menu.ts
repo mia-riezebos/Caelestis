@@ -1252,11 +1252,20 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
             rerender()
             return
           }
+          // Condemned while the show was saving: `setLocalVisible` passed the guard before the
+          // delete set it, so the show still published. `beginMove` would refuse and nothing would
+          // ever clear the watch.
+          if (isDoomed(id)) {
+            rerender()
+            return
+          }
           closeOverlayMenu()
           shownForMove.add(id)
           beginMove(id, () => {
             shownForMove.delete(id)
           })
+          // Refused for some other reason — the watch belongs to a placement that never started.
+          if (!isMoving()) shownForMove.delete(id)
           buttons.get(id)?.focus()
           rerender()
         },
@@ -1270,12 +1279,13 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       return
     }
     closeOverlayMenu()
-    // `finish()` repaints, so the completion callback does not need to — and the gear is held by
-    // reference, so focusing it needs no repaint either. One click, one paint.
-    beginMove(id, () => {})
-    buttons.get(id)?.focus()
-    rerender()
-    // Back to the gear, which is about to become the only control left.
+    // `finish()` repaints, so the completion callback does not need to. F1: watched even on the
+    // direct path, because an external Hide already in flight is invisible from here too.
+    shownForMove.add(id)
+    beginMove(id, () => {
+      shownForMove.delete(id)
+    })
+    // The gear is held by reference, so focusing it needs no repaint of its own. One click, one paint.
     buttons.get(id)?.focus()
     rerender()
   })
@@ -1717,7 +1727,11 @@ const renderControls = (
   const groupsGone =
     openFor !== null &&
     [...(selections.get(openFor) ?? [])].some(
-      ([group, option]) => menuNode === null || controlIn(menuNode, `${group}:${option}`) === null,
+      ([group, option]) =>
+        // A detached menu still *contains* its cells; reachable is the question, not present.
+        menuNode === null ||
+        !stillMounted(menuNode) ||
+        controlIn(menuNode, `${group}:${option}`) === null,
     )
   if (openFor !== null && (keyboardGone || groupsGone)) flushSelections(openFor)
   // A hide that was already queued elsewhere lands after the placement has started, leaving the
@@ -1886,6 +1900,9 @@ const renderControls = (
       for (const control of builtControls) {
         if (menuNode?.contains(control) !== true) control.remove()
       }
+      // The rebuild is what takes the chosen cell away, and a browser does not retarget a pending
+      // keyup to its replacement — so the selection settles here, before it is replaced.
+      if (menuOwner !== null) flushSelections(menuOwner)
       const previous = menuNode
       // Sampled before anything is discarded: once an adopted node is dropped, this document's
       // active element has already fallen back to the body and the key is gone.
