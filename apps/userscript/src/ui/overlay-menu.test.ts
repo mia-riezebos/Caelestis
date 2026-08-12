@@ -3185,6 +3185,9 @@ describe('a placement only survives while its overlay does', () => {
     rerender()
 
     expect(harness.abortMove).toHaveBeenCalled()
+    // Awaited: nothing is declared stopped until the abort has actually stopped it.
+    await settle()
+    rerender()
     // Move closed the menu; the gear survives because the template now has something to say.
     gear('a').click()
     rerender()
@@ -3310,5 +3313,88 @@ describe('gestures settle when their control stops being reachable', () => {
     rerender()
 
     expect(extracted.isConnected).toBe(false)
+  })
+})
+
+describe('teardown and identity, at the edges', () => {
+  it('does not announce a stop for a placement that saved anyway', async () => {
+    // `abort()` returns immediately while move.ts is already finishing, so the placement is still
+    // running when it resolves — which means it did not stop and must not say it did.
+    harness.abortMove.mockImplementation(async () => {})
+    harness.isMoving.mockReturnValue(true)
+    harness.movingId.mockReturnValue('a')
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    await settle()
+    rerender()
+
+    expect(harness.abortMove).not.toHaveBeenCalled()
+  })
+
+  it('settles a selection when the host removes only the chosen radio', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    // The group stays; only the cell whose keyup would have settled the choice goes.
+    byKey('Shape:square').remove()
+    rerender()
+    await settle()
+
+    expect(appearanceWritten(0).shape).toBe('square')
+  })
+
+  it('takes an extracted control away when the map detaches', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const extracted = byKey('delete')
+    document.body.appendChild(extracted)
+    mapCanvas.remove()
+    rerender()
+
+    expect(extracted.isConnected).toBe(false)
+  })
+
+  it('takes an extracted control away when the overlay leaves the viewport', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const extracted = byKey('delete')
+    document.body.appendChild(extracted)
+    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
+    rerender()
+
+    expect(extracted.isConnected).toBe(false)
+  })
+
+  it('knows which template its menu belongs to without asking the DOM', async () => {
+    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.value = '0.44'
+    opacity.dispatchEvent(new Event('input'))
+
+    // The host strips the marker this used to trust for identity.
+    delete menu().dataset.wtsTemplate
+    gear('b').click()
+    rerender()
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ opacity: 0.44 }),
+    )
   })
 })

@@ -129,7 +129,9 @@ export const installStyles = (): void => {
     // A host can point `media` somewhere that never matches, or delete the rules through CSSOM,
     // and neither shows up in the text or the `disabled` flag.
     installed.media === '' &&
-    (installed.sheet?.cssRules.length ?? 0) > 0
+    // The rule we actually depend on, not merely *a* rule: deleting `.wts-swatch` through CSSOM
+    // leaves the text, the media, the enabled flag and most of the rules exactly as they were.
+    [...(installed.sheet?.cssRules ?? [])].some((rule) => rule.cssText.includes('.wts-swatch'))
   ) {
     return
   }

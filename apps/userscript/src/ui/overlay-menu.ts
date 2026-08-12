@@ -90,6 +90,14 @@ type FailureKey =
 let openFor: string | null = null
 /** The menu we built. Never `getElementById`: the page can mint an element under our id. */
 let menuNode: HTMLElement | null = null
+/**
+ * Which template {@link menuNode} was built for.
+ *
+ * Not `menuNode.dataset` — this module's whole rule is that page-owned markers are not identity, and
+ * a host stripping that attribute made the owner `undefined`, so a pending draft or selection was
+ * rebuilt away instead of flushed.
+ */
+let menuOwner: string | null = null
 /** Measured once per rebuild — the contents only change when the menu is rebuilt. */
 let menuBox: { width: number; height: number } = { width: 0, height: 0 }
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
@@ -257,6 +265,8 @@ const showingToMove = new Set<string>()
  * the only reliable answer: if the overlay we are placing goes away, the placement goes with it.
  */
 const shownForMove = new Set<string>()
+/** Placements we have asked to stop, so the ask is not repeated every frame while it settles. */
+const aborting = new Set<string>()
 const deleting = new Set<string>()
 
 /**
@@ -1260,8 +1270,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       return
     }
     closeOverlayMenu()
-    // Z9: `finish()` repaints, so passing `rerender` here paints the whole thing twice.
+    // `finish()` repaints, so the completion callback does not need to — and the gear is held by
+    // reference, so focusing it needs no repaint either. One click, one paint.
     beginMove(id, () => {})
+    buttons.get(id)?.focus()
     rerender()
     // Back to the gear, which is about to become the only control left.
     buttons.get(id)?.focus()
@@ -1484,13 +1496,22 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
   log('install', `overlay menu opened for ${id}`)
 }
 
-const closeOverlayMenu = (): void => {
-  // Anything the host pulled out of the menu goes with it. Cleaning only during the open-menu
-  // repair leaves an extracted Delete button live in the page the moment ✕ or Escape runs.
+/**
+ * Drop any control the host pulled out of the menu.
+ *
+ * Every path that takes the menu away has to do this — Close, Escape, a map detach, the overlay
+ * leaving the viewport — because an extracted Delete button keeps its handler and can destroy the
+ * template with nothing on screen to show for it.
+ */
+const dropExtractedControls = (): void => {
   for (const control of builtControls) {
     if (menuNode?.contains(control) !== true) control.remove()
   }
   builtControls = new Set()
+}
+
+const closeOverlayMenu = (): void => {
+  dropExtractedControls()
   if (escapeListener !== null) {
     window.removeEventListener('keydown', escapeListener)
     escapeListener = null
@@ -1512,8 +1533,10 @@ const closeOverlayMenu = (): void => {
   if (openFor !== null && !deleting.has(openFor)) confirming.delete(openFor)
   openFor = null
   focusRequest = null
+  dropExtractedControls()
   menuNode?.remove()
   menuNode = null
+  menuOwner = null
 }
 
 /**
@@ -1545,8 +1568,10 @@ const detachControls = (): void => {
   rememberFocus()
   for (const [, button] of buttons) button.remove()
   buttons.clear()
+  dropExtractedControls()
   menuNode?.remove()
   menuNode = null
+  menuOwner = null
 }
 
 /**
@@ -1687,23 +1712,39 @@ const renderControls = (
   if (openFor !== null && menuNode !== null && !heldWithin(menuNode)) flushDrafts(openFor)
   // Its own control gone — removed by the host, or replaced before keyup — is the same thing as the
   // keyboard hold going: nothing is coming to settle it.
+  // The chosen cell, not just its group: a host removing one radio leaves the group standing while
+  // the element whose keyup would have settled the choice is gone.
   const groupsGone =
     openFor !== null &&
-    [...(selections.get(openFor)?.keys() ?? [])].some(
-      (group) => menuNode?.querySelector(`[role="radiogroup"][aria-label="${group}"]`) == null,
+    [...(selections.get(openFor) ?? [])].some(
+      ([group, option]) => menuNode === null || controlIn(menuNode, `${group}:${option}`) === null,
     )
   if (openFor !== null && (keyboardGone || groupsGone)) flushSelections(openFor)
   // A hide that was already queued elsewhere lands after the placement has started, leaving the
   // user positioning something invisible. The later action wins: the placement is abandoned.
   const placing = movingId()
-  if (placing !== null && shownForMove.has(placing) && templateFor(placing)?.visible === false) {
-    shownForMove.delete(placing)
-    recordFailure(
-      placing,
-      'move-stopped',
-      (name) => `“${name}” was hidden, so its placement was stopped.`,
-    )
-    void abortMove()
+  if (
+    placing !== null &&
+    shownForMove.has(placing) &&
+    templateFor(placing)?.visible === false &&
+    !aborting.has(placing)
+  ) {
+    // Reported only once it has actually stopped. `abort()` returns immediately while `move.ts` is
+    // already finishing, so announcing first turns a save that succeeded into a false "stopped" —
+    // and a save that failed resumes the placement with nobody left watching it.
+    aborting.add(placing)
+    const stopping = placing
+    void abortMove().then(() => {
+      aborting.delete(stopping)
+      if (isMoving()) return
+      shownForMove.delete(stopping)
+      recordFailure(
+        stopping,
+        'move-stopped',
+        (name) => `“${name}” was hidden, so its placement stopped.`,
+      )
+      lastRerender?.()
+    })
   }
   // A pending Anchor choice outlives its group when a reconciliation switches the shape to `full`:
   // keyup has nothing to reach, and the entry would be resurrected the next time a shape brings the
@@ -1744,8 +1785,10 @@ const renderControls = (
       if (openFor === template.id && menuNode !== null) {
         if (heldWithin(menuNode)) continue
         rememberFocus()
+        dropExtractedControls()
         menuNode.remove()
         menuNode = null
+        menuOwner = null
       } else if (button === document.activeElement) {
         focusedGear = template.id
       }
@@ -1816,10 +1859,10 @@ const renderControls = (
     // gesture's release does not, so the gesture ends here. That covers the page tearing the menu
     // off, and a second touch opening another template's menu while the first is still being
     // dragged, where the draft belongs to whoever the menu was for a moment ago.
-    const previousOwner = menuNode?.dataset.wtsTemplate
+    const previousOwner = menuOwner
     // The owner changing settles the previous owner's gestures whether or not a slider was held: a
     // touch browser need not focus a button, so switching menus can produce no blur at all.
-    if (previousOwner !== undefined && previousOwner !== template.id) {
+    if (previousOwner !== null && previousOwner !== template.id) {
       releaseAllHolds()
       flushDrafts(previousOwner)
       flushSelections(previousOwner)
@@ -1830,7 +1873,7 @@ const renderControls = (
     }
     const dragging =
       !stale &&
-      menuNode?.dataset.wtsTemplate === template.id &&
+      menuOwner === template.id &&
       // *Any* of them: two pointers can be down at once on a touch device, and rebuilding when the
       // first is released takes the second one's element away mid-gesture.
       heldWithin(menuNode)
@@ -1857,6 +1900,7 @@ const renderControls = (
       previous?.remove()
       menuNode = buildMenu(template, rerender)
       menuNode.dataset.wtsSignature = signature
+      menuOwner = template.id
       builtControls = new Set(
         [...menuNode.querySelectorAll('[data-wts-control]')].filter(
           (node): node is HTMLElement => node instanceof HTMLElement,
