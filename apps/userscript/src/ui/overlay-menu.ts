@@ -67,9 +67,14 @@ const GEAR_SIZE = 28
  */
 const CONTROL = 'wtsControl'
 
-type Field = 'appearance' | 'visible' | 'delete'
-/** Rendered in this order, so a rebuild cannot reshuffle what the user is looking at. */
-const FIELDS: readonly Field[] = ['delete', 'visible', 'appearance']
+/**
+ * What a refused write is recorded against.
+ *
+ * Granular on purpose. One `appearance` bucket lets a successful colour change clear the banner for
+ * a shape change refused moments earlier — the overlay ends up without the shape and without a word
+ * about it — so an appearance write is keyed by the properties it actually patched.
+ */
+type FailureKey = 'delete' | 'visible' | 'move' | `appearance:${string}`
 
 let openFor: string | null = null
 /** The menu we built. Never `getElementById`: the page can mint an element under our id. */
@@ -100,8 +105,16 @@ interface Intent {
 const intents = new Map<string, Intent>()
 let sequence = 0
 
-/** Refused writes, per template and per field, until a later write of that field succeeds. */
-const failures = new Map<string, Map<Field, string>>()
+/**
+ * Refused writes, per template and per key, until a later write of that same key succeeds.
+ *
+ * The value is a function of the name rather than a string: a message built when the click happened
+ * names the template as it was then, and a rename landing before the refusal puts the old name in a
+ * banner under the new heading.
+ */
+const failures = new Map<string, Map<FailureKey, (name: string) => string>>()
+/** Which failures a screen reader has already been told about, so a rebuild does not repeat them. */
+const announced = new Map<string, Set<FailureKey>>()
 /** Templates whose delete question is up, and those whose delete is actually running. */
 const confirming = new Set<string>()
 const deleting = new Set<string>()
@@ -153,17 +166,20 @@ const releaseIntent = (id: string, seq: number): void => {
   if (intents.get(id)?.seq === seq) intents.delete(id)
 }
 
-const recordFailure = (id: string, field: Field, message: string): void => {
-  const forTemplate = failures.get(id) ?? new Map<Field, string>()
-  forTemplate.set(field, message)
+const recordFailure = (id: string, key: FailureKey, message: (name: string) => string): void => {
+  const forTemplate = failures.get(id) ?? new Map<FailureKey, (name: string) => string>()
+  forTemplate.set(key, message)
   failures.set(id, forTemplate)
 }
 
-/** Clear only this field's failure: a successful colour change says nothing about a refused hide. */
-const clearFailure = (id: string, field: Field): void => {
+/** Clear only these keys: a successful colour change says nothing about a refused hide or shape. */
+const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
   const forTemplate = failures.get(id)
   if (forTemplate === undefined) return
-  forTemplate.delete(field)
+  for (const key of keys) {
+    forTemplate.delete(key)
+    announced.get(id)?.delete(key)
+  }
   if (forTemplate.size === 0) failures.delete(id)
 }
 
@@ -171,9 +187,21 @@ const forget = (id: string): void => {
   intents.delete(id)
   queues.delete(id)
   failures.delete(id)
+  announced.delete(id)
   confirming.delete(id)
   deleting.delete(id)
 }
+
+/** Every template this module still remembers anything about, whether or not it has a button. */
+const remembered = (): Set<string> =>
+  new Set([
+    ...buttons.keys(),
+    ...intents.keys(),
+    ...queues.keys(),
+    ...failures.keys(),
+    ...confirming,
+    ...deleting,
+  ])
 
 const enqueue = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
   const previous = queues.get(id) ?? Promise.resolve()
@@ -198,26 +226,26 @@ const enqueue = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
  */
 const commit = (
   id: string,
-  field: Exclude<Field, 'delete'>,
+  keys: readonly FailureKey[],
   intent: Omit<Intent, 'seq'>,
   run: () => Promise<boolean>,
-  refused: string,
+  refused: (name: string) => string,
   rerender: () => void,
 ): void => {
   const seq = intend(id, intent)
-  clearFailure(id, field)
+  clearFailure(id, ...keys)
   rerender()
   void enqueue(id, run)
     .then(
       (saved) => {
-        if (saved) clearFailure(id, field)
-        else recordFailure(id, field, refused)
+        if (saved) clearFailure(id, ...keys)
+        else for (const key of keys) recordFailure(id, key, refused)
       },
       (error: unknown) => {
         // Without this the intent is never released and the menu asserts, indefinitely, a state
         // that was never saved.
-        warn('install', `${field} for ${nameFor(id)} threw`, error)
-        recordFailure(id, field, refused)
+        warn('install', `${keys.join(', ')} for ${nameFor(id)} threw`, error)
+        for (const key of keys) recordFailure(id, key, refused)
       },
     )
     .finally(() => {
@@ -246,7 +274,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
     confirming.has(id),
     deleting.has(id),
-    FIELDS.map((field) => failures.get(id)?.get(field) ?? '').join(''),
+    [...(failures.get(id) ?? [])].map(([key, text]) => `${key}=${text(template.name)}`).join(','),
   ].join('|')
 }
 
@@ -373,7 +401,12 @@ const radioGroup = <T extends string>(
               : -1
       if (target === -1) return
       event.preventDefault()
-      cells[target]?.focus()
+      const next = cells[target]
+      if (next === undefined) return
+      // The tab stop moves with focus. Leaving it on the selected option makes Shift+Tab land back
+      // inside the group instead of leaving it.
+      for (const other of cells) other.tabIndex = other === next ? 0 : -1
+      next.focus()
     })
     cells.push(cell)
     group.appendChild(cell)
@@ -385,16 +418,22 @@ const radioGroup = <T extends string>(
 const failureBanners = (id: string): HTMLElement[] => {
   const forTemplate = failures.get(id)
   if (forTemplate === undefined) return []
-  return FIELDS.flatMap((field) => {
-    const message = forTemplate.get(field)
-    if (message === undefined) return []
+  const name = nameFor(id)
+  const seen = announced.get(id) ?? new Set<FailureKey>()
+  announced.set(id, seen)
+  return [...forTemplate].map(([key, message]) => {
     const el = document.createElement('div')
     el.setAttribute('data-wts-error', '')
-    el.setAttribute('role', 'alert')
+    // A rebuild reconstructs an identical node, and a fresh `role="alert"` is read out again — so
+    // an unrelated colour click would re-announce a visibility failure from minutes ago.
+    if (!seen.has(key)) {
+      el.setAttribute('role', 'alert')
+      seen.add(key)
+    }
     el.className = 'alert alert-error text-xs'
     Object.assign(el.style, { padding: '0.375rem 0.5rem', marginTop: '0.25rem' })
-    el.textContent = message
-    return [el]
+    el.textContent = message(name)
+    return el
   })
 }
 
@@ -443,11 +482,16 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
     deleting.add(id)
     clearFailure(id, 'delete')
     rerender()
-    void enqueue(id, async () => await removeLocalTemplate(id)).then(
+    // Deliberately *not* queued behind this module's own writes. `removeLocalTemplate` sets the
+    // store's terminal `deleting` guard synchronously, which is what stops an in-flight save from
+    // resurrecting the record — holding it behind a slow `setLocalVisible` defeats that and leaves
+    // the question reading "Deleting…" for as long as the bitmaps take. The store serialises this
+    // itself, through `writeInOrder`.
+    void removeLocalTemplate(id).then(
       (removed) => {
         deleting.delete(id)
         if (!removed) {
-          recordFailure(id, 'delete', `Could not delete “${nameFor(id)}”.`)
+          recordFailure(id, 'delete', (name) => `Could not delete “${name}”.`)
           rerender()
           return
         }
@@ -463,7 +507,7 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
       (error: unknown) => {
         deleting.delete(id)
         warn('install', `delete for ${nameFor(id)} threw`, error)
-        recordFailure(id, 'delete', `Could not delete “${nameFor(id)}”.`)
+        recordFailure(id, 'delete', (name) => `Could not delete “${name}”.`)
         rerender()
       },
     )
@@ -509,12 +553,13 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   const edit = (patch: Partial<Appearance>): void => {
     commit(
       id,
-      'appearance',
+      // Keyed by what this patch actually changes, so a colour success cannot clear a refused shape.
+      Object.keys(patch).map((property): FailureKey => `appearance:${property}`),
       { appearance: { ...appearanceFor(id), ...patch } },
       // Composed at dispatch, so a reconciliation that landed while this waited is not overwritten
       // by a snapshot taken before it.
       async () => await setAppearance(id, { ...storedAppearance(id), ...patch }),
-      `Could not update “${nameFor(id)}”.`,
+      (name) => `Could not update “${name}”.`,
       rerender,
     )
   }
@@ -539,14 +584,15 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // overlay, pressed", which reads as though showing were already on.
   hide.setAttribute('aria-label', hide.title)
   hide.appendChild(icon('image', 'size-4'))
+  hide.disabled = deleting.has(id)
   hide.addEventListener('click', () => {
     const next = !visibleFor(id)
     commit(
       id,
-      'visible',
+      ['visible'],
       { visible: next },
       async () => await setLocalVisible(id, next),
-      `Could not change visibility for “${nameFor(id)}”.`,
+      (name) => `Could not change visibility for “${name}”.`,
       rerender,
     )
   })
@@ -558,12 +604,17 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   move.title = 'Move this overlay'
   move.setAttribute('aria-label', 'Move this overlay')
   move.appendChild(icon('move', 'size-4'))
+  // Placing a template that is being deleted leaves the placement bar bound to a record that is
+  // about to stop existing.
+  move.disabled = deleting.has(id)
   move.addEventListener('click', () => {
     // `beginMove` refuses while another placement is running. It is the only action here that can
     // refuse without saying anything, and closing first would throw away the one surface able to
     // report it.
     if (isMoving()) {
-      recordFailure(id, 'visible', 'Finish the placement already in progress first.')
+      // Its own key, so a later visibility change cannot clear this and a visibility failure
+      // cannot be overwritten by it.
+      recordFailure(id, 'move', () => 'Finish the placement already in progress first.')
       rerender()
       return
     }
@@ -591,6 +642,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // with a fresh enabled Cancel, over a delete that is already running.
   remove.disabled = deleting.has(id)
   remove.addEventListener('click', () => {
+    // Only when this actually opens the question. Setting it again changes no signature, so no
+    // rebuild consumes it, and the next unrelated one — a rename, a refusal — would move focus onto
+    // a destructive button the user never asked for.
+    if (confirming.has(id)) return
     confirming.add(id)
     focusRequest = 'confirm-delete'
     rerender()
@@ -704,6 +759,11 @@ const closeOverlayMenu = (): void => {
 const detachControls = (): void => {
   for (const [, button] of buttons) button.remove()
   buttons.clear()
+  // `openFor` survives a detach, so the menu comes back when the map does — and it should come back
+  // with the keyboard where the user left it.
+  if (menuNode?.contains(document.activeElement) === true) {
+    focusRequest = (document.activeElement as HTMLElement | null)?.dataset[CONTROL] ?? focusRequest
+  }
   menuNode?.remove()
   menuNode = null
 }
@@ -717,9 +777,12 @@ const detachControls = (): void => {
  * away in-flight write ordering and pending failures for templates that are all still there.
  */
 const sweepControls = (live: ReadonlySet<string>): void => {
-  for (const [id, button] of buttons) {
+  // Over everything remembered, not just what has a button: a template panned out of view has
+  // already lost its button, so deleting it while off-screen would strand its intent, queue and
+  // failure state for the rest of the session — and hand them back if that id ever reappeared.
+  for (const id of remembered()) {
     if (live.has(id)) continue
-    button.remove()
+    buttons.get(id)?.remove()
     buttons.delete(id)
     forget(id)
   }
@@ -853,7 +916,14 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
 
     if (openFor !== template.id) continue
     const signature = menuSignature(template)
-    if (menuNode === null || !menuNode.isConnected || menuNode.dataset.wtsSignature !== signature) {
+    // A drag in progress outranks a rebuild. The range element would be replaced before it ever
+    // fired `change`, so the value the user was setting is simply lost — and a refusal landing
+    // elsewhere, or another tab renaming the template, is enough to trigger it.
+    const dragging = menuNode?.querySelector('input[data-wts-held="true"]') != null
+    if (
+      !dragging &&
+      (menuNode === null || !menuNode.isConnected || menuNode.dataset.wtsSignature !== signature)
+    ) {
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
       // re-parented under a different template.
@@ -875,6 +945,7 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
       const box = menuNode.getBoundingClientRect()
       menuBox = { width: box.width, height: box.height }
     }
+    if (menuNode === null) continue
     refreshSliders(menuNode, appearanceFor(template.id))
     // Keep it on screen when the overlay is near an edge, on both sides: a template hanging off
     // the left keeps a clamped, reachable button, and its menu has to be reachable too. It also has
