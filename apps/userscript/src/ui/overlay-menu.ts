@@ -128,6 +128,8 @@ let focusRequest: string | null = null
 let focusRestore: string | null = null
 /** A gear to focus once the map comes back and it exists again. */
 let focusedGear: string | null = null
+/** The frame that held the keyboard when we let go of it — not merely "an iframe is focused". */
+let focusHost: Element | null = null
 /**
  * The slider currently under a gesture, held by reference.
  *
@@ -433,6 +435,25 @@ const activeIn = (node: Node | null | undefined): Element | null => {
     ? active.shadowRoot.activeElement
     : active
 }
+
+/**
+ * Where the keyboard is, asked of this node's own root and then of the document.
+ *
+ * A node the host adopted into a shadow root holds focus in *that* root, where the main document
+ * reports only the shadow host — and a root that is neither answers for neither, which is the
+ * ordinary case and the document's to answer.
+ */
+const keyboardOn = (node: Node | null | undefined): Element | null =>
+  activeIn(node) ?? document.activeElement
+
+/**
+ * The frame our focus went out to, if the host adopted this node into one.
+ *
+ * `document.activeElement` is that frame, not our control — but so is *any* iframe the user clicks
+ * into afterwards, and the two are only distinguishable by which frame is holding our node.
+ */
+const holdingFrame = (node: Node | null | undefined): Element | null =>
+  node?.ownerDocument?.defaultView?.frameElement ?? null
 
 const stillMounted = (node: Element | null | undefined): boolean =>
   inOurDocument(node) && node?.parentElement === document.body
@@ -1521,7 +1542,12 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
         return
       }
       closeOverlayMenu()
-      buttons.get(id)?.focus()
+      const gear = buttons.get(id)
+      gear?.focus()
+      // Escape returns the keyboard to the gear. With the map detached there is no gear to return
+      // it to, so the intent is kept instead and the rebuild honours it — `closeOverlayMenu` has
+      // just cleared `focusRestore`, which was the menu's, not this.
+      if (gear === undefined) focusedGear = id
       rerender()
     }
     window.addEventListener('keydown', escapeListener)
@@ -1590,13 +1616,20 @@ const closeOverlayMenu = (): void => {
  * does own is that the gesture is over — the thing that would have delivered its release is going.
  */
 const rememberFocus = (): void => {
-  const active = document.activeElement
-  if (menuNode?.contains(active) === true) {
-    focusRestore = (active as HTMLElement | null)?.dataset[CONTROL] ?? focusRestore
+  // Asked of the node's own root: focus inside a shadow root the host adopted our menu into leaves
+  // the main document's active element as the shadow *host*, and neither branch below would match.
+  const inMenu = keyboardOn(menuNode)
+  if (menuNode?.contains(inMenu) === true) {
+    focusRestore = (inMenu as HTMLElement | null)?.dataset[CONTROL] ?? focusRestore
+    focusHost = holdingFrame(menuNode)
   }
   // Gears carry no control key — they are not menu contents — so the keyboard's place on one is
   // remembered by template instead.
-  for (const [id, button] of buttons) if (button === active) focusedGear = id
+  for (const [id, button] of buttons) {
+    if (button !== keyboardOn(button)) continue
+    focusedGear = id
+    focusHost = holdingFrame(button)
+  }
   releaseAllHolds()
   if (openFor !== null) {
     flushDrafts(openFor)
@@ -1905,7 +1938,9 @@ const renderControls = (
         // deliberate thing to do here, and the user may well have clicked into the panel since —
         // but an iframe holding it is the adoption case this exists to recover from.
         const active = document.activeElement
-        if (active === null || active === document.body || active instanceof HTMLIFrameElement) {
+        const host = focusHost
+        focusHost = null
+        if (active === null || active === document.body || (host !== null && active === host)) {
           button.focus()
         }
       }
@@ -1976,6 +2011,7 @@ const renderControls = (
       // active element has already fallen back to the body and the key is gone.
       if (previous !== null && !stillMounted(previous) && previous.contains(activeIn(previous))) {
         focusRestore = (activeIn(previous) as HTMLElement | null)?.dataset[CONTROL] ?? focusRestore
+        focusHost = holdingFrame(previous)
       }
       const scrollTop = previous?.scrollTop ?? 0
       const focusedKey =
@@ -1995,10 +2031,11 @@ const renderControls = (
       menuNode.scrollTop = scrollTop
       // An adopted node's focus counts as abandoned: the host's iframe holding it is precisely the
       // case the restore exists for, and `document.activeElement` is that iframe, not our control.
+      // *That* iframe, though — one the user has since clicked into is where they want to be.
       const abandoned =
         document.activeElement === null ||
         document.activeElement === document.body ||
-        document.activeElement instanceof HTMLIFrameElement
+        (focusHost !== null && document.activeElement === focusHost)
       const wanted = focusRequest ?? focusedKey ?? (abandoned ? focusRestore : null)
       // Size and Anchor exist only for a sub-pixel shape, so another tab setting Full takes the
       // control the keyboard was on. The header close button is always there and never disabled.

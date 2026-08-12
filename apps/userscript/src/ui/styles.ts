@@ -116,6 +116,13 @@ const CSS = `
  */
 let installed: HTMLStyleElement | null = null
 
+/** Every rule in our own sheet that styles a swatch, in cascade order. */
+const swatchRules = (sheet: CSSStyleSheet | null | undefined): CSSStyleRule[] =>
+  [...(sheet?.cssRules ?? [])].filter(
+    (rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule && rule.selectorText === '.wts-swatch',
+  )
+
 /** Is this `aspect-ratio` square? `1`, `1 / 1` and `2/2` all are; `auto` and `16 / 9` are not. */
 const isSquare = (value: string): boolean => {
   const [width, height = '1'] = value.split('/').map((part) => Number(part.trim()))
@@ -138,14 +145,14 @@ export const installStyles = (): void => {
     // The declaration we actually depend on, not merely *a* rule mentioning the class: the text,
     // the media, the enabled flag, the rule count and even the selector all survive a host calling
     // `rule.style.removeProperty('aspect-ratio')`, while every colour toggle collapses to nothing.
-    [...(installed.sheet?.cssRules ?? [])].some(
-      (rule) =>
-        rule instanceof CSSStyleRule &&
-        rule.selectorText === '.wts-swatch' &&
-        // The value, not merely the presence: `setProperty('aspect-ratio', 'auto')` leaves the
-        // declaration standing and the swatches just as collapsed as deleting it. Compared as a
-        // ratio rather than as text, because CSSOM serialises `1` back as `1 / 1`.
-        isSquare(rule.style.getPropertyValue('aspect-ratio')),
+    swatchRules(installed.sheet).length > 0 &&
+    // *Every* one of them, not merely one: a host appending `.wts-swatch { aspect-ratio: auto }`
+    // leaves the square rule standing and the text unchanged while winning the cascade.
+    swatchRules(installed.sheet).every((rule) =>
+      // The value, not merely the presence: `setProperty('aspect-ratio', 'auto')` leaves the
+      // declaration standing and the swatches just as collapsed as deleting it. Compared as a
+      // ratio rather than as text, because CSSOM serialises `1` back as `1 / 1`.
+      isSquare(rule.style.getPropertyValue('aspect-ratio')),
     )
   ) {
     return
