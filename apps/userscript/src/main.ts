@@ -88,7 +88,9 @@ const draw = (frame: TileFrame): void => {
   try {
     renderOverlayControls(repaint, mapCanvas)
   } catch (error) {
-    warn('frame', 'overlay controls failed', String(error))
+    // Not `String(error)`: this bundle runs in the page world, and a thrown value whose primitive
+    // conversion throws would escape the catch and take the rest of the frame with it.
+    warn('frame', 'overlay controls failed', error)
   }
   const canvas = overlayCanvas()
   const mapParent = mapCanvas.parentElement

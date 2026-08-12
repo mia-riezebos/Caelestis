@@ -139,6 +139,30 @@ const releaseAllHolds = (): void => {
  * *from* it, and a teardown that forgets it cannot lose it.
  */
 const drafts = new Map<string, Map<'size' | 'opacity', number>>()
+/**
+ * An arrow-key selection the user has made but not released, by template then group.
+ *
+ * The same lesson as {@link drafts}: kept in the group's closure it died with the element, so a
+ * rename or a remote change rebuilding the menu before keyup lost the selection silently — removing
+ * a focused element fires no blur — and a blur during a click committed mid-gesture.
+ */
+const selections = new Map<string, Map<string, string>>()
+
+const selectionFor = (id: string, group: string): string | undefined =>
+  selections.get(id)?.get(group)
+
+const setSelection = (id: string, group: string, option: string): void => {
+  const forTemplate = selections.get(id) ?? new Map<string, string>()
+  forTemplate.set(group, option)
+  selections.set(id, forTemplate)
+}
+
+const clearSelection = (id: string, group: string): void => {
+  const forTemplate = selections.get(id)
+  if (forTemplate === undefined) return
+  forTemplate.delete(group)
+  if (forTemplate.size === 0) selections.delete(id)
+}
 
 const draftFor = (id: string, property: 'size' | 'opacity'): number | undefined =>
   drafts.get(id)?.get(property)
@@ -213,6 +237,8 @@ interface Refusal {
 const refusals = new Map<string, Map<FailureKey, Refusal>>()
 /** Templates whose delete question is up, and those whose delete is actually running. */
 const confirming = new Set<string>()
+/** Templates being made visible so they can be placed — one such request at a time each. */
+const showingToMove = new Set<string>()
 const deleting = new Set<string>()
 
 /**
@@ -455,7 +481,9 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
 }
 
 const forget = (id: string): void => {
+  showingToMove.delete(id)
   drafts.delete(id)
+  selections.delete(id)
   refusals.delete(id)
   if (focusedGear === id) focusedGear = null
   appearanceIntents.delete(id)
@@ -478,6 +506,7 @@ const remembered = (): Set<string> =>
     ...announced.keys(),
     ...refusals.keys(),
     ...drafts.keys(),
+    ...selections.keys(),
     ...confirming,
     ...deleting,
     ...(focusedGear === null ? [] : [focusedGear]),
@@ -576,6 +605,8 @@ const menuSignature = (template: PlacedTemplate): string => {
     visibleFor(id),
     appearance.shape,
     appearance.anchor,
+    selectionFor(id, 'Shape') ?? '',
+    selectionFor(id, 'Anchor') ?? '',
     // Render inputs now. They were excluded because a rebuild mid-drag dropped the gesture's value
     // along with the element; the value lives in `drafts` and survives, and the drag guard still
     // keeps the element itself from being replaced under the pointer.
@@ -769,6 +800,7 @@ const section = (title: string): HTMLElement => {
  * Enter and Space select, which native buttons already do.
  */
 const radioGroup = <T extends string>(
+  id: string,
   label: string,
   options: ReadonlyArray<{ id: T; label: string; hint?: string; text: boolean }>,
   selected: T,
@@ -777,16 +809,20 @@ const radioGroup = <T extends string>(
   className: (chosen: boolean) => string,
 ): HTMLElement => {
   const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'])
+  const settleSelection = (): void => {
+    const chosen = selectionFor(id, label)
+    if (chosen === undefined) return
+    clearSelection(id, label)
+    onSelect(chosen as T)
+  }
   const group = document.createElement('div')
   group.setAttribute('role', 'radiogroup')
   group.setAttribute('aria-label', label)
   const cells: HTMLButtonElement[] = []
-  // Selection follows focus, as `radiogroup` announces — but the write waits for the key to come
-  // back up. `shape` is part of the stamped-tile cache key, so one durable write per OS key repeat
-  // re-stamps the viewport at scale 3.
-  let pending: T | null = null
+  const shown = (selectionFor(id, label) as T | undefined) ?? selected
+
   options.forEach((option, index) => {
-    const chosen = option.id === selected
+    const chosen = option.id === shown
     const cell = document.createElement('button')
     cell.type = 'button'
     cell.dataset[CONTROL] = `${label}:${option.id}`
@@ -820,7 +856,7 @@ const radioGroup = <T extends string>(
       const next = cells[target]
       const picked = options[target]
       if (next === undefined || picked === undefined) return
-      pending = picked.id
+      setSelection(id, label, picked.id)
       for (const cell of cells) {
         const chosenNow = cell === next
         cell.setAttribute('aria-checked', String(chosenNow))
@@ -832,21 +868,16 @@ const radioGroup = <T extends string>(
       next.focus()
     })
     cell.addEventListener('keyup', (event) => {
-      if (!ARROWS.has(event.key) || pending === null) return
-      const chosen = pending
-      pending = null
-      onSelect(chosen)
+      if (!ARROWS.has(event.key)) return
+      settleSelection()
     })
     cell.addEventListener('blur', (event) => {
-      // Only when focus actually leaves the group. `next.focus()` during arrow navigation blurs the
-      // cell we came from, and committing there writes on *keydown* — then the repaint rebuilds the
-      // menu while `focus()` is still running and the destination cell is gone.
-      if (pending === null) return
+      // Only when focus actually leaves the group, and never synchronously: `next.focus()` during
+      // arrow navigation blurs the cell we came from, and a real click on Close blurs before the
+      // click lands — committing in either case rebuilds the menu out from under the gesture.
       const to = (event as FocusEvent).relatedTarget
       if (to instanceof Node && group.contains(to)) return
-      const chosen = pending
-      pending = null
-      onSelect(chosen)
+      setTimeout(() => settleSelection(), 0)
     })
     cells.push(cell)
     group.appendChild(cell)
@@ -1113,31 +1144,46 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     // Awaited, because visibility is published only after slicing and persistence succeed: starting
     // the placement first means positioning nothing, and a refused show means positioning nothing
     // for the whole session.
-    if (!visibleFor(id)) {
+    // One request at a time, and every assumption re-checked when it lands: the user can press
+    // Move again, press Hide, open another template's menu, or start a placement from the panel
+    // while the bitmaps are being built.
+    if (showingToMove.has(id)) return
+    if (!templateFor(id)?.visible) {
+      showingToMove.add(id)
       const seq = intend(visibleIntents, id, true)
       clearFailure(id, 'visible')
       rerender()
+      const refused = (name: string): string => `Could not show “${name}” to move it.`
       void setLocalVisible(id, true).then(
         (shown) => {
+          showingToMove.delete(id)
           releaseIntent(visibleIntents, id, seq)
-          if (!shown) {
-            recordFailure(
-              id,
-              'visible',
-              (name) => `Could not show “${name}” to move it.`,
-              () => templateFor(id)?.visible === true,
-            )
+          // Asked for again in the meantime — a later Hide, or a hide queued behind this show —
+          // means the user no longer wants it visible, so there is nothing to place.
+          const wanted = visibleIntents.get(id)?.value ?? shown
+          if (!shown || !wanted) {
+            if (!shown)
+              recordFailure(id, 'visible', refused, () => templateFor(id)?.visible === true)
             rerender()
             return
           }
-          closeOverlayMenu()
-          // `finish()` repaints for us, so the completion callback does not need to.
+          // A show that worked says nothing was wrong with visibility.
+          clearFailure(id, 'visible')
+          if (isMoving()) {
+            recordFailure(id, 'move', () => 'Finish the placement already in progress first.')
+            rerender()
+            return
+          }
+          // Only our own menu, and only if it is still ours to close.
+          if (openFor === id) closeOverlayMenu()
           beginMove(id, () => {})
+          buttons.get(id)?.focus()
           rerender()
         },
         () => {
+          showingToMove.delete(id)
           releaseIntent(visibleIntents, id, seq)
-          recordFailure(id, 'visible', (name) => `Could not show “${name}” to move it.`)
+          recordFailure(id, 'visible', refused)
           rerender()
         },
       )
@@ -1211,6 +1257,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // refuse it anyway and leave a meaningless banner beside "Deleting…".
   const locked = isDoomed(id)
   const shapes = radioGroup(
+    id,
     'Shape',
     SHAPES.map((shape) => ({ id: shape.id, label: shape.label, hint: shape.hint, text: true })),
     appearance.shape,
@@ -1234,6 +1281,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       ),
     )
     const anchors = radioGroup(
+      id,
       'Anchor',
       ANCHORS.map((anchor) => ({ id: anchor.id, label: anchor.label, text: false })),
       appearance.anchor,
@@ -1532,7 +1580,11 @@ const renderControls = (
   // A held control the host has taken out of our document will never deliver its release, and
   // neither teardown path notices, because the menu around it is untouched.
   for (const [pointerId, slider] of [...heldPointers]) {
-    if (!inOurDocument(slider)) heldPointers.delete(pointerId)
+    if (inOurDocument(slider)) continue
+    heldPointers.delete(pointerId)
+    // Its window-level release, if capture was unavailable, would otherwise outlive it and settle
+    // whatever draft the replacement control has by then.
+    for (const drop of captureFallbacks) drop()
   }
   if (heldByKey !== null && !inOurDocument(heldByKey)) heldByKey = null
   if (openFor !== null && menuNode !== null && !heldWithin(menuNode)) flushDrafts(openFor)
@@ -1602,8 +1654,10 @@ const renderControls = (
       if (focusedGear === template.id) {
         focusedGear = null
         // Only if the keyboard is still where it was abandoned. Panning to look at the map is the
-        // deliberate thing to do here, and the user may well have clicked into the panel since.
-        if (document.activeElement === null || document.activeElement === document.body) {
+        // deliberate thing to do here, and the user may well have clicked into the panel since —
+        // but an iframe holding it is the adoption case this exists to recover from.
+        const active = document.activeElement
+        if (active === null || active === document.body || active instanceof HTMLIFrameElement) {
           button.focus()
         }
       }
@@ -1654,6 +1708,11 @@ const renderControls = (
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
       // re-parented under a different template.
+      // Any control the host pulled out of the menu goes too: still connected, still carrying our
+      // handler, still able to delete A or close B long after its menu was replaced.
+      for (const control of builtControls) {
+        if (menuNode?.contains(control) !== true) control.remove()
+      }
       const previous = menuNode
       // Sampled before anything is discarded: once an adopted node is dropped, this document's
       // active element has already fallen back to the body and the key is gone.
@@ -1675,7 +1734,12 @@ const renderControls = (
       )
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
-      const abandoned = document.activeElement === null || document.activeElement === document.body
+      // An adopted node's focus counts as abandoned: the host's iframe holding it is precisely the
+      // case the restore exists for, and `document.activeElement` is that iframe, not our control.
+      const abandoned =
+        document.activeElement === null ||
+        document.activeElement === document.body ||
+        document.activeElement instanceof HTMLIFrameElement
       const wanted = focusRequest ?? focusedKey ?? (abandoned ? focusRestore : null)
       // Size and Anchor exist only for a sub-pixel shape, so another tab setting Full takes the
       // control the keyboard was on. The header close button is always there and never disabled.

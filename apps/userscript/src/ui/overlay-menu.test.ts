@@ -2848,3 +2848,158 @@ describe('an action waits for the state it depends on', () => {
     expect(byKey('close')).not.toBe(impostor)
   })
 })
+
+describe('showing an overlay in order to move it', () => {
+  const hiddenWithMenu = async () => {
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+  }
+
+  it('does not close another template’s menu when the show lands late', async () => {
+    let release = (): void => {}
+    harness.setLocalVisible.mockImplementation(
+      async () =>
+        await new Promise<boolean>((resolve) => {
+          release = () => resolve(true)
+        }),
+    )
+    await hiddenWithMenu()
+    byKey('move').click()
+
+    harness.localTemplates.mockReturnValue([
+      template({ visible: false }),
+      template({ id: 'b', name: 'beta.png' }),
+    ])
+    rerender()
+    gear('b').click()
+    rerender()
+    release()
+    await settle()
+
+    expect(menu().dataset.wtsTemplate).toBe('b')
+  })
+
+  it('ignores a second Move while the first is still showing', async () => {
+    harness.setLocalVisible.mockImplementation(() => new Promise<boolean>(() => {}))
+    await hiddenWithMenu()
+
+    byKey('move').click()
+    rerender()
+    byKey('move').click()
+    await settle()
+
+    // The first click leaves an optimistic visible intent, which made the second take the normal
+    // branch and place a template the store still has hidden.
+    expect(harness.beginMove).not.toHaveBeenCalled()
+    expect(harness.setLocalVisible).toHaveBeenCalledTimes(2)
+  })
+
+  it('says so when the placement slot was taken while it was showing', async () => {
+    let release = (): void => {}
+    harness.setLocalVisible.mockImplementation(
+      async () =>
+        await new Promise<boolean>((resolve) => {
+          release = () => resolve(true)
+        }),
+    )
+    await hiddenWithMenu()
+    byKey('move').click()
+
+    harness.isMoving.mockReturnValue(true)
+    release()
+    await settle()
+    rerender()
+
+    // Asserted while that placement is still running: the refusal is retired the moment it ends,
+    // which is the behaviour V5 established.
+    expect(harness.beginMove).not.toHaveBeenCalled()
+    expect(errorText()).toContain('placement already in progress')
+  })
+
+  it('abandons the move when the user hides it again first', async () => {
+    let release = (): void => {}
+    harness.setLocalVisible.mockImplementation(
+      async () =>
+        await new Promise<boolean>((resolve) => {
+          release = () => resolve(true)
+        }),
+    )
+    await hiddenWithMenu()
+    byKey('move').click()
+    rerender()
+
+    byKey('hide').click()
+    release()
+    await settle()
+
+    expect(harness.beginMove).not.toHaveBeenCalled()
+  })
+})
+
+describe('an arrow-key selection is state, like a drag', () => {
+  it('survives a rebuild that arrives before the key comes up', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').focus()
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    // A rename rebuilds the menu; removing a focused element fires no blur, so the selection would
+    // simply vanish if it lived in the group's closure.
+    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
+    rerender()
+
+    expect(byKey('Shape:square').getAttribute('aria-checked')).toBe('true')
+    byKey('Shape:square').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    await settle()
+
+    expect(appearanceWritten(0).shape).toBe('square')
+  })
+
+  it('lets the click that blurred a radio still reach its button', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').focus()
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+    const close = byKey('close')
+    byKey('Shape:square').dispatchEvent(new FocusEvent('blur', { relatedTarget: close }))
+    close.click()
+    rerender()
+    await settle()
+
+    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+    expect(appearanceWritten(0).shape).toBe('square')
+  })
+})
+
+describe('a control the host pulls out of the menu stops being live', () => {
+  it('removes an extracted button when the menu is repaired', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const extracted = byKey('delete')
+    document.body.appendChild(extracted)
+    rerender()
+
+    // Still connected and still carrying our handler: able to delete this template with no menu.
+    expect(extracted.isConnected).toBe(false)
+  })
+})
