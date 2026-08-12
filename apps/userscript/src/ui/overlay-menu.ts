@@ -101,7 +101,7 @@ let focusedGear: string | null = null
  * `<input data-wts-held="true">` inside our menu would freeze it — the delete question, the lock
  * state and every banner would stop tracking state while the menu looked perfectly correct.
  */
-let heldSlider: HTMLInputElement | null = null
+const heldSliders = new Set<HTMLInputElement>()
 /**
  * A slider value the user has moved to but not committed, by template then property.
  *
@@ -226,8 +226,12 @@ const flushDrafts = (id: string): void => {
   const forTemplate = drafts.get(id)
   const rerender = lastRerender
   if (forTemplate === undefined || rerender === null) return
-  for (const [property, value] of [...forTemplate]) {
-    clearDraft(id, property)
+  // Taken and cleared *before* any dispatch. `settle` repaints synchronously, and that repaint can
+  // come straight back through a teardown into here — iterating a snapshot while entries are still
+  // in the map means the re-entrant call commits one and the outer loop commits it again.
+  const pending = [...forTemplate]
+  drafts.delete(id)
+  for (const [property, value] of pending) {
     const patch = (): Partial<Appearance> => ({ [property]: value })
     const seq = intendAppearance(id, [property], patch)
     settle(
@@ -356,6 +360,9 @@ const recordFailure = (
   const forRefusals = refusals.get(id) ?? new Map<FailureKey, Refusal>()
   forRefusals.set(key, { satisfied, attempts: (forRefusals.get(key)?.attempts ?? 0) + 1 })
   refusals.set(id, forRefusals)
+  // Every raise is a distinct event, so it is announced again — a second deliberate attempt that
+  // also fails deserves an answer, and only Move used to get one.
+  announced.get(id)?.delete(key)
 }
 
 /**
@@ -598,7 +605,7 @@ const slider = (
 
   /** End the gesture: commit the draft if there is one, and let the map catch up either way. */
   const settleGesture = (): void => {
-    if (heldSlider === input) heldSlider = null
+    heldSliders.delete(input)
     keyHeld = false
     const draft = draftFor(id, property)
     if (draft === undefined) {
@@ -614,14 +621,14 @@ const slider = (
   }
 
   input.addEventListener('pointerdown', () => {
-    heldSlider = input
+    heldSliders.add(input)
   })
   input.addEventListener('keydown', (event) => {
     // Tab does not move the thumb, and its `keyup` lands on whatever it moved focus *to*, so
     // treating every key as held waits for a keyup that never arrives.
     if (!MOVES_THE_THUMB.has(event.key)) return
     keyHeld = true
-    heldSlider = input
+    heldSliders.add(input)
   })
   // Every `input` is a draft, never a write: a one-second drag would otherwise be dozens of
   // serialised IndexedDB transactions, each clearing the stamped-tile cache and re-stamping.
@@ -890,7 +897,12 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     patch: Updater,
     satisfied?: () => boolean,
   ): void => {
-    if (isDoomed(id)) return
+    if (isDoomed(id)) {
+      // The drag guard has been suppressing rebuilds for the whole gesture, so this is the first
+      // chance the menu has had to show that the template is being deleted.
+      rerender()
+      return
+    }
     const seq = intendAppearance(id, properties, patch)
     settle(
       id,
@@ -1161,7 +1173,7 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
 
 const closeOverlayMenu = (): void => {
   focusRestore = null
-  heldSlider = null
+  heldSliders.clear()
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
   // sends that release somewhere else.
   if (openFor !== null) flushDrafts(openFor)
@@ -1193,7 +1205,7 @@ const rememberFocus = (): void => {
   // Gears carry no control key — they are not menu contents — so the keyboard's place on one is
   // remembered by template instead.
   for (const [id, button] of buttons) if (button === active) focusedGear = id
-  heldSlider = null
+  heldSliders.clear()
   if (openFor !== null) flushDrafts(openFor)
 }
 
@@ -1347,7 +1359,7 @@ const renderControls = (
       // ordinary way to look at the map while its menu is open, so it must not cost the keyboard
       // its place or a drag its value — and a rebuild is still refused under a held slider.
       if (openFor === template.id && menuNode !== null) {
-        if (heldSlider !== null && menuNode.contains(heldSlider)) continue
+        if ([...heldSliders].some((slider) => menuNode?.contains(slider) === true)) continue
         rememberFocus()
         menuNode.remove()
         menuNode = null
@@ -1413,15 +1425,16 @@ const renderControls = (
     // off, and a second touch opening another template's menu while the first is still being
     // dragged, where the draft belongs to whoever the menu was for a moment ago.
     const previousOwner = menuNode?.dataset.wtsTemplate
-    if (heldSlider !== null && (stale || previousOwner !== template.id)) {
-      heldSlider = null
+    if (heldSliders.size > 0 && (stale || previousOwner !== template.id)) {
+      heldSliders.clear()
       if (previousOwner !== undefined) flushDrafts(previousOwner)
     }
     const dragging =
       !stale &&
       menuNode?.dataset.wtsTemplate === template.id &&
-      heldSlider !== null &&
-      menuNode.contains(heldSlider)
+      // *Any* of them: two pointers can be down at once on a touch device, and rebuilding when the
+      // first is released takes the second one's element away mid-gesture.
+      [...heldSliders].some((slider) => menuNode?.contains(slider) === true)
     if (!dragging && (stale || menuNode?.dataset.wtsSignature !== signature)) {
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —

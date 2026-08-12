@@ -2360,3 +2360,92 @@ describe('refusals track the world, not our own render schedule', () => {
     expect(document.getElementById('wts-overlay-button-a')).toBeNull()
   })
 })
+
+describe('more than one thing can be happening at once', () => {
+  it('does not take a second pointer’s slider away when the first releases', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const size = byKey('size') as HTMLInputElement
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    size.dispatchEvent(new Event('pointerdown'))
+    size.value = '0.6'
+    size.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.3'
+    opacity.dispatchEvent(new Event('input'))
+    // Two touches; the second one lifts first.
+    opacity.dispatchEvent(new Event('pointerup'))
+    await settle()
+
+    // Rebuilding here would remove the size input mid-gesture, and its release would never come.
+    expect(byKey('size')).toBe(size)
+    size.dispatchEvent(new Event('pointerup'))
+    await settle()
+    expect(harness.setAppearance).toHaveBeenCalledWith('a', expect.objectContaining({ size: 0.6 }))
+  })
+
+  it('writes an interrupted pair of drafts once each', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const size = byKey('size') as HTMLInputElement
+    const opacity = byKey('opacity') as HTMLInputElement
+    size.dispatchEvent(new Event('pointerdown'))
+    size.value = '0.6'
+    size.dispatchEvent(new Event('input'))
+    opacity.value = '0.3'
+    opacity.dispatchEvent(new Event('input'))
+
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    host?.appendChild(mapCanvas)
+    rerender()
+    await settle()
+
+    // `settle` repaints synchronously and that repaint re-enters the teardown; iterating a live map
+    // meant the re-entrant call and the outer loop each committed the same draft.
+    expect(harness.setAppearance).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the delete that started while a slider was being dragged', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.7'
+    opacity.dispatchEvent(new Event('input'))
+    // The panel starts a delete; the drag guard has been suppressing rebuilds throughout.
+    harness.isDeletingLocal.mockReturnValue(true)
+    rerender()
+    opacity.dispatchEvent(new Event('pointerup'))
+    await settle()
+
+    expect(byKey('confirm-delete').textContent).toBe('Deleting…')
+  })
+
+  it('announces a second refusal of the same control', async () => {
+    harness.setLocalVisible.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('hide').click()
+    await settle()
+    const first = menu().querySelector('[data-wts-error]')
+    byKey('hide').click()
+    await settle()
+
+    // Only Move used to get a second announcement; a deliberate retry of anything deserves one.
+    expect(menu().querySelector('[data-wts-error]')).not.toBe(first)
+    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+  })
+})
