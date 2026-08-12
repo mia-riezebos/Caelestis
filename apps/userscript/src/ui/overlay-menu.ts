@@ -1,6 +1,6 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
-import { log } from '../debug.js'
-import { screenPointFor } from '../main.js'
+import { log, warn } from '../debug.js'
+import { cssPixelsPerCanvasPixel, screenPointFor } from '../main.js'
 import { removeCustomOrderKeys } from '../state.js'
 import { ANCHORS, type Appearance, DEFAULT_APPEARANCE, SHAPES } from '../templates/appearance.js'
 import {
@@ -30,18 +30,25 @@ import { installStyles } from './styles.js'
  *
  * **It does not dismiss on outside clicks.** Everything in here changes what is on the map behind
  * it, so clicking the map to look at the result must not close the thing you are adjusting. It
- * closes on its own ✕, its own gear, and nothing else.
+ * closes on its own ✕, its own gear, Escape, and nothing else.
  *
- * **Intended state is the state; this menu only draws it.** Every action reads the appearance the
- * user has asked for at the moment it is clicked, and the menu is rebuilt whenever what it draws
- * changes. Holding a snapshot instead means the second edit silently reverts the first — and
- * reading the *store* alone is not enough either, because a write only becomes visible there once
- * IndexedDB has acknowledged it, which is several clicks later at human speed.
+ * ## The menu is a render, not a place to keep things
  *
- * **Everything asynchronous is tied to the template that asked for it.** There is one menu element
- * for the whole map, so a completion that assumes it still belongs to the menu currently on screen
- * will happily report template A's failure inside template B's menu, or delete A from under B's
- * heading. Every deferred path re-checks the id it was started for.
+ * Everything the menu shows — the intended appearance, an unanswered delete question, a refused
+ * write — lives in this module's maps, and {@link buildMenu} is a pure function of them. Nothing is
+ * read back out of the DOM and nothing is carried from one menu element to the next.
+ *
+ * Three rounds of review found the same shape of bug until it worked this way: state parked in the
+ * DOM gets destroyed by a rebuild, or worse, *survives* one and ends up attached to a different
+ * template — a delete question that migrated from one overlay's menu to another's while its button
+ * still deleted the first. Rebuilding from state cannot do that.
+ *
+ * ## Deferred work belongs to the template that asked for it
+ *
+ * There is one menu element for the whole map, so a completion that assumes it still belongs to
+ * whatever is on screen will report template A's failure under template B's heading. Every write
+ * goes through {@link commit}, which records the outcome against the id it was started for, and
+ * lets the next render decide whether that is something to show.
  */
 
 const MENU_ID = 'wts-overlay-menu'
@@ -51,10 +58,27 @@ const BUTTON_Z = '28'
 const MENU_Z = '29'
 /** The gear's own height, so the menu hangs under the button rather than over it. */
 const GEAR_SIZE = 28
+/**
+ * Our controls' identity attribute.
+ *
+ * Deliberately not `data-wts-key`, which `tree.ts` uses for `local:<id>`/`server:<url>` row keys.
+ * Nothing collides while every lookup is scoped to the menu, but one unscoped query would be enough
+ * to focus a panel row instead of a control.
+ */
+const CONTROL = 'wtsControl'
+
+type Field = 'appearance' | 'visible' | 'delete'
+/** Rendered in this order, so a rebuild cannot reshuffle what the user is looking at. */
+const FIELDS: readonly Field[] = ['delete', 'visible', 'appearance']
 
 let openFor: string | null = null
-/** Set when a menu has been asked for but not yet built, so opening moves focus exactly once. */
-let focusOnBuild = false
+/** The menu we built. Never `getElementById`: the page can mint an element under our id. */
+let menuNode: HTMLElement | null = null
+/** Measured once per rebuild — the contents only change when the menu is rebuilt. */
+let menuBox: { width: number; height: number } = { width: 0, height: 0 }
+/** A control to focus once the next build has produced it. */
+let focusRequest: string | null = null
+let stylesInstalled = false
 
 /**
  * What the user has asked for but IndexedDB has not acknowledged yet.
@@ -75,6 +99,12 @@ interface Intent {
 }
 const intents = new Map<string, Intent>()
 let sequence = 0
+
+/** Refused writes, per template and per field, until a later write of that field succeeds. */
+const failures = new Map<string, Map<Field, string>>()
+/** Templates whose delete question is up, and those whose delete is actually running. */
+const confirming = new Set<string>()
+const deleting = new Set<string>()
 
 /**
  * One write at a time per template, with the payload composed at dispatch.
@@ -98,6 +128,9 @@ const buttons = new Map<string, HTMLElement>()
 const templateFor = (id: string): PlacedTemplate | undefined =>
   localTemplates().find((candidate) => candidate.id === id)
 
+/** The template's name as it is *now* — a name captured at build time goes stale on a rename. */
+const nameFor = (id: string): string => templateFor(id)?.name ?? 'this template'
+
 const storedAppearance = (id: string): Appearance =>
   templateFor(id)?.appearance ?? DEFAULT_APPEARANCE
 
@@ -116,75 +149,108 @@ const intend = (id: string, next: Omit<Intent, 'seq'>): number => {
 }
 
 /** Release the intent, unless a later action has already taken ownership of it. */
-const releaseIntent = (id: string, seq: number): boolean => {
-  if (intents.get(id)?.seq !== seq) return false
+const releaseIntent = (id: string, seq: number): void => {
+  if (intents.get(id)?.seq === seq) intents.delete(id)
+}
+
+const recordFailure = (id: string, field: Field, message: string): void => {
+  const forTemplate = failures.get(id) ?? new Map<Field, string>()
+  forTemplate.set(field, message)
+  failures.set(id, forTemplate)
+}
+
+/** Clear only this field's failure: a successful colour change says nothing about a refused hide. */
+const clearFailure = (id: string, field: Field): void => {
+  const forTemplate = failures.get(id)
+  if (forTemplate === undefined) return
+  forTemplate.delete(field)
+  if (forTemplate.size === 0) failures.delete(id)
+}
+
+const forget = (id: string): void => {
   intents.delete(id)
-  return true
+  queues.delete(id)
+  failures.delete(id)
+  confirming.delete(id)
+  deleting.delete(id)
 }
 
 const enqueue = async <T>(id: string, run: () => Promise<T>): Promise<T> => {
   const previous = queues.get(id) ?? Promise.resolve()
   const next = previous.then(run, run)
-  queues.set(
-    id,
-    next.catch(() => undefined),
-  )
+  const settled = next.catch(() => undefined)
+  queues.set(id, settled)
+  // Drop the tail once it is no longer current, the way `writeInOrder` does, rather than retaining
+  // a settled promise per template for the lifetime of the page.
+  void settled.then(() => {
+    if (queues.get(id) === settled) queues.delete(id)
+  })
   return await next
 }
 
-const menuElement = (): HTMLElement | null => document.getElementById(MENU_ID)
-
-/** The menu, but only while it still belongs to `id`. */
-const menuFor = (id: string): HTMLElement | null => (openFor === id ? menuElement() : null)
+/**
+ * Run one durable write for `id`, and make sure its outcome is recorded no matter what.
+ *
+ * The reporting is deliberately *not* conditional on this still being the latest request. Releasing
+ * intent is — an older completion must not drop a newer one's — but a refused write is news
+ * regardless of what has been clicked since, and tying the two together makes any second click
+ * silence the first one's failure.
+ */
+const commit = (
+  id: string,
+  field: Exclude<Field, 'delete'>,
+  intent: Omit<Intent, 'seq'>,
+  run: () => Promise<boolean>,
+  refused: string,
+  rerender: () => void,
+): void => {
+  const seq = intend(id, intent)
+  clearFailure(id, field)
+  rerender()
+  void enqueue(id, run)
+    .then(
+      (saved) => {
+        if (saved) clearFailure(id, field)
+        else recordFailure(id, field, refused)
+      },
+      (error: unknown) => {
+        // Without this the intent is never released and the menu asserts, indefinitely, a state
+        // that was never saved.
+        warn('install', `${field} for ${nameFor(id)} threw`, error)
+        recordFailure(id, field, refused)
+      },
+    )
+    .finally(() => {
+      releaseIntent(id, seq)
+      rerender()
+    })
+}
 
 /**
- * What the menu's structure and labels are drawn from, as one comparable string.
+ * What the menu draws, as one comparable string.
  *
- * `size` and `opacity` are deliberately absent. Their sliders already carry their own value while
- * being dragged, and rebuilding the menu under the pointer would drop the drag on the first frame;
- * they are refreshed in place instead, by {@link refreshSliders}.
+ * Every input to {@link buildMenu} appears here, so "the menu is stale" and "the signature did not
+ * change" cannot come apart. `size` and `opacity` are the two exceptions and are handled by
+ * {@link refreshSliders}: their sliders carry their own value while being dragged, and rebuilding
+ * under the pointer would drop the drag on the first frame.
  */
 const menuSignature = (template: PlacedTemplate): string => {
-  const appearance = appearanceFor(template.id)
+  const id = template.id
+  const appearance = appearanceFor(id)
   return [
-    template.id,
+    id,
     template.name,
-    visibleFor(template.id),
+    visibleFor(id),
     appearance.shape,
     appearance.anchor,
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
+    confirming.has(id),
+    deleting.has(id),
+    FIELDS.map((field) => failures.get(id)?.get(field) ?? '').join(''),
   ].join('|')
 }
 
 const deleteQuestion = (name: string): string => `Delete “${name}”? This cannot be undone.`
-
-/**
- * Say so in the menu when a write is refused.
- *
- * The panel's `toast` mounts inside the panel and does nothing while it is closed — and this menu
- * is reachable with the panel shut, which is exactly when the failure would go unmentioned.
- *
- * Looked up by id rather than captured, for two reasons: the menu is rebuilt whenever its signature
- * changes, so a handler holding the node it was built with would report into a detached element;
- * and a write started for one template can complete while another's menu is open, which must not
- * put "Could not update A" under B's heading.
- */
-const reportFailure = (id: string, message: string): void => {
-  const menu = menuFor(id)
-  if (menu === null) return
-  menu.querySelector('[data-wts-error]')?.remove()
-  const el = document.createElement('div')
-  el.setAttribute('data-wts-error', '')
-  el.setAttribute('role', 'alert')
-  el.className = 'alert alert-error text-xs'
-  Object.assign(el.style, { padding: '0.375rem 0.5rem', marginTop: '0.25rem' })
-  el.textContent = message
-  menu.querySelector('[data-wts-header]')?.after(el)
-}
-
-const clearFailure = (id: string): void => {
-  menuFor(id)?.querySelector('[data-wts-error]')?.remove()
-}
 
 const slider = (
   key: string,
@@ -201,11 +267,15 @@ const slider = (
   name.textContent = label
   const input = document.createElement('input')
   input.type = 'range'
-  input.dataset.wtsKey = key
+  input.dataset[CONTROL] = key
   input.className = 'range range-xs'
-  input.min = '0.1'
+  // The contract is 0..1 continuous (`local-store.ts` accepts both endpoints, and a reconciled
+  // record from another client can hold either). A stepped grid both excludes the default 1/3 —
+  // which the browser then snaps, so the thumb and the readout disagree for ever — and makes
+  // legitimately stored values unrepresentable.
+  input.min = '0'
   input.max = '1'
-  input.step = '0.05'
+  input.step = 'any'
   input.value = String(value)
   input.style.flex = '1'
   const readout = document.createElement('span')
@@ -214,14 +284,19 @@ const slider = (
   readout.style.textAlign = 'right'
   readout.textContent = `${Math.round(value * 100)}%`
   // Only an *in-progress* gesture blocks a refresh. Using focus for that leaves a refused commit,
-  // or another tab's change, sitting on a thumb that stays focused long after the drag ended.
-  const holding = (held: boolean) => () => {
-    if (held) input.dataset.wtsHeld = 'true'
-    else delete input.dataset.wtsHeld
+  // or another tab's change, sitting on a thumb that stays focused long after the drag ended — and
+  // every way a gesture can end has to release it, or the slider freezes for the session.
+  const release = (): void => {
+    delete input.dataset.wtsHeld
   }
-  input.addEventListener('pointerdown', holding(true))
-  input.addEventListener('keydown', holding(true))
-  input.addEventListener('blur', holding(false))
+  const hold = (): void => {
+    input.dataset.wtsHeld = 'true'
+  }
+  input.addEventListener('pointerdown', hold)
+  input.addEventListener('keydown', hold)
+  for (const ending of ['pointerup', 'pointercancel', 'keyup', 'blur']) {
+    input.addEventListener(ending, release)
+  }
   // The readout follows the thumb; the write waits for the release. Every `input` event used to be
   // a durable IndexedDB write, and `size` is part of the stamped-tile cache key, so a one-second
   // drag meant dozens of serialised transactions each throwing away every stamped tile and
@@ -230,7 +305,7 @@ const slider = (
     readout.textContent = `${Math.round(Number(input.value) * 100)}%`
   })
   input.addEventListener('change', () => {
-    delete input.dataset.wtsHeld
+    release()
     onCommit(Number(input.value))
   })
   wrap.append(name, input, readout)
@@ -249,8 +324,12 @@ const section = (title: string): HTMLElement => {
  * An exclusive choice, with the keyboard model the role promises.
  *
  * `role="radiogroup"` tells assistive technology "one of N", and a screen reader then offers arrow
- * keys and expects the group to be a single tab stop. Native buttons give neither by default, so
- * announcing the contract without implementing it is worse than plain toggles would have been.
+ * keys and expects the group to be a single tab stop. Native buttons give neither by default.
+ *
+ * Arrows move focus and stop there. ARIA permits selection to follow focus, but `shape` is the
+ * expensive axis — it is part of the stamped-tile cache key, so each selection re-stamps the
+ * viewport at scale 3 — and holding an arrow key at OS repeat would queue one of those per repeat.
+ * Enter and Space select, which native buttons already do.
  */
 const radioGroup = <T extends string>(
   label: string,
@@ -267,7 +346,7 @@ const radioGroup = <T extends string>(
     const chosen = option.id === selected
     const cell = document.createElement('button')
     cell.type = 'button'
-    cell.dataset.wtsKey = `${label}:${option.id}`
+    cell.dataset[CONTROL] = `${label}:${option.id}`
     cell.className = className(chosen)
     if (option.text) cell.textContent = option.label
     if (option.hint !== undefined) cell.title = option.hint
@@ -295,13 +374,104 @@ const radioGroup = <T extends string>(
       if (target === -1) return
       event.preventDefault()
       cells[target]?.focus()
-      const chosenOption = options[target]
-      if (chosenOption !== undefined) onSelect(chosenOption.id)
     })
     cells.push(cell)
     group.appendChild(cell)
   })
   return group
+}
+
+/** The refused writes for this template, newest concern first, rebuilt from state every time. */
+const failureBanners = (id: string): HTMLElement[] => {
+  const forTemplate = failures.get(id)
+  if (forTemplate === undefined) return []
+  return FIELDS.flatMap((field) => {
+    const message = forTemplate.get(field)
+    if (message === undefined) return []
+    const el = document.createElement('div')
+    el.setAttribute('data-wts-error', '')
+    el.setAttribute('role', 'alert')
+    el.className = 'alert alert-error text-xs'
+    Object.assign(el.style, { padding: '0.375rem 0.5rem', marginTop: '0.25rem' })
+    el.textContent = message
+    return [el]
+  })
+}
+
+const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
+  const running = deleting.has(id)
+  const name = nameFor(id)
+  const box = document.createElement('div')
+  box.setAttribute('data-wts-confirm', '')
+  // Announced as a whole, so the focused Delete button is not read as a bare "Delete".
+  box.setAttribute('role', 'alertdialog')
+  box.setAttribute('aria-label', deleteQuestion(name))
+  box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
+  Object.assign(box.style, { padding: '0.5rem 0.625rem' })
+  const text = document.createElement('span')
+  // Name the thing rather than asking "are you sure", so the answer does not depend on
+  // remembering which template's menu this is.
+  text.textContent = deleteQuestion(name)
+  const row = document.createElement('div')
+  row.className = 'flex gap-2 justify-end'
+
+  const cancel = document.createElement('button')
+  cancel.type = 'button'
+  cancel.dataset[CONTROL] = 'cancel-delete'
+  cancel.className = 'btn btn-xs btn-ghost'
+  cancel.textContent = 'Cancel'
+  // A live Cancel next to a delete already in flight takes the question away and reads as though it
+  // stopped something.
+  cancel.disabled = running
+  cancel.addEventListener('click', () => {
+    confirming.delete(id)
+    // Back to the control that raised the question, rather than dropping to the document.
+    focusRequest = 'delete'
+    rerender()
+  })
+
+  const confirm = document.createElement('button')
+  confirm.type = 'button'
+  confirm.dataset[CONTROL] = 'confirm-delete'
+  confirm.className = 'btn btn-xs btn-error'
+  // The write is serialised behind any appearance or visibility write still running for this
+  // template, and `setLocalVisible` can be rebuilding source bitmaps. Say so rather than presenting
+  // a dead button.
+  confirm.textContent = running ? 'Deleting…' : 'Delete'
+  confirm.disabled = running
+  confirm.addEventListener('click', () => {
+    deleting.add(id)
+    clearFailure(id, 'delete')
+    rerender()
+    void enqueue(id, async () => await removeLocalTemplate(id)).then(
+      (removed) => {
+        deleting.delete(id)
+        if (!removed) {
+          recordFailure(id, 'delete', `Could not delete “${nameFor(id)}”.`)
+          rerender()
+          return
+        }
+        // The panel's delete path drops the ordering key too; leaving it behind accumulates
+        // entries for templates that no longer exist in persisted state.
+        removeCustomOrderKeys(new Set([`local:${id}`]))
+        confirming.delete(id)
+        // Only if this template's menu is still the one on screen. A delete that completes while
+        // another template's menu is open must not close that one.
+        if (openFor === id) closeOverlayMenu()
+        rerender()
+      },
+      (error: unknown) => {
+        deleting.delete(id)
+        warn('install', `delete for ${nameFor(id)} threw`, error)
+        recordFailure(id, 'delete', `Could not delete “${nameFor(id)}”.`)
+        rerender()
+      },
+    )
+  })
+
+  row.append(cancel, confirm)
+  box.append(text, row)
+  return box
 }
 
 const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement => {
@@ -326,27 +496,27 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     maxHeight: '70vh',
     overflowY: 'auto',
   })
-
-  /**
-   * Edit from what the user has asked for, not from what IndexedDB has caught up to.
-   *
-   * Intent is recorded before the write starts so the next click builds on it, and released only
-   * once this request is the last one outstanding — or, on a refusal, dropped so the menu snaps
-   * back to the truth.
-   */
-  const edit = (patch: Partial<Appearance>): void => {
-    clearFailure(id)
-    const seq = intend(id, { appearance: { ...appearanceFor(id), ...patch } })
+  // Not a modal — the map behind it stays live on purpose — so focus is not trapped. Escape is the
+  // keyboard's way out, since a dialog that takes focus with no exit is a trap.
+  menu.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    closeOverlayMenu()
+    buttons.get(id)?.focus()
     rerender()
-    void enqueue(id, async () => await setAppearance(id, { ...storedAppearance(id), ...patch }))
-      .then((saved) => {
-        // An older request must not overwrite a newer one's banner: if this is no longer the latest,
-        // whatever it has to say about the state is already out of date.
-        if (!releaseIntent(id, seq)) return
-        if (saved) clearFailure(id)
-        else reportFailure(id, `Could not update “${name}”.`)
-      })
-      .finally(rerender)
+  })
+
+  const edit = (patch: Partial<Appearance>): void => {
+    commit(
+      id,
+      'appearance',
+      { appearance: { ...appearanceFor(id), ...patch } },
+      // Composed at dispatch, so a reconciliation that landed while this waited is not overwritten
+      // by a snapshot taken before it.
+      async () => await setAppearance(id, { ...storedAppearance(id), ...patch }),
+      `Could not update “${nameFor(id)}”.`,
+      rerender,
+    )
   }
 
   const header = document.createElement('div')
@@ -362,7 +532,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
 
   const hide = document.createElement('button')
   hide.type = 'button'
-  hide.dataset.wtsKey = 'hide'
+  hide.dataset[CONTROL] = 'hide'
   hide.className = visible ? 'btn btn-ghost btn-xs btn-circle' : 'btn btn-xs btn-circle btn-active'
   hide.title = visible ? 'Hide this overlay' : 'Show this overlay'
   // The label already says which way this goes. A pressed state on top of it announces "Show this
@@ -370,40 +540,37 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   hide.setAttribute('aria-label', hide.title)
   hide.appendChild(icon('image', 'size-4'))
   hide.addEventListener('click', () => {
-    clearFailure(id)
     const next = !visibleFor(id)
-    const seq = intend(id, { visible: next })
-    rerender()
-    void enqueue(id, async () => await setLocalVisible(id, next))
-      .then((changed) => {
-        if (!releaseIntent(id, seq)) return
-        if (changed) clearFailure(id)
-        else reportFailure(id, `Could not change visibility for “${name}”.`)
-      })
-      .finally(rerender)
+    commit(
+      id,
+      'visible',
+      { visible: next },
+      async () => await setLocalVisible(id, next),
+      `Could not change visibility for “${nameFor(id)}”.`,
+      rerender,
+    )
   })
 
   const move = document.createElement('button')
   move.type = 'button'
-  move.dataset.wtsKey = 'move'
+  move.dataset[CONTROL] = 'move'
   move.className = 'btn btn-ghost btn-xs btn-circle'
   move.title = 'Move this overlay'
   move.setAttribute('aria-label', 'Move this overlay')
   move.appendChild(icon('move', 'size-4'))
   move.addEventListener('click', () => {
-    clearFailure(id)
     // `beginMove` refuses while another placement is running. It is the only action here that can
     // refuse without saying anything, and closing first would throw away the one surface able to
     // report it.
     if (isMoving()) {
-      reportFailure(id, 'Finish the placement already in progress first.')
-      // The banner is extra height, and the clamp was measured without it.
+      recordFailure(id, 'visible', 'Finish the placement already in progress first.')
       rerender()
       return
     }
     closeOverlayMenu()
     beginMove(id, rerender)
-    // Otherwise the gear keeps advertising a dialog that is gone until the next map frame.
+    // Back to the gear, which is about to become the only control left.
+    buttons.get(id)?.focus()
     rerender()
   })
 
@@ -415,83 +582,23 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // the panel shut, which is exactly when the delete would silently do nothing.
   const remove = document.createElement('button')
   remove.type = 'button'
-  remove.dataset.wtsKey = 'delete'
+  remove.dataset[CONTROL] = 'delete'
   remove.className = 'btn btn-ghost btn-xs btn-circle text-error'
   remove.title = 'Delete this template'
   remove.setAttribute('aria-label', 'Delete this template')
   remove.appendChild(icon('trash', 'size-4'))
+  // Disabling both the question's buttons is not enough while this one can raise a fresh question,
+  // with a fresh enabled Cancel, over a delete that is already running.
+  remove.disabled = deleting.has(id)
   remove.addEventListener('click', () => {
-    clearFailure(id)
-    const host = menuFor(id)
-    if (host === null) return
-    host.querySelector('[data-wts-confirm]')?.remove()
-    const box = document.createElement('div')
-    box.setAttribute('data-wts-confirm', '')
-    // Announced as a whole, so the focused Delete button is not read as a bare "Delete".
-    box.setAttribute('role', 'alertdialog')
-    box.setAttribute('aria-label', deleteQuestion(name))
-    box.className = 'alert alert-warning flex flex-col items-stretch gap-2 text-xs'
-    Object.assign(box.style, { padding: '0.5rem 0.625rem' })
-    const text = document.createElement('span')
-    text.setAttribute('data-wts-confirm-text', '')
-    // Name the thing rather than asking "are you sure", so the answer does not depend on
-    // remembering which template's menu this is.
-    text.textContent = deleteQuestion(name)
-    const buttonRow = document.createElement('div')
-    buttonRow.className = 'flex gap-2 justify-end'
-    const cancel = document.createElement('button')
-    cancel.type = 'button'
-    cancel.className = 'btn btn-xs btn-ghost'
-    cancel.textContent = 'Cancel'
-    cancel.addEventListener('click', () => {
-      box.remove()
-      // Back to the control that raised the question, rather than dropping to the document.
-      const raiser = menuFor(id)?.querySelector('[data-wts-key="delete"]')
-      if (raiser instanceof HTMLElement) raiser.focus()
-      rerender()
-    })
-    const confirm = document.createElement('button')
-    confirm.type = 'button'
-    confirm.dataset.wtsKey = 'confirm-delete'
-    confirm.className = 'btn btn-xs btn-error'
-    confirm.textContent = 'Delete'
-    confirm.addEventListener('click', () => {
-      // Both, not just Delete: a still-live Cancel takes the question away and reads as though it
-      // stopped something, while the delete carries on regardless.
-      confirm.disabled = true
-      cancel.disabled = true
-      // Close only once it is actually gone. Closing first turns a refused delete into a template
-      // that looks deleted and is not.
-      void enqueue(id, async () => await removeLocalTemplate(id)).then((removed) => {
-        if (!removed) {
-          confirm.disabled = false
-          cancel.disabled = false
-          reportFailure(id, `Could not delete “${name}”.`)
-          rerender()
-          return
-        }
-        // The panel's delete path drops the ordering key too; leaving it behind accumulates
-        // entries for templates that no longer exist in persisted state.
-        removeCustomOrderKeys(new Set([`local:${id}`]))
-        // Only if this template's menu is still the one on screen. A delete that completes while
-        // another template's menu is open must not close that one.
-        if (openFor === id) closeOverlayMenu()
-        rerender()
-      })
-    })
-    buttonRow.append(cancel, confirm)
-    box.append(text, buttonRow)
-    // Directly under the header, next to the button that raised it. Appending to the end of a menu
-    // that scrolls past 70vh can put the question off-screen from the answer.
-    host.querySelector('[data-wts-header]')?.after(box)
-    confirm.focus()
-    // The question is extra height, and the viewport clamp was measured without it.
+    confirming.add(id)
+    focusRequest = 'confirm-delete'
     rerender()
   })
 
   const close = document.createElement('button')
   close.type = 'button'
-  close.dataset.wtsKey = 'close'
+  close.dataset[CONTROL] = 'close'
   close.className = 'btn btn-ghost btn-xs btn-circle'
   close.title = 'Close'
   close.setAttribute('aria-label', 'Close')
@@ -505,6 +612,11 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
 
   header.append(title, hide, move, remove, close)
   menu.appendChild(header)
+
+  // Directly under the header, next to the buttons that raised them. Appending to the end of a menu
+  // that scrolls past 70vh can put the question off-screen from the answer.
+  if (confirming.has(id)) menu.appendChild(deleteConfirm(id, rerender))
+  for (const banner of failureBanners(id)) menu.appendChild(banner)
 
   menu.appendChild(section('Shape'))
   const shapes = radioGroup(
@@ -555,7 +667,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     const swatch = document.createElement('button')
     const on = !appearance.hiddenColours.includes(colour.index)
     swatch.type = 'button'
-    swatch.dataset.wtsKey = `swatch:${colour.index}`
+    swatch.dataset[CONTROL] = `swatch:${colour.index}`
     swatch.className = 'wts-swatch'
     swatch.dataset.on = String(on)
     swatch.style.backgroundColor = colour.hex
@@ -576,31 +688,40 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
 
 const openOverlayMenu = (id: string, rerender: () => void): void => {
   openFor = id
-  focusOnBuild = true
+  focusRequest = 'hide'
   rerender()
   log('install', `overlay menu opened for ${id}`)
 }
 
 const closeOverlayMenu = (): void => {
   openFor = null
-  focusOnBuild = false
-  menuElement()?.remove()
+  focusRequest = null
+  menuNode?.remove()
+  menuNode = null
+}
+
+/** Take the controls off the page without forgetting anything about the templates. */
+const detachControls = (): void => {
+  for (const [, button] of buttons) button.remove()
+  buttons.clear()
+  menuNode?.remove()
+  menuNode = null
 }
 
 /**
- * Drop the controls of every template not in `live`.
+ * Drop the controls of every template not in `live`, and everything remembered about it.
  *
- * Controls belong to a template, so a template that is gone takes its button and its menu with it —
- * whether it went from this menu, from the panel, or from another tab's reconciliation. Rendering
- * only walks the templates that still exist, so nothing else would ever visit the leftovers.
+ * Only for templates that have actually gone — from this menu, from the panel, or from another
+ * tab's reconciliation. A frame where the *map* is missing is {@link detachControls}: MapLibre
+ * detaches and re-attaches its canvas, and treating that as "every template ceased to exist" throws
+ * away in-flight write ordering and pending failures for templates that are all still there.
  */
 const sweepControls = (live: ReadonlySet<string>): void => {
   for (const [id, button] of buttons) {
     if (live.has(id)) continue
     button.remove()
     buttons.delete(id)
-    intents.delete(id)
-    queues.delete(id)
+    forget(id)
   }
   if (openFor !== null && !live.has(openFor)) closeOverlayMenu()
 }
@@ -617,13 +738,21 @@ const refreshSliders = (menu: HTMLElement, appearance: Appearance): void => {
     ['size', appearance.size],
     ['opacity', appearance.opacity],
   ] as const) {
-    const input = menu.querySelector(`input[data-wts-key="${key}"]`)
+    const input = menu.querySelector(`input[data-wts-control="${key}"]`)
     if (!(input instanceof HTMLInputElement) || input.dataset.wtsHeld === 'true') continue
     if (Number(input.value) === value) continue
     input.value = String(value)
     const readout = input.nextElementSibling
     if (readout !== null) readout.textContent = `${Math.round(value * 100)}%`
   }
+}
+
+/** The control carrying `key`, found by scanning rather than by building a selector from it. */
+const controlIn = (menu: HTMLElement, key: string): HTMLElement | null => {
+  for (const candidate of menu.querySelectorAll('[data-wts-control]')) {
+    if (candidate instanceof HTMLElement && candidate.dataset[CONTROL] === key) return candidate
+  }
+  return null
 }
 
 /** Where the overlay's top-right corner sits on screen, or null when none of it is in view. */
@@ -634,39 +763,20 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
   const originX = preview?.x ?? template.originX
   const originY = preview?.y ?? template.originY
   const topLeft = screenPointFor(originX, originY)
-  const bottomRight = screenPointFor(originX + template.width, originY + template.height)
-  if (topLeft === null || bottomRight === null) return null
+  if (topLeft === null) return null
+  // One projection, then the size in CSS pixels. Projecting the far corner separately lets the two
+  // calls resolve to different wrapped copies of the world for a template near the seam, which
+  // produces a box spanning the screen and defeats the check below.
+  const scale = cssPixelsPerCanvasPixel()
+  const right = topLeft.x + template.width * scale.x
+  const bottom = topLeft.y + template.height * scale.y
   // Projection never fails for a coordinate that is merely off-screen, so without this every
   // template in the store — including ones on the far side of the world — would clamp a button
   // into the viewport and pile them all onto the same corner, where only the last is clickable.
-  const left = Math.min(topLeft.x, bottomRight.x)
-  const right = Math.max(topLeft.x, bottomRight.x)
-  if (right < 0 || left > window.innerWidth) return null
-  if (bottomRight.y < 0 || topLeft.y > window.innerHeight) return null
+  if (right < 0 || topLeft.x > window.innerWidth) return null
+  if (bottom < 0 || topLeft.y > window.innerHeight) return null
   // Top-right of the overlay, just outside it, so template pixels are never covered.
-  return { x: bottomRight.x, y: topLeft.y }
-}
-
-/**
- * Carry the in-progress interaction across a rebuild — but only within one template.
- *
- * A half-answered delete question and a fresh failure both belong to the template that raised them,
- * and their handlers close over that id. Moving them into another template's menu puts "Could not
- * update A" under B's heading and, far worse, a Delete button that removes A under a question
- * naming B.
- */
-const carryOver = (previous: HTMLElement | null, id: string, name: string): Element[] => {
-  if (previous === null || previous.dataset.wtsTemplate !== id) return []
-  const confirm = previous.querySelector('[data-wts-confirm]')
-  // The name can have changed underneath an open question.
-  if (confirm !== null) {
-    confirm.setAttribute('aria-label', deleteQuestion(name))
-    const text = confirm.querySelector('[data-wts-confirm-text]')
-    if (text !== null) text.textContent = deleteQuestion(name)
-  }
-  return [confirm, previous.querySelector('[data-wts-error]')].filter(
-    (node): node is Element => node !== null,
-  )
+  return { x: right, y: topLeft.y }
 }
 
 /**
@@ -681,15 +791,18 @@ const carryOver = (previous: HTMLElement | null, id: string, name: string): Elem
  * the overlay perfectly well.
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
-  // The swatches are styled by the shared stylesheet, which only `installPanel` used to install —
-  // and these controls are driven by the map frame, an entirely independent trigger. Without it
-  // `.wts-swatch` loses its `aspect-ratio` and the colour toggles collapse to nothing.
-  installStyles()
+  if (!stylesInstalled) {
+    // The swatches are styled by the shared stylesheet, which only `installPanel` used to install —
+    // and these controls are driven by the map frame, an entirely independent trigger. Without it
+    // `.wts-swatch` loses its `aspect-ratio` and the colour toggles collapse to nothing.
+    installStyles()
+    stylesInstalled = true
+  }
   const templates = localTemplates()
   if (mapCanvas.parentElement === null) {
-    // No map, no overlays to anchor to — leaving the controls behind strands them over whatever
-    // replaced it.
-    sweepControls(new Set())
+    // No map to anchor to right now. The templates have not gone anywhere, and neither has anything
+    // in flight for them.
+    detachControls()
     return
   }
   sweepControls(new Set(templates.map((template) => template.id)))
@@ -705,7 +818,10 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
     if (corner === null) {
       button?.remove()
       buttons.delete(template.id)
-      if (openFor === template.id) menuElement()?.remove()
+      if (openFor === template.id) {
+        menuNode?.remove()
+        menuNode = null
+      }
       continue
     }
     if (button === undefined) {
@@ -731,45 +847,41 @@ export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanva
     button.setAttribute('aria-expanded', String(openFor === template.id))
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
+    const buttonTop = Math.min(Math.max(corner.y, 4), window.innerHeight - 32)
     button.style.left = `${Math.min(Math.max(corner.x + 6, 4), window.innerWidth - 32)}px`
-    button.style.top = `${Math.min(Math.max(corner.y, 4), window.innerHeight - 32)}px`
+    button.style.top = `${buttonTop}px`
 
     if (openFor !== template.id) continue
-    let menu = menuElement()
     const signature = menuSignature(template)
-    if (menu === null || menu.dataset.wtsSignature !== signature) {
-      // Rebuilt, not patched: the menu's structure depends on what it draws — a full-pixel shape
-      // has no Size or Anchor — so refreshing labels in place would not be enough.
-      const previous = menu
+    if (menuNode === null || !menuNode.isConnected || menuNode.dataset.wtsSignature !== signature) {
+      // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
+      // depends on what it draws, and anything kept in the old element is either lost or — worse —
+      // re-parented under a different template.
+      const previous = menuNode
       const scrollTop = previous?.scrollTop ?? 0
-      const carried = carryOver(previous, template.id, template.name)
-      const focusedKey = previous?.contains(document.activeElement)
-        ? ((document.activeElement as HTMLElement | null)?.dataset.wtsKey ?? null)
-        : null
+      const focusedKey =
+        previous?.contains(document.activeElement) === true
+          ? ((document.activeElement as HTMLElement | null)?.dataset[CONTROL] ?? null)
+          : null
       previous?.remove()
-      menu = buildMenu(template, rerender)
-      menu.dataset.wtsSignature = signature
-      document.body.appendChild(menu)
-      if (carried.length > 0) menu.querySelector('[data-wts-header]')?.after(...carried)
-      menu.scrollTop = scrollTop
-      const restore =
-        focusedKey === null ? null : menu.querySelector(`[data-wts-key="${focusedKey}"]`)
-      if (restore instanceof HTMLElement) restore.focus()
-      else if (focusOnBuild) {
-        const first = menu.querySelector('[data-wts-key="hide"]')
-        if (first instanceof HTMLElement) first.focus()
-      }
-      focusOnBuild = false
+      menuNode = buildMenu(template, rerender)
+      menuNode.dataset.wtsSignature = signature
+      document.body.appendChild(menuNode)
+      menuNode.scrollTop = scrollTop
+      const wanted = focusRequest ?? focusedKey
+      const restore = wanted === null ? null : controlIn(menuNode, wanted)
+      if (restore !== null) restore.focus()
+      focusRequest = null
+      const box = menuNode.getBoundingClientRect()
+      menuBox = { width: box.width, height: box.height }
     }
-    refreshSliders(menu, appearanceFor(template.id))
+    refreshSliders(menuNode, appearanceFor(template.id))
     // Keep it on screen when the overlay is near an edge, on both sides: a template hanging off
-    // the left keeps a clamped, reachable button, and its menu has to be reachable too.
-    const box = menu.getBoundingClientRect()
-    const rightmost = Math.max(8, window.innerWidth - box.width - 8)
-    menu.style.left = `${Math.min(Math.max(8, corner.x + 6), rightmost)}px`
-    menu.style.top = `${Math.min(
-      Math.max(8, corner.y + GEAR_SIZE),
-      Math.max(8, window.innerHeight - box.height - 8),
-    )}px`
+    // the left keeps a clamped, reachable button, and its menu has to be reachable too. It also has
+    // to stay below its own gear, which has a lower z-index and would otherwise be buried by it.
+    const rightmost = Math.max(8, window.innerWidth - menuBox.width - 8)
+    const lowest = Math.max(8, window.innerHeight - menuBox.height - 8)
+    menuNode.style.left = `${Math.min(Math.max(8, corner.x + 6), rightmost)}px`
+    menuNode.style.top = `${Math.min(Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE), lowest)}px`
   }
 }
