@@ -756,7 +756,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
     expect(byKey('hide').getAttribute('aria-label')).toBe('Show this overlay')
   })
 
-  it('clears a stale failure once a later write succeeds', async () => {
+  it('keeps a refused shape reported when a colour change succeeds', async () => {
     let call = 0
     harness.setAppearance.mockImplementation(async () => (++call === 1 ? false : true))
     harness.localTemplates.mockReturnValue([template()])
@@ -768,7 +768,26 @@ describe('deferred work stays tied to the template that asked for it', () => {
     byKey('swatch:1').click()
     await settle()
 
-    // The saved state is correct; a leftover banner says otherwise.
+    // The colour landed and the shape did not. One shared `appearance` bucket would let the
+    // colour's success clear the shape's banner, and the overlay ends up Full with nothing said.
+    expect(errorText()).toContain('Could not update')
+    expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('clears a refused write once the same property succeeds', async () => {
+    let call = 0
+    harness.setAppearance.mockImplementation(async () => (++call === 1 ? false : true))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byText(menu(), 'Dot').click()
+    await settle()
+    expect(errorText()).toContain('Could not update')
+    byText(menu(), 'Corner').click()
+    await settle()
+
     expect(errorText()).toBeNull()
   })
 
@@ -1106,5 +1125,200 @@ describe('the menu is ours and has a keyboard exit', () => {
 
     expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
     expect(document.activeElement).toBe(gear('a'))
+  })
+})
+
+describe('a delete under way owns the template', () => {
+  it('does not queue the delete behind this menu’s own writes', () => {
+    // `removeLocalTemplate` sets the store's terminal guard synchronously; that is what stops an
+    // in-flight save resurrecting the record. Queueing it behind a slow visibility write means the
+    // guard is not set until the bitmaps finish.
+    harness.setLocalVisible.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('hide').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+    byKey('confirm-delete').click()
+
+    expect(harness.removeLocalTemplate).toHaveBeenCalledWith('a')
+  })
+
+  it('stops offering Move and Hide while the delete runs', () => {
+    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+    byKey('confirm-delete').click()
+    rerender()
+
+    // Starting a placement for a record that is about to stop existing strands the placement bar.
+    expect((byKey('move') as HTMLButtonElement).disabled).toBe(true)
+    expect((byKey('hide') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('forgets a template deleted while it was off screen', async () => {
+    harness.setLocalVisible.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+
+    // Panned out of view, so it no longer has a button — then deleted.
+    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
+    rerender()
+    harness.localTemplates.mockReturnValue([])
+    rerender()
+    // ...and a template with the same durable id comes back.
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(errorText()).toBeNull()
+  })
+})
+
+describe('interaction outranks a repaint', () => {
+  it('does not replace the menu under an active slider drag', () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
+
+    // Something rebuilds the menu mid-drag: a rename here, a refusal elsewhere.
+    harness.localTemplates.mockReturnValue([
+      template({ name: 'renamed.png', appearance: { opacity: 0.4 } }),
+    ])
+    rerender()
+
+    // Replacing the range before it fires `change` loses the value the user was setting.
+    expect(byKey('opacity')).toBe(opacity)
+  })
+
+  it('carries the tab stop with arrow-key focus', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('Shape:full').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+    )
+
+    // Leaving the stop on the selected option makes Shift+Tab land back inside the group.
+    expect((byKey('Shape:square') as HTMLButtonElement).tabIndex).toBe(0)
+    expect((byKey('Shape:full') as HTMLButtonElement).tabIndex).toBe(-1)
+  })
+
+  it('keeps the keyboard across a transient map detach', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('swatch:5').focus()
+
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    host?.appendChild(mapCanvas)
+    rerender()
+
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('swatch:5')
+  })
+
+  it('does not arm a focus jump when the question is already open', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+    byKey('close').focus()
+
+    byKey('delete').click()
+    rerender()
+    // An unrelated rebuild later on must not consume a leftover request and jump to Delete.
+    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
+    rerender()
+
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).not.toBe(
+      'confirm-delete',
+    )
+  })
+})
+
+describe('failure messages are resolved when they are shown', () => {
+  it('names the template as it is at render time', async () => {
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    harness.setLocalVisible.mockImplementation(async () => {
+      await held
+      return false
+    })
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+
+    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
+    rerender()
+    release()
+    await settle()
+
+    expect(errorText()).toContain('renamed.png')
+    expect(errorText()).not.toContain('alpha.png')
+  })
+
+  it('gives Move its own slot rather than the visibility one', async () => {
+    harness.setLocalVisible.mockResolvedValue(false)
+    harness.isMoving.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('hide').click()
+    await settle()
+    byKey('move').click()
+    rerender()
+
+    const messages = [...menu().querySelectorAll('[data-wts-error]')].map((el) => el.textContent)
+    expect(messages).toHaveLength(2)
+    expect(messages.join(' ')).toContain('Could not change visibility')
+    expect(messages.join(' ')).toContain('placement already in progress')
+  })
+
+  it('announces a failure once, not on every unrelated rebuild', async () => {
+    harness.setLocalVisible.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('hide').click()
+    await settle()
+    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+
+    byKey('swatch:1').click()
+    await settle()
+
+    // A rebuild reconstructs the node; a fresh role="alert" would read the old failure out again.
+    expect(menu().querySelector('[data-wts-error]')?.hasAttribute('role')).toBe(false)
   })
 })
