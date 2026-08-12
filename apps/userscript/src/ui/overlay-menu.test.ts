@@ -1660,7 +1660,7 @@ describe('a delete owns the template whichever surface started it', () => {
 })
 
 describe('a transient detach costs nothing', () => {
-  it('restores a value the drag had reached', () => {
+  it('commits a value the drag had reached', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
     gear('a').click()
@@ -1674,8 +1674,11 @@ describe('a transient detach costs nothing', () => {
     rerender()
     host?.appendChild(mapCanvas)
     rerender()
+    await settle()
 
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.85')
+    // The pointer capture died with the node, so no `change` is ever coming — displaying it and
+    // hoping left the menu showing 85% while the overlay stayed at 40%.
+    expect(appearanceWritten(0).opacity).toBe(0.85)
   })
 
   it('keeps focus that was on a gear rather than in the menu', () => {
@@ -1901,7 +1904,7 @@ describe('a held slider holds its own menu, not the next one', () => {
     expect(menu().textContent).toContain('beta.png')
   })
 
-  it('rebuilds a menu the page has torn off even while held', () => {
+  it('rebuilds a menu the page has torn off even while held, keeping the value', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -1909,10 +1912,16 @@ describe('a held slider holds its own menu, not the next one', () => {
     ;(byKey('opacity') as HTMLInputElement).dispatchEvent(new Event('pointerdown'))
 
     // A hostile or careless host removes it; the detached control may never see another event.
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.value = '0.62'
+    opacity.dispatchEvent(new Event('input'))
     menu().remove()
     rerender()
+    await settle()
 
     expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    // And the value the user had reached is not simply thrown away with the node.
+    expect(appearanceWritten(0).opacity).toBe(0.62)
   })
 })
 
@@ -2112,5 +2121,148 @@ describe('the menu belongs to us, and to one template at a time', () => {
     rerender()
 
     expect(byKey('swatch:1').dataset.on).toBe('false')
+  })
+})
+
+describe('a condemned template is condemned everywhere', () => {
+  it('renders the progress box as soon as the store says so', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+
+    // A delete started from the panel, with the record still present for its IndexedDB round trip.
+    harness.isDeletingLocal.mockReturnValue(true)
+    rerender()
+
+    expect(byKey('confirm-delete').textContent).toBe('Deleting…')
+  })
+
+  it('does not resurrect a dismissed question when an external delete fails', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+
+    harness.isDeletingLocal.mockReturnValue(true)
+    rerender()
+    byKey('close').click()
+    rerender()
+    // The panel's delete fails and drops the guard.
+    harness.isDeletingLocal.mockReturnValue(false)
+    gear('a').click()
+    rerender()
+
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+  })
+
+  it('keeps a hidden overlay reachable while it still has something to say', async () => {
+    harness.setLocalVisible.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    // Reached the hidden state through its own menu, which is the only way in.
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
+    rerender()
+    byKey('close').click()
+    rerender()
+
+    // Culling the gear would leave the refusal recorded with no control left to open it.
+    expect(document.getElementById('wts-overlay-button-a')).not.toBeNull()
+  })
+})
+
+describe('a locked slider arms nothing', () => {
+  it('does not block rebuilds after a refused press', () => {
+    harness.isDeletingLocal.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // A prevented native range gesture takes no pointer capture, so releasing outside the input
+    // never delivers a `pointerup` here.
+    byKey('opacity').dispatchEvent(new Event('pointerdown', { cancelable: true }))
+    harness.localTemplates.mockReturnValue([
+      template({ name: 'renamed.png', appearance: { shape: 'circle' } }),
+    ])
+    rerender()
+
+    expect(menu().textContent).toContain('renamed.png')
+  })
+
+  it('keeps tracking the store after a drag back to its origin, even if the store moved', () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+
+    opacity.dispatchEvent(new Event('pointerdown'))
+    // Another tab moves the store mid-drag.
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
+    opacity.value = '0.7'
+    opacity.dispatchEvent(new Event('input'))
+    opacity.value = '0.4'
+    opacity.dispatchEvent(new Event('input'))
+    // Ends where it began, so Chromium fires no `change` — and the thumb no longer equals the store.
+    opacity.dispatchEvent(new Event('pointerup'))
+
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        rerender()
+        expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
+        resolve()
+      }, 0)
+    })
+  })
+})
+
+describe('focus saved across a teardown is not focus demanded', () => {
+  it('leaves the keyboard where the user has since put it', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('swatch:5').focus()
+
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    // The user clicks into something else while the map is away.
+    const elsewhere = document.createElement('input')
+    document.body.appendChild(elsewhere)
+    elsewhere.focus()
+    host?.appendChild(mapCanvas)
+    rerender()
+
+    expect(document.activeElement).toBe(elsewhere)
+  })
+
+  it('falls back to Close when the saved control no longer exists', () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('size').focus()
+
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    // Another tab sets Full, so Size and Anchor are gone when the menu comes back.
+    harness.localTemplates.mockReturnValue([template()])
+    host?.appendChild(mapCanvas)
+    rerender()
+
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('close')
   })
 })
