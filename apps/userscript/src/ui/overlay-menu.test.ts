@@ -447,7 +447,7 @@ describe('refused writes are reported rather than swallowed', () => {
     byText(menu(), 'Dot').click()
     await settle()
 
-    expect(errorText()).toContain('Could not update')
+    expect(errorText()).toContain('Could not change shape')
   })
 
   it('reports a refusal raised after a rebuild replaced the menu', async () => {
@@ -562,16 +562,29 @@ describe('the exclusive choices behave like the radiogroups they announce', () =
     expect(appearanceWritten(0).shape).toBe('square')
   })
 
-  it('does not contradict its own label on the hide toggle', () => {
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
+  it('does not contradict its own label on the hide toggle', async () => {
+    harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
+    rerender()
+    byKey('hide').click()
+    await settle()
+    harness.localTemplates.mockReturnValue([template({ visible: false })])
     rerender()
 
     const hide = byKey('hide')
     expect(hide.getAttribute('aria-label')).toBe('Show this overlay')
     // "Show this overlay, pressed" reads as though showing were already on.
     expect(hide.hasAttribute('aria-pressed')).toBe(false)
+  })
+
+  it('keeps a hidden overlay’s controls only while its own menu is open', () => {
+    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', visible: false })])
+    rerender()
+
+    // A hidden overlay draws nothing, so its gear is a hole in the map with nothing to explain it.
+    expect(document.getElementById('wts-overlay-button-b')).toBeNull()
+    expect(document.getElementById('wts-overlay-button-a')).not.toBeNull()
   })
 
   it('tells assistive technology the gear owns a dialog', () => {
@@ -770,7 +783,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
 
     // The colour landed and the shape did not. One shared `appearance` bucket would let the
     // colour's success clear the shape's banner, and the overlay ends up Full with nothing said.
-    expect(errorText()).toContain('Could not update')
+    expect(errorText()).toContain('Could not change shape')
     expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
   })
 
@@ -784,7 +797,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
 
     byText(menu(), 'Dot').click()
     await settle()
-    expect(errorText()).toContain('Could not update')
+    expect(errorText()).toContain('Could not change shape')
     byText(menu(), 'Corner').click()
     await settle()
 
@@ -922,7 +935,7 @@ describe('an outcome is reported whatever else has happened since', () => {
     byText(menu(), 'Dot').click()
     await settle()
 
-    expect(errorText()).toContain('Could not update')
+    expect(errorText()).toContain('Could not change shape')
     // Intent released: the menu must not keep asserting a shape that was never saved.
     expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
   })
@@ -1320,5 +1333,214 @@ describe('failure messages are resolved when they are shown', () => {
 
     // A rebuild reconstructs the node; a fresh role="alert" would read the old failure out again.
     expect(menu().querySelector('[data-wts-error]')?.hasAttribute('role')).toBe(false)
+  })
+})
+
+describe('nothing is stranded by a held slider or a running delete', () => {
+  it('draws a refusal that landed while the thumb was held', async () => {
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    harness.setLocalVisible.mockImplementation(async () => {
+      await held
+      return false
+    })
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('hide').click()
+
+    // Press and hold the thumb; the hold blocks rebuilds, so the refusal has nowhere to land.
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
+    release()
+    await settle()
+    expect(errorText()).toBeNull()
+
+    // Letting go has to let it through: on a static map no other frame is coming.
+    opacity.dispatchEvent(new Event('pointerup'))
+
+    expect(errorText()).toContain('Could not change visibility')
+  })
+
+  it('clears the Move refusal once a placement actually starts', () => {
+    harness.isMoving.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('move').click()
+    rerender()
+    expect(errorText()).toContain('placement already in progress')
+
+    harness.isMoving.mockReturnValue(false)
+    byKey('move').click()
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // Nothing else ever cleared this one, so it outlived the placement it was about.
+    expect(errorText()).toBeNull()
+  })
+
+  it('re-announces a repeated Move refusal', () => {
+    harness.isMoving.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('move').click()
+    rerender()
+    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+    byKey('move').click()
+    rerender()
+
+    // Announcing once is right for an unrelated rebuild. A deliberate repeat deserves an answer.
+    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+  })
+
+  it('keeps focus on the confirm button once the delete starts', () => {
+    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+
+    byKey('confirm-delete').click()
+    rerender()
+
+    // A `disabled` button cannot hold focus, so confirming from the keyboard would drop it to the
+    // document at the exact moment a destructive action is running.
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe(
+      'confirm-delete',
+    )
+    expect(byKey('confirm-delete').getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('stops offering the appearance controls while the delete runs', () => {
+    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+    byKey('confirm-delete').click()
+    rerender()
+
+    // The store refuses these anyway, leaving a meaningless banner beside "Deleting…".
+    expect((byKey('Shape:full') as HTMLButtonElement).disabled).toBe(true)
+    expect((byKey('opacity') as HTMLInputElement).disabled).toBe(true)
+    expect((byKey('swatch:1') as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('the delete question is retracted by the gestures that dismiss it', () => {
+  it('does not come back armed after the menu is closed', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+
+    byKey('close').click()
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+  })
+
+  it('answers the question before the menu on Escape', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+
+    byKey('confirm-delete').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+    rerender()
+
+    // Escape answers the innermost dialog, not the one around it.
+    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+  })
+})
+
+describe('an edit carries the change, not a resolved snapshot', () => {
+  it('applies a colour toggle to whatever the store holds at dispatch', async () => {
+    let release = (): void => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let call = 0
+    harness.setAppearance.mockImplementation(async () => {
+      if (++call === 1) {
+        await held
+        // Reconciliation installs another client's colour filter.
+        harness.localTemplates.mockReturnValue([template({ appearance: { hiddenColours: [5] } })])
+        return false
+      }
+      return true
+    })
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('swatch:1').click()
+    byKey('swatch:2').click()
+    release()
+    await settle()
+
+    // Carrying the resolved array would put colour 5 back on and apply colour 1 anyway, even though
+    // its own write was refused.
+    expect(appearanceWritten(1).hiddenColours).toEqual([5, 2])
+  })
+
+  it('releases a refused property without waiting for an unrelated queued write', async () => {
+    harness.setAppearance.mockResolvedValue(false)
+    harness.setLocalVisible.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byText(menu(), 'Dot').click()
+    byKey('hide').click()
+    await settle()
+
+    // One shared intent, released only by its latest owner, keeps asserting the refused shape for
+    // as long as the visibility write is outstanding — and that one never resolves.
+    expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
+    expect(errorText()).toContain('Could not change shape')
+  })
+
+  it('names the property a refusal is about', async () => {
+    harness.setAppearance.mockResolvedValue(false)
+    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byText(menu(), 'Full').click()
+    await settle()
+    const size = byKey('size') as HTMLInputElement
+    size.value = '0.5'
+    size.dispatchEvent(new Event('change'))
+    await settle()
+
+    const messages = [...menu().querySelectorAll('[data-wts-error]')].map((el) => el.textContent)
+    expect(messages.join(' ')).toContain('shape')
+    expect(messages.join(' ')).toContain('size')
   })
 })
