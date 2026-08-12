@@ -94,6 +94,14 @@ type FailureKey =
   | `appearance:${string}`
 
 let openFor: string | null = null
+/**
+ * The template whose menu is being torn down right now.
+ *
+ * A teardown flushes pending edits, and settling one repaints synchronously — a pass that sees no
+ * open menu and would cull the gear of a hidden overlay before the close is finished putting the
+ * keyboard back on it.
+ */
+let closingFor: string | null = null
 /** The menu we built. Never `getElementById`: the page can mint an element under our id. */
 let menuNode: HTMLElement | null = null
 /**
@@ -1549,11 +1557,16 @@ const closeOverlayMenu = (): void => {
   // lose — built, then removed a moment later by the rest of this teardown.
   const closing = openFor
   openFor = null
+  closingFor = closing
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
   // sends that release somewhere else.
-  if (closing !== null) {
-    flushDrafts(closing)
-    flushSelections(closing)
+  try {
+    if (closing !== null) {
+      flushDrafts(closing)
+      flushSelections(closing)
+    }
+  } finally {
+    closingFor = null
   }
   // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
   // gear puts a live Delete button back up that the user thought they had dismissed — but not once
@@ -1650,6 +1663,8 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
   if (
     !visibleFor(template.id) &&
     openFor !== template.id &&
+    // Mid-teardown its menu is already disowned, but the gear is where the keyboard is going.
+    closingFor !== template.id &&
     buttons.get(template.id) !== activeIn(buttons.get(template.id)) &&
     // A gear the host has adopted holds focus in *its* root, so the main document's active element
     // is the iframe or host — culling here would run before ownership repair and no replacement

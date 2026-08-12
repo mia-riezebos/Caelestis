@@ -116,6 +116,12 @@ const CSS = `
  */
 let installed: HTMLStyleElement | null = null
 
+/** Is this `aspect-ratio` square? `1`, `1 / 1` and `2/2` all are; `auto` and `16 / 9` are not. */
+const isSquare = (value: string): boolean => {
+  const [width, height = '1'] = value.split('/').map((part) => Number(part.trim()))
+  return Number.isFinite(width) && Number.isFinite(height) && height !== 0 && width === height
+}
+
 export const installStyles = (): void => {
   // `isConnected` alone stays true for a node the host has adopted into an iframe or moved into a
   // shadow root, where its rules no longer reach our body-mounted controls.
@@ -137,8 +143,9 @@ export const installStyles = (): void => {
         rule instanceof CSSStyleRule &&
         rule.selectorText === '.wts-swatch' &&
         // The value, not merely the presence: `setProperty('aspect-ratio', 'auto')` leaves the
-        // declaration standing and the swatches just as collapsed as deleting it.
-        rule.style.getPropertyValue('aspect-ratio') === '1',
+        // declaration standing and the swatches just as collapsed as deleting it. Compared as a
+        // ratio rather than as text, because CSSOM serialises `1` back as `1 / 1`.
+        isSquare(rule.style.getPropertyValue('aspect-ratio')),
     )
   ) {
     return
