@@ -326,6 +326,14 @@ const resumeAfterFailure = (action: string, error?: unknown): void => {
   warn('install', `${action} could not be saved; placement is still open`, String(error ?? ''))
   finishing = false
   listen(true)
+  // Resuming is a state change like any other, and `finish` announces its own. Without this a
+  // failed save leaves a live placement over a map that may never paint again — nobody watching it
+  // is told the session came back, and on a still map nothing else will say so.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after resuming placement failed', error)
+  }
 }
 
 export const commit = async (): Promise<void> => {

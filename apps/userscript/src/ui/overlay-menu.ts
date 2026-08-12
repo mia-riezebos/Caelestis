@@ -310,10 +310,6 @@ const buttons = new Map<string, HTMLElement>()
  * old behaviour: the menu showed 85% while the overlay stayed at 40%, indefinitely.
  */
 let lastRerender: (() => void) | null = null
-/** A render is on the stack; anything that repaints from inside one asks for another pass instead. */
-let rendering = false
-let renderAgain = false
-const MAX_RENDER_PASSES = 3
 
 /**
  * Write out every draft for `id`, because the gesture that would have committed them is over.
@@ -1548,11 +1544,16 @@ const closeOverlayMenu = (): void => {
   }
   focusRestore = null
   releaseAllHolds()
+  // Closed before anything is flushed: settling a draft or a selection repaints synchronously, and
+  // a menu still claiming to be open is rebuilt by that repaint for an appearance it is about to
+  // lose — built, then removed a moment later by the rest of this teardown.
+  const closing = openFor
+  openFor = null
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
   // sends that release somewhere else.
-  if (openFor !== null) {
-    flushDrafts(openFor)
-    flushSelections(openFor)
+  if (closing !== null) {
+    flushDrafts(closing)
+    flushSelections(closing)
   }
   // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
   // gear puts a live Delete button back up that the user thought they had dismissed — but not once
@@ -1560,8 +1561,7 @@ const closeOverlayMenu = (): void => {
   // Our own running delete keeps its question, because that box is the only progress it has. An
   // external one renders its box from `isDoomed` and needs no help — and preserving `confirming` for
   // it means a panel delete that later *fails* resurrects a question ✕ had already dismissed.
-  if (openFor !== null && !deleting.has(openFor)) confirming.delete(openFor)
-  openFor = null
+  if (closing !== null && !deleting.has(closing)) confirming.delete(closing)
   focusRequest = null
   dropExtractedControls()
   menuNode?.remove()
@@ -1698,30 +1698,9 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   lastRerender = rerender
-  // A render can reach back into itself: settling a flushed draft or selection repaints, and
-  // `repaint` calls `draw` straight through. The nested pass would build a menu the outer pass then
-  // removes, and stamp it with a signature sampled before the flush — so the work is deferred to a
-  // second pass here instead, where it sees the state the flush produced.
-  if (rendering) {
-    renderAgain = true
-    return
-  }
-  rendering = true
-  try {
-    let passes = 0
-    do {
-      renderAgain = false
-      withFrameTemplates(localTemplates(), (templates) => {
-        renderControls(rerender, mapCanvas, templates)
-      })
-      passes += 1
-      // Two settled passes are enough to reach a fixed point; a third means something is repainting
-      // itself, and one frame is not the place to find out.
-    } while (renderAgain && passes < MAX_RENDER_PASSES)
-  } finally {
-    rendering = false
-    renderAgain = false
-  }
+  withFrameTemplates(localTemplates(), (templates) => {
+    renderControls(rerender, mapCanvas, templates)
+  })
 }
 
 const renderControls = (
@@ -1804,8 +1783,9 @@ const renderControls = (
             stopping,
             'move-stopped',
             (name) => `“${name}” was hidden, so its placement stopped.`,
-            // The message is about a placement that ended over a hidden overlay; showing it again,
-            // or starting another placement, is the user having moved past it.
+            // It is about *this* template's placement ending over a hidden overlay. Showing it
+            // again, or placing it again, is the user having moved past it — another template
+            // moving says nothing about this one and leaves the message standing.
             () => templateFor(stopping)?.visible !== false || movingId() === stopping,
           )
           lastRerender?.()

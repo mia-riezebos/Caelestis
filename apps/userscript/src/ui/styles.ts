@@ -136,7 +136,9 @@ export const installStyles = (): void => {
       (rule) =>
         rule instanceof CSSStyleRule &&
         rule.selectorText === '.wts-swatch' &&
-        rule.style.getPropertyValue('aspect-ratio') !== '',
+        // The value, not merely the presence: `setProperty('aspect-ratio', 'auto')` leaves the
+        // declaration standing and the swatches just as collapsed as deleting it.
+        rule.style.getPropertyValue('aspect-ratio') === '1',
     )
   ) {
     return

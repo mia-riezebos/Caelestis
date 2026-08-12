@@ -76,7 +76,41 @@ export const repaint = (): void => {
   if (lastFrame !== null) draw(lastFrame)
 }
 
+/** A draw is on the stack; anything repainting from inside one asks for another pass instead. */
+let drawing = false
+let drawAgain = false
+// Two settled passes reach a fixed point. A third means something repaints itself, and a frame is
+// not the place to find that out.
+const MAX_DRAW_PASSES = 3
+
+/**
+ * One frame, however many changes it takes to settle.
+ *
+ * Our own controls repaint synchronously when they settle an edit — a slider released, a selection
+ * flushed by a teardown — and that repaint used to land in the middle of the pass that provoked it:
+ * controls built by the inner pass removed by the outer one, and the canvas painted twice for a
+ * single change. A nested request now waits for the pass it interrupted.
+ */
 const draw = (frame: TileFrame): void => {
+  if (drawing) {
+    drawAgain = true
+    return
+  }
+  drawing = true
+  try {
+    let passes = 0
+    do {
+      drawAgain = false
+      paintOnce(frame)
+      passes += 1
+    } while (drawAgain && passes < MAX_DRAW_PASSES)
+  } finally {
+    drawing = false
+    drawAgain = false
+  }
+}
+
+const paintOnce = (frame: TileFrame): void => {
   lastFrame = frame
   const { canvas: mapCanvas, quads } = frame
   // Before the canvas work, and deliberately not a painter: these are DOM controls, and registering
