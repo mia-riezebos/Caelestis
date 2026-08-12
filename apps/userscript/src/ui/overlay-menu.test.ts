@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   localTemplates: vi.fn(() => [] as unknown[]),
   previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
   removeCustomOrderKeys: vi.fn(),
+  isDeletingLocal: vi.fn((_id: string) => false),
   removeLocalTemplate: vi.fn(async (_id: string) => true),
   // A projection, not a constant: the module derives the overlay's on-screen box from one
   // projected corner plus the scale, and a constant would make every template a zero-size point.
@@ -24,6 +25,7 @@ vi.mock('../main.js', () => ({
 }))
 vi.mock('../state.js', () => ({ removeCustomOrderKeys: harness.removeCustomOrderKeys }))
 vi.mock('../templates/local-store.js', () => ({
+  isDeletingLocal: harness.isDeletingLocal,
   localTemplates: harness.localTemplates,
   previewOriginFor: harness.previewOriginFor,
   removeLocalTemplate: harness.removeLocalTemplate,
@@ -116,6 +118,7 @@ afterEach(() => {
   harness.screenPointFor.mockImplementation((x: number, y: number) => ({ x, y }))
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
   harness.isMoving.mockReturnValue(false)
+  harness.isDeletingLocal.mockReturnValue(false)
   harness.removeLocalTemplate.mockResolvedValue(true)
   harness.setAppearance.mockImplementation(async () => true)
   harness.setLocalVisible.mockResolvedValue(true)
@@ -1376,6 +1379,7 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     expect(errorText()).toContain('placement already in progress')
 
     harness.isMoving.mockReturnValue(false)
+    harness.isDeletingLocal.mockReturnValue(false)
     byKey('move').click()
     rerender()
     gear('a').click()
@@ -1542,5 +1546,161 @@ describe('an edit carries the change, not a resolved snapshot', () => {
     const messages = [...menu().querySelectorAll('[data-wts-error]')].map((el) => el.textContent)
     expect(messages.join(' ')).toContain('shape')
     expect(messages.join(' ')).toContain('size')
+  })
+})
+
+describe('a real gesture commits what the user chose', () => {
+  it('writes the value the thumb ended on, not the one the repaint restored', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.9'
+    opacity.dispatchEvent(new Event('change'))
+    await settle()
+
+    // Releasing the hold repaints, and the repaint puts the stored value back into this very input.
+    // Reading after that commits the value the user just dragged away from.
+    expect(appearanceWritten(0).opacity).toBe(0.9)
+  })
+
+  it('keeps one refused colour reported when a different colour succeeds', async () => {
+    let call = 0
+    harness.setAppearance.mockImplementation(async () => ++call !== 1)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('swatch:1').click()
+    byKey('swatch:2').click()
+    await settle()
+
+    // One shared `hiddenColours` key lets the second swatch's success clear the first's failure.
+    expect(errorText()).toContain('Could not change')
+  })
+})
+
+describe('a delete owns the template whichever surface started it', () => {
+  it('refuses Move for a template the store has already condemned', () => {
+    harness.isDeletingLocal.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // The panel's delete sets the store's terminal guard and then does its IndexedDB work with the
+    // record still present. Reading only our own flag starts a placement for a doomed template.
+    expect((byKey('move') as HTMLButtonElement).disabled).toBe(true)
+    expect((byKey('delete') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps the progress box when the menu is closed mid-delete', () => {
+    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+    byKey('confirm-delete').click()
+    rerender()
+
+    byKey('close').click()
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // Without it the controls are all disabled with nothing on screen explaining why.
+    expect(menu().querySelector('[data-wts-confirm]')).not.toBeNull()
+  })
+
+  it('opens onto a control that can take focus while a delete runs', () => {
+    harness.isDeletingLocal.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+
+    gear('a').click()
+    rerender()
+
+    // Hide is disabled during a delete, and a disabled control cannot hold focus.
+    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('close')
+  })
+
+  it('forgets a template deleted while the map was detached', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('delete').click()
+    rerender()
+
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    harness.localTemplates.mockReturnValue([])
+    rerender()
+    // A template with the same durable id comes back.
+    harness.localTemplates.mockReturnValue([template()])
+    host?.appendChild(mapCanvas)
+    rerender()
+    gear('a').click()
+    rerender()
+
+    // The old question must not be handed to the new lifetime.
+    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+  })
+})
+
+describe('a transient detach costs nothing', () => {
+  it('restores a value the drag had reached', () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new Event('pointerdown'))
+    opacity.value = '0.85'
+
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    host?.appendChild(mapCanvas)
+    rerender()
+
+    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.85')
+  })
+
+  it('keeps focus that was on a gear rather than in the menu', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').focus()
+
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    host?.appendChild(mapCanvas)
+    rerender()
+
+    expect(document.activeElement).toBe(gear('a'))
+  })
+
+  it('retires a Move refusal once the placement it was about ends', () => {
+    harness.isMoving.mockReturnValue(true)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('move').click()
+    rerender()
+    expect(errorText()).toContain('placement already in progress')
+
+    // The other template's placement finishes; nobody pressed Move again.
+    harness.isMoving.mockReturnValue(false)
+    rerender()
+
+    expect(errorText()).toBeNull()
   })
 })

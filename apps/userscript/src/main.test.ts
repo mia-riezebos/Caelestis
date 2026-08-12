@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   localTemplates: vi.fn(() => [] as unknown[]),
   paintFrame: vi.fn(),
   previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
+  renderOverlayControls: vi.fn(),
   restoreLocalTemplates: vi.fn(async () => {}),
   stampTile: vi.fn(),
 }))
@@ -38,6 +39,9 @@ vi.mock('./tile-transform.js', () => ({
   }),
 }))
 vi.mock('./ui/panel.js', () => ({ installPanel: vi.fn() }))
+// Mocked rather than imported: the real module pulls in `move.ts`, which reads `navigator.platform`
+// at module scope, so `main.test.ts` would fail for reasons that have nothing to do with `main.ts`.
+vi.mock('./ui/overlay-menu.js', () => ({ renderOverlayControls: harness.renderOverlayControls }))
 
 afterEach(() => {
   vi.resetModules()
@@ -172,6 +176,10 @@ describe('overlay canvas lifecycle', () => {
     const painters = harness.paintFrame.mock.calls[0]?.[2] as
       | Array<(context: unknown, frame: unknown) => void>
       | undefined
+    // Pinned, because this test selects its painter by position: templates, mark, then the overlay
+    // controls. Inserting a painter above the mark silently redirects every assertion below to the
+    // wrong function, which is exactly how it broke once already.
+    expect(painters).toHaveLength(3)
     if (painters?.[1] === undefined) throw new Error('main must register its mark painter')
 
     painters[1](context, frame)
@@ -179,6 +187,29 @@ describe('overlay canvas lifecycle', () => {
     expect(context.fillStyle).toBe('rgba(0, 0, 0, 0.6)')
     expect(context.fillRect).toHaveBeenCalledOnce()
     expect(context.fillRect).toHaveBeenCalledWith(10, 20, 30, 40)
+  })
+
+  it('hands the overlay controls the canvas of the frame being painted', async () => {
+    vi.stubGlobal('document', {
+      querySelector: vi.fn(() => null),
+      createElement: vi.fn(() => ({ dataset: {}, style: {}, getContext: () => ({}) })),
+      readyState: 'complete',
+      addEventListener: vi.fn(),
+    })
+    await import('./main.js')
+    const draw = harness.draw
+    if (draw === null) throw new Error('main must register its tile-frame listener')
+    const canvas = { width: 100, height: 50, parentElement: null }
+    draw({ canvas, quads: [] })
+
+    const painters = harness.paintFrame.mock.calls[0]?.[2] as
+      | Array<(context: unknown, frame: unknown) => void>
+      | undefined
+    painters?.[2]?.({}, { canvas, quads: [] })
+
+    // Not a CSS-class lookup: the class is wplace's to rename, and guessing it wrong sweeps every
+    // control off a frame that painted the overlay perfectly well.
+    expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
   })
 
   it('draws visible templates on MapLibre fractional quads without distorting their pixel grid', async () => {
