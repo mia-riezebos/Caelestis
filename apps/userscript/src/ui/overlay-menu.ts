@@ -1014,10 +1014,14 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
   // template, and `setLocalVisible` can be rebuilding source bitmaps. Say so rather than presenting
   // a dead button.
   confirm.textContent = running ? 'Deleting…' : 'Delete'
+  // Refused while the template is being placed, exactly as the button that raised this question is
+  // — a question opened before the placement started is still on screen after it does, and a
+  // control that will refuse has to say so before it is pressed rather than after.
+  const refusing = running || movingId() === id
   // `aria-disabled`, not `disabled`: a disabled button cannot hold focus, so confirming from the
   // keyboard would drop it to the document at the exact moment the user is watching a destructive
   // action. The click guard below is what actually makes it inert.
-  confirm.setAttribute('aria-disabled', String(running))
+  confirm.setAttribute('aria-disabled', String(refusing))
   confirm.addEventListener('click', () => {
     if (isDoomed(id)) return
     // A question opened before the placement started is still on screen after it does — this menu
