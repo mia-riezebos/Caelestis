@@ -1514,25 +1514,14 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
 }
 
 /**
- * Put the keyboard back on the gear that opened the menu — or take it off, while something is being
- * placed.
+ * Put the keyboard back on the gear that opened the menu, unless something is being placed.
  *
- * A placement is driven from the window by Escape and Enter, and `move.ts` deliberately ignores key
- * events aimed at a button so that the page's own controls keep working. A focused gear therefore
- * takes both keys away from the placement: Escape does nothing, and Enter activates the gear and
- * reopens the very menu that was closing.
- *
- * Declining to focus it is not enough, because clicking a button focuses it — so the gear that
- * dismissed the menu is already holding the keyboard by the time this runs, and it has to be sent
- * away rather than merely not sent for.
+ * Taking it *off* a gear is not this function's job — see the invariant in `renderControls`, which
+ * enforces that every frame, however focus got there.
  */
 const handBack = (id: string): void => {
-  const gear = buttons.get(id)
-  if (!isMoving()) {
-    gear?.focus()
-    return
-  }
-  if (gear === document.activeElement) gear?.blur()
+  if (isMoving()) return
+  buttons.get(id)?.focus()
 }
 
 const closeOverlayMenu = (): void => {
@@ -1746,6 +1735,18 @@ const renderControls = (
   if (openFor !== null && (keyboardGone || groupsGone)) flushSelections(openFor)
   // A hide that was already queued elsewhere lands after the placement has started, leaving the
   // user positioning something invisible. The later action wins: the placement is abandoned.
+  // While something is being placed, the keyboard is not on a gear.
+  //
+  // `move.ts` drives a placement from the window and ignores keys aimed at a page control, so a gear
+  // holding focus costs the placement both of its keys: Escape does nothing, and Enter activates the
+  // gear, opening or closing this menu instead of applying the placement. Guarding the routes one at
+  // a time did not work — a click that starts a placement, a close handing the keyboard back, a menu
+  // opened behind a running placement, and a tap that changed no focus at all are four arrivals at
+  // the same state, and each fix found the next one. So it is stated once, here, where it holds
+  // however focus got there.
+  if (isMoving()) {
+    for (const [, gear] of buttons) if (gear === document.activeElement) gear.blur()
+  }
   const placing = movingId()
   if (placing !== null && shownForMove.has(placing)) {
     const stopping = placing
@@ -1865,14 +1866,7 @@ const renderControls = (
           // The click that closed it left the keyboard on this gear.
           handBack(template.id)
           rerender()
-        } else {
-          openOverlayMenu(template.id, rerender)
-          // The click that opened it focused this gear, and declining to send the keyboard deeper
-          // into the menu does not take it off the button it is already on. `move.ts` ignores keys
-          // aimed at a page control, so leaving it here costs the placement its next Enter — which
-          // would close this menu instead of applying the placement.
-          if (isMoving()) buttons.get(template.id)?.blur()
-        }
+        } else openOverlayMenu(template.id, rerender)
       })
       document.body.appendChild(button)
       buttons.set(template.id, button)
