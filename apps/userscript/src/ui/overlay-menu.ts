@@ -307,6 +307,8 @@ const buttons = new Map<string, HTMLElement>()
  * old behaviour: the menu showed 85% while the overlay stayed at 40%, indefinitely.
  */
 let lastRerender: (() => void) | null = null
+/** A pass is under way, so anything it disturbs is already this pass's to finish. */
+let painting = false
 
 /**
  * Write out every draft for `id`, because the gesture that would have committed them is over.
@@ -1680,9 +1682,14 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   lastRerender = rerender
-  withFrameTemplates(localTemplates(), (templates) => {
-    renderControls(rerender, mapCanvas, templates)
-  })
+  painting = true
+  try {
+    withFrameTemplates(localTemplates(), (templates) => {
+      renderControls(rerender, mapCanvas, templates)
+    })
+  } finally {
+    painting = false
+  }
 }
 
 const renderControls = (
@@ -1860,8 +1867,12 @@ const renderControls = (
       button.appendChild(icon('settings', 'size-3'))
       // A hidden overlay's gear is kept alive only while it holds focus. Nothing else would repaint
       // when focus leaves, so with the panel shut and the map idle it would sit there indefinitely.
+      //
+      // Unless we are the ones taking focus away, which the placement rule does mid-pass: this same
+      // pass goes on to cull the gear, so asking for another frame buys a second full paint for
+      // work that is already happening.
       button.addEventListener('blur', () => {
-        if (!visibleFor(template.id)) rerender()
+        if (!visibleFor(template.id) && !painting) rerender()
       })
       button.addEventListener('click', () => {
         if (openFor === template.id) {
