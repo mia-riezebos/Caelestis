@@ -649,16 +649,7 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
  * the drag guard: a rebuild under the pointer would drop the gesture, and their in-progress value
  * lives in {@link drafts}.
  */
-/**
- * Everything the menu draws *except* a pending arrow-key selection.
- *
- * Split from the signature because the two answer different questions. Both decide whether to
- * rebuild — a pending choice has to be drawn, so it is in the signature — but only this decides
- * whether to *settle* that choice on the way. A rebuild caused by the selection itself must not
- * commit it, or an arrow becomes a durable write the moment any frame arrives, which is the thing
- * "arrows move focus and stop there" exists to prevent.
- */
-const menuStructure = (template: PlacedTemplate): string => {
+const menuSignature = (template: PlacedTemplate): string => {
   const id = template.id
   const appearance = appearanceFor(id)
   // Serialised, not joined on a separator. Ids and names are arbitrary strings, so a `|` they can
@@ -678,6 +669,10 @@ const menuStructure = (template: PlacedTemplate): string => {
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
     confirming.has(id),
     isDoomed(id),
+    // Drawn — it is Delete's `aria-disabled` — so it is a render input like the rest. A placement
+    // beginning or ending while the menu is open otherwise leaves the button announcing the
+    // opposite of what it will do.
+    movingId() === id,
     [...(failures.get(id) ?? [])]
       .map(
         ([key, text]) =>
@@ -686,14 +681,6 @@ const menuStructure = (template: PlacedTemplate): string => {
       .join(','),
   ])
 }
-
-/** What the menu draws, pending choice included: a selection is shown before it is settled. */
-const menuSignature = (template: PlacedTemplate): string =>
-  JSON.stringify([
-    menuStructure(template),
-    selectionFor(template.id, 'Shape') ?? '',
-    selectionFor(template.id, 'Anchor') ?? '',
-  ])
 
 const deleteQuestion = (name: string): string => `Delete “${name}”? This cannot be undone.`
 
@@ -1033,6 +1020,20 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
   confirm.setAttribute('aria-disabled', String(running))
   confirm.addEventListener('click', () => {
     if (isDoomed(id)) return
+    // A question opened before the placement started is still on screen after it does — this menu
+    // survives outside interaction on purpose — so the refusal has to live here as well as on the
+    // button that raises it. This is the one that actually deletes.
+    if (movingId() === id) {
+      confirming.delete(id)
+      recordFailure(
+        id,
+        'delete',
+        (name) => `Finish placing “${name}” before deleting it.`,
+        () => movingId() !== id,
+      )
+      rerender()
+      return
+    }
     deleting.add(id)
     clearFailure(id, 'delete')
     rerender()
@@ -1942,7 +1943,6 @@ const renderControls = (
 
     if (openFor !== template.id) continue
     const signature = menuSignature(template)
-    const structure = menuStructure(template)
     // A drag in progress outranks a rebuild. The range element would be replaced before it ever
     // fired `change`, so the value the user was setting is simply lost — and a refusal landing
     // elsewhere, or another tab renaming the template, is enough to trigger it.
@@ -1978,13 +1978,12 @@ const renderControls = (
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
       // re-parented under a different template.
       // The rebuild is what takes the chosen cell away, and a browser does not retarget a pending
-      // keyup to its replacement — so the selection settles here, before it is replaced. Only when
-      // something *else* caused the rebuild, though: a rebuild the selection itself asked for is
-      // how the choice gets drawn, and settling it there would commit on the next frame rather
-      // than on the key coming up.
-      if (menuOwner !== null && structure !== menuNode?.dataset.wtsStructure) {
-        flushSelections(menuOwner)
-      }
+      // keyup to its replacement — so the selection settles here, before it is replaced. Every
+      // rebuild that reaches this line was caused by something other than the choice itself: the
+      // arrow that makes a choice paints it into the cells directly, so it is not a render input
+      // and asks for no rebuild. Were it one, this line would commit it on the next frame that
+      // happened to arrive, which is what "arrows move focus and stop there" forbids.
+      if (menuOwner !== null) flushSelections(menuOwner)
       const previous = menuNode
       // Sampled before anything is discarded: removing the node takes the keyboard with it.
       const scrollTop = previous?.scrollTop ?? 0
@@ -2001,7 +2000,6 @@ const renderControls = (
       // that no longer exists and buys an identical rebuild — and a forced measurement with it —
       // on the very next frame.
       menuNode.dataset.wtsSignature = menuSignature(template)
-      menuNode.dataset.wtsStructure = menuStructure(template)
       menuOwner = template.id
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
