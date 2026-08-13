@@ -1865,7 +1865,14 @@ const renderControls = (
           // The click that closed it left the keyboard on this gear.
           handBack(template.id)
           rerender()
-        } else openOverlayMenu(template.id, rerender)
+        } else {
+          openOverlayMenu(template.id, rerender)
+          // The click that opened it focused this gear, and declining to send the keyboard deeper
+          // into the menu does not take it off the button it is already on. `move.ts` ignores keys
+          // aimed at a page control, so leaving it here costs the placement its next Enter — which
+          // would close this menu instead of applying the placement.
+          if (isMoving()) buttons.get(template.id)?.blur()
+        }
       })
       document.body.appendChild(button)
       buttons.set(template.id, button)
