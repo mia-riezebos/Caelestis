@@ -1263,7 +1263,9 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
           // Refused for some other reason — the watch belongs to a placement that never started.
           if (!isMoving()) shownForMove.delete(id)
           handBack(id)
-          rerender()
+          // A placement that started has already painted from `beginMove`; one that was refused has
+          // not, and the refusal needs a frame of its own. One click, one paint, either way.
+          if (movingId() !== id) rerender()
         },
         () => {
           showingToMove.delete(id)
@@ -1282,9 +1284,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       shownForMove.delete(id)
       abortAttempts.delete(id)
     })
-    // The gear is held by reference, so focusing it needs no repaint of its own. One click, one paint.
+    // The gear is held by reference, so focusing it needs no repaint of its own, and `beginMove`
+    // paints when it starts. Only a refusal, which paints nothing, still needs a frame here.
     handBack(id)
-    rerender()
+    if (movingId() !== id) rerender()
   })
 
   // Deleting from here rather than from a panel row, for the same reason Move is here: this menu is

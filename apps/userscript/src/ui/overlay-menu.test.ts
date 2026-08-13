@@ -6,8 +6,9 @@ const harness = vi.hoisted(() => ({
   // Flips `isMoving`, as the real one does the instant it returns — without this every Move test
   // runs against a state production never produces, and the rule that the keyboard belongs to a
   // running placement cannot be observed at all.
-  beginMove: vi.fn((_id: string, _finished: () => void) => {
+  beginMove: vi.fn((id: string, _finished: () => void) => {
     harness.isMoving.mockReturnValue(true)
+    harness.movingId.mockReturnValue(id)
   }),
   isMoving: vi.fn(() => false),
   isFinishing: vi.fn(() => false),
