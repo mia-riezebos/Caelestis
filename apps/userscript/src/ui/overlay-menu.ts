@@ -522,6 +522,11 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
 
 const forget = (id: string): void => {
   showingToMove.delete(id)
+  // Its near-namesake, and the two counters that go with it: an armed auto-abort watch outliving
+  // its template would fire on a later placement of the same id.
+  shownForMove.delete(id)
+  aborting.delete(id)
+  abortAttempts.delete(id)
   drafts.delete(id)
   selections.delete(id)
   refusals.delete(id)
@@ -538,6 +543,7 @@ const forget = (id: string): void => {
 const remembered = (): Set<string> =>
   new Set([
     ...buttons.keys(),
+    ...shownForMove,
     ...appearanceIntents.keys(),
     ...visibleIntents.keys(),
     ...queues.keys(),
@@ -1470,7 +1476,14 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
   openFor = id
   // Hide is disabled while a delete runs, and a disabled control cannot take focus — so reopening a
   // condemned template's menu would leave the keyboard outside the dialog it just opened.
-  focusRequest = isDoomed(id) ? 'close' : 'hide'
+  //
+  // And not at all while something is being placed. This module already refuses to *start* a
+  // placement behind an open menu, because `move.ts` treats dialog controls as page controls and
+  // the placement's own keys would be ignored; opening a menu behind a running placement is the
+  // same hazard arriving from the other side. A placement started from the panel leaves every gear
+  // clickable, and the keyboard landing on Hide turns the placement's Enter into a Hide — hiding
+  // the very overlay being positioned, with no watch armed to notice.
+  focusRequest = isMoving() ? null : isDoomed(id) ? 'close' : 'hide'
   if (escapeListener === null) {
     escapeListener = (event: KeyboardEvent): void => {
       // The menu's own handler answers the inner question first; this one is for everywhere else.

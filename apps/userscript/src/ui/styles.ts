@@ -127,7 +127,6 @@ export const installStyles = (): void => {
   // delete either, so we simply add our own alongside it.
   const style = document.createElement('style')
   style.id = STYLE_ID
-  style.dataset.wtsStyles = ''
   style.textContent = CSS
   document.head.appendChild(style)
   installed = style

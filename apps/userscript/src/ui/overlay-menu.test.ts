@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 
 const harness = vi.hoisted(() => ({
-  beginMove: vi.fn(),
+  // Flips `isMoving`, as the real one does the instant it returns — without this every Move test
+  // runs against a state production never produces, and the rule that the keyboard belongs to a
+  // running placement cannot be observed at all.
+  beginMove: vi.fn((_id: string, _finished: () => void) => {
+    harness.isMoving.mockReturnValue(true)
+  }),
   isMoving: vi.fn(() => false),
   isFinishing: vi.fn(() => false),
   alreadyAnswered: vi.fn((_event: KeyboardEvent) => false),
@@ -1154,7 +1159,7 @@ describe('the menu is ours and has a keyboard exit', () => {
     expect(document.activeElement).toBe(gear('a'))
   })
 
-  it('returns focus to the gear when Move takes over the canvas', () => {
+  it('leaves the keyboard off the gear while the placement it started is running', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -1164,7 +1169,9 @@ describe('the menu is ours and has a keyboard exit', () => {
     rerender()
 
     expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
-    expect(document.activeElement).toBe(gear('a'))
+    // `move.ts` ignores keys aimed at a page control, so a focused gear would take Escape and Enter
+    // away from the placement — and Enter would reopen this menu instead of applying it.
+    expect(document.activeElement).not.toBe(gear('a'))
   })
 })
 
