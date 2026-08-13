@@ -2722,6 +2722,11 @@ describe('an action waits for the state it depends on', () => {
       new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
     )
     await settle()
+    // A frame, which a panning map or another tab's write produces at any moment. Drawing the
+    // pending choice is a rebuild, and the rebuild must not be what settles it — otherwise holding
+    // the arrow key writes once per repeat step, which is what this behaviour exists to prevent.
+    rerender()
+    await settle()
 
     expect(harness.setAppearance).not.toHaveBeenCalled()
     expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('Shape:square')

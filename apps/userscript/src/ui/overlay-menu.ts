@@ -649,7 +649,16 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
  * the drag guard: a rebuild under the pointer would drop the gesture, and their in-progress value
  * lives in {@link drafts}.
  */
-const menuSignature = (template: PlacedTemplate): string => {
+/**
+ * Everything the menu draws *except* a pending arrow-key selection.
+ *
+ * Split from the signature because the two answer different questions. Both decide whether to
+ * rebuild — a pending choice has to be drawn, so it is in the signature — but only this decides
+ * whether to *settle* that choice on the way. A rebuild caused by the selection itself must not
+ * commit it, or an arrow becomes a durable write the moment any frame arrives, which is the thing
+ * "arrows move focus and stop there" exists to prevent.
+ */
+const menuStructure = (template: PlacedTemplate): string => {
   const id = template.id
   const appearance = appearanceFor(id)
   // Serialised, not joined on a separator. Ids and names are arbitrary strings, so a `|` they can
@@ -661,8 +670,6 @@ const menuSignature = (template: PlacedTemplate): string => {
     visibleFor(id),
     appearance.shape,
     appearance.anchor,
-    selectionFor(id, 'Shape') ?? '',
-    selectionFor(id, 'Anchor') ?? '',
     // Render inputs now. They were excluded because a rebuild mid-drag dropped the gesture's value
     // along with the element; the value lives in `drafts` and survives, and the drag guard still
     // keeps the element itself from being replaced under the pointer.
@@ -679,6 +686,14 @@ const menuSignature = (template: PlacedTemplate): string => {
       .join(','),
   ])
 }
+
+/** What the menu draws, pending choice included: a selection is shown before it is settled. */
+const menuSignature = (template: PlacedTemplate): string =>
+  JSON.stringify([
+    menuStructure(template),
+    selectionFor(template.id, 'Shape') ?? '',
+    selectionFor(template.id, 'Anchor') ?? '',
+  ])
 
 const deleteQuestion = (name: string): string => `Delete “${name}”? This cannot be undone.`
 
@@ -1312,9 +1327,23 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // `aria-disabled`, never `disabled`. Nothing notifies us when the store's guard clears — a failed
   // panel delete just drops it — so a native lock taken on a stale read stays dead until the map
   // next moves. The handlers re-check, which is what actually makes these inert.
-  remove.setAttribute('aria-disabled', String(isDoomed(id)))
+  // Not while it is being placed, either. `move.ts` holds a session against the record, so deleting
+  // it leaves the placement bar up naming a template that is gone, over a map with nothing left to
+  // position — Move refuses a condemned template for the mirror of this reason.
+  const placing = (): boolean => movingId() === id
+  remove.setAttribute('aria-disabled', String(isDoomed(id) || placing()))
   remove.addEventListener('click', () => {
     if (isDoomed(id)) return
+    if (placing()) {
+      recordFailure(
+        id,
+        'delete',
+        (name) => `Finish placing “${name}” before deleting it.`,
+        () => movingId() !== id,
+      )
+      rerender()
+      return
+    }
     // Only when this actually opens the question. Setting it again changes no signature, so no
     // rebuild consumes it, and the next unrelated one — a rename, a refusal — would move focus onto
     // a destructive button the user never asked for.
@@ -1913,6 +1942,7 @@ const renderControls = (
 
     if (openFor !== template.id) continue
     const signature = menuSignature(template)
+    const structure = menuStructure(template)
     // A drag in progress outranks a rebuild. The range element would be replaced before it ever
     // fired `change`, so the value the user was setting is simply lost — and a refusal landing
     // elsewhere, or another tab renaming the template, is enough to trigger it.
@@ -1948,8 +1978,13 @@ const renderControls = (
       // depends on what it draws, and anything kept in the old element is either lost or — worse —
       // re-parented under a different template.
       // The rebuild is what takes the chosen cell away, and a browser does not retarget a pending
-      // keyup to its replacement — so the selection settles here, before it is replaced.
-      if (menuOwner !== null) flushSelections(menuOwner)
+      // keyup to its replacement — so the selection settles here, before it is replaced. Only when
+      // something *else* caused the rebuild, though: a rebuild the selection itself asked for is
+      // how the choice gets drawn, and settling it there would commit on the next frame rather
+      // than on the key coming up.
+      if (menuOwner !== null && structure !== menuNode?.dataset.wtsStructure) {
+        flushSelections(menuOwner)
+      }
       const previous = menuNode
       // Sampled before anything is discarded: removing the node takes the keyboard with it.
       const scrollTop = previous?.scrollTop ?? 0
@@ -1961,7 +1996,12 @@ const renderControls = (
       menuNode = buildMenu(template, rerender)
       // A new node has no measurement, whatever the viewport has been doing.
       measuredFor = { width: 0, height: 0 }
-      menuNode.dataset.wtsSignature = signature
+      // Stamped from what was just built, not from what was sampled: settling a selection changes
+      // the appearance and clears the choice, so a stamp taken before the flush describes a menu
+      // that no longer exists and buys an identical rebuild — and a forced measurement with it —
+      // on the very next frame.
+      menuNode.dataset.wtsSignature = menuSignature(template)
+      menuNode.dataset.wtsStructure = menuStructure(template)
       menuOwner = template.id
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
