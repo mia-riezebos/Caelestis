@@ -72,19 +72,13 @@ export const createKeyedOperationGate = (): {
     begin: (key) => {
       if (active.has(key)) return null
       active.add(key)
-      let held = true
       return () => {
-        if (!held) return
-        held = false
         active.delete(key)
       }
     },
     isActive: (key) => active.has(key),
   }
 }
-
-export const shouldDeferPanelRerender = (activeViewRequests: number): boolean =>
-  activeViewRequests > 0
 
 export const shouldNavigateAfterImport = (stillOwned: boolean, moving: boolean): boolean =>
   stillOwned && !moving
@@ -118,10 +112,7 @@ export const createRerenderGate = (
   return {
     hold: () => {
       holds++
-      let held = true
       return () => {
-        if (!held) return
-        held = false
         holds--
         if (holds !== 0 || !pending) return
         pending = false

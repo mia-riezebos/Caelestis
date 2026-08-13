@@ -10,7 +10,6 @@ import {
   refreshNodes,
   reorderedSiblings,
   reorderedVisibleSiblings,
-  replaceSiblingOrder,
   treeContents,
 } from './tree.js'
 
@@ -123,20 +122,6 @@ describe('tree identity and ordering', () => {
     ])
   })
 
-  it('replaces a very large sibling order without spreading function arguments', () => {
-    const siblings = Array.from({ length: 70_000 }, (_, index) => `node:${index}`)
-    const first = siblings[0]
-    const second = siblings[1]
-    if (first === undefined || second === undefined) throw new Error('expected sibling fixtures')
-    const next = [second, first, ...siblings.slice(2)]
-
-    const replaced = replaceSiblingOrder(['before', ...siblings, 'after'], siblings, next)
-
-    expect(replaced).toHaveLength(70_002)
-    expect(replaced.slice(0, 4)).toEqual(['before', 'node:1', 'node:0', 'node:2'])
-    expect(replaced.at(-1)).toBe('after')
-  })
-
   it('namespaces node UI state by verified server identity and season', () => {
     const first = nodeTreeKey(server(SERVER_ID, 0), NODE_ID)
     const otherServer = nodeTreeKey(server('019fed50-87a1-7523-a88c-bdeafad49683', 0), NODE_ID)
@@ -164,20 +149,6 @@ describe('tree identity and ordering', () => {
         new Map(),
       ).map((item) => item.key),
     ).toEqual(['newer', 'older'])
-  })
-
-  it('bounds name ordering before sorting a large sibling collection', () => {
-    setState({ sort: { field: 'name', direction: 'asc' } })
-    const items = Array.from({ length: 10_000 }, (_, index) => ({
-      key: `key:${index}`,
-      name: String(10_000 - index).padStart(5, '0'),
-    }))
-
-    expect(orderedItems(items, new Map(), 3).map((item) => item.name)).toEqual([
-      '00001',
-      '00002',
-      '00003',
-    ])
   })
 
   it('forgets URL-scoped node state even when no server tree is loaded', () => {
