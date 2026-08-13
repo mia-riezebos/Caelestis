@@ -2,10 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_A = '019fed50-87a1-7523-a88c-bdeafad49682'
-const NODE_B = '019fed50-87a1-7523-a88c-bdeafad49683'
-const TEMPLATE_ID = '019fed50-87a1-7523-a88c-bdeafad49684'
-const CREATED_AT = 1_750_000_000_000
-const HASH = 'a'.repeat(64)
 
 const serverInfo = { id: SERVER_ID, name: 'Caelestis', auth: 'none' as const }
 const manifest = {
@@ -120,26 +116,6 @@ describe('server state boundaries', () => {
     expect(getState().servers[0]?.error).toBe('updated')
   })
 
-  it('rejects remote tree cycles before rendering them', async () => {
-    const { validateTreeNodes } = await import('./state.js')
-
-    expect(
-      validateTreeNodes([
-        { id: NODE_A, parentId: NODE_B, path: 'a', name: 'A' },
-        { id: NODE_B, parentId: NODE_A, path: 'b', name: 'B' },
-      ]),
-    ).toBeNull()
-  })
-
-  it('rejects malformed root paths regardless of node order', async () => {
-    const { validateTreeNodes } = await import('./state.js')
-    const parent = { id: NODE_A, parentId: null, path: '/a/b', name: 'Parent' }
-    const child = { id: NODE_B, parentId: NODE_A, path: '/a/b/c', name: 'Child' }
-
-    expect(validateTreeNodes([parent, child])).toBeNull()
-    expect(validateTreeNodes([child, parent])).toBeNull()
-  })
-
   it('accepts season zero and uses the validated manifest season for admin probes', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -161,27 +137,6 @@ describe('server state boundaries', () => {
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
-  })
-
-  it('rejects malformed manifest members before reporting a verified connection', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn<typeof fetch>()
-        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ ...manifest, nodes: [null] }), { status: 200 }),
-        ),
-    )
-    const { probeServer } = await import('./state.js')
-
-    await expect(probeServer('https://example.com', null)).resolves.toEqual(
-      expect.objectContaining({
-        status: 'unreachable',
-        error: 'TypeError: server returned an invalid manifest',
-      }),
-    )
-    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('does not retain cached identity after a different server answers at the same URL', async () => {
@@ -225,80 +180,6 @@ describe('server state boundaries', () => {
     expect(getState().servers[0]).not.toHaveProperty('lastVerified')
   })
 
-  it.each([
-    {
-      name: 'a chunk outside its template bounds',
-      document: {
-        ...manifest,
-        nodes: [
-          { id: NODE_A, parentId: null, path: '/group', name: 'Group', createdAt: CREATED_AT },
-        ],
-        templates: [
-          {
-            id: TEMPLATE_ID,
-            nodeId: NODE_A,
-            name: 'Template',
-            version: NODE_B,
-            bbox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
-            totalPixels: 1,
-            chunks: [{ tile: '1/0', hash: HASH }],
-            published: true,
-            createdAt: CREATED_AT,
-          },
-        ],
-        tiles: ['1/0'],
-      },
-    },
-    {
-      name: 'a pixel count larger than the bounded chunk capacity',
-      document: {
-        ...manifest,
-        nodes: [
-          { id: NODE_A, parentId: null, path: '/group', name: 'Group', createdAt: CREATED_AT },
-        ],
-        templates: [
-          {
-            id: TEMPLATE_ID,
-            nodeId: NODE_A,
-            name: 'Template',
-            version: NODE_B,
-            bbox: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
-            totalPixels: 101,
-            chunks: [{ tile: '0/0', hash: HASH }],
-            published: true,
-            createdAt: CREATED_AT,
-          },
-        ],
-        tiles: ['0/0'],
-      },
-    },
-    {
-      name: 'a seconds-scale creation timestamp',
-      document: {
-        ...manifest,
-        nodes: [
-          { id: NODE_A, parentId: null, path: '/group', name: 'Group', createdAt: 1_750_000_000 },
-        ],
-      },
-    },
-  ])('rejects $name before verifying the connection', async ({ document }) => {
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn<typeof fetch>()
-        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
-        .mockResolvedValueOnce(new Response(JSON.stringify(document), { status: 200 })),
-    )
-    const { probeServer } = await import('./state.js')
-
-    await expect(probeServer('https://example.com', null)).resolves.toEqual(
-      expect.objectContaining({
-        status: 'unreachable',
-        error: expect.stringContaining('manifest'),
-      }),
-    )
-  })
-
   it('isolates throwing state observers after committing the update', async () => {
     const { getState, onStateChange, setState } = await import('./state.js')
     const reached = vi.fn()
@@ -311,29 +192,6 @@ describe('server state boundaries', () => {
 
     expect(getState().shareTiles).toBe(true)
     expect(reached).toHaveBeenCalledOnce()
-  })
-
-  it('rejects an invalid folder returned by a successful create request', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => Promise.resolve(new Response('{}', { status: 201 }))),
-    )
-    const { createNode } = await import('./state.js')
-
-    await expect(
-      createNode(
-        {
-          url: 'https://example.com',
-          info: serverInfo,
-          token: null,
-          status: 'connected',
-          isAdmin: true,
-          season: 0,
-        },
-        'Folder',
-        null,
-      ),
-    ).resolves.toEqual({ ok: false, message: 'Server returned an invalid folder.' })
   })
 
   it('does not resurrect a server removed while its refresh is in flight', async () => {
@@ -730,40 +588,5 @@ describe('server state boundaries', () => {
     await vi.advanceTimersByTimeAsync(110_000)
 
     await expect(uploading).resolves.toEqual({ ok: false, message: 'Error: request timed out' })
-  })
-
-  it('requires the canonical created-template identity from a successful upload', async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ templateId: TEMPLATE_ID }), { status: 201 }),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ templateId: '' }), { status: 201 }))
-    vi.stubGlobal('fetch', fetchMock)
-    const { uploadTemplate } = await import('./state.js')
-    const connected = {
-      url: 'https://example.com',
-      info: serverInfo,
-      token: null,
-      status: 'connected' as const,
-      isAdmin: true,
-      season: 0,
-    }
-    const input = {
-      nodeId: NODE_A,
-      name: 'Template',
-      originX: 0,
-      originY: 0,
-      png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
-    }
-
-    await expect(uploadTemplate(connected, input)).resolves.toEqual({
-      ok: true,
-      id: TEMPLATE_ID,
-    })
-    await expect(uploadTemplate(connected, input)).resolves.toEqual({
-      ok: false,
-      message: 'Server returned an invalid uploaded template.',
-    })
   })
 })

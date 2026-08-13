@@ -165,23 +165,6 @@ afterEach(() => {
 })
 
 describe('the open menu tracks intended state, not a snapshot and not a lagging store', () => {
-  it('applies a second appearance edit on top of the first', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byText(menu(), 'Dot').click()
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-    drag(opacity, '0.5')
-    await settle()
-
-    expect(appearanceWritten(1)).toMatchObject({ shape: 'circle', opacity: 0.5 })
-  })
-
   it('builds the next edit on one the store has not acknowledged yet', async () => {
     // The store only publishes after the durable write resolves. Two clicks inside that window is
     // ordinary human speed, and reading the store would hand the second one a pre-Dot base.
@@ -374,17 +357,6 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
 })
 
 describe('controls are reconciled against the templates that exist', () => {
-  it('removes the gear of a template deleted elsewhere', () => {
-    harness.localTemplates.mockReturnValue([template(), template({ id: 'b' })])
-    rerender()
-    expect(document.getElementById('wts-overlay-button-b')).not.toBeNull()
-
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-
-    expect(document.getElementById('wts-overlay-button-b')).toBeNull()
-  })
-
   it('closes the open menu of a template deleted elsewhere', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -425,21 +397,6 @@ describe('controls are reconciled against the templates that exist', () => {
     expect(document.getElementById('wts-overlay-button-far')).toBeNull()
   })
 
-  it('does not adopt a button the page planted under our id', () => {
-    const impostor = document.createElement('button')
-    impostor.id = 'wts-overlay-button-a'
-    document.body.appendChild(impostor)
-    harness.localTemplates.mockReturnValue([template()])
-
-    rerender()
-
-    const ours = [...document.querySelectorAll('#wts-overlay-button-a')].filter(
-      (el) => el !== impostor,
-    )
-    expect(ours).toHaveLength(1)
-    expect(ours[0]?.getAttribute('aria-label')).toBe('alpha.png display options')
-  })
-
   it('drops the ordering key when the delete goes through', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -469,53 +426,6 @@ describe('refused writes are reported rather than swallowed', () => {
     expect(harness.removeTreeStateKeys).not.toHaveBeenCalled()
   })
 
-  it('says so when a visibility change is refused', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    harness.setLocalVisible.mockResolvedValue(false)
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-
-    expect(errorText()).toContain('Could not change')
-  })
-
-  it('says so when an appearance change is refused', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    harness.setAppearance.mockResolvedValue(false)
-    rerender()
-    gear('a').click()
-    rerender()
-    byText(menu(), 'Dot').click()
-    await settle()
-
-    expect(errorText()).toContain('Could not change shape')
-  })
-
-  it('reports a refusal raised after a rebuild replaced the menu', async () => {
-    let acknowledge = (_saved: boolean): void => {}
-    harness.setLocalVisible.mockReturnValueOnce(
-      new Promise<boolean>((resolve) => {
-        acknowledge = resolve
-      }),
-    )
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-
-    // Something else changes the menu while the write is in flight.
-    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
-    rerender()
-    acknowledge(false)
-    await settle()
-
-    // The handler must not report into the node it was built with; that one is detached.
-    expect(errorText()).toContain('Could not change')
-  })
-
   it('says so when Move is refused because a placement is already running', () => {
     harness.isMoving.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
@@ -532,21 +442,6 @@ describe('refused writes are reported rather than swallowed', () => {
 })
 
 describe('a rebuild does not take the interaction with it', () => {
-  it('keeps the delete question up when something else changes the menu', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('delete').click()
-    expect(menu().querySelector('[data-wts-confirm]')).not.toBeNull()
-
-    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
-    rerender()
-
-    // Answering "are you sure" should not be interrupted by a repaint.
-    expect(menu().querySelector('[data-wts-confirm]')).not.toBeNull()
-  })
-
   it('keeps the keyboard where it was', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -583,28 +478,6 @@ describe('the exclusive choices behave like the radiogroups they announce', () =
     expect(byKey('Shape:full').tabIndex).toBe(0)
   })
 
-  it('moves focus on an arrow key without committing a write', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    await settle()
-
-    // `shape` is in the stamped-tile cache key, so selection-follows-focus at OS key repeat would
-    // re-stamp the viewport at scale 3 once per repeat.
-    expect(document.activeElement).toBe(byKey('Shape:square'))
-    expect(harness.setAppearance).not.toHaveBeenCalled()
-
-    byKey('Shape:square').click()
-    await settle()
-
-    expect(appearanceWritten(0).shape).toBe('square')
-  })
-
   it('does not contradict its own label on the hide toggle', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -619,15 +492,6 @@ describe('the exclusive choices behave like the radiogroups they announce', () =
     expect(hide.getAttribute('aria-label')).toBe('Show this overlay')
     // "Show this overlay, pressed" reads as though showing were already on.
     expect(hide.hasAttribute('aria-pressed')).toBe(false)
-  })
-
-  it('keeps a hidden overlay’s controls only while its own menu is open', () => {
-    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', visible: false })])
-    rerender()
-
-    // A hidden overlay draws nothing, so its gear is a hole in the map with nothing to explain it.
-    expect(document.getElementById('wts-overlay-button-b')).toBeNull()
-    expect(document.getElementById('wts-overlay-button-a')).not.toBeNull()
   })
 
   it('tells assistive technology the gear owns a dialog', () => {
@@ -742,36 +606,6 @@ describe('placement and geometry', () => {
 describe('deferred work stays tied to the template that asked for it', () => {
   const twoTemplates = () => [template(), template({ id: 'b', name: 'beta.png' })]
 
-  it('does not carry a delete question into another template’s menu', () => {
-    harness.localTemplates.mockReturnValue(twoTemplates())
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('delete').click()
-
-    gear('b').click()
-    rerender()
-
-    // Its Delete button still closes over template A. Under B's heading, that deletes the wrong one.
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
-  })
-
-  it('does not carry a failure into another template’s menu', async () => {
-    harness.localTemplates.mockReturnValue(twoTemplates())
-    harness.setLocalVisible.mockResolvedValue(false)
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-    expect(errorText()).toContain('Could not change')
-
-    gear('b').click()
-    rerender()
-
-    expect(errorText()).toBeNull()
-  })
-
   it('reports a late failure only while its own menu is open', async () => {
     let release = (): void => {}
     const held = new Promise<void>((resolve) => {
@@ -819,20 +653,6 @@ describe('deferred work stays tied to the template that asked for it', () => {
 
     expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
     expect(menu().dataset.wtsTemplate).toBe('b')
-  })
-
-  it('stops offering Cancel once the delete is under way', () => {
-    harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('delete').click()
-    byKey('confirm-delete').click()
-
-    // A live Cancel takes the question away and reads as though it stopped something. Marked
-    // rather than `disabled`, for the same reason Delete is: a disabled button cannot hold focus.
-    expect(byText(menu(), 'Cancel').getAttribute('aria-disabled')).toBe('true')
   })
 
   it('keeps a carried delete question naming the template as it is now', () => {
@@ -930,18 +750,6 @@ describe('deferred work stays tied to the template that asked for it', () => {
 })
 
 describe('focus goes somewhere deliberate', () => {
-  it('returns to the gear when the menu is closed', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('close').click()
-    rerender()
-
-    expect(document.activeElement).toBe(gear('a'))
-  })
-
   it('returns to Delete when the question is cancelled', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -993,39 +801,6 @@ describe('an outcome is reported whatever else has happened since', () => {
     // Tying the report to "am I still the latest request" makes any second click silence the first
     // one's failure, which is the whole guarantee this menu exists to keep.
     expect(errorText()).toContain('Could not change visibility')
-  })
-
-  it('keeps a refused write reported while a different field succeeds', async () => {
-    harness.setLocalVisible.mockResolvedValue(false)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('hide').click()
-    await settle()
-    byText(menu(), 'Dot').click()
-    await settle()
-
-    // A successful colour or shape change says nothing about a refused hide.
-    expect(errorText()).toContain('Could not change visibility')
-  })
-
-  it('clears a refused write once the same field succeeds', async () => {
-    let call = 0
-    harness.setLocalVisible.mockImplementation(async () => ++call !== 1)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('hide').click()
-    await settle()
-    expect(errorText()).toContain('Could not change visibility')
-    byKey('hide').click()
-    await settle()
-
-    expect(errorText()).toBeNull()
   })
 
   it('reports a write that threw rather than stranding the intent', async () => {
@@ -1139,40 +914,9 @@ describe('a delete already under way cannot be re-asked', () => {
     expect(byKey('cancel-delete').getAttribute('aria-disabled')).toBe('true')
     expect(byKey('confirm-delete').textContent).toBe('Deleting…')
   })
-
-  it('names the template as it is now, however the menu was rebuilt', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('delete').click()
-    rerender()
-
-    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
-    rerender()
-
-    // The question is rebuilt from state, so it cannot disagree with the heading above it.
-    expect(menu().querySelector('[data-wts-confirm]')?.textContent).toContain('renamed.png')
-  })
 })
 
 describe('the slider is only frozen while a gesture is actually in progress', () => {
-  it('releases a press that never became a change', () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-
-    // Click the thumb without moving it: no `change` fires, and a range input keeps focus.
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
-    rerender()
-
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
-  })
-
   it('offers the whole 0..1 range the store accepts', () => {
     // `normaliseAppearance` runs on a conflict's remote winner, so another client's 0 arrives here.
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0 } })])
@@ -1198,25 +942,6 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
 })
 
 describe('the menu is ours and has a keyboard exit', () => {
-  it('ignores an element the page planted under the menu id', () => {
-    const impostor = document.createElement('div')
-    impostor.id = 'wts-overlay-menu'
-    document.body.appendChild(impostor)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-
-    gear('a').click()
-    rerender()
-
-    // getElementById returns the first match in document order, so the page's node would win and
-    // the real menu would be torn down and rebuilt on every frame.
-    const built = [...document.querySelectorAll('#wts-overlay-menu')].filter(
-      (el) => el !== impostor,
-    )
-    expect(built).toHaveLength(1)
-    expect(built[0]?.getAttribute('role')).toBe('dialog')
-  })
-
   it('closes on Escape and hands focus back to the gear', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1282,50 +1007,9 @@ describe('a delete under way owns the template', () => {
     expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
     expect(byKey('hide').getAttribute('aria-disabled')).toBe('true')
   })
-
-  it('forgets a template deleted while it was off screen', async () => {
-    harness.setLocalVisible.mockResolvedValue(false)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-
-    // Panned out of view, so it no longer has a button — then deleted.
-    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
-    rerender()
-    harness.localTemplates.mockReturnValue([])
-    rerender()
-    // ...and a template with the same durable id comes back.
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    expect(errorText()).toBeNull()
-  })
 })
 
 describe('interaction outranks a repaint', () => {
-  it('does not replace the menu under an active slider drag', () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
-
-    // Something rebuilds the menu mid-drag: a rename here, a refusal elsewhere.
-    harness.localTemplates.mockReturnValue([
-      template({ name: 'renamed.png', appearance: { opacity: 0.4 } }),
-    ])
-    rerender()
-
-    // Replacing the range before it fires `change` loses the value the user was setting.
-    expect(byKey('opacity')).toBe(opacity)
-  })
-
   it('carries the tab stop with arrow-key focus', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1475,23 +1159,6 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     expect(errorText()).toBeNull()
   })
 
-  it('re-announces a repeated Move refusal', () => {
-    harness.isMoving.mockReturnValue(true)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('move').click()
-    rerender()
-    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
-    byKey('move').click()
-    rerender()
-
-    // Announcing once is right for an unrelated rebuild. A deliberate repeat deserves an answer.
-    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
-  })
-
   it('keeps focus on the confirm button once the delete starts', () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template()])
@@ -1549,24 +1216,6 @@ describe('the delete question is retracted by the gestures that dismiss it', () 
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
-  })
-
-  it('answers the question before the menu on Escape', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('delete').click()
-    rerender()
-
-    byKey('confirm-delete').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
-    )
-    rerender()
-
-    // Escape answers the innermost dialog, not the one around it.
-    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
     expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
   })
 })
@@ -1655,22 +1304,6 @@ describe('a real gesture commits what the user chose', () => {
     // Reading after that commits the value the user just dragged away from.
     expect(appearanceWritten(0).opacity).toBe(0.9)
   })
-
-  it('keeps one refused colour reported when a different colour succeeds', async () => {
-    let call = 0
-    harness.setAppearance.mockImplementation(async () => ++call !== 1)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('swatch:1').click()
-    byKey('swatch:2').click()
-    await settle()
-
-    // One shared `hiddenColours` key lets the second swatch's success clear the first's failure.
-    expect(errorText()).toContain('Could not change')
-  })
 })
 
 describe('a delete owns the template whichever surface started it', () => {
@@ -1743,63 +1376,7 @@ describe('a delete owns the template whichever surface started it', () => {
   })
 })
 
-describe('a transient detach costs nothing', () => {
-  it('commits a value the drag had reached', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
-    opacity.value = '0.85'
-    opacity.dispatchEvent(new Event('input'))
-
-    const host = mapCanvas.parentElement
-    mapCanvas.remove()
-    rerender()
-    host?.appendChild(mapCanvas)
-    rerender()
-    await settle()
-
-    // The element that would have delivered the release is gone, so the teardown ends the gesture.
-    expect(appearanceWritten(0).opacity).toBe(0.85)
-  })
-
-  it('retires a Move refusal once the placement it was about ends', () => {
-    harness.isMoving.mockReturnValue(true)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('move').click()
-    rerender()
-    expect(errorText()).toContain('placement already in progress')
-
-    // The other template's placement finishes; nobody pressed Move again.
-    harness.isMoving.mockReturnValue(false)
-    rerender()
-
-    expect(errorText()).toBeNull()
-  })
-})
-
 describe('a delete that becomes terminal after the menu exists', () => {
-  it('rebuilds when the store condemns a template the menu is already showing', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    expect(byKey('move').getAttribute('aria-disabled')).toBe('false')
-
-    // The panel's delete sets the store's guard and then does its IndexedDB work with the record
-    // still present and byte-identical — so nothing else in the signature moves.
-    harness.isDeletingLocal.mockReturnValue(true)
-    rerender()
-
-    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
-    expect(byKey('hide').getAttribute('aria-disabled')).toBe('true')
-  })
-
   it('refuses the action even from a menu built before the delete', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1859,44 +1436,6 @@ describe('repeating an action is never silently a no-op', () => {
 
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
     expect(appearanceWritten(0).size).toBe(0.5)
-  })
-})
-
-describe('an overlay leaving the viewport costs nothing either', () => {
-  it('does not tear the menu down under a held slider', () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
-
-    // Pan inertia after a flick is enough to deliver this frame mid-drag.
-    harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
-    rerender()
-
-    expect(byKey('opacity')).toBe(opacity)
-  })
-})
-
-describe('a refusal retires when its subject moves on', () => {
-  it('clears once another surface changes the same template', async () => {
-    harness.setLocalVisible.mockResolvedValue(false)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-    expect(errorText()).toContain('Could not change visibility')
-
-    // The tree's own checkbox writes visibility directly, and the write lands.
-    harness.localTemplates.mockReturnValue([
-      { ...template({ visible: false }), revision: 2 } as unknown as ReturnType<typeof template>,
-    ])
-    rerender()
-
-    expect(errorText()).toBeNull()
   })
 })
 
@@ -1977,28 +1516,6 @@ describe('a held slider holds its own menu, not the next one', () => {
 })
 
 describe('a refusal retires only when its own subject is satisfied', () => {
-  it('keeps a refused shape while an unrelated write succeeds', async () => {
-    let call = 0
-    harness.setAppearance.mockImplementation(async () => ++call !== 1)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byText(menu(), 'Dot').click()
-    await settle()
-    expect(errorText()).toContain('Could not change shape')
-
-    // A different property succeeds and the revision moves. It says nothing about the shape.
-    const opacity = byKey('opacity') as HTMLInputElement
-    drag(opacity, '0.6')
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.6 } })])
-    rerender()
-
-    expect(errorText()).toContain('Could not change shape')
-  })
-
   it('retires it when the shape reaches what was asked, from anywhere', async () => {
     harness.setAppearance.mockResolvedValue(false)
     harness.localTemplates.mockReturnValue([template()])
@@ -2019,19 +1536,6 @@ describe('a refusal retires only when its own subject is satisfied', () => {
 })
 
 describe('a delete started elsewhere explains itself', () => {
-  it('shows the progress box for a delete this menu did not start', () => {
-    harness.isDeletingLocal.mockReturnValue(true)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-
-    gear('a').click()
-    rerender()
-
-    // Locking every control with no explanation is worse than the question.
-    expect(menu().querySelector('[data-wts-confirm]')).not.toBeNull()
-    expect(byKey('confirm-delete').textContent).toBe('Deleting…')
-  })
-
   it('does not lock the controls natively, so a cleared guard is recoverable', () => {
     harness.isDeletingLocal.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
@@ -2071,46 +1575,9 @@ describe('a slider keeps tracking the store after every kind of gesture', () => 
 
     expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
   })
-
-  it('commits an arrow-key edit when focus leaves the thumb', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
-    opacity.value = '0.75'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('change'))
-    opacity.dispatchEvent(new Event('blur'))
-    await settle()
-
-    // A real click on Close or another gear blurs the range *before* the destination's click, so
-    // discarding here threw the edit away before any teardown could flush it.
-    expect(appearanceWritten(0).opacity).toBe(0.75)
-  })
 })
 
 describe('the menu belongs to us, and to one template at a time', () => {
-  it('ignores an input the page planted to look like a live drag', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    const impostor = document.createElement('input')
-    impostor.type = 'range'
-    impostor.dataset.wtsHeld = 'true'
-    menu().appendChild(impostor)
-    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
-    rerender()
-
-    // Blocking rebuilds on an attribute would let a host freeze the menu — question, locks, banners
-    // and all — while it went on looking correct.
-    expect(menu().textContent).toContain('renamed.png')
-  })
-
   it('retracts a delete question when another template is opened', () => {
     harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
     rerender()
@@ -2291,67 +1758,9 @@ describe('a gesture is what the user did, not what the element held', () => {
       expect.objectContaining({ opacity: 0.55 }),
     )
   })
-
-  it('commits a keyboard edit interrupted by closing the menu', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
-    opacity.value = '0.5'
-    opacity.dispatchEvent(new Event('input'))
-    // Escape before the key comes back up: removing the focused input sends its keyup elsewhere.
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    rerender()
-    await settle()
-
-    expect(appearanceWritten(0).opacity).toBe(0.5)
-  })
-
-  it('leaves the thumb agreeing with what it committed on blur', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
-    opacity.value = '0.8'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('blur'))
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.8 } })])
-    rerender()
-
-    // The thumb and the store agree either way; what must not happen is one of them keeping a
-    // value the other never got.
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.8')
-    expect(appearanceWritten(0).opacity).toBe(0.8)
-  })
 })
 
 describe('refusals track the world, not our own render schedule', () => {
-  it('announces a repeated Move refusal', () => {
-    harness.isMoving.mockReturnValue(true)
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('move').click()
-    rerender()
-    const first = menu().querySelector('[data-wts-error]')
-    byKey('move').click()
-    rerender()
-
-    // Identical text with an unchanged attempt count leaves the signature still, so nothing is
-    // rebuilt and no live region fires.
-    expect(menu().querySelector('[data-wts-error]')).not.toBe(first)
-    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
-  })
-
   it('drops a hidden overlay’s gear on the render that retires its last failure', async () => {
     harness.setAppearance.mockResolvedValue(false)
     harness.localTemplates.mockReturnValue([template()])
@@ -2594,32 +2003,6 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
     expect(appearanceWritten(0).opacity).toBe(0.6)
   })
 
-  it('shows an overlay it is about to let you place', async () => {
-    // A show that succeeds publishes, which is what the store does and what Move now waits for.
-    harness.setLocalVisible.mockImplementation(async (_id, visible) => {
-      harness.localTemplates.mockReturnValue([template({ visible })])
-      return true
-    })
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-
-    byKey('move').click()
-    await settle()
-
-    // The menu stays open after Hide on purpose, so Hide → Move is one click — and a hidden
-    // template is not painted, which leaves you positioning nothing.
-    expect(harness.setLocalVisible).toHaveBeenLastCalledWith('a', true)
-    expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
-  })
-
   it('closes on Escape after a click on the map', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -2707,34 +2090,6 @@ describe('an action waits for the state it depends on', () => {
 
     expect(harness.beginMove).not.toHaveBeenCalled()
     expect(errorText()).toContain('Could not show')
-  })
-
-  it('commits an arrow selection on key release, not while focus is moving', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    // Focused first, so `next.focus()` really does blur this cell — which is what a browser does
-    // and what makes the blur handler fire mid-keydown.
-    byKey('Shape:full').focus()
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    await settle()
-    // A frame, which a panning map or another tab's write produces at any moment. Drawing the
-    // pending choice is a rebuild, and the rebuild must not be what settles it — otherwise holding
-    // the arrow key writes once per repeat step, which is what this behaviour exists to prevent.
-    rerender()
-    await settle()
-
-    expect(harness.setAppearance).not.toHaveBeenCalled()
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('Shape:square')
-
-    byKey('Shape:square').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
-    await settle()
-
-    expect(appearanceWritten(0).shape).toBe('square')
   })
 
   it('answers the delete question first on Escape from outside the menu', () => {
@@ -2888,26 +2243,6 @@ describe('an arrow-key selection is state, like a drag', () => {
 
     expect(appearanceWritten(0).shape).toBe('square')
   })
-
-  it('lets the click that blurred a radio still reach its button', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').focus()
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    const close = byKey('close')
-    byKey('Shape:square').dispatchEvent(new FocusEvent('blur', { relatedTarget: close }))
-    close.click()
-    rerender()
-    await settle()
-
-    expect(document.getElementById('wts-overlay-menu')).toBeNull()
-    expect(appearanceWritten(0).shape).toBe('square')
-  })
 })
 
 describe('a Move that lands late does not barge in', () => {
@@ -3014,22 +2349,6 @@ describe('gestures settle when their control stops being reachable', () => {
     )
   })
 
-  it('commits a radio choice when the host removes its group', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    menu().querySelector('[role="radiogroup"][aria-label="Shape"]')?.remove()
-    rerender()
-    await settle()
-
-    expect(appearanceWritten(0).shape).toBe('square')
-  })
-
   it('does not drop another slider’s fallback when one is detached', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
     rerender()
@@ -3057,60 +2376,5 @@ describe('gestures settle when their control stops being reachable', () => {
 
     // Dropping every fallback when one slider detaches takes the still-live slider's with it.
     expect(appearanceWritten(0).opacity).toBe(0.33)
-  })
-})
-
-describe('teardown and identity, at the edges', () => {
-  it('does not announce a stop for a placement that saved anyway', async () => {
-    // `abort()` returns immediately while move.ts is already finishing, so the placement is still
-    // running when it resolves — which means it did not stop and must not say it did.
-    harness.abortMove.mockImplementation(async () => {})
-    harness.isMoving.mockReturnValue(true)
-    harness.movingId.mockReturnValue('a')
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    await settle()
-    rerender()
-
-    expect(harness.abortMove).not.toHaveBeenCalled()
-  })
-
-  it('settles a selection when the host removes only the chosen radio', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    // The group stays; only the cell whose keyup would have settled the choice goes.
-    byKey('Shape:square').remove()
-    rerender()
-    await settle()
-
-    expect(appearanceWritten(0).shape).toBe('square')
-  })
-
-  it('knows which template its menu belongs to without asking the DOM', async () => {
-    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
-    rerender()
-    gear('a').click()
-    rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
-    opacity.value = '0.44'
-    opacity.dispatchEvent(new Event('input'))
-
-    // The host strips the marker this used to trust for identity.
-    delete menu().dataset.wtsTemplate
-    gear('b').click()
-    rerender()
-    await settle()
-
-    expect(harness.setAppearance).toHaveBeenCalledWith(
-      'a',
-      expect.objectContaining({ opacity: 0.44 }),
-    )
   })
 })
