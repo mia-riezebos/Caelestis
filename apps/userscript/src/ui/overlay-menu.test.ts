@@ -133,7 +133,11 @@ beforeEach(async () => {
   render = (await import('./overlay-menu.js')).renderOverlayControls
 })
 
+const measuresAsZero = Element.prototype.getBoundingClientRect
+
 afterEach(() => {
+  // Whatever a test taught the DOM about its own size is that test's, not the next one's.
+  Element.prototype.getBoundingClientRect = measuresAsZero
   // Close anything still open *before* discarding the module: an open menu holds a window-level
   // Escape listener, and a discarded instance's listener keeps firing against stale state.
   const open = document.getElementById('wts-overlay-menu')
@@ -655,6 +659,43 @@ describe('placement and geometry', () => {
     rerender()
 
     expect(Number.parseFloat(menu().style.left)).toBeGreaterThanOrEqual(8)
+  })
+
+  /**
+   * happy-dom measures everything as zero, so every clamp in this module is inert under test unless
+   * the menu is given a size — which is why both placements below were wrong for the whole life of
+   * this branch with a three-thousand-line suite over them. Patched on the prototype rather than on
+   * the node, because the module measures during the build, before any test can reach the element.
+   */
+  const menuMeasures = (height: number, width = 240): void => {
+    Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+      const isMenu = this instanceof HTMLElement && this.dataset.wtsSignature !== undefined
+      const box = isMenu ? { width, height } : { width: 0, height: 0 }
+      return {
+        ...box,
+        top: 0,
+        left: 0,
+        right: box.width,
+        bottom: box.height,
+        x: 0,
+        y: 0,
+      } as DOMRect
+    }
+  }
+
+  it('goes above its gear when there is no room below, rather than over it', () => {
+    menuMeasures(300)
+    // A corner low in the viewport, where the menu does not fit underneath its own gear.
+    harness.localTemplates.mockReturnValue([template({ originY: window.innerHeight - 100 })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const gearTop = Number.parseFloat(gear('a').style.top)
+    const top = Number.parseFloat(menu().style.top)
+    // Clear of the gear on one side or the other, never over it: the menu has the higher z-index,
+    // so overlapping costs the overlay the control that opens and closes it.
+    expect(top + 300 <= gearTop || top >= gearTop + 28).toBe(true)
   })
 
   it('sits below the panel rather than over it', () => {

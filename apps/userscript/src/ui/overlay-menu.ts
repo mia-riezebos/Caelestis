@@ -1967,16 +1967,25 @@ const renderControls = (
         restore.focus()
       }
       focusRequest = null
-      const box = menuNode.getBoundingClientRect()
-      menuBox = { width: box.width, height: box.height }
     }
     if (menuNode === null) continue
+    // Measured every frame it is on screen, not once when it was built. Both of its dimensions are
+    // viewport-relative — `min(15rem, 100vw - 1rem)` and `70vh` — so a rotation or a resize changes
+    // the real size while the contents, and therefore the signature, stay exactly as they were. A
+    // size cached at build time would be clamped against a viewport it no longer belongs to.
+    const box = menuNode.getBoundingClientRect()
+    menuBox = { width: box.width, height: box.height }
     // Keep it on screen when the overlay is near an edge, on both sides: a template hanging off
-    // the left keeps a clamped, reachable button, and its menu has to be reachable too. It also has
-    // to stay below its own gear, which has a lower z-index and would otherwise be buried by it.
+    // the left keeps a clamped, reachable button, and its menu has to be reachable too.
     const rightmost = Math.max(8, window.innerWidth - menuBox.width - 8)
     const lowest = Math.max(8, window.innerHeight - menuBox.height - 8)
     menuNode.style.left = `${Math.min(Math.max(8, corner.x + 6), rightmost)}px`
-    menuNode.style.top = `${Math.min(Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE), lowest)}px`
+    // Below its own gear, which has the lower z-index and would otherwise be buried by it — and
+    // when there is no room below, above it instead. Clamping it up into the gear was the one
+    // outcome the rule existed to prevent: an overlay in the lower part of the map lost the control
+    // that opens and closes its menu, under the menu itself.
+    const below = Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE)
+    const above = buttonTop - menuBox.height
+    menuNode.style.top = `${below <= lowest ? below : Math.max(8, above)}px`
   }
 }
