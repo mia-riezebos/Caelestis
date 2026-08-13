@@ -939,6 +939,9 @@ const applyDelete = async (
       !(await confirmDestructive(`Delete “${target.name}”? This cannot be undone.`, restoreFocusTo))
     )
       return
+    // No early return for a delete already running elsewhere: `removeLocalTemplate` joins it and
+    // answers with its outcome, so this surface still reports a genuine failure and still stays
+    // quiet about a success it did not start.
     const stoppedMove = stopMoveForDeletion(templateId)
     try {
       const removed = await removeLocalTemplate(templateId)

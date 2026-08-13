@@ -20,6 +20,7 @@ import {
   stampTile,
 } from './templates/local-store.js'
 import { install, onTileFrame, type TileFrame } from './tile-transform.js'
+import { renderOverlayControls } from './ui/overlay-menu.js'
 import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
 
@@ -76,9 +77,56 @@ export const repaint = (): void => {
   if (lastFrame !== null) draw(lastFrame)
 }
 
+/** A draw is on the stack; anything repainting from inside one asks for another pass instead. */
+let drawing = false
+let drawAgain = false
+// Two settled passes reach a fixed point. A third means something repaints itself, and a frame is
+// not the place to find that out.
+const MAX_DRAW_PASSES = 3
+
+/**
+ * One frame, however many changes it takes to settle.
+ *
+ * Our own controls repaint synchronously when they settle an edit — a slider released, a selection
+ * flushed by a teardown — and that repaint used to land in the middle of the pass that provoked it:
+ * controls built by the inner pass removed by the outer one, and the canvas painted twice for a
+ * single change. A nested request now waits for the pass it interrupted.
+ */
 const draw = (frame: TileFrame): void => {
+  if (drawing) {
+    drawAgain = true
+    return
+  }
+  drawing = true
+  try {
+    let passes = 0
+    do {
+      drawAgain = false
+      paintOnce(frame)
+      passes += 1
+    } while (drawAgain && passes < MAX_DRAW_PASSES)
+  } finally {
+    drawing = false
+    drawAgain = false
+  }
+}
+
+const paintOnce = (frame: TileFrame): void => {
   lastFrame = frame
   const { canvas: mapCanvas, quads } = frame
+  // Before the canvas work, and deliberately not a painter: these are DOM controls, and registering
+  // them as one made them conditional on acquiring a 2D context. A context failure would otherwise
+  // strand every button and menu — never mounted, or never repositioned or swept again.
+  //
+  // Caught, because `paintFrame` used to do this for us: a throw here would otherwise take the whole
+  // frame with it — no canvas resize, no template pixels — and the page is not ours to trust.
+  try {
+    renderOverlayControls(repaint, mapCanvas)
+  } catch (error) {
+    // Not `String(error)`: this bundle runs in the page world, and a thrown value whose primitive
+    // conversion throws would escape the catch and take the rest of the frame with it.
+    warn('frame', 'overlay controls failed', error)
+  }
   const canvas = overlayCanvas()
   const mapParent = mapCanvas.parentElement
   if (mapParent !== null && canvas.parentElement !== mapParent) mapParent.appendChild(canvas)

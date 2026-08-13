@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   canvasPixelAt: vi.fn(() => ({ x: 2, y: 3 })),
   cssPixelsPerCanvasPixel: vi.fn(() => ({ x: 1, y: 1 })),
+  isDeletingLocal: vi.fn((_id: string) => false),
   clearLocalPreview: vi.fn(() => true),
+  repaint: vi.fn(),
   isMapInteractionTarget: vi.fn(() => true),
   localTemplates: vi.fn(),
   placeLocalTemplate: vi.fn(async () => true),
@@ -16,11 +18,13 @@ vi.mock('../main.js', () => ({
   canvasPixelAt: harness.canvasPixelAt,
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
   isMapInteractionTarget: harness.isMapInteractionTarget,
+  repaint: harness.repaint,
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
 vi.mock('./local-store.js', () => ({
   clearLocalPreview: harness.clearLocalPreview,
+  isDeletingLocal: harness.isDeletingLocal,
   localTemplates: harness.localTemplates,
   onLocalReconciliation: (id: string, observer: () => void) => {
     const observers = harness.reconciliationObservers.get(id) ?? new Set<() => void>()

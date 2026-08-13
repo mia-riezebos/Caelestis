@@ -110,10 +110,28 @@ const CSS = `
 }
 `
 
+/**
+ * Ours, kept by reference.
+ *
+ * Looking the stylesheet up by id every frame would be both slower and less certain than holding
+ * the node we created, which is the same rule the controls follow: identity is ours to keep.
+ */
+let installed: HTMLStyleElement | null = null
+
 export const installStyles = (): void => {
-  if (document.getElementById(STYLE_ID) !== null) return
+  // Ours, by reference, and still on the page. Anything finer — which root it is in, whether the
+  // text still matches, whether the sheet was disabled — asks whether the page rewrote our
+  // stylesheet on purpose, which is not a thing wplace does. A node that simply went away is what
+  // actually happens, and `isConnected` is what says so.
+  if (installed?.isConnected === true) return
+  installed?.remove()
+  // The id is a convenience for anyone reading the DOM, never an identity check. An element the
+  // page put there is not ours whatever it is called — an empty `<style id="wts-styles">` would
+  // otherwise stand in for the real one and every swatch would collapse — and it is not ours to
+  // delete either, so we simply add our own alongside it.
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = CSS
   document.head.appendChild(style)
+  installed = style
 }

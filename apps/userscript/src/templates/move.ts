@@ -1,9 +1,10 @@
 import { TILE_SIZE, WORLD_PIXELS } from '@wts/shared'
 import { log, warn } from '../debug.js'
-import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget } from '../main.js'
+import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget, repaint } from '../main.js'
 import { icon } from '../ui/icons.js'
 import {
   clearLocalPreview,
+  isDeletingLocal,
   localTemplates,
   onLocalReconciliation,
   placeLocalTemplate,
@@ -51,6 +52,21 @@ let moveReservation: symbol | null = null
 
 export const isMoving = (): boolean => session !== null || moveReservation !== null
 export const movingId = (): string | null => session?.id ?? null
+/** A commit or revert is already under way, so `commit`/`abort` are no-ops until it settles. */
+export const isFinishing = (): boolean => finishing
+
+/**
+ * Which placement this is, counted rather than named.
+ *
+ * A template's id is not an identity for the session placing it: the same template can be placed
+ * twice, and anything remembered about the first placement matches the second by name alone.
+ */
+let placements = 0
+export const placementSeq = (): number | null => (session === null ? null : placements)
+
+/** The keydown this placement has already answered, so no other listener answers it a second time. */
+let answered: KeyboardEvent | null = null
+export const alreadyAnswered = (event: KeyboardEvent): boolean => answered === event
 
 export interface MoveReservation {
   /** Consume this reservation by starting the move synchronously. */
@@ -300,10 +316,12 @@ const onKeyDown = (event: KeyboardEvent): void => {
     return
   }
   if (event.key === 'Escape') {
+    answered = event
     event.preventDefault()
     void abort()
   }
   if (event.key === 'Enter') {
+    answered = event
     event.preventDefault()
     void commit()
   }
@@ -335,8 +353,13 @@ export const beginMove = (
   restoredOrigin?: { readonly x: number; readonly y: number },
 ): boolean => {
   if (session !== null || finishing || moveReservation !== null) return false
+  // A condemned template is still in the store for the whole of its delete, so every surface that
+  // has not re-rendered still offers Move for it. Refusing here covers all of them at once, rather
+  // than each caller having to remember.
+  if (isDeletingLocal(id)) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
   if (template === undefined) return false
+  placements += 1
   const nextSession: MoveSession = {
     id,
     x: restoredOrigin?.x ?? template.originX,
@@ -361,6 +384,14 @@ export const beginMove = (
   suppressMiddleAuxClickFor = null
   renderBar(template.name)
   listen(true)
+  // Starting announces itself, as finishing and resuming do. Every surface that has to react to a
+  // live placement — the overlay controls' own keyboard rule among them — reacts on a frame, and a
+  // placement begun from the panel over a still map would otherwise wait for one that never comes.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after starting placement failed', error)
+  }
   log('install', `move started for ${template.name}`)
   return true
 }
@@ -369,6 +400,18 @@ const finish = (reserveNext = false): MoveReservation | null => {
   listen(false)
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
+  // The placement ending is state other surfaces render from — the overlay menu retires its
+  // "finish the placement first" refusal off `isMoving()`. A move started from the panel only calls
+  // back into the panel, so without this the refusal outlives the placement on a static map.
+  //
+  // Caught, like the completion callback below: a throw from page-owned canvas work would otherwise
+  // reach `commit()`'s handler and be treated as a failed placement, re-arming capture listeners
+  // for a session that has already been cleared and saved.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after placement failed', error)
+  }
   finishing = false
   suppressMiddleAuxClickFor = null
   const finished = onFinish
@@ -407,6 +450,14 @@ const resumeAfterFailure = (action: string, error?: unknown): void => {
   warn('install', `${action} could not be saved; placement is still open`, String(error ?? ''))
   finishing = false
   listen(true)
+  // Resuming is a state change like any other, and `finish` announces its own. Without this a
+  // failed save leaves a live placement over a map that may never paint again — nobody watching it
+  // is told the session came back, and on a still map nothing else will say so.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after resuming placement failed', error)
+  }
 }
 
 export const commit = async (): Promise<void> => {
