@@ -1880,6 +1880,13 @@ const renderControls = (
       // Unless we are the ones taking focus away, which the placement rule does mid-pass: this same
       // pass goes on to cull the gear, so asking for another frame buys a second full paint for
       // work that is already happening.
+      // The keyboard can arrive here without a frame — Tab produces none — and the rule that keeps
+      // it off a gear during a placement runs in the render. Focus is the one event every arrival
+      // has in common, so it is answered where it happens as well as where it is stated.
+      const gear = button
+      gear.addEventListener('focus', () => {
+        if (isMoving()) gear.blur()
+      })
       button.addEventListener('blur', () => {
         if (!visibleFor(template.id) && !painting) rerender()
       })
@@ -2007,9 +2014,14 @@ const renderControls = (
     // more room. Decided by the space and the height it wants, neither of which the cap changes.
     const goBelow = menuBox.height <= spaceBelow || spaceBelow >= spaceAbove
     const room = Math.max(0, goBelow ? spaceBelow : spaceAbove)
-    menuNode.style.maxHeight = `${room}px`
+    // The height it will have: what it wants, or the room beside its gear, whichever is less. One
+    // value, used both to cap it and to place it — they were two, and a cap larger than the
+    // measurement let the menu render taller than the height it was positioned from, which put the
+    // difference straight back over the gear.
+    const applied = Math.min(menuBox.height, room)
+    menuNode.style.maxHeight = `${applied}px`
     menuNode.style.top = goBelow
       ? `${Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE)}px`
-      : `${Math.max(8, buttonTop - Math.min(menuBox.height, room))}px`
+      : `${Math.max(8, buttonTop - applied)}px`
   }
 }

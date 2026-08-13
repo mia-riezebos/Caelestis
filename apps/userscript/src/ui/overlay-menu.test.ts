@@ -672,10 +672,19 @@ describe('placement and geometry', () => {
    * this branch with a three-thousand-line suite over them. Patched on the prototype rather than on
    * the node, because the module measures during the build, before any test can reach the element.
    */
-  const menuMeasures = (height: number, width = 240): void => {
+  const menuMeasures = (content: number, width = 240): void => {
     Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
       const isMenu = this instanceof HTMLElement && this.dataset.wtsSignature !== undefined
-      const box = isMenu ? { width, height } : { width: 0, height: 0 }
+      // Honours whatever cap the module has just written, as a browser does. A stub returning a
+      // fixed height makes measured and rendered identical by construction, which is the one thing
+      // the placement arithmetic must not assume.
+      const cap = isMenu ? this.style.maxHeight : ''
+      const ceiling = cap.endsWith('vh')
+        ? (window.innerHeight * Number.parseFloat(cap)) / 100
+        : cap.endsWith('px')
+          ? Number.parseFloat(cap)
+          : Number.POSITIVE_INFINITY
+      const box = isMenu ? { width, height: Math.min(content, ceiling) } : { width: 0, height: 0 }
       return {
         ...box,
         top: 0,
@@ -689,17 +698,20 @@ describe('placement and geometry', () => {
   }
 
   it.each([
-    ['no room below', 768, 668],
+    ['no room below', 768, 668, 300],
     // Too little room on either side, which a menu that merely flips answers by covering the gear
     // from above instead of below.
-    ['too little room on either side', 400, 180],
-  ])('never covers its own gear — %s', (_case, viewport, originY) => {
+    ['too little room on either side', 400, 180, 300],
+    // Content taller than the `70vh` it is measured under, beside a gear with more room above it
+    // than that — so the cap it is given and the height it was measured at disagree.
+    ['content taller than the design cap', 320, 300, 320],
+  ])('never covers its own gear — %s', (_case, viewport, originY, content) => {
     const restore = window.innerHeight
     Object.defineProperty(window, 'innerHeight', { value: viewport, configurable: true })
     onTestFinished(() => {
       Object.defineProperty(window, 'innerHeight', { value: restore, configurable: true })
     })
-    menuMeasures(300)
+    menuMeasures(content)
     harness.localTemplates.mockReturnValue([template({ originY })])
     rerender()
     gear('a').click()
@@ -707,10 +719,12 @@ describe('placement and geometry', () => {
 
     const gearTop = Number.parseFloat(gear('a').style.top)
     const top = Number.parseFloat(menu().style.top)
+    // The height it renders at, which is what overlaps or does not — not the height the module
+    // measured, and not `maxHeight`, which is a cap.
+    const height = menu().getBoundingClientRect().height
     // Clear of the gear on one side or the other, never over it: the menu has the higher z-index,
-    // so overlapping costs the overlay the control that opens and closes it. Measured against the
-    // height the module was told, not `maxHeight`, which is a cap and parses as `70` from `70vh`.
-    expect(top + 300 <= gearTop || top >= gearTop + 28).toBe(true)
+    // so overlapping costs the overlay the control that opens and closes it.
+    expect(top + height <= gearTop || top >= gearTop + 28).toBe(true)
   })
 
   it('sits below the panel rather than over it', () => {
