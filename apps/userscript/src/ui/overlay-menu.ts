@@ -1040,6 +1040,11 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
     }
     deleting.add(id)
     clearFailure(id, 'delete')
+    // Ours to draw, because `deleting` is ours. The store also announces its own guard
+    // synchronously, so a delete that starts is painted twice for one click — and the alternative
+    // is worse: not painting here makes this menu's progress depend on the store choosing to
+    // notify before its first `await`, which is an internal ordering nothing here can hold it to.
+    // One redundant paint on a destructive click, once, buys that independence.
     rerender()
     // Deliberately *not* queued behind this module's own writes. `removeLocalTemplate` sets the
     // store's terminal `deleting` guard synchronously, which is what stops an in-flight save from
