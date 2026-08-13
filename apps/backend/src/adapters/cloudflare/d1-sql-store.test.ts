@@ -418,4 +418,56 @@ describe('D1SqlStore', () => {
       d1.sqlite.prepare("INSERT INTO applied_events VALUES ('e1', 200, 2000)").run(),
     ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/)
   })
+
+  // The manifest's two filters live in SQL and nowhere else: `assemble` is tested against the
+  // in-memory store, so a dropped predicate here would serve drafts or another season with the
+  // whole suite green. A client asking for a manifest is the actor.
+  it('lists only published templates of the asked-for season', async () => {
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .run()
+    await store.insertTemplateVersion(templateVersion())
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+    )
+    await store.setTemplatePublishedAt('template-1', millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000))
+
+    await expect(store.listManifestTemplates(1, false)).resolves.toMatchObject([
+      { id: 'template-1' },
+    ])
+    // The same call including drafts still refuses the other season.
+    await expect(store.listManifestTemplates(1, true)).resolves.toMatchObject([
+      { id: 'template-1' },
+      { id: 'draft' },
+    ])
+  })
+
+  it('lists only tiles of published templates of the asked-for season', async () => {
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .run()
+    await store.insertTemplateVersion(templateVersion())
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+    )
+    await store.setTemplatePublishedAt('template-1', millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000))
+
+    const published = await store.listManifestTiles(1, false)
+    expect(published.every((tile) => tile.templateId === 'template-1')).toBe(true)
+    expect(published.length).toBeGreaterThan(0)
+  })
 })
