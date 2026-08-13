@@ -2007,7 +2007,13 @@ const renderControls = (
       menuOwner = template.id
       document.body.appendChild(menuNode)
       menuNode.scrollTop = scrollTop
-      const wanted = focusRequest ?? focusedKey
+      // Focus this module *asks* for is dropped while something is being placed; focus it merely
+      // finds is kept. An action that asks — opening the delete question — can be deferred by a
+      // held slider, which suppresses the rebuild that would consume it, and a placement can begin
+      // in the meantime. Applying it then is this module moving the keyboard off a running
+      // placement, which is not the same as the user having left it inside the menu.
+      const asked = isMoving() ? null : focusRequest
+      const wanted = asked ?? focusedKey
       // Size and Anchor exist only for a sub-pixel shape, so another tab setting Full takes the
       // control the keyboard was on. The header close button is always there and never disabled.
       const restore =
