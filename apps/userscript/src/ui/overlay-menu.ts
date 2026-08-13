@@ -67,6 +67,8 @@ const BUTTON_Z = '28'
 const MENU_Z = '29'
 /** The gear's own height, so the menu hangs under the button rather than over it. */
 const GEAR_SIZE = 28
+/** As tall as the menu is ever allowed to want to be, before the room beside its gear is counted. */
+const NATURAL_MAX_HEIGHT = '70vh'
 /**
  * Our controls' identity attribute.
  *
@@ -116,6 +118,8 @@ let menuNode: HTMLElement | null = null
 let menuOwner: string | null = null
 /** Measured once per rebuild — the contents only change when the menu is rebuilt. */
 let menuBox: { width: number; height: number } = { width: 0, height: 0 }
+/** The viewport `menuBox` was measured in, so a rotation or a resize is the thing that re-measures. */
+let measuredFor: { width: number; height: number } = { width: 0, height: 0 }
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
 let focusRequest: string | null = null
@@ -1072,7 +1076,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     borderRadius: '0.5rem',
     padding: '0.5rem 0.625rem 0.625rem',
     color: 'var(--color-base-content, inherit)',
-    maxHeight: '70vh',
+    maxHeight: NATURAL_MAX_HEIGHT,
     overflowY: 'auto',
   })
   // Not a modal — the map behind it stays live on purpose — so focus is not trapped. Escape is the
@@ -1948,6 +1952,8 @@ const renderControls = (
           : null
       previous?.remove()
       menuNode = buildMenu(template, rerender)
+      // A new node has no measurement, whatever the viewport has been doing.
+      measuredFor = { width: 0, height: 0 }
       menuNode.dataset.wtsSignature = signature
       menuOwner = template.id
       document.body.appendChild(menuNode)
@@ -1971,12 +1977,21 @@ const renderControls = (
       focusRequest = null
     }
     if (menuNode === null) continue
-    // Measured every frame it is on screen, not once when it was built. Both of its dimensions are
-    // viewport-relative — `min(15rem, 100vw - 1rem)` and `70vh` — so a rotation or a resize changes
-    // the real size while the contents, and therefore the signature, stay exactly as they were. A
-    // size cached at build time would be clamped against a viewport it no longer belongs to.
-    const box = menuNode.getBoundingClientRect()
-    menuBox = { width: box.width, height: box.height }
+    // Measured when it is built and when the viewport changes under it, and at no other time.
+    //
+    // Both dimensions are viewport-relative — `min(15rem, 100vw - 1rem)` and `70vh` — so a size
+    // cached at build time alone would be clamped against a viewport it no longer belongs to. But
+    // measuring every frame means reading after writing every frame, which is the forced layout the
+    // batching above exists to avoid, and a panning map writes on every one of them.
+    //
+    // What is measured is the height the menu wants. What it gets is that, capped to the room on
+    // whichever side it goes — arithmetic, not another read.
+    if (measuredFor.width !== window.innerWidth || measuredFor.height !== window.innerHeight) {
+      menuNode.style.maxHeight = NATURAL_MAX_HEIGHT
+      const box = menuNode.getBoundingClientRect()
+      menuBox = { width: box.width, height: box.height }
+      measuredFor = { width: window.innerWidth, height: window.innerHeight }
+    }
     // Keep it on screen when the overlay is near an edge, on both sides: a template hanging off
     // the left keeps a clamped, reachable button, and its menu has to be reachable too.
     const rightmost = Math.max(8, window.innerWidth - menuBox.width - 8)
@@ -1989,19 +2004,12 @@ const renderControls = (
     const spaceBelow = window.innerHeight - (buttonTop + GEAR_SIZE) - 8
     const spaceAbove = buttonTop - 8
     // Below whenever it fits, because that is where the menu belongs; otherwise wherever there is
-    // more room. Decided by the space and not by the height, so capping the height cannot flip the
-    // decision that capped it.
+    // more room. Decided by the space and the height it wants, neither of which the cap changes.
     const goBelow = menuBox.height <= spaceBelow || spaceBelow >= spaceAbove
     const room = Math.max(0, goBelow ? spaceBelow : spaceAbove)
     menuNode.style.maxHeight = `${room}px`
-    // Measured *after* the cap, because the cap is what decides the height. Positioning an
-    // above-placed menu from the height it had a moment ago puts its top where a shorter menu
-    // belonged: relax the cap on the same frame — a pan that gives it more room — and it grows
-    // downwards, back over the gear. The one that matters is the height it is about to have.
-    const capped = menuNode.getBoundingClientRect()
-    menuBox = { width: capped.width, height: capped.height }
     menuNode.style.top = goBelow
       ? `${Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE)}px`
-      : `${Math.max(8, buttonTop - menuBox.height)}px`
+      : `${Math.max(8, buttonTop - Math.min(menuBox.height, room))}px`
   }
 }
