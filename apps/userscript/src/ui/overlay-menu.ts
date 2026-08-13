@@ -14,6 +14,7 @@ import {
 } from '../templates/local-store.js'
 import {
   abort as abortMove,
+  alreadyAnswered,
   beginMove,
   isFinishing,
   isMoving,
@@ -1075,7 +1076,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       return
     }
     closeOverlayMenu()
-    buttons.get(id)?.focus()
+    handBack(id)
     rerender()
   })
 
@@ -1255,7 +1256,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
           })
           // Refused for some other reason — the watch belongs to a placement that never started.
           if (!isMoving()) shownForMove.delete(id)
-          buttons.get(id)?.focus()
+          handBack(id)
           rerender()
         },
         () => {
@@ -1276,7 +1277,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       abortAttempts.delete(id)
     })
     // The gear is held by reference, so focusing it needs no repaint of its own. One click, one paint.
-    buttons.get(id)?.focus()
+    handBack(id)
     rerender()
   })
 
@@ -1320,7 +1321,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   close.addEventListener('click', () => {
     closeOverlayMenu()
     // Back to the gear that opened it, rather than to the top of wplace's document.
-    buttons.get(id)?.focus()
+    handBack(id)
     rerender()
   })
 
@@ -1477,6 +1478,9 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
       // Our own marker, not `defaultPrevented` — any other page listener preventing Escape would
       // otherwise read as "this menu handled it" and disable the exit entirely.
       if (escapeHandled === event) return
+      // `move.ts` listens in capture, so a running placement has already answered this Escape by the
+      // time it bubbles here — and answering it again unwinds two layers on one key press.
+      if (alreadyAnswered(event)) return
       if (menuNode?.contains(event.target as Node) === true) return
       const id = openFor
       // The innermost dialog first, exactly as the menu-local handler does.
@@ -1487,13 +1491,27 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
         return
       }
       closeOverlayMenu()
-      buttons.get(id)?.focus()
+      handBack(id)
       rerender()
     }
     window.addEventListener('keydown', escapeListener)
   }
   rerender()
   log('install', `overlay menu opened for ${id}`)
+}
+
+/**
+ * Put the keyboard back on the gear that opened the menu — unless a placement is running.
+ *
+ * A placement is driven from the window by Escape and Enter, and `move.ts` deliberately ignores key
+ * events aimed at a button so that the page's own controls keep working. Focusing the gear therefore
+ * takes both keys away from the placement: Escape does nothing, and Enter activates the gear and
+ * reopens the very menu that was closing. While something is being placed, the keyboard belongs to
+ * the placement.
+ */
+const handBack = (id: string): void => {
+  if (isMoving()) return
+  buttons.get(id)?.focus()
 }
 
 const closeOverlayMenu = (): void => {

@@ -5,6 +5,8 @@ import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 const harness = vi.hoisted(() => ({
   beginMove: vi.fn(),
   isMoving: vi.fn(() => false),
+  isFinishing: vi.fn(() => false),
+  alreadyAnswered: vi.fn((_event: KeyboardEvent) => false),
   movingId: vi.fn(() => null as string | null),
   abortMove: vi.fn(async () => {}),
   localTemplates: vi.fn(() => [] as unknown[]),
@@ -37,6 +39,8 @@ vi.mock('../templates/local-store.js', () => ({
 vi.mock('../templates/move.js', () => ({
   abort: harness.abortMove,
   beginMove: harness.beginMove,
+  isFinishing: harness.isFinishing,
+  alreadyAnswered: harness.alreadyAnswered,
   isMoving: harness.isMoving,
   movingId: harness.movingId,
 }))
@@ -136,6 +140,8 @@ afterEach(() => {
   harness.screenPointFor.mockImplementation((x: number, y: number) => ({ x, y }))
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
   harness.isMoving.mockReturnValue(false)
+  harness.isFinishing.mockReturnValue(false)
+  harness.alreadyAnswered.mockReturnValue(false)
   harness.movingId.mockReturnValue(null)
   harness.isDeletingLocal.mockReturnValue(false)
   harness.removeLocalTemplate.mockResolvedValue(true)

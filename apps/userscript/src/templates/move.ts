@@ -54,6 +54,10 @@ export const movingId = (): string | null => session?.id ?? null
 /** A commit or revert is already under way, so `commit`/`abort` are no-ops until it settles. */
 export const isFinishing = (): boolean => finishing
 
+/** The keydown this placement has already answered, so no other listener answers it a second time. */
+let answered: KeyboardEvent | null = null
+export const alreadyAnswered = (event: KeyboardEvent): boolean => answered === event
+
 /** Where the template currently sits during a move, so the renderer can draw it there. */
 export const movePreviewOrigin = (id: string): { x: number; y: number } | null =>
   session !== null && session.id === id ? { x: session.x, y: session.y } : null
@@ -240,10 +244,12 @@ const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
   if (isPageControl(event.target)) return
   if (event.key === 'Escape') {
+    answered = event
     event.preventDefault()
     void abort()
   }
   if (event.key === 'Enter') {
+    answered = event
     event.preventDefault()
     void commit()
   }
