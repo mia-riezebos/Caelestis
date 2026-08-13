@@ -1,4 +1,4 @@
-import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
+import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { redraw, viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
@@ -10,7 +10,7 @@ import {
   deleteTemplate as deleteTemplateOnServer,
   forgetScopes,
   getState,
-  listNodes,
+  listServerNodes,
   loadState,
   moveLocalFolder,
   moveNode as moveNodeOnServer,
@@ -20,6 +20,7 @@ import {
   probeServer,
   removeLocalFolder,
   removeServer,
+  removeTreeStateKeys,
   renameLocalFolder,
   renameNode as renameNodeOnServer,
   renameServer as renameServerOnServer,
@@ -41,7 +42,7 @@ import {
   setTemplateFolder,
   templateAsPng,
 } from '../templates/local-store.js'
-import { beginMove } from '../templates/move.js'
+import { beginMove, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
@@ -984,23 +985,68 @@ const applyRename = async (
  * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
  * client, so it always asks first.
  */
-const askToDelete = (kind: string, name: string, note?: string): Promise<boolean> =>
+const askToDelete = (
+  kind: string,
+  name: string,
+  note?: string,
+  restoreFocusTo: HTMLElement | null = null,
+): Promise<boolean> =>
   confirmDestructive({
     // Their shape: the heading asks, the body names the thing and says what happens to it.
     title: `Delete ${kind}?`,
     body: `${name} will be permanently removed.`,
     ...(note === undefined ? {} : { note }),
     confirmLabel: 'Delete',
+    restoreFocusTo,
   })
 
-const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<void> => {
+const applyDelete = async (
+  target: TreeTarget,
+  rerender: () => void,
+  restoreFocusTo: HTMLElement | null = null,
+): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    if (!(await askToDelete('template', target.name, 'It is stored in this browser only.'))) {
+    if (
+      !(await askToDelete(
+        'template',
+        target.name,
+        'It is stored in this browser only.',
+        restoreFocusTo,
+      ))
+    ) {
       return
     }
-    await removeLocalTemplate(templateId)
-    rerender()
+    // Join an existing delete in the store rather than returning early: every surface that asked
+    // still receives the real outcome. If placement was active, reserve its slot until deletion is
+    // known to have succeeded; a failed delete restores exactly the preview the user was moving.
+    const stoppedMove = stopMoveForDeletion(templateId)
+    try {
+      const removed = await removeLocalTemplate(templateId)
+      if (!removed) {
+        toast(`Could not delete “${target.name}”.`, 'error')
+        if (
+          stoppedMove !== null &&
+          !stoppedMove.reservation.start(templateId, rerender, stoppedMove.origin)
+        ) {
+          toast(`Could not restore placement for “${target.name}”.`, 'error')
+        }
+        return
+      }
+      removeTreeStateKeys(new Set([target.key]))
+      rerender()
+    } catch (error) {
+      warn('install', 'local delete failed', String(error))
+      toast(`Could not delete “${target.name}”.`, 'error')
+      if (
+        stoppedMove !== null &&
+        !stoppedMove.reservation.start(templateId, rerender, stoppedMove.origin)
+      ) {
+        toast(`Could not restore placement for “${target.name}”.`, 'error')
+      }
+    } finally {
+      stoppedMove?.reservation.release()
+    }
     return
   }
   const folderId = localFolderIdOf(target)
@@ -1011,6 +1057,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
       // Say where things go, because "delete" on a container reads as "delete what is inside it".
       note: 'Anything inside it moves up one level rather than being deleted.',
       confirmLabel: 'Delete',
+      restoreFocusTo,
     })
     if (!confirmed) return
     for (const template of localTemplates()) {
@@ -1022,6 +1069,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
       }
     }
     removeLocalFolder(folderId)
+    removeTreeStateKeys(new Set([target.key]))
     rerender()
     return
   }
@@ -1032,6 +1080,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
       // Said plainly because it is the one delete here that reaches other people: everyone
       // connected to this server loses it, not just this browser.
       'Everyone connected to this server will stop seeing it.',
+      restoreFocusTo,
     )
     if (!confirmed) return
     const result = await deleteTemplateOnServer(target.server, target.templateId)
@@ -1080,6 +1129,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
       ? {}
       : { note: 'Everyone connected to this server loses all of it, and it cannot be undone.' }),
     confirmLabel: 'Delete',
+    restoreFocusTo,
   })
   if (!confirmed) return
 
@@ -1100,7 +1150,7 @@ const applyDelete = async (target: TreeTarget, rerender: () => void): Promise<vo
 const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, templateId } = target
   if (server === null || templateId === undefined) return
-  const nodes = await listNodes(server)
+  const nodes = await listServerNodes(server)
   const destinations = nodes.filter((node) => node.id !== target.nodeId)
   if (destinations.length === 0) {
     toast('There is nowhere else to put it — this server has one folder.', 'warning')
@@ -1497,6 +1547,7 @@ const setServerTemplatePublished = async (
  */
 const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => void): void => {
   document.querySelector('[data-caelestis-menu]')?.remove()
+  const invoker = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   const menu = document.createElement('ul')
   menu.setAttribute('data-caelestis-menu', '')
   menu.className = 'menu bg-base-100 shadow-2xl'
@@ -1522,7 +1573,7 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
   const remove: readonly [IconName, string, () => void] = [
     'trash',
     'Delete',
-    () => void applyDelete(target, rerender),
+    () => void applyDelete(target, rerender, invoker),
   ]
   const published = publishedStateOf(target)
   const entries: ReadonlyArray<readonly [IconName, string, () => void]> =
@@ -1614,30 +1665,46 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
           toast('Nothing importable in that file.', 'error')
           return
         }
+        const first = imported[0]
+        if (first === undefined) return
+        const reservation = first.source === 'image' ? reserveMove() : null
+        if (first.source === 'image' && reservation === null) {
+          toast('Finish the current placement, then import this image again.', 'warning')
+          return
+        }
         // Straight into whichever Local folder was clicked. Importing from a folder's own button
         // and then finding the result at the top level would make the button a lie.
         const folderId = localFolderIdOf(target)
-        for (const template of imported) {
-          await addLocalTemplate(template)
-          if (folderId !== null) await setTemplateFolder(template.id, folderId)
-        }
-        rerender()
+        try {
+          for (const template of imported) {
+            await addLocalTemplate(template)
+            if (folderId !== null) await setTemplateFolder(template.id, folderId)
+          }
+          rerender()
 
-        const first = imported[0]
-        if (first === undefined) return
-        const moved = first.moved
-        toast(
-          `Imported ${first.name} — ${first.width}x${first.height}` +
-            (moved > 0 ? `, ${moved.toLocaleString()} pixels quantised` : ''),
-        )
-        if (first.source === 'image') {
-          // An image arrives with no placement of its own, so placing it is not an extra step —
-          // it is the rest of the import.
-          beginMove(first.id, rerender)
-        } else {
-          // It already knows where it belongs, so go and look at it — centred on the template and
-          // zoomed to fit it, in-game. Changing the URL would reload and throw the import away.
-          navigateTo(centreOf(first))
+          const moved = first.moved
+          toast(
+            `Imported ${first.name} — ${first.width}x${first.height}` +
+              (moved > 0 ? `, ${moved.toLocaleString()} pixels quantised` : ''),
+          )
+          if (first.source === 'image') {
+            // The reservation spans persistence, so another placement cannot strand this image in
+            // volatile state between admission and `beginMove`.
+            if (reservation === null || !reservation.start(first.id, rerender)) {
+              for (const template of imported) await removeLocalTemplate(template.id)
+              rerender()
+              toast(
+                'Another placement started. Finish it, then import this image again.',
+                'warning',
+              )
+            }
+          } else {
+            // It already knows where it belongs, so go and look at it — centred on the template and
+            // zoomed to fit it, in-game. Changing the URL would reload and throw the import away.
+            navigateTo(centreOf(first))
+          }
+        } finally {
+          reservation?.release()
         }
       } catch (error) {
         toast(`Could not import: ${String(error)}`, 'error')
@@ -1679,7 +1746,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
   for (const server of targets) {
-    for (const node of await listNodes(server)) {
+    for (const node of await listServerNodes(server)) {
       const option = document.createElement('option')
       option.value = `${server.url}|${node.id}`
       option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
@@ -1759,7 +1826,7 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   }
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
-  const existing = await listNodes(server)
+  const existing = await listServerNodes(server)
   const name = freeFolderName(new Set(existing.map((node) => node.name.toLowerCase())))
   const result = await createNode(server, name, nodeId)
   if (!result.ok) {

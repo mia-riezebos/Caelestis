@@ -85,7 +85,31 @@ const attachOverlayLayer = (): void => {
   }, 250)
 }
 
+/** A draw is on the stack; synchronous repaint requests become a later pass, never recursion. */
+let drawing = false
+let drawAgain = false
+const MAX_DRAW_PASSES = 3
+
 const draw = (frame: TileFrame): void => {
+  if (drawing) {
+    drawAgain = true
+    return
+  }
+  drawing = true
+  try {
+    let passes = 0
+    do {
+      drawAgain = false
+      paintOnce(frame)
+      passes++
+    } while (drawAgain && passes < MAX_DRAW_PASSES)
+  } finally {
+    drawing = false
+    drawAgain = false
+  }
+}
+
+const paintOnce = (frame: TileFrame): void => {
   // Keep the last frame that actually had tiles in it. Wplace emits empty frames while idle, but
   // coordinates and controls still need the last known tile projection until a new one arrives.
   if (frame.quads.length > 0) lastFrame = frame
@@ -304,7 +328,7 @@ const main = (): void => {
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
-  onFrame(() => renderOverlayControls(repaint))
+  onFrame((frame) => renderOverlayControls(repaint, frame.canvas))
   onTileFrame(draw)
   onLocalChange(redraw)
   onStateChange(redraw)

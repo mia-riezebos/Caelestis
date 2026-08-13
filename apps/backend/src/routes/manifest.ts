@@ -5,8 +5,8 @@ import { assembleManifest } from '../manifest/assemble.js'
 import type { Ports } from '../ports/index.js'
 import { resolveServerInfo } from './server.js'
 
-// Seasons are 1-based, matching `Season` in the wire and the Worker's own `SEASON` refusal.
-const SEASON_NUMBER = /^[1-9]\d*$/
+// Wplace's first and current canvas is season 0; later seasons increment from there.
+const SEASON_NUMBER = /^(?:0|[1-9]\d*)$/
 
 const parseSeason = (value: string | undefined, fallback: number): number | null => {
   if (value === undefined) return fallback
@@ -26,7 +26,7 @@ export const createManifestRoutes = (
 
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'), options.currentSeason)
-    if (season === null) return c.json({ error: 'season must be a positive integer' }, 400)
+    if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
 
     const manifest = await assembleManifest(ports, {
       // Resolved rather than the configured value: the manifest carries the server's name too, and

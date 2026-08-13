@@ -101,7 +101,9 @@ describe('node routes', () => {
       parentId: destination.body.id,
       path: '/destination/renamed',
     })
-    const manifest = (await (await app.request('/manifest', { headers: bearer })).json()) as {
+    const manifest = (await (
+      await app.request('/manifest?season=1', { headers: bearer })
+    ).json()) as {
       nodes: NodeResponse[]
     }
     expect(manifest.nodes).toEqual(
@@ -299,16 +301,13 @@ describe('node routes', () => {
     ).toBe(400)
   })
 
-  it('refuses season zero, which no deployment can be configured to serve', async () => {
-    // The wire and the routes used to accept season 0 while `worker.ts` refused `SEASON=0`, so an
-    // admin could build a whole tree in a season the server could never make its default — visible
-    // only to a client that already knew to ask for it by number.
+  it('creates and lists nodes in wplace season zero', async () => {
     const { app } = harness()
 
     expect(
       (await createNode(app, { season: 0, parentId: null, name: 'Ghost' })).response.status,
-    ).toBe(400)
-    expect((await app.request('/admin/nodes?season=0', { headers: bearer })).status).toBe(400)
+    ).toBe(201)
+    expect((await app.request('/admin/nodes?season=0', { headers: bearer })).status).toBe(200)
   })
 
   it('rejects duplicate paths case-insensitively within a season but accepts them across seasons', async () => {

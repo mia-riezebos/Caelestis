@@ -53,7 +53,7 @@ reads it next.
   tree, one parent per template, ETag-polled manifest gates all interception. **Amended 2026-08-09**:
   templates may overlap anywhere, the no-overlap rule and the wire constraint enforcing it are gone,
   and no sort order reaches the wire at all — ordering is entirely the client's. The manifest is
-  season-scoped and seasons are 1-based.
+  season-scoped and seasons are non-negative; Wplace has used season 0 since launch.
 - [Auth model](issues/03-auth-model.md) — server-generated high-entropy invite codes, three scopes
   (read/report/admin), bearer for everything, one env admin token to bootstrap. **Amended
   2026-08-09**: there are no signed URLs anywhere. Read is bearer like the rest — see the chunk
@@ -115,9 +115,9 @@ otherwise.
   hash. Client-side caching does the work; there is no CDN tier in front of chunks.
 - [Nodes, seasons and manifest assembly](https://github.com/mia-riezebos/Caelestis/pull/37) — node
   CRUD under `/admin/nodes`, season-scoped manifest assembly, publication as a per-template flag.
-  **Seasons are 1-based**: the wire, both route parsers and the Worker's `SEASON` binding all refuse
-  0. The assembler drops a template whose node or chunks a torn read missed, rather than emitting a
-  200 no client can decode.
+  **Seasons are non-negative safe integers**: the wire, both route parsers and the Worker's `SEASON`
+  binding accept Wplace's launch season 0. The assembler drops a template whose node or chunks a
+  torn read missed, rather than emitting a 200 no client can decode.
 - [Renaming a node moves its subtree](https://github.com/mia-riezebos/Caelestis/pull/38) —
   `PATCH /admin/nodes/:id` rewrites every descendant's path in one batch. Two rules came out of
   building it and now hold for *every* node write: **only the last path segment is ever the

@@ -4,10 +4,13 @@ import {
   getState,
   isScopeVisible,
   listServerContents,
+  MAX_TREE_NODES,
+  removeTreeStateKeys,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
   type TreeNode,
+  takeProbedNodes,
 } from '../state.js'
 import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
@@ -92,6 +95,178 @@ const nodesByServer = new Map<string, readonly TreeNode[]>()
 /** Templates per server, from the manifest, on the same terms as the nodes above. */
 const templatesByServer = new Map<string, readonly ServerTemplate[]>()
 
+const serverIdentity = (server: ConnectedServer): string | null => {
+  if (server.info !== null && server.season !== null) return `${server.info.id}:${server.season}`
+  return server.lastVerified == null
+    ? null
+    : `${server.lastVerified.serverId}:${server.lastVerified.season}`
+}
+
+export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
+  `node:${encodeURIComponent(server.url)}:${serverIdentity(server) ?? 'unknown:unknown'}:${nodeId}`
+
+export const forgetServerTree = (url: string): void => {
+  const prefix = `node:${encodeURIComponent(url)}:`
+  const state = getState()
+  removeTreeStateKeys(
+    new Set([
+      `server:${url}`,
+      ...state.customOrder.filter((key) => key.startsWith(prefix)),
+      ...state.collapsed.filter((key) => key.startsWith(prefix)),
+    ]),
+  )
+  forgetServerRows(url)
+}
+
+interface OrderedItem {
+  readonly key: string
+  readonly name: string
+  readonly createdAt?: number
+}
+
+const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
+
+export const nodeSiblingItems = (
+  server: ConnectedServer,
+  nodes: readonly TreeNode[],
+): ReadonlyArray<OrderedItem & { readonly node: TreeNode }> =>
+  nodes.map((node) => ({
+    key: nodeTreeKey(server, node.id),
+    name: node.name,
+    createdAt: node.createdAt,
+    node,
+  }))
+
+export const canRetryNodeRefresh = (server: ConnectedServer): boolean => server.isAdmin
+
+export const localSiblingKeys = (
+  templates: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+  needle: string,
+): readonly string[] => {
+  const folded = needle.toLocaleLowerCase()
+  return templates
+    .filter((template) => folded === '' || template.name.toLocaleLowerCase().includes(folded))
+    .map((template) => `local:${template.id}`)
+}
+
+export const orderedItems = <T extends OrderedItem>(
+  items: readonly T[],
+  rank: ReadonlyMap<string, number>,
+  limit = Number.POSITIVE_INFINITY,
+): readonly T[] => {
+  const bounded = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : items.length
+  if (bounded === 0) return []
+  const takeFirst = (compare: (a: T, b: T) => number): readonly T[] => {
+    if (bounded >= items.length) return [...items].sort(compare)
+    const heap: T[] = []
+    const siftUp = (start: number): void => {
+      let index = start
+      while (index > 0) {
+        const parent = Math.floor((index - 1) / 2)
+        const item = heap[index]
+        const parentItem = heap[parent]
+        if (item === undefined || parentItem === undefined || compare(item, parentItem) <= 0) break
+        ;[heap[index], heap[parent]] = [parentItem, item]
+        index = parent
+      }
+    }
+    const siftDown = (): void => {
+      let index = 0
+      while (true) {
+        const left = index * 2 + 1
+        const right = left + 1
+        let worst = index
+        const leftItem = heap[left]
+        const currentWorst = heap[worst]
+        if (
+          leftItem !== undefined &&
+          currentWorst !== undefined &&
+          compare(leftItem, currentWorst) > 0
+        )
+          worst = left
+        const rightItem = heap[right]
+        const nextWorst = heap[worst]
+        if (rightItem !== undefined && nextWorst !== undefined && compare(rightItem, nextWorst) > 0)
+          worst = right
+        if (worst === index) return
+        const current = heap[index]
+        const replacement = heap[worst]
+        if (current === undefined || replacement === undefined) return
+        ;[heap[index], heap[worst]] = [replacement, current]
+        index = worst
+      }
+    }
+    for (const item of items) {
+      if (heap.length < bounded) {
+        heap.push(item)
+        siftUp(heap.length - 1)
+      } else if (heap[0] !== undefined && compare(item, heap[0]) < 0) {
+        heap[0] = item
+        siftDown()
+      }
+    }
+    return heap.sort(compare)
+  }
+  if (getState().sort.field === 'name') {
+    const direction = getState().sort.direction === 'desc' ? -1 : 1
+    return takeFirst(
+      (a, b) => direction * NAME_COLLATOR.compare(a.name, b.name) || a.key.localeCompare(b.key),
+    )
+  }
+  const ranked: Array<{ readonly item: T; readonly rank: number }> = []
+  const unranked: T[] = []
+  for (const item of items) {
+    const itemRank = rank.get(item.key)
+    if (itemRank === undefined) unranked.push(item)
+    else ranked.push({ item, rank: itemRank })
+  }
+  ranked.sort((a, b) => a.rank - b.rank)
+  unranked.sort(
+    (a, b) => (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
+  )
+  return [...ranked.map(({ item }) => item), ...unranked].slice(0, bounded)
+}
+
+export const reorderedSiblings = (
+  keys: readonly string[],
+  from: string,
+  to: string,
+  after: boolean,
+): readonly string[] | null => {
+  if (!keys.includes(from)) return null
+  const next = keys.filter((key) => key !== from)
+  const index = next.indexOf(to)
+  if (index === -1) return null
+  next.splice(after ? index + 1 : index, 0, from)
+  return next
+}
+
+export const reorderedVisibleSiblings = (
+  allKeys: readonly string[],
+  visibleKeys: readonly string[],
+  from: string,
+  to: string,
+  after: boolean,
+): readonly string[] | null => {
+  const visible = reorderedSiblings(visibleKeys, from, to, after)
+  if (visible === null) return null
+  const visibleSet = new Set(visibleKeys)
+  let cursor = 0
+  return allKeys.map((key) => (visibleSet.has(key) ? (visible[cursor++] ?? key) : key))
+}
+
+export const replaceSiblingOrder = (
+  current: readonly string[],
+  siblings: readonly string[],
+  next: readonly string[],
+): readonly string[] => {
+  const siblingSet = new Set(siblings)
+  const first = current.findIndex((key) => siblingSet.has(key))
+  const retained = current.filter((key) => !siblingSet.has(key))
+  const at = first === -1 ? retained.length : first
+  return [...retained.slice(0, at), ...next, ...retained.slice(at)]
+}
+
 /**
  * Which server holds a template, given only its id.
  *
@@ -150,30 +325,73 @@ export const templatesOfNode = (
  * token got a fresh manifest request on *every* re-render, because a failure leaves the map empty
  * and the next pass sees the same gap. Sharing the in-flight promise makes that one request.
  */
-const refreshing = new Map<string, Promise<void>>()
+export type NodeRefreshResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string; readonly superseded?: true }
+const refreshing = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
+const refreshGeneration = new Map<string, number>()
 
 export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
-): Promise<void> => {
-  const pending = refreshing.get(server.url)
-  if (pending !== undefined) return pending
-  const run = refreshOnce(server, rerender).finally(() => refreshing.delete(server.url))
-  refreshing.set(server.url, run)
-  return run
+  force = false,
+): Promise<NodeRefreshResult> => {
+  const pending = refreshing.get(server)
+  if (!force && pending !== undefined) {
+    const result = await pending
+    queueMicrotask(rerender)
+    return result
+  }
+  const generation = (refreshGeneration.get(server.url) ?? 0) + 1
+  refreshGeneration.set(server.url, generation)
+  const run = refreshOnce(server, generation).finally(() => refreshing.delete(server))
+  refreshing.set(server, run)
+  const result = await run
+  queueMicrotask(rerender)
+  return result
 }
 
-const refreshOnce = async (server: ConnectedServer, rerender: () => void): Promise<void> => {
+const refreshOnce = async (
+  server: ConnectedServer,
+  generation: number,
+): Promise<NodeRefreshResult> => {
   const contents = await listServerContents(server)
   // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
   // emptying itself — a server that blinks should not take its folders off your screen.
-  if (contents === null) return
+  if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
+  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+    return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
+  }
+  if (refreshGeneration.get(server.url) !== generation) {
+    return { ok: false, message: 'A newer refresh replaced this one.', superseded: true }
+  }
   const { nodes, templates } = contents
+  // The public manifest is now the authoritative snapshot. Retaining the connect-time copy lets a
+  // later admin-only consumer resurrect older folders after this refresh has already succeeded.
+  takeProbedNodes(server)
+  let retainedNodes = 0
+  for (const [url, retained] of nodesByServer) {
+    if (url !== server.url) retainedNodes += retained.length
+  }
+  if (retainedNodes + nodes.length > MAX_TREE_NODES) {
+    return {
+      ok: false,
+      message: `Connected server folders exceed the ${MAX_TREE_NODES.toLocaleString()}-node client limit.`,
+    }
+  }
   nodesByServer.set(server.url, nodes)
   rememberNodes(server.url, nodes)
   templatesByServer.set(server.url, templates)
-  void cacheServer({ url: server.url, nodes, templates, fetchedAt: Date.now() })
-  rerender()
+  if (server.info !== null && server.season !== null) {
+    void cacheServer({
+      url: server.url,
+      serverId: server.info.id,
+      season: server.season,
+      nodes,
+      templates,
+      fetchedAt: Date.now(),
+    })
+  }
   // Every caller of this is a mutation that just landed — a publish, an upload, a delete. Waiting
   // out the poll to see it on the canvas would make each of those feel like it had not worked.
   //
@@ -181,6 +399,7 @@ const refreshOnce = async (server: ConnectedServer, rerender: () => void): Promi
   // same document, requested a millisecond apart, and the second one can only disagree with the
   // first by being newer than the tree that is already on screen.
   void syncServerTemplates(server, templates)
+  return { ok: true }
 }
 
 /**
@@ -190,7 +409,17 @@ const refreshOnce = async (server: ConnectedServer, rerender: () => void): Promi
  * first impression and gets worse the more servers are connected.
  */
 export const primeFromCache = async (rerender: () => void): Promise<void> => {
-  for (const entry of await loadServerCache()) {
+  const servers = getState().servers
+  for (const entry of await loadServerCache(servers.map((server) => server.url))) {
+    const server = servers.find((candidate) => candidate.url === entry.url)
+    const identity = server?.lastVerified
+    if (
+      server === undefined ||
+      identity == null ||
+      identity.serverId !== entry.serverId ||
+      identity.season !== entry.season
+    )
+      continue
     if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
     // The renderer needs the folder tree too, and it needs it now rather than after the first
     // fetch: a template restored from cache into a folder switched off last session would
@@ -215,7 +444,7 @@ export const forgetServerRows = (serverUrl: string): readonly string[] => {
   )
   nodesByServer.delete(serverUrl)
   templatesByServer.delete(serverUrl)
-  refreshing.delete(serverUrl)
+  refreshGeneration.delete(serverUrl)
   return hashes
 }
 
@@ -918,12 +1147,14 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
     )
     if (!isExpanded(key)) continue
 
-    if (server !== undefined && server.status === 'connected') {
+    if (server !== undefined) {
       const known = nodesByServer.get(server.url)
-      if (known === undefined) {
-        // First sight of this server: kick off the fetch, draw nothing extra this pass.
+      if (known === undefined && server.status === 'connected') {
+        // First sight of this server: kick off the fetch and say why the tree is not here yet.
         void refreshNodes(server, rerender)
-      } else {
+        wrap.appendChild(childText('Loading folders…', 0))
+        continue
+      } else if (known !== undefined) {
         const published = templatesByServer.get(server.url) ?? []
 
         /**
@@ -1056,7 +1287,13 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         }
 
         renderLevel(wrap, source, null, 1, key, rerender)
-        if (known.length === 0) wrap.appendChild(childText('No templates published yet.', 0))
+        if (known.length === 0 && published.length === 0)
+          wrap.appendChild(childText('No templates published yet.', 0))
+        if (server.status === 'unreachable') {
+          wrap.appendChild(childText(`Could not be reached. ${server.error ?? ''}`.trim(), 0))
+        } else if (server.status === 'needs-token') {
+          wrap.appendChild(childText('Needs an access token — add it in settings.', 0))
+        }
         continue
       }
     }

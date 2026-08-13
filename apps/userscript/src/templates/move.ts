@@ -1,8 +1,9 @@
 import { TILE_SIZE, WORLD_PIXELS } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
-import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget } from '../main.js'
+import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget, repaint } from '../main.js'
 import {
   clearLocalPreview,
+  isDeletingLocal,
   localTemplates,
   onLocalReconciliation,
   placeLocalTemplate,
@@ -16,8 +17,7 @@ import {
  * The map has to keep working — pan, zoom and paint are what someone is here to do — and the
  * template's own outline is what separates the two. Over it, a drag moves the template and the
  * cursor says so by becoming a hand; anywhere else, every gesture falls through to wplace
- * untouched. A modifier used to be required as well, which made the one mode you deliberately
- * entered feel like it had not started.
+ * untouched.
  *
  * Middle-click centres the template on the cursor. Without it, moving a template across the world
  * while zoomed in means dragging it the whole way; with it, the long move is one click and the drag
@@ -46,9 +46,63 @@ let session: MoveSession | null = null
 let onFinish: (() => void) | null = null
 let finishing = false
 let suppressMiddleAuxClickFor: number | null = null
+let moveReservation: symbol | null = null
 
-export const isMoving = (): boolean => session !== null
+export const isMoving = (): boolean => session !== null || moveReservation !== null
 export const movingId = (): string | null => session?.id ?? null
+/** A commit or revert is already under way, so `commit`/`abort` are no-ops until it settles. */
+export const isFinishing = (): boolean => finishing
+
+/**
+ * Which placement this is, counted rather than named.
+ *
+ * A template's id is not an identity for the session placing it: the same template can be placed
+ * twice, and anything remembered about the first placement matches the second by name alone.
+ */
+let placements = 0
+export const placementSeq = (): number | null => (session === null ? null : placements)
+
+/** The keydown this placement has already answered, so no other listener answers it a second time. */
+let answered: KeyboardEvent | null = null
+export const alreadyAnswered = (event: KeyboardEvent): boolean => answered === event
+
+export interface MoveReservation {
+  /** Consume this reservation by starting the move synchronously. */
+  readonly start: (
+    id: string,
+    finished: () => void,
+    restoredOrigin?: { readonly x: number; readonly y: number },
+  ) => boolean
+  /** Release an unconsumed reservation. Safe to call after `start`. */
+  readonly release: () => void
+}
+
+const holdMoveSlot = (): MoveReservation => {
+  const token = Symbol('move reservation')
+  moveReservation = token
+  const release = (): void => {
+    if (moveReservation === token) moveReservation = null
+  }
+  return {
+    start: (id, finished, restoredOrigin) => {
+      if (moveReservation !== token) return false
+      moveReservation = null
+      return beginMove(id, finished, restoredOrigin)
+    },
+    release,
+  }
+}
+
+/**
+ * Hold the single placement slot across asynchronous preparation.
+ *
+ * Image imports must be sliced and admitted before `beginMove` can see them. Without a reservation,
+ * another row can start moving during that await and strand the new image in volatile local state.
+ */
+export const reserveMove = (): MoveReservation | null => {
+  if (session !== null || finishing || moveReservation !== null) return null
+  return holdMoveSlot()
+}
 
 /** Where the template currently sits during a move, so the renderer can draw it there. */
 export const movePreviewOrigin = (id: string): { x: number; y: number } | null =>
@@ -77,17 +131,10 @@ const boundedOrigin = (
   y: Math.min(Math.max(0, Math.round(y)), WORLD_PIXELS - template.height),
 })
 
-/**
- * The map's own cursor, borrowed for as long as the placement lasts.
- *
- * The cursor is the only thing on screen that can say "this is draggable" at the moment it becomes
- * true, which is while hovering — a label somewhere else cannot. Set inline so it beats whatever
- * MapLibre is setting for its own state, and cleared on the way out so the map gets it back.
- */
+/** Borrow the map's own cursor for as long as placement owns the pointer. */
 const setCursor = (shape: string): void => {
   const canvas = document.querySelector<HTMLElement>('canvas.maplibregl-canvas')
-  if (canvas === null) return
-  canvas.style.cursor = shape
+  if (canvas !== null) canvas.style.cursor = shape
 }
 
 const onPointerDown = (event: PointerEvent): void => {
@@ -116,8 +163,7 @@ const onPointerDown = (event: PointerEvent): void => {
     return
   }
   if (event.button !== 0) return
-  // The template's own outline is the boundary. Starting a drag anywhere else is a pan, which is
-  // what makes this mode livable — the map underneath keeps working the whole time.
+  // The template's own outline is the boundary. Starting elsewhere remains a map pan.
   if (!isOverTemplate(event.clientX, event.clientY)) return
   event.preventDefault()
   event.stopPropagation()
@@ -165,8 +211,7 @@ const previewMove = (id: string, x: number, y: number): void => {
 }
 
 const onPointerUp = (event: PointerEvent): void => {
-  const wasHandled = session?.dragging?.pointerId === event.pointerId
-  if (wasHandled && session !== null) {
+  if (session?.dragging?.pointerId === event.pointerId) {
     session.dragging = null
     setCursor(isOverTemplate(event.clientX, event.clientY) ? 'grab' : '')
     event.preventDefault()
@@ -179,6 +224,17 @@ const onPointerUp = (event: PointerEvent): void => {
       if (suppressMiddleAuxClickFor === pointerId) suppressMiddleAuxClickFor = null
     }, 0)
   }
+}
+
+const swallowNextClick = (): void => {
+  const swallow = (event: Event): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.removeEventListener('click', swallow, true)
+    clearTimeout(timer)
+  }
+  const timer = setTimeout(() => window.removeEventListener('click', swallow, true), 400)
+  window.addEventListener('click', swallow, true)
 }
 
 const onPointerCancel = (event: PointerEvent): void => {
@@ -202,30 +258,21 @@ const isPageControl = (target: EventTarget | null): boolean => {
     element.isContentEditable === true ||
     ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
     (element.closest?.(
-      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"]',
+      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"],#caelestis-panel',
     ) ?? null) !== null
   )
-}
-
-const swallowNextClick = (): void => {
-  const swallow = (event: Event): void => {
-    event.preventDefault()
-    event.stopPropagation()
-    window.removeEventListener('click', swallow, true)
-    clearTimeout(timer)
-  }
-  const timer = setTimeout(() => window.removeEventListener('click', swallow, true), 400)
-  window.addEventListener('click', swallow, true)
 }
 
 const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
   if (isPageControl(event.target)) return
   if (event.key === 'Escape') {
+    answered = event
     event.preventDefault()
     void abort()
   }
   if (event.key === 'Enter') {
+    answered = event
     event.preventDefault()
     void commit()
   }
@@ -251,52 +298,116 @@ const listen = (on: boolean): void => {
   window[method]('auxclick', onAuxClick as EventListener, true)
 }
 
-export const beginMove = (id: string, finished: () => void): void => {
-  if (session !== null) return
+export const beginMove = (
+  id: string,
+  finished: () => void,
+  restoredOrigin?: { readonly x: number; readonly y: number },
+): boolean => {
+  if (session !== null || finishing || moveReservation !== null) return false
+  // A condemned template is still in the store for the whole of its delete, so every surface that
+  // has not re-rendered still offers Move for it. Refusing here covers all of them at once, rather
+  // than each caller having to remember.
+  if (isDeletingLocal(id)) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
-  if (template === undefined) return
-  session = {
+  if (template === undefined) return false
+  placements += 1
+  const nextSession: MoveSession = {
     id,
-    x: template.originX,
-    y: template.originY,
+    x: restoredOrigin?.x ?? template.originX,
+    y: restoredOrigin?.y ?? template.originY,
     dragging: null,
+  }
+  session = nextSession
+  if (restoredOrigin !== undefined) {
+    try {
+      if (!previewLocalTemplate(id, nextSession.x, nextSession.y)) {
+        session = null
+        return false
+      }
+    } catch (error) {
+      session = null
+      warn('install', 'template placement could not be restored', String(error))
+      return false
+    }
   }
   onFinish = finished
   finishing = false
   suppressMiddleAuxClickFor = null
   listen(true)
-  // Apply and cancel are drawn where the template's own menu button was, by `renderOverlayControls`
-  // — the controls for this template stay in the one place they have always been.
-  notify(finished)
-  log('install', `move started for ${template.name}`)
-}
-
-const notify = (observer: (() => void) | null): void => {
+  // Starting announces itself, as finishing and resuming do. Every surface that has to react to a
+  // live placement — the overlay controls' own keyboard rule among them — reacts on a frame, and a
+  // placement begun from the panel over a still map would otherwise wait for one that never comes.
   try {
-    observer?.()
+    repaint()
   } catch (error) {
-    // UI refresh is an observer notification, not part of the durable placement transaction.
-    try {
-      warn('install', 'placement observer failed', String(error))
-    } catch {}
+    warn('install', 'repaint after starting placement failed', error)
   }
+  log('install', `move started for ${template.name}`)
+  return true
 }
 
-const finish = (): void => {
+const finish = (reserveNext = false): MoveReservation | null => {
   listen(false)
   setCursor('')
   session = null
+  // The placement ending is state other surfaces render from — the overlay menu retires its
+  // "finish the placement first" refusal off `isMoving()`. A move started from the panel only calls
+  // back into the panel, so without this the refusal outlives the placement on a static map.
+  //
+  // Caught, like the completion callback below: a throw from page-owned canvas work would otherwise
+  // reach `commit()`'s handler and be treated as a failed placement, re-arming capture listeners
+  // for a session that has already been cleared and saved.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after placement failed', error)
+  }
   finishing = false
   suppressMiddleAuxClickFor = null
   const finished = onFinish
   onFinish = null
-  notify(finished)
+  // Reserve before notifying observers. A completion callback may synchronously start another
+  // placement, which would otherwise steal the slot while deletion is still awaiting storage.
+  const reservation = reserveNext ? holdMoveSlot() : null
+  try {
+    finished?.()
+  } catch (error) {
+    // Completion is an observer notification, not part of the durable placement transaction.
+    // Never let it reopen capture-phase listeners after teardown.
+    try {
+      warn('install', 'placement completion callback failed', String(error))
+    } catch {}
+  }
+  return reservation
+}
+
+/** Tear down placement ownership before its template is deleted through another surface. */
+export const stopMoveForDeletion = (
+  id: string,
+): {
+  readonly origin: { readonly x: number; readonly y: number }
+  readonly reservation: MoveReservation
+} | null => {
+  if (session?.id !== id) return null
+  const origin = { x: session.x, y: session.y }
+  clearLocalPreview(id)
+  const reservation = finish(true)
+  if (reservation === null) return null
+  return { origin, reservation }
 }
 
 const resumeAfterFailure = (action: string, error?: unknown): void => {
   warn('install', `${action} could not be saved; placement is still open`, String(error ?? ''))
   finishing = false
   listen(true)
+  // Resuming is a state change like any other, and `finish` announces its own. Without this a
+  // failed save leaves a live placement over a map that may never paint again — nobody watching it
+  // is told the session came back, and on a still map nothing else will say so.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after resuming placement failed', error)
+  }
 }
 
 export const commit = async (): Promise<void> => {

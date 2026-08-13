@@ -15,8 +15,11 @@ export { TelemetryShard } from './telemetry-shard.js'
  */
 const parseSeason = (value: string | undefined): number | undefined => {
   if (value === undefined) return undefined
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+    throw new Error(`SEASON is not a season number: ${JSON.stringify(value)}`)
+  }
   const season = Number(value)
-  if (!Number.isSafeInteger(season) || season < 1) {
+  if (!Number.isSafeInteger(season) || season < 0) {
     throw new Error(`SEASON is not a season number: ${JSON.stringify(value)}`)
   }
   return season
@@ -40,9 +43,9 @@ export default {
       serverName: env.SERVER_NAME,
       serverDescription: env.SERVER_DESCRIPTION,
       // Both were reachable only from tests. Without the season, every deployment answered as
-      // season 1 — a season-2 server served season 1's manifest, which for a fresh one is empty, and
-      // `ServerInfo` carries no season for a client to notice. Without openAccess, a server could
-      // not be opened at all.
+      // season 0 — a later-season server served season 0's manifest, which for a fresh one is empty,
+      // and `ServerInfo` carries no season for a client to notice. Without openAccess, a server
+      // could not be opened at all.
       currentSeason: parseSeason(env.SEASON),
       openAccess: env.OPEN_ACCESS === 'true',
     }).fetch(request)

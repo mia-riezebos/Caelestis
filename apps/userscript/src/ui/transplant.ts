@@ -6,7 +6,7 @@ import {
   deleteNode as deleteNodeOnServer,
   deleteTemplate as deleteTemplateOnServer,
   getState,
-  listNodes,
+  listServerNodes,
   removeLocalFolder,
   type TreeNode,
   uploadTemplate,
@@ -82,7 +82,7 @@ const serverBranch = async (
   rootId: string,
   templatesOf: (nodeId: string) => ReadonlyArray<{ id: string; name: string }>,
 ): Promise<Branch | null> => {
-  const nodes = await listNodes(server)
+  const nodes = await listServerNodes(server)
   const root = nodes.find((node) => node.id === rootId)
   if (root === undefined) return null
 

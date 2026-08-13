@@ -7,7 +7,7 @@ interface __BaseEnv_Env {
 	SERVER_ID: "00000000-0000-7000-8000-000000000000";
 	SERVER_NAME: "Template Server";
 	SERVER_DESCRIPTION: "A self-hosted wplace template server";
-	SEASON: "1";
+	SEASON: "0";
 	OPEN_ACCESS: "false";
 	TELEMETRY: DurableObjectNamespace<import("./worker").TelemetryShard>;
 }

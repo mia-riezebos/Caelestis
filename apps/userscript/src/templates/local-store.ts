@@ -1482,44 +1482,78 @@ export const renameLocalTemplate = async (id: string, name: string): Promise<boo
   })
 }
 
+/**
+ * Whether a delete has been made terminal for this id, from any surface.
+ *
+ * `deleting` is set synchronously by {@link removeLocalTemplate} and outlives the IndexedDB work,
+ * during which the record is still present in `localTemplates()`. A UI that reads only its own
+ * "am I deleting this" flag will happily start a move, or offer a second delete, for a template
+ * another surface has already condemned.
+ */
+export const isDeletingLocal = (id: string): boolean => deleting.has(id)
+
+/** In-flight deletions, so a second caller joins the first rather than being told it failed. */
+const deletions = new Map<string, Promise<boolean>>()
+
 export const removeLocalTemplate = async (id: string): Promise<boolean> => {
+  // A second surface asking for the same deletion is not a failure, and answering `false` made the
+  // panel report one over a delete that was succeeding. Join the one already running instead.
+  const running = deletions.get(id)
+  if (running !== undefined) return await running
   const existing = templates.get(id)
-  if (existing === undefined || deleting.has(id)) return false
+  // Already gone — by this id's own earlier deletion, most likely — which is the outcome asked for.
+  if (existing === undefined) return !templates.has(id)
+  if (deleting.has(id)) return false
   // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
   // behind this delete and resurrect the record.
   deleting.add(id)
-  let removed = false
-  try {
-    removed = await writeInOrder(id, async () => {
-      const current = templates.get(id)
-      if (current === undefined) return true
-      if (!isPendingImage(current)) {
-        const deleted = await deleteTemplate(id, current.revision)
-        if (deleted.status !== 'saved') {
-          if (deleted.status === 'conflict') {
-            await reconcileConflict(id)
-            return !templates.has(id)
+  const settled = (async (): Promise<boolean> => {
+    // The guard is state, and other surfaces render from it — an open overlay menu locks its controls
+    // and shows progress off this. Announcing it only once the record is gone leaves every one of them
+    // stale for the whole IndexedDB round trip, and on a static map indefinitely.
+    notify()
+    let removed = false
+    try {
+      removed = await writeInOrder(id, async () => {
+        const current = templates.get(id)
+        if (current === undefined) return true
+        if (!isPendingImage(current)) {
+          const deleted = await deleteTemplate(id, current.revision)
+          if (deleted.status !== 'saved') {
+            if (deleted.status === 'conflict') {
+              await reconcileConflict(id)
+              return !templates.has(id)
+            }
+            return false
           }
-          return false
         }
-      }
-      releaseRetainedTiles(current.tiles)
-      retainedIndexPixels -= current.indices.length
-      desiredVisibility.delete(id)
-      clearStamped(id)
-      previewOrigins.delete(id)
-      templates.delete(id)
-      notify()
-      return true
-    })
+        releaseRetainedTiles(current.tiles)
+        retainedIndexPixels -= current.indices.length
+        desiredVisibility.delete(id)
+        clearStamped(id)
+        previewOrigins.delete(id)
+        templates.delete(id)
+        notify()
+        return true
+      })
+    } finally {
+      deleting.delete(id)
+      // Clearing it is a state change too. A refused delete otherwise leaves every surface that
+      // rendered from the guard locked, with nothing to tell them it lifted.
+      if (!removed) notify()
+    }
+    if (!removed) {
+      warn('install', `deletion of ${existing.name} was not saved`)
+      return false
+    }
+    return true
+  })()
+  deletions.set(id, settled)
+  try {
+    return await settled
   } finally {
-    deleting.delete(id)
+    deletions.delete(id)
   }
-  if (!removed) {
-    warn('install', `deletion of ${existing.name} was not saved`)
-    return false
-  }
-  return true
 }
 
 export const setLocalVisible = async (id: string, visible: boolean): Promise<boolean> => {
@@ -1954,7 +1988,11 @@ const buildStamp = async (
  * previewed locally is byte-identical to what is stored — no second opinion from a second
  * quantiser on the way through.
  */
-export const templateAsPng = async (template: PlacedTemplate): Promise<Blob | null> => {
-  const encoded = await encodeIndexedPng(template.width, template.height, template.indices)
+export const templateAsPng = async (
+  template: PlacedTemplate,
+  signal?: AbortSignal,
+): Promise<Blob | null> => {
+  const encoded = await encodeIndexedPng(template.width, template.height, template.indices, signal)
+  signal?.throwIfAborted()
   return new Blob([Uint8Array.from(encoded)], { type: 'image/png' })
 }

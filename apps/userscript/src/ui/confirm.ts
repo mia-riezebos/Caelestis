@@ -35,6 +35,8 @@ export interface ConfirmOptions {
   /** The quieter line under it. Defaults to what theirs says. */
   readonly note?: string
   readonly confirmLabel: string
+  /** Return keyboard ownership to the control that raised the dialog, if it still exists. */
+  readonly restoreFocusTo?: HTMLElement | null
 }
 
 export const confirmDestructive = ({
@@ -42,6 +44,7 @@ export const confirmDestructive = ({
   body,
   note = 'This action cannot be undone.',
   confirmLabel,
+  restoreFocusTo = null,
 }: ConfirmOptions): Promise<boolean> =>
   new Promise((resolve) => {
     document.querySelector('dialog[data-caelestis-confirm]')?.remove()
@@ -104,6 +107,7 @@ export const confirmDestructive = ({
     // One exit point, so Escape, the backdrop and both buttons all resolve exactly once.
     dialog.addEventListener('close', () => {
       dialog.remove()
+      if (restoreFocusTo?.isConnected === true) restoreFocusTo.focus()
       resolve(answer)
     })
     // DaisyUI's modal has no backdrop form here, so clicking outside the box closes it ourselves.

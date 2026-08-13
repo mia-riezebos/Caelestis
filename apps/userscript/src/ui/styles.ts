@@ -291,10 +291,15 @@ const CSS = `
 }
 `
 
+/** Our stylesheet's identity is the node we created, not a page-owned id string. */
+let installed: HTMLStyleElement | null = null
+
 export const installStyles = (): void => {
-  if (document.getElementById(STYLE_ID) !== null) return
+  if (installed?.isConnected === true) return
+  installed?.remove()
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = CSS
   document.head.appendChild(style)
+  installed = style
 }
