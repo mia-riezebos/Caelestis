@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 
 const harness = vi.hoisted(() => ({
@@ -683,10 +683,19 @@ describe('placement and geometry', () => {
     }
   }
 
-  it('goes above its gear when there is no room below, rather than over it', () => {
+  it.each([
+    ['no room below', 768, 668],
+    // Too little room on either side, which a menu that merely flips answers by covering the gear
+    // from above instead of below.
+    ['too little room on either side', 400, 180],
+  ])('never covers its own gear — %s', (_case, viewport, originY) => {
+    const restore = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: viewport, configurable: true })
+    onTestFinished(() => {
+      Object.defineProperty(window, 'innerHeight', { value: restore, configurable: true })
+    })
     menuMeasures(300)
-    // A corner low in the viewport, where the menu does not fit underneath its own gear.
-    harness.localTemplates.mockReturnValue([template({ originY: window.innerHeight - 100 })])
+    harness.localTemplates.mockReturnValue([template({ originY })])
     rerender()
     gear('a').click()
     rerender()
@@ -694,7 +703,8 @@ describe('placement and geometry', () => {
     const gearTop = Number.parseFloat(gear('a').style.top)
     const top = Number.parseFloat(menu().style.top)
     // Clear of the gear on one side or the other, never over it: the menu has the higher z-index,
-    // so overlapping costs the overlay the control that opens and closes it.
+    // so overlapping costs the overlay the control that opens and closes it. Measured against the
+    // height the module was told, not `maxHeight`, which is a cap and parses as `70` from `70vh`.
     expect(top + 300 <= gearTop || top >= gearTop + 28).toBe(true)
   })
 

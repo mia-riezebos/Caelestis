@@ -261,18 +261,17 @@ const confirming = new Set<string>()
 /** Templates being made visible so they can be placed — one such request at a time each. */
 const showingToMove = new Set<string>()
 /**
- * Placements we have seen the overlay for, while it was visible.
+ * The placement we have seen over a visible overlay, if it is still running.
  *
  * `writeInOrder` serialises writes but publishes no queue, so a Hide the tree row already had in
  * flight is invisible to any check made before the placement starts. Watching for it afterwards is
  * the only reliable answer: if the overlay we are placing goes away, the placement goes with it.
  *
- * Recorded from what is on screen rather than from this menu having done the showing, because the
- * panel starts placements too and they need the same watch — and because a template that was
- * already hidden when its placement began was never made invisible *by* anything, so abandoning
- * that one would be answering a question nobody asked.
+ * Read from what is on screen rather than from this menu having done the showing, because the panel
+ * starts placements too and they need the same watch — and one slot rather than a set, because
+ * `move.ts` runs one session at a time and a set outlives whichever placement filled it.
  */
-const placedWhileVisible = new Set<string>()
+let watchedPlacement: string | null = null
 /** Placements we have asked to stop, so the ask is not repeated every frame while it settles. */
 const aborting = new Set<string>()
 /**
@@ -531,7 +530,6 @@ const forget = (id: string): void => {
   showingToMove.delete(id)
   // Its near-namesake, and the two counters that go with it: an armed auto-abort watch outliving
   // its template would fire on a later placement of the same id.
-  placedWhileVisible.delete(id)
   aborting.delete(id)
   abortAttempts.delete(id)
   drafts.delete(id)
@@ -550,7 +548,6 @@ const forget = (id: string): void => {
 const remembered = (): Set<string> =>
   new Set([
     ...buttons.keys(),
-    ...placedWhileVisible,
     ...appearanceIntents.keys(),
     ...visibleIntents.keys(),
     ...queues.keys(),
@@ -1263,7 +1260,6 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
           }
           closeOverlayMenu()
           beginMove(id, () => {
-            placedWhileVisible.delete(id)
             abortAttempts.delete(id)
           })
           handBack(id)
@@ -1283,7 +1279,6 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     closeOverlayMenu()
     // `finish()` repaints, so the completion callback does not need to.
     beginMove(id, () => {
-      placedWhileVisible.delete(id)
       abortAttempts.delete(id)
     })
     // The gear is held by reference, so focusing it needs no repaint of its own, and `beginMove`
@@ -1759,9 +1754,12 @@ const renderControls = (
   }
   const placing = movingId()
   // Seen while visible, whoever started it: the panel's Move is the same placement over the same
-  // overlay, and a hide landing under it strands the user just as completely.
-  if (placing !== null && templateFor(placing)?.visible === true) placedWhileVisible.add(placing)
-  if (placing !== null && placedWhileVisible.has(placing)) {
+  // overlay, and a hide landing under it strands the user just as completely. Forgotten the moment
+  // the placement ends, so a template placed again later — hidden this time, and so deliberately
+  // unwatched — does not inherit the watch from the placement before it.
+  if (placing === null) watchedPlacement = null
+  else if (templateFor(placing)?.visible === true) watchedPlacement = placing
+  if (placing !== null && watchedPlacement === placing) {
     const stopping = placing
     if (templateFor(stopping)?.visible !== false) {
       // Visible again, so whatever failed before is behind us and the next hide starts fresh.
@@ -1782,7 +1780,7 @@ const renderControls = (
         aborting.delete(stopping)
         if (!isMoving()) {
           abortAttempts.delete(stopping)
-          placedWhileVisible.delete(stopping)
+          watchedPlacement = null
           recordFailure(
             stopping,
             'move-stopped',
@@ -1978,14 +1976,22 @@ const renderControls = (
     // Keep it on screen when the overlay is near an edge, on both sides: a template hanging off
     // the left keeps a clamped, reachable button, and its menu has to be reachable too.
     const rightmost = Math.max(8, window.innerWidth - menuBox.width - 8)
-    const lowest = Math.max(8, window.innerHeight - menuBox.height - 8)
     menuNode.style.left = `${Math.min(Math.max(8, corner.x + 6), rightmost)}px`
     // Below its own gear, which has the lower z-index and would otherwise be buried by it — and
-    // when there is no room below, above it instead. Clamping it up into the gear was the one
-    // outcome the rule existed to prevent: an overlay in the lower part of the map lost the control
-    // that opens and closes its menu, under the menu itself.
-    const below = Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE)
-    const above = buttonTop - menuBox.height
-    menuNode.style.top = `${below <= lowest ? below : Math.max(8, above)}px`
+    // above when there is more room there. Neither side is guaranteed to fit: a gear halfway down a
+    // short viewport has too little of both, and a menu that simply flips is then clamped back over
+    // the gear from the other direction. So the side that is chosen also caps the height, and the
+    // menu scrolls rather than covering the control that closes it.
+    const spaceBelow = window.innerHeight - (buttonTop + GEAR_SIZE) - 8
+    const spaceAbove = buttonTop - 8
+    // Below whenever it fits, because that is where the menu belongs; otherwise wherever there is
+    // more room. Decided by the space and not by the height, so capping the height cannot flip the
+    // decision that capped it.
+    const goBelow = menuBox.height <= spaceBelow || spaceBelow >= spaceAbove
+    const room = Math.max(0, goBelow ? spaceBelow : spaceAbove)
+    menuNode.style.maxHeight = `${room}px`
+    menuNode.style.top = goBelow
+      ? `${Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE)}px`
+      : `${buttonTop - Math.min(menuBox.height, room)}px`
   }
 }
