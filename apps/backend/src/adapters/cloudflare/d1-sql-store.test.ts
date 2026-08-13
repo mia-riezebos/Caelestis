@@ -418,4 +418,61 @@ describe('D1SqlStore', () => {
       d1.sqlite.prepare("INSERT INTO applied_events VALUES ('e1', 200, 2000)").run(),
     ).toThrow(/UNIQUE constraint failed|PRIMARY KEY/)
   })
+
+  // The manifest's two filters live in SQL and nowhere else: `assemble` is tested against the
+  // in-memory store, so a dropped predicate here would serve drafts or another season with the
+  // whole suite green. A client asking for a manifest is the actor.
+  it('lists only published templates of the asked-for season', async () => {
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .run()
+    await store.insertTemplateVersion(templateVersion())
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+    )
+    await store.setTemplatePublishedAt('template-1', millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000))
+
+    const ids = async (includeUnpublished: boolean): Promise<string[]> =>
+      (await store.listManifestTemplates(1, includeUnpublished)).map((row) => row.id).sort()
+
+    await expect(ids(false)).resolves.toEqual(['template-1'])
+    // The same call including drafts still refuses the other season. Sorted, because the query has
+    // no ORDER BY — the assembler sorts these itself, so row order here is SQLite's to choose.
+    await expect(ids(true)).resolves.toEqual(['draft', 'template-1'])
+  })
+
+  it('lists only tiles of published templates of the asked-for season', async () => {
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .run()
+    d1.sqlite
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .run()
+    await store.insertTemplateVersion(templateVersion())
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
+    )
+    await store.insertTemplateVersion(
+      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+    )
+    await store.setTemplatePublishedAt('template-1', millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000))
+
+    const owners = async (includeUnpublished: boolean): Promise<string[]> =>
+      [
+        ...new Set((await store.listManifestTiles(1, includeUnpublished)).map((t) => t.templateId)),
+      ].sort()
+
+    await expect(owners(false)).resolves.toEqual(['template-1'])
+    // Both arms carry the season predicate, and only this one carries it alone: without the call
+    // below, deleting it leaks the other season's tiles while everything stays green.
+    await expect(owners(true)).resolves.toEqual(['draft', 'template-1'])
+  })
 })
