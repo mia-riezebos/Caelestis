@@ -1501,17 +1501,25 @@ const openOverlayMenu = (id: string, rerender: () => void): void => {
 }
 
 /**
- * Put the keyboard back on the gear that opened the menu — unless a placement is running.
+ * Put the keyboard back on the gear that opened the menu — or take it off, while something is being
+ * placed.
  *
  * A placement is driven from the window by Escape and Enter, and `move.ts` deliberately ignores key
- * events aimed at a button so that the page's own controls keep working. Focusing the gear therefore
+ * events aimed at a button so that the page's own controls keep working. A focused gear therefore
  * takes both keys away from the placement: Escape does nothing, and Enter activates the gear and
- * reopens the very menu that was closing. While something is being placed, the keyboard belongs to
- * the placement.
+ * reopens the very menu that was closing.
+ *
+ * Declining to focus it is not enough, because clicking a button focuses it — so the gear that
+ * dismissed the menu is already holding the keyboard by the time this runs, and it has to be sent
+ * away rather than merely not sent for.
  */
 const handBack = (id: string): void => {
-  if (isMoving()) return
-  buttons.get(id)?.focus()
+  const gear = buttons.get(id)
+  if (!isMoving()) {
+    gear?.focus()
+    return
+  }
+  if (gear === document.activeElement) gear?.blur()
 }
 
 const closeOverlayMenu = (): void => {
@@ -1841,6 +1849,8 @@ const renderControls = (
       button.addEventListener('click', () => {
         if (openFor === template.id) {
           closeOverlayMenu()
+          // The click that closed it left the keyboard on this gear.
+          handBack(template.id)
           rerender()
         } else openOverlayMenu(template.id, rerender)
       })
