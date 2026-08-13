@@ -439,14 +439,13 @@ describe('D1SqlStore', () => {
     await store.setTemplatePublishedAt('template-1', millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000))
 
-    await expect(store.listManifestTemplates(1, false)).resolves.toMatchObject([
-      { id: 'template-1' },
-    ])
-    // The same call including drafts still refuses the other season.
-    await expect(store.listManifestTemplates(1, true)).resolves.toMatchObject([
-      { id: 'template-1' },
-      { id: 'draft' },
-    ])
+    const ids = async (includeUnpublished: boolean): Promise<string[]> =>
+      (await store.listManifestTemplates(1, includeUnpublished)).map((row) => row.id).sort()
+
+    await expect(ids(false)).resolves.toEqual(['template-1'])
+    // The same call including drafts still refuses the other season. Sorted, because the query has
+    // no ORDER BY — the assembler sorts these itself, so row order here is SQLite's to choose.
+    await expect(ids(true)).resolves.toEqual(['draft', 'template-1'])
   })
 
   it('lists only tiles of published templates of the asked-for season', async () => {
@@ -466,8 +465,14 @@ describe('D1SqlStore', () => {
     await store.setTemplatePublishedAt('template-1', millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000))
 
-    const published = await store.listManifestTiles(1, false)
-    expect(published.every((tile) => tile.templateId === 'template-1')).toBe(true)
-    expect(published.length).toBeGreaterThan(0)
+    const owners = async (includeUnpublished: boolean): Promise<string[]> =>
+      [
+        ...new Set((await store.listManifestTiles(1, includeUnpublished)).map((t) => t.templateId)),
+      ].sort()
+
+    await expect(owners(false)).resolves.toEqual(['template-1'])
+    // Both arms carry the season predicate, and only this one carries it alone: without the call
+    // below, deleting it leaks the other season's tiles while everything stays green.
+    await expect(owners(true)).resolves.toEqual(['draft', 'template-1'])
   })
 })
