@@ -294,6 +294,14 @@ export const beginMove = (id: string, finished: () => void): void => {
   suppressMiddleAuxClickFor = null
   renderBar(template.name)
   listen(true)
+  // Starting announces itself, as finishing and resuming do. Every surface that has to react to a
+  // live placement — the overlay controls' own keyboard rule among them — reacts on a frame, and a
+  // placement begun from the panel over a still map would otherwise wait for one that never comes.
+  try {
+    repaint()
+  } catch (error) {
+    warn('install', 'repaint after starting placement failed', error)
+  }
   log('install', `move started for ${template.name}`)
 }
 
