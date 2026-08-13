@@ -261,13 +261,18 @@ const confirming = new Set<string>()
 /** Templates being made visible so they can be placed — one such request at a time each. */
 const showingToMove = new Set<string>()
 /**
- * Templates we made visible *in order to* place them.
+ * Placements we have seen the overlay for, while it was visible.
  *
  * `writeInOrder` serialises writes but publishes no queue, so a Hide the tree row already had in
  * flight is invisible to any check made before the placement starts. Watching for it afterwards is
  * the only reliable answer: if the overlay we are placing goes away, the placement goes with it.
+ *
+ * Recorded from what is on screen rather than from this menu having done the showing, because the
+ * panel starts placements too and they need the same watch — and because a template that was
+ * already hidden when its placement began was never made invisible *by* anything, so abandoning
+ * that one would be answering a question nobody asked.
  */
-const shownForMove = new Set<string>()
+const placedWhileVisible = new Set<string>()
 /** Placements we have asked to stop, so the ask is not repeated every frame while it settles. */
 const aborting = new Set<string>()
 /**
@@ -526,7 +531,7 @@ const forget = (id: string): void => {
   showingToMove.delete(id)
   // Its near-namesake, and the two counters that go with it: an armed auto-abort watch outliving
   // its template would fire on a later placement of the same id.
-  shownForMove.delete(id)
+  placedWhileVisible.delete(id)
   aborting.delete(id)
   abortAttempts.delete(id)
   drafts.delete(id)
@@ -545,7 +550,7 @@ const forget = (id: string): void => {
 const remembered = (): Set<string> =>
   new Set([
     ...buttons.keys(),
-    ...shownForMove,
+    ...placedWhileVisible,
     ...appearanceIntents.keys(),
     ...visibleIntents.keys(),
     ...queues.keys(),
@@ -1257,13 +1262,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
             return
           }
           closeOverlayMenu()
-          shownForMove.add(id)
           beginMove(id, () => {
-            shownForMove.delete(id)
+            placedWhileVisible.delete(id)
             abortAttempts.delete(id)
           })
-          // Refused for some other reason — the watch belongs to a placement that never started.
-          if (!isMoving()) shownForMove.delete(id)
           handBack(id)
           // A placement that started has already painted from `beginMove`; one that was refused has
           // not, and the refusal needs a frame of its own. One click, one paint, either way.
@@ -1279,11 +1281,9 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
       return
     }
     closeOverlayMenu()
-    // `finish()` repaints, so the completion callback does not need to. F1: watched even on the
-    // direct path, because an external Hide already in flight is invisible from here too.
-    shownForMove.add(id)
+    // `finish()` repaints, so the completion callback does not need to.
     beginMove(id, () => {
-      shownForMove.delete(id)
+      placedWhileVisible.delete(id)
       abortAttempts.delete(id)
     })
     // The gear is held by reference, so focusing it needs no repaint of its own, and `beginMove`
@@ -1758,7 +1758,10 @@ const renderControls = (
     for (const [, gear] of buttons) if (gear === document.activeElement) gear.blur()
   }
   const placing = movingId()
-  if (placing !== null && shownForMove.has(placing)) {
+  // Seen while visible, whoever started it: the panel's Move is the same placement over the same
+  // overlay, and a hide landing under it strands the user just as completely.
+  if (placing !== null && templateFor(placing)?.visible === true) placedWhileVisible.add(placing)
+  if (placing !== null && placedWhileVisible.has(placing)) {
     const stopping = placing
     if (templateFor(stopping)?.visible !== false) {
       // Visible again, so whatever failed before is behind us and the next hide starts fresh.
@@ -1779,7 +1782,7 @@ const renderControls = (
         aborting.delete(stopping)
         if (!isMoving()) {
           abortAttempts.delete(stopping)
-          shownForMove.delete(stopping)
+          placedWhileVisible.delete(stopping)
           recordFailure(
             stopping,
             'move-stopped',
