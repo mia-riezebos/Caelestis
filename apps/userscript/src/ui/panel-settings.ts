@@ -92,7 +92,6 @@ const retryServerButton = (
   button.className = 'btn btn-xs btn-ghost'
   button.textContent = label
   button.addEventListener('click', () => {
-    if (button.disabled) return
     button.disabled = true
     void (async () => {
       const ownsAttempt = beginConnectionAttempt(server.url)

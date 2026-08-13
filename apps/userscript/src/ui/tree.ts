@@ -77,7 +77,6 @@ export type NodeRefreshResult =
   | {
       readonly ok: false
       readonly message: string
-      readonly cancelled?: true
       readonly superseded?: true
     }
 const refreshes = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
@@ -151,7 +150,6 @@ export const refreshNodes = async (
   server: ConnectedServer,
   rerender: () => void,
   force = false,
-  signal?: AbortSignal,
 ): Promise<NodeRefreshResult> => {
   const existing = refreshes.get(server)
   if (!force && existing !== undefined) {
@@ -171,10 +169,7 @@ export const refreshNodes = async (
   refreshGeneration.set(server.url, generation)
   const loading = Promise.resolve().then(async (): Promise<NodeRefreshResult> => {
     const result =
-      probed === undefined ? await listNodes(server, signal) : { ok: true as const, nodes: probed }
-    if (signal?.aborted) {
-      return { ok: false, message: 'Folder refresh cancelled.', cancelled: true }
-    }
+      probed === undefined ? await listNodes(server) : { ok: true as const, nodes: probed }
     if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
       return { ok: false, message: 'The server connection changed during refresh.' }
     }
@@ -246,7 +241,7 @@ export const refreshNodes = async (
   refreshes.set(server, loading)
   const result = await loading
   if (refreshes.get(server) === loading) refreshes.delete(server)
-  if (!signal?.aborted) queueMicrotask(rerender)
+  queueMicrotask(rerender)
   return result
 }
 
@@ -608,10 +603,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
     const group = document.createElement('span')
     group.className = 'flex items-center gap-0.5'
     group.style.flex = '0 0 auto'
-    let submitted = false
     const commit = (): void => {
-      if (submitted) return
-      submitted = true
       const value = input.value.trim()
       renaming = null
       renameDraft = null
@@ -622,7 +614,6 @@ const treeRow = (options: RowOptions): HTMLElement => {
       else options.rerender()
     }
     const cancel = (): void => {
-      if (submitted) return
       renaming = null
       renameDraft = null
       row.focus({ preventScroll: true })

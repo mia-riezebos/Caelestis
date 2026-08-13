@@ -54,8 +54,6 @@ import {
   treeContents,
 } from './tree.js'
 
-type PanelRequestScope = 'view' | 'mutation'
-
 export interface TreeViewShell {
   readonly copyOperations: {
     readonly begin: (key: string) => (() => void) | null
@@ -63,10 +61,6 @@ export interface TreeViewShell {
   }
   readonly ownerGeneration: () => number
   readonly ownsTreeView: (generation: number) => boolean
-  readonly panelRequest: (scope?: PanelRequestScope) => {
-    controller: AbortController
-    finish: () => void
-  }
   readonly showSettings: () => void
 }
 
@@ -83,10 +77,6 @@ const treeShell = (): TreeViewShell => {
   if (shell === null) throw new Error('tree view shell is not installed')
   return shell
 }
-
-const panelRequest = (
-  scope: PanelRequestScope = 'view',
-): { controller: AbortController; finish: () => void } => treeShell().panelRequest(scope)
 
 const copyOperations = {
   begin: (key: string): (() => void) | null => treeShell().copyOperations.begin(key),
@@ -221,10 +211,7 @@ const refreshAfterMutation = async (
   rerender: () => void,
 ): Promise<boolean> => {
   if (!isCurrentServer(server)) return false
-  const request = panelRequest('mutation')
-  const refreshed = await refreshNodes(server, rerender, true, request.controller.signal)
-  request.finish()
-  if (request.controller.signal.aborted || (!refreshed.ok && refreshed.cancelled)) return false
+  const refreshed = await refreshNodes(server, rerender, true)
   if (refreshed.ok || refreshed.superseded) return true
   toast(`Saved, but the folder list could not refresh. ${refreshed.message}`, 'warning')
   return false
@@ -302,15 +289,7 @@ const applyRename = async (
     rerender()
     return
   }
-  const request = panelRequest('mutation')
-  const result = await renameNodeOnServer(
-    target.server,
-    target.nodeId,
-    name,
-    request.controller.signal,
-  )
-  request.finish()
-  if (request.controller.signal.aborted) return
+  const result = await renameNodeOnServer(target.server, target.nodeId, name)
   if (!result.ok) {
     toast(result.message, 'error')
     rerender()
@@ -353,10 +332,7 @@ const confirmDestructive = (
     const confirm = document.createElement('button')
     confirm.className = 'btn btn-xs btn-error'
     confirm.textContent = 'Delete'
-    let settled = false
     const finish = (answer: boolean): void => {
-      if (settled) return
-      settled = true
       if (cancelActiveConfirm === cancelPending) cancelActiveConfirm = null
       box.remove()
       restoreConnectedFocus(restoreFocusTo)
@@ -428,10 +404,7 @@ const applyDelete = async (
     rerender()
     return
   }
-  const request = panelRequest('mutation')
-  const result = await deleteNodeOnServer(target.server, target.nodeId, request.controller.signal)
-  request.finish()
-  if (request.controller.signal.aborted) return
+  const result = await deleteNodeOnServer(target.server, target.nodeId)
   if (!result.ok) {
     toast(result.message, 'error')
     rerender()
@@ -799,7 +772,6 @@ const copyToServer = async (
     readonly path: string
     readonly search: string
   }[] = []
-  let loadGeneration = 0
   const renderDestinations = (): void => {
     chooser.replaceChildren()
     const needle = filter.value.trim().toLocaleLowerCase()
@@ -828,7 +800,6 @@ const copyToServer = async (
   }
   const loadSelectedServer = async (): Promise<void> => {
     destinationController?.abort()
-    const generation = ++loadGeneration
     const server = targets[Number(serverChooser.value)]
     if (server === undefined) return
     loadedNodes = []
@@ -844,7 +815,7 @@ const copyToServer = async (
     destinationController = controller
     controllers.push(controller)
     const result = await listNodes(server, controller.signal)
-    if (closed || controller.signal.aborted || generation !== loadGeneration) return
+    if (controller.signal.aborted) return
     if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
       loadedNodes = []
       chooser.replaceChildren()
@@ -869,15 +840,13 @@ const copyToServer = async (
     if (filterTimer !== null) clearTimeout(filterTimer)
     filterTimer = setTimeout(() => {
       filterTimer = null
-      if (!closed) renderDestinations()
+      renderDestinations()
     }, 150)
   })
   await loadSelectedServer()
   if (!box.isConnected) return
 
-  let uploading = false
   go.addEventListener('click', () => {
-    if (uploading) return
     void (async () => {
       const selected = targets[Number(serverChooser.value)]
       const nodeId = chooser.value || undefined
@@ -895,13 +864,7 @@ const copyToServer = async (
         toast('That server connection changed. Open Copy again.', 'warning')
         return
       }
-      const releaseCopy = copyOperations.begin(templateId)
-      if (releaseCopy === null) {
-        closeCopy()
-        toast(`A copy of “${template.name}” is already in progress.`, 'warning')
-        return
-      }
-      uploading = true
+      const releaseCopy = copyOperations.begin(templateId) as () => void
       go.disabled = true
       serverChooser.disabled = true
       filter.disabled = true
@@ -964,7 +927,6 @@ const copyToServer = async (
         if (closed && !uploadStarted) return
         toast(`Could not copy: ${String(error)}`, 'error')
         label.textContent = `Copy “${template.name}” to:`
-        uploading = false
         if (box.isConnected) {
           serverChooser.disabled = false
           filter.disabled = false
@@ -989,21 +951,14 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
     rerender()
     return
   }
-  const request = panelRequest('mutation')
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
-  const existing = await listNodes(server, request.controller.signal)
-  if (request.controller.signal.aborted) {
-    request.finish()
-    return
-  }
+  const existing = await listNodes(server)
   if (!existing.ok) {
-    request.finish()
     toast(existing.message, 'error')
     return
   }
   if (!isCurrentServer(server)) {
-    request.finish()
     toast('That server connection changed. Try again.', 'warning')
     rerender()
     return
@@ -1015,9 +970,7 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
         .map((node) => folderSlug(node.name)),
     ),
   )
-  const result = await createNode(server, name, nodeId, request.controller.signal)
-  request.finish()
-  if (request.controller.signal.aborted) return
+  const result = await createNode(server, name, nodeId)
   if (!result.ok) {
     toast(result.message, 'error')
     return

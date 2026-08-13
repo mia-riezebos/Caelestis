@@ -66,18 +66,13 @@ const activePanelRequests = new Map<AbortController, () => void>()
 const copyOperations = createKeyedOperationGate()
 const panelRerenders = createRerenderGate(() => rerenderWhenIdle())
 
-type PanelRequestScope = 'view' | 'mutation'
-
-const panelRequest = (
-  scope: PanelRequestScope = 'view',
-): { controller: AbortController; finish: () => void } => {
+const panelRequest = (): { controller: AbortController; finish: () => void } => {
   const controller = new AbortController()
-  const releaseRerender = scope === 'view' ? panelRerenders.hold() : null
-  if (releaseRerender !== null) activePanelRequests.set(controller, releaseRerender)
+  const releaseRerender = panelRerenders.hold()
+  activePanelRequests.set(controller, releaseRerender)
   return {
     controller,
     finish: () => {
-      if (scope !== 'view') return
       const release = activePanelRequests.get(controller)
       activePanelRequests.delete(controller)
       release?.()
@@ -235,7 +230,6 @@ const showView = (view: View, preserveDrafts = false): void => {
           ownerGeneration: () => panelOwnerGeneration,
           ownsTreeView: (generation) =>
             open && currentView === 'tree' && panelOwnerGeneration === generation,
-          panelRequest,
           showSettings: () => showView('settings'),
         }),
   )
