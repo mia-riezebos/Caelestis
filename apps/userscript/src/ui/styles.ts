@@ -73,12 +73,16 @@ const CSS = `
   opacity: 0.5;
 }
 .wts-actions {
-  opacity: 0;
   transition: opacity 100ms ease-out;
 }
-.wts-row:hover .wts-actions,
-.wts-row:focus-within .wts-actions {
-  opacity: 1;
+@media (hover: hover) {
+  .wts-actions {
+    opacity: 0;
+  }
+  .wts-row:hover .wts-actions,
+  .wts-row:focus-within .wts-actions {
+    opacity: 1;
+  }
 }
 .wts-swatch {
   aspect-ratio: 1;

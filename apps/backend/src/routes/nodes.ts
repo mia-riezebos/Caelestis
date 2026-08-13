@@ -10,13 +10,13 @@ import {
 } from '../ports/index.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-// Seasons are 1-based, matching `Season` in the wire and the Worker's own `SEASON` refusal.
-const SEASON_NUMBER = /^[1-9]\d*$/
+// Wplace's first and current canvas is season 0; later seasons increment from there.
+const SEASON_NUMBER = /^(?:0|[1-9]\d*)$/
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4_096
 
 const parseSeason = (value: unknown): number | null => {
-  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 1 ? value : null
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : null
   if (typeof value !== 'string' || !SEASON_NUMBER.test(value)) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) ? parsed : null
@@ -65,7 +65,7 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
     }
     const parsedSeason = parseSeason(season)
     if (parsedSeason === null) {
-      return c.json({ error: 'season must be a positive integer' }, 400)
+      return c.json({ error: 'season must be a non-negative integer' }, 400)
     }
     if (parentId !== null && (typeof parentId !== 'string' || !UUID_V7.test(parentId))) {
       return c.json({ error: 'parentId must be null or a canonical lowercase UUIDv7' }, 400)
@@ -126,7 +126,7 @@ export const createNodeRoutes = (sql: SqlStore, auth: AuthOptions) => {
 
   routes.get('/', async (c) => {
     const season = parseSeason(c.req.query('season'))
-    if (season === null) return c.json({ error: 'season must be a positive integer' }, 400)
+    if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
     return c.json((await sql.listNodes(season)).map(publicNode))
   })
 

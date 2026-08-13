@@ -235,9 +235,10 @@ overlap in the 2026-08-03 amendment; it now applies within a group as well.
 sparse ordering, and no server-side z-order key. Everything above about *client-side* ordering stands
 and is now the whole story; everything implying the server has an opinion about draw order does not.
 
-**The manifest is season-scoped, and seasons are 1-based.** `Manifest.season` is a positive integer;
-season 0 is refused by the wire, both season-parsing routes and the Worker's own `SEASON` binding.
-`/manifest` answers the deployment's configured season unless asked otherwise with `?season=`.
+**The manifest is season-scoped. Amended 2026-08-11:** seasons are non-negative safe integers,
+because Wplace has used season 0 since launch. The wire, both season-parsing routes and the Worker's
+own `SEASON` binding accept 0. `/manifest` answers the deployment's configured season unless asked
+otherwise with `?season=`.
 
 Recorded here rather than rewritten above, because the reasoning that produced the original rule is
 worth keeping: it explains why the rollups behave as they do.

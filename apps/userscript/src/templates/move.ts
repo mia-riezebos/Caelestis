@@ -48,8 +48,9 @@ let session: MoveSession | null = null
 let onFinish: (() => void) | null = null
 let finishing = false
 let suppressMiddleAuxClickFor: number | null = null
+let moveReservation: symbol | null = null
 
-export const isMoving = (): boolean => session !== null
+export const isMoving = (): boolean => session !== null || moveReservation !== null
 export const movingId = (): string | null => session?.id ?? null
 /** A commit or revert is already under way, so `commit`/`abort` are no-ops until it settles. */
 export const isFinishing = (): boolean => finishing
@@ -66,6 +67,44 @@ export const placementSeq = (): number | null => (session === null ? null : plac
 /** The keydown this placement has already answered, so no other listener answers it a second time. */
 let answered: KeyboardEvent | null = null
 export const alreadyAnswered = (event: KeyboardEvent): boolean => answered === event
+
+export interface MoveReservation {
+  /** Consume this reservation by starting the move synchronously. */
+  readonly start: (
+    id: string,
+    finished: () => void,
+    restoredOrigin?: { readonly x: number; readonly y: number },
+  ) => boolean
+  /** Release an unconsumed reservation. Safe to call after `start`. */
+  readonly release: () => void
+}
+
+const holdMoveSlot = (): MoveReservation => {
+  const token = Symbol('move reservation')
+  moveReservation = token
+  const release = (): void => {
+    if (moveReservation === token) moveReservation = null
+  }
+  return {
+    start: (id, finished, restoredOrigin) => {
+      if (moveReservation !== token) return false
+      moveReservation = null
+      return beginMove(id, finished, restoredOrigin)
+    },
+    release,
+  }
+}
+
+/**
+ * Hold the single placement slot across asynchronous preparation.
+ *
+ * Image imports must be sliced and admitted before `beginMove` can see them. Without a reservation,
+ * another row can start moving during that await and strand the new image in volatile local state.
+ */
+export const reserveMove = (): MoveReservation | null => {
+  if (session !== null || finishing || moveReservation !== null) return null
+  return holdMoveSlot()
+}
 
 /** Where the template currently sits during a move, so the renderer can draw it there. */
 export const movePreviewOrigin = (id: string): { x: number; y: number } | null =>
@@ -124,7 +163,7 @@ const renderBar = (name: string): void => {
   label.textContent = `Placing “${name}”`
   const hint = document.createElement('span')
   hint.className = 'text-xs opacity-60'
-  hint.textContent = `${MODIFIER_HINT}+drag to move · middle-click to centre here`
+  hint.textContent = MOVE_HINT
 
   const apply = document.createElement('button')
   apply.className = 'btn btn-sm btn-primary btn-circle'
@@ -142,6 +181,8 @@ const renderBar = (name: string): void => {
 
   el.append(label, hint, apply, cancel)
 }
+
+export const MOVE_HINT = `Click the map, then ${MODIFIER_HINT}+drag or use arrow keys to move · Shift for 10 px · middle-click to centre here`
 
 const onPointerDown = (event: PointerEvent): void => {
   if (session === null || finishing) return
@@ -244,7 +285,7 @@ const isPageControl = (target: EventTarget | null): boolean => {
     element.isContentEditable === true ||
     ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName?.toUpperCase() ?? '') ||
     (element.closest?.(
-      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"]',
+      'a,button,input,select,textarea,[contenteditable="true"],dialog,[role="dialog"],[role="button"],[role="link"],#wts-panel,[data-wts-movebar]',
     ) ?? null) !== null
   )
 }
@@ -252,6 +293,28 @@ const isPageControl = (target: EventTarget | null): boolean => {
 const onKeyDown = (event: KeyboardEvent): void => {
   if (session === null || finishing) return
   if (isPageControl(event.target)) return
+  const delta =
+    event.key === 'ArrowLeft'
+      ? { x: -1, y: 0 }
+      : event.key === 'ArrowRight'
+        ? { x: 1, y: 0 }
+        : event.key === 'ArrowUp'
+          ? { x: 0, y: -1 }
+          : event.key === 'ArrowDown'
+            ? { x: 0, y: 1 }
+            : null
+  if (delta !== null) {
+    const template = localTemplates().find((candidate) => candidate.id === session?.id)
+    if (template === undefined) return
+    event.preventDefault()
+    event.stopPropagation()
+    const step = event.shiftKey ? 10 : 1
+    const next = boundedOrigin(template, session.x + delta.x * step, session.y + delta.y * step)
+    session.x = next.x
+    session.y = next.y
+    previewMove(session.id, session.x, session.y)
+    return
+  }
   if (event.key === 'Escape') {
     answered = event
     event.preventDefault()
@@ -284,20 +347,37 @@ const listen = (on: boolean): void => {
   window[method]('auxclick', onAuxClick as EventListener, true)
 }
 
-export const beginMove = (id: string, finished: () => void): void => {
-  if (session !== null) return
+export const beginMove = (
+  id: string,
+  finished: () => void,
+  restoredOrigin?: { readonly x: number; readonly y: number },
+): boolean => {
+  if (session !== null || finishing || moveReservation !== null) return false
   // A condemned template is still in the store for the whole of its delete, so every surface that
   // has not re-rendered still offers Move for it. Refusing here covers all of them at once, rather
   // than each caller having to remember.
-  if (isDeletingLocal(id)) return
+  if (isDeletingLocal(id)) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
-  if (template === undefined) return
+  if (template === undefined) return false
   placements += 1
-  session = {
+  const nextSession: MoveSession = {
     id,
-    x: template.originX,
-    y: template.originY,
+    x: restoredOrigin?.x ?? template.originX,
+    y: restoredOrigin?.y ?? template.originY,
     dragging: null,
+  }
+  session = nextSession
+  if (restoredOrigin !== undefined) {
+    try {
+      if (!previewLocalTemplate(id, nextSession.x, nextSession.y)) {
+        session = null
+        return false
+      }
+    } catch (error) {
+      session = null
+      warn('install', 'template placement could not be restored', String(error))
+      return false
+    }
   }
   onFinish = finished
   finishing = false
@@ -313,9 +393,10 @@ export const beginMove = (id: string, finished: () => void): void => {
     warn('install', 'repaint after starting placement failed', error)
   }
   log('install', `move started for ${template.name}`)
+  return true
 }
 
-const finish = (): void => {
+const finish = (reserveNext = false): MoveReservation | null => {
   listen(false)
   document.querySelector('[data-wts-movebar]')?.remove()
   session = null
@@ -335,6 +416,9 @@ const finish = (): void => {
   suppressMiddleAuxClickFor = null
   const finished = onFinish
   onFinish = null
+  // Reserve before notifying observers. A completion callback may synchronously start another
+  // placement, which would otherwise steal the slot while deletion is still awaiting storage.
+  const reservation = reserveNext ? holdMoveSlot() : null
   try {
     finished?.()
   } catch (error) {
@@ -344,6 +428,22 @@ const finish = (): void => {
       warn('install', 'placement completion callback failed', String(error))
     } catch {}
   }
+  return reservation
+}
+
+/** Tear down placement ownership before its template is deleted through another surface. */
+export const stopMoveForDeletion = (
+  id: string,
+): {
+  readonly origin: { readonly x: number; readonly y: number }
+  readonly reservation: MoveReservation
+} | null => {
+  if (session?.id !== id) return null
+  const origin = { x: session.x, y: session.y }
+  clearLocalPreview(id)
+  const reservation = finish(true)
+  if (reservation === null) return null
+  return { origin, reservation }
 }
 
 const resumeAfterFailure = (action: string, error?: unknown): void => {

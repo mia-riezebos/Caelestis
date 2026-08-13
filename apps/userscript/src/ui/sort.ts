@@ -9,8 +9,8 @@ import { icon } from './icons.js'
  * find something in a long tree, not ways to change what draws on top of what. Sorting by progress
  * to see what needs work should not silently reshuffle the canvas.
  *
- * Anything the client has not seen before sorts most-recent-first regardless of the mode in force,
- * so connecting to a new server surfaces what arrived rather than burying it.
+ * Keys the user has not ranked use the manifest's creation timestamps. New server rows surface
+ * newest-first until the user's own durable order takes over.
  */
 
 export type SortField = 'custom' | 'name'
@@ -63,6 +63,7 @@ export const sortControl = (
   wrapper.className = 'dropdown dropdown-end'
 
   const trigger = document.createElement('button')
+  trigger.dataset.wtsSort = ''
   trigger.type = 'button'
   trigger.className = 'btn btn-sm btn-ghost btn-square'
   const tooltip = isReorderable(current)
@@ -71,6 +72,9 @@ export const sortControl = (
   trigger.title = tooltip
   trigger.setAttribute('aria-label', tooltip)
   trigger.setAttribute('tabindex', '0')
+  trigger.setAttribute('aria-haspopup', 'menu')
+  trigger.setAttribute('aria-expanded', 'false')
+  trigger.setAttribute('aria-controls', 'wts-sort-menu')
   trigger.appendChild(icon('sort', 'size-4'))
   // Custom is the resting state, so it gets no directional mark; anything else is a deliberate
   // deviation and says which way it runs.
@@ -81,15 +85,29 @@ export const sortControl = (
   }
 
   const menu = document.createElement('ul')
+  menu.id = 'wts-sort-menu'
   menu.className = 'dropdown-content menu bg-base-100 shadow-2xl z-50 p-1'
   Object.assign(menu.style, { borderRadius: '0.5rem', width: '13rem' })
-  menu.setAttribute('tabindex', '0')
+  menu.setAttribute('role', 'menu')
+  menu.tabIndex = -1
+  let open = false
+  const setOpen = (next: boolean): void => {
+    open = next
+    trigger.setAttribute('aria-expanded', String(next))
+    // DaisyUI's dropdown is focus-within based. Inline display ownership keeps focus restoration
+    // from reopening a menu that was explicitly dismissed or whose selection rebuilt the toolbar.
+    menu.style.display = next ? '' : 'none'
+  }
+  setOpen(false)
 
   for (const entry of FIELDS) {
     const item = document.createElement('li')
+    item.setAttribute('role', 'none')
     const button = document.createElement('button')
     button.type = 'button'
     const active = entry.field === current.field
+    button.setAttribute('role', 'menuitemradio')
+    button.setAttribute('aria-checked', String(active))
     button.className = active ? 'active' : ''
 
     const name = document.createElement('span')
@@ -100,7 +118,7 @@ export const sortControl = (
     if (entry.field !== 'custom') {
       const hint = document.createElement('span')
       hint.className = 'text-xs opacity-60'
-      hint.textContent = active ? entry[current.direction] : entry.desc
+      hint.textContent = active ? entry[current.direction] : entry.asc
       button.appendChild(hint)
       if (active) {
         button.appendChild(
@@ -118,14 +136,51 @@ export const sortControl = (
             : // Most fields are most useful large-end-first on arrival; a name is not.
               { field: entry.field, direction: entry.field === 'name' ? 'asc' : 'desc' }
       log('install', `sort: ${next.field} ${next.direction}`)
-      // Close the dropdown: DaisyUI keeps it open while anything inside holds focus.
-      ;(document.activeElement as HTMLElement | null)?.blur()
+      setOpen(false)
       onChange(next)
     })
 
     item.appendChild(button)
     menu.appendChild(item)
   }
+
+  const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
+  const focusButton = (index: number): void => buttons.at(index)?.focus()
+  trigger.addEventListener('click', () => setOpen(!open))
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setOpen(false)
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setOpen(true)
+      focusButton(event.key === 'ArrowDown' ? 0 : -1)
+    }
+  })
+  menu.addEventListener('keydown', (event) => {
+    const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setOpen(false)
+      trigger.focus()
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      focusButton((currentIndex + 1) % buttons.length)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      focusButton((currentIndex - 1 + buttons.length) % buttons.length)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      focusButton(0)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      focusButton(-1)
+    }
+  })
+  wrapper.addEventListener('focusout', (event) => {
+    if (event.relatedTarget instanceof Node && wrapper.contains(event.relatedTarget)) return
+    setOpen(false)
+  })
 
   wrapper.append(trigger, menu)
   return wrapper

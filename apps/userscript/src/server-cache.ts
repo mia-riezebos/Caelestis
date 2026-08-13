@@ -1,5 +1,5 @@
 import { warn } from './debug.js'
-import { type TreeNode, validateTreeNodes } from './state.js'
+import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
 
 /**
  * What a server told us, kept between sessions.
@@ -20,6 +20,9 @@ const VERSION = 3
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
   readonly url: string
+  /** Verified identity and season prevent one deployment at this URL reusing another's tree. */
+  readonly serverId: string
+  readonly season: number
   readonly nodes: readonly TreeNode[]
   readonly fetchedAt: number
   /** ETag from the manifest, so a refetch can be a 304. */
@@ -92,25 +95,79 @@ export const forgetServer = async (url: string): Promise<void> => {
   await run('readwrite', (store) => store.delete(url))
 }
 
-export const loadServerCache = async (): Promise<readonly CachedServer[]> => {
-  const raw = (await run<unknown[]>('readonly', (store) => store.getAll())) ?? []
-  const valid: CachedServer[] = []
-  for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) continue
-    const candidate = entry as Partial<CachedServer>
-    const nodes = validateTreeNodes(candidate.nodes)
-    if (
-      typeof candidate.url !== 'string' ||
-      !Number.isFinite(candidate.fetchedAt) ||
-      nodes === null
-    )
-      continue
-    valid.push({
-      url: candidate.url,
-      nodes,
-      fetchedAt: Number(candidate.fetchedAt),
-      ...(typeof candidate.etag === 'string' ? { etag: candidate.etag } : {}),
-    })
+const cachedServerFrom = (
+  raw: unknown,
+  expectedUrl: string,
+  remainingNodes: number,
+): CachedServer | null => {
+  if (typeof raw !== 'object' || raw === null) return null
+  const candidate = raw as Partial<CachedServer>
+  // Check the cheap aggregate boundary before walking and copying a large untrusted node array.
+  if (!Array.isArray(candidate.nodes) || candidate.nodes.length > remainingNodes) return null
+  const nodes = validateTreeNodes(candidate.nodes)
+  if (
+    candidate.url !== expectedUrl ||
+    typeof candidate.serverId !== 'string' ||
+    !Number.isSafeInteger(candidate.season) ||
+    Number(candidate.season) < 0 ||
+    !Number.isFinite(candidate.fetchedAt) ||
+    nodes === null
+  ) {
+    return null
   }
-  return valid
+  return {
+    url: candidate.url,
+    serverId: candidate.serverId,
+    season: Number(candidate.season),
+    nodes,
+    fetchedAt: Number(candidate.fetchedAt),
+    ...(typeof candidate.etag === 'string' ? { etag: candidate.etag } : {}),
+  }
+}
+
+export const loadServerCache = async (
+  configuredUrls: readonly string[],
+): Promise<readonly CachedServer[]> => {
+  const unique = [...new Set(configuredUrls)]
+  if (unique.length === 0) return []
+  try {
+    const db = await open()
+    try {
+      return await new Promise<readonly CachedServer[]>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readonly')
+        const store = transaction.objectStore(STORE)
+        const valid: CachedServer[] = []
+        let remainingNodes = MAX_TREE_NODES
+        let index = 0
+        const readNext = (): void => {
+          if (index >= unique.length || remainingNodes === 0) return
+          const expectedUrl = unique[index++]
+          if (expectedUrl === undefined) return
+          const request = store.get(expectedUrl)
+          request.onsuccess = () => {
+            const entry = cachedServerFrom(request.result, expectedUrl, remainingNodes)
+            if (entry !== null) {
+              valid.push(entry)
+              remainingNodes -= entry.nodes.length
+            }
+            // Issue the next read from this success callback so IndexedDB keeps the transaction
+            // active, while only one structured-cloned cache record is live at a time.
+            readNext()
+          }
+          request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
+        }
+        transaction.oncomplete = () => resolve(valid)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+        readNext()
+      })
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    warn('install', 'server cache unavailable', String(error))
+    return []
+  }
 }

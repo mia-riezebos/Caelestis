@@ -20,7 +20,7 @@ const harness = vi.hoisted(() => ({
   abortMove: vi.fn(async () => {}),
   localTemplates: vi.fn(() => [] as unknown[]),
   previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
-  removeCustomOrderKeys: vi.fn(),
+  removeTreeStateKeys: vi.fn(),
   isDeletingLocal: vi.fn((_id: string) => false),
   removeLocalTemplate: vi.fn(async (_id: string) => true),
   // A projection, not a constant: the module derives the overlay's on-screen box from one
@@ -36,7 +36,7 @@ vi.mock('../main.js', () => ({
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
   screenPointFor: harness.screenPointFor,
 }))
-vi.mock('../state.js', () => ({ removeCustomOrderKeys: harness.removeCustomOrderKeys }))
+vi.mock('../state.js', () => ({ removeTreeStateKeys: harness.removeTreeStateKeys }))
 vi.mock('../templates/local-store.js', () => ({
   isDeletingLocal: harness.isDeletingLocal,
   localTemplates: harness.localTemplates,
@@ -449,7 +449,7 @@ describe('controls are reconciled against the templates that exist', () => {
     byKey('confirm-delete').click()
     await settle()
 
-    expect(harness.removeCustomOrderKeys).toHaveBeenCalledWith(new Set(['local:a']))
+    expect(harness.removeTreeStateKeys).toHaveBeenCalledWith(new Set(['local:a']))
   })
 })
 
@@ -466,7 +466,7 @@ describe('refused writes are reported rather than swallowed', () => {
 
     expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
     expect(errorText()).toContain('Could not delete')
-    expect(harness.removeCustomOrderKeys).not.toHaveBeenCalled()
+    expect(harness.removeTreeStateKeys).not.toHaveBeenCalled()
   })
 
   it('says so when a visibility change is refused', async () => {

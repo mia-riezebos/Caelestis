@@ -42,9 +42,18 @@ const applyPreset = (preset: ColourPresetId): void => {
   setState({ hiddenColours: hidden })
 }
 
-export const coloursSection = (rerender: () => void): HTMLElement => {
+export const coloursSection = (): HTMLElement => {
   const wrap = document.createElement('div')
   const hidden = new Set(getState().hiddenColours)
+  const syncSwatches = (): void => {
+    const nextHidden = new Set(getState().hiddenColours)
+    for (const swatch of wrap.querySelectorAll<HTMLButtonElement>('[data-wts-colour-index]')) {
+      const index = Number(swatch.dataset.wtsColourIndex)
+      const on = !nextHidden.has(index)
+      swatch.dataset.on = String(on)
+      swatch.setAttribute('aria-pressed', String(on))
+    }
+  }
 
   const presets = document.createElement('div')
   presets.className = 'flex gap-1 px-3 pb-2'
@@ -67,7 +76,7 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
     button.addEventListener('click', () => {
       if (button.disabled) return
       applyPreset(id)
-      rerender()
+      syncSwatches()
     })
     presets.appendChild(button)
   }
@@ -87,6 +96,7 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
     const on = !hidden.has(colour.index)
     swatch.type = 'button'
     swatch.className = 'wts-swatch'
+    swatch.dataset.wtsColourIndex = String(colour.index)
     swatch.dataset.on = String(on)
     swatch.style.backgroundColor = colour.hex
     swatch.title = `${colour.name} · ${colour.kind}`
@@ -97,7 +107,7 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
       if (next.has(colour.index)) next.delete(colour.index)
       else next.add(colour.index)
       setState({ hiddenColours: [...next] })
-      rerender()
+      syncSwatches()
     })
     grid.appendChild(swatch)
   }

@@ -1,7 +1,7 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@wts/shared'
 import { log, warn } from '../debug.js'
 import { cssPixelsPerCanvasPixel, screenPointFor } from '../main.js'
-import { removeCustomOrderKeys } from '../state.js'
+import { removeTreeStateKeys } from '../state.js'
 import { ANCHORS, type Appearance, DEFAULT_APPEARANCE, SHAPES } from '../templates/appearance.js'
 import {
   isDeletingLocal,
@@ -1061,7 +1061,7 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
         }
         // The panel's delete path drops the ordering key too; leaving it behind accumulates
         // entries for templates that no longer exist in persisted state.
-        removeCustomOrderKeys(new Set([`local:${id}`]))
+        removeTreeStateKeys(new Set([`local:${id}`]))
         confirming.delete(id)
         // Only if this template's menu is still the one on screen. A delete that completes while
         // another template's menu is open must not close that one.
