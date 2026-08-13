@@ -19,6 +19,7 @@ import {
   isFinishing,
   isMoving,
   movingId,
+  placementSeq,
 } from '../templates/move.js'
 import { icon } from './icons.js'
 import { installStyles } from './styles.js'
@@ -268,10 +269,12 @@ const showingToMove = new Set<string>()
  * the only reliable answer: if the overlay we are placing goes away, the placement goes with it.
  *
  * Read from what is on screen rather than from this menu having done the showing, because the panel
- * starts placements too and they need the same watch — and one slot rather than a set, because
- * `move.ts` runs one session at a time and a set outlives whichever placement filled it.
+ * starts placements too and they need the same watch — and it holds *which placement*, not which
+ * template. A template's id matches its own next placement just as well as this one, so anything
+ * that leaves this set behind — a frame that never came because the map was detached, a completion
+ * this module does not own — arms the watch for a placement nobody watched.
  */
-let watchedPlacement: string | null = null
+let watchedPlacement: number | null = null
 /** Placements we have asked to stop, so the ask is not repeated every frame while it settles. */
 const aborting = new Set<string>()
 /**
@@ -1757,9 +1760,11 @@ const renderControls = (
   // overlay, and a hide landing under it strands the user just as completely. Forgotten the moment
   // the placement ends, so a template placed again later — hidden this time, and so deliberately
   // unwatched — does not inherit the watch from the placement before it.
-  if (placing === null) watchedPlacement = null
-  else if (templateFor(placing)?.visible === true) watchedPlacement = placing
-  if (placing !== null && watchedPlacement === placing) {
+  const placement = placementSeq()
+  if (placement === null) watchedPlacement = null
+  else if (placing !== null && templateFor(placing)?.visible === true) watchedPlacement = placement
+  // Both null is not a match: nothing is being placed, so there is nothing to watch.
+  if (placing !== null && placement !== null && watchedPlacement === placement) {
     const stopping = placing
     if (templateFor(stopping)?.visible !== false) {
       // Visible again, so whatever failed before is behind us and the next hide starts fresh.
@@ -1780,7 +1785,6 @@ const renderControls = (
         aborting.delete(stopping)
         if (!isMoving()) {
           abortAttempts.delete(stopping)
-          watchedPlacement = null
           recordFailure(
             stopping,
             'move-stopped',
@@ -1990,8 +1994,14 @@ const renderControls = (
     const goBelow = menuBox.height <= spaceBelow || spaceBelow >= spaceAbove
     const room = Math.max(0, goBelow ? spaceBelow : spaceAbove)
     menuNode.style.maxHeight = `${room}px`
+    // Measured *after* the cap, because the cap is what decides the height. Positioning an
+    // above-placed menu from the height it had a moment ago puts its top where a shorter menu
+    // belonged: relax the cap on the same frame — a pan that gives it more room — and it grows
+    // downwards, back over the gear. The one that matters is the height it is about to have.
+    const capped = menuNode.getBoundingClientRect()
+    menuBox = { width: capped.width, height: capped.height }
     menuNode.style.top = goBelow
       ? `${Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE)}px`
-      : `${buttonTop - Math.min(menuBox.height, room)}px`
+      : `${Math.max(8, buttonTop - menuBox.height)}px`
   }
 }

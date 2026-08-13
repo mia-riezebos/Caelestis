@@ -54,6 +54,15 @@ export const movingId = (): string | null => session?.id ?? null
 /** A commit or revert is already under way, so `commit`/`abort` are no-ops until it settles. */
 export const isFinishing = (): boolean => finishing
 
+/**
+ * Which placement this is, counted rather than named.
+ *
+ * A template's id is not an identity for the session placing it: the same template can be placed
+ * twice, and anything remembered about the first placement matches the second by name alone.
+ */
+let placements = 0
+export const placementSeq = (): number | null => (session === null ? null : placements)
+
 /** The keydown this placement has already answered, so no other listener answers it a second time. */
 let answered: KeyboardEvent | null = null
 export const alreadyAnswered = (event: KeyboardEvent): boolean => answered === event
@@ -283,6 +292,7 @@ export const beginMove = (id: string, finished: () => void): void => {
   if (isDeletingLocal(id)) return
   const template = localTemplates().find((candidate) => candidate.id === id)
   if (template === undefined) return
+  placements += 1
   session = {
     id,
     x: template.originX,

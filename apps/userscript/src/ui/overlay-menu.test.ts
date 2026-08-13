@@ -9,7 +9,10 @@ const harness = vi.hoisted(() => ({
   beginMove: vi.fn((id: string, _finished: () => void) => {
     harness.isMoving.mockReturnValue(true)
     harness.movingId.mockReturnValue(id)
+    // Counted as production counts it: the same template placed twice is two placements.
+    harness.placementSeq.mockReturnValue((harness.placementSeq() ?? 0) + 1)
   }),
+  placementSeq: vi.fn(() => null as number | null),
   isMoving: vi.fn(() => false),
   isFinishing: vi.fn(() => false),
   alreadyAnswered: vi.fn((_event: KeyboardEvent) => false),
@@ -46,6 +49,7 @@ vi.mock('../templates/move.js', () => ({
   abort: harness.abortMove,
   beginMove: harness.beginMove,
   isFinishing: harness.isFinishing,
+  placementSeq: harness.placementSeq,
   alreadyAnswered: harness.alreadyAnswered,
   isMoving: harness.isMoving,
   movingId: harness.movingId,
@@ -153,6 +157,7 @@ afterEach(() => {
   harness.isFinishing.mockReturnValue(false)
   harness.alreadyAnswered.mockReturnValue(false)
   harness.movingId.mockReturnValue(null)
+  harness.placementSeq.mockReturnValue(null)
   harness.isDeletingLocal.mockReturnValue(false)
   harness.removeLocalTemplate.mockResolvedValue(true)
   harness.setAppearance.mockImplementation(async () => true)
