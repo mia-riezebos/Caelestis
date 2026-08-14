@@ -1060,13 +1060,25 @@ const applyDelete = async (
       restoreFocusTo,
     })
     if (!confirmed) return
+    // The folder goes only once everything inside it has somewhere else to be. A write that fails —
+    // IndexedDB gone, or a compare-and-swap lost to another tab — leaves that template pointing at a
+    // folder id, and the tree renders templates by matching their folder to one that exists, so
+    // removing the folder anyway would take the template off screen for good.
+    const parentId = getState().localFolders.find((f) => f.id === folderId)?.parentId ?? null
+    const stranded: string[] = []
     for (const template of localTemplates()) {
-      if (template.folderId === folderId) {
-        await setTemplateFolder(
-          template.id,
-          getState().localFolders.find((f) => f.id === folderId)?.parentId ?? null,
-        )
-      }
+      if (template.folderId !== folderId) continue
+      if (!(await setTemplateFolder(template.id, parentId))) stranded.push(template.name)
+    }
+    if (stranded.length > 0) {
+      toast(
+        stranded.length === 1
+          ? `Could not move “${stranded[0]}” out of “${target.name}”, so the folder was kept.`
+          : `Could not move ${stranded.length} templates out of “${target.name}”, so the folder was kept.`,
+        'error',
+      )
+      rerender()
+      return
     }
     removeLocalFolder(folderId)
     removeTreeStateKeys(new Set([target.key]))
