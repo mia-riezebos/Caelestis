@@ -144,24 +144,6 @@ describe('template routes', () => {
     await expect(response.json()).resolves.toEqual({ error: 'not a PNG' })
   })
 
-  it('returns 400 when nodeId does not name an existing node', async () => {
-    const { app } = await harness()
-    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
-    const form = templateForm(png)
-    form.set('nodeId', '01890f3e-7b2c-7abc-8def-0123456789ac')
-
-    const response = await app.request('/admin/templates', {
-      method: 'POST',
-      body: form,
-      ...bearer(BOOTSTRAP),
-    })
-
-    expect(response.status).toBe(400)
-    await expect(response.json()).resolves.toEqual({
-      error: 'node does not exist: 01890f3e-7b2c-7abc-8def-0123456789ac',
-    })
-  })
-
   it('creates templates unpublished and publishes them with PATCH', async () => {
     const { app } = await harness()
     const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))

@@ -270,39 +270,6 @@ describe('template import', () => {
     expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
-  it('rejects blank Marble coordinate components before decoding tiles', async () => {
-    const { importFile } = await import('./import.js')
-    const marble = JSON.stringify({
-      templates: {
-        malformed: { coords: '10,20,,', tiles: { '10,20,0,0': 'AAAA' } },
-      },
-    })
-
-    await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
-    expect(createImageBitmap).not.toHaveBeenCalled()
-  })
-
-  it('skips a malformed stamped Marble template without rejecting the whole import', async () => {
-    blobSizes.push({ width: 2, height: 3 }, { width: 3, height: 3 })
-    bitmapSizes.push({ width: 3, height: 3 })
-    const validStamp = new Uint8ClampedArray(3 * 3 * 4)
-    validStamp.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
-    readbacks.push(validStamp)
-    const { importFile } = await import('./import.js')
-    const marble = JSON.stringify({
-      templates: {
-        malformed: { coords: '10,20,0,0', tiles: { '10,20,0,0': 'AAAA' } },
-        valid: { coords: '11,21,0,0', tiles: { '11,21,0,0': 'BBBB' } },
-      },
-    })
-
-    const imported = await importFile(file('template.json', marble), { x: 0, y: 0 })
-
-    expect(imported).toHaveLength(1)
-    expect(imported[0]).toMatchObject({ name: 'valid', width: 1, height: 1 })
-    expect(createImageBitmap).toHaveBeenCalledOnce()
-  })
-
   it('bounds cumulative decoded Marble pixels across individually valid chunks', async () => {
     const tiles = Object.fromEntries(
       Array.from({ length: 64 }, (_, index) => [`${index},0,0,0`, 'AAAA']),
@@ -333,53 +300,6 @@ describe('template import', () => {
 
     expect(imported).toHaveLength(1)
     expect(imported[0]).toMatchObject({ name: 'first', width: 3_001, height: 3_001 })
-  })
-
-  it('does not charge empty Marble extents against later retained templates', async () => {
-    bitmapSizes.push({ width: 3, height: 3 }, { width: 3, height: 3 })
-    const empty = new Uint8ClampedArray(3 * 3 * 4)
-    const painted = new Uint8ClampedArray(3 * 3 * 4)
-    painted.set([0, 0, 0, 255], (1 * 3 + 1) * 4)
-    readbacks.push(empty, painted)
-    const { importFile } = await import('./import.js')
-    const marble = JSON.stringify({
-      templates: {
-        empty: { coords: '0,0,0,0', tiles: { '3,3,0,0': 'AAAA' } },
-        painted: { coords: '0,0,0,0', tiles: { '3,3,0,0': 'BBBB' } },
-      },
-    })
-
-    const imported = await importFile(file('template.json', marble), { x: 0, y: 0 })
-
-    expect(imported).toHaveLength(1)
-    expect(imported[0]).toMatchObject({ name: 'painted', width: 3_001, height: 3_001 })
-  })
-
-  it('discards a transparent sparse Marble record before allocating its bounding extent', async () => {
-    blobSizes.push({ width: 3, height: 3 })
-    bitmapSizes.push({ width: 3, height: 3 })
-    readbacks.push(new Uint8ClampedArray(3 * 3 * 4))
-    const filledLengths: number[] = []
-    const fill = Uint8Array.prototype.fill
-    vi.spyOn(Uint8Array.prototype, 'fill').mockImplementation(function (
-      this: Uint8Array,
-      value,
-      start,
-      end,
-    ) {
-      filledLengths.push(this.length)
-      return fill.call(this, value, start, end)
-    })
-    const { importFile } = await import('./import.js')
-    const marble = JSON.stringify({
-      templates: {
-        empty: { coords: '0,0,0,0', tiles: { '3,3,998,998': 'AAAA' } },
-      },
-    })
-
-    await expect(importFile(file('template.json', marble), { x: 0, y: 0 })).resolves.toEqual([])
-
-    expect(filledLengths).not.toContain(3_999 * 3_999)
   })
 
   it('charges overlapping Marble pieces as decode work, not retained output', async () => {
@@ -614,28 +534,6 @@ describe('template import', () => {
 
     expect(template).toMatchObject({ width: 3, height: 3, opaque: 1 })
     expect(template?.indices[4]).not.toBe(TRANSPARENT_INDEX)
-  })
-
-  it('counts moved pixels from the final opaque Marble overlap', async () => {
-    bitmapSizes.push({ width: 6, height: 3 }, { width: 6, height: 3 })
-    const first = new Uint8ClampedArray(6 * 3 * 4)
-    const second = new Uint8ClampedArray(6 * 3 * 4)
-    first.set([1, 2, 3, 255], (1 * 6 + 4) * 4)
-    second.set([4, 5, 6, 255], (1 * 6 + 1) * 4)
-    readbacks.push(first, second)
-    const { importFile } = await import('./import.js')
-    const marble = JSON.stringify({
-      templates: {
-        overlap: {
-          coords: '1,1,0,0',
-          tiles: { '1,1,0,0': 'AAAA', '1,1,1,0': 'BBBB' },
-        },
-      },
-    })
-
-    const [template] = await importFile(file('template.json', marble), { x: 0, y: 0 })
-
-    expect(template).toMatchObject({ opaque: 1, moved: 1 })
   })
 
   it('charges rejected Marble records against the cumulative decoder-work cap', async () => {

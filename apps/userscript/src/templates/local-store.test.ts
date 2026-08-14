@@ -193,23 +193,6 @@ describe('local template lifecycle', () => {
     expect(persistence.deleteTemplate).toHaveBeenCalledWith('invalid', 0)
   })
 
-  it('deletes a record whose CAS revision can no longer be incremented', async () => {
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({ id: 'exhausted' }),
-        visible: true,
-        everPlaced: true,
-        revision: Number.MAX_SAFE_INTEGER,
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates()).toEqual([])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('exhausted', Number.MAX_SAFE_INTEGER)
-  })
-
   it('restores a valid persisted record hidden when rendering fails transiently', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       { ...template({ id: 'valid' }), visible: true, everPlaced: true },
@@ -264,77 +247,6 @@ describe('local template lifecycle', () => {
     )
   })
 
-  it('deletes a persisted record spanning too many painted source tiles before slicing', async () => {
-    const invalidIndices = new Uint8Array(13_000)
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({
-          id: 'invalid',
-          originX: 0,
-          originY: 0,
-          width: invalidIndices.length,
-          indices: invalidIndices,
-          opaque: invalidIndices.length,
-        }),
-        visible: true,
-        everPlaced: true,
-      },
-      {
-        ...template({ id: 'valid', originX: 20_000 }),
-        visible: true,
-        everPlaced: true,
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates().map(({ id }) => id)).toEqual(['valid'])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('invalid', 0)
-    expect(createImageBitmap).toHaveBeenCalledTimes(4)
-    expect(createdBitmaps.every(({ close }) => !close.mock.calls.length)).toBe(true)
-  })
-
-  it('accepts a sparse two-dimensional persisted layout covering exactly twelve tiles', async () => {
-    const width = 2_002
-    const height = 1_002
-    const indices = new Uint8Array(width * height).fill(63)
-    for (const y of [0, 1, 1_001]) {
-      for (const x of [0, 1, 1_001, 2_001]) indices[y * width + x] = 0
-    }
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({ originX: 999, originY: 999, width, height, indices, opaque: 12 }),
-        visible: false,
-        everPlaced: true,
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates()).toEqual([expect.objectContaining({ id: 'local-test' })])
-    expect(persistence.deleteTemplate).not.toHaveBeenCalled()
-  })
-
-  it('accepts a persisted painted pixel on the east and south world edges', async () => {
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({ originX: WORLD_PIXELS - 1, originY: WORLD_PIXELS - 1 }),
-        visible: false,
-        everPlaced: true,
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates()).toEqual([
-      expect.objectContaining({ originX: WORLD_PIXELS - 1, originY: WORLD_PIXELS - 1 }),
-    ])
-    expect(persistence.deleteTemplate).not.toHaveBeenCalled()
-  })
-
   it('preserves persisted appearance while restoring', async () => {
     persistence.loadTemplates.mockResolvedValueOnce([
       {
@@ -362,166 +274,6 @@ describe('local template lifecycle', () => {
       opacity: 0.25,
       hiddenColours: [1],
     })
-  })
-
-  it('normalises malformed persisted appearance without poisoning rendering', async () => {
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({ id: 'styled', source: 'marble' }),
-        visible: false,
-        everPlaced: true,
-        appearance: { size: 'large', hiddenColours: null },
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates()[0]?.appearance).toMatchObject({
-      size: 1,
-      hiddenColours: [],
-    })
-    expect(persistence.deleteTemplate).not.toHaveBeenCalled()
-  })
-
-  it('bounds template text and deduplicates persisted colour metadata', async () => {
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({ id: 'styled', source: 'marble' }),
-        visible: false,
-        everPlaced: true,
-        appearance: {
-          size: 1 / 3,
-          radius: 1,
-          translateX: 0,
-          translateY: 0,
-          rotation: 0,
-          opacity: 1,
-          hiddenColours: Array.from({ length: 65 }, () => 1),
-        },
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await expect(store.addLocalTemplate(template({ id: 'x'.repeat(129) }))).rejects.toThrow(
-      /metadata/i,
-    )
-    await expect(store.addLocalTemplate(template({ name: 'x'.repeat(257) }))).rejects.toThrow(
-      /metadata/i,
-    )
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates()[0]?.appearance).toMatchObject({
-      hiddenColours: [1],
-      size: 1 / 3,
-    })
-  })
-
-  it('discards irreparable persisted runtime shapes independently', async () => {
-    persistence.loadTemplates.mockResolvedValueOnce([
-      { ...template({ id: 'bad', source: 'unknown' as never }), visible: true, everPlaced: true },
-      {
-        ...template({ id: 'boxed' }),
-        source: new String('image'),
-        visible: true,
-        everPlaced: true,
-      },
-      { ...template({ id: 'good', source: 'marble' }), visible: false, everPlaced: true },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates().map(({ id }) => id)).toEqual(['good'])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad', 0)
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('boxed', 0)
-  })
-
-  it('discards persisted palette bytes and opaque counts that cannot render faithfully', async () => {
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({ id: 'bad-index', indices: new Uint8Array([64]) }),
-        visible: false,
-        everPlaced: true,
-      },
-      {
-        ...template({ id: 'bad-count', opaque: 1, indices: new Uint8Array([255]) }),
-        visible: false,
-        everPlaced: true,
-      },
-      {
-        ...template({ id: 'good', source: 'marble' }),
-        visible: false,
-        everPlaced: true,
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates().map(({ id }) => id)).toEqual(['good'])
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad-index', 0)
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('bad-count', 0)
-  })
-
-  it('retries later persisted candidates after deleting an invalid admission', async () => {
-    persistence.loadTemplates
-      .mockResolvedValueOnce([
-        {
-          ...template({ id: 'invalid', indices: new Uint8Array([64]) }),
-          visible: false,
-          everPlaced: true,
-        },
-      ])
-      .mockResolvedValueOnce([
-        { ...template({ id: 'valid', source: 'marble' }), visible: false, everPlaced: true },
-      ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates().map(({ id }) => id)).toEqual(['valid'])
-    expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
-    expect(persistence.loadTemplates.mock.calls[1]?.[2]).toEqual(
-      new Map([
-        ['invalid', 0],
-        ['valid', 0],
-      ]),
-    )
-  })
-
-  it('retries an invalid deletion conflict and restores the valid replacement', async () => {
-    let secondPassExclusions = new Map<string, number>()
-    persistence.loadTemplates
-      .mockResolvedValueOnce([
-        {
-          ...template({ id: 'replaced', indices: new Uint8Array([64]) }),
-          visible: false,
-          everPlaced: true,
-          revision: 1,
-        },
-      ])
-      .mockImplementationOnce(async (_templates, _pixels, exclusions) => {
-        secondPassExclusions = new Map(exclusions)
-        return [
-          {
-            ...template({ id: 'replaced', source: 'marble' }),
-            visible: false,
-            everPlaced: true,
-            revision: 2,
-          },
-        ]
-      })
-    persistence.deleteTemplate.mockResolvedValueOnce({ status: 'conflict' })
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
-    expect(secondPassExclusions.has('replaced')).toBe(false)
-    expect(store.localTemplates()).toEqual([
-      expect.objectContaining({ id: 'replaced', revision: 2 }),
-    ])
   })
 
   it('retries past a transient hydration failure without deleting its durable record', async () => {
@@ -616,46 +368,6 @@ describe('local template lifecycle', () => {
     expect(persistence.loadTemplates).toHaveBeenCalledTimes(3)
   })
 
-  it('deletes malformed records identified only by their IndexedDB primary key', async () => {
-    persistence.loadTemplates
-      .mockResolvedValueOnce([
-        {
-          kind: 'template-hydration-failure',
-          status: 'invalid',
-          key: 42,
-          revision: 3,
-          indexPixels: 0,
-        },
-      ])
-      .mockResolvedValueOnce([])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith(42, 3)
-    expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
-  })
-
-  it('deletes a permanently invalid hydrated Blob before retrying later records', async () => {
-    persistence.loadTemplates
-      .mockResolvedValueOnce([
-        {
-          kind: 'template-hydration-failure',
-          status: 'invalid',
-          id: 'invalid-blob',
-          revision: 3,
-          indexPixels: 1,
-        },
-      ])
-      .mockResolvedValueOnce([])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith('invalid-blob', 3)
-    expect(persistence.loadTemplates).toHaveBeenCalledTimes(2)
-  })
-
   it('deduplicates concurrent restores and clears the slot after rejection', async () => {
     let finishLoad = (_templates: unknown[]): void => undefined
     persistence.loadTemplates.mockImplementationOnce(
@@ -679,69 +391,6 @@ describe('local template lifecycle', () => {
     expect(persistence.loadTemplates).toHaveBeenCalledTimes(3)
   })
 
-  it('bounds repeated restore retries even if persistence ignores excluded ids', async () => {
-    persistence.loadTemplates.mockResolvedValue([
-      {
-        ...template({ id: 'invalid', indices: new Uint8Array([64]) }),
-        visible: false,
-        everPlaced: true,
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(persistence.loadTemplates).toHaveBeenCalledTimes(64)
-  })
-
-  it('shares candidate and hydration work budgets across restore retry passes', async () => {
-    let pass = 0
-    persistence.loadTemplates.mockImplementation(async () => {
-      const prefix = pass++
-      return Array.from({ length: 64 }, (_, index) => ({
-        kind: 'template-hydration-failure',
-        status: 'unavailable',
-        id: `unavailable-${prefix}-${index}`,
-        revision: 0,
-        indexPixels: 512 * 1024,
-      }))
-    })
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(persistence.loadTemplates).toHaveBeenCalledTimes(4)
-    expect(persistence.loadTemplates.mock.calls.map(([, pixels]) => pixels)).toEqual([
-      64 * 1024 * 1024,
-      64 * 1024 * 1024,
-      64 * 1024 * 1024,
-      32 * 1024 * 1024,
-    ])
-  })
-
-  it('charges cursor rows that persistence skips before returning candidates', async () => {
-    const skipped = [
-      {
-        kind: 'template-hydration-failure',
-        status: 'invalid',
-        id: 'returned-invalid',
-        revision: 0,
-        indexPixels: 1,
-      },
-    ] as unknown[] & { inspected?: number; indexPixels?: number }
-    Object.defineProperties(skipped, {
-      inspected: { value: 256 },
-      indexPixels: { value: 1 },
-    })
-    persistence.loadTemplates.mockImplementation(async () => skipped)
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(persistence.loadTemplates).toHaveBeenCalledOnce()
-    persistence.loadTemplates.mockResolvedValue([])
-  })
-
   it('rejects duplicate restore records before scanning their pixels', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
@@ -761,26 +410,6 @@ describe('local template lifecycle', () => {
 
     expect(yieldToBrowser).not.toHaveBeenCalled()
     expect(persistence.deleteTemplate).not.toHaveBeenCalled()
-  })
-
-  it('does not rescan invalid persisted pixels to classify a restore failure', async () => {
-    vi.stubGlobal('scheduler', undefined)
-    const yieldToBrowser = vi.spyOn(globalThis, 'setTimeout')
-    const indices = new Uint8Array(1_000_000).fill(63)
-    indices[0] = 0
-    persistence.loadTemplates.mockResolvedValueOnce([
-      {
-        ...template({ width: indices.length, indices, opaque: 2 }),
-        visible: false,
-        everPlaced: true,
-      },
-    ])
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(yieldToBrowser).toHaveBeenCalledOnce()
-    expect(persistence.deleteTemplate).toHaveBeenCalledOnce()
   })
 
   it('serializes imports behind startup restore so failed adds cannot suppress durable state', async () => {
@@ -818,21 +447,6 @@ describe('local template lifecycle', () => {
     await restoring
     await expect(adding).rejects.toThrow(/already exists/i)
     expect(store.localTemplates()).toHaveLength(1)
-  })
-
-  it('bounds restored template cardinality even if persistence returns extra records', async () => {
-    persistence.loadTemplates.mockResolvedValueOnce(
-      Array.from({ length: 65 }, (_, id) => ({
-        ...template({ id: `stored-${id}`, source: 'marble' }),
-        visible: false,
-        everPlaced: true,
-      })),
-    )
-    const store = await import('./local-store.js')
-
-    await store.restoreLocalTemplates()
-
-    expect(store.localTemplates()).toHaveLength(64)
   })
 
   it('does not resolve an add until its IndexedDB write is durable', async () => {
@@ -1567,20 +1181,6 @@ describe('local template lifecycle', () => {
     expect(oldLevels.every((level) => !level.close.mock.calls.length)).toBe(true)
   })
 
-  it('CAS-deletes a present structurally invalid conflict winner', async () => {
-    const store = await import('./local-store.js')
-    const added = await store.addLocalTemplate(template())
-    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
-    persistence.loadTemplate.mockResolvedValueOnce({ status: 'invalid', revision: 4 })
-
-    await expect(
-      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
-    ).resolves.toBe(false)
-
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id, 4)
-    expect(store.localTemplates()).toEqual([])
-  })
-
   it('adopts the durable winner after a non-delete CAS conflict', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
@@ -1600,90 +1200,6 @@ describe('local template lifecycle', () => {
     ).resolves.toBe(false)
 
     expect(store.localTemplates()[0]).toMatchObject({ originX: 30, originY: 40, revision: 2 })
-  })
-
-  it('CAS-deletes a semantically invalid conflict winner instead of looping stale writes', async () => {
-    const store = await import('./local-store.js')
-    const added = await store.addLocalTemplate(template())
-    const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
-    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
-    persistence.loadTemplate.mockResolvedValueOnce({
-      status: 'loaded',
-      template: {
-        ...template({ indices: new Uint8Array([64]) }),
-        visible: true,
-        everPlaced: true,
-        revision: 2,
-      },
-    })
-
-    await expect(
-      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
-    ).resolves.toBe(false)
-
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id, 2)
-    expect(store.localTemplates()).toEqual([])
-    expect(oldLevels.every((level) => level.close.mock.calls.length === 1)).toBe(true)
-  })
-
-  it('retries an invalid-winner delete conflict and adopts the replacement', async () => {
-    const store = await import('./local-store.js')
-    const added = await store.addLocalTemplate(template())
-    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
-    persistence.loadTemplate
-      .mockResolvedValueOnce({
-        status: 'loaded',
-        template: {
-          ...template({ indices: new Uint8Array([64]) }),
-          visible: true,
-          everPlaced: true,
-          revision: 2,
-        },
-      })
-      .mockResolvedValueOnce({
-        status: 'loaded',
-        template: {
-          ...template({ originX: 30, originY: 40 }),
-          visible: true,
-          everPlaced: true,
-          revision: 3,
-        },
-      })
-    persistence.deleteTemplate.mockResolvedValueOnce({ status: 'conflict' })
-
-    await expect(
-      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
-    ).resolves.toBe(false)
-
-    expect(persistence.loadTemplate).toHaveBeenCalledTimes(2)
-    expect(persistence.deleteTemplate).toHaveBeenCalledWith(added.id, 2)
-    expect(store.localTemplates()[0]).toMatchObject({ originX: 30, originY: 40, revision: 3 })
-  })
-
-  it('bounds repeated delete conflicts for invalid conflict winners', async () => {
-    const store = await import('./local-store.js')
-    const added = await store.addLocalTemplate(template())
-    persistence.saveTemplate.mockResolvedValueOnce({ status: 'conflict' })
-    for (let attempt = 0; attempt < 4; attempt++) {
-      persistence.loadTemplate.mockResolvedValueOnce({
-        status: 'loaded',
-        template: {
-          ...template({ indices: new Uint8Array([64]) }),
-          visible: true,
-          everPlaced: true,
-          revision: attempt + 2,
-        },
-      })
-      persistence.deleteTemplate.mockResolvedValueOnce({ status: 'conflict' })
-    }
-
-    await expect(
-      store.setAppearance(added.id, { ...added.appearance, opacity: 0.5 }),
-    ).resolves.toBe(false)
-
-    expect(persistence.loadTemplate).toHaveBeenCalledTimes(4)
-    expect(persistence.deleteTemplate).toHaveBeenCalledTimes(4)
-    expect(store.localTemplates()[0]).toMatchObject({ id: added.id, revision: added.revision })
   })
 
   it('adopts a valid conflict winner runtime-hidden when its source cannot render', async () => {

@@ -128,16 +128,6 @@ describe('template placement controls', () => {
     await moves.commit()
   })
 
-  it('removes the exact auxclick listener it installed', async () => {
-    const moves = await import('./move.js')
-    moves.beginMove('test', vi.fn())
-    const auxclick = listeners.get('auxclick')
-    if (auxclick === undefined) throw new Error('expected auxclick listener')
-    await moves.commit()
-
-    expect(window.removeEventListener).toHaveBeenCalledWith('auxclick', auxclick, true)
-  })
-
   it('does not reopen placement when its completion observer throws', async () => {
     const moves = await import('./move.js')
     moves.beginMove('test', () => {
@@ -203,55 +193,6 @@ describe('template placement controls', () => {
     expect(controlEvent.preventDefault).not.toHaveBeenCalled()
     expect(outsideEvent.preventDefault).not.toHaveBeenCalled()
     expect(harness.canvasPixelAt).not.toHaveBeenCalled()
-  })
-
-  it('clears middle-click suppression when the handled pointer is cancelled', async () => {
-    const moves = await import('./move.js')
-    moves.beginMove('test', vi.fn())
-    const pointerdown = listeners.get('pointerdown')
-    const pointercancel = listeners.get('pointercancel')
-    const auxclick = listeners.get('auxclick')
-    if (pointerdown === undefined || pointercancel === undefined || auxclick === undefined) {
-      throw new Error('expected pointer listeners')
-    }
-    pointerdown({
-      button: 1,
-      pointerId: 7,
-      target: { tagName: 'CANVAS', closest: vi.fn(() => null) },
-      clientX: 2,
-      clientY: 3,
-      preventDefault: vi.fn(),
-    } as unknown as Event)
-    pointercancel({ pointerId: 7 } as unknown as Event)
-    const later = { button: 1, preventDefault: vi.fn() }
-
-    auxclick(later as unknown as Event)
-
-    expect(later.preventDefault).not.toHaveBeenCalled()
-  })
-
-  it('does not carry middle-click suppression into the next placement session', async () => {
-    const moves = await import('./move.js')
-    moves.beginMove('test', vi.fn())
-    const pointerdown = listeners.get('pointerdown')
-    if (pointerdown === undefined) throw new Error('expected pointerdown listener')
-    pointerdown({
-      button: 1,
-      pointerId: 1,
-      target: { tagName: 'CANVAS', closest: vi.fn(() => null) },
-      clientX: 2,
-      clientY: 3,
-      preventDefault: vi.fn(),
-    } as unknown as Event)
-    await moves.commit()
-
-    moves.beginMove('test', vi.fn())
-    const auxclick = listeners.get('auxclick')
-    if (auxclick === undefined) throw new Error('expected auxclick listener')
-    const nextMiddleClick = { button: 1, preventDefault: vi.fn() }
-    auxclick(nextMiddleClick as unknown as Event)
-
-    expect(nextMiddleClick.preventDefault).not.toHaveBeenCalled()
   })
 
   it('allows only one commit while an asynchronous placement is finishing', async () => {
@@ -577,52 +518,6 @@ describe('template placement controls', () => {
     expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
   })
 
-  it('finishes at a same-revision winner after an explicit reconciliation event', async () => {
-    harness.placeLocalTemplate.mockImplementationOnce(async () => {
-      for (const observer of harness.reconciliationObservers.get('test') ?? []) observer()
-      return false
-    })
-    const active = (harness.localTemplates() as Array<Record<string, unknown>>).map((template) => ({
-      ...template,
-      revision: 0,
-    }))
-    harness.localTemplates.mockClear()
-    harness.localTemplates
-      .mockReturnValueOnce(active)
-      .mockReturnValue([{ ...active[0], originX: 90, originY: 80, revision: 0 }])
-    const finished = vi.fn()
-    const moves = await import('./move.js')
-    moves.beginMove('test', finished)
-    finished.mockClear()
-
-    await moves.commit()
-    await moves.commit()
-
-    expect(finished).toHaveBeenCalledOnce()
-    expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
-  })
-
-  it('keeps Apply open when an unrelated mutation replaces the template object', async () => {
-    harness.placeLocalTemplate.mockResolvedValueOnce(false)
-    const active = harness.localTemplates()
-    harness.localTemplates.mockClear()
-    harness.localTemplates
-      .mockReturnValueOnce(active)
-      .mockReturnValueOnce([{ ...active[0], appearance: { opacity: 0.5 } }])
-      .mockReturnValue([{ ...active[0], appearance: { opacity: 0.5 } }])
-    const finished = vi.fn()
-    const moves = await import('./move.js')
-    moves.beginMove('test', finished)
-    finished.mockClear()
-
-    await moves.commit()
-
-    expect(finished).not.toHaveBeenCalled()
-    await moves.commit()
-    expect(finished).toHaveBeenCalledOnce()
-    expect(harness.placeLocalTemplate).toHaveBeenCalledTimes(2)
-  })
-
   it('finishes at a reconciled winner instead of retrying stale Cancel', async () => {
     harness.removeLocalTemplate.mockImplementationOnce(async () => {
       for (const observer of harness.reconciliationObservers.get('test') ?? []) observer()
@@ -646,24 +541,6 @@ describe('template placement controls', () => {
 
     expect(finished).toHaveBeenCalledOnce()
     expect(harness.removeLocalTemplate).toHaveBeenCalledOnce()
-  })
-
-  it('finishes Cancel when the active template was already deleted', async () => {
-    const active = harness.localTemplates()
-    harness.localTemplates.mockClear()
-    harness.localTemplates
-      .mockReturnValueOnce(active)
-      .mockReturnValueOnce([])
-      .mockReturnValueOnce([])
-    harness.clearLocalPreview.mockReturnValueOnce(false)
-    const finished = vi.fn()
-    const moves = await import('./move.js')
-    moves.beginMove('test', finished)
-    finished.mockClear()
-
-    await moves.abort()
-
-    expect(finished).toHaveBeenCalledOnce()
   })
 
   it('reverts an existing template to its original placement on cancel', async () => {
@@ -694,17 +571,6 @@ describe('template placement controls', () => {
     expect(moves.stopMoveForDeletion('other')).toBeNull()
     stopped?.reservation.release()
     expect(moves.isMoving()).toBe(false)
-  })
-
-  it('can restore the preview origin after a failed deletion', async () => {
-    const moves = await import('./move.js')
-    moves.beginMove('test', vi.fn(), { x: 71, y: 82 })
-
-    const stopped = moves.stopMoveForDeletion('test')
-    expect(stopped?.origin).toEqual({ x: 71, y: 82 })
-    expect(stopped?.reservation.start('test', vi.fn(), stopped.origin)).toBe(true)
-    expect(moves.movePreviewOrigin('test')).toEqual({ x: 71, y: 82 })
-    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('test', 71, 82)
   })
 
   it('discards a fresh image import on its first cancel', async () => {

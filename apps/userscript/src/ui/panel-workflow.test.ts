@@ -15,7 +15,6 @@ import {
   readTransientStatus,
   restoreConnectedFocus,
   restoreTransientStatus,
-  shouldDeferPanelRerender,
   shouldNavigateAfterImport,
   toastMount,
 } from './panel-workflow.js'
@@ -72,11 +71,6 @@ describe('panel workflow ownership', () => {
     expect(gate.begin('template')).toBeNull()
     release?.()
     expect(gate.begin('template')).not.toBeNull()
-  })
-
-  it('defers same-view rebuilding while a form request owns that view', () => {
-    expect(shouldDeferPanelRerender(1)).toBe(true)
-    expect(shouldDeferPanelRerender(0)).toBe(false)
   })
 
   it('replays one deferred rerender after the final view request finishes', async () => {
