@@ -377,8 +377,8 @@ const treeView = (): HTMLElement => {
  *
  * Skipped mid-gesture. A rename is an open text field, a drag is a row in flight, and a slider is
  * held under the pointer; replacing any of those takes the thing away from the hand using it. The
- * colour picker counts even though it is not in the panel — it is anchored to a swatch that is, and
- * it writes a colour on every pointer move, so rebuilding would detach it from its own anchor.
+ * colour picker counts even though it is not in the panel — it is anchored to a swatch that is, so
+ * rebuilding would detach it from its own anchor. Its close callback requests the deferred redraw.
  */
 const refreshView = (): void => {
   if (!open) return

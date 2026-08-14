@@ -210,16 +210,15 @@ const beginPointerHold = (
 }
 
 /** Let a shared range tell this menu when its live DOM must stay under the user's gesture. */
-const protectRange = (input: HTMLInputElement): void => {
-  const repaintAfterNativeChange = (): void => {
+const protectRange = (input: HTMLInputElement, commit: () => void): void => {
+  const finish = (): void => {
+    commit()
     setTimeout(() => lastRerender?.(), 0)
   }
-  input.addEventListener('pointerdown', (event) =>
-    beginPointerHold(input, event, repaintAfterNativeChange),
-  )
+  input.addEventListener('pointerdown', (event) => beginPointerHold(input, event, finish))
   for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
     input.addEventListener(ending, (event) =>
-      finishPointerHold(input, (event as PointerEvent).pointerId, repaintAfterNativeChange),
+      finishPointerHold(input, (event as PointerEvent).pointerId, finish),
     )
   }
   input.addEventListener('keydown', (event) => {
@@ -228,7 +227,7 @@ const protectRange = (input: HTMLInputElement): void => {
   input.addEventListener('keyup', (event) => {
     if (!MOVES_RANGE.has(event.key) || heldByKey !== input) return
     heldByKey = null
-    repaintAfterNativeChange()
+    finish()
   })
 }
 
@@ -239,31 +238,32 @@ const releaseAllHolds = (): void => {
   heldByKey = null
 }
 /**
- * A slider value the user has moved to but not committed, by template then property.
+ * An appearance value the user has previewed but not committed, by template then property.
  *
- * The sliders were the last place this module kept state in the DOM, and every teardown path — map
- * detached, overlay panned out of view, template switched under a second touch, menu closed, node
- * torn off by the page — had to know to go and rescue it. Four review legs running found another
- * path that did not. Holding the draft here means there is nothing to rescue: a rebuild renders
- * *from* it, and a teardown that forgets it cannot lose it.
+ * Ranges and colour swatches cannot keep in-progress state only in the DOM: every teardown path —
+ * map detached, overlay panned out of view, template switched under a second touch, menu closed,
+ * node torn off by the page — would have to know how to rescue it. Holding the draft here means
+ * there is nothing to rescue: a rebuild renders *from* it, and teardown flushes it in one place.
  */
 type SliderKey = (typeof APPEARANCE_CONTROLS)[number]['key']
-const drafts = new Map<string, Map<SliderKey, number>>()
+type DraftKey = keyof Appearance
+type DraftValue = Appearance[DraftKey]
+const drafts = new Map<string, Map<DraftKey, DraftValue>>()
 
-const draftFor = (id: string, property: SliderKey): number | undefined =>
-  drafts.get(id)?.get(property)
+const draftFor = <K extends DraftKey>(id: string, property: K): Appearance[K] | undefined =>
+  drafts.get(id)?.get(property) as Appearance[K] | undefined
 
-const setDraft = (id: string, property: SliderKey, value: number): void => {
-  const forTemplate = drafts.get(id) ?? new Map<SliderKey, number>()
+const setDraft = <K extends DraftKey>(id: string, property: K, value: Appearance[K]): void => {
+  const forTemplate = drafts.get(id) ?? new Map<DraftKey, DraftValue>()
   forTemplate.set(property, value)
   drafts.set(id, forTemplate)
 }
 
-const clearDraft = (id: string, property: SliderKey): void => {
+const clearDraft = (id: string, property: DraftKey): boolean => {
   const forTemplate = drafts.get(id)
-  if (forTemplate === undefined) return
-  forTemplate.delete(property)
+  if (forTemplate === undefined || !forTemplate.delete(property)) return false
   if (forTemplate.size === 0) drafts.delete(id)
+  return true
 }
 
 /**
@@ -397,7 +397,7 @@ const flushDrafts = (id: string): void => {
   const pending = [...forTemplate]
   drafts.delete(id)
   for (const [property, value] of pending) {
-    const patch = (): Partial<Appearance> => ({ [property]: value })
+    const patch = (): Partial<Appearance> => ({ [property]: value }) as Partial<Appearance>
     const seq = intendAppearance(id, [property], patch)
     settle(
       id,
@@ -494,6 +494,15 @@ const appearanceFor = (id: string): Appearance => {
   ordered.sort(([a], [b]) => a - b)
   for (const [, updater] of ordered) composed = { ...composed, ...updater(composed) }
   return composed
+}
+
+/** The latest visible edit, including one whose gesture has not reached durable storage yet. */
+const draftedAppearanceFor = (id: string): Appearance => {
+  let appearance = appearanceFor(id)
+  for (const [property, value] of drafts.get(id) ?? []) {
+    appearance = { ...appearance, [property]: value }
+  }
+  return appearance
 }
 
 const visibleFor = (id: string): boolean =>
@@ -704,7 +713,7 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
  */
 const menuSignature = (template: PlacedTemplate): string => {
   const id = template.id
-  const appearance = appearanceFor(id)
+  const appearance = draftedAppearanceFor(id)
   // Serialised, not joined on a separator. Ids and names are arbitrary strings, so a `|` they can
   // both contain lets two different templates produce one signature — `{id:"a|b", name:"c"}` and
   // `{id:"a", name:"b|c"}` — and the menu is then reused for the wrong one, handlers and all.
@@ -1009,7 +1018,7 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
 
 const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement => {
   const { id, name } = template
-  const appearance = appearanceFor(id)
+  const appearance = draftedAppearanceFor(id)
   const visible = visibleFor(id)
   const menu = document.createElement('div')
   menu.id = MENU_ID
@@ -1439,7 +1448,18 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
         edit(properties, 'mismatch markers', () => patch)
       },
       rerender,
-      { compact: true, protectRange },
+      {
+        compact: true,
+        protectRange,
+        draftRange: {
+          set: (property, value) => setDraft(id, property, value),
+          clear: (property) => clearDraft(id, property),
+        },
+        draftColour: {
+          set: (property, value) => setDraft(id, property, value),
+          clear: (property) => clearDraft(id, property),
+        },
+      },
     ),
   )
   disableFollowing(markers)

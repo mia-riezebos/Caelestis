@@ -30,6 +30,17 @@ interface Hsv {
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value))
 
+const MOVES_RANGE = new Set([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+])
+
 export const hexToHsv = (hex: string): Hsv => {
   const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
   if (match?.[1] === undefined) return { h: 0, s: 0, v: 0 }
@@ -65,24 +76,29 @@ export const hsvToHex = ({ h, s, v }: Hsv): string => {
 const hueHex = (h: number): string => hsvToHex({ h, s: 1, v: 1 })
 
 const POPOVER_ID = 'caelestis-colour-picker'
+let closeOpenPicker: ((restoreFocus: boolean) => void) | null = null
 
 /** Shut whichever picker is open. Exported so anything closing its own surface can take this with it. */
 export const closeColourPicker = (): void => {
-  document.getElementById(POPOVER_ID)?.remove()
+  closeOpenPicker?.(false)
 }
 
 /**
  * Whether one is open, for anything that rebuilds the surface a picker is anchored to.
  *
- * Dragging in the square writes a colour on every pointer move, and every write is a state change —
- * so a panel that redraws on state changes would replace the swatch this is anchored to sixty times
- * a second, leaving the picker pointing at a detached element.
+ * A picker stays anchored to the swatch that opened it for the whole gesture. Rebuilding that
+ * surface while the popup is open would leave it pointing at a detached element, so owners defer
+ * redraws until the close callback asks for the one they suppressed.
  */
 export const isColourPickerOpen = (): boolean => document.getElementById(POPOVER_ID) !== null
 
 interface SwatchOptions {
   /** Announced to a screen reader, since the swatch itself has nothing to read out. */
   readonly label: string
+  /** A transient value for a surface that keeps in-progress edits outside the DOM. */
+  readonly onPreview?: (next: string) => void
+  /** Called after the picker stops suppressing its owner's redraws. */
+  readonly onClose?: () => void
 }
 
 /**
@@ -96,7 +112,7 @@ interface SwatchOptions {
 export const colourSwatch = (
   value: string,
   onChange: (next: string) => void,
-  { label }: SwatchOptions,
+  { label, onPreview, onClose }: SwatchOptions,
 ): HTMLButtonElement => {
   const button = document.createElement('button')
   button.type = 'button'
@@ -112,7 +128,6 @@ export const colourSwatch = (
     button.style.backgroundColor = next
     button.setAttribute('aria-label', `${label}: ${next}`)
     button.title = next
-    onChange(next)
   }
 
   button.addEventListener('click', (event) => {
@@ -123,7 +138,20 @@ export const colourSwatch = (
       closeColourPicker()
       return
     }
-    openPicker(button, button.style.backgroundColor === '' ? value : rgbToHex(button), show, label)
+    openPicker(
+      button,
+      button.style.backgroundColor === '' ? value : rgbToHex(button),
+      (next) => {
+        show(next)
+        onPreview?.(next)
+      },
+      (next) => {
+        show(next)
+        onChange(next)
+      },
+      label,
+      onClose,
+    )
   })
   return button
 }
@@ -145,10 +173,13 @@ const rgbToHex = (element: HTMLElement): string => {
 const openPicker = (
   anchor: HTMLElement,
   initial: string,
-  onChange: (next: string) => void,
+  onPreview: (next: string) => void,
+  onCommit: (next: string) => void,
   label: string,
+  onClose?: () => void,
 ): void => {
   let hsv = hexToHsv(initial)
+  let pending: string | null = null
 
   const pop = document.createElement('div')
   pop.id = POPOVER_ID
@@ -208,7 +239,7 @@ const openPicker = (
   bottom.style.marginTop = '0.5rem'
   bottom.append(preview, hex)
 
-  const paint = (writeHex: boolean): void => {
+  const paint = (writeHex: boolean, notify = true): void => {
     const colour = hsvToHex(hsv)
     square.style.background = `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, ${hueHex(hsv.h)})`
     handle.style.left = `${hsv.s * 100}%`
@@ -222,7 +253,17 @@ const openPicker = (
       `saturation ${Math.round(hsv.s * 100)}%, brightness ${Math.round(hsv.v * 100)}%`,
     )
     if (writeHex) hex.value = colour
-    onChange(colour)
+    if (notify) {
+      pending = colour
+      onPreview(colour)
+    }
+  }
+
+  const commit = (): void => {
+    if (pending === null) return
+    const colour = pending
+    pending = null
+    onCommit(colour)
   }
 
   const fromPoint = (event: PointerEvent): void => {
@@ -244,8 +285,19 @@ const openPicker = (
     if (!square.hasPointerCapture(event.pointerId)) return
     fromPoint(event)
   })
+  for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    square.addEventListener(ending, (event) => {
+      if (
+        ending !== 'lostpointercapture' &&
+        !square.hasPointerCapture((event as PointerEvent).pointerId)
+      )
+        return
+      commit()
+    })
+  }
   // Arrow keys, because a square you can only reach with a pointer is a square half the people here
   // cannot use. A step of 2% crosses it in fifty presses; Shift makes that ten.
+  let squareKeyHeld = false
   square.addEventListener('keydown', (event) => {
     const step = event.shiftKey ? 0.1 : 0.02
     const move: Record<string, [number, number]> = {
@@ -257,14 +309,37 @@ const openPicker = (
     const delta = move[event.key]
     if (delta === undefined) return
     event.preventDefault()
+    squareKeyHeld = true
     hsv = { ...hsv, s: clamp(hsv.s + delta[0], 0, 1), v: clamp(hsv.v + delta[1], 0, 1) }
     paint(true)
   })
+  square.addEventListener('keyup', (event) => {
+    if (!squareKeyHeld || !event.key.startsWith('Arrow')) return
+    squareKeyHeld = false
+    commit()
+  })
+  square.addEventListener('blur', commit)
 
+  let hueKeyHeld = false
+  hue.addEventListener('keydown', (event) => {
+    if (MOVES_RANGE.has(event.key)) hueKeyHeld = true
+  })
   hue.addEventListener('input', () => {
     hsv = { ...hsv, h: Number(hue.value) }
     paint(true)
   })
+  hue.addEventListener('change', () => {
+    if (!hueKeyHeld) commit()
+  })
+  hue.addEventListener('keyup', () => {
+    if (!hueKeyHeld) return
+    hueKeyHeld = false
+    commit()
+  })
+  for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    hue.addEventListener(ending, commit)
+  }
+  hue.addEventListener('blur', commit)
 
   hex.addEventListener('input', () => {
     const typed = /^#?[0-9a-f]{6}$/i.test(hex.value)
@@ -275,10 +350,15 @@ const openPicker = (
     hsv = hexToHsv(hex.value)
     paint(false)
   })
+  hex.addEventListener('change', commit)
+  hex.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') commit()
+  })
+  hex.addEventListener('blur', commit)
 
   pop.append(square, hue, bottom)
   document.body.appendChild(pop)
-  paint(true)
+  paint(true, false)
   place(pop, anchor)
 
   /**
@@ -289,11 +369,15 @@ const openPicker = (
    * the page rather than from the row that was being edited.
    */
   const close = (restoreFocus: boolean): void => {
+    if (closeOpenPicker !== close) return
+    commit()
     pop.remove()
     window.removeEventListener('pointerdown', outside, true)
     window.removeEventListener('keydown', onKey, true)
     window.removeEventListener('resize', reposition)
+    closeOpenPicker = null
     if (restoreFocus) anchor.focus()
+    onClose?.()
   }
   const outside = (event: PointerEvent): void => {
     if (
@@ -314,6 +398,7 @@ const openPicker = (
   window.addEventListener('pointerdown', outside, true)
   window.addEventListener('keydown', onKey, true)
   window.addEventListener('resize', reposition)
+  closeOpenPicker = close
   square.focus()
 }
 

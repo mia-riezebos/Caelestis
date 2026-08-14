@@ -1061,12 +1061,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
     const place = options.onDropAt
     if (place === undefined) {
-      // Rows without a position handler still reorder among their own siblings.
-      const box = row.getBoundingClientRect()
-      parent.insertBefore(
-        placeholder(options.depth),
-        event.clientY < box.top + box.height / 2 ? row : row.nextSibling,
-      )
+      // Rows without a position handler still reorder among their own siblings when dropped on the
+      // row below, but cannot arm the between-row placeholder: that placeholder accepts the drop
+      // itself and therefore needs a `dropTarget` describing what it will do.
       return
     }
 

@@ -1511,6 +1511,67 @@ describe('a held slider holds its own menu, not the next one', () => {
     // And the value the user had reached is not simply thrown away with the node.
     expect(appearanceWritten(0).opacity).toBe(0.62)
   })
+
+  it('commits a marker range when the menu is torn down mid-drag', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const markerSize = menu().querySelector<HTMLInputElement>(
+      'input[type="range"]:not([data-caelestis-control])',
+    )
+    if (markerSize === null) throw new Error('no Mismatches Size track')
+
+    markerSize.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    markerSize.value = '17'
+    markerSize.dispatchEvent(new Event('input'))
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    host?.appendChild(mapCanvas)
+    rerender()
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).markerSize).toBe(17)
+  })
+
+  it('commits one colour for a picker drag rather than every movement', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { markMismatch: true } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const swatch = menu().querySelector<HTMLButtonElement>('button[aria-label^="Marker colour:"]')
+    if (swatch === null) throw new Error('no marker colour swatch')
+    swatch.click()
+    const square = document.querySelector<HTMLElement>('.caelestis-cp-sv')
+    if (square === null) throw new Error('no colour picker square')
+    square.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }) as DOMRect
+    let captured: number | null = null
+    square.setPointerCapture = (pointerId) => {
+      captured = pointerId
+    }
+    square.hasPointerCapture = (pointerId) => captured === pointerId
+
+    square.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 7, clientX: 10, clientY: 90 }),
+    )
+    square.dispatchEvent(
+      new PointerEvent('pointermove', { pointerId: 7, clientX: 50, clientY: 50 }),
+    )
+    square.dispatchEvent(
+      new PointerEvent('pointermove', { pointerId: 7, clientX: 80, clientY: 20 }),
+    )
+    await settle()
+
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+    square.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7 }))
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).markerColour).toBe('#cc2929')
+  })
 })
 
 describe('a refusal retires only when its own subject is satisfied', () => {

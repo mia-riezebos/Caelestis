@@ -43,6 +43,22 @@ interface RowOptions {
   readonly hint?: string
 }
 
+type MarkerRangeKey = 'markerSize' | 'unpaintedLimit' | 'otherOpacity'
+type MarkerColourKey = 'markerColour' | 'otherColour'
+
+interface MismatchOptions {
+  readonly compact?: boolean
+  readonly protectRange?: (input: HTMLInputElement, commit: () => void) => void
+  readonly draftRange?: {
+    readonly set: (property: MarkerRangeKey, value: number) => void
+    readonly clear: (property: MarkerRangeKey) => boolean
+  }
+  readonly draftColour?: {
+    readonly set: (property: MarkerColourKey, value: string) => void
+    readonly clear: (property: MarkerColourKey) => boolean
+  }
+}
+
 const row = (label: string, control: HTMLElement, options: RowOptions): HTMLElement => {
   const wrap = document.createElement('label')
   wrap.className = 'items-center'
@@ -88,7 +104,8 @@ const track = (
   spec: { min: number; max: number; step: number; format: (value: number) => string },
   value: number,
   onChange: (next: number) => void,
-  protectGesture?: (input: HTMLInputElement) => void,
+  onDraft?: (next: number) => void,
+  protectGesture?: (input: HTMLInputElement, commit: () => void) => void,
 ): HTMLElement => {
   const wrap = document.createElement('span')
   wrap.className = 'flex items-center gap-2'
@@ -120,7 +137,9 @@ const track = (
   }
   input.addEventListener('input', () => {
     dirty = true
-    readout.textContent = spec.format(Number(input.value))
+    const next = Number(input.value)
+    readout.textContent = spec.format(next)
+    onDraft?.(next)
   })
   input.addEventListener('keydown', (event) => {
     if (MOVES_RANGE.has(event.key)) keyHeld = true
@@ -134,13 +153,23 @@ const track = (
     commit()
   })
   input.addEventListener('blur', () => setTimeout(commit, 0))
-  protectGesture?.(input)
+  protectGesture?.(input, commit)
   wrap.append(input, readout)
   return wrap
 }
 
-const swatch = (label: string, value: string, onChange: (next: string) => void): HTMLElement =>
-  colourSwatch(value, onChange, { label })
+const swatch = (
+  label: string,
+  value: string,
+  onChange: (next: string) => void,
+  onPreview?: (next: string) => void,
+  onClose?: () => void,
+): HTMLElement =>
+  colourSwatch(value, onChange, {
+    label,
+    ...(onPreview === undefined ? {} : { onPreview }),
+    ...(onClose === undefined ? {} : { onClose }),
+  })
 
 const tick = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
   const input = document.createElement('input')
@@ -171,10 +200,7 @@ export const mismatchSettings = (
   values: Appearance,
   write: (patch: Partial<Appearance>) => void,
   rerender: () => void,
-  {
-    compact = false,
-    protectRange,
-  }: { compact?: boolean; protectRange?: (input: HTMLInputElement) => void } = {},
+  { compact = false, protectRange, draftRange, draftColour }: MismatchOptions = {},
 ): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'flex flex-col'
@@ -204,14 +230,27 @@ export const mismatchSettings = (
       track(
         { min: 3, max: 33, step: 1, format: (v) => `${Math.round(v)}px` },
         values.markerSize,
-        (next) => write({ markerSize: next }),
+        (next) => {
+          if (draftRange !== undefined && !draftRange.clear('markerSize')) return
+          write({ markerSize: next })
+        },
+        (next) => draftRange?.set('markerSize', next),
         protectRange,
       ),
       at(1),
     ),
     row(
       'Colour',
-      swatch('Marker colour', values.markerColour, (next) => write({ markerColour: next })),
+      swatch(
+        'Marker colour',
+        values.markerColour,
+        (next) => {
+          if (draftColour !== undefined && !draftColour.clear('markerColour')) return
+          write({ markerColour: next })
+        },
+        (next) => draftColour?.set('markerColour', next),
+        rerender,
+      ),
       at(1),
     ),
     row(
@@ -236,7 +275,11 @@ export const mismatchSettings = (
     track(
       UNPAINTED_LIMIT_CONTROL,
       values.unpaintedLimit,
-      (next) => write({ unpaintedLimit: next }),
+      (next) => {
+        if (draftRange !== undefined && !draftRange.clear('unpaintedLimit')) return
+        write({ unpaintedLimit: next })
+      },
+      (next) => draftRange?.set('unpaintedLimit', next),
       protectRange,
     ),
     at(2),
@@ -264,12 +307,16 @@ export const mismatchSettings = (
       track(
         { min: 0.05, max: 1, step: 0.05, format: (v) => `${Math.round(v * 100)}%` },
         values.otherOpacity,
-        (next) => write({ otherOpacity: next }),
+        (next) => {
+          if (draftRange !== undefined && !draftRange.clear('otherOpacity')) return
+          write({ otherOpacity: next })
+        },
+        (next) => draftRange?.set('otherOpacity', next),
         protectRange,
       ),
       at(2),
     ),
-    markedInRow(values, write, rerender, compact),
+    markedInRow(values, write, rerender, compact, draftColour),
   )
   under.appendChild(dim)
 
@@ -299,12 +346,20 @@ const markedInRow = (
   write: (patch: Partial<Appearance>) => void,
   rerender: () => void,
   compact: boolean,
+  draftColour?: MismatchOptions['draftColour'],
 ): HTMLElement => {
   const cell = document.createElement('span')
   cell.className = 'flex items-center gap-2'
   cell.appendChild(
-    swatch('Colour for other colours', values.otherColour ?? values.markerColour, (next) =>
-      write({ otherColour: next }),
+    swatch(
+      'Colour for other colours',
+      values.otherColour ?? values.markerColour,
+      (next) => {
+        if (draftColour !== undefined && !draftColour.clear('otherColour')) return
+        write({ otherColour: next })
+      },
+      (next) => draftColour?.set('otherColour', next),
+      rerender,
     ),
   )
   const same = document.createElement('button')
