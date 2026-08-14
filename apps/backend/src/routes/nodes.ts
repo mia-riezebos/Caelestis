@@ -50,7 +50,7 @@ const slug = (name: string): string =>
 const publicNode = ({ season: _season, description, ...node }: NodeRecord) =>
   description === null ? node : { ...node, description }
 
-export const createNodeRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) => {
+export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) => {
   const routes = new Hono()
   const { sql } = ports
 
@@ -217,9 +217,10 @@ export const createNodeRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: Auth
     if (c.req.query('cascade') === 'true') {
       try {
         const deleted = await sql.deleteNodeCascade(nodeId)
-        const hashes = await sql.unreferencedHashes(deleted.hashes)
-        await ports.blobs.delete('chunks', hashes)
-        return c.json({ nodes: deleted.nodes, templates: deleted.templates, chunks: hashes.length })
+        // R2 and D1 have no shared transaction. Deleting blobs after the D1 commit can race a new
+        // reference and corrupt it; retaining content-addressed blobs is the safe interim until a
+        // durable, retryable garbage collector can prove a hash remains unreferenced.
+        return c.json({ nodes: deleted.nodes, templates: deleted.templates, chunks: 0 })
       } catch (error) {
         if (error instanceof NodeNotFoundError) return c.json({ error: 'not found' }, 404)
         throw error

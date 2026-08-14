@@ -945,7 +945,11 @@ export const forgetServerTemplates = (serverUrl: string): void => {
   let removed = false
   for (const template of [...templates.values()]) {
     if (template.serverUrl !== serverUrl) continue
-    for (const tile of template.tiles.values()) for (const level of tile.levels) level.close()
+    releaseRetainedTiles(template.tiles)
+    retainedIndexPixels -= template.indices.length
+    desiredVisibility.delete(template.id)
+    clearStamped(template.id)
+    previewOrigins.delete(template.id)
     templates.delete(template.id)
     removed = true
   }
@@ -1017,6 +1021,38 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
     pendingAdds.delete(template.id)
     pendingIndexPixels -= template.indices.length
   }
+}
+
+/**
+ * Make a durable local copy without carrying any server-owned identity fields across the boundary.
+ *
+ * Picking the imported fields explicitly makes a server identity unrepresentable in the copy. An
+ * image import is normally pending until its first placement; this copy already has a position, so
+ * marking that placement immediately is also what commits it to IndexedDB before its source can be
+ * removed.
+ */
+export const copyAsLocalTemplate = async (
+  template: PlacedTemplate,
+  id: string,
+): Promise<PlacedTemplate> => {
+  const copied = await addLocalTemplate({
+    id,
+    name: template.name,
+    source: 'image',
+    ...(template.sortOrder === undefined ? {} : { sortOrder: template.sortOrder }),
+    originX: template.originX,
+    originY: template.originY,
+    width: template.width,
+    height: template.height,
+    indices: template.indices,
+    moved: template.moved,
+    opaque: template.opaque,
+  })
+  if (await moveLocalTemplate(copied.id, copied.originX, copied.originY)) {
+    return templates.get(copied.id) ?? copied
+  }
+  await removeLocalTemplate(copied.id)
+  throw new Error('local template copy could not be saved')
 }
 
 /** Rehydrate on startup, before the first frame if possible. */

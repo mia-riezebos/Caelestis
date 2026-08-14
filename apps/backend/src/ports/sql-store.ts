@@ -281,6 +281,7 @@ export interface ManifestTemplateRecord {
 
 export interface ManifestTileRecord {
   readonly templateId: string
+  readonly versionId: string
   readonly tileX: number
   readonly tileY: number
   readonly hash: string
@@ -309,6 +310,10 @@ export class InvalidNodeParentError extends Error {
 
 export class NodeNotFoundError extends Error {
   override readonly name = 'NodeNotFoundError'
+}
+
+export class TemplateNotFoundError extends Error {
+  override readonly name = 'TemplateNotFoundError'
 }
 
 /**
@@ -431,7 +436,10 @@ export interface SqlStore {
   countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }>
 
   /** Atomically add a version, its tile index, and make it the template's current version. */
-  insertTemplateVersion(version: TemplateVersionRecord): Promise<void>
+  insertTemplateVersion(
+    version: TemplateVersionRecord,
+    options?: { readonly requireExisting?: boolean },
+  ): Promise<void>
 
   /** A version with its template metadata and complete tile index, or null if absent. */
   readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null>

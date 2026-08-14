@@ -248,6 +248,26 @@ export const isPlain = (appearance: Appearance): boolean =>
   appearance.translateY === 0 &&
   appearance.rotation === 0
 
+/** Whether a point within one source cell is covered by the same stamp the shader draws. */
+export const stampContains = (appearance: Appearance, cellX: number, cellY: number): boolean => {
+  if (isPlain(appearance)) return true
+  const radians = (-appearance.rotation * Math.PI) / 180
+  const c = Math.cos(radians)
+  const s = Math.sin(radians)
+  const localX = cellX - 0.5
+  const localY = cellY - 0.5
+  // This is the GLSL mat2 multiplication in `FRAGMENT_SOURCE`, including its column order.
+  const pointX = c * localX + s * localY - appearance.translateX
+  const pointY = -s * localX + c * localY - appearance.translateY
+  const half = appearance.size * 0.5
+  const radius = appearance.radius * half
+  const qx = Math.abs(pointX) - half + radius
+  const qy = Math.abs(pointY) - half + radius
+  const distance =
+    Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - radius
+  return distance <= 0
+}
+
 /**
  * One cell's stamp, drawn once at high resolution and reused as a tiling mask.
  *

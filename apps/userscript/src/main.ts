@@ -75,14 +75,10 @@ export const redraw = (): void => {
   map?.triggerRepaint?.()
 }
 
-/** Add the GL layer as soon as the captured map's style is ready. */
+/** Keep the GL layer attached across delayed map creation, style reloads, and SPA map replacement. */
 const attachOverlayLayer = (): void => {
-  if (installOverlayLayer()) return
-  let attempts = 0
-  const timer = setInterval(() => {
-    attempts++
-    if (installOverlayLayer() || attempts > 60) clearInterval(timer)
-  }, 250)
+  installOverlayLayer()
+  setInterval(installOverlayLayer, 1_000)
 }
 
 /** A draw is on the stack; synchronous repaint requests become a later pass, never recursion. */

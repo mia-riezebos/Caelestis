@@ -198,29 +198,13 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
 const cached = new Map<string, readonly AccessToken[]>()
 const inFlight = new Map<string, Promise<readonly AccessToken[] | null>>()
 
-/**
- * Deleting a token means it is gone.
- *
- * **This disagrees with the backend on this branch, deliberately and temporarily.** `DELETE
- * /admin/tokens/:hash` still soft-revokes — it stamps `revokedAt` and keeps the row — while the
- * decision taken further down the stack is that a deleted token is deleted and there is no revoked
- * state at all. Until those meet, anything still carrying a `revokedAt` is filtered out here, so the
- * interface says what was decided rather than what this branch's server happens to do.
- *
- * The filter comes out when the route does. It is one line and it is marked; what it must not become
- * is a permanent client-side patch over a server that never got changed.
- */
-const withoutDeleted = (tokens: readonly AccessToken[]): readonly AccessToken[] =>
-  tokens.filter((token) => token.revokedAt === null)
-
 const fetchTokens = (server: ConnectedServer): Promise<readonly AccessToken[] | null> => {
   const running = inFlight.get(server.url)
   if (running !== undefined) return running
   const run = listAccessTokens(server)
     .then((tokens) => {
-      const live = tokens === null ? null : withoutDeleted(tokens)
-      if (live !== null) cached.set(server.url, live)
-      return live
+      if (tokens !== null) cached.set(server.url, tokens)
+      return tokens
     })
     .finally(() => inFlight.delete(server.url))
   inFlight.set(server.url, run)

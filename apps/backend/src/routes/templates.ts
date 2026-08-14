@@ -2,7 +2,7 @@ import { millis, PngError, SliceError } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
-import { NodeNotFoundError } from '../ports/index.js'
+import { NodeNotFoundError, TemplateIdentityError, TemplateNotFoundError } from '../ports/index.js'
 import { StoreTemplateError, storeTemplate } from '../templates/store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -120,15 +120,23 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
         originX: parsedOriginX,
         originY: parsedOriginY,
         png: new Uint8Array(await png.arrayBuffer()),
+        published: existing.published,
       })
       return c.json(result, 201)
     } catch (error) {
       if (
         error instanceof PngError ||
         error instanceof SliceError ||
+        error instanceof StoreTemplateError ||
         error instanceof NodeNotFoundError
       ) {
         return c.json({ error: error.message }, 400)
+      }
+      if (error instanceof TemplateIdentityError) {
+        return c.json({ error: error.message }, 409)
+      }
+      if (error instanceof TemplateNotFoundError) {
+        return c.json({ error: 'not found' }, 404)
       }
       throw error
     }

@@ -47,6 +47,7 @@ import {
   type SqlStore,
   type TelemetryBucket,
   TemplateIdentityError,
+  TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
   type TemplateVersionRecord,
@@ -344,12 +345,36 @@ export class D1SqlStore implements SqlStore {
         ? sql`'/' || ${segment}`
         : sql`(select path from nodes where id = ${parentId}) || '/' || ${segment}`
     const oldPath = sql`(select path from nodes where id = ${nodeId})`
+    // Re-evaluate the parent against the node's live path inside each batch statement. Two opposite
+    // moves may both pass the reads above, but only the first can still satisfy this predicate once
+    // its write makes the other destination a descendant.
+    const parentIsStillValid =
+      parentId === null
+        ? sql`1 = 1`
+        : sql`(
+            select path from nodes where id = ${parentId} and season = ${node.season}
+          ) is not null and lower(substr(
+            (select path from nodes where id = ${parentId} and season = ${node.season}),
+            1,
+            length(${oldPath}) + 1
+          )) <> lower(${oldPath} || '/') and lower(
+            (select path from nodes where id = ${parentId} and season = ${node.season})
+          ) <> lower(${oldPath})`
     const statements = [
       this.database
         .update(nodes)
         .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
-        .where(and(eq(nodes.season, node.season), startsWithOldPrefix(sql`${oldPath} || '/'`))),
-      this.database.update(nodes).set({ parentId, path: destination }).where(eq(nodes.id, nodeId)),
+        .where(
+          and(
+            eq(nodes.season, node.season),
+            startsWithOldPrefix(sql`${oldPath} || '/'`),
+            parentIsStillValid,
+          ),
+        ),
+      this.database
+        .update(nodes)
+        .set({ parentId, path: destination })
+        .where(and(eq(nodes.id, nodeId), parentIsStillValid)),
     ] as const
     try {
       await this.database.batch([statements[0], statements[1]])
@@ -363,6 +388,11 @@ export class D1SqlStore implements SqlStore {
         )
       }
       throw error
+    }
+    const moved = await this.readNode(nodeId)
+    if (moved === null) return false
+    if (moved.parentId !== parentId) {
+      throw new InvalidNodeParentError('parent node became invalid during the move')
     }
     return true
   }
@@ -484,7 +514,10 @@ export class D1SqlStore implements SqlStore {
     return candidates.filter((hash) => !referenced.has(hash))
   }
 
-  async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
+  async insertTemplateVersion(
+    version: TemplateVersionRecord,
+    options: { readonly requireExisting?: boolean } = {},
+  ): Promise<void> {
     assertValidTemplateVersion(version)
     if ((await this.readNode(version.nodeId)) === null) {
       throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
@@ -525,21 +558,22 @@ export class D1SqlStore implements SqlStore {
       }
     }
 
+    const createTemplate = this.database
+      .insert(templates)
+      .values({
+        id: version.templateId,
+        nodeId: version.nodeId,
+        name: version.name,
+        currentVersionId: null,
+        publishedAt: null,
+        createdWithToken: version.createdWithToken,
+        createdByUserId: version.createdByUserId,
+        createdAtMs: version.createdAt,
+        updatedAtMs: version.createdAt,
+      })
+      .onConflictDoNothing({ target: templates.id })
     const statements = [
-      this.database
-        .insert(templates)
-        .values({
-          id: version.templateId,
-          nodeId: version.nodeId,
-          name: version.name,
-          currentVersionId: null,
-          publishedAt: null,
-          createdWithToken: version.createdWithToken,
-          createdByUserId: version.createdByUserId,
-          createdAtMs: version.createdAt,
-          updatedAtMs: version.createdAt,
-        })
-        .onConflictDoNothing({ target: templates.id }),
+      ...(options.requireExisting === true ? [] : [createTemplate]),
       this.database.insert(templateVersions).values({
         id: version.versionId,
         templateId: version.templateId,
@@ -585,6 +619,9 @@ export class D1SqlStore implements SqlStore {
       // this insert. Same outcome as the check finding it missing, so it gets the same error rather
       // than escaping as a 500. Same rule as `insertNode` and `deleteNode`.
       if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        if (options.requireExisting === true) {
+          throw new TemplateNotFoundError(`template does not exist: ${version.templateId}`)
+        }
         throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
       }
       throw error
@@ -645,17 +682,18 @@ export class D1SqlStore implements SqlStore {
   }
 
   async writeServerSettings(patch: { name?: string; description?: string | null }): Promise<void> {
-    // Read-then-write rather than an upsert of the patch alone: an upsert would insert nulls for
-    // whichever field this call is not setting, so renaming a server would silently clear its
-    // description.
-    const current = await this.readServerSettings()
+    if (patch.name === undefined && patch.description === undefined) return
     const next = {
-      name: patch.name ?? current.name,
-      description: patch.description === undefined ? current.description : patch.description,
+      ...(patch.name === undefined ? {} : { name: patch.name }),
+      ...(patch.description === undefined ? {} : { description: patch.description }),
     }
     await this.database
       .insert(serverSettings)
-      .values({ id: 1, ...next })
+      .values({
+        id: 1,
+        name: patch.name ?? null,
+        description: patch.description ?? null,
+      })
       .onConflictDoUpdate({ target: serverSettings.id, set: next })
   }
 
@@ -739,10 +777,6 @@ export class D1SqlStore implements SqlStore {
   }
 
   async deleteTemplate(templateId: string): Promise<boolean> {
-    const versions = await this.database
-      .select({ id: templateVersions.id })
-      .from(templateVersions)
-      .where(eq(templateVersions.templateId, templateId))
     const existing = await this.database
       .select({ id: templates.id })
       .from(templates)
@@ -754,13 +788,21 @@ export class D1SqlStore implements SqlStore {
     // version and every version points back at the template, so the pointer has to be dropped before
     // the rows it refers to. Tiles go first because they reference a version.
     const statements = [
-      ...versions.map(({ id }) =>
-        this.database.delete(versionTiles).where(eq(versionTiles.versionId, id)),
-      ),
       this.database
         .update(templates)
         .set({ currentVersionId: null })
         .where(eq(templates.id, templateId)),
+      this.database
+        .delete(versionTiles)
+        .where(
+          inArray(
+            versionTiles.versionId,
+            this.database
+              .select({ id: templateVersions.id })
+              .from(templateVersions)
+              .where(eq(templateVersions.templateId, templateId)),
+          ),
+        ),
       this.database.delete(templateVersions).where(eq(templateVersions.templateId, templateId)),
       this.database.delete(templates).where(eq(templates.id, templateId)),
     ]
@@ -819,6 +861,7 @@ export class D1SqlStore implements SqlStore {
     return this.database
       .select({
         templateId: templates.id,
+        versionId: templateVersions.id,
         tileX: versionTiles.tileX,
         tileY: versionTiles.tileY,
         hash: versionTiles.hash,

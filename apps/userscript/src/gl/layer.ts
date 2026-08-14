@@ -38,8 +38,10 @@ const BEFORE_LAYER = 'pixel-hover'
 interface TemplateGpu {
   readonly indices: WebGLTexture
   readonly palette: WebGLTexture
-  readonly width: number
-  readonly height: number
+  width: number
+  height: number
+  /** Array identity of the pixels currently uploaded into `indices`. */
+  source: Uint8Array
   /**
    * What the palette texture was built from, so it is only rewritten when the filter moves.
    *
@@ -378,10 +380,20 @@ export const overlayLayer = {
           palette,
           width: template.width,
           height: template.height,
+          source: template.indices,
           paletteKey: null,
           paletteMoving: false,
         }
         gpu.set(template.id, entry)
+      } else if (
+        entry.source !== template.indices ||
+        entry.width !== template.width ||
+        entry.height !== template.height
+      ) {
+        uploadIndices(gl, entry.indices, template.width, template.height, template.indices)
+        entry.source = template.indices
+        entry.width = template.width
+        entry.height = template.height
       }
 
       const appearance = appearanceOf(template)

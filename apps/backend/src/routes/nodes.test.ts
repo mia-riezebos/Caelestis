@@ -363,12 +363,14 @@ describe('node routes', () => {
       headers: bearer,
     })
     expect(deleted.status).toBe(200)
-    await expect(deleted.json()).resolves.toEqual({ nodes: 3, templates: 2, chunks: 1 })
+    await expect(deleted.json()).resolves.toEqual({ nodes: 3, templates: 2, chunks: 0 })
 
     const sharedChunk = await app.request(`/chunks/${shared}`, { headers: bearer })
     expect(sharedChunk.status).toBe(200)
     await expect(sharedChunk.arrayBuffer()).resolves.toEqual(new Uint8Array([1, 2, 3]).buffer)
-    expect((await app.request(`/chunks/${orphaned}`, { headers: bearer })).status).toBe(404)
+    const retainedChunk = await app.request(`/chunks/${orphaned}`, { headers: bearer })
+    expect(retainedChunk.status).toBe(200)
+    await expect(retainedChunk.arrayBuffer()).resolves.toEqual(new Uint8Array([4, 5, 6]).buffer)
     await expect(sql.readTemplate('01890f3a-6b7c-7def-8123-456789abcda2')).resolves.not.toBeNull()
   })
 

@@ -33,6 +33,7 @@ const chunkCache = new Map<string, Uint8Array>()
  * version bump of a template that mostly did not change.
  */
 const CHUNK_CACHE_LIMIT = 512
+const CHUNK_FETCH_TIMEOUT_MS = 15_000
 
 const rememberChunk = (hash: string, bytes: Uint8Array): void => {
   if (chunkCache.size >= CHUNK_CACHE_LIMIT) {
@@ -48,6 +49,7 @@ const fetchChunk = async (server: ConnectedServer, hash: string): Promise<Uint8A
   try {
     const response = await fetch(`${server.url}/chunks/${hash}`, {
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+      signal: AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS),
     })
     if (!response.ok) return null
     const bytes = new Uint8Array(await response.arrayBuffer())
@@ -103,11 +105,17 @@ const assemble = async (
   let placed = 0
   for (const chunk of template.chunks) {
     const [tileX, tileY] = chunk.tile.split('/').map(Number)
-    if (tileX === undefined || tileY === undefined || !Number.isFinite(tileX)) continue
+    if (
+      tileX === undefined ||
+      tileY === undefined ||
+      !Number.isInteger(tileX) ||
+      !Number.isInteger(tileY)
+    )
+      return null
     const bytes = await fetchChunk(server, chunk.hash)
-    if (bytes === null) continue
+    if (bytes === null) return null
     const decoded = await decodeChunk(bytes)
-    if (decoded === null) continue
+    if (decoded === null) return null
 
     const left = Math.max(template.bbox.minX, tileX * TILE_SIZE)
     const top = Math.max(template.bbox.minY, tileY * TILE_SIZE)
@@ -124,7 +132,7 @@ const assemble = async (
     }
     placed++
   }
-  if (placed === 0) return null
+  if (placed !== template.chunks.length) return null
   return { width, height, indices }
 }
 

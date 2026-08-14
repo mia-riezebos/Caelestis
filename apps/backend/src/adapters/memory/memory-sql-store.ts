@@ -22,6 +22,7 @@ import {
   type SqlStore,
   type TelemetryBucket,
   TemplateIdentityError,
+  TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
   type TemplateVersionRecord,
@@ -304,7 +305,10 @@ export class MemorySqlStore implements SqlStore {
     return [...candidates]
   }
 
-  async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
+  async insertTemplateVersion(
+    version: TemplateVersionRecord,
+    options: { readonly requireExisting?: boolean } = {},
+  ): Promise<void> {
     assertValidTemplateVersion(version)
     if (!this.nodes.has(version.nodeId)) {
       throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
@@ -318,6 +322,9 @@ export class MemorySqlStore implements SqlStore {
     }
 
     const previous = this.templates.get(version.templateId)
+    if (options.requireExisting === true && previous === undefined) {
+      throw new TemplateNotFoundError(`template does not exist: ${version.templateId}`)
+    }
     if (previous !== undefined) {
       const current = this.templateVersions.get(previous.currentVersionId)
       const dimensions = (bbox: TemplateVersionRecord['bbox']) => ({
@@ -477,7 +484,13 @@ export class MemorySqlStore implements SqlStore {
       ) {
         continue
       }
-      records.push(...version.chunks.map((chunk) => ({ templateId, ...chunk })))
+      records.push(
+        ...version.chunks.map((chunk) => ({
+          templateId,
+          versionId: version.versionId,
+          ...chunk,
+        })),
+      )
     }
     return records
   }

@@ -825,6 +825,7 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
  * drawer's source-only colour picker.
  */
 const pixelsOfTile = new Map<string, Uint8Array>()
+const KEEP_TILE_PIXELS = 64
 let capturePixels = false
 
 /** Index meaning "nobody has painted here". Distinct from every palette entry. */
@@ -855,8 +856,25 @@ export const captureTilePixels = (on: boolean): void => {
   log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
 }
 
-export const tilePixels = (tile: TileCoord): Uint8Array | null =>
-  pixelsOfTile.get(tileKey(tile)) ?? null
+const rememberTilePixels = (key: string, pixels: Uint8Array): void => {
+  pixelsOfTile.delete(key)
+  pixelsOfTile.set(key, pixels)
+  while (pixelsOfTile.size > KEEP_TILE_PIXELS) {
+    const oldest = pixelsOfTile.keys().next()
+    if (oldest.done) break
+    pixelsOfTile.delete(oldest.value)
+    // An evicted tile is fetchable again when it next enters the viewport.
+    chased.delete(oldest.value)
+  }
+}
+
+export const tilePixels = (tile: TileCoord): Uint8Array | null => {
+  const key = tileKey(tile)
+  const pixels = pixelsOfTile.get(key)
+  if (pixels === undefined) return null
+  rememberTilePixels(key, pixels)
+  return pixels
+}
 
 /** Whatever tile URL wplace last used, with the coordinates blanked out. */
 let tileUrlShape: string | null = null
@@ -902,6 +920,7 @@ export const ensureTilePixels = (tile: TileCoord): void => {
       warn('fetch', `could not chase tile ${tile.x}/${tile.y}`, String(error))
     } finally {
       chasing--
+      if (!pixelsOfTile.has(key)) chased.delete(key)
     }
   })()
 }
@@ -961,10 +980,27 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
  * drafted on it.
  */
 const draftOfTile = new Map<string, Uint8Array>()
+const KEEP_DRAFT_TILES = 64
+
+const rememberDraft = (key: string, draft: Uint8Array): void => {
+  draftOfTile.delete(key)
+  draftOfTile.set(key, draft)
+  while (draftOfTile.size > KEEP_DRAFT_TILES) {
+    const oldest = draftOfTile.keys().next()
+    if (oldest.done) break
+    draftOfTile.delete(oldest.value)
+    transparentOfTile.delete(oldest.value)
+  }
+}
 
 /** The draft layer for a tile, or null if nothing has been drafted on it. */
-export const draftPixels = (tile: TileCoord): Uint8Array | null =>
-  draftOfTile.get(tileKey(tile)) ?? null
+export const draftPixels = (tile: TileCoord): Uint8Array | null => {
+  const key = tileKey(tile)
+  const draft = draftOfTile.get(key)
+  if (draft === undefined) return null
+  rememberDraft(key, draft)
+  return draft
+}
 
 /**
  * Pixels drafted as Transparent, per tile, as tile-local offsets.
@@ -1141,8 +1177,8 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
   let draft = draftOfTile.get(key)
   if (draft === undefined) {
     draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
-    draftOfTile.set(key, draft)
   }
+  rememberDraft(key, draft)
   let changed = 0
   for (let i = 0; i < triples.length; i += 3) {
     const x = triples[i] as number
@@ -1241,9 +1277,10 @@ const capture = (
       // is drafted here, which is true and needs no special case.
       const existingDraft = draftOfTile.get(key)
       if (existingDraft === undefined || existingDraft.length !== indices.length) {
-        draftOfTile.set(key, indices)
+        rememberDraft(key, indices)
         count('pixels:draft captured')
       } else {
+        rememberDraft(key, existingDraft)
         apply(tile, existingDraft, indices)
         count('pixels:draft re-read')
       }
@@ -1263,10 +1300,11 @@ const capture = (
      */
     const existing = pixelsOfTile.get(key)
     if (existing === undefined || existing.length !== indices.length) {
-      pixelsOfTile.set(key, indices)
+      rememberTilePixels(key, indices)
       count('pixels:captured')
       return
     }
+    rememberTilePixels(key, existing)
     apply(tile, existing, indices)
     count('pixels:re-read as a diff')
   } catch (error) {

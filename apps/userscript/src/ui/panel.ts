@@ -34,6 +34,7 @@ import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
   localTemplates as allLocal,
+  copyAsLocalTemplate,
   forgetServerTemplates,
   localTemplates,
   onLocalChange,
@@ -62,6 +63,7 @@ import {
   findServerNode,
   findServerTemplate,
   forgetServerRows,
+  nodeTreeKey,
   placeKey,
   primeFromCache,
   refreshNodes,
@@ -302,11 +304,7 @@ const treeView = (): HTMLElement => {
               return
             }
             if (draggedKey.startsWith('st:')) {
-              void copyServerTemplateToLocal(
-                draggedKey.slice('st:'.length),
-                parentFolderId,
-                renderTree,
-              )
+              void copyServerTemplateToLocal(draggedKey, parentFolderId, renderTree)
               return
             }
             // Reparent first, then place. One drop target, two kinds of passenger — which it is
@@ -544,7 +542,7 @@ const disconnectServer = (server: ConnectedServer): void => {
   const nodes = forgetNodes(server.url)
   forgetChunks(hashes)
   forgetCachedTokens(server.url)
-  forgetScopes([`server:${server.url}`, ...nodes.map(nodeScopeKey)])
+  forgetScopes([`server:${server.url}`, ...nodes.map((id) => nodeScopeKey(server.url, id))])
   expandedServers.delete(server.url)
   autoExpanded.delete(server.url)
   removeServer(server.url)
@@ -1238,9 +1236,9 @@ const moveBranch = async (
   rerender: () => void,
 ): Promise<void> => {
   const fromServer = draggedKey.startsWith('node:')
-  const sourceId = draggedKey.slice(draggedKey.indexOf(':') + 1)
-  const found = fromServer ? findServerNode(sourceId) : null
+  const found = fromServer ? findServerNode(draggedKey) : null
   if (fromServer && found === null) return
+  const sourceId = found?.node.id ?? draggedKey.slice(draggedKey.indexOf(':') + 1)
 
   const sourceServer =
     found === null
@@ -1305,12 +1303,13 @@ const moveBranch = async (
  * finished arriving there is nothing to move yet, which is worth saying rather than half-doing.
  */
 const copyServerTemplateToLocal = async (
-  templateId: string,
+  templateKey: string,
   folderId: string | null,
   rerender: () => void,
 ): Promise<void> => {
-  const found = findServerTemplate(templateId)
+  const found = findServerTemplate(templateKey)
   if (found === null) return
+  const templateId = found.template.id
   const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
   if (source === undefined) return
   const drawn = allLocal().find(
@@ -1330,12 +1329,15 @@ const copyServerTemplateToLocal = async (
   })
   if (!confirmed) return
 
-  const copied = await addLocalTemplate({
-    ...drawn,
-    id: `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
-    source: 'image',
-  })
-  setTemplateFolder(copied.id, folderId)
+  const copied = await copyAsLocalTemplate(
+    drawn,
+    `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+  )
+  if (!(await setTemplateFolder(copied.id, folderId))) {
+    toast('Copied into Local, but could not put it in that folder.', 'error')
+    rerender()
+    return
+  }
   const removed = await deleteTemplateOnServer(source, templateId)
   if (!removed.ok) toast(`Copied into Local, but ${removed.message}`, 'error')
   else toast(`Moved “${found.template.name}” into Local.`)
@@ -1389,9 +1391,9 @@ const dropOnServerNode = async (
   }
 
   if (!draggedKey.startsWith('st:')) return
-  const templateId = draggedKey.slice('st:'.length)
-  const found = findServerTemplate(templateId)
+  const found = findServerTemplate(draggedKey)
   if (found === null) return
+  const templateId = found.template.id
 
   if (found.serverUrl === server.url) {
     if (found.template.nodeId === nodeId) return
@@ -1847,7 +1849,7 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   }
   // Refresh before rendering: the row we are about to put into rename mode does not exist in the
   // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
-  startRenaming(`node:${result.node.id}`)
+  startRenaming(nodeTreeKey(server, result.node.id))
   await refreshNodes(server, rerender)
 }
 

@@ -105,6 +105,9 @@ const serverIdentity = (server: ConnectedServer): string | null => {
 export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
   `node:${encodeURIComponent(server.url)}:${serverIdentity(server) ?? 'unknown:unknown'}:${nodeId}`
 
+export const serverTemplateTreeKey = (server: ConnectedServer, templateId: string): string =>
+  `st:${encodeURIComponent(server.url)}:${serverIdentity(server) ?? 'unknown:unknown'}:${templateId}`
+
 export const forgetServerTree = (url: string): void => {
   const prefix = `node:${encodeURIComponent(url)}:`
   const state = getState()
@@ -268,18 +271,16 @@ export const replaceSiblingOrder = (
 }
 
 /**
- * Which server holds a template, given only its id.
- *
- * A drag carries one string, and a template row's key is `st:<id>` — so a drop has the template but
- * not where it came from, and a cross-server move needs both ends. Ids are UUIDv7 and unique across
- * servers in practice, so the first match is the right one.
+ * Which server holds the template row identified by its server-scoped tree key.
  */
 export const findServerTemplate = (
-  id: string,
+  key: string,
 ): { serverUrl: string; template: ServerTemplate } | null => {
-  for (const [serverUrl, templates] of templatesByServer) {
-    const template = templates.find((candidate) => candidate.id === id)
-    if (template !== undefined) return { serverUrl, template }
+  for (const server of getState().servers) {
+    const template = templatesByServer
+      .get(server.url)
+      ?.find((candidate) => serverTemplateTreeKey(server, candidate.id) === key)
+    if (template !== undefined) return { serverUrl: server.url, template }
   }
   return null
 }
@@ -293,11 +294,13 @@ export const findServerTemplate = (
 export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null =>
   templatesByServer.get(serverUrl)?.find((template) => template.id === id) ?? null
 
-/** Which server holds a folder, given only its id — the same problem `findServerTemplate` solves. */
-export const findServerNode = (id: string): { serverUrl: string; node: TreeNode } | null => {
-  for (const [serverUrl, nodes] of nodesByServer) {
-    const node = nodes.find((candidate) => candidate.id === id)
-    if (node !== undefined) return { serverUrl, node }
+/** Which server holds a folder row — the same scoped-key lookup as `findServerTemplate`. */
+export const findServerNode = (key: string): { serverUrl: string; node: TreeNode } | null => {
+  for (const server of getState().servers) {
+    const node = nodesByServer
+      .get(server.url)
+      ?.find((candidate) => nodeTreeKey(server, candidate.id) === key)
+    if (node !== undefined) return { serverUrl: server.url, node }
   }
   return null
 }
@@ -1173,9 +1176,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           const into =
             dropParent === null || dropParent === key
               ? null
-              : dropParent.startsWith('node:')
-                ? dropParent.slice('node:'.length)
-                : undefined
+              : known.find((node) => nodeTreeKey(server, node.id) === dropParent)?.id
           if (into === undefined) return
           callbacks.onDropInServer(server, into, draggedKey, beforeKey)
         }
@@ -1196,19 +1197,20 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                 const nodeTarget: TreeTarget = {
                   server,
                   nodeId: node.id,
-                  key: `node:${node.id}`,
+                  key: nodeTreeKey(server, node.id),
                   name: node.name,
                 }
                 return {
-                  key: `node:${node.id}`,
+                  key: nodeTreeKey(server, node.id),
                   name: node.name,
                   kind: 'folder' as const,
                   childrenOf: node.id,
                   // Whether someone else's folder is on your canvas is your decision, so this is
                   // kept here and never sent anywhere. Switching it off takes its templates and its
                   // subfolders off the map while every row inside keeps saying what it said.
-                  visible: isScopeVisible(nodeScopeKey(node.id)),
-                  setVisible: (on: boolean) => setScopeVisible(nodeScopeKey(node.id), on),
+                  visible: isScopeVisible(nodeScopeKey(server.url, node.id)),
+                  setVisible: (on: boolean) =>
+                    setScopeVisible(nodeScopeKey(server.url, node.id), on),
                   canReparent: canEdit,
                   onDropAt: canEdit ? intoServer : undefined,
                   onContextMenu: canEdit
@@ -1251,12 +1253,12 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                       const templateTarget: TreeTarget = {
                         server,
                         nodeId: parentId,
-                        key: `st:${template.id}`,
+                        key: serverTemplateTreeKey(server, template.id),
                         name: template.name,
                         templateId: template.id,
                       }
                       return {
-                        key: `st:${template.id}`,
+                        key: serverTemplateTreeKey(server, template.id),
                         name: template.name,
                         // The same glyph a Local template row wears: it is the same kind of thing,
                         // and where it lives is said by the tree rather than by the icon.

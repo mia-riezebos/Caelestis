@@ -27,8 +27,9 @@ export const rememberNodes = (
   parents.set(serverUrl, new Map(nodes.map((node) => [node.id, node.parentId])))
 }
 
-/** The scope key a folder's switch writes to. Node ids are UUIDv7, so they need no namespacing. */
-export const nodeScopeKey = (nodeId: string): string => `node:${nodeId}`
+/** The scope key a folder's switch writes to, isolated from equal ids on another server. */
+export const nodeScopeKey = (serverUrl: string, nodeId: string): string =>
+  `node:${encodeURIComponent(serverUrl)}:${nodeId}`
 
 /**
  * Whether every folder from this one up to the server's root is switched on.
@@ -45,7 +46,7 @@ export const nodeChainVisible = (serverUrl: string, nodeId: string | null): bool
   if (byId === undefined) return true
   let at = nodeId
   for (let depth = 0; at !== null && depth <= byId.size; depth++) {
-    if (!isScopeVisible(nodeScopeKey(at))) return false
+    if (!isScopeVisible(nodeScopeKey(serverUrl, at))) return false
     at = byId.get(at) ?? null
   }
   return true

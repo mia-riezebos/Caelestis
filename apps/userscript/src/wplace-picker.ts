@@ -2,8 +2,9 @@ import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { log } from './debug.js'
 import { canvasPixelAt } from './main.js'
 import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
+import { stampContains } from './templates/appearance.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
-import { isTemplateVisible, localTemplates } from './templates/local-store.js'
+import { appearanceOf, isTemplateVisible, localTemplates } from './templates/local-store.js'
 import { ensureTilePixels, tilePixels } from './tile-transform.js'
 import { isPaintOpen } from './wplace-paint.js'
 
@@ -55,9 +56,12 @@ const overlayIndexAt = (x: number, y: number): number | null => {
     const localX = x - template.originX
     const localY = y - template.originY
     if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) continue
-    const index = template.indices[localY * template.width + localX]
+    const cellX = Math.floor(localX)
+    const cellY = Math.floor(localY)
+    const index = template.indices[cellY * template.width + cellX]
     if (index === undefined || index === TRANSPARENT_INDEX) continue
     if (claimedHiddenFor(template.appearance).includes(index)) continue
+    if (!stampContains(appearanceOf(template), localX - cellX, localY - cellY)) continue
     found = index
   }
   return found
@@ -65,7 +69,7 @@ const overlayIndexAt = (x: number, y: number): number | null => {
 
 /** The exact base tile index. A cache miss starts a fetch and deliberately returns no colour. */
 const placedIndexAt = (x: number, y: number): number | null =>
-  pixelArtIndexAt(x, y, (tile) => {
+  pixelArtIndexAt(Math.floor(x), Math.floor(y), (tile) => {
     ensureTilePixels(tile)
     return tilePixels(tile)
   })
@@ -145,8 +149,7 @@ export const installColourPicker = (): void => {
 
       const point = canvasPixelAt(event.clientX, event.clientY)
       if (point === null) return
-      const x = Math.floor(point.x)
-      const y = Math.floor(point.y)
+      const { x, y } = point
       const index = pickedIndexAt(x, y)
       if (index === null || !selectColour(index)) {
         log('install', 'picker source pixel is not ready', { x, y })
@@ -182,7 +185,7 @@ export const installColourPicker = (): void => {
 
       const point = canvasPixelAt(event.clientX, event.clientY)
       if (point === null) return
-      const index = overlayIndexAt(Math.floor(point.x), Math.floor(point.y))
+      const index = overlayIndexAt(point.x, point.y)
       if (index === null) return
       if (!selectColour(index)) return
 

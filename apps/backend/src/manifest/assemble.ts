@@ -32,14 +32,15 @@ export const assembleManifest = async (
     )
     .sort((left, right) => left.id.localeCompare(right.id))
 
-  const chunksByTemplate = new Map<
+  const chunksByVersion = new Map<
     string,
     Array<{ tile: ReturnType<typeof tileKey>; hash: string }>
   >()
   for (const record of tileRecords) {
     const chunk = { tile: tileKey({ x: record.tileX, y: record.tileY }), hash: record.hash }
-    const chunks = chunksByTemplate.get(record.templateId)
-    if (chunks === undefined) chunksByTemplate.set(record.templateId, [chunk])
+    const key = `${record.templateId}:${record.versionId}`
+    const chunks = chunksByVersion.get(key)
+    if (chunks === undefined) chunksByVersion.set(key, [chunk])
     else chunks.push(chunk)
   }
 
@@ -57,7 +58,8 @@ export const assembleManifest = async (
     // recoverable; the next poll has both.
     .filter(
       (template) =>
-        nodeIds.has(template.nodeId) && (chunksByTemplate.get(template.id)?.length ?? 0) > 0,
+        nodeIds.has(template.nodeId) &&
+        (chunksByVersion.get(`${template.id}:${template.versionId}`)?.length ?? 0) > 0,
     )
     .map((template) => ({
       id: template.id,
@@ -66,8 +68,8 @@ export const assembleManifest = async (
       version: template.versionId,
       bbox: { ...template.bbox },
       totalPixels: template.totalPixels,
-      chunks: (chunksByTemplate.get(template.id) ?? []).sort((left, right) =>
-        left.tile.localeCompare(right.tile),
+      chunks: (chunksByVersion.get(`${template.id}:${template.versionId}`) ?? []).sort(
+        (left, right) => left.tile.localeCompare(right.tile),
       ),
       published: template.published,
       createdAt: template.createdAt,

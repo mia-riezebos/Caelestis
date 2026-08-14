@@ -36,6 +36,8 @@ export type Mismatches = Float32Array
 interface Cached {
   /** Identity, not contents: a re-captured tile is a new array, and that is the signal to redo it. */
   readonly source: Uint8Array
+  /** Identity of the template pixels this answer was computed against. */
+  readonly templateSource: Uint8Array
   readonly key: string
   /**
    * The two kinds of disagreement, kept apart.
@@ -80,7 +82,12 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
   let asserted = 0
   let unpainted = 0
   for (const [cacheKey, entry] of cache) {
-    if (!cacheKey.startsWith(`${template.id}|`) || entry.key !== key) continue
+    if (
+      !cacheKey.startsWith(`${template.id}|`) ||
+      entry.key !== key ||
+      entry.templateSource !== template.indices
+    )
+      continue
     asserted += entry.asserted
     unpainted += entry.unpainted.length / 3
   }
@@ -89,6 +96,16 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
 }
 
 const cache = new Map<string, Cached>()
+const KEEP_ANSWERS = 128
+
+const remember = (cacheKey: string, entry: Cached): void => {
+  cache.delete(cacheKey)
+  cache.set(cacheKey, entry)
+  while (cache.size > KEEP_ANSWERS) {
+    const oldest = cache.keys().next()
+    if (!oldest.done) cache.delete(oldest.value)
+  }
+}
 
 /** Bumped whenever a cached answer is patched, so a listener can tell that anything happened. */
 let changed = 0
@@ -234,9 +251,15 @@ const buildJob = (
   }
 }
 
-const store = (cacheKey: string, source: Uint8Array, key: string, outcome: ScanOutcome): Cached => {
-  const entry: Cached = { source, key, ...outcome, both: null }
-  cache.set(cacheKey, entry)
+const store = (
+  cacheKey: string,
+  source: Uint8Array,
+  templateSource: Uint8Array,
+  key: string,
+  outcome: ScanOutcome,
+): Cached => {
+  const entry: Cached = { source, templateSource, key, ...outcome, both: null }
+  remember(cacheKey, entry)
   count('mismatch:tiles scanned')
   count('mismatch:pixels marked', outcome.wrong.length / 3)
   count('mismatch:pixels unpainted', outcome.unpainted.length / 3)
@@ -249,7 +272,12 @@ const store = (cacheKey: string, source: Uint8Array, key: string, outcome: ScanO
  * Without this, every frame between asking and answering asks again — sixty scans in flight for one
  * tile, each with its own band copied out of it.
  */
-const inFlight = new Map<string, Uint8Array>()
+interface PendingScan {
+  readonly pixels: Uint8Array
+  readonly templateSource: Uint8Array
+}
+
+const inFlight = new Map<string, PendingScan>()
 
 const requestScan = (
   template: PlacedTemplate,
@@ -258,17 +286,22 @@ const requestScan = (
   cacheKey: string,
   key: string,
 ): void => {
-  if (inFlight.get(cacheKey) === pixels) return
-  inFlight.set(cacheKey, pixels)
+  const templateSource = template.indices
+  const pending = inFlight.get(cacheKey)
+  if (pending?.pixels === pixels && pending.templateSource === templateSource) return
+  inFlight.set(cacheKey, { pixels, templateSource })
   void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
-    if (inFlight.get(cacheKey) === pixels) inFlight.delete(cacheKey)
+    const current = inFlight.get(cacheKey)
+    const isCurrent = current?.pixels === pixels && current.templateSource === templateSource
+    if (isCurrent) inFlight.delete(cacheKey)
+    if (!isCurrent) return
     if (outcome === null) {
       // No worker to be had. The inline path picks this up on the next frame, within its budget.
       stale.add(cacheKey)
       scheduleIdleScan()
       return
     }
-    store(cacheKey, pixels, key, outcome)
+    store(cacheKey, pixels, templateSource, key, outcome)
     changed++
     for (const listener of changeListeners) listener()
   })
@@ -296,7 +329,13 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   const cacheKey = `${template.id}|${tile.x}/${tile.y}`
   const key = signature(template)
   const existing = cache.get(cacheKey)
-  if (existing !== undefined && existing.source === pixels && existing.key === key) {
+  if (
+    existing !== undefined &&
+    existing.source === pixels &&
+    existing.templateSource === template.indices &&
+    existing.key === key
+  ) {
+    remember(cacheKey, existing)
     return answerFrom(existing, countsUnpainted(template))
   }
 
@@ -326,6 +365,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   const entry = store(
     cacheKey,
     pixels,
+    template.indices,
     key,
     scanTile(buildJob(template, tile, pixels, false), template.indices),
   )
@@ -354,7 +394,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
     if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
     const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
     const template = localTemplates().find((candidate) => candidate.id === id)
-    if (template === undefined) continue
+    if (template === undefined || entry.templateSource !== template.indices) continue
 
     const localX = x - template.originX
     const localY = y - template.originY
@@ -408,8 +448,9 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
     if (belongs === 'wrong') wrong = plus(wrong)
     if (belongs === 'unpainted') unpainted = plus(unpainted)
 
-    cache.set(cacheKey, {
+    remember(cacheKey, {
       source: entry.source,
+      templateSource: entry.templateSource,
       key: entry.key,
       wrong,
       unpainted,

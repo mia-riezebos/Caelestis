@@ -12,7 +12,7 @@ import {
   uploadTemplate,
 } from '../state.js'
 import {
-  addLocalTemplate,
+  copyAsLocalTemplate,
   localTemplates,
   type PlacedTemplate,
   removeLocalTemplate,
@@ -228,13 +228,15 @@ export const transplant = async (
       })
       if (!uploaded.ok) return { ok: false, nodes, templates, message: uploaded.message }
     } else {
-      const copied = await addLocalTemplate({
-        ...carried.template,
-        id: localId(),
-        // Its provenance is an image either way; where it came from is said by where it now sits.
-        source: 'image',
-      })
-      setTemplateFolder(copied.id, target)
+      const copied = await copyAsLocalTemplate(carried.template, localId())
+      if (!(await setTemplateFolder(copied.id, target))) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Copied “${carried.template.name}”, but could not put it in its Local folder.`,
+        }
+      }
     }
     templates++
   }
@@ -258,7 +260,16 @@ export const transplant = async (
       if (!removed.ok) warn('install', 'could not remove a source folder', removed.message)
     }
   } else {
-    for (const carried of branch.templates) removeLocalTemplate(carried.sourceId)
+    for (const carried of branch.templates) {
+      if (!(await removeLocalTemplate(carried.sourceId))) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Copied, but could not remove “${carried.template.name}” from Local.`,
+        }
+      }
+    }
     for (const folder of [...inCreationOrder(branch)].reverse()) removeLocalFolder(folder.id)
   }
 

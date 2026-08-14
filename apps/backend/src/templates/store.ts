@@ -10,9 +10,10 @@ import {
   type TileKey,
   tileKey,
   uuidV7,
+  WORLD_PIXELS,
 } from '@caelestis/shared'
 import type { Ports, TemplateVersionRecord } from '../ports/index.js'
-import { NodeNotFoundError } from '../ports/index.js'
+import { NodeNotFoundError, TemplateIdentityError, TemplateNotFoundError } from '../ports/index.js'
 
 export interface StoreTemplateInput {
   /**
@@ -31,6 +32,8 @@ export interface StoreTemplateInput {
   readonly originX: number
   readonly originY: number
   readonly png: Uint8Array
+  /** Publication state to echo for a replacement; new templates default to unpublished. */
+  readonly published?: boolean
 }
 
 export interface StoredTemplate {
@@ -40,7 +43,7 @@ export interface StoredTemplate {
   readonly totalPixels: number
   readonly chunks: readonly { readonly tile: TileKey; readonly hash: string }[]
   readonly report: QuantiseReport
-  readonly published: false
+  readonly published: boolean
 }
 
 /**
@@ -77,6 +80,36 @@ export const storeTemplate = async (
     throw new StoreTemplateError(
       `template covers ${sliced.chunks.length} tiles, more than the ${MAX_TEMPLATE_CHUNKS} one upload may carry`,
     )
+  }
+
+  if (input.templateId !== undefined) {
+    const existing = await ports.sql.readTemplate(input.templateId)
+    if (existing === null) {
+      throw new TemplateNotFoundError(`template does not exist: ${input.templateId}`)
+    }
+    if (existing.name !== input.name) {
+      throw new TemplateIdentityError(
+        `template ${input.templateId} is named ${existing.name}, not ${input.name}`,
+      )
+    }
+    if (existing.currentVersionId !== null) {
+      const current = await ports.sql.readTemplateVersion(existing.currentVersionId)
+      if (current === null) {
+        throw new TemplateNotFoundError(
+          `current version does not exist: ${existing.currentVersionId}`,
+        )
+      }
+      const span = (min: number, max: number) => (max >= min ? max - min : WORLD_PIXELS - min + max)
+      const wasWidth = span(current.bbox.minX, current.bbox.maxX)
+      const wasHeight = current.bbox.maxY - current.bbox.minY
+      const nowWidth = span(sliced.bbox.minX, sliced.bbox.maxX)
+      const nowHeight = sliced.bbox.maxY - sliced.bbox.minY
+      if (wasWidth !== nowWidth || wasHeight !== nowHeight) {
+        throw new TemplateIdentityError(
+          `template ${input.templateId} is ${wasWidth}x${wasHeight}, not ${nowWidth}x${nowHeight}`,
+        )
+      }
+    }
   }
 
   const encodedChunks = await Promise.all(
@@ -116,7 +149,9 @@ export const storeTemplate = async (
     totalPixels: sliced.totalPixels,
     chunks: versionChunks,
   }
-  await ports.sql.insertTemplateVersion(version)
+  await ports.sql.insertTemplateVersion(version, {
+    requireExisting: input.templateId !== undefined,
+  })
 
   return {
     templateId,
@@ -128,6 +163,6 @@ export const storeTemplate = async (
       hash,
     })),
     report,
-    published: false,
+    published: input.published ?? false,
   }
 }

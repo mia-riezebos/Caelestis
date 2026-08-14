@@ -6,8 +6,8 @@ import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
  * page inherits from.
  *
  * It had no tests: the guard that stops it deleting somebody else's setter, the restore of a
- * descriptor it replaced, the timer it cancels on capture and the check that decides what counts as
- * a map could each be removed with the whole workspace green. None of it needs a browser — the trap
+ * descriptor it replaced and the check that decides what counts as a map could each be removed with
+ * the whole workspace green. None of it needs a browser — the trap
  * is on `Object.prototype`, and a plain object assigned to is exactly the event it waits for.
  */
 const WITNESS = '_canvasContainer'
@@ -42,7 +42,7 @@ describe('installMapCapture', () => {
     map[WITNESS] = { nodeName: 'DIV' }
 
     expect(getMap()).toBe(map)
-    expect(Object.getOwnPropertyDescriptor(pagePrototype, WITNESS)).toBeUndefined()
+    expect(Object.getOwnPropertyDescriptor(pagePrototype, WITNESS)).toBeDefined()
   })
 
   it('captures the object the assignment was made on', () => {
@@ -70,13 +70,17 @@ describe('installMapCapture', () => {
     })
   })
 
-  it('removes the trap as soon as it has what it came for', () => {
+  it('keeps the trap armed after capture so a replacement map can become current', () => {
     installMapCapture()
     expect(witnessDescriptor()).toBeDefined()
 
-    ;(mapLike() as Record<string, unknown>)[WITNESS] = {}
+    const first = mapLike() as Record<string, unknown>
+    const second = mapLike() as Record<string, unknown>
+    first[WITNESS] = {}
+    second[WITNESS] = {}
 
-    expect(witnessDescriptor()).toBeUndefined()
+    expect(witnessDescriptor()).toBeDefined()
+    expect(getMap()).toBe(second)
   })
 
   it.each([
@@ -94,18 +98,16 @@ describe('installMapCapture', () => {
     expect(witnessDescriptor()).toBeDefined()
   })
 
-  it('gives up after the release window even if no map ever appears', () => {
+  it('keeps waiting past a slow initial map load', () => {
     installMapCapture()
 
     vi.advanceTimersByTime(30_000)
 
-    expect(witnessDescriptor()).toBeUndefined()
+    expect(witnessDescriptor()).toBeDefined()
     expect(getMap()).toBeNull()
   })
 
-  it('cancels the release timer once it has captured', () => {
-    // Otherwise the timer fires later and deletes whatever now sits under that name — which, after
-    // capture, is nothing of ours.
+  it('does not remove a setter that replaces ours after capture', () => {
     installMapCapture()
     ;(mapLike() as Record<string, unknown>)[WITNESS] = {}
     const theirs = () => undefined

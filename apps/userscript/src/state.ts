@@ -1217,6 +1217,7 @@ export const moveNode = async (
       headers: adminHeaders(server),
       body: JSON.stringify({ parentId }),
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
@@ -1232,6 +1233,7 @@ export const countNodeSubtree = async (
     const response = await fetch(`${server.url}/admin/nodes/${nodeId}/subtree`, {
       headers: adminHeaders(server),
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
     const body = (await response.json()) as { nodes?: unknown; templates?: unknown }
     if (typeof body.nodes !== 'number' || typeof body.templates !== 'number') return null
@@ -1318,6 +1320,7 @@ export const patchTemplate = async (
       headers: adminHeaders(server),
       body: JSON.stringify(patch),
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
@@ -1347,6 +1350,7 @@ export const renameServer = async (
       headers: adminHeaders(server),
       body: JSON.stringify({ name: trimmed }),
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) {
       return { ok: false, message: failure(response, await response.json().catch(() => null)) }
     }
@@ -1368,6 +1372,7 @@ export const deleteTemplate = async (
       method: 'DELETE',
       headers: adminHeaders(server),
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {
@@ -1396,6 +1401,7 @@ export const uploadTemplateVersion = async (
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
       body: form,
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) {
       const body = (await response.json()) as { versionId?: string }
       return { ok: true, versionId: body.versionId ?? '' }
@@ -1418,9 +1424,8 @@ export interface AccessToken {
   readonly tokenHash: string
   readonly label: string
   readonly scope: 'read' | 'report' | 'admin'
-  readonly createdBy: string
+  readonly createdWithToken: string
   readonly createdAt: number
-  readonly revokedAt: number | null
   /**
    * The operator's credential from the server's environment, which has no row and cannot be deleted.
    *
@@ -1435,6 +1440,7 @@ export const listAccessTokens = async (
 ): Promise<readonly AccessToken[] | null> => {
   try {
     const response = await fetch(`${server.url}/admin/tokens`, { headers: adminHeaders(server) })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
     const body = (await response.json()) as { tokens?: readonly AccessToken[] }
     return body.tokens ?? []
@@ -1457,6 +1463,7 @@ export const createAccessToken = async (
       headers: adminHeaders(server),
       body: JSON.stringify({ label, scope }),
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     const body = (await response.json().catch(() => null)) as {
       token?: string
       error?: string
@@ -1469,10 +1476,7 @@ export const createAccessToken = async (
 }
 
 /**
- * Revoke one, by the hash the list gave us.
- *
- * The row stays afterwards, with a date on it. A revoked token is a fact about who used to have a
- * way in, and deleting the record would leave nothing to answer that with.
+ * Revoke one, by the hash the list gave us. Revocation deletes the stored token row.
  */
 export const revokeAccessToken = async (
   server: ConnectedServer,
@@ -1483,6 +1487,7 @@ export const revokeAccessToken = async (
       method: 'DELETE',
       headers: adminHeaders(server),
     })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
     return { ok: false, message: failure(response, await response.json().catch(() => null)) }
   } catch (error) {

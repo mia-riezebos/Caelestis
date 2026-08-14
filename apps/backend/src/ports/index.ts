@@ -40,6 +40,7 @@ export {
   type SqlStore,
   type TelemetryBucket,
   TemplateIdentityError,
+  TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
   type TemplateVersionRecord,
