@@ -14,7 +14,7 @@ import {
 } from '../state.js'
 import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
-import { syncServerTemplates } from '../templates/server-sync.js'
+import { serverTemplateKey, syncServerTemplates } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -526,13 +526,18 @@ const moveKey = (
   to: string,
   after: boolean,
   allKeys: readonly string[] = keys,
-): void => {
+): 'moved' | 'unchanged' | 'too-many' => {
+  // `customOrder` is a flat rank list, so preserving an arbitrary filtered sibling order currently
+  // requires writing every sibling. Bound that synchronous GM storage write to the same number of
+  // rows the UI can render until the persisted format can represent sparse relative positions.
+  if (allKeys.length > MAX_RENDERED_ROWS) return 'too-many'
   const next =
     allKeys === keys
       ? reorderedSiblings(keys, from, to, after)
       : reorderedVisibleSiblings(allKeys, keys, from, to, after)
-  if (next === null || next.every((key, index) => key === allKeys[index])) return
+  if (next === null || next.every((key, index) => key === allKeys[index])) return 'unchanged'
   setState({ customOrder: replaceSiblingOrder(getState().customOrder, allKeys, next) })
+  return 'moved'
 }
 
 const placeAmongVisibleSiblings = (
@@ -540,15 +545,15 @@ const placeAmongVisibleSiblings = (
   allKeys: readonly string[],
   from: string,
   beforeKey: string | null,
-): void => {
+): 'moved' | 'unchanged' | 'too-many' => {
   if (!allKeys.includes(from)) {
     placeKey(from, beforeKey)
-    return
+    return 'moved'
   }
   const without = visibleKeys.filter((key) => key !== from)
   const target = beforeKey ?? without.at(-1)
-  if (target === undefined) return
-  moveKey(visibleKeys, from, target, beforeKey === null, allKeys)
+  if (target === undefined) return 'unchanged'
+  return moveKey(visibleKeys, from, target, beforeKey === null, allKeys)
 }
 
 /**
@@ -722,6 +727,7 @@ interface RowOptions {
   /** Full sibling order, computed only if a filtered or capped view is actually reordered. */
   readonly orderingSiblings?: (() => readonly string[]) | undefined
   readonly rerender: () => void
+  readonly onError: (message: string) => void
   /**
    * Drop resolved to a position: which container it lands in, and which key it lands before.
    *
@@ -798,12 +804,14 @@ const treeRow = (options: RowOptions): HTMLElement => {
       if (renameDraft?.key === options.key) renameDraft.value = input.value
     })
     row.appendChild(input)
-    if (startingRename) {
-      requestAnimationFrame(() => {
-        input.focus()
+    requestAnimationFrame(() => {
+      input.focus()
+      if (startingRename) {
         input.select()
-      })
-    }
+      } else {
+        input.setSelectionRange(input.value.length, input.value.length)
+      }
+    })
   } else {
     name.className = 'caelestis-name text-sm'
     name.textContent = options.name
@@ -952,13 +960,16 @@ const treeRow = (options: RowOptions): HTMLElement => {
       if (target === undefined) return
       event.preventDefault()
       event.stopPropagation()
-      moveKey(
+      const result = moveKey(
         options.siblings,
         options.key,
         target,
         event.key === 'ArrowDown',
         options.orderingSiblings?.() ?? options.siblings,
       )
+      if (result === 'too-many') {
+        options.onError('This level has too many rows to save a custom order safely.')
+      }
       options.rerender()
     })
   }
@@ -1024,16 +1035,25 @@ const treeRow = (options: RowOptions): HTMLElement => {
     ) {
       return
     }
+    const reparenting = dragging !== null && resolved.parentKey !== dragging.parentKey
     dropTarget = {
       parentKey: resolved.parentKey,
       beforeKey: resolved.beforeKey,
       apply: (draggedKey, parentKey, beforeKey) => {
-        placeAmongVisibleSiblings(
-          options.siblings,
-          options.orderingSiblings?.() ?? options.siblings,
-          draggedKey,
-          beforeKey,
-        )
+        if (reparenting) {
+          placeKey(draggedKey, beforeKey)
+        } else {
+          const result = placeAmongVisibleSiblings(
+            options.siblings,
+            options.orderingSiblings?.() ?? options.siblings,
+            draggedKey,
+            beforeKey,
+          )
+          if (result === 'too-many') {
+            options.onError('This level has too many rows to save a custom order safely.')
+            return
+          }
+        }
         place(draggedKey, parentKey, beforeKey)
       },
       rerender: options.rerender,
@@ -1058,13 +1078,16 @@ const treeRow = (options: RowOptions): HTMLElement => {
     }
     if (from === options.key) return
     const box = row.getBoundingClientRect()
-    moveKey(
+    const result = moveKey(
       options.siblings,
       from,
       options.key,
       event.clientY > box.top + box.height / 2,
       options.orderingSiblings?.() ?? options.siblings,
     )
+    if (result === 'too-many') {
+      options.onError('This level has too many rows to save a custom order safely.')
+    }
     options.rerender()
   })
 
@@ -1233,6 +1256,7 @@ const renderLevel = (
         canReparent: item.canReparent,
         forceExpanded: needle !== '',
         rerender,
+        onError,
         checked: item.visible,
         onToggleChecked: (on) => {
           void Promise.resolve(item.setVisible(on)).then(
@@ -1331,6 +1355,7 @@ export const treeContents = (
         orderingSiblings: () => ordered,
         parentKey: null,
         rerender,
+        onError: callbacks.onError,
         /**
          * Categories reorder among themselves, and only among themselves.
          *
@@ -1387,6 +1412,8 @@ export const treeContents = (
           // Exactly one automatic attempt per verified connection. A failed request records an
           // error and waits for the explicit Retry button instead of scheduling itself forever.
           void refreshNodes(server, rerender)
+        }
+        if (refreshing.has(server)) {
           wrap.appendChild(childText('Loading folders…', 0))
         } else {
           const message = nodeErrors.get(server) ?? 'Could not load this server.'
@@ -1487,6 +1514,7 @@ export const treeContents = (
         )
         for (const template of published) {
           const drawn = drawnById.get(template.id)
+          const visibilityKey = serverTemplateKey(server.url, template.id)
           const templateTarget: TreeTarget = {
             server,
             nodeId: template.nodeId,
@@ -1504,10 +1532,10 @@ export const treeContents = (
               createdAt: template.updatedAt,
               muted: !template.published,
               ...(template.published ? {} : { meta: 'unpublished' }),
-              visible: drawn?.visible ?? isScopeVisible(serverTemplateTreeKey(server, template.id)),
+              visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: (on) => {
                 if (drawn !== undefined) return setLocalVisible(drawn.id, on)
-                setScopeVisible(serverTemplateTreeKey(server, template.id), on)
+                setScopeVisible(visibilityKey, on)
                 return true
               },
               canReparent: canEdit,

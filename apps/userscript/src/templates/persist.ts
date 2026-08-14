@@ -1,6 +1,6 @@
 import { WORLD_PIXELS } from '@caelestis/shared'
 import { warn } from '../debug.js'
-import { isUint8Array } from '../page-world.js'
+import { isStoredBlob, isUint8Array, type StoredBlob } from '../page-world.js'
 import type { Appearance, AppearanceGroup } from './appearance.js'
 import {
   type ImportedTemplate,
@@ -254,18 +254,6 @@ export const deleteTemplate = async (
     },
     false,
   )
-
-interface StoredBlob {
-  readonly size: number
-  arrayBuffer(): Promise<ArrayBuffer>
-}
-
-const isStoredBlob = (value: unknown): value is StoredBlob =>
-  typeof value === 'object' &&
-  value !== null &&
-  Number.isSafeInteger((value as StoredBlob).size) &&
-  (value as StoredBlob).size >= 0 &&
-  typeof (value as StoredBlob).arrayBuffer === 'function'
 
 const boundedStoredCandidate = (
   value: unknown,

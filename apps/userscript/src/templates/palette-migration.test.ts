@@ -9,11 +9,12 @@ import {
 const runMigration = async (value: unknown) => {
   const abort = vi.fn()
   const update = vi.fn()
+  const continueCursor = vi.fn()
   const cursor = {
     value,
     primaryKey: 'template',
     update,
-    continue: vi.fn(),
+    continue: continueCursor,
   }
   const cursorRequest = {
     result: cursor as unknown as IDBCursorWithValue | null,
@@ -37,7 +38,7 @@ const runMigration = async (value: unknown) => {
   ) {
     await Promise.resolve()
   }
-  return { abort, update }
+  return { abort, continueCursor, update }
 }
 
 describe('palette persistence migration', () => {
@@ -83,10 +84,14 @@ describe('palette persistence migration', () => {
     expect(migrated.appearance).toEqual({ hiddenColours: [19] })
   })
 
-  it('aborts the version upgrade when a template record cannot be migrated', async () => {
-    const { abort, update } = await runMigration({ id: 'template', indices: 'unreadable' })
+  it('skips a template record that cannot be migrated', async () => {
+    const { abort, continueCursor, update } = await runMigration({
+      id: 'template',
+      indices: 'unreadable',
+    })
 
     expect(update).not.toHaveBeenCalled()
-    expect(abort).toHaveBeenCalledOnce()
+    expect(abort).not.toHaveBeenCalled()
+    expect(continueCursor).toHaveBeenCalledOnce()
   })
 })

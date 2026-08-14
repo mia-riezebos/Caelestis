@@ -1,3 +1,5 @@
+import { isStoredBlob, isUint8Array } from '../page-world.js'
+
 /** Old persisted palette indices mapped to wplace's authoritative current ordering. */
 const OLD_TO_CURRENT = [
   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 17, 18, 20, 21, 22, 23, 24, 25, 26,
@@ -24,14 +26,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const MAX_MIGRATED_INDEX_BYTES = 64 * 1024 * 1024
 
-const abortUpgrade = (store: IDBObjectStore): void => {
-  try {
-    store.transaction.abort()
-  } catch {
-    // The transaction may already have failed for the request that brought us here.
-  }
-}
-
 export const remapStoredAppearance = (value: unknown): unknown => {
   if (!isRecord(value) || !Array.isArray(value.hiddenColours)) return value
   const hidden = value.hiddenColours.filter((entry): entry is number => Number.isSafeInteger(entry))
@@ -41,19 +35,18 @@ export const remapStoredAppearance = (value: unknown): unknown => {
 /** Rewrite local-template records inside the caller's IndexedDB version-change transaction. */
 export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
   const request = store.openCursor()
-  request.onerror = () => abortUpgrade(store)
   request.onsuccess = () => {
     const cursor = request.result
     if (cursor === null) return
     const value: unknown = cursor.value
     if (!isRecord(value)) {
-      abortUpgrade(store)
+      cursor.continue()
       return
     }
     const appearance = remapStoredAppearance(value.appearance)
-    if (value.indices instanceof Uint8Array) {
+    if (isUint8Array(value.indices)) {
       if (value.indices.length > MAX_MIGRATED_INDEX_BYTES) {
-        abortUpgrade(store)
+        cursor.continue()
         return
       }
       cursor.update({ ...value, indices: remapPaletteIndices(value.indices), appearance })
@@ -61,16 +54,16 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
       return
     }
     const storedIndices = value.indices
-    if (!(storedIndices instanceof Blob) || storedIndices.size > MAX_MIGRATED_INDEX_BYTES) {
-      abortUpgrade(store)
+    if (!isStoredBlob(storedIndices) || storedIndices.size > MAX_MIGRATED_INDEX_BYTES) {
+      cursor.continue()
       return
     }
 
     // Blob reads are asynchronous, while a version-change transaction stays active only while it
     // has IndexedDB requests outstanding. Keep one harmless read in flight and apply the remap from
     // that request's success callback, where the transaction is active again. If the Blob cannot be
-    // read, aborting this transaction leaves the database at v3 so a later open can retry instead of
-    // permanently recording a migration that did not happen.
+    // read, skip this invalid record just as the ordinary template loader does. One unreadable row
+    // must not prevent the version upgrade from preserving every other local template.
     let migrated: Blob | null = null
     let failed = false
     void storedIndices
@@ -89,10 +82,9 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
 
     const keepAlive = (): void => {
       const pending = store.get(cursor.primaryKey)
-      pending.onerror = () => abortUpgrade(store)
       pending.onsuccess = () => {
         if (failed) {
-          abortUpgrade(store)
+          cursor.continue()
           return
         }
         if (migrated === null) {

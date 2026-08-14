@@ -1050,6 +1050,8 @@ export const copyAsLocalTemplate = async (
   template: PlacedTemplate,
   id: string,
 ): Promise<PlacedTemplate> => {
+  const restoring = restoreInFlight
+  if (restoring !== null) await restoring
   const imported: ImportedTemplate = {
     id,
     name: template.name,
@@ -1083,6 +1085,12 @@ export const copyAsLocalTemplate = async (
     }
     const source = templates.get(template.id)
     if (source !== template) throw new Error('server template changed while it was being copied')
+    if (
+      retainedIndexPixels - source.indices.length + pendingIndexPixels + imported.indices.length >
+      MAX_LOCAL_INDEX_PIXELS
+    ) {
+      throw new RangeError('local templates exceed the persisted pixel budget')
+    }
 
     pendingAdds.add(id)
     let builtTiles: Map<string, TileLevels> | null = null

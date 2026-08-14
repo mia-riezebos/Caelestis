@@ -23,6 +23,124 @@ afterEach(() => {
 })
 
 describe('local template persistence', () => {
+  it('opens a v3 database past an unreadable migration record and preserves later records', async () => {
+    const records: unknown[] = [
+      { id: 'unreadable', indices: 'not binary' },
+      stored({ id: 'survivor', indices: Uint8Array.from([17]) }),
+    ]
+    let upgradeIndex = 0
+    let readIndex = 0
+    let aborted = false
+    const upgradeCursorRequest = {
+      result: null,
+    } as unknown as IDBRequest<IDBCursorWithValue | null>
+    const readCursorRequest = {
+      result: null,
+    } as unknown as IDBRequest<IDBCursorWithValue | null>
+
+    const finishOpen = (): void => {
+      queueMicrotask(() => opening.onsuccess?.(new Event('success')))
+    }
+    const driveUpgrade = (): void => {
+      if (aborted) return
+      if (upgradeIndex >= records.length) {
+        ;(upgradeCursorRequest as unknown as { result: IDBCursorWithValue | null }).result = null
+        upgradeCursorRequest.onsuccess?.(new Event('success'))
+        finishOpen()
+        return
+      }
+      const index = upgradeIndex
+      const cursor = {
+        value: records[index],
+        primaryKey: (records[index] as { id: string }).id,
+        update: vi.fn((value: unknown) => {
+          records[index] = value
+          return {} as IDBRequest<IDBValidKey>
+        }),
+        continue: vi.fn(() => {
+          upgradeIndex++
+          queueMicrotask(driveUpgrade)
+        }),
+      } as unknown as IDBCursorWithValue
+      ;(upgradeCursorRequest as unknown as { result: IDBCursorWithValue | null }).result = cursor
+      upgradeCursorRequest.onsuccess?.(new Event('success'))
+    }
+
+    const upgradeStore = {
+      openCursor: vi.fn(() => upgradeCursorRequest),
+      get: vi.fn(() => ({}) as IDBRequest<unknown>),
+    } as unknown as IDBObjectStore
+    const upgradeTransaction = {
+      objectStore: vi.fn(() => upgradeStore),
+      abort: vi.fn(() => {
+        aborted = true
+        queueMicrotask(() => opening.onerror?.(new Event('error')))
+      }),
+    } as unknown as IDBTransaction
+    Object.assign(upgradeStore, { transaction: upgradeTransaction })
+
+    const readTransaction = {
+      objectStore: vi.fn(() => ({
+        openCursor: vi.fn(() => {
+          const driveRead = (): void => {
+            if (readIndex >= records.length) {
+              ;(readCursorRequest as unknown as { result: IDBCursorWithValue | null }).result = null
+              readCursorRequest.onsuccess?.(new Event('success'))
+              queueMicrotask(() => readTransaction.oncomplete?.(new Event('complete')))
+              return
+            }
+            const cursor = {
+              value: records[readIndex],
+              primaryKey: (records[readIndex] as { id: string }).id,
+              continue: vi.fn(() => {
+                readIndex++
+                queueMicrotask(driveRead)
+              }),
+            } as unknown as IDBCursorWithValue
+            ;(readCursorRequest as unknown as { result: IDBCursorWithValue | null }).result = cursor
+            readCursorRequest.onsuccess?.(new Event('success'))
+          }
+          queueMicrotask(driveRead)
+          return readCursorRequest
+        }),
+      })),
+    } as unknown as IDBTransaction
+    const database = {
+      objectStoreNames: { contains: vi.fn(() => true) },
+      transaction: vi.fn(() => readTransaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = {
+      result: database,
+      transaction: upgradeTransaction,
+    } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', {
+      open: vi.fn((_name: string, version: number) => {
+        expect(version).toBe(4)
+        queueMicrotask(() => {
+          opening.onupgradeneeded?.({ oldVersion: 3 } as IDBVersionChangeEvent)
+          queueMicrotask(driveUpgrade)
+        })
+        return opening
+      }),
+    })
+    const { loadTemplates } = await import('./persist.js')
+
+    const loaded = await loadTemplates()
+
+    expect(upgradeTransaction.abort).not.toHaveBeenCalled()
+    expect(loaded).toEqual([
+      {
+        kind: 'template-hydration-failure',
+        status: 'invalid',
+        id: 'unreadable',
+        revision: 0,
+        indexPixels: 0,
+      },
+      expect.objectContaining({ id: 'survivor', indices: Uint8Array.from([19]) }),
+    ])
+  })
+
   it('fails a blocked version upgrade instead of hanging and closes any late connection', async () => {
     const database = { close: vi.fn() } as unknown as IDBDatabase
     const opening = { result: database } as IDBOpenDBRequest

@@ -567,7 +567,15 @@ const disconnectServer = (server: ConnectedServer): void => {
   const nodes = forgetNodes(server.url)
   forgetChunks(hashes)
   forgetCachedTokens(server.url)
-  forgetScopes([`server:${server.url}`, ...nodes.map((id) => nodeScopeKey(server.url, id))])
+  const serverTemplatePrefix = `srv:${server.url}:`
+  const legacyTreeTemplatePrefix = `st:${encodeURIComponent(server.url)}:`
+  forgetScopes([
+    `server:${server.url}`,
+    ...nodes.map((id) => nodeScopeKey(server.url, id)),
+    ...getState().hiddenScopes.filter(
+      (key) => key.startsWith(serverTemplatePrefix) || key.startsWith(legacyTreeTemplatePrefix),
+    ),
+  ])
   expandedServers.delete(server.url)
   autoExpanded.delete(server.url)
   removeServer(server.url)
