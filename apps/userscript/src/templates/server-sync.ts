@@ -1,4 +1,11 @@
-import { PALETTE_RGB, quantiseToPalette, TILE_SIZE, TRANSPARENT_INDEX } from '@caelestis/shared'
+import {
+  PALETTE_RGB,
+  quantiseToPalette,
+  sha256Hex,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+  WORLD_PIXELS,
+} from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
 import { type ConnectedServer, getState, listServerContents, onStateChange } from '../state.js'
@@ -79,6 +86,9 @@ const fetchChunk = async (server: ConnectedServer, hash: string): Promise<Uint8A
       bytes.set(part, offset)
       offset += part.byteLength
     }
+    // A configured server is not trusted to tell the truth about a content address. Verify before
+    // admitting bytes to the global cache, otherwise one server can seed another server's hash.
+    if ((await sha256Hex(bytes)) !== hash) return null
     rememberChunk(hash, bytes)
     return bytes
   } catch {
@@ -89,6 +99,8 @@ const fetchChunk = async (server: ConnectedServer, hash: string): Promise<Uint8A
 /** A chunk PNG, as palette indices. */
 const decodeChunk = async (
   bytes: Uint8Array,
+  expectedWidth: number,
+  expectedHeight: number,
 ): Promise<{ width: number; height: number; indices: Uint8Array } | null> => {
   try {
     // Read IHDR before asking the browser to decode. Checking the ImageBitmap afterwards is too
@@ -102,9 +114,10 @@ const decodeChunk = async (
     )
       return null
     const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    if (header.getUint32(16) !== TILE_SIZE || header.getUint32(20) !== TILE_SIZE) return null
+    if (header.getUint32(16) !== expectedWidth || header.getUint32(20) !== expectedHeight)
+      return null
     const bitmap = await createImageBitmap(new Blob([bytes.slice()], { type: 'image/png' }))
-    if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) {
+    if (bitmap.width !== expectedWidth || bitmap.height !== expectedHeight) {
       bitmap.close()
       return null
     }
@@ -139,7 +152,10 @@ const assemble = async (
   server: ConnectedServer,
   template: ServerTemplate,
 ): Promise<{ width: number; height: number; indices: Uint8Array } | null> => {
-  const width = template.bbox.maxX - template.bbox.minX
+  const wrapsX = template.bbox.minX > template.bbox.maxX
+  const width = wrapsX
+    ? WORLD_PIXELS - template.bbox.minX + template.bbox.maxX
+    : template.bbox.maxX - template.bbox.minX
   const height = template.bbox.maxY - template.bbox.minY
   if (width <= 0 || height <= 0 || width * height > 64_000_000) return null
 
@@ -154,18 +170,30 @@ const assemble = async (
       !Number.isInteger(tileY)
     )
       return null
+    const tileLeft = tileX * TILE_SIZE
+    const tileRight = (tileX + 1) * TILE_SIZE
+    const spanStart = wrapsX && tileLeft < template.bbox.maxX ? 0 : template.bbox.minX
+    const spanEnd = wrapsX && tileLeft < template.bbox.maxX ? template.bbox.maxX : WORLD_PIXELS
+    const left = Math.max(spanStart, tileLeft)
+    const right = Math.min(wrapsX ? spanEnd : template.bbox.maxX, tileRight)
+    const top = Math.max(template.bbox.minY, tileY * TILE_SIZE)
+    const bottom = Math.min(template.bbox.maxY, (tileY + 1) * TILE_SIZE)
+    const chunkWidth = right - left
+    const chunkHeight = bottom - top
+    if (chunkWidth <= 0 || chunkHeight <= 0) return null
     const bytes = await fetchChunk(server, chunk.hash)
     if (bytes === null) return null
-    const decoded = await decodeChunk(bytes)
+    const decoded = await decodeChunk(bytes, chunkWidth, chunkHeight)
     if (decoded === null) return null
 
-    const left = Math.max(template.bbox.minX, tileX * TILE_SIZE)
-    const top = Math.max(template.bbox.minY, tileY * TILE_SIZE)
     for (let y = 0; y < decoded.height; y++) {
       const targetY = top + y - template.bbox.minY
       if (targetY < 0 || targetY >= height) continue
       for (let x = 0; x < decoded.width; x++) {
-        const targetX = left + x - template.bbox.minX
+        const targetX =
+          left >= template.bbox.minX
+            ? left + x - template.bbox.minX
+            : WORLD_PIXELS - template.bbox.minX + left + x
         if (targetX < 0 || targetX >= width) continue
         const index = decoded.indices[y * decoded.width + x] ?? TRANSPARENT_INDEX
         if (index === TRANSPARENT_INDEX) continue

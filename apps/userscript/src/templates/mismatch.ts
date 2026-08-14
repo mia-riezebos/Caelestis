@@ -90,7 +90,7 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
     )
       continue
     asserted += entry.asserted
-    unpainted += entry.unpainted.length / 3
+    unpainted += entry.unpainted
   }
   if (asserted === 0) return false
   return unpainted / asserted <= appearance.unpaintedLimit
@@ -100,7 +100,7 @@ const cache = new Map<string, Cached>()
 const KEEP_ANSWERS = 128
 const coverage = new Map<
   string,
-  Pick<Cached, 'asserted' | 'key' | 'templateSource' | 'unpainted'>
+  Pick<Cached, 'asserted' | 'key' | 'templateSource'> & { readonly unpainted: number }
 >()
 
 const remember = (cacheKey: string, entry: Cached): void => {
@@ -282,7 +282,12 @@ const store = (
       coverage.delete(heldKey)
     }
   }
-  coverage.set(cacheKey, entry)
+  coverage.set(cacheKey, {
+    asserted: entry.asserted,
+    key: entry.key,
+    templateSource: entry.templateSource,
+    unpainted: entry.unpainted.length / 3,
+  })
   remember(cacheKey, entry)
   count('mismatch:tiles scanned')
   count('mismatch:pixels marked', outcome.wrong.length / 3)
@@ -481,7 +486,12 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
       asserted: entry.asserted,
       both: null,
     }
-    coverage.set(cacheKey, patched)
+    coverage.set(cacheKey, {
+      asserted: patched.asserted,
+      key: patched.key,
+      templateSource: patched.templateSource,
+      unpainted: patched.unpainted.length / 3,
+    })
     remember(cacheKey, patched)
     changed++
     count(belongs === null ? 'mismatch:pixel fixed' : `mismatch:pixel became ${belongs}`)

@@ -380,9 +380,9 @@ describe('tree identity and ordering', () => {
     expect(downgraded === undefined ? undefined : peekProbedNodes(downgraded)).toEqual(nodes)
   })
 
-  it('offers folder retry only to a connection that can perform it', () => {
+  it('offers manifest retry to every connected server', () => {
     expect(canRetryNodeRefresh(server(SERVER_ID, 0))).toBe(true)
-    expect(canRetryNodeRefresh({ ...server(SERVER_ID, 0), isAdmin: false })).toBe(false)
+    expect(canRetryNodeRefresh({ ...server(SERVER_ID, 0), isAdmin: false })).toBe(true)
   })
 
   it('retains manifest folders for a connected server without admin scope', async () => {

@@ -22,6 +22,16 @@ export const remapPaletteIndices = (values: Uint8Array): Uint8Array => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
+const MAX_MIGRATED_INDEX_BYTES = 64 * 1024 * 1024
+
+const abortUpgrade = (store: IDBObjectStore): void => {
+  try {
+    store.transaction.abort()
+  } catch {
+    // The transaction may already have failed for the request that brought us here.
+  }
+}
+
 export const remapStoredAppearance = (value: unknown): unknown => {
   if (!isRecord(value) || !Array.isArray(value.hiddenColours)) return value
   const hidden = value.hiddenColours.filter((entry): entry is number => Number.isSafeInteger(entry))
@@ -31,19 +41,68 @@ export const remapStoredAppearance = (value: unknown): unknown => {
 /** Rewrite local-template records inside the caller's IndexedDB version-change transaction. */
 export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
   const request = store.openCursor()
+  request.onerror = () => abortUpgrade(store)
   request.onsuccess = () => {
     const cursor = request.result
     if (cursor === null) return
     const value: unknown = cursor.value
-    if (isRecord(value)) {
-      cursor.update({
-        ...value,
-        ...(value.indices instanceof Uint8Array
-          ? { indices: remapPaletteIndices(value.indices) }
-          : {}),
-        appearance: remapStoredAppearance(value.appearance),
-      })
+    if (!isRecord(value)) {
+      abortUpgrade(store)
+      return
     }
-    cursor.continue()
+    const appearance = remapStoredAppearance(value.appearance)
+    if (value.indices instanceof Uint8Array) {
+      if (value.indices.length > MAX_MIGRATED_INDEX_BYTES) {
+        abortUpgrade(store)
+        return
+      }
+      cursor.update({ ...value, indices: remapPaletteIndices(value.indices), appearance })
+      cursor.continue()
+      return
+    }
+    const storedIndices = value.indices
+    if (!(storedIndices instanceof Blob) || storedIndices.size > MAX_MIGRATED_INDEX_BYTES) {
+      abortUpgrade(store)
+      return
+    }
+
+    // Blob reads are asynchronous, while a version-change transaction stays active only while it
+    // has IndexedDB requests outstanding. Keep one harmless read in flight and apply the remap from
+    // that request's success callback, where the transaction is active again. If the Blob cannot be
+    // read, aborting this transaction leaves the database at v3 so a later open can retry instead of
+    // permanently recording a migration that did not happen.
+    let migrated: Blob | null = null
+    let failed = false
+    void storedIndices
+      .arrayBuffer()
+      .then((buffer) => {
+        if (buffer.byteLength !== storedIndices.size) {
+          failed = true
+          return
+        }
+        const remapped = remapPaletteIndices(new Uint8Array(buffer))
+        migrated = new Blob([remapped.buffer as ArrayBuffer])
+      })
+      .catch(() => {
+        failed = true
+      })
+
+    const keepAlive = (): void => {
+      const pending = store.get(cursor.primaryKey)
+      pending.onerror = () => abortUpgrade(store)
+      pending.onsuccess = () => {
+        if (failed) {
+          abortUpgrade(store)
+          return
+        }
+        if (migrated === null) {
+          keepAlive()
+          return
+        }
+        cursor.update({ ...value, indices: migrated, appearance })
+        cursor.continue()
+      }
+    }
+    keepAlive()
   }
 }

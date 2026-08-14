@@ -1043,13 +1043,14 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
  * Picking the imported fields explicitly makes a server identity unrepresentable in the copy. An
  * image import is normally pending until its first placement; this copy already has a position, so
  * marking that placement immediately is also what commits it to IndexedDB before its source can be
- * removed.
+ * removed. A server source transfers its immutable indices and tiles to the Local identity after
+ * that commit, so a move at the aggregate budget does not need to retain the same artwork twice.
  */
 export const copyAsLocalTemplate = async (
   template: PlacedTemplate,
   id: string,
 ): Promise<PlacedTemplate> => {
-  const copied = await addLocalTemplate({
+  const imported: ImportedTemplate = {
     id,
     name: template.name,
     source: 'image',
@@ -1061,7 +1062,82 @@ export const copyAsLocalTemplate = async (
     indices: template.indices,
     moved: template.moved,
     opaque: template.opaque,
-  })
+  }
+  if (isServerTemplate(template)) {
+    validatePlacement(imported)
+    if (
+      id.length === 0 ||
+      id.length > MAX_TEMPLATE_ID_LENGTH ||
+      imported.name.length > MAX_TEMPLATE_NAME_LENGTH ||
+      templates.has(id) ||
+      pendingAdds.has(id)
+    ) {
+      throw new RangeError('local template metadata or id is unavailable')
+    }
+    if (
+      [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length +
+        pendingAdds.size >=
+      MAX_LOCAL_TEMPLATES
+    ) {
+      throw new RangeError('too many local templates')
+    }
+    const source = templates.get(template.id)
+    if (source !== template) throw new Error('server template changed while it was being copied')
+
+    pendingAdds.add(id)
+    let builtTiles: Map<string, TileLevels> | null = null
+    try {
+      if (!template.visible) builtTiles = await slice(imported)
+      const tiles = builtTiles ?? template.tiles
+      if (builtTiles !== null && !claimSourceReplacement(template.tiles.size, builtTiles.size)) {
+        releaseCandidateTiles(builtTiles)
+        builtTiles = null
+        throw new RangeError('local templates exceed the retained source bitmap budget')
+      }
+      const placed: PlacedTemplate = {
+        ...imported,
+        tiles,
+        visible: true,
+        everPlaced: true,
+        appearance: null,
+        owns: [],
+        revision: 0,
+        folderId: null,
+      }
+      const saved = await persist(placed)
+      if (saved.status !== 'saved') {
+        if (builtTiles !== null) {
+          cancelSourceClaim(template.tiles.size, builtTiles.size)
+          releaseCandidateTiles(builtTiles)
+          builtTiles = null
+        }
+        throw new Error('local template copy could not be saved')
+      }
+      if (templates.get(template.id) !== source) {
+        if (builtTiles !== null) {
+          cancelSourceClaim(template.tiles.size, builtTiles.size)
+          releaseCandidateTiles(builtTiles)
+          builtTiles = null
+        }
+        await deleteTemplate(id, saved.revision)
+        throw new Error('server template changed while it was being copied')
+      }
+
+      const copied = { ...placed, revision: saved.revision }
+      desiredVisibility.delete(template.id)
+      clearStamped(template.id)
+      previewOrigins.delete(template.id)
+      templates.delete(template.id)
+      templates.set(id, copied)
+      if (builtTiles !== null) installSourceReplacement(template.tiles.size, builtTiles.size)
+      notify()
+      return copied
+    } finally {
+      pendingAdds.delete(id)
+    }
+  }
+
+  const copied = await addLocalTemplate(imported)
   if (await markPlaced(copied.id)) {
     return templates.get(copied.id) ?? copied
   }

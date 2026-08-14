@@ -18,6 +18,7 @@ import {
   type ProgressPlacement,
   patchTemplate,
   probeServer,
+  refreshStoredServers,
   removeLocalFolder,
   removeServer,
   removeTreeStateKeys,
@@ -64,7 +65,6 @@ import {
   findServerTemplate,
   forgetServerRows,
   nodeTreeKey,
-  placeKey,
   primeFromCache,
   refreshNodes,
   serverTemplateAt,
@@ -121,6 +121,11 @@ const findRail = (): { rail: Element; after: Element } | null => {
 }
 const BUTTON_ID = 'caelestis-rail-button'
 const PANEL_ID = 'caelestis-panel'
+
+const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
+const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
+const panelWidthForViewport = (wanted: number): number =>
+  Math.min(maximumPanelWidth(), Math.max(minimumPanelWidth(), wanted))
 
 /**
  * Named for the alliance it was built for. From Latin `caelum` — sky, heavens — so it carries
@@ -293,9 +298,10 @@ const treeView = (): HTMLElement => {
           onGoTo: goTo,
           onPlace: (id) => beginMove(id, renderTree),
           onCopyToServer: (id) => void copyToServer(id, renderTree),
+          onError: (message) => toast(message, 'error'),
           onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
             void dropOnServerNode(server, nodeId, draggedKey, beforeKey, renderTree),
-          onMoveLocal: (draggedKey, parentKey, beforeKey) => {
+          onMoveLocal: (draggedKey, parentKey, _beforeKey) => {
             // `local` is the root of the category; `lf:<id>` is a folder within it.
             const parentFolderId =
               parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null
@@ -318,14 +324,12 @@ const treeView = (): HTMLElement => {
                   renderTree()
                   return
                 }
-                placeKey(draggedKey, beforeKey)
                 renderTree()
               })()
               return
             } else if (draggedKey.startsWith('lf:')) {
               moveLocalFolder(draggedKey.slice('lf:'.length), parentFolderId)
             }
-            placeKey(draggedKey, beforeKey)
           },
         },
         renderTree,
@@ -1370,13 +1374,9 @@ const dropOnServerNode = async (
   server: ConnectedServer,
   nodeId: string | null,
   draggedKey: string,
-  beforeKey: string | null,
+  _beforeKey: string | null,
   rerender: () => void,
 ): Promise<void> => {
-  // Order is this browser's preference and is recorded whatever else happens — including for a drop
-  // that only reorders, where nothing below this does anything at all.
-  placeKey(draggedKey, beforeKey)
-
   // A folder is a branch, not a row: its structure and everything hanging off it must exist at the
   // destination before anything is taken off the source. `transplant` owns that ordering; this only
   // decides which end is which.
@@ -1901,7 +1901,7 @@ const buildPanel = (): HTMLElement => {
     // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
     // their rail and menus open over our panel rather than being trapped behind it.
     zIndex: '30',
-    width: `${Math.min(getState().panelWidth, window.innerWidth - 96)}px`,
+    width: `${panelWidthForViewport(getState().panelWidth)}px`,
     display: 'flex',
     flexDirection: 'column',
     minHeight: '0',
@@ -1928,7 +1928,7 @@ const buildPanel = (): HTMLElement => {
     const startWidth = panel.getBoundingClientRect().width
     const move = (moved: PointerEvent): void => {
       // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
-      const next = Math.min(720, Math.max(260, startWidth - (moved.clientX - startX)))
+      const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
       panel.style.width = `${next}px`
     }
     const done = (): void => {
@@ -2149,6 +2149,7 @@ export const syncColourModeState = (): void => {
  */
 export const installPanel = (): void => {
   loadState()
+  void refreshStoredServers(refreshView)
   installStyles()
   const rail = railContainer()
   rail.append(railButton(), colourModeButton())
@@ -2163,7 +2164,11 @@ export const installPanel = (): void => {
     positionRail()
   }
   new MutationObserver(sync).observe(document.body, { childList: true, subtree: true })
-  window.addEventListener('resize', positionRail)
+  window.addEventListener('resize', () => {
+    positionRail()
+    const panel = document.getElementById(PANEL_ID)
+    if (panel !== null) panel.style.width = `${panelWidthForViewport(getState().panelWidth)}px`
+  })
   onStateChange(syncColourModeState)
   // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a
   // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per

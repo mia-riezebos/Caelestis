@@ -14,7 +14,7 @@ import {
 } from '../state.js'
 import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
-import { serverTemplateKey, syncServerTemplates } from '../templates/server-sync.js'
+import { syncServerTemplates } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -57,6 +57,7 @@ export interface TreeCallbacks {
   readonly onGoTo: (templateId: string) => void
   readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
+  readonly onError: (message: string) => void
   /** Move a dragged Local row to a place in the tree: a container, and the key it goes before. */
   readonly onMoveLocal: (
     draggedKey: string,
@@ -79,9 +80,11 @@ export interface TreeCallbacks {
   ) => void
 }
 
-const collapsed = new Set<string>()
+let activeTreeKey: string | null = null
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
+let renameDraft: { key: string; value: string } | null = null
+const MAX_RENDERED_ROWS = 2_000
 
 /**
  * Nodes per server, fetched once and refreshed on demand.
@@ -94,12 +97,24 @@ const nodesByServer = new Map<string, readonly TreeNode[]>()
 
 /** Templates per server, from the manifest, on the same terms as the nodes above. */
 const templatesByServer = new Map<string, readonly ServerTemplate[]>()
+/** Verified identity belonging to the rows cached at each URL. */
+const rowIdentityByServer = new Map<string, string>()
 
 const serverIdentity = (server: ConnectedServer): string | null => {
   if (server.info !== null && server.season !== null) return `${server.info.id}:${server.season}`
   return server.lastVerified == null
     ? null
     : `${server.lastVerified.serverId}:${server.lastVerified.season}`
+}
+
+const rowsFor = (
+  server: ConnectedServer,
+): { nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] } | undefined => {
+  const identity = serverIdentity(server)
+  if (identity === null || rowIdentityByServer.get(server.url) !== identity) return undefined
+  const nodes = nodesByServer.get(server.url)
+  if (nodes === undefined) return undefined
+  return { nodes, templates: templatesByServer.get(server.url) ?? [] }
 }
 
 export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
@@ -140,7 +155,8 @@ export const nodeSiblingItems = (
     node,
   }))
 
-export const canRetryNodeRefresh = (server: ConnectedServer): boolean => server.isAdmin
+export const canRetryNodeRefresh = (server: ConnectedServer): boolean =>
+  server.status === 'connected'
 
 export const orderedItems = <T extends OrderedItem>(
   items: readonly T[],
@@ -267,9 +283,9 @@ export const findServerTemplate = (
   key: string,
 ): { serverUrl: string; template: ServerTemplate } | null => {
   for (const server of getState().servers) {
-    const template = templatesByServer
-      .get(server.url)
-      ?.find((candidate) => serverTemplateTreeKey(server, candidate.id) === key)
+    const template = rowsFor(server)?.templates.find(
+      (candidate) => serverTemplateTreeKey(server, candidate.id) === key,
+    )
     if (template !== undefined) return { serverUrl: server.url, template }
   }
   return null
@@ -281,15 +297,19 @@ export const findServerTemplate = (
  * Read from the same cache the row was drawn from, so a menu can never offer "Unpublish" on a row
  * drawn as unpublished — the two would otherwise be answering from different copies.
  */
-export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null =>
-  templatesByServer.get(serverUrl)?.find((template) => template.id === id) ?? null
+export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate | null => {
+  const server = getState().servers.find((candidate) => candidate.url === serverUrl)
+  return server === undefined
+    ? null
+    : (rowsFor(server)?.templates.find((template) => template.id === id) ?? null)
+}
 
 /** Which server holds a folder row — the same scoped-key lookup as `findServerTemplate`. */
 export const findServerNode = (key: string): { serverUrl: string; node: TreeNode } | null => {
   for (const server of getState().servers) {
-    const node = nodesByServer
-      .get(server.url)
-      ?.find((candidate) => nodeTreeKey(server, candidate.id) === key)
+    const node = rowsFor(server)?.nodes.find(
+      (candidate) => nodeTreeKey(server, candidate.id) === key,
+    )
     if (node !== undefined) return { serverUrl: server.url, node }
   }
   return null
@@ -299,8 +319,12 @@ export const findServerNode = (key: string): { serverUrl: string; node: TreeNode
 export const templatesOfNode = (
   serverUrl: string,
   nodeId: string,
-): ReadonlyArray<{ id: string; name: string }> =>
-  (templatesByServer.get(serverUrl) ?? []).filter((template) => template.nodeId === nodeId)
+): ReadonlyArray<{ id: string; name: string }> => {
+  const server = getState().servers.find((candidate) => candidate.url === serverUrl)
+  return server === undefined
+    ? []
+    : (rowsFor(server)?.templates.filter((template) => template.nodeId === nodeId) ?? [])
+}
 
 /**
  * Re-read what a server publishes: its folders and the templates under them.
@@ -322,6 +346,8 @@ export type NodeRefreshResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string; readonly superseded?: true }
 const refreshing = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
+const refreshedConnections = new WeakSet<ConnectedServer>()
+const nodeErrors = new WeakMap<ConnectedServer, string>()
 const refreshGeneration = new Map<string, number>()
 
 export const refreshNodes = async (
@@ -337,9 +363,13 @@ export const refreshNodes = async (
   }
   const generation = (refreshGeneration.get(server.url) ?? 0) + 1
   refreshGeneration.set(server.url, generation)
-  const run = refreshOnce(server, generation).finally(() => refreshing.delete(server))
+  refreshedConnections.add(server)
+  const run = refreshOnce(server, generation)
   refreshing.set(server, run)
   const result = await run
+  if (refreshing.get(server) === run) refreshing.delete(server)
+  if (result.ok) nodeErrors.delete(server)
+  else if (result.superseded !== true) nodeErrors.set(server, result.message)
   queueMicrotask(rerender)
   return result
 }
@@ -359,12 +389,15 @@ const refreshOnce = async (
     return { ok: false, message: 'A newer refresh replaced this one.', superseded: true }
   }
   const { nodes, templates } = contents
+  const identity = serverIdentity(server)
+  if (identity === null) return { ok: false, message: 'The server identity is unavailable.' }
   // The public manifest is now the authoritative snapshot. Retaining the connect-time copy lets a
   // later admin-only consumer resurrect older folders after this refresh has already succeeded.
   takeProbedNodes(server)
   let retainedNodes = 0
-  for (const [url, retained] of nodesByServer) {
-    if (url !== server.url) retainedNodes += retained.length
+  for (const candidate of getState().servers) {
+    if (candidate.url === server.url) continue
+    retainedNodes += rowsFor(candidate)?.nodes.length ?? 0
   }
   if (retainedNodes + nodes.length > MAX_TREE_NODES) {
     return {
@@ -375,6 +408,7 @@ const refreshOnce = async (
   nodesByServer.set(server.url, nodes)
   rememberNodes(server.url, nodes)
   templatesByServer.set(server.url, templates)
+  rowIdentityByServer.set(server.url, identity)
   if (server.info !== null && server.season !== null) {
     void cacheServer({
       url: server.url,
@@ -413,12 +447,21 @@ export const primeFromCache = async (rerender: () => void): Promise<void> => {
       identity.season !== entry.season
     )
       continue
-    if (!nodesByServer.has(entry.url)) nodesByServer.set(entry.url, entry.nodes)
+    const replace = rowsFor(server) === undefined
+    if (replace) {
+      nodesByServer.set(entry.url, entry.nodes)
+      rowIdentityByServer.set(entry.url, `${entry.serverId}:${entry.season}`)
+      templatesByServer.set(entry.url, entry.templates ?? [])
+    }
     // The renderer needs the folder tree too, and it needs it now rather than after the first
     // fetch: a template restored from cache into a folder switched off last session would
     // otherwise draw until the manifest came back and said which folder it was in.
     rememberNodes(entry.url, entry.nodes)
-    if (!templatesByServer.has(entry.url) && entry.templates !== undefined) {
+    if (
+      !replace &&
+      templatesByServer.get(entry.url) === undefined &&
+      entry.templates !== undefined
+    ) {
       templatesByServer.set(entry.url, entry.templates)
     }
   }
@@ -437,16 +480,18 @@ export const forgetServerRows = (serverUrl: string): readonly string[] => {
   )
   nodesByServer.delete(serverUrl)
   templatesByServer.delete(serverUrl)
+  rowIdentityByServer.delete(serverUrl)
   refreshGeneration.delete(serverUrl)
   return hashes
 }
 
 export const startRenaming = (key: string): void => {
   renaming = key
+  renameDraft = null
 }
 const disabled = new Set<string>()
 
-const isExpanded = (key: string): boolean => !collapsed.has(key)
+const isExpanded = (key: string): boolean => !getState().collapsed.includes(key)
 const isEnabled = (key: string): boolean => !disabled.has(key)
 const toggle = (set: Set<string>, key: string): void => {
   if (set.has(key)) set.delete(key)
@@ -475,12 +520,35 @@ export const placeKey = (key: string, beforeKey: string | null): void => {
  * arrangement of every folder and template in the tree. `customOrder` spans all levels; only ever
  * edit it, never rewrite it.
  */
-const moveKey = (keys: readonly string[], from: string, to: string, after: boolean): void => {
-  const siblings = keys.filter((key) => key !== from)
-  const index = siblings.indexOf(to)
-  if (index === -1) return
-  // Land before whichever sibling now follows the target; null means last among these siblings.
-  placeKey(from, after ? (siblings[index + 1] ?? null) : to)
+const moveKey = (
+  keys: readonly string[],
+  from: string,
+  to: string,
+  after: boolean,
+  allKeys: readonly string[] = keys,
+): void => {
+  const next =
+    allKeys === keys
+      ? reorderedSiblings(keys, from, to, after)
+      : reorderedVisibleSiblings(allKeys, keys, from, to, after)
+  if (next === null || next.every((key, index) => key === allKeys[index])) return
+  setState({ customOrder: replaceSiblingOrder(getState().customOrder, allKeys, next) })
+}
+
+const placeAmongVisibleSiblings = (
+  visibleKeys: readonly string[],
+  allKeys: readonly string[],
+  from: string,
+  beforeKey: string | null,
+): void => {
+  if (!allKeys.includes(from)) {
+    placeKey(from, beforeKey)
+    return
+  }
+  const without = visibleKeys.filter((key) => key !== from)
+  const target = beforeKey ?? without.at(-1)
+  if (target === undefined) return
+  moveKey(visibleKeys, from, target, beforeKey === null, allKeys)
 }
 
 /**
@@ -651,6 +719,8 @@ interface RowOptions {
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly siblings: readonly string[]
+  /** Full sibling order, computed only if a filtered or capped view is actually reordered. */
+  readonly orderingSiblings?: (() => readonly string[]) | undefined
   readonly rerender: () => void
   /**
    * Drop resolved to a position: which container it lands in, and which key it lands before.
@@ -686,10 +756,12 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.style.minHeight = '2rem'
   if (options.muted === true) row.style.opacity = '0.55'
   row.draggable = draggable
-  row.tabIndex = 0
+  row.tabIndex = -1
   row.setAttribute('role', 'treeitem')
+  row.setAttribute('aria-level', String(options.depth + 1))
   const expanded = options.forceExpanded === true || isExpanded(options.key)
-  row.setAttribute('aria-expanded', String(expanded))
+  if (options.forceExpanded === true) row.dataset.caelestisForceExpanded = ''
+  if (options.container) row.setAttribute('aria-expanded', String(expanded))
 
   if (options.container) {
     const glyph = icon('caret', 'size-4 opacity-60')
@@ -713,17 +785,25 @@ const treeRow = (options: RowOptions): HTMLElement => {
   const input = document.createElement('input')
   const name = document.createElement('span')
   if (editing) {
+    const startingRename = renameDraft?.key !== options.key
+    if (startingRename) renameDraft = { key: options.key, value: options.name }
     input.type = 'text'
+    input.dataset.caelestisRename = ''
     input.className = 'input input-xs input-bordered'
-    input.value = options.name
+    input.value = renameDraft?.value ?? options.name
     input.style.flex = '1'
     input.style.minWidth = '0'
     input.addEventListener('click', (event) => event.stopPropagation())
-    row.appendChild(input)
-    requestAnimationFrame(() => {
-      input.focus()
-      input.select()
+    input.addEventListener('input', () => {
+      if (renameDraft?.key === options.key) renameDraft.value = input.value
     })
+    row.appendChild(input)
+    if (startingRename) {
+      requestAnimationFrame(() => {
+        input.focus()
+        input.select()
+      })
+    }
   } else {
     name.className = 'caelestis-name text-sm'
     name.textContent = options.name
@@ -751,11 +831,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     const commit = (): void => {
       const value = input.value.trim()
       renaming = null
+      renameDraft = null
       if (value !== '' && value !== options.name) options.onRename?.(value)
       else options.rerender()
     }
     const cancel = (): void => {
       renaming = null
+      renameDraft = null
       options.rerender()
     }
     for (const [glyphName, label, run] of [
@@ -832,21 +914,52 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.appendChild(eye)
 
   const expand = (): void => {
-    toggle(collapsed, options.key)
+    if (!options.container || options.forceExpanded === true) return
+    const next = new Set(getState().collapsed)
+    toggle(next, options.key)
+    setState({ collapsed: [...next] })
     options.rerender()
   }
-  if (!editing) row.addEventListener('click', expand)
-  row.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      expand()
-    }
-  })
+  if (options.container) {
+    if (!editing) row.addEventListener('click', expand)
+    row.addEventListener('keydown', (event) => {
+      if (event.target !== row) return
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        expand()
+      }
+    })
+  }
 
   if (options.onContextMenu !== undefined) {
     row.addEventListener('contextmenu', (event) => {
       event.preventDefault()
       options.onContextMenu?.(event)
+    })
+  }
+
+  if (draggable && !editing) {
+    row.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown')
+    row.addEventListener('keydown', (event) => {
+      if (event.target !== row || !event.altKey) return
+      const index = options.siblings.indexOf(options.key)
+      const target =
+        event.key === 'ArrowUp'
+          ? options.siblings[index - 1]
+          : event.key === 'ArrowDown'
+            ? options.siblings[index + 1]
+            : undefined
+      if (target === undefined) return
+      event.preventDefault()
+      event.stopPropagation()
+      moveKey(
+        options.siblings,
+        options.key,
+        target,
+        event.key === 'ArrowDown',
+        options.orderingSiblings?.() ?? options.siblings,
+      )
+      options.rerender()
     })
   }
 
@@ -914,7 +1027,15 @@ const treeRow = (options: RowOptions): HTMLElement => {
     dropTarget = {
       parentKey: resolved.parentKey,
       beforeKey: resolved.beforeKey,
-      apply: place,
+      apply: (draggedKey, parentKey, beforeKey) => {
+        placeAmongVisibleSiblings(
+          options.siblings,
+          options.orderingSiblings?.() ?? options.siblings,
+          draggedKey,
+          beforeKey,
+        )
+        place(draggedKey, parentKey, beforeKey)
+      },
       rerender: options.rerender,
     }
     parent.insertBefore(placeholder(resolved.depth), resolved.before)
@@ -937,7 +1058,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
     }
     if (from === options.key) return
     const box = row.getBoundingClientRect()
-    moveKey(options.siblings, from, options.key, event.clientY > box.top + box.height / 2)
+    moveKey(
+      options.siblings,
+      from,
+      options.key,
+      event.clientY > box.top + box.height / 2,
+      options.orderingSiblings?.() ?? options.siblings,
+    )
     options.rerender()
   })
 
@@ -961,7 +1088,7 @@ interface TreeItem {
   readonly meta?: string | undefined
   readonly muted?: boolean | undefined
   readonly visible: boolean
-  readonly setVisible: (on: boolean) => void
+  readonly setVisible: (on: boolean) => boolean | Promise<boolean>
   readonly canReparent: boolean
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
   readonly onRename?: ((name: string) => void) | undefined
@@ -988,14 +1115,76 @@ interface TreeSource {
   readonly children: (parentId: string | null) => readonly TreeItem[]
 }
 
+const groupedSource = (
+  entries: ReadonlyArray<{ readonly parentId: string | null; readonly item: TreeItem }>,
+): TreeSource => {
+  const byParent = new Map<string | null, TreeItem[]>()
+  for (const { parentId, item } of entries) {
+    const siblings = byParent.get(parentId) ?? []
+    siblings.push(item)
+    byParent.set(parentId, siblings)
+  }
+  return { children: (parentId) => byParent.get(parentId) ?? [] }
+}
+
+const matcherFor = (source: TreeSource, needle: string): ((item: TreeItem) => boolean) => {
+  if (needle === '') return () => true
+  const matches = new Map<string, boolean>()
+  const visiting = new Set<string>()
+  const visit = (item: TreeItem): boolean => {
+    const cached = matches.get(item.key)
+    if (cached !== undefined) return cached
+    if (item.name.toLocaleLowerCase().includes(needle)) {
+      matches.set(item.key, true)
+      return true
+    }
+    if (item.childrenOf === null || visiting.has(item.key)) {
+      matches.set(item.key, false)
+      return false
+    }
+    visiting.add(item.key)
+    const result = source.children(item.childrenOf).some(visit)
+    visiting.delete(item.key)
+    matches.set(item.key, result)
+    return result
+  }
+  return visit
+}
+
+interface RenderBudget {
+  remaining: number
+  truncated: boolean
+}
+
 const childText = (text: string, depth: number): HTMLElement => {
   const el = document.createElement('p')
+  el.setAttribute('role', 'treeitem')
+  el.setAttribute('aria-level', String(depth + 2))
+  el.setAttribute('aria-disabled', 'true')
   el.className = 'text-xs opacity-60'
   el.style.padding = '0.125rem 0.75rem 0.375rem'
   el.style.paddingLeft = `${2.5 + depth * 1.125}rem`
   el.dataset.caelestisDepth = String(depth)
   el.textContent = text
   return el
+}
+
+const childRetry = (text: string, depth: number, retry: () => void): HTMLElement => {
+  const row = document.createElement('div')
+  row.setAttribute('role', 'treeitem')
+  row.setAttribute('aria-level', String(depth + 2))
+  row.className = 'flex items-center gap-2'
+  row.style.padding = '0.125rem 0.75rem 0.375rem'
+  row.style.paddingLeft = `${2.5 + depth * 1.125}rem`
+  const message = document.createElement('span')
+  message.className = 'text-xs opacity-60'
+  message.textContent = text
+  const button = document.createElement('button')
+  button.className = 'btn btn-xs btn-ghost'
+  button.textContent = 'Retry'
+  button.addEventListener('click', retry)
+  row.append(message, button)
+  return row
 }
 
 /**
@@ -1016,11 +1205,20 @@ const renderLevel = (
   needle: string,
   rank: ReadonlyMap<string, number>,
   matches: (item: TreeItem) => boolean,
+  budget: RenderBudget,
+  onError: (message: string) => void,
 ): void => {
-  const items = orderedItems(source.children(parentId).filter(matches), rank)
+  const allSiblings = source.children(parentId)
+  const matching = allSiblings.filter(matches)
+  const items = orderedItems(matching, rank, budget.remaining)
+  if (items.length < matching.length) budget.truncated = true
   const keys = items.map((item) => item.key)
 
   for (const item of items) {
+    if (budget.remaining <= 0) {
+      budget.truncated = true
+      break
+    }
     const key = item.key
     into.appendChild(
       treeRow({
@@ -1030,14 +1228,23 @@ const renderLevel = (
         depth,
         container: item.childrenOf !== null,
         siblings: keys,
+        orderingSiblings: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
         parentKey,
         canReparent: item.canReparent,
         forceExpanded: needle !== '',
         rerender,
         checked: item.visible,
         onToggleChecked: (on) => {
-          item.setVisible(on)
-          rerender()
+          void Promise.resolve(item.setVisible(on)).then(
+            (changed) => {
+              if (!changed) onError(`Could not change visibility for “${item.name}”.`)
+              rerender()
+            },
+            (error: unknown) => {
+              onError(`Could not change visibility for “${item.name}”. ${String(error)}`)
+              rerender()
+            },
+          )
         },
         ...(item.meta === undefined ? {} : { meta: item.meta }),
         ...(item.muted === undefined ? {} : { muted: item.muted }),
@@ -1047,13 +1254,26 @@ const renderLevel = (
         ...(item.onDropAt === undefined ? {} : { onDropAt: item.onDropAt }),
       }),
     )
+    budget.remaining--
     if (item.childrenOf === null || (needle === '' && !isExpanded(key))) continue
-    renderLevel(into, source, item.childrenOf, depth + 1, key, rerender, needle, rank, matches)
+    renderLevel(
+      into,
+      source,
+      item.childrenOf,
+      depth + 1,
+      key,
+      rerender,
+      needle,
+      rank,
+      matches,
+      budget,
+      onError,
+    )
   }
 
   // Only inside something. "Nothing here" is worth saying about a folder you have just opened; at
   // the top of a source it is the source's own empty state, which says more than this can.
-  if (parentId !== null && keys.length === 0) into.appendChild(childText('Empty.', depth))
+  if (parentId !== null && matching.length === 0) into.appendChild(childText('Empty.', depth))
 }
 
 export const treeContents = (
@@ -1081,6 +1301,7 @@ export const treeContents = (
   const keys = categories.map((item) => item.key)
   const ordered = orderedItems(categories, rank).map((item) => item.key)
   const needle = query.trim().toLocaleLowerCase()
+  const budget: RenderBudget = { remaining: MAX_RENDERED_ROWS, truncated: false }
 
   for (const key of ordered) {
     const server = servers.find((candidate) => `server:${candidate.url}` === key)
@@ -1107,6 +1328,7 @@ export const treeContents = (
         container: true,
         forceExpanded: needle !== '',
         siblings: ordered,
+        orderingSiblings: () => ordered,
         parentKey: null,
         rerender,
         /**
@@ -1122,7 +1344,6 @@ export const treeContents = (
         onDropAt: (draggedKey, parentKey, beforeKey) => {
           // Another category, reordering among its own kind.
           if (parentKey === null && keys.includes(draggedKey)) {
-            placeKey(draggedKey, beforeKey)
             return
           }
           // Landing just under a server's own row means its top level, which is otherwise
@@ -1160,14 +1381,24 @@ export const treeContents = (
     if (!isExpanded(key) && needle === '') continue
 
     if (server !== undefined) {
-      const known = nodesByServer.get(server.url)
-      if (known === undefined && server.status === 'connected') {
-        // First sight of this server: kick off the fetch and say why the tree is not here yet.
-        void refreshNodes(server, rerender)
-        wrap.appendChild(childText('Loading folders…', 0))
+      const rows = rowsFor(server)
+      if (rows === undefined && server.status === 'connected') {
+        if (!refreshedConnections.has(server)) {
+          // Exactly one automatic attempt per verified connection. A failed request records an
+          // error and waits for the explicit Retry button instead of scheduling itself forever.
+          void refreshNodes(server, rerender)
+          wrap.appendChild(childText('Loading folders…', 0))
+        } else {
+          const message = nodeErrors.get(server) ?? 'Could not load this server.'
+          wrap.appendChild(
+            childRetry(message, 0, () => {
+              void refreshNodes(server, rerender, true)
+            }),
+          )
+        }
         continue
-      } else if (known !== undefined) {
-        const published = templatesByServer.get(server.url) ?? []
+      } else if (rows !== undefined) {
+        const { nodes: known, templates: published } = rows
 
         /**
          * A drop anywhere in this server's tree, resolved to a folder.
@@ -1198,119 +1429,128 @@ export const treeContents = (
          * from the manifest before its pixels have finished downloading, and the switch is this
          * browser's own record rather than anything the server said.
          */
-        const source: TreeSource = {
-          children: (parentId) => {
-            const folders: TreeItem[] = known
-              .filter((node) => node.parentId === parentId)
-              .map((node) => {
-                const nodeTarget: TreeTarget = {
-                  server,
-                  nodeId: node.id,
-                  key: nodeTreeKey(server, node.id),
-                  name: node.name,
-                }
-                return {
-                  key: nodeTreeKey(server, node.id),
-                  name: node.name,
-                  kind: 'folder' as const,
-                  childrenOf: node.id,
-                  createdAt: node.createdAt,
-                  // Whether someone else's folder is on your canvas is your decision, so this is
-                  // kept here and never sent anywhere. Switching it off takes its templates and its
-                  // subfolders off the map while every row inside keeps saying what it said.
-                  visible: isScopeVisible(nodeScopeKey(server.url, node.id)),
-                  setVisible: (on: boolean) =>
-                    setScopeVisible(nodeScopeKey(server.url, node.id), on),
-                  canReparent: canEdit,
-                  onDropAt: canEdit ? intoServer : undefined,
-                  onContextMenu: canEdit
-                    ? (event: MouseEvent) => callbacks.onContextMenu(nodeTarget, event)
-                    : undefined,
-                  onRename: canEdit
-                    ? (value: string) => callbacks.onRename(nodeTarget, value)
-                    : undefined,
-                  actions: canEdit
-                    ? [
-                        {
-                          icon: 'createFolder' as const,
-                          label: 'New folder',
-                          run: () => callbacks.onCreateFolder(nodeTarget),
-                        },
-                        {
-                          icon: 'uploadFile' as const,
-                          label: 'Import template',
-                          run: () => callbacks.onImportTemplate(nodeTarget),
-                        },
-                      ]
-                    : undefined,
-                }
-              })
-
-            // Templates hang off a folder, never off the server's own row: the top level of a
-            // server holds folders only, which is what `parentId === null` means here.
-            const templates: TreeItem[] =
-              parentId === null
-                ? []
-                : published
-                    .filter((template) => template.nodeId === parentId)
-                    .map((template) => {
-                      // The copy on the canvas, if the sync has fetched it yet. Absent means the row
-                      // is drawn from the manifest alone — the right first frame, since the manifest
-                      // arrives long before the chunks do.
-                      const drawn = localTemplates().find(
-                        (candidate) => candidate.id === serverTemplateKey(server.url, template.id),
-                      )
-                      const templateTarget: TreeTarget = {
-                        server,
-                        nodeId: parentId,
-                        key: serverTemplateTreeKey(server, template.id),
-                        name: template.name,
-                        templateId: template.id,
-                      }
-                      return {
-                        key: serverTemplateTreeKey(server, template.id),
-                        name: template.name,
-                        // The same glyph a Local template row wears: it is the same kind of thing,
-                        // and where it lives is said by the tree rather than by the icon.
-                        kind: 'image' as const,
-                        childrenOf: null,
-                        createdAt: template.updatedAt,
-                        // Unpublished ones are visible to an admin and nobody else, so they have to
-                        // look different — otherwise the tree shows a template members cannot see
-                        // and gives no hint why.
-                        muted: !template.published,
-                        meta: template.published ? undefined : 'unpublished',
-                        visible:
-                          drawn?.visible ??
-                          isScopeVisible(serverTemplateKey(server.url, template.id)),
-                        setVisible: (on: boolean) => {
-                          if (drawn !== undefined) setLocalVisible(drawn.id, on)
-                          else setScopeVisible(serverTemplateKey(server.url, template.id), on)
-                        },
-                        canReparent: canEdit,
-                        onDropAt: canEdit ? intoServer : undefined,
-                        onContextMenu: canEdit
-                          ? (event: MouseEvent) => callbacks.onContextMenu(templateTarget, event)
-                          : undefined,
-                        onRename: canEdit
-                          ? (value: string) => callbacks.onRename(templateTarget, value)
-                          : undefined,
-                      }
-                    })
-
-            return [...folders, ...templates]
-          },
+        const entries: Array<{ parentId: string | null; item: TreeItem }> = []
+        for (const node of known) {
+          const nodeTarget: TreeTarget = {
+            server,
+            nodeId: node.id,
+            key: nodeTreeKey(server, node.id),
+            name: node.name,
+          }
+          entries.push({
+            parentId: node.parentId,
+            item: {
+              key: nodeTreeKey(server, node.id),
+              name: node.name,
+              kind: 'folder',
+              childrenOf: node.id,
+              createdAt: node.createdAt,
+              visible: isScopeVisible(nodeScopeKey(server.url, node.id)),
+              setVisible: (on) => {
+                setScopeVisible(nodeScopeKey(server.url, node.id), on)
+                return true
+              },
+              canReparent: canEdit,
+              ...(canEdit ? { onDropAt: intoServer } : {}),
+              ...(canEdit
+                ? {
+                    onContextMenu: (event: MouseEvent) =>
+                      callbacks.onContextMenu(nodeTarget, event),
+                  }
+                : {}),
+              ...(canEdit
+                ? { onRename: (value: string) => callbacks.onRename(nodeTarget, value) }
+                : {}),
+              ...(canEdit
+                ? {
+                    actions: [
+                      {
+                        icon: 'createFolder' as const,
+                        label: 'New folder',
+                        run: () => callbacks.onCreateFolder(nodeTarget),
+                      },
+                      {
+                        icon: 'uploadFile' as const,
+                        label: 'Import template',
+                        run: () => callbacks.onImportTemplate(nodeTarget),
+                      },
+                    ],
+                  }
+                : {}),
+            },
+          })
         }
-
-        const matches = (item: TreeItem): boolean =>
-          needle === '' ||
-          item.name.toLocaleLowerCase().includes(needle) ||
-          (item.childrenOf !== null && source.children(item.childrenOf).some(matches))
+        const drawnById = new Map(
+          localTemplates()
+            .filter((candidate) => candidate.serverUrl === server.url)
+            .map((candidate) => [candidate.serverTemplateId, candidate]),
+        )
+        for (const template of published) {
+          const drawn = drawnById.get(template.id)
+          const templateTarget: TreeTarget = {
+            server,
+            nodeId: template.nodeId,
+            key: serverTemplateTreeKey(server, template.id),
+            name: template.name,
+            templateId: template.id,
+          }
+          entries.push({
+            parentId: template.nodeId,
+            item: {
+              key: serverTemplateTreeKey(server, template.id),
+              name: template.name,
+              kind: 'image',
+              childrenOf: null,
+              createdAt: template.updatedAt,
+              muted: !template.published,
+              ...(template.published ? {} : { meta: 'unpublished' }),
+              visible: drawn?.visible ?? isScopeVisible(serverTemplateTreeKey(server, template.id)),
+              setVisible: (on) => {
+                if (drawn !== undefined) return setLocalVisible(drawn.id, on)
+                setScopeVisible(serverTemplateTreeKey(server, template.id), on)
+                return true
+              },
+              canReparent: canEdit,
+              ...(canEdit ? { onDropAt: intoServer } : {}),
+              ...(canEdit
+                ? {
+                    onContextMenu: (event: MouseEvent) =>
+                      callbacks.onContextMenu(templateTarget, event),
+                  }
+                : {}),
+              ...(canEdit
+                ? { onRename: (value: string) => callbacks.onRename(templateTarget, value) }
+                : {}),
+            },
+          })
+        }
+        const source = groupedSource(entries)
+        const matches = matcherFor(source, needle)
         const hasMatches = source.children(null).some(matches)
-        renderLevel(wrap, source, null, 1, key, rerender, needle, rank, matches)
+        renderLevel(
+          wrap,
+          source,
+          null,
+          1,
+          key,
+          rerender,
+          needle,
+          rank,
+          matches,
+          budget,
+          callbacks.onError,
+        )
         if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
         else if (known.length === 0 && published.length === 0)
           wrap.appendChild(childText('No templates published yet.', 0))
+        const refreshError = nodeErrors.get(server)
+        if (server.status === 'connected' && refreshError !== undefined) {
+          wrap.appendChild(
+            childRetry(refreshError, 0, () => {
+              void refreshNodes(server, rerender, true)
+            }),
+          )
+        }
         if (server.status === 'unreachable') {
           wrap.appendChild(childText(`Could not be reached. ${server.error ?? ''}`.trim(), 0))
         } else if (server.status === 'needs-token') {
@@ -1325,99 +1565,100 @@ export const treeContents = (
       // draws them takes a `PlacedTemplate` and does not care where it came from — but they are
       // listed under the server publishing them, not here.
       const mine = localTemplates().filter((template) => !isServerTemplate(template))
-
-      const source: TreeSource = {
-        children: (parentId) => {
-          const folders: TreeItem[] = getState()
-            .localFolders.filter((folder) => folder.parentId === parentId)
-            .map((folder) => {
-              const folderTarget: TreeTarget = {
-                server: null,
-                nodeId: null,
-                key: `lf:${folder.id}`,
-                name: folder.name,
-              }
-              return {
-                key: `lf:${folder.id}`,
-                name: folder.name,
-                kind: 'folder' as const,
-                childrenOf: folder.id,
-                visible: folder.visible,
-                setVisible: (on: boolean) => setLocalFolderVisible(folder.id, on),
-                canReparent: true,
-                onDropAt: callbacks.onMoveLocal,
-                onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(folderTarget, event),
-                onRename: (value: string) => callbacks.onRename(folderTarget, value),
-                actions: [
-                  {
-                    icon: 'createFolder' as const,
-                    label: 'New folder',
-                    run: () => callbacks.onCreateFolder(folderTarget),
-                  },
-                  {
-                    icon: 'uploadFile' as const,
-                    label: 'Import template',
-                    run: () => callbacks.onImportTemplate(folderTarget),
-                  },
-                ],
-              }
-            })
-
-          const templates: TreeItem[] = mine
-            .filter((template) => (template.folderId ?? null) === parentId)
-            .map((template) => {
-              const templateTarget: TreeTarget = {
-                server: null,
-                nodeId: null,
-                key: `local:${template.id}`,
-                name: template.name,
-              }
-              return {
-                key: `local:${template.id}`,
-                name: template.name,
-                kind: 'image' as const,
-                childrenOf: null,
-                meta: `${template.width}×${template.height}`,
-                visible: template.visible,
-                setVisible: (on: boolean) => setLocalVisible(template.id, on),
-                canReparent: true,
-                onDropAt: callbacks.onMoveLocal,
-                onContextMenu: (event: MouseEvent) =>
-                  callbacks.onContextMenu(templateTarget, event),
-                onRename: (value: string) => callbacks.onRename(templateTarget, value),
-                // Only the two that are safe to hit by accident on a hover target. Move takes over
-                // the canvas and Remove destroys the template, so both live in the right-click menu
-                // and in the template's own menu on the canvas, where reaching them is deliberate.
-                actions: [
-                  {
-                    icon: 'search' as const,
-                    label: 'Go to',
-                    run: () => callbacks.onGoTo(template.id),
-                  },
-                  {
-                    icon: 'uploadFile' as const,
-                    label: 'Copy to a server',
-                    run: () => callbacks.onCopyToServer(template.id),
-                  },
-                ],
-              }
-            })
-
-          return [...folders, ...templates]
-        },
+      const entries: Array<{ parentId: string | null; item: TreeItem }> = []
+      for (const folder of getState().localFolders) {
+        const folderTarget: TreeTarget = {
+          server: null,
+          nodeId: null,
+          key: `lf:${folder.id}`,
+          name: folder.name,
+        }
+        entries.push({
+          parentId: folder.parentId,
+          item: {
+            key: `lf:${folder.id}`,
+            name: folder.name,
+            kind: 'folder',
+            childrenOf: folder.id,
+            visible: folder.visible,
+            setVisible: (on) => {
+              setLocalFolderVisible(folder.id, on)
+              return true
+            },
+            canReparent: true,
+            onDropAt: callbacks.onMoveLocal,
+            onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
+            onRename: (value) => callbacks.onRename(folderTarget, value),
+            actions: [
+              {
+                icon: 'createFolder',
+                label: 'New folder',
+                run: () => callbacks.onCreateFolder(folderTarget),
+              },
+              {
+                icon: 'uploadFile',
+                label: 'Import template',
+                run: () => callbacks.onImportTemplate(folderTarget),
+              },
+            ],
+          },
+        })
       }
-
-      const matches = (item: TreeItem): boolean =>
-        needle === '' ||
-        item.name.toLocaleLowerCase().includes(needle) ||
-        (item.childrenOf !== null && source.children(item.childrenOf).some(matches))
+      for (const template of mine) {
+        const templateTarget: TreeTarget = {
+          server: null,
+          nodeId: null,
+          key: `local:${template.id}`,
+          name: template.name,
+        }
+        entries.push({
+          parentId: template.folderId ?? null,
+          item: {
+            key: `local:${template.id}`,
+            name: template.name,
+            kind: 'image',
+            childrenOf: null,
+            meta: `${template.width}×${template.height}`,
+            visible: template.visible,
+            setVisible: (on) => setLocalVisible(template.id, on),
+            canReparent: true,
+            onDropAt: callbacks.onMoveLocal,
+            onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
+            onRename: (value) => callbacks.onRename(templateTarget, value),
+            actions: [
+              { icon: 'search', label: 'Go to', run: () => callbacks.onGoTo(template.id) },
+              {
+                icon: 'uploadFile',
+                label: 'Copy to a server',
+                run: () => callbacks.onCopyToServer(template.id),
+              },
+            ],
+          },
+        })
+      }
+      const source = groupedSource(entries)
+      const matches = matcherFor(source, needle)
       const hasMatches = source.children(null).some(matches)
-      renderLevel(wrap, source, null, 1, 'local', rerender, needle, rank, matches)
+      renderLevel(
+        wrap,
+        source,
+        null,
+        1,
+        'local',
+        rerender,
+        needle,
+        rank,
+        matches,
+        budget,
+        callbacks.onError,
+      )
       if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
       else if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.
       const actions = document.createElement('div')
+      actions.setAttribute('role', 'treeitem')
+      actions.setAttribute('aria-level', '2')
       actions.style.padding = '0 0.75rem 0.5rem 2.25rem'
       const importButton = document.createElement('button')
       importButton.className = 'btn btn-xs'
@@ -1442,7 +1683,18 @@ export const treeContents = (
     }
   }
 
+  if (budget.truncated) {
+    wrap.appendChild(
+      childText(
+        `Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} rows. Refine the search to see others.`,
+        0,
+      ),
+    )
+  }
+
   const addWrap = document.createElement('div')
+  addWrap.setAttribute('role', 'treeitem')
+  addWrap.setAttribute('aria-level', '1')
   addWrap.className = 'flex justify-center'
   addWrap.style.padding = '0.5rem 0.75rem 0'
   const add = document.createElement('button')
@@ -1454,6 +1706,74 @@ export const treeContents = (
   add.addEventListener('click', callbacks.onAddServer)
   addWrap.appendChild(add)
   wrap.appendChild(addWrap)
+
+  if (renaming !== null && wrap.querySelector('[data-caelestis-rename]') === null) {
+    renaming = null
+    renameDraft = null
+  }
+
+  const rows = [...wrap.querySelectorAll<HTMLElement>('[role="treeitem"][data-caelestis-key]')]
+  const active = rows.find((row) => row.dataset.caelestisKey === activeTreeKey) ?? rows[0]
+  const activate = (row: HTMLElement): void => {
+    for (const candidate of rows) {
+      candidate.tabIndex = candidate === row ? 0 : -1
+      for (const control of candidate.querySelectorAll<HTMLElement>('button,input')) {
+        control.tabIndex = candidate === row ? 0 : -1
+      }
+    }
+    activeTreeKey = row.dataset.caelestisKey ?? null
+  }
+  if (active !== undefined) activate(active)
+  wrap.addEventListener('focusin', (event) => {
+    const row = (event.target as Element | null)?.closest<HTMLElement>('[role="treeitem"]')
+    if (row === null || row === undefined || !wrap.contains(row)) return
+    activate(row)
+  })
+  wrap.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented) return
+    const row = (event.target as Element | null)?.closest<HTMLElement>('[role="treeitem"]')
+    if (row === null || row === undefined || event.target !== row) return
+    const index = rows.indexOf(row)
+    let next: HTMLElement | undefined
+    if (event.key === 'ArrowDown') next = rows[index + 1]
+    else if (event.key === 'ArrowUp') next = rows[index - 1]
+    else if (event.key === 'Home') next = rows[0]
+    else if (event.key === 'End') next = rows.at(-1)
+    else if (event.key === 'ArrowRight') {
+      if (row.getAttribute('aria-expanded') === 'false') {
+        event.preventDefault()
+        row.click()
+        return
+      }
+      const child = rows[index + 1]
+      if (
+        child !== undefined &&
+        Number(child.getAttribute('aria-level')) > Number(row.getAttribute('aria-level'))
+      ) {
+        next = child
+      }
+    } else if (event.key === 'ArrowLeft') {
+      if (
+        row.getAttribute('aria-expanded') === 'true' &&
+        row.dataset.caelestisForceExpanded === undefined
+      ) {
+        event.preventDefault()
+        row.click()
+        return
+      }
+      const level = Number(row.getAttribute('aria-level'))
+      for (let candidate = index - 1; candidate >= 0; candidate--) {
+        const parent = rows[candidate]
+        if (parent !== undefined && Number(parent.getAttribute('aria-level')) < level) {
+          next = parent
+          break
+        }
+      }
+    }
+    if (next === undefined) return
+    event.preventDefault()
+    next.focus()
+  })
 
   return wrap
 }
