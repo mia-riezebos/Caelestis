@@ -3,7 +3,12 @@ import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { getState } from '../state.js'
 import { toRgbUnit } from '../templates/appearance.js'
-import { appearanceOf, localTemplates, type PlacedTemplate } from '../templates/local-store.js'
+import {
+  appearanceOf,
+  isTemplateVisible,
+  localTemplates,
+  type PlacedTemplate,
+} from '../templates/local-store.js'
 import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
 import {
   currentQuads,
@@ -358,7 +363,13 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     // on brings them with it rather than laying them over a template that is not there yet.
     // Hiding the template is already in there: its own ramp is on its way to zero, and the markers
     // leave with it rather than a step ahead of it.
-    const fade = value * templateFades.value(template.id)
+    const templateFade = templateFades.advance(
+      template.id,
+      isTemplateVisible(template) ? 1 : 0,
+      now,
+    )
+    if (!templateFade.done) animating = true
+    const fade = value * templateFade.value
     if (fade > 0) wanted.push({ template, fade })
   }
   markerFades.prune(new Set(localTemplates().map((template) => template.id)))
@@ -411,18 +422,26 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   count('marker:tiles with marks', work.length)
 
   const hadBlend = gl.isEnabled(gl.BLEND)
+  const hadDepth = gl.isEnabled(gl.DEPTH_TEST)
+  const blendSrcRgb = gl.getParameter(gl.BLEND_SRC_RGB) as GLenum
+  const blendDstRgb = gl.getParameter(gl.BLEND_DST_RGB) as GLenum
+  const blendSrcAlpha = gl.getParameter(gl.BLEND_SRC_ALPHA) as GLenum
+  const blendDstAlpha = gl.getParameter(gl.BLEND_DST_ALPHA) as GLenum
   const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
   const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
   const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
   gl.enable(gl.BLEND)
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+  gl.disable(gl.DEPTH_TEST)
 
   for (const one of work) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
 
   gl.bindVertexArray(previousVao)
   gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
   gl.useProgram(previousProgram)
+  gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
   if (!hadBlend) gl.disable(gl.BLEND)
+  if (hadDepth) gl.enable(gl.DEPTH_TEST)
 
   if (deferred && now >= nextRetry) {
     nextRetry = now + RETRY_MS

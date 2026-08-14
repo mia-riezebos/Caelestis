@@ -142,16 +142,6 @@ export const nodeSiblingItems = (
 
 export const canRetryNodeRefresh = (server: ConnectedServer): boolean => server.isAdmin
 
-export const localSiblingKeys = (
-  templates: ReadonlyArray<{ readonly id: string; readonly name: string }>,
-  needle: string,
-): readonly string[] => {
-  const folded = needle.toLocaleLowerCase()
-  return templates
-    .filter((template) => folded === '' || template.name.toLocaleLowerCase().includes(folded))
-    .map((template) => `local:${template.id}`)
-}
-
 export const orderedItems = <T extends OrderedItem>(
   items: readonly T[],
   rank: ReadonlyMap<string, number>,
@@ -463,13 +453,6 @@ const toggle = (set: Set<string>, key: string): void => {
   else set.add(key)
 }
 
-const orderedKeys = (keys: readonly string[]): readonly string[] => {
-  const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
-  return [...keys].sort(
-    (a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
-  )
-}
-
 /**
  * Put `key` immediately before `beforeKey` in the custom order, or last when that is null.
  *
@@ -509,7 +492,7 @@ const moveKey = (keys: readonly string[], from: string, to: string, after: boole
  * and the drop only has to read it.
  */
 /** The row being dragged, and the container it came from — needed to police reparenting. */
-let dragging: { key: string; parentKey: string | null } | null = null
+let dragging: { key: string; parentKey: string | null; canReparent: boolean } | null = null
 
 let dropTarget: {
   readonly parentKey: string | null
@@ -531,7 +514,7 @@ const draggedRows = (row: HTMLElement): HTMLElement[] => {
   const depth = Number(row.dataset.caelestisDepth ?? 0)
   const rows = [row]
   let next = row.nextElementSibling
-  while (next instanceof HTMLElement && next.dataset.caelestisKey !== undefined) {
+  while (next instanceof HTMLElement) {
     if (Number(next.dataset.caelestisDepth ?? 0) <= depth) break
     rows.push(next)
     next = next.nextElementSibling
@@ -659,6 +642,8 @@ interface RowOptions {
    * structure, and only an admin may rearrange that.
    */
   readonly canReparent?: boolean | undefined
+  /** Search exposes descendants without changing the user's stored collapsed state. */
+  readonly forceExpanded?: boolean | undefined
   /** Dimmed, for a row that exists but is not doing anything yet — an unpublished template. */
   readonly muted?: boolean | undefined
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
@@ -703,13 +688,14 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.draggable = draggable
   row.tabIndex = 0
   row.setAttribute('role', 'treeitem')
-  row.setAttribute('aria-expanded', String(isExpanded(options.key)))
+  const expanded = options.forceExpanded === true || isExpanded(options.key)
+  row.setAttribute('aria-expanded', String(expanded))
 
   if (options.container) {
     const glyph = icon('caret', 'size-4 opacity-60')
     glyph.style.flex = '0 0 auto'
     glyph.style.transition = 'transform 120ms ease-out'
-    glyph.style.transform = isExpanded(options.key) ? 'rotate(90deg)' : 'rotate(0deg)'
+    glyph.style.transform = expanded ? 'rotate(90deg)' : 'rotate(0deg)'
     row.appendChild(glyph)
   } else {
     // A leaf still needs the caret's width, or its name hangs left of every sibling's.
@@ -868,7 +854,11 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
   row.addEventListener('dragstart', (event) => {
     event.dataTransfer?.setData('text/plain', options.key)
-    dragging = { key: options.key, parentKey: options.parentKey ?? null }
+    dragging = {
+      key: options.key,
+      parentKey: options.parentKey ?? null,
+      canReparent: options.canReparent === true,
+    }
     // A folder travels with what is inside it. Measured before anything is hidden, because a hidden
     // row has no height and the hole has to be the size of what left it.
     const moving = draggedRows(row)
@@ -915,8 +905,8 @@ const treeRow = (options: RowOptions): HTMLElement => {
     // change to the shared structure, so without the right to make it the drop is simply not
     // offered: no outline appears, which reads as "not there" without needing to say so.
     if (
-      options.canReparent !== true &&
       dragging !== null &&
+      (options.canReparent !== true || !dragging.canReparent) &&
       resolved.parentKey !== dragging.parentKey
     ) {
       return
@@ -967,6 +957,7 @@ interface TreeItem {
   readonly kind: IconName
   /** Its id as a container, so the renderer can ask for its children. Null for a leaf. */
   readonly childrenOf: string | null
+  readonly createdAt?: number
   readonly meta?: string | undefined
   readonly muted?: boolean | undefined
   readonly visible: boolean
@@ -1002,6 +993,7 @@ const childText = (text: string, depth: number): HTMLElement => {
   el.className = 'text-xs opacity-60'
   el.style.padding = '0.125rem 0.75rem 0.375rem'
   el.style.paddingLeft = `${2.5 + depth * 1.125}rem`
+  el.dataset.caelestisDepth = String(depth)
   el.textContent = text
   return el
 }
@@ -1021,13 +1013,15 @@ const renderLevel = (
   depth: number,
   parentKey: string,
   rerender: () => void,
+  needle: string,
+  rank: ReadonlyMap<string, number>,
+  matches: (item: TreeItem) => boolean,
 ): void => {
-  const byKey = new Map(source.children(parentId).map((item) => [item.key, item]))
-  const keys = orderedKeys([...byKey.keys()])
+  const items = orderedItems(source.children(parentId).filter(matches), rank)
+  const keys = items.map((item) => item.key)
 
-  for (const key of keys) {
-    const item = byKey.get(key)
-    if (item === undefined) continue
+  for (const item of items) {
+    const key = item.key
     into.appendChild(
       treeRow({
         key,
@@ -1038,6 +1032,7 @@ const renderLevel = (
         siblings: keys,
         parentKey,
         canReparent: item.canReparent,
+        forceExpanded: needle !== '',
         rerender,
         checked: item.visible,
         onToggleChecked: (on) => {
@@ -1052,8 +1047,8 @@ const renderLevel = (
         ...(item.onDropAt === undefined ? {} : { onDropAt: item.onDropAt }),
       }),
     )
-    if (item.childrenOf === null || !isExpanded(key)) continue
-    renderLevel(into, source, item.childrenOf, depth + 1, key, rerender)
+    if (item.childrenOf === null || (needle === '' && !isExpanded(key))) continue
+    renderLevel(into, source, item.childrenOf, depth + 1, key, rerender, needle, rank, matches)
   }
 
   // Only inside something. "Nothing here" is worth saying about a folder you have just opened; at
@@ -1061,7 +1056,11 @@ const renderLevel = (
   if (parentId !== null && keys.length === 0) into.appendChild(childText('Empty.', depth))
 }
 
-export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HTMLElement => {
+export const treeContents = (
+  callbacks: TreeCallbacks,
+  rerender: () => void,
+  query = '',
+): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.setAttribute('role', 'tree')
   wrap.className = 'flex flex-col'
@@ -1071,8 +1070,17 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
   wrap.style.paddingBottom = '0.5rem'
 
   const servers = getState().servers
-  const keys = ['local', ...servers.map((server) => `server:${server.url}`)]
-  const ordered = orderedKeys(keys)
+  const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
+  const categories = [
+    { key: 'local', name: 'Local' },
+    ...servers.map((server) => ({
+      key: `server:${server.url}`,
+      name: server.info?.name ?? server.url,
+    })),
+  ]
+  const keys = categories.map((item) => item.key)
+  const ordered = orderedItems(categories, rank).map((item) => item.key)
+  const needle = query.trim().toLocaleLowerCase()
 
   for (const key of ordered) {
     const server = servers.find((candidate) => `server:${candidate.url}` === key)
@@ -1097,6 +1105,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         kind: isLocal ? 'folder' : 'server',
         depth: 0,
         container: true,
+        forceExpanded: needle !== '',
         siblings: ordered,
         parentKey: null,
         rerender,
@@ -1148,7 +1157,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           : undefined,
       }),
     )
-    if (!isExpanded(key)) continue
+    if (!isExpanded(key) && needle === '') continue
 
     if (server !== undefined) {
       const known = nodesByServer.get(server.url)
@@ -1205,6 +1214,7 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                   name: node.name,
                   kind: 'folder' as const,
                   childrenOf: node.id,
+                  createdAt: node.createdAt,
                   // Whether someone else's folder is on your canvas is your decision, so this is
                   // kept here and never sent anywhere. Switching it off takes its templates and its
                   // subfolders off the map while every row inside keeps saying what it said.
@@ -1264,14 +1274,18 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
                         // and where it lives is said by the tree rather than by the icon.
                         kind: 'image' as const,
                         childrenOf: null,
+                        createdAt: template.updatedAt,
                         // Unpublished ones are visible to an admin and nobody else, so they have to
                         // look different — otherwise the tree shows a template members cannot see
                         // and gives no hint why.
                         muted: !template.published,
                         meta: template.published ? undefined : 'unpublished',
-                        visible: drawn?.visible ?? false,
+                        visible:
+                          drawn?.visible ??
+                          isScopeVisible(serverTemplateKey(server.url, template.id)),
                         setVisible: (on: boolean) => {
                           if (drawn !== undefined) setLocalVisible(drawn.id, on)
+                          else setScopeVisible(serverTemplateKey(server.url, template.id), on)
                         },
                         canReparent: canEdit,
                         onDropAt: canEdit ? intoServer : undefined,
@@ -1288,8 +1302,14 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
           },
         }
 
-        renderLevel(wrap, source, null, 1, key, rerender)
-        if (known.length === 0 && published.length === 0)
+        const matches = (item: TreeItem): boolean =>
+          needle === '' ||
+          item.name.toLocaleLowerCase().includes(needle) ||
+          (item.childrenOf !== null && source.children(item.childrenOf).some(matches))
+        const hasMatches = source.children(null).some(matches)
+        renderLevel(wrap, source, null, 1, key, rerender, needle, rank, matches)
+        if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
+        else if (known.length === 0 && published.length === 0)
           wrap.appendChild(childText('No templates published yet.', 0))
         if (server.status === 'unreachable') {
           wrap.appendChild(childText(`Could not be reached. ${server.error ?? ''}`.trim(), 0))
@@ -1387,8 +1407,14 @@ export const treeContents = (callbacks: TreeCallbacks, rerender: () => void): HT
         },
       }
 
-      renderLevel(wrap, source, null, 1, 'local', rerender)
-      if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
+      const matches = (item: TreeItem): boolean =>
+        needle === '' ||
+        item.name.toLocaleLowerCase().includes(needle) ||
+        (item.childrenOf !== null && source.children(item.childrenOf).some(matches))
+      const hasMatches = source.children(null).some(matches)
+      renderLevel(wrap, source, null, 1, 'local', rerender, needle, rank, matches)
+      if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
+      else if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.
       const actions = document.createElement('div')

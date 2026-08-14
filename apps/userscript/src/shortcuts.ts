@@ -18,9 +18,10 @@ const isTyping = (target: EventTarget | null): boolean => {
 
 /** Resolve an unmodified, non-typing keydown to one of Caelestis's deliberately few shortcuts. */
 export const shortcutFor = (
-  event: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'key' | 'metaKey' | 'target'>,
+  event: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
+    Partial<Pick<KeyboardEvent, 'repeat' | 'shiftKey'>>,
 ): Shortcut | null => {
-  if (event.metaKey || event.ctrlKey || event.altKey) return null
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat) return null
   if (isTyping(event.target)) return null
 
   switch (event.key.toLowerCase()) {

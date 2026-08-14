@@ -179,7 +179,12 @@ export class MemorySqlStore implements SqlStore {
     return renamed
   }
 
-  async moveNode(nodeId: string, parentId: string | null, proposedPath: string): Promise<boolean> {
+  async moveNode(
+    nodeId: string,
+    parentId: string | null,
+    proposedPath: string,
+    patch: { readonly name?: string } = {},
+  ): Promise<boolean> {
     const node = this.nodes.get(nodeId)
     if (node === undefined) return false
 
@@ -230,7 +235,7 @@ export class MemorySqlStore implements SqlStore {
       throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
     }
 
-    this.nodes.set(node.id, { ...node, parentId, path })
+    this.nodes.set(node.id, { ...node, parentId, path, name: patch.name ?? node.name })
     for (const descendant of rewritten) this.nodes.set(descendant.id, descendant)
     return true
   }
@@ -282,27 +287,16 @@ export class MemorySqlStore implements SqlStore {
         .filter(([, template]) => nodeIds.has(template.nodeId))
         .map(([templateId]) => templateId),
     )
-    const hashes = new Set<string>()
-
     // The collections do not enforce foreign keys, but this deliberately follows D1's safe order:
-    // collect the tile hashes, remove versions, then their templates, and only then their nodes.
+    // remove versions, then their templates, and only then their nodes.
     for (const [versionId, version] of this.templateVersions) {
       if (!templateIds.has(version.templateId)) continue
-      for (const chunk of version.chunks) hashes.add(chunk.hash)
       this.templateVersions.delete(versionId)
     }
     for (const templateId of templateIds) this.templates.delete(templateId)
     for (const descendantId of nodeIds) this.nodes.delete(descendantId)
 
-    return { nodes: nodeIds.size, templates: templateIds.size, hashes: [...hashes] }
-  }
-
-  async unreferencedHashes(hashes: readonly string[]): Promise<readonly string[]> {
-    const candidates = new Set(hashes)
-    for (const version of this.templateVersions.values()) {
-      for (const chunk of version.chunks) candidates.delete(chunk.hash)
-    }
-    return [...candidates]
+    return { nodes: nodeIds.size, templates: templateIds.size }
   }
 
   async insertTemplateVersion(
@@ -403,10 +397,7 @@ export class MemorySqlStore implements SqlStore {
     publishedAt: Millis | null,
     updatedAt: Millis,
   ): Promise<boolean> {
-    const template = this.templates.get(templateId)
-    if (template === undefined) return false
-    this.templates.set(templateId, { ...template, publishedAt, updatedAt })
-    return true
+    return await this.updateTemplate(templateId, { publishedAt }, updatedAt)
   }
 
   async updateTemplate(
@@ -423,6 +414,7 @@ export class MemorySqlStore implements SqlStore {
       ...template,
       name: patch.name ?? template.name,
       nodeId: patch.nodeId ?? template.nodeId,
+      publishedAt: patch.publishedAt === undefined ? template.publishedAt : patch.publishedAt,
       updatedAt,
     })
     return true

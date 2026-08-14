@@ -56,7 +56,7 @@ import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
-import { DEFAULT_SORT, type SortOrder, sortControl } from './sort.js'
+import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { type Destination, type Source, transplant } from './transplant.js'
 import {
@@ -145,7 +145,7 @@ const VIEW_TITLE: Record<View, string | null> = {
 
 let currentView: View = 'tree'
 let open = false
-let sortOrder: SortOrder = DEFAULT_SORT
+let searchQuery = ''
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -266,12 +266,14 @@ const treeView = (): HTMLElement => {
   searchInput.style.flex = '1'
   searchInput.style.minWidth = '0'
   searchInput.placeholder = 'Search templates'
+  searchInput.setAttribute('aria-label', 'Search templates')
+  searchInput.value = searchQuery
   search.append(searchIcon, searchInput)
 
   toolbar.append(
     search,
-    sortControl(sortOrder, (next) => {
-      sortOrder = next
+    sortControl(getState().sort, (next) => {
+      setState({ sort: next })
       showView('tree')
     }),
   )
@@ -310,7 +312,16 @@ const treeView = (): HTMLElement => {
             // Reparent first, then place. One drop target, two kinds of passenger — which it is
             // comes from the dragged row's own key, so nothing else has to care.
             if (draggedKey.startsWith('local:')) {
-              void setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId)
+              void (async () => {
+                if (!(await setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId))) {
+                  toast('Could not move that template into the folder.', 'error')
+                  renderTree()
+                  return
+                }
+                placeKey(draggedKey, beforeKey)
+                renderTree()
+              })()
+              return
             } else if (draggedKey.startsWith('lf:')) {
               moveLocalFolder(draggedKey.slice('lf:'.length), parentFolderId)
             }
@@ -318,9 +329,19 @@ const treeView = (): HTMLElement => {
           },
         },
         renderTree,
+        searchQuery,
       ),
     )
   }
+  let searchTimer: ReturnType<typeof setTimeout> | null = null
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value
+    if (searchTimer !== null) clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => {
+      searchTimer = null
+      renderTree()
+    }, 100)
+  })
   renderTree()
   // Paint what the servers said last time, then let a live fetch replace it.
   void primeFromCache(renderTree)
@@ -1689,10 +1710,14 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
         // Straight into whichever Local folder was clicked. Importing from a folder's own button
         // and then finding the result at the top level would make the button a lie.
         const folderId = localFolderIdOf(target)
+        const admitted: string[] = []
         try {
           for (const template of imported) {
             await addLocalTemplate(template)
-            if (folderId !== null) await setTemplateFolder(template.id, folderId)
+            admitted.push(template.id)
+            if (folderId !== null && !(await setTemplateFolder(template.id, folderId))) {
+              throw new Error(`could not move ${template.name} into the selected folder`)
+            }
           }
           rerender()
 
@@ -1717,6 +1742,10 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
             // zoomed to fit it, in-game. Changing the URL would reload and throw the import away.
             navigateTo(centreOf(first))
           }
+        } catch (error) {
+          for (const id of admitted) await removeLocalTemplate(id)
+          rerender()
+          throw error
         } finally {
           reservation?.release()
         }

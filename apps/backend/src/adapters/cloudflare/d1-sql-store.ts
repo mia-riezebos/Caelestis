@@ -54,8 +54,6 @@ import {
   tooManyTemplateIds,
 } from '../../ports/index.js'
 
-/** Leave room below D1's 100-bound-parameter ceiling when checking candidate chunk hashes. */
-const UNREFERENCED_HASH_CHUNK_SIZE = 90
 const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
   tokenHash: row.tokenHash,
   label: row.label,
@@ -307,7 +305,12 @@ export class D1SqlStore implements SqlStore {
     return this.readNode(nodeId)
   }
 
-  async moveNode(nodeId: string, parentId: string | null, proposedPath: string): Promise<boolean> {
+  async moveNode(
+    nodeId: string,
+    parentId: string | null,
+    proposedPath: string,
+    patch: { readonly name?: string } = {},
+  ): Promise<boolean> {
     const node = await this.readNode(nodeId)
     if (node === null) return false
 
@@ -373,7 +376,11 @@ export class D1SqlStore implements SqlStore {
         ),
       this.database
         .update(nodes)
-        .set({ parentId, path: destination })
+        .set({
+          parentId,
+          path: destination,
+          ...(patch.name === undefined ? {} : { name: patch.name }),
+        })
         .where(and(eq(nodes.id, nodeId), parentIsStillValid)),
     ] as const
     try {
@@ -447,18 +454,11 @@ export class D1SqlStore implements SqlStore {
       eq(nodes.id, nodeId),
       and(eq(nodes.season, node.season), like(nodes.path, `${node.path}/%`)),
     )
-    const [nodeRows, templateRows, hashRows] = await Promise.all([
+    const [nodeRows, templateRows] = await Promise.all([
       this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
       this.database
         .select({ count: sql<number>`count(*)` })
         .from(templates)
-        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
-        .where(subtree),
-      this.database
-        .selectDistinct({ hash: versionTiles.hash })
-        .from(versionTiles)
-        .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
-        .innerJoin(templates, eq(templates.id, templateVersions.templateId))
         .innerJoin(nodes, eq(nodes.id, templates.nodeId))
         .where(subtree),
     ])
@@ -496,22 +496,7 @@ export class D1SqlStore implements SqlStore {
     return {
       nodes: nodeRows[0]?.count ?? 0,
       templates: templateRows[0]?.count ?? 0,
-      hashes: hashRows.map(({ hash }) => hash),
     }
-  }
-
-  async unreferencedHashes(hashes: readonly string[]): Promise<readonly string[]> {
-    const candidates = [...new Set(hashes)]
-    const referenced = new Set<string>()
-    for (let start = 0; start < candidates.length; start += UNREFERENCED_HASH_CHUNK_SIZE) {
-      const chunk = candidates.slice(start, start + UNREFERENCED_HASH_CHUNK_SIZE)
-      const rows = await this.database
-        .selectDistinct({ hash: versionTiles.hash })
-        .from(versionTiles)
-        .where(inArray(versionTiles.hash, chunk))
-      for (const { hash } of rows) referenced.add(hash)
-    }
-    return candidates.filter((hash) => !referenced.has(hash))
   }
 
   async insertTemplateVersion(
@@ -729,17 +714,7 @@ export class D1SqlStore implements SqlStore {
     publishedAt: Millis | null,
     updatedAt: Millis,
   ): Promise<boolean> {
-    const existing = await this.database
-      .select({ id: templates.id })
-      .from(templates)
-      .where(eq(templates.id, templateId))
-      .limit(1)
-    if (existing.length === 0) return false
-    await this.database
-      .update(templates)
-      .set({ publishedAt, updatedAtMs: updatedAt })
-      .where(eq(templates.id, templateId))
-    return true
+    return await this.updateTemplate(templateId, { publishedAt }, updatedAt)
   }
 
   async updateTemplate(
@@ -747,43 +722,39 @@ export class D1SqlStore implements SqlStore {
     patch: TemplatePatch,
     updatedAt: Millis,
   ): Promise<boolean> {
-    const existing = await this.database
-      .select({ id: templates.id })
-      .from(templates)
-      .where(eq(templates.id, templateId))
-      .limit(1)
-    if (existing.length === 0) return false
-
+    let predicate = eq(templates.id, templateId)
     if (patch.nodeId !== undefined) {
-      // Checked rather than left to the foreign key, because D1 surfaces a constraint failure as an
-      // opaque error string. "That node does not exist" is worth saying plainly to whoever typed it.
-      const node = await this.database
-        .select({ id: nodes.id })
-        .from(nodes)
-        .where(eq(nodes.id, patch.nodeId))
+      const [existing] = await this.database
+        .select({ nodeId: templates.nodeId, season: nodes.season })
+        .from(templates)
+        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
+        .where(eq(templates.id, templateId))
         .limit(1)
-      if (node.length === 0) throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+      if (existing === undefined) return false
+      const target = await this.readNode(patch.nodeId)
+      if (target === null) throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+      if (target.season !== existing.season) {
+        throw new InvalidNodeParentError('destination node belongs to a different season')
+      }
+      // If another administrator moves or deletes the template after the season check, this write
+      // loses instead of applying a stale decision and reporting success.
+      predicate =
+        and(eq(templates.id, templateId), eq(templates.nodeId, existing.nodeId)) ?? predicate
     }
 
-    await this.database
+    const result = await this.database
       .update(templates)
       .set({
         ...(patch.name === undefined ? {} : { name: patch.name }),
         ...(patch.nodeId === undefined ? {} : { nodeId: patch.nodeId }),
+        ...(patch.publishedAt === undefined ? {} : { publishedAt: patch.publishedAt }),
         updatedAtMs: updatedAt,
       })
-      .where(eq(templates.id, templateId))
-    return true
+      .where(predicate)
+    return Number(result.meta.changes) > 0
   }
 
   async deleteTemplate(templateId: string): Promise<boolean> {
-    const existing = await this.database
-      .select({ id: templates.id })
-      .from(templates)
-      .where(eq(templates.id, templateId))
-      .limit(1)
-    if (existing.length === 0) return false
-
     // Order matters and the batch is what makes it safe. `templates.current_version_id` points at a
     // version and every version points back at the template, so the pointer has to be dropped before
     // the rows it refers to. Tiles go first because they reference a version.
@@ -804,13 +775,14 @@ export class D1SqlStore implements SqlStore {
           ),
         ),
       this.database.delete(templateVersions).where(eq(templateVersions.templateId, templateId)),
+      this.database.delete(contributions).where(eq(contributions.templateId, templateId)),
       this.database.delete(templates).where(eq(templates.id, templateId)),
     ]
-    await this.database.batch(
+    const results = await this.database.batch(
       statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
     )
     // Chunk blobs stay: they are content-addressed and shared. See `deleteTemplate` on the port.
-    return true
+    return Number(results.at(-1)?.meta.changes) > 0
   }
 
   async listManifestTemplates(

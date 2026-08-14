@@ -10,7 +10,15 @@ import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
 import { draftedPixelsIn } from './templates/drafted.js'
-import { wplaceRasterRole } from './tile-draw-state.js'
+
+export type WplaceRasterRole = 'tile' | 'draft' | 'other'
+
+/** Wplace names the raster layers; use that identity instead of reverse-engineering their quads. */
+export const wplaceRasterRole = (layerId: string | null): WplaceRasterRole => {
+  if (layerId === 'pixel-art-layer') return 'tile'
+  if (layerId?.startsWith('paint-preview-')) return 'draft'
+  return 'other'
+}
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -540,7 +548,6 @@ export const isDrawingTiles = (): boolean => drawingTiles
 
 const emit = (quads: readonly TileQuad[]): void => {
   if (mapCanvas === null) return
-  drawingTiles = quads.length > 0
   const frame: TileFrame = { canvas: mapCanvas, quads }
   for (const listener of listeners) {
     try {
@@ -550,20 +557,6 @@ const emit = (quads: readonly TileQuad[]): void => {
     }
   }
 }
-
-/**
- * The texture wplace last drew each tile from, keyed by `tileKey`.
- *
- * Not a WeakMap on purpose — this is the reverse lookup, from a tile we care about to the GPU copy
- * of its pixels. Entries go stale when MapLibre recycles a texture, which is harmless: the value is
- * only ever read during a frame in which that tile was drawn, and drawing it rewrites the entry
- * first.
- */
-const textureOfTile = new Map<string, WebGLTexture>()
-
-/** The GPU copy of a tile's placed pixels, if wplace has drawn that tile. */
-export const textureForTile = (tile: TileCoord): WebGLTexture | null =>
-  textureOfTile.get(tileKey(tile)) ?? null
 
 let lastQuads: readonly TileQuad[] = []
 
@@ -909,7 +902,7 @@ export const ensureTilePixels = (tile: TileCoord): void => {
     try {
       const realm = captureRealm
       if (realm === null) return
-      const response = await realm.fetch.call(realm, url)
+      const response = await realm.fetch.call(realm, url, { signal: AbortSignal.timeout(15_000) })
       if (!response.ok) return
       const bitmap = (await Reflect.apply(realm.createImageBitmap, realm, [
         await response.blob(),
@@ -1019,7 +1012,11 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
   const x = p % TILE_SIZE
   const y = (p - x) / TILE_SIZE
   for (const listener of pixelListeners) {
-    listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+    try {
+      listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+    } catch {
+      count('pixels:listener-failed')
+    }
   }
 }
 
@@ -2226,7 +2223,6 @@ export const install = (
           return
         }
         frameTileDraws++
-        textureOfTile.set(tileKey(tile), drawnTexture)
         const quad = quadFromMatrix(drawnProjection, tile, this)
         if (quad !== null) pending.push(quad)
       }

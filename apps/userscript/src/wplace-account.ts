@@ -16,7 +16,6 @@ import { discardResponseBody } from './response.js'
 let owned: ReadonlySet<number> | null = null
 let lastAttemptAt: number | null = null
 let loading: Promise<void> | null = null
-const listeners = new Set<() => void>()
 const ACCOUNT_TIMEOUT_MS = 10_000
 const ACCOUNT_JSON_BYTES = 16 * 1024
 
@@ -58,8 +57,16 @@ const premiumIndices = (): readonly number[] =>
   ).map((colour) => colour.index)
 
 /** Re-read `/me` when colour settings are shown, while respecting the shared negative cache. */
-export const refreshAccount = (): void => {
-  void loadAccount(30_000)
+export const refreshAccount = (rerender?: () => void): void => {
+  const before = owned
+  void loadAccount(30_000).then(() => {
+    if (owned === before || rerender === undefined) return
+    try {
+      rerender()
+    } catch (error) {
+      warn('install', 'account refresh callback failed', String(error))
+    }
+  })
 }
 
 /** Palette indices this account can place, or null when we have not been able to ask. */
@@ -68,17 +75,6 @@ export const ownedColours = (): ReadonlySet<number> | null => owned
 const replaceOwned = (next: ReadonlySet<number> | null): void => {
   if (owned === next || (owned === null && next === null)) return
   owned = next
-  for (const listener of listeners) {
-    try {
-      listener()
-    } catch (error) {
-      try {
-        warn('install', 'account observer failed', String(error))
-      } catch {
-        // Ownership was already updated; observers cannot be allowed to turn that into a failure.
-      }
-    }
-  }
 }
 
 const fetchAccount = async (): Promise<void> => {
@@ -135,9 +131,4 @@ export const loadAccount = async (maxAgeMs = 60_000): Promise<void> => {
     loading = null
   })
   return loading
-}
-
-export const onAccountChange = (listener: () => void): (() => void) => {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
 }

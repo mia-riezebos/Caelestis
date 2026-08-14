@@ -7,6 +7,7 @@ import {
   MAX_TEMPLATE_ID_LENGTH,
   MAX_TEMPLATE_NAME_LENGTH,
 } from './import.js'
+import { migrateTemplateStorePalette } from './palette-migration.js'
 
 /**
  * Local templates on disk.
@@ -24,7 +25,7 @@ import {
 const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
-const VERSION = 3
+const VERSION = 4
 const MAX_PERSISTED_TEMPLATES = 64
 const MAX_PERSISTED_INDEX_PIXELS = 64 * 1024 * 1024
 let blockedOpenRequest: IDBOpenDBRequest | null = null
@@ -73,11 +74,15 @@ const open = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
     let abandoned = false
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
       if (!db.objectStoreNames.contains('server-cache')) {
         db.createObjectStore('server-cache', { keyPath: 'url' })
+      }
+      if (event.oldVersion < 4) {
+        const templates = request.transaction?.objectStore(STORE)
+        if (templates !== undefined) migrateTemplateStorePalette(templates)
       }
     }
     request.onblocked = () => {

@@ -8,7 +8,7 @@ import {
 import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
-import { getMap, installMapCapture } from './map-handle.js'
+import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
 import { shortcutFor } from './shortcuts.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
 import {
@@ -77,8 +77,20 @@ export const redraw = (): void => {
 
 /** Keep the GL layer attached across delayed map creation, style reloads, and SPA map replacement. */
 const attachOverlayLayer = (): void => {
-  installOverlayLayer()
-  setInterval(installOverlayLayer, 1_000)
+  const attach = (): void => {
+    const map = getMap()
+    if (map !== null) {
+      try {
+        if (!map.getCanvas().isConnected) releaseMapCapture()
+      } catch {
+        releaseMapCapture()
+      }
+    }
+    if (getMap() === null) installMapCapture()
+    installOverlayLayer()
+  }
+  attach()
+  setInterval(attach, 1_000)
 }
 
 /** A draw is on the stack; synchronous repaint requests become a later pass, never recursion. */
@@ -106,12 +118,15 @@ const draw = (frame: TileFrame): void => {
 }
 
 const paintOnce = (frame: TileFrame): void => {
-  // Keep the last frame that actually had tiles in it. Wplace emits empty frames while idle, but
-  // coordinates and controls still need the last known tile projection until a new one arrives.
-  if (frame.quads.length > 0) lastFrame = frame
-  else if (lastFrame !== null) lastFrame = { canvas: frame.canvas, quads: lastFrame.quads }
+  lastFrame = frame
 
-  for (const hook of hooks) hook(frame)
+  for (const hook of hooks) {
+    try {
+      hook(frame)
+    } catch (error) {
+      warn('install', 'frame hook failed', String(error))
+    }
+  }
 }
 
 /** Where the middle of the viewport is, in canvas pixels — used to place an image on import. */

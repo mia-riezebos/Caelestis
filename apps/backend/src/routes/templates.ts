@@ -2,7 +2,12 @@ import { millis, PngError, SliceError } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
-import { NodeNotFoundError, TemplateIdentityError, TemplateNotFoundError } from '../ports/index.js'
+import {
+  InvalidNodeParentError,
+  NodeNotFoundError,
+  TemplateIdentityError,
+  TemplateNotFoundError,
+} from '../ports/index.js'
 import { StoreTemplateError, storeTemplate } from '../templates/store.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -176,27 +181,20 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     }
 
     const now = millis(Date.now())
-    if (name !== undefined || nodeId !== undefined) {
-      const patch = {
-        ...(name === undefined ? {} : { name: name as string }),
-        ...(nodeId === undefined ? {} : { nodeId: nodeId as string }),
-      }
-      try {
-        if (!(await ports.sql.updateTemplate(templateId, patch, now))) {
-          return c.json({ error: 'not found' }, 404)
-        }
-      } catch (error) {
-        if (error instanceof NodeNotFoundError) return c.json({ error: error.message }, 400)
-        throw error
-      }
+    const patch = {
+      ...(name === undefined ? {} : { name: name as string }),
+      ...(nodeId === undefined ? {} : { nodeId: nodeId as string }),
+      ...(published === undefined ? {} : { publishedAt: published ? now : null }),
     }
-    if (published !== undefined) {
-      const updated = await ports.sql.setTemplatePublishedAt(
-        templateId,
-        published ? now : null,
-        now,
-      )
-      if (!updated) return c.json({ error: 'not found' }, 404)
+    try {
+      if (!(await ports.sql.updateTemplate(templateId, patch, now))) {
+        return c.json({ error: 'not found' }, 404)
+      }
+    } catch (error) {
+      if (error instanceof NodeNotFoundError || error instanceof InvalidNodeParentError) {
+        return c.json({ error: error.message }, 400)
+      }
+      throw error
     }
 
     return c.json({

@@ -178,10 +178,11 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
     const path = `${parentPath}/${segment}`
     try {
       if (parentId !== undefined) {
-        const moved = await sql.moveNode(nodeId, nextParentId as string | null, path)
+        const moved = await sql.moveNode(nodeId, nextParentId as string | null, path, {
+          ...(name === undefined ? {} : { name: name as string }),
+        })
         if (!moved) return c.json({ error: 'not found' }, 404)
-      }
-      if (name !== undefined) {
+      } else if (name !== undefined) {
         const renamed = await sql.renameNode(nodeId, name, segment)
         if (renamed === null) return c.json({ error: 'not found' }, 404)
       }

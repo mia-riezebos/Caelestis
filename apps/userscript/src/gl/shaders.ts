@@ -139,12 +139,12 @@ void main() {
     // backwards, then remove the offset, and the box stays axis-aligned at the origin.
     float c = cos(-u_stampRotation);
     float s = sin(-u_stampRotation);
-    vec2 rotated = mat2(c, -s, s, c) * local;
+    vec2 rotated = mat2(c, s, -s, c) * local;
     vec2 point = rotated - u_stampOffset;
 
     // One screen pixel expressed in cell units, so the edge is exactly one pixel wide however far
     // in or out the map is zoomed. This is where the resolution independence comes from.
-    float pixel = fwidth(texel.x);
+    float pixel = footprint.x;
 
     // Push the edge out by the anti-aliasing band when the stamp is meant to fill its cell.
     //

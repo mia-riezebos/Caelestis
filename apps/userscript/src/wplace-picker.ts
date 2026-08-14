@@ -60,7 +60,7 @@ const overlayIndexAt = (x: number, y: number): number | null => {
     const cellY = Math.floor(localY)
     const index = template.indices[cellY * template.width + cellX]
     if (index === undefined || index === TRANSPARENT_INDEX) continue
-    if (claimedHiddenFor(template.appearance).includes(index)) continue
+    if (claimedHiddenFor(appearanceOf(template)).includes(index)) continue
     if (!stampContains(appearanceOf(template), localX - cellX, localY - cellY)) continue
     found = index
   }

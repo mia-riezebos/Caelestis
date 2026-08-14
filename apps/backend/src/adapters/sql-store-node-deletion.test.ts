@@ -84,9 +84,6 @@ describe.each(adapters)('$name node cascade contract', ({ make }) => {
 
     const deleted = await store.deleteNodeCascade('root')
     expect(deleted).toMatchObject(count)
-    expect(new Set(deleted.hashes)).toEqual(new Set([shared, orphaned]))
-    await expect(store.unreferencedHashes(deleted.hashes)).resolves.toEqual([orphaned])
-
     await expect(store.readNode('root')).resolves.toBeNull()
     await expect(store.readNode('child')).resolves.toBeNull()
     await expect(store.readNode('grandchild')).resolves.toBeNull()

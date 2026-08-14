@@ -124,6 +124,7 @@ const deleting = new Set<string>()
 const pendingAdds = new Set<string>()
 const listeners: Array<() => void> = []
 const MAX_LOCAL_TEMPLATES = 64
+const MAX_SERVER_TEMPLATES = 64
 const MAX_LOCAL_INDEX_PIXELS = 64 * 1024 * 1024
 const MAX_RESTORE_CANDIDATES = MAX_LOCAL_TEMPLATES * 4
 const MAX_RESTORE_HYDRATED_PIXELS = MAX_LOCAL_INDEX_PIXELS * 2
@@ -868,11 +869,20 @@ export const putServerTemplate = async (
     serverVersion: string
   },
 ): Promise<void> => {
+  const restoring = restoreInFlight
+  if (restoring !== null) await restoring
   const existing = templates.get(template.id)
   if (existing !== undefined && !isServerTemplate(existing)) {
     throw new RangeError('server template id collides with a local template')
   }
-  const tiles = await slice(template)
+  if (
+    existing === undefined &&
+    [...templates.values()].filter(isServerTemplate).length >= MAX_SERVER_TEMPLATES
+  ) {
+    throw new RangeError('server template count exceeds the local rendering budget')
+  }
+  const visible = existing?.visible ?? isScopeVisible(template.id)
+  const tiles = visible ? await slice(template) : new Map<string, TileLevels>()
   const priorTileCount = existing?.tiles.size ?? 0
   const priorPixels = existing?.indices.length ?? 0
   const pixelIncrease = template.indices.length - priorPixels
@@ -890,7 +900,7 @@ export const putServerTemplate = async (
     // is read back from this browser's own record rather than defaulted. Without that, re-syncing —
     // which happens on every poll, and on every hot reload of a dev server — quietly switched a
     // hidden template back on, and a page load forgot the choice entirely.
-    visible: existing?.visible ?? isScopeVisible(template.id),
+    visible,
     everPlaced: true,
     appearance: existing?.appearance ?? null,
     revision: existing?.revision ?? 0,
@@ -972,7 +982,11 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
   if (templates.has(template.id) || pendingAdds.has(template.id)) {
     throw new RangeError('local template id already exists')
   }
-  if (templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES) {
+  if (
+    [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length +
+      pendingAdds.size >=
+    MAX_LOCAL_TEMPLATES
+  ) {
     throw new RangeError('too many local templates')
   }
   if (retainedIndexPixels + pendingIndexPixels + template.indices.length > MAX_LOCAL_INDEX_PIXELS) {
@@ -1048,7 +1062,7 @@ export const copyAsLocalTemplate = async (
     moved: template.moved,
     opaque: template.opaque,
   })
-  if (await moveLocalTemplate(copied.id, copied.originX, copied.originY)) {
+  if (await markPlaced(copied.id)) {
     return templates.get(copied.id) ?? copied
   }
   await removeLocalTemplate(copied.id)
@@ -1066,7 +1080,10 @@ const restoreStoredTemplates = async (): Promise<void> => {
   do {
     restorePasses++
     retryAfterGap = false
-    const remainingTemplates = MAX_LOCAL_TEMPLATES - templates.size - pendingAdds.size
+    const remainingTemplates =
+      MAX_LOCAL_TEMPLATES -
+      [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length -
+      pendingAdds.size
     const remainingPixels = MAX_LOCAL_INDEX_PIXELS - retainedIndexPixels - pendingIndexPixels
     if (
       remainingTemplates <= 0 ||
@@ -1152,7 +1169,9 @@ const restoreStoredTemplates = async (): Promise<void> => {
           continue
         }
         if (
-          templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES ||
+          [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length +
+            pendingAdds.size >=
+            MAX_LOCAL_TEMPLATES ||
           retainedIndexPixels + pendingIndexPixels + template.indices.length >
             MAX_LOCAL_INDEX_PIXELS
         ) {

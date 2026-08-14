@@ -201,6 +201,8 @@ export const colourPresets = (
       // Only disabled when we genuinely could not ask — signed out, or wplace refused.
       button.classList.add('btn-disabled')
       button.title = 'Sign in to wplace so it can tell us which colours you own'
+      button.disabled = true
+      button.setAttribute('aria-disabled', 'true')
     }
     button.addEventListener('click', () => {
       apply(hiddenForPreset(id))
@@ -294,7 +296,7 @@ export const coloursSection = (rerender: () => void): HTMLElement => {
   const wrap = document.createElement('div')
   // Colours get bought mid-session. Showing this pane is exactly the moment a stale "Owned" is
   // visible, so ask again — rate-limited, and it only redraws if the answer moved.
-  refreshAccount()
+  refreshAccount(rerender)
   // What is actually hidden right now, so the grid agrees with the canvas while a mode is driving
   // it rather than showing the switches the mode is overriding.
   const hidden = new Set(globalHiddenColours())

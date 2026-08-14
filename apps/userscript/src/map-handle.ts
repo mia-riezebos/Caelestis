@@ -12,7 +12,8 @@ import { pageWindow } from './page-world.js'
  *
  * What does work: **the Map assigns distinctive private fields to itself while it is being built.**
  * A setter on `Object.prototype` for one of those names sees the assignment, and `this` at that
- * moment *is* the Map. The trap stays armed so a later SPA-created Map replaces the live handle.
+ * moment *is* the Map. The trap is removed as soon as it succeeds (or after a bounded startup
+ * window); the layer attachment loop rearms it only after the captured map's canvas is detached.
  *
  * This is a deliberate piece of nastiness, so it is fenced in:
  *
@@ -28,6 +29,7 @@ import { pageWindow } from './page-world.js'
 
 /** Assigned by MapLibre's `Map` during `_setupContainer`. Measured: `_canvasContainer` fires. */
 const WITNESS_PROPERTIES = ['_canvasContainer', '_controlContainer', '_canvas'] as const
+const RELEASE_AFTER_MS = 30_000
 
 let captured: MapLike | null = null
 
@@ -64,8 +66,11 @@ const pageProto = (realm: Window & typeof globalThis = pageWindow()): object =>
 const installed = new Set<string>()
 const ours = new Map<string, PropertyDescriptor>()
 let installedPrototype: object | null = null
+let releaseTimer: ReturnType<typeof setTimeout> | null = null
 
 const removeTraps = (): void => {
+  if (releaseTimer !== null) clearTimeout(releaseTimer)
+  releaseTimer = null
   const prototype = installedPrototype
   for (const property of installed) {
     if (prototype === null) continue
@@ -99,22 +104,26 @@ export const installMapCapture = (realm: Window & typeof globalThis = pageWindow
           return undefined
         },
         set(this: object, value: unknown) {
-          // Preserve the assignment's native success/failure semantics first. Without this
-          // inherited trap, strict assignment to a non-extensible receiver throws.
-          Object.defineProperty(this, property, {
-            value,
-            writable: true,
-            configurable: true,
-            enumerable: true,
-          })
+          // Materialise the inherited assignment as the ordinary own property it was trying to
+          // create. Reflect reports a non-extensible receiver without throwing through page code.
           // Everything this setter does beyond completing the assignment is wrapped, because it runs
           // inside someone else's assignment statement. A throwing `flyTo` getter, a proxy trap, a
           // hostile receiver — any of them would otherwise throw after a successful assignment and
           // abort whatever was initialising, which for MapLibre is the map itself.
           try {
-            if (looksLikeMap(this) && captured !== this) {
+            if (
+              !Reflect.defineProperty(this, property, {
+                value,
+                writable: true,
+                configurable: true,
+                enumerable: true,
+              })
+            )
+              return
+            if (looksLikeMap(this) && captured === null) {
               captured = this
               log('install', `captured the map via ${property}`)
+              removeTraps()
             }
           } catch {
             // Detection is best-effort; a failure here must not become the page's problem.
@@ -128,6 +137,7 @@ export const installMapCapture = (realm: Window & typeof globalThis = pageWindow
       // A property already defined non-configurably is not worth fighting over; the others remain.
     }
   }
+  if (installed.size > 0) releaseTimer = setTimeout(removeTraps, RELEASE_AFTER_MS)
 }
 
 export const getMap = (): MapLike | null => captured

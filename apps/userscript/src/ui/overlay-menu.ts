@@ -1,7 +1,7 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { cssPixelsPerCanvasPixel, screenPointFor } from '../main.js'
-import { removeTreeStateKeys } from '../state.js'
+import { getState, removeTreeStateKeys, setState } from '../state.js'
 import {
   APPEARANCE_CONTROLS,
   type Appearance,
@@ -30,6 +30,7 @@ import {
   movingId,
   placementSeq,
 } from '../templates/move.js'
+import { isPaintOpen } from '../wplace-paint.js'
 import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
@@ -650,6 +651,15 @@ const menuSignature = (template: PlacedTemplate): string => {
     appearance.size,
     appearance.opacity,
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
+    appearance.markMismatch,
+    appearance.markUnpainted,
+    appearance.unpaintedLimit,
+    appearance.markerColour,
+    appearance.markerSize,
+    appearance.dimOthers,
+    appearance.otherOpacity,
+    appearance.otherColour,
+    [...(template.owns ?? [])].sort().join('.'),
     confirming.has(id),
     isDoomed(id),
     // Drawn — it is Delete's `aria-disabled` — so it is a render input like the rest. A placement
@@ -1428,11 +1438,17 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   for (const colour of WPLACE_PALETTE) {
     if (colour.index === TRANSPARENT_INDEX) continue
     const swatch = paletteSwatch(colour, !hidden.has(colour.index), () => {
-      const wantHidden = !appearanceFor(id).hiddenColours.includes(colour.index)
+      const modeDriven = getState().onlySelectedColour && isPaintOpen()
+      const rebased = new Set(effective())
+      const wantHidden = !rebased.has(colour.index)
+      if (wantHidden) rebased.add(colour.index)
+      else rebased.delete(colour.index)
+      if (modeDriven) setState({ onlySelectedColour: false })
       edit(
         [`hiddenColours:${colour.index}`],
         `the ${colour.name} filter`,
         (base) => {
+          if (modeDriven) return { hiddenColours: [...rebased] }
           if (base.hiddenColours.includes(colour.index) === wantHidden) return {}
           const next = new Set(base.hiddenColours)
           if (wantHidden) next.add(colour.index)

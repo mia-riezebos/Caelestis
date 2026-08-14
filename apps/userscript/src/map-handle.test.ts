@@ -42,7 +42,7 @@ describe('installMapCapture', () => {
     map[WITNESS] = { nodeName: 'DIV' }
 
     expect(getMap()).toBe(map)
-    expect(Object.getOwnPropertyDescriptor(pagePrototype, WITNESS)).toBeDefined()
+    expect(Object.getOwnPropertyDescriptor(pagePrototype, WITNESS)).toBeUndefined()
   })
 
   it('captures the object the assignment was made on', () => {
@@ -70,16 +70,20 @@ describe('installMapCapture', () => {
     })
   })
 
-  it('keeps the trap armed after capture so a replacement map can become current', () => {
+  it('releases the global trap after capture and can be rearmed for a replacement', () => {
     installMapCapture()
     expect(witnessDescriptor()).toBeDefined()
 
     const first = mapLike() as Record<string, unknown>
     const second = mapLike() as Record<string, unknown>
     first[WITNESS] = {}
+    expect(witnessDescriptor()).toBeUndefined()
+
+    releaseMapCapture()
+    installMapCapture()
     second[WITNESS] = {}
 
-    expect(witnessDescriptor()).toBeDefined()
+    expect(witnessDescriptor()).toBeUndefined()
     expect(getMap()).toBe(second)
   })
 
@@ -98,12 +102,12 @@ describe('installMapCapture', () => {
     expect(witnessDescriptor()).toBeDefined()
   })
 
-  it('keeps waiting past a slow initial map load', () => {
+  it('stops changing Object.prototype after a bounded initial capture window', () => {
     installMapCapture()
 
     vi.advanceTimersByTime(30_000)
 
-    expect(witnessDescriptor()).toBeDefined()
+    expect(witnessDescriptor()).toBeUndefined()
     expect(getMap()).toBeNull()
   })
 
@@ -147,7 +151,7 @@ describe('installMapCapture', () => {
     delete (Object.prototype as Record<string, unknown>)[WITNESS]
   })
 
-  it('preserves a failed assignment to a non-extensible receiver', () => {
+  it('does not throw from an intercepted assignment to a non-extensible receiver', () => {
     installMapCapture()
     const hostile = Object.preventExtensions({
       get flyTo(): never {
@@ -157,6 +161,7 @@ describe('installMapCapture', () => {
 
     expect(() => {
       ;(hostile as Record<string, unknown>)[WITNESS] = {}
-    }).toThrow(TypeError)
+    }).not.toThrow()
+    expect(Object.hasOwn(hostile, WITNESS)).toBe(false)
   })
 })

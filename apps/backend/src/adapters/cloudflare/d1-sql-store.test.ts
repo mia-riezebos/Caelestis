@@ -1,4 +1,4 @@
-import { millis, seconds } from '@wts/shared'
+import { millis, seconds } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
 import {
@@ -387,6 +387,19 @@ describe('D1SqlStore', () => {
       { tiles: 48 },
     ])
     expect(d1.batchStatements - before).toBeLessThanOrEqual(50)
+  })
+
+  it('deletes contribution rows before their template', async () => {
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+    await store.insertTemplateVersion(templateVersion())
+    d1.sqlite
+      .prepare('INSERT INTO contributions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(1, 'template-1', 0, 'c'.repeat(64), 1, 1, 1, 0)
+
+    await expect(store.deleteTemplate('template-1')).resolves.toBe(true)
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM contributions').get()).toEqual({
+      count: 0,
+    })
   })
 
   it('orders tokens minted in the same millisecond by hash, as the port promises', async () => {

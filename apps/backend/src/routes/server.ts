@@ -57,9 +57,11 @@ export const createServerAdminRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOpt
     if (
       description !== undefined &&
       description !== null &&
-      (typeof description !== 'string' || description.length > MAX_DESCRIPTION_LENGTH)
+      (typeof description !== 'string' ||
+        description.trim().length === 0 ||
+        description.length > MAX_DESCRIPTION_LENGTH)
     ) {
-      return c.json({ error: 'description must be at most 4096 characters, or null' }, 400)
+      return c.json({ error: 'description must be 1..4096 characters, or null' }, 400)
     }
     if (name === undefined && description === undefined) {
       return c.json({ error: 'patch must set at least one of name, description' }, 400)

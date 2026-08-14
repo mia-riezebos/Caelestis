@@ -3,8 +3,6 @@ import {
   admitTemplates,
   cancelViewOwnedWork,
   completionAfterImport,
-  createKeyedOperationGate,
-  createRerenderGate,
   createResizeCommitter,
   finalImportNotice,
   IMPORT_ACCEPT,
@@ -61,31 +59,6 @@ describe('panel workflow ownership', () => {
     expect(
       finalImportNotice({ name: 'First', width: 10, height: 20, moved: 0 }, 3, 3, null),
     ).toEqual({ message: 'Imported 3 templates — first: First (10x20)', tone: 'info' })
-  })
-
-  it('allows only one copy operation for a template at a time', () => {
-    const gate = createKeyedOperationGate()
-    const release = gate.begin('template')
-
-    expect(release).not.toBeNull()
-    expect(gate.begin('template')).toBeNull()
-    release?.()
-    expect(gate.begin('template')).not.toBeNull()
-  })
-
-  it('replays one deferred rerender after the final view request finishes', async () => {
-    const render = vi.fn()
-    const gate = createRerenderGate(render)
-    const finishFirst = gate.hold()
-    const finishSecond = gate.hold()
-
-    gate.request()
-    finishFirst()
-    expect(render).not.toHaveBeenCalled()
-    finishSecond()
-    await Promise.resolve()
-
-    expect(render).toHaveBeenCalledOnce()
   })
 
   it('keeps partial-import error semantics when an active placement blocks navigation', () => {

@@ -1,5 +1,6 @@
 import { warn } from './debug.js'
 import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
+import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 
 /**
  * What a server told us, kept between sessions.
@@ -15,7 +16,7 @@ import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
 const DB_NAME = 'caelestis'
 const STORE = 'server-cache'
 // Shared with local template persistence. Opening an older version after v3 exists is a VersionError.
-const VERSION = 3
+const VERSION = 4
 
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
@@ -83,13 +84,17 @@ const open = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
     let abandoned = false
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result
       // The local-template store lives in the same database and must survive this upgrade.
       if (!db.objectStoreNames.contains('local-templates')) {
         db.createObjectStore('local-templates', { keyPath: 'id' })
       }
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'url' })
+      if (event.oldVersion < 4) {
+        const templates = request.transaction?.objectStore('local-templates')
+        if (templates !== undefined) migrateTemplateStorePalette(templates)
+      }
     }
     request.onblocked = () => {
       abandoned = true

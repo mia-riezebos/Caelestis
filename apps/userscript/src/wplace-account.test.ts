@@ -13,13 +13,11 @@ describe('wplace account state', () => {
         Promise.resolve(new Response(JSON.stringify({ extraColorsBitmap: 1 }), { status: 200 })),
       ),
     )
-    const { loadAccount, onAccountChange, ownedColours } = await import('./wplace-account.js')
+    const { ownedColours, refreshAccount } = await import('./wplace-account.js')
     const changed = vi.fn()
-    onAccountChange(changed)
+    refreshAccount(changed)
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
 
-    await loadAccount()
-
-    expect(changed).toHaveBeenCalledOnce()
     expect(ownedColours()?.size).toBe(1)
   })
 
@@ -30,16 +28,11 @@ describe('wplace account state', () => {
         Promise.resolve(new Response(JSON.stringify({ extraColorsBitmap: 1 }), { status: 200 })),
       ),
     )
-    const { loadAccount, onAccountChange } = await import('./wplace-account.js')
-    const reached = vi.fn()
-    onAccountChange(() => {
+    const { ownedColours, refreshAccount } = await import('./wplace-account.js')
+    refreshAccount(() => {
       throw new Error('broken observer')
     })
-    onAccountChange(reached)
-
-    await expect(loadAccount()).resolves.toBeUndefined()
-
-    expect(reached).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(ownedColours()?.size).toBe(1))
   })
 
   it('times out a stuck account request and allows a later retry', async () => {
@@ -110,15 +103,12 @@ describe('wplace account state', () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 401 }))
     vi.stubGlobal('fetch', fetchMock)
-    const { loadAccount, onAccountChange, ownedColours } = await import('./wplace-account.js')
-    const changed = vi.fn()
-    onAccountChange(changed)
+    const { loadAccount, ownedColours } = await import('./wplace-account.js')
 
     await loadAccount()
     expect(ownedColours()?.size).toBe(1)
     await loadAccount(0)
 
     expect(ownedColours()).toBeNull()
-    expect(changed).toHaveBeenCalledTimes(2)
   })
 })

@@ -263,8 +263,6 @@ export interface NodeRecord {
 export interface NodeDeletion {
   readonly nodes: number
   readonly templates: number
-  /** Chunk hashes the deleted versions referenced, which may or may not still be in use. */
-  readonly hashes: readonly string[]
 }
 
 export interface ManifestTemplateRecord {
@@ -356,6 +354,8 @@ export interface TemplatePatch {
   readonly name?: string
   /** Moving a template to another node. Rejected with `NodeNotFoundError` if it does not exist. */
   readonly nodeId?: string
+  /** Null unpublishes; absent leaves publication alone. */
+  readonly publishedAt?: Millis | null
 }
 
 /**
@@ -423,14 +423,16 @@ export interface SqlStore {
    * does not exist, belongs to another season, or is the node itself or one of its own descendants;
    * `NodePathConflictError` when the new path collides with a sibling.
    */
-  moveNode(nodeId: string, parentId: string | null, path: string): Promise<boolean>
+  moveNode(
+    nodeId: string,
+    parentId: string | null,
+    path: string,
+    patch?: { readonly name?: string },
+  ): Promise<boolean>
 
   deleteNode(nodeId: string): Promise<void>
 
   deleteNodeCascade(nodeId: string): Promise<NodeDeletion>
-
-  /** Of these hashes, the ones no surviving template version references. Safe to delete from blobs. */
-  unreferencedHashes(hashes: readonly string[]): Promise<readonly string[]>
 
   /** How much a cascading delete would remove, without removing it. */
   countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }>

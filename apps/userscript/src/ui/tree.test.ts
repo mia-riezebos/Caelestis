@@ -3,7 +3,6 @@ import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState 
 import {
   canRetryNodeRefresh,
   forgetServerTree,
-  localSiblingKeys,
   nodeSiblingItems,
   nodeTreeKey,
   orderedItems,
@@ -384,19 +383,6 @@ describe('tree identity and ordering', () => {
   it('offers folder retry only to a connection that can perform it', () => {
     expect(canRetryNodeRefresh(server(SERVER_ID, 0))).toBe(true)
     expect(canRetryNodeRefresh({ ...server(SERVER_ID, 0), isAdmin: false })).toBe(false)
-  })
-
-  it('reorders only visible local siblings while search is active', () => {
-    expect(
-      localSiblingKeys(
-        [
-          { id: 'one', name: 'match one' },
-          { id: 'two', name: 'hidden' },
-          { id: 'three', name: 'match three' },
-        ],
-        'match',
-      ),
-    ).toEqual(['local:one', 'local:three'])
   })
 
   it('retains manifest folders for a connected server without admin scope', async () => {

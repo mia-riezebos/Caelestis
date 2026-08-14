@@ -6,16 +6,6 @@ import type { AccessToken } from '../ports/index.js'
 
 const MAX_LABEL_LENGTH = 128
 
-/**
- * The stand-in hash for the operator's bootstrap credential.
- *
- * It has no row and therefore no hash of its own — it is an environment variable compared in
- * constant time, never stored. But the list is the only place anyone can see what may reach this
- * server, and leaving out the credential most operators are actually holding made that list a lie by
- * omission: it showed every way in *except* the one you were using.
- *
- * A hash is 64 hex characters, so this cannot collide with a real one.
- */
 const BOOTSTRAP_HASH = 'bootstrap'
 
 /** Everything about a token except the secret, which is not stored and cannot be shown again. */
@@ -77,14 +67,11 @@ export const createTokenRoutes = (auth: AuthOptions) => {
     return c.json({
       tokens: [
         {
-          tokenHash: BOOTSTRAP_HASH,
           label: 'bootstrap',
           scope: 'admin' as const,
-          createdBy: 'environment',
           // Unknown rather than invented. It was set whenever the server was deployed, which is not
           // something this process can find out.
           createdAt: 0,
-          revokedAt: null,
           // Said on the wire rather than left for the client to infer from the label, which anyone
           // could give a real token.
           bootstrap: true,

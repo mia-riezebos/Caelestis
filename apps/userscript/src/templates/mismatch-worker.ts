@@ -71,6 +71,7 @@ let worker: Worker | null = null
 let tried = false
 let nextId = 0
 const waiting = new Map<number, (reply: Reply | null) => void>()
+const REPLY_TIMEOUT_MS = 15_000
 
 /** Template pixels the worker has been given, by identity — a re-import is a different array. */
 const sent = new Map<string, Uint8Array>()
@@ -143,11 +144,20 @@ export const scanInWorker = async (
     if (job.draft !== null) transfer.push(job.draft.buffer)
     const payload = { ...job, id, indices: withIndices ? indices : null }
     return new Promise((resolve) => {
-      waiting.set(id, resolve)
+      const timeout = setTimeout(() => {
+        if (!waiting.delete(id)) return
+        abandon('a worker reply timed out', id)
+        resolve(null)
+      }, REPLY_TIMEOUT_MS)
+      waiting.set(id, (reply) => {
+        clearTimeout(timeout)
+        resolve(reply)
+      })
       try {
         active.postMessage(payload, transfer)
       } catch (error) {
         waiting.delete(id)
+        clearTimeout(timeout)
         abandon('a job could not be sent', String(error))
         resolve(null)
       }

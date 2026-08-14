@@ -356,6 +356,10 @@ export const overlayLayer = {
     // unit on 1, or depth test off, quietly corrupts whatever it draws next.
     const hadBlend = gl.isEnabled(gl.BLEND)
     const hadDepth = gl.isEnabled(gl.DEPTH_TEST)
+    const blendSrcRgb = gl.getParameter(gl.BLEND_SRC_RGB) as GLenum
+    const blendDstRgb = gl.getParameter(gl.BLEND_DST_RGB) as GLenum
+    const blendSrcAlpha = gl.getParameter(gl.BLEND_SRC_ALPHA) as GLenum
+    const blendDstAlpha = gl.getParameter(gl.BLEND_DST_ALPHA) as GLenum
     const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
     const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
     const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
@@ -397,9 +401,7 @@ export const overlayLayer = {
       }
 
       const appearance = appearanceOf(template)
-      // The template's own appearance, not the resolved one: whether it *has* overrides is the
-      // question, and `appearanceOf` has already answered it by falling back to the defaults.
-      const hidden = hiddenColoursFor(template.appearance)
+      const hidden = hiddenColoursFor(appearance)
       const paletteKey = hidden.join(',')
       // Re-uploaded while anything in it is still moving, not only when the filter changes: the
       // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
@@ -476,6 +478,7 @@ export const overlayLayer = {
     gl.bindVertexArray(previousVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
     gl.useProgram(previousProgram)
+    gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
     if (!hadBlend) gl.disable(gl.BLEND)
     if (hadDepth) gl.enable(gl.DEPTH_TEST)
     askForAnotherFrame()

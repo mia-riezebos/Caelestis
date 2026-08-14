@@ -63,23 +63,6 @@ export const admitTemplates = async <T>(
   return { added, failures }
 }
 
-export const createKeyedOperationGate = (): {
-  begin: (key: string) => (() => void) | null
-  isActive: (key: string) => boolean
-} => {
-  const active = new Set<string>()
-  return {
-    begin: (key) => {
-      if (active.has(key)) return null
-      active.add(key)
-      return () => {
-        active.delete(key)
-      }
-    },
-    isActive: (key) => active.has(key),
-  }
-}
-
 export const shouldNavigateAfterImport = (stillOwned: boolean, moving: boolean): boolean =>
   stillOwned && !moving
 
@@ -96,36 +79,6 @@ export const completionAfterImport = (
         : notice.message,
     tone: notice.tone,
     navigate,
-  }
-}
-
-/** Hold a view rebuild while requests own its status nodes, then replay exactly one missed build. */
-export const createRerenderGate = (
-  rerender: () => void,
-): {
-  hold: () => () => void
-  request: () => void
-  cancel: () => void
-} => {
-  let holds = 0
-  let pending = false
-  return {
-    hold: () => {
-      holds++
-      return () => {
-        holds--
-        if (holds !== 0 || !pending) return
-        pending = false
-        queueMicrotask(rerender)
-      }
-    },
-    request: () => {
-      if (holds === 0) rerender()
-      else pending = true
-    },
-    cancel: () => {
-      pending = false
-    },
   }
 }
 

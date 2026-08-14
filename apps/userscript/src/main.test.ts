@@ -93,7 +93,7 @@ beforeEach(() => {
 })
 
 describe('GL frame lifecycle', () => {
-  it('keeps the last non-empty projection while accepting the current map canvas', async () => {
+  it('drops a stale projection when the current frame has no tiles', async () => {
     const main = await load()
     const first = document.createElement('canvas')
     const current = document.createElement('canvas')
@@ -102,7 +102,7 @@ describe('GL frame lifecycle', () => {
 
     expect(main.viewportCentre()).toEqual({ x: 12, y: 34 })
     expect(harness.viewportCentreIn).toHaveBeenCalledWith(
-      expect.objectContaining({ canvas: current, quads: [{}] }),
+      expect.objectContaining({ canvas: current, quads: [] }),
     )
   })
 

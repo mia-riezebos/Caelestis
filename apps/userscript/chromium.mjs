@@ -21,6 +21,10 @@ import { spawn } from 'node:child_process'
 
 const CDP = 'http://127.0.0.1:9222'
 const PORT_ARG = '--remote-debugging-port=9222'
+const PROCESS_PATTERN =
+  process.platform === 'darwin'
+    ? 'Chromium.app/Contents/MacOS/Chromium'
+    : '(chromium|chromium-browser|google-chrome)'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -56,7 +60,7 @@ const output = (command, args) =>
 
 /** A Chromium process that is not ours, i.e. one started without the port. */
 const runningWithoutPort = async () => {
-  const found = await output('pgrep', ['-f', 'Chromium.app/Contents/MacOS/Chromium'])
+  const found = await output('pgrep', ['-f', PROCESS_PATTERN])
   return found !== ''
 }
 
@@ -84,7 +88,11 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
 
   if (relaunch) {
     if (!quiet) console.log('quitting the running Chromium so it can be started with the port…')
-    await run('osascript', ['-e', 'tell application "Chromium" to quit'])
+    if (process.platform === 'darwin') {
+      await run('osascript', ['-e', 'tell application "Chromium" to quit'])
+    } else {
+      await run('pkill', ['-f', PROCESS_PATTERN])
+    }
     // Quitting is not instant, and relaunching too early gets the arguments dropped again.
     for (let attempt = 0; attempt < 40; attempt++) {
       if (!(await runningWithoutPort())) break
@@ -120,12 +128,14 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
   // The port never came up. If a Chromium is running, this is the one situation that cannot be
   // fixed from here, and it is worth saying so precisely rather than reporting a timeout.
   if (await runningWithoutPort()) {
+    const restart =
+      process.platform === 'darwin'
+        ? `  osascript -e 'tell application "Chromium" to quit'\n  open -a Chromium --args ${PORT_ARG}`
+        : `  pkill -f '${PROCESS_PATTERN}'\n  chromium ${PORT_ARG}`
     throw new Error(
       'Chromium is already running without the debugging port, and the port can only be set at\n' +
         'launch — the arguments are dropped when the app is already open. Pass --relaunch to quit\n' +
-        'and restart it, or do it yourself:\n' +
-        `  osascript -e 'tell application "Chromium" to quit'\n` +
-        `  open -a Chromium --args ${PORT_ARG}`,
+        `and restart it, or do it yourself:\n${restart}`,
     )
   }
   throw new Error('Chromium was launched but never opened the debugging port')

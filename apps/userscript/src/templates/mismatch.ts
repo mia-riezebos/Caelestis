@@ -12,6 +12,7 @@ import {
   appearanceOf,
   isTemplateVisible,
   localTemplates,
+  onLocalChange,
   type PlacedTemplate,
 } from './local-store.js'
 import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
@@ -81,7 +82,7 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
   const key = signature(template)
   let asserted = 0
   let unpainted = 0
-  for (const [cacheKey, entry] of cache) {
+  for (const [cacheKey, entry] of coverage) {
     if (
       !cacheKey.startsWith(`${template.id}|`) ||
       entry.key !== key ||
@@ -97,6 +98,10 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
 
 const cache = new Map<string, Cached>()
 const KEEP_ANSWERS = 128
+const coverage = new Map<
+  string,
+  Pick<Cached, 'asserted' | 'key' | 'templateSource' | 'unpainted'>
+>()
 
 const remember = (cacheKey: string, entry: Cached): void => {
   cache.delete(cacheKey)
@@ -111,6 +116,15 @@ const remember = (cacheKey: string, entry: Cached): void => {
 let changed = 0
 
 const changeListeners: Array<() => void> = []
+const notifyChanged = (): void => {
+  for (const listener of changeListeners) {
+    try {
+      listener()
+    } catch {
+      count('mismatch:listener-failed')
+    }
+  }
+}
 
 /**
  * How long scanning may take in one frame, in milliseconds.
@@ -166,7 +180,7 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
   }
   scanDeadline = 0
   if (stale.size > 0) scheduleIdleScan()
-  for (const listener of changeListeners) listener()
+  notifyChanged()
 }
 
 const scheduleIdleScan = (): void => {
@@ -192,7 +206,7 @@ export const wantsTilePixels = (): boolean =>
 
 /** The switches, not what is on screen — see `claimedHiddenFor` for why the two differ. */
 const assertedHidden = (template: PlacedTemplate): readonly number[] =>
-  claimedHiddenFor(template.appearance)
+  claimedHiddenFor(appearanceOf(template))
 
 /**
  * Everything that changes what a scan finds, so a stale entry is never returned.
@@ -201,7 +215,7 @@ const assertedHidden = (template: PlacedTemplate): readonly number[] =>
  * lists to hand back, not what goes in them, so neither is a reason to look at a tile again.
  */
 const signature = (template: PlacedTemplate): string =>
-  `${template.moved}|${assertedHidden(template).join(',')}`
+  `${template.originX},${template.originY}|${template.moved}|${assertedHidden(template).join(',')}`
 
 /**
  * Everything the comparison needs, gathered for whichever thread is going to run it.
@@ -259,6 +273,16 @@ const store = (
   outcome: ScanOutcome,
 ): Cached => {
   const entry: Cached = { source, templateSource, key, ...outcome, both: null }
+  const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
+  for (const [heldKey, held] of coverage) {
+    if (
+      heldKey.startsWith(`${id}|`) &&
+      (held.templateSource !== templateSource || held.key !== key)
+    ) {
+      coverage.delete(heldKey)
+    }
+  }
+  coverage.set(cacheKey, entry)
   remember(cacheKey, entry)
   count('mismatch:tiles scanned')
   count('mismatch:pixels marked', outcome.wrong.length / 3)
@@ -303,7 +327,7 @@ const requestScan = (
     }
     store(cacheKey, pixels, templateSource, key, outcome)
     changed++
-    for (const listener of changeListeners) listener()
+    notifyChanged()
   })
 }
 
@@ -390,7 +414,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
   const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
   const placed =
     drafted !== UNPAINTED ? drafted : server === null ? UNPAINTED : (server[at] as number)
-  for (const [cacheKey, entry] of cache) {
+  for (const [cacheKey, entry] of [...cache]) {
     if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
     const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
     const template = localTemplates().find((candidate) => candidate.id === id)
@@ -448,7 +472,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
     if (belongs === 'wrong') wrong = plus(wrong)
     if (belongs === 'unpainted') unpainted = plus(unpainted)
 
-    remember(cacheKey, {
+    const patched = {
       source: entry.source,
       templateSource: entry.templateSource,
       key: entry.key,
@@ -456,7 +480,9 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
       unpainted,
       asserted: entry.asserted,
       both: null,
-    })
+    }
+    coverage.set(cacheKey, patched)
+    remember(cacheKey, patched)
     changed++
     count(belongs === null ? 'mismatch:pixel fixed' : `mismatch:pixel became ${belongs}`)
   }
@@ -477,7 +503,7 @@ onTilePixel((tile, x, y, placed) => {
   const before = changed
   patchTile(tile, x, y, placed)
   if (changed === before) return
-  for (const listener of changeListeners) listener()
+  notifyChanged()
 })
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
@@ -485,5 +511,23 @@ export const forgetMismatches = (id: string): void => {
   for (const key of [...cache.keys()]) {
     if (key.startsWith(`${id}|`)) cache.delete(key)
   }
+  for (const key of [...coverage.keys()]) {
+    if (key.startsWith(`${id}|`)) coverage.delete(key)
+  }
+  for (const key of [...inFlight.keys()]) {
+    if (key.startsWith(`${id}|`)) inFlight.delete(key)
+  }
+  for (const key of [...stale]) {
+    if (key.startsWith(`${id}|`)) stale.delete(key)
+  }
   forgetInWorker(id)
 }
+
+let knownTemplateIds = new Set<string>()
+onLocalChange(() => {
+  const current = new Set(localTemplates().map((template) => template.id))
+  for (const id of knownTemplateIds) {
+    if (!current.has(id)) forgetMismatches(id)
+  }
+  knownTemplateIds = current
+})

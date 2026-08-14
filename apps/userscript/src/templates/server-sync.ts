@@ -34,6 +34,7 @@ const chunkCache = new Map<string, Uint8Array>()
  */
 const CHUNK_CACHE_LIMIT = 512
 const CHUNK_FETCH_TIMEOUT_MS = 15_000
+const MAX_CHUNK_BYTES = 8 * 1024 * 1024
 
 const rememberChunk = (hash: string, bytes: Uint8Array): void => {
   if (chunkCache.size >= CHUNK_CACHE_LIMIT) {
@@ -52,7 +53,32 @@ const fetchChunk = async (server: ConnectedServer, hash: string): Promise<Uint8A
       signal: AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS),
     })
     if (!response.ok) return null
-    const bytes = new Uint8Array(await response.arrayBuffer())
+    const declared = Number(response.headers.get('content-length'))
+    if (Number.isFinite(declared) && declared > MAX_CHUNK_BYTES) return null
+    if (response.body === null) return null
+    const reader = response.body.getReader()
+    const parts: Uint8Array[] = []
+    let length = 0
+    try {
+      while (true) {
+        const part = await reader.read()
+        if (part.done) break
+        length += part.value.byteLength
+        if (length > MAX_CHUNK_BYTES) {
+          await reader.cancel()
+          return null
+        }
+        parts.push(part.value)
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    const bytes = new Uint8Array(length)
+    let offset = 0
+    for (const part of parts) {
+      bytes.set(part, offset)
+      offset += part.byteLength
+    }
     rememberChunk(hash, bytes)
     return bytes
   } catch {
@@ -65,7 +91,23 @@ const decodeChunk = async (
   bytes: Uint8Array,
 ): Promise<{ width: number; height: number; indices: Uint8Array } | null> => {
   try {
+    // Read IHDR before asking the browser to decode. Checking the ImageBitmap afterwards is too
+    // late for a PNG that declares a gigantic surface: the decoder may already have allocated it.
+    if (
+      bytes.length < 24 ||
+      bytes[0] !== 0x89 ||
+      bytes[1] !== 0x50 ||
+      bytes[2] !== 0x4e ||
+      bytes[3] !== 0x47
+    )
+      return null
+    const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    if (header.getUint32(16) !== TILE_SIZE || header.getUint32(20) !== TILE_SIZE) return null
     const bitmap = await createImageBitmap(new Blob([bytes.slice()], { type: 'image/png' }))
+    if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) {
+      bitmap.close()
+      return null
+    }
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
     const context = canvas.getContext('2d', { willReadFrequently: true })
     if (context === null) return null
@@ -221,6 +263,8 @@ export const syncServerTemplates = async (
         serverVersion: template.version,
       })
       count('server:template drawn from chunks')
+    } catch (error) {
+      warn('install', `could not sync server template ${template.name}`, String(error))
     } finally {
       inFlight.delete(key)
     }

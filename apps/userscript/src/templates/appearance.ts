@@ -257,8 +257,8 @@ export const stampContains = (appearance: Appearance, cellX: number, cellY: numb
   const localX = cellX - 0.5
   const localY = cellY - 0.5
   // This is the GLSL mat2 multiplication in `FRAGMENT_SOURCE`, including its column order.
-  const pointX = c * localX + s * localY - appearance.translateX
-  const pointY = -s * localX + c * localY - appearance.translateY
+  const pointX = c * localX - s * localY - appearance.translateX
+  const pointY = s * localX + c * localY - appearance.translateY
   const half = appearance.size * 0.5
   const radius = appearance.radius * half
   const qx = Math.abs(pointX) - half + radius
@@ -267,66 +267,6 @@ export const stampContains = (appearance: Appearance, cellX: number, cellY: numb
     Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - radius
   return distance <= 0
 }
-
-/**
- * One cell's stamp, drawn once at high resolution and reused as a tiling mask.
- *
- * This is the whole shape system. The stamp is identical for every pixel — only the colour differs —
- * so rasterising it per pixel was doing the same drawing a million times per tile and then throwing
- * the resolution away.
- *
- * What it replaces: each source pixel was expanded into a 3x3 block and the shape was drawn inside
- * *that*. A "33% size" stamp was therefore one device pixel, and rounding it did nothing except
- * blur that pixel — which is exactly what it looked like. Resolution came from the pixel grid, so
- * the shape could never be finer than the grid it lived on.
- *
- * Here the mask is `MASK_RESOLUTION` square regardless, and is scaled to whatever a cell measures on
- * screen at draw time. Zoom in and the same mask gives a crisp, correctly-rounded stamp, because the
- * shape is resolution-independent in exactly the way a vector is.
- */
-const MASK_RESOLUTION = 64
-
-let cachedMask: { key: string; canvas: OffscreenCanvas } | null = null
-
-/** Everything that changes the stamp's silhouette. Opacity and colour are not part of it. */
-const maskKey = (a: Appearance): string =>
-  `${a.size}|${a.radius}|${a.translateX}|${a.translateY}|${a.rotation}`
-
-export const stampMask = (appearance: Appearance): OffscreenCanvas | null => {
-  if (isPlain(appearance)) return null
-  const key = maskKey(appearance)
-  if (cachedMask !== null && cachedMask.key === key) return cachedMask.canvas
-
-  const canvas = new OffscreenCanvas(MASK_RESOLUTION, MASK_RESOLUTION)
-  const context = canvas.getContext('2d')
-  if (context === null) return null
-
-  const cell = MASK_RESOLUTION
-  const side = appearance.size * cell
-  const radius = (appearance.radius * side) / 2
-
-  // Opaque white: the mask is used with `destination-in`, so only its alpha matters.
-  context.fillStyle = '#ffffff'
-  context.translate(cell / 2, cell / 2)
-  context.rotate((appearance.rotation * Math.PI) / 180)
-  context.translate(appearance.translateX * cell, appearance.translateY * cell)
-  context.beginPath()
-  if (radius <= 0) context.rect(-side / 2, -side / 2, side, side)
-  else context.roundRect(-side / 2, -side / 2, side, side, radius)
-  context.fill()
-
-  cachedMask = { key, canvas }
-  return canvas
-}
-
-/**
- * Below this many device pixels per cell, the stamp is not worth drawing.
- *
- * A shape carved out of two screen pixels is indistinguishable from a dimmer full pixel, and paying
- * a masking pass per tile to produce that is pure waste. Zoomed out far enough, overlays simply
- * render as solid pixels — which is also the only thing that reads at that size.
- */
-export const MIN_CELL_FOR_SHAPE = 3
 
 /**
  * Whether a template pixel of this index should be left unpainted by the overlay.

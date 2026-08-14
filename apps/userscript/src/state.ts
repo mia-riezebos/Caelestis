@@ -3,6 +3,7 @@ import { log, warn } from './debug.js'
 import { discardResponseBody } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
 import { type Appearance, DEFAULT_APPEARANCE, normaliseAppearance } from './templates/appearance.js'
+import { remapPaletteColours, remapStoredAppearance } from './templates/palette-migration.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
 /**
@@ -17,7 +18,8 @@ import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
  * somewhere a real alliance token belongs — see the note in `handoff-userscript-browser.md`.
  */
 
-const STORAGE_KEY = 'caelestis.state.v1'
+const STORAGE_KEY = 'caelestis.state.v2'
+const LEGACY_STORAGE_KEY = 'caelestis.state.v1'
 
 export type ServerAuthMode = 'none' | 'access_token'
 
@@ -302,13 +304,9 @@ type ManifestBbox = {
   readonly maxY: number
 }
 
-const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> =>
-  bbox.minX < bbox.maxX
-    ? [{ start: bbox.minX, end: bbox.maxX }]
-    : [
-        { start: bbox.minX, end: WORLD_PIXELS },
-        { start: 0, end: bbox.maxX },
-      ]
+const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> => [
+  { start: bbox.minX, end: bbox.maxX },
+]
 
 const tileCoordinates = (tile: string): { x: number; y: number } => {
   const separator = tile.indexOf('/')
@@ -391,7 +389,7 @@ const manifestContentsValid = (
       Number(minX) >= WORLD_PIXELS ||
       Number(maxX) < 1 ||
       Number(maxX) > WORLD_PIXELS ||
-      Number(minX) === Number(maxX) ||
+      Number(minX) >= Number(maxX) ||
       Number(minY) < 0 ||
       Number(minY) >= WORLD_PIXELS ||
       Number(maxY) < 1 ||
@@ -457,10 +455,14 @@ const manifestProbeFrom = (
 // biome-ignore lint/suspicious/noExplicitAny: the GM_* API only exists under a userscript manager
 const gm = globalThis as any
 
-const readRaw = (): string | null => {
+const readRaw = (): { readonly value: string; readonly legacyPalette: boolean } | null => {
   try {
-    if (typeof gm.GM_getValue === 'function') return gm.GM_getValue(STORAGE_KEY, null)
-    return localStorage.getItem(STORAGE_KEY)
+    const read = (key: string): string | null =>
+      typeof gm.GM_getValue === 'function' ? gm.GM_getValue(key, null) : localStorage.getItem(key)
+    const current = read(STORAGE_KEY)
+    if (current !== null) return { value: current, legacyPalette: false }
+    const legacy = read(LEGACY_STORAGE_KEY)
+    return legacy === null ? null : { value: legacy, legacyPalette: true }
   } catch (error) {
     warn('install', 'could not read stored state', String(error))
     return null
@@ -494,12 +496,12 @@ const notifyStateListeners = (): void => {
 }
 
 export const loadState = (): State => {
-  const raw = readRaw()
-  if (raw === null) return state
+  const storedRaw = readRaw()
+  if (storedRaw === null) return state
   try {
     // Spread over the defaults rather than trusting the stored shape: a build that adds a field
     // must not be broken by state written before it existed.
-    const parsed: unknown = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(storedRaw.value)
     if (!isRecord(parsed)) throw new TypeError('stored state is not an object')
     const stored = parsed as Partial<State>
     const servers: ConnectedServer[] = []
@@ -565,16 +567,23 @@ export const loadState = (): State => {
       stored.sort?.field === 'name'
         ? { field: 'name', direction: stored.sort.direction === 'desc' ? 'desc' : 'asc' }
         : DEFAULT_SORT
-    const hiddenColours = Array.isArray(stored.hiddenColours)
-      ? [
-          ...new Set(
-            stored.hiddenColours.filter(
-              (index): index is number =>
-                Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
-            ),
-          ),
-        ]
+    const storedHiddenColours = Array.isArray(stored.hiddenColours)
+      ? stored.hiddenColours.filter((index): index is number => Number.isSafeInteger(index))
       : []
+    const hiddenColours =
+      storedHiddenColours.length > 0
+        ? [
+            ...new Set(
+              (storedRaw.legacyPalette
+                ? remapPaletteColours(storedHiddenColours)
+                : storedHiddenColours
+              ).filter(
+                (index): index is number =>
+                  Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
+              ),
+            ),
+          ]
+        : []
     const panelWidth =
       typeof stored.panelWidth === 'number' && Number.isFinite(stored.panelWidth)
         ? Math.min(720, Math.max(260, stored.panelWidth))
@@ -607,15 +616,22 @@ export const loadState = (): State => {
         if (localFolders.length >= MAX_CONNECTED_SERVERS * 1_000) break
       }
     }
-    const hiddenScopes = Array.isArray(stored.hiddenScopes)
-      ? [
-          ...new Set(
-            stored.hiddenScopes.filter(
-              (key): key is string => typeof key === 'string' && key.length <= 2_048,
-            ),
-          ),
-        ].slice(0, MAX_CUSTOM_ORDER)
+    const storedHiddenScopes = Array.isArray(stored.hiddenScopes)
+      ? stored.hiddenScopes.filter(
+          (key): key is string => typeof key === 'string' && key.length <= 2_048,
+        )
       : []
+    const hiddenScopes = [
+      ...new Set(
+        storedHiddenScopes.flatMap((key) => {
+          const legacyNodeId = key.startsWith('node:') ? key.slice('node:'.length) : ''
+          if (!UUID_V7.test(legacyNodeId)) return [key]
+          // The old key hid this node id without naming a server. Preserve that meaning for every
+          // connection that existed with the setting, then store only the collision-safe form.
+          return servers.map((server) => `node:${encodeURIComponent(server.url)}:${legacyNodeId}`)
+        }),
+      ),
+    ].slice(0, MAX_CUSTOM_ORDER)
     state = {
       ...DEFAULT_STATE,
       servers,
@@ -628,11 +644,17 @@ export const loadState = (): State => {
       onlySelectedColour: stored.onlySelectedColour === true,
       localFolders,
       hiddenScopes,
-      appearance: normaliseAppearance(stored.appearance ?? null) ?? DEFAULT_APPEARANCE,
+      appearance:
+        normaliseAppearance(
+          storedRaw.legacyPalette
+            ? remapStoredAppearance(stored.appearance ?? null)
+            : (stored.appearance ?? null),
+        ) ?? DEFAULT_APPEARANCE,
       reportPaints: stored.reportPaints === true,
       shareTiles: stored.shareTiles === true,
     }
     log('install', 'state loaded', { servers: state.servers.length })
+    if (storedRaw.legacyPalette) writeRaw(JSON.stringify(state))
     notifyStateListeners()
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
@@ -1420,20 +1442,24 @@ export const uploadTemplateVersion = async (
  * wanted to. Which is the point: a list that could show them would turn one leaked admin session
  * into every token the server has.
  */
-export interface AccessToken {
+interface StoredAccessToken {
   readonly tokenHash: string
   readonly label: string
   readonly scope: 'read' | 'report' | 'admin'
   readonly createdWithToken: string
   readonly createdAt: number
-  /**
-   * The operator's credential from the server's environment, which has no row and cannot be deleted.
-   *
-   * Said by the server rather than inferred from the label, since anyone can call a real token
-   * "bootstrap" and an undeletable row is not something a label should be able to claim.
-   */
-  readonly bootstrap?: boolean
+  readonly bootstrap?: false
 }
+
+/** The operator credential is environment-owned and therefore has no revocable token hash. */
+interface BootstrapAccessToken {
+  readonly label: string
+  readonly scope: 'admin'
+  readonly createdAt: number
+  readonly bootstrap: true
+}
+
+export type AccessToken = StoredAccessToken | BootstrapAccessToken
 
 export const listAccessTokens = async (
   server: ConnectedServer,
