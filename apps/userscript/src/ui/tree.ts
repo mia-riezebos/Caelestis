@@ -504,21 +504,7 @@ const toggle = (set: Set<string>, key: string): void => {
 }
 
 /**
- * Put `key` immediately before `beforeKey` in the custom order, or last when that is null.
- *
- * One flat list across the whole tree, because each level only ever sorts among its own children —
- * a key's rank is meaningless outside its parent, so the lists cannot interfere.
- */
-export const placeKey = (key: string, beforeKey: string | null): void => {
-  const next = getState().customOrder.filter((candidate) => candidate !== key)
-  const index = beforeKey === null ? -1 : next.indexOf(beforeKey)
-  if (index === -1) next.push(key)
-  else next.splice(index, 0, key)
-  setState({ customOrder: next })
-}
-
-/**
- * Reorder one row among its siblings, expressed as "before this one" so it goes through `placeKey`.
+ * Reorder one row among its siblings without disturbing the rank slots belonging to other levels.
  *
  * It used to build the new order from the sibling list alone and store *that* as the whole custom
  * order — so reordering two categories replaced the flat list with two keys and threw away the
@@ -736,6 +722,15 @@ interface RowOptions {
   readonly siblings: readonly string[]
   /** Full sibling order, computed only if a filtered or capped view is actually reordered. */
   readonly orderingSiblings?: (() => readonly string[]) | undefined
+  /** Resolve the sibling order for the destination level returned by `resolveDrop`. */
+  readonly destinationSiblings?:
+    | ((parentKey: string | null) =>
+        | {
+            readonly visible: readonly string[]
+            readonly all: () => readonly string[]
+          }
+        | undefined)
+    | undefined
   readonly rerender: () => void
   readonly onError: (message: string) => void
   /**
@@ -1070,23 +1065,25 @@ const treeRow = (options: RowOptions): HTMLElement => {
       beforeKey: resolved.beforeKey,
       apply: (draggedKey, parentKey, beforeKey) => {
         if (reparenting) {
-          const visibleSiblings = options.siblings
-          const allSiblings = options.orderingSiblings?.() ?? visibleSiblings
-          if (allSiblings.length + 1 > MAX_RENDERED_ROWS) {
-            options.onError('This level has too many rows to save a custom order safely.')
-            return
-          }
+          const destination = options.destinationSiblings?.(parentKey)
           void place(draggedKey, parentKey, beforeKey).then(
             (destinationKey) => {
               if (destinationKey === null) return
+              if (destination === undefined) {
+                options.onError('The row was moved, but its custom order could not be saved.')
+                options.rerender()
+                return
+              }
               const result = placeAmongVisibleSiblings(
-                visibleSiblings,
-                allSiblings,
+                destination.visible,
+                destination.all(),
                 destinationKey,
                 beforeKey,
               )
               if (result === 'too-many') {
-                options.onError('This level has too many rows to save a custom order safely.')
+                options.onError(
+                  'The row was moved, but this level has too many rows to save a custom order safely.',
+                )
               }
               options.rerender()
             },
@@ -1236,6 +1233,11 @@ interface RenderBudget {
   truncated: boolean
 }
 
+interface SiblingLevel {
+  readonly visible: readonly string[]
+  readonly all: () => readonly string[]
+}
+
 const childText = (text: string, depth: number): HTMLElement => {
   const el = document.createElement('p')
   el.setAttribute('role', 'treeitem')
@@ -1287,12 +1289,17 @@ const renderLevel = (
   matches: (item: TreeItem) => boolean,
   budget: RenderBudget,
   onError: (message: string) => void,
+  siblingLevels: Map<string, SiblingLevel>,
 ): void => {
   const allSiblings = source.children(parentId)
   const matching = allSiblings.filter(matches)
   const items = orderedItems(matching, rank, budget.remaining)
   if (items.length < matching.length) budget.truncated = true
   const keys = items.map((item) => item.key)
+  siblingLevels.set(parentKey, {
+    visible: keys,
+    all: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
+  })
 
   for (const item of items) {
     if (budget.remaining <= 0) {
@@ -1309,6 +1316,8 @@ const renderLevel = (
         container: item.childrenOf !== null,
         siblings: keys,
         orderingSiblings: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
+        destinationSiblings: (destinationParentKey) =>
+          destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
         parentKey,
         canReparent: item.canReparent,
         forceExpanded: needle !== '',
@@ -1349,6 +1358,7 @@ const renderLevel = (
       matches,
       budget,
       onError,
+      siblingLevels,
     )
   }
 
@@ -1383,6 +1393,7 @@ export const treeContents = (
   const ordered = orderedItems(categories, rank).map((item) => item.key)
   const needle = query.trim().toLocaleLowerCase()
   const budget: RenderBudget = { remaining: MAX_RENDERED_ROWS, truncated: false }
+  const siblingLevels = new Map<string, SiblingLevel>()
 
   for (const key of ordered) {
     const server = servers.find((candidate) => `server:${candidate.url}` === key)
@@ -1410,6 +1421,8 @@ export const treeContents = (
         forceExpanded: needle !== '',
         siblings: ordered,
         orderingSiblings: () => ordered,
+        destinationSiblings: (destinationParentKey) =>
+          destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
         parentKey: null,
         rerender,
         onError: callbacks.onError,
@@ -1625,6 +1638,7 @@ export const treeContents = (
           matches,
           budget,
           callbacks.onError,
+          siblingLevels,
         )
         if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
         else if (known.length === 0 && published.length === 0)
@@ -1737,6 +1751,7 @@ export const treeContents = (
         matches,
         budget,
         callbacks.onError,
+        siblingLevels,
       )
       if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
       else if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))

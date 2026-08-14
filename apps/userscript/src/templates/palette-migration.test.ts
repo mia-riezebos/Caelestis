@@ -109,15 +109,13 @@ describe('palette persistence migration', () => {
     expect(third.update).not.toHaveBeenCalled()
   })
 
-  it('skips a template record that cannot be migrated', async () => {
+  it('leaves an unreadable template record unmarked when it cannot be migrated', async () => {
     const { abort, continueCursor, update } = await runMigration({
       id: 'template',
       indices: 'unreadable',
     })
 
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'template', paletteMigration: 4 }),
-    )
+    expect(update).not.toHaveBeenCalled()
     expect(abort).not.toHaveBeenCalled()
     expect(continueCursor).toHaveBeenCalledOnce()
   })

@@ -59,7 +59,6 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
     const appearance = remapStoredAppearance(value.appearance)
     if (isUint8Array(value.indices)) {
       if (value.indices.length > MAX_MIGRATED_INDEX_BYTES) {
-        cursor.update(markCurrentPalette(value))
         cursor.continue()
         return
       }
@@ -71,7 +70,6 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
     }
     const storedIndices = value.indices
     if (!isStoredBlob(storedIndices) || storedIndices.size > MAX_MIGRATED_INDEX_BYTES) {
-      cursor.update(markCurrentPalette(value))
       cursor.continue()
       return
     }
@@ -106,7 +104,6 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
           return
         }
         if (invalid) {
-          cursor.update(markCurrentPalette(value))
           cursor.continue()
           return
         }

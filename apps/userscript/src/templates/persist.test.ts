@@ -397,6 +397,40 @@ describe('local template persistence', () => {
     expect(durablePixels.arrayBuffer).not.toHaveBeenCalled()
   })
 
+  it('does not mark reused unremapped pixels as current during a metadata-only update', async () => {
+    const durablePixels = {
+      size: 1,
+      arrayBuffer: vi.fn(async () => new Uint8Array([17]).buffer),
+    }
+    const unmarkedRecord = stored({ id: 'test', revision: 1, indices: durablePixels })
+    delete unmarkedRecord.paletteMigration
+    const templateRequest = {
+      result: unmarkedRecord,
+    } as unknown as IDBRequest<unknown>
+    const templateStore = { get: vi.fn(() => templateRequest), put: vi.fn() }
+    const transaction = { objectStore: vi.fn(() => templateStore) } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { saveTemplate } = await import('./persist.js')
+
+    const saving = saveTemplate(stored({ id: 'test', revision: 1, visible: false }) as never, 1)
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    templateRequest.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(saving).resolves.toEqual({ status: 'saved', revision: 2 })
+    expect(templateStore.put).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'test', revision: 2, indices: durablePixels }),
+    )
+    expect(templateStore.put.mock.calls[0]?.[0]).not.toHaveProperty('paletteMigration')
+    expect(durablePixels.arrayBuffer).not.toHaveBeenCalled()
+  })
+
   it('waits for durable deletes and skips records outside the aggregate pixel cap', async () => {
     const templateRequest = {
       result: stored({ id: 'gone', revision: 0 }),
