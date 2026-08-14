@@ -31,6 +31,7 @@ import {
   placementSeq,
 } from '../templates/move.js'
 import { isPaintOpen } from '../wplace-paint.js'
+import { isColourPickerOpen } from './colour-picker.js'
 import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
@@ -160,6 +161,76 @@ const heldWithin = (root: HTMLElement | null): boolean =>
 
 /** Window-level releases installed when pointer capture was unavailable, by pointer. */
 const captureFallbacks = new Map<number, () => void>()
+
+const MOVES_RANGE = new Set([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+])
+
+const finishPointerHold = (
+  input: HTMLInputElement,
+  pointerId: number,
+  settleGesture: () => void,
+): void => {
+  captureFallbacks.get(pointerId)?.()
+  heldPointers.delete(pointerId)
+  if (![...heldPointers.values()].includes(input)) settleGesture()
+}
+
+/** Register one range in the same held-control registry that suppresses menu rebuilds. */
+const beginPointerHold = (
+  input: HTMLInputElement,
+  event: PointerEvent,
+  settleGesture: () => void,
+): void => {
+  heldPointers.set(event.pointerId, input)
+  try {
+    input.setPointerCapture(event.pointerId)
+  } catch {
+    const drop = (): void => {
+      window.removeEventListener('pointerup', ended, true)
+      window.removeEventListener('pointercancel', ended, true)
+      captureFallbacks.delete(event.pointerId)
+    }
+    const ended = (release: Event): void => {
+      if ((release as PointerEvent).pointerId !== event.pointerId) return
+      drop()
+      finishPointerHold(input, event.pointerId, settleGesture)
+    }
+    window.addEventListener('pointerup', ended, true)
+    window.addEventListener('pointercancel', ended, true)
+    captureFallbacks.set(event.pointerId, drop)
+  }
+}
+
+/** Let a shared range tell this menu when its live DOM must stay under the user's gesture. */
+const protectRange = (input: HTMLInputElement): void => {
+  const repaintAfterNativeChange = (): void => {
+    setTimeout(() => lastRerender?.(), 0)
+  }
+  input.addEventListener('pointerdown', (event) =>
+    beginPointerHold(input, event, repaintAfterNativeChange),
+  )
+  for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    input.addEventListener(ending, (event) =>
+      finishPointerHold(input, (event as PointerEvent).pointerId, repaintAfterNativeChange),
+    )
+  }
+  input.addEventListener('keydown', (event) => {
+    if (MOVES_RANGE.has(event.key)) heldByKey = input
+  })
+  input.addEventListener('keyup', (event) => {
+    if (!MOVES_RANGE.has(event.key) || heldByKey !== input) return
+    heldByKey = null
+    repaintAfterNativeChange()
+  })
+}
 
 const releaseAllHolds = (): void => {
   for (const drop of [...captureFallbacks.values()]) drop()
@@ -651,6 +722,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     appearance.size,
     appearance.opacity,
     [...appearance.hiddenColours].sort((a, b) => a - b).join('.'),
+    [...hiddenColoursFor(appearance)].sort((a, b) => a - b).join('.'),
     appearance.markMismatch,
     appearance.markUnpainted,
     appearance.unpaintedLimit,
@@ -736,16 +808,6 @@ const slider = (
     return wrap
   }
 
-  const MOVES_THE_THUMB = new Set([
-    'ArrowLeft',
-    'ArrowRight',
-    'ArrowUp',
-    'ArrowDown',
-    'Home',
-    'End',
-    'PageUp',
-    'PageDown',
-  ])
   let keyHeld = false
 
   /** End the gesture: commit the draft if there is one, and let the map catch up either way. */
@@ -765,38 +827,11 @@ const slider = (
     onCommit(draft)
   }
 
-  input.addEventListener('pointerdown', (event) => {
-    heldPointers.set(event.pointerId, input)
-    // Captured, so the release comes back here even when the pointer leaves the control. A mouse
-    // drag that ends outside the range otherwise never delivers `pointerup` to it at all, and the
-    // gesture — and the rebuild suppression that goes with it — never ends.
-    try {
-      input.setPointerCapture(event.pointerId)
-    } catch {
-      // Capture unavailable, so the release will not come back to this element. Listen where it
-      // will: without this the hold stays registered and rebuilds stay suppressed for good.
-      const drop = (): void => {
-        window.removeEventListener('pointerup', ended, true)
-        window.removeEventListener('pointercancel', ended, true)
-        captureFallbacks.delete(event.pointerId)
-      }
-      const ended = (release: Event): void => {
-        if ((release as PointerEvent).pointerId !== event.pointerId) return
-        drop()
-        heldPointers.delete(event.pointerId)
-        if (![...heldPointers.values()].includes(input)) settleGesture()
-      }
-      window.addEventListener('pointerup', ended, true)
-      window.addEventListener('pointercancel', ended, true)
-      // Dropped by any teardown too: a listener that outlives its menu will happily settle a later
-      // gesture with a draft that was never its own.
-      captureFallbacks.set(event.pointerId, drop)
-    }
-  })
+  input.addEventListener('pointerdown', (event) => beginPointerHold(input, event, settleGesture))
   input.addEventListener('keydown', (event) => {
     // Tab does not move the thumb, and its `keyup` lands on whatever it moved focus *to*, so
     // treating every key as held waits for a keyup that never arrives.
-    if (!MOVES_THE_THUMB.has(event.key)) return
+    if (!MOVES_RANGE.has(event.key)) return
     keyHeld = true
     heldByKey = input
   })
@@ -811,10 +846,7 @@ const slider = (
   // which Chromium fires no `change` for at all.
   for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
     input.addEventListener(ending, (event) => {
-      heldPointers.delete((event as PointerEvent).pointerId)
-      // Only once every pointer on this control has finished: two can be down on one slider, and
-      // ending the gesture on the first would take the second one's element away under it.
-      if (![...heldPointers.values()].includes(input)) settleGesture()
+      finishPointerHold(input, (event as PointerEvent).pointerId, settleGesture)
     })
   }
   // Under a held key `change` fires once per repeat, so that path waits for the key to come up.
@@ -823,7 +855,7 @@ const slider = (
     settleGesture()
   })
   input.addEventListener('keyup', (event) => {
-    if (!MOVES_THE_THUMB.has(event.key)) return
+    if (!MOVES_RANGE.has(event.key)) return
     settleGesture()
   })
   input.addEventListener('blur', () => {
@@ -1407,7 +1439,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
         edit(properties, 'mismatch markers', () => patch)
       },
       rerender,
-      { compact: true },
+      { compact: true, protectRange },
     ),
   )
   disableFollowing(markers)
@@ -1939,8 +1971,9 @@ const renderControls = (
       !stale &&
       menuOwner === template.id &&
       // *Any* of them: two pointers can be down at once on a touch device, and rebuilding when the
-      // first is released takes the second one's element away mid-gesture.
-      heldWithin(menuNode)
+      // first is released takes the second one's element away mid-gesture. The picker lives outside
+      // the menu, but its anchor is inside it and must remain attached for the same duration.
+      (heldWithin(menuNode) || isColourPickerOpen())
     if (!dragging && (stale || menuNode?.dataset.caelestisSignature !== signature)) {
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —

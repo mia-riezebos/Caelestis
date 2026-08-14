@@ -528,8 +528,10 @@ const moveKey = (
   to: string,
   after: boolean,
   allKeys: readonly string[] = keys,
+  allowInsert = false,
 ): 'moved' | 'unchanged' | 'too-many' => {
   const inserting = !allKeys.includes(from)
+  if (inserting && !allowInsert) return 'unchanged'
   const affectedKeys = inserting ? [...allKeys, from] : allKeys
   // `customOrder` is a flat rank list, so preserving an arbitrary filtered sibling order currently
   // requires writing every sibling. Bound that synchronous GM storage write to the same number of
@@ -550,10 +552,11 @@ const placeAmongVisibleSiblings = (
   allKeys: readonly string[],
   from: string,
   beforeKey: string | null,
+  allowInsert = false,
 ): 'moved' | 'unchanged' | 'too-many' => {
   const without = visibleKeys.filter((key) => key !== from)
   const target = beforeKey ?? without.at(-1) ?? from
-  return moveKey(visibleKeys, from, target, beforeKey === null, allKeys)
+  return moveKey(visibleKeys, from, target, beforeKey === null, allKeys, allowInsert)
 }
 
 /**
@@ -757,6 +760,18 @@ interface RowOptions {
   readonly checked?: boolean | undefined
   readonly onToggleChecked?: ((on: boolean) => void) | undefined
 }
+
+/** The one sibling level a resolved placement belongs to, whether or not it is the hovered row's. */
+const destinationLevel = (
+  options: RowOptions,
+  parentKey: string | null,
+): SiblingLevel | undefined =>
+  parentKey === (options.parentKey ?? null)
+    ? {
+        visible: options.siblings,
+        all: options.orderingSiblings ?? (() => options.siblings),
+      }
+    : options.destinationSiblings?.(parentKey)
 
 const treeRow = (options: RowOptions): HTMLElement => {
   const draggable = isReorderable(getState().sort)
@@ -1037,6 +1052,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
   })
   row.addEventListener('dragover', (event) => {
     event.preventDefault()
+    // A hover owns the only armed placement. If this row cannot offer one, releasing here must do
+    // nothing rather than applying whichever row happened to be hovered previously.
+    dropTarget = null
     const parent = row.parentElement
     if (parent === null) return
     clearDropMarks(parent)
@@ -1063,26 +1081,23 @@ const treeRow = (options: RowOptions): HTMLElement => {
     ) {
       return
     }
+    const destination = destinationLevel(options, resolved.parentKey)
+    if (destination === undefined) return
     const reparenting = dragging !== null && resolved.parentKey !== dragging.parentKey
     dropTarget = {
       parentKey: resolved.parentKey,
       beforeKey: resolved.beforeKey,
       apply: (draggedKey, parentKey, beforeKey) => {
         if (reparenting) {
-          const destination = options.destinationSiblings?.(parentKey)
           void place(draggedKey, parentKey, beforeKey).then(
             (destinationKey) => {
               if (destinationKey === null) return
-              if (destination === undefined) {
-                options.onError('The row was moved, but its custom order could not be saved.')
-                options.rerender()
-                return
-              }
               const result = placeAmongVisibleSiblings(
                 destination.visible,
                 destination.all(),
                 destinationKey,
                 beforeKey,
+                true,
               )
               if (result === 'too-many') {
                 options.onError(
@@ -1098,8 +1113,8 @@ const treeRow = (options: RowOptions): HTMLElement => {
           )
         } else {
           const result = placeAmongVisibleSiblings(
-            options.siblings,
-            options.orderingSiblings?.() ?? options.siblings,
+            destination.visible,
+            destination.all(),
             draggedKey,
             beforeKey,
           )

@@ -402,6 +402,22 @@ describe('D1SqlStore', () => {
     })
   })
 
+  it('deletes a subtree whose root path exceeds D1s LIKE pattern limit', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const path = `/${'deep'.repeat(15)}`
+    await store.insertNode({ ...base, id: 'deep-root', parentId: null, path, name: 'Deep root' })
+    await store.insertNode({
+      ...base,
+      id: 'deep-child',
+      parentId: 'deep-root',
+      path: `${path}/child`,
+      name: 'Child',
+    })
+
+    await expect(store.deleteNodeCascade('deep-root')).resolves.toEqual({ nodes: 2, templates: 0 })
+    await expect(store.listNodes(1)).resolves.toEqual([])
+  })
+
   it('orders tokens minted in the same millisecond by hash, as the port promises', async () => {
     // SQL leaves equal ORDER BY keys unspecified, so the adapters could return different arrays for
     // one input — the memory store applies the port's tiebreak and D1 did not. Date.now() is

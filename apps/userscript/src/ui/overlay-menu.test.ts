@@ -323,6 +323,23 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     expect(byKey('opacity')).toBe(before)
   })
 
+  it('keeps the Mismatches Size track under the pointer on input', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const before = menu().querySelector<HTMLInputElement>(
+      'input[type="range"]:not([data-caelestis-control])',
+    )
+    if (before === null) throw new Error('no Mismatches Size track')
+
+    before.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    before.value = '17'
+    before.dispatchEvent(new Event('input'))
+
+    expect(menu().querySelector('input[type="range"]:not([data-caelestis-control])')).toBe(before)
+  })
+
   it('moves an unfocused slider to a value changed elsewhere', () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()

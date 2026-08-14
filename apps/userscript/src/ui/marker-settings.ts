@@ -25,6 +25,17 @@ const CONTROL_WIDTH = '8.5rem'
 /** One step of nesting. Deep enough to read as subordinate at a glance, shallow enough to stack. */
 const INDENT = '1.25rem'
 
+const MOVES_RANGE = new Set([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+])
+
 interface RowOptions {
   readonly depth: number
   readonly compact: boolean
@@ -77,6 +88,7 @@ const track = (
   spec: { min: number; max: number; step: number; format: (value: number) => string },
   value: number,
   onChange: (next: number) => void,
+  protectGesture?: (input: HTMLInputElement) => void,
 ): HTMLElement => {
   const wrap = document.createElement('span')
   wrap.className = 'flex items-center gap-2'
@@ -99,11 +111,30 @@ const track = (
   // The value changes as you drag, so it must not reflow the row it sits in.
   readout.style.fontVariantNumeric = 'tabular-nums'
   readout.textContent = spec.format(value)
+  let dirty = false
+  let keyHeld = false
+  const commit = (): void => {
+    if (!dirty) return
+    dirty = false
+    onChange(Number(input.value))
+  }
   input.addEventListener('input', () => {
-    const next = Number(input.value)
-    readout.textContent = spec.format(next)
-    onChange(next)
+    dirty = true
+    readout.textContent = spec.format(Number(input.value))
   })
+  input.addEventListener('keydown', (event) => {
+    if (MOVES_RANGE.has(event.key)) keyHeld = true
+  })
+  input.addEventListener('change', () => {
+    if (!keyHeld) commit()
+  })
+  input.addEventListener('keyup', (event) => {
+    if (!MOVES_RANGE.has(event.key)) return
+    keyHeld = false
+    commit()
+  })
+  input.addEventListener('blur', () => setTimeout(commit, 0))
+  protectGesture?.(input)
   wrap.append(input, readout)
   return wrap
 }
@@ -140,7 +171,10 @@ export const mismatchSettings = (
   values: Appearance,
   write: (patch: Partial<Appearance>) => void,
   rerender: () => void,
-  { compact = false }: { compact?: boolean } = {},
+  {
+    compact = false,
+    protectRange,
+  }: { compact?: boolean; protectRange?: (input: HTMLInputElement) => void } = {},
 ): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'flex flex-col'
@@ -171,6 +205,7 @@ export const mismatchSettings = (
         { min: 3, max: 33, step: 1, format: (v) => `${Math.round(v)}px` },
         values.markerSize,
         (next) => write({ markerSize: next }),
+        protectRange,
       ),
       at(1),
     ),
@@ -198,8 +233,11 @@ export const mismatchSettings = (
    */
   const limit = row(
     'Only under',
-    track(UNPAINTED_LIMIT_CONTROL, values.unpaintedLimit, (next) =>
-      write({ unpaintedLimit: next }),
+    track(
+      UNPAINTED_LIMIT_CONTROL,
+      values.unpaintedLimit,
+      (next) => write({ unpaintedLimit: next }),
+      protectRange,
     ),
     at(2),
   )
@@ -227,6 +265,7 @@ export const mismatchSettings = (
         { min: 0.05, max: 1, step: 0.05, format: (v) => `${Math.round(v * 100)}%` },
         values.otherOpacity,
         (next) => write({ otherOpacity: next }),
+        protectRange,
       ),
       at(2),
     ),

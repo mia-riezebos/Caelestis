@@ -1,18 +1,5 @@
 import { type Millis, seconds, WORLD_PIXELS } from '@caelestis/shared'
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gte,
-  inArray,
-  isNotNull,
-  like,
-  lt,
-  or,
-  type SQL,
-  sql,
-} from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, type SQL, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -67,6 +54,16 @@ const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
  * 100-parameter ceiling, and it turns the per-tile statement count into a per-24-tile one.
  */
 const VERSION_TILE_ROWS_PER_INSERT = 24
+
+/**
+ * Case-insensitive path-prefix matching without a LIKE pattern.
+ *
+ * D1 caps a LIKE or GLOB pattern at 50 bytes, while a node path may be 256 characters. `substr`
+ * compares the same prefix without constructing a pattern, and `lower` folds ASCII exactly as
+ * SQLite LIKE did. SQLite supplies both lengths so the comparison stays in characters throughout.
+ */
+const pathStartsWith = (prefix: SQL | string): SQL =>
+  sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
 
 const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
   const out: T[][] = []
@@ -214,15 +211,8 @@ export class D1SqlStore implements SqlStore {
     const node = await this.readNode(nodeId)
     if (node === null) return null
 
-    // Not LIKE: D1 caps a LIKE or GLOB pattern at 50 bytes, and a node path may be 256 characters,
-    // so renaming anything but a shallow node answered "LIKE or GLOB pattern too complex" — every
-    // ordinary rename of a nested group, in production only. `substr` compares the same prefix with
-    // no pattern at all, and `lower` folds ASCII exactly as LIKE did. Lengths come from SQLite's own
-    // `length()` so the comparison stays in characters throughout.
     const oldPrefix = `${node.path}/`
-    const startsWithOldPrefix = (prefix: SQL | string): SQL =>
-      sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
-    const descendants = and(eq(nodes.season, node.season), startsWithOldPrefix(oldPrefix))
+    const descendants = and(eq(nodes.season, node.season), pathStartsWith(oldPrefix))
 
     // Every descendant keeps its suffix, so its new length is its old one shifted by the change in
     // the prefix — one aggregate, no rows. `slug` keeps paths inside the BMP, so SQLite's character
@@ -282,7 +272,7 @@ export class D1SqlStore implements SqlStore {
       this.database
         .update(nodes)
         .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
-        .where(and(eq(nodes.season, node.season), startsWithOldPrefix(sql`${oldPath} || '/'`))),
+        .where(and(eq(nodes.season, node.season), pathStartsWith(sql`${oldPath} || '/'`))),
       this.database.update(nodes).set({ name, path: destination }).where(eq(nodes.id, nodeId)),
     ] as const
     try {
@@ -331,9 +321,7 @@ export class D1SqlStore implements SqlStore {
     const segment = proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
     const path = `${parent?.path ?? ''}/${segment}`
     const oldPrefix = `${node.path}/`
-    const startsWithOldPrefix = (prefix: SQL | string): SQL =>
-      sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
-    const descendants = and(eq(nodes.season, node.season), startsWithOldPrefix(oldPrefix))
+    const descendants = and(eq(nodes.season, node.season), pathStartsWith(oldPrefix))
     const shift = path.length - node.path.length
     const [deepest] = await this.database
       .select({ length: sql<number>`coalesce(max(length(${nodes.path})), 0)` })
@@ -370,7 +358,7 @@ export class D1SqlStore implements SqlStore {
         .where(
           and(
             eq(nodes.season, node.season),
-            startsWithOldPrefix(sql`${oldPath} || '/'`),
+            pathStartsWith(sql`${oldPath} || '/'`),
             parentIsStillValid,
           ),
         ),
@@ -434,7 +422,7 @@ export class D1SqlStore implements SqlStore {
     if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
     const subtree = or(
       eq(nodes.id, nodeId),
-      and(eq(nodes.season, node.season), like(nodes.path, `${node.path}/%`)),
+      and(eq(nodes.season, node.season), pathStartsWith(`${node.path}/`)),
     )
     const [nodeRows, templateRows] = await Promise.all([
       this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
@@ -452,7 +440,7 @@ export class D1SqlStore implements SqlStore {
     if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
     const subtree = or(
       eq(nodes.id, nodeId),
-      and(eq(nodes.season, node.season), like(nodes.path, `${node.path}/%`)),
+      and(eq(nodes.season, node.season), pathStartsWith(`${node.path}/`)),
     )
     const [nodeRows, templateRows] = await Promise.all([
       this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
