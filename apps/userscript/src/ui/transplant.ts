@@ -51,6 +51,8 @@ export interface TransplantResult {
   /** Folders and templates that reached the destination, whether or not the whole move finished. */
   readonly nodes: number
   readonly templates: number
+  /** The root folder's new identity, available only after the whole move succeeds. */
+  readonly destinationRootId?: string
 }
 
 /** One branch, flattened: each folder with the templates directly inside it. */
@@ -273,10 +275,15 @@ export const transplant = async (
     for (const folder of [...inCreationOrder(branch)].reverse()) removeLocalFolder(folder.id)
   }
 
+  const destinationRootId = mapped.get(source.kind === 'local' ? source.folderId : source.nodeId)
+  if (destinationRootId === undefined) {
+    return { ok: false, nodes, templates, message: 'The moved folder has no destination identity.' }
+  }
   return {
     ok: true,
     nodes,
     templates,
+    destinationRootId,
     message: `Moved “${branch.name}” — ${nodes} folder${nodes === 1 ? '' : 's'}, ${templates} template${templates === 1 ? '' : 's'}.`,
   }
 }

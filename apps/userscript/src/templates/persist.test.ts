@@ -14,6 +14,7 @@ const stored = (overrides: Record<string, unknown> = {}): Record<string, unknown
   visible: true,
   everPlaced: true,
   revision: 0,
+  paletteMigration: 4,
   ...overrides,
 })
 
@@ -26,7 +27,7 @@ describe('local template persistence', () => {
   it('opens a v3 database past an unreadable migration record and preserves later records', async () => {
     const records: unknown[] = [
       { id: 'unreadable', indices: 'not binary' },
-      stored({ id: 'survivor', indices: Uint8Array.from([17]) }),
+      stored({ id: 'survivor', indices: Uint8Array.from([17]), paletteMigration: undefined }),
     ]
     let upgradeIndex = 0
     let readIndex = 0

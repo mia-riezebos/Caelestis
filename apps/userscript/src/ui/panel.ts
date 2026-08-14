@@ -68,6 +68,7 @@ import {
   primeFromCache,
   refreshNodes,
   serverTemplateAt,
+  serverTemplateTreeKey,
   startRenaming,
   type TreeTarget,
   templatesOfNode,
@@ -300,36 +301,42 @@ const treeView = (): HTMLElement => {
           onCopyToServer: (id) => void copyToServer(id, renderTree),
           onError: (message) => toast(message, 'error'),
           onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
-            void dropOnServerNode(server, nodeId, draggedKey, beforeKey, renderTree),
-          onMoveLocal: (draggedKey, parentKey, _beforeKey) => {
+            dropOnServerNode(server, nodeId, draggedKey, beforeKey, renderTree),
+          onMoveLocal: async (draggedKey, parentKey, _beforeKey) => {
             // `local` is the root of the category; `lf:<id>` is a folder within it.
             const parentFolderId =
               parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null
             // Something from a server, dropped into Local. It is a move rather than a reorder, and
             // it lands here because Local's rows are the ones that own dropping *between* rows.
             if (draggedKey.startsWith('node:')) {
-              void moveBranch(draggedKey, { kind: 'local', folderId: parentFolderId }, renderTree)
-              return
+              return await moveBranch(
+                draggedKey,
+                { kind: 'local', folderId: parentFolderId },
+                renderTree,
+              )
             }
             if (draggedKey.startsWith('st:')) {
-              void copyServerTemplateToLocal(draggedKey, parentFolderId, renderTree)
-              return
+              return await copyServerTemplateToLocal(draggedKey, parentFolderId, renderTree)
             }
             // Reparent first, then place. One drop target, two kinds of passenger — which it is
             // comes from the dragged row's own key, so nothing else has to care.
             if (draggedKey.startsWith('local:')) {
-              void (async () => {
-                if (!(await setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId))) {
-                  toast('Could not move that template into the folder.', 'error')
-                  renderTree()
-                  return
-                }
+              if (!(await setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId))) {
+                toast('Could not move that template into the folder.', 'error')
                 renderTree()
-              })()
-              return
+                return null
+              }
+              renderTree()
+              return draggedKey
             } else if (draggedKey.startsWith('lf:')) {
-              moveLocalFolder(draggedKey.slice('lf:'.length), parentFolderId)
+              const folderId = draggedKey.slice('lf:'.length)
+              moveLocalFolder(folderId, parentFolderId)
+              return getState().localFolders.find((folder) => folder.id === folderId)?.parentId ===
+                parentFolderId
+                ? draggedKey
+                : null
             }
+            return null
           },
         },
         renderTree,
@@ -549,6 +556,12 @@ const expandedServers = new Set<string>()
  */
 const autoExpanded = new Set<string>()
 
+const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
+  if (!key.startsWith(prefix)) return false
+  const suffix = key.slice(prefix.length)
+  return suffix !== '' && !suffix.includes(':')
+}
+
 /**
  * Disconnect: take the server out of the list, and everything it put on this machine with it.
  *
@@ -573,7 +586,9 @@ const disconnectServer = (server: ConnectedServer): void => {
     `server:${server.url}`,
     ...nodes.map((id) => nodeScopeKey(server.url, id)),
     ...getState().hiddenScopes.filter(
-      (key) => key.startsWith(serverTemplatePrefix) || key.startsWith(legacyTreeTemplatePrefix),
+      (key) =>
+        hasSingleKeySegmentAfter(key, serverTemplatePrefix) ||
+        hasSingleKeySegmentAfter(key, legacyTreeTemplatePrefix),
     ),
   ])
   expandedServers.delete(server.url)
@@ -1267,17 +1282,17 @@ const moveBranch = async (
   draggedKey: string,
   destination: Destination,
   rerender: () => void,
-): Promise<void> => {
+): Promise<string | null> => {
   const fromServer = draggedKey.startsWith('node:')
   const found = fromServer ? findServerNode(draggedKey) : null
-  if (fromServer && found === null) return
+  if (fromServer && found === null) return null
   const sourceId = found?.node.id ?? draggedKey.slice(draggedKey.indexOf(':') + 1)
 
   const sourceServer =
     found === null
       ? null
       : (getState().servers.find((candidate) => candidate.url === found.serverUrl) ?? null)
-  if (fromServer && sourceServer === null) return
+  if (fromServer && sourceServer === null) return null
 
   /**
    * Within one server, a move is one field: the node's parent.
@@ -1291,11 +1306,11 @@ const moveBranch = async (
     sourceServer !== null &&
     destination.server.url === sourceServer.url
   ) {
-    if (found !== null && destination.nodeId === found.node.parentId) return
+    if (found !== null && destination.nodeId === found.node.parentId) return draggedKey
     const moved = await moveNodeOnServer(destination.server, sourceId, destination.nodeId)
     if (!moved.ok) toast(moved.message, 'error')
     await refreshNodes(destination.server, rerender)
-    return
+    return moved.ok ? draggedKey : null
   }
 
   const sourceName = sourceServer?.info?.name ?? sourceServer?.url ?? 'Local'
@@ -1311,7 +1326,7 @@ const moveBranch = async (
       : { note: `Everyone connected to ${sourceName} will stop seeing it.` }),
     confirmLabel: 'Move',
   })
-  if (!confirmed) return
+  if (!confirmed) return null
 
   const source: Source =
     sourceServer === null
@@ -1327,6 +1342,10 @@ const moveBranch = async (
   if (sourceServer !== null) await refreshNodes(sourceServer, rerender)
   if (destination.kind === 'server') await refreshNodes(destination.server, rerender)
   rerender()
+  if (!result.ok || result.destinationRootId === undefined) return null
+  return destination.kind === 'server'
+    ? nodeTreeKey(destination.server, result.destinationRootId)
+    : `lf:${result.destinationRootId}`
 }
 
 /**
@@ -1339,18 +1358,18 @@ const copyServerTemplateToLocal = async (
   templateKey: string,
   folderId: string | null,
   rerender: () => void,
-): Promise<void> => {
+): Promise<string | null> => {
   const found = findServerTemplate(templateKey)
-  if (found === null) return
+  if (found === null) return null
   const templateId = found.template.id
   const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
-  if (source === undefined) return
+  if (source === undefined) return null
   const drawn = allLocal().find(
     (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
   )
   if (drawn === undefined) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
-    return
+    return null
   }
 
   const sourceName = source.info?.name ?? source.url
@@ -1360,7 +1379,7 @@ const copyServerTemplateToLocal = async (
     note: `Everyone connected to ${sourceName} will stop seeing it.`,
     confirmLabel: 'Move',
   })
-  if (!confirmed) return
+  if (!confirmed) return null
 
   const copied = await copyAsLocalTemplate(
     drawn,
@@ -1369,13 +1388,14 @@ const copyServerTemplateToLocal = async (
   if (!(await setTemplateFolder(copied.id, folderId))) {
     toast('Copied into Local, but could not put it in that folder.', 'error')
     rerender()
-    return
+    return null
   }
   const removed = await deleteTemplateOnServer(source, templateId)
   if (!removed.ok) toast(`Copied into Local, but ${removed.message}`, 'error')
   else toast(`Moved “${found.template.name}” into Local.`)
   await refreshNodes(source, rerender)
   rerender()
+  return `local:${copied.id}`
 }
 
 const dropOnServerNode = async (
@@ -1384,7 +1404,7 @@ const dropOnServerNode = async (
   draggedKey: string,
   _beforeKey: string | null,
   rerender: () => void,
-): Promise<void> => {
+): Promise<string | null> => {
   // A folder is a branch, not a row: its structure and everything hanging off it must exist at the
   // destination before anything is taken off the source. `transplant` owns that ordering; this only
   // decides which end is which.
@@ -1393,18 +1413,17 @@ const dropOnServerNode = async (
   // dropping onto the server's own row means the top level. A template cannot go there, because a
   // template has to live in a folder, which is why the null check below is after this.
   if (draggedKey.startsWith('node:') || draggedKey.startsWith('lf:')) {
-    await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender)
-    return
+    return await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender)
   }
-  if (nodeId === null) return
+  if (nodeId === null) return null
 
   if (draggedKey.startsWith('local:')) {
     const local = allLocal().find((candidate) => candidate.id === draggedKey.slice('local:'.length))
-    if (local === undefined) return
+    if (local === undefined) return null
     const png = await templateAsPng(local)
     if (png === null) {
       toast('Could not encode that template.', 'error')
-      return
+      return null
     }
     const result = await uploadTemplate(server, {
       nodeId,
@@ -1416,24 +1435,24 @@ const dropOnServerNode = async (
     if (result.ok) toast(`Uploaded “${local.name}” to ${server.info?.name ?? server.url}.`)
     else toast(result.message, 'error')
     await refreshNodes(server, rerender)
-    return
+    return result.ok ? serverTemplateTreeKey(server, result.id) : null
   }
 
-  if (!draggedKey.startsWith('st:')) return
+  if (!draggedKey.startsWith('st:')) return null
   const found = findServerTemplate(draggedKey)
-  if (found === null) return
+  if (found === null) return null
   const templateId = found.template.id
 
   if (found.serverUrl === server.url) {
-    if (found.template.nodeId === nodeId) return
+    if (found.template.nodeId === nodeId) return draggedKey
     const result = await patchTemplate(server, templateId, { nodeId })
     if (!result.ok) toast(result.message, 'error')
     await refreshNodes(server, rerender)
-    return
+    return result.ok ? draggedKey : null
   }
 
   const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
-  if (source === undefined) return
+  if (source === undefined) return null
   const sourceName = source.info?.name ?? source.url
   const destinationName = server.info?.name ?? server.url
   const confirmed = await confirmDestructive({
@@ -1442,7 +1461,7 @@ const dropOnServerNode = async (
     note: `Everyone connected to ${sourceName} will stop seeing it.`,
     confirmLabel: 'Move',
   })
-  if (!confirmed) return
+  if (!confirmed) return null
 
   // The pixels come from the copy already on the canvas, which is the assembled result of that
   // server's own chunks — so a cross-server move needs no second download.
@@ -1451,12 +1470,12 @@ const dropOnServerNode = async (
   )
   if (drawn === undefined) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
-    return
+    return null
   }
   const png = await templateAsPng(drawn)
   if (png === null) {
     toast('Could not encode that template.', 'error')
-    return
+    return null
   }
 
   const uploaded = await uploadTemplate(server, {
@@ -1469,7 +1488,7 @@ const dropOnServerNode = async (
   if (!uploaded.ok) {
     // Nothing has been removed yet, so a failure here leaves both sides exactly as they were.
     toast(uploaded.message, 'error')
-    return
+    return null
   }
   const removed = await deleteTemplateOnServer(source, templateId)
   if (!removed.ok) {
@@ -1479,6 +1498,7 @@ const dropOnServerNode = async (
   }
   await refreshNodes(source, rerender)
   await refreshNodes(server, rerender)
+  return serverTemplateTreeKey(server, uploaded.id)
 }
 
 /** Whether the row's template is published, read from the copy the row itself was drawn from. */

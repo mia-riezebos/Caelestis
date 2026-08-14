@@ -84,13 +84,40 @@ describe('palette persistence migration', () => {
     expect(migrated.appearance).toEqual({ hiddenColours: [19] })
   })
 
+  it('retries a transient Blob read and migrates the record only once', async () => {
+    let reads = 0
+    const indices = {
+      size: 1,
+      arrayBuffer: () => {
+        reads++
+        return reads === 1
+          ? Promise.reject(new Error('Blob is temporarily unavailable'))
+          : Promise.resolve(Uint8Array.from([17]).buffer)
+      },
+    }
+    const stored = { id: 'template', indices }
+
+    const first = await runMigration(stored)
+    expect(first.update).not.toHaveBeenCalled()
+
+    const second = await runMigration(stored)
+    expect(second.update).toHaveBeenCalledOnce()
+    const migrated = second.update.mock.calls[0]?.[0] as { indices: Blob }
+    expect([...new Uint8Array(await migrated.indices.arrayBuffer())]).toEqual([19])
+
+    const third = await runMigration(migrated)
+    expect(third.update).not.toHaveBeenCalled()
+  })
+
   it('skips a template record that cannot be migrated', async () => {
     const { abort, continueCursor, update } = await runMigration({
       id: 'template',
       indices: 'unreadable',
     })
 
-    expect(update).not.toHaveBeenCalled()
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'template', paletteMigration: 4 }),
+    )
     expect(abort).not.toHaveBeenCalled()
     expect(continueCursor).toHaveBeenCalledOnce()
   })

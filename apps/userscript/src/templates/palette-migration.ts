@@ -25,6 +25,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const MAX_MIGRATED_INDEX_BYTES = 64 * 1024 * 1024
+export const PALETTE_MIGRATION_VERSION = 4
+
+export const hasCurrentPalette = (value: unknown): boolean =>
+  isRecord(value) && value.paletteMigration === PALETTE_MIGRATION_VERSION
+
+export const markCurrentPalette = <T extends Record<string, unknown>>(value: T): T => ({
+  ...value,
+  paletteMigration: PALETTE_MIGRATION_VERSION,
+})
 
 export const remapStoredAppearance = (value: unknown): unknown => {
   if (!isRecord(value) || !Array.isArray(value.hiddenColours)) return value
@@ -43,18 +52,26 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
       cursor.continue()
       return
     }
+    if (hasCurrentPalette(value)) {
+      cursor.continue()
+      return
+    }
     const appearance = remapStoredAppearance(value.appearance)
     if (isUint8Array(value.indices)) {
       if (value.indices.length > MAX_MIGRATED_INDEX_BYTES) {
+        cursor.update(markCurrentPalette(value))
         cursor.continue()
         return
       }
-      cursor.update({ ...value, indices: remapPaletteIndices(value.indices), appearance })
+      cursor.update(
+        markCurrentPalette({ ...value, indices: remapPaletteIndices(value.indices), appearance }),
+      )
       cursor.continue()
       return
     }
     const storedIndices = value.indices
     if (!isStoredBlob(storedIndices) || storedIndices.size > MAX_MIGRATED_INDEX_BYTES) {
+      cursor.update(markCurrentPalette(value))
       cursor.continue()
       return
     }
@@ -62,28 +79,34 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
     // Blob reads are asynchronous, while a version-change transaction stays active only while it
     // has IndexedDB requests outstanding. Keep one harmless read in flight and apply the remap from
     // that request's success callback, where the transaction is active again. If the Blob cannot be
-    // read, skip this invalid record just as the ordinary template loader does. One unreadable row
-    // must not prevent the version upgrade from preserving every other local template.
+    // read, leave this record unmarked so the ordinary loader can retry it later. One unavailable
+    // row must not prevent the version upgrade from preserving every other local template.
     let migrated: Blob | null = null
-    let failed = false
+    let invalid = false
+    let unavailable = false
     void storedIndices
       .arrayBuffer()
       .then((buffer) => {
         if (buffer.byteLength !== storedIndices.size) {
-          failed = true
+          invalid = true
           return
         }
         const remapped = remapPaletteIndices(new Uint8Array(buffer))
         migrated = new Blob([remapped.buffer as ArrayBuffer])
       })
       .catch(() => {
-        failed = true
+        unavailable = true
       })
 
     const keepAlive = (): void => {
       const pending = store.get(cursor.primaryKey)
       pending.onsuccess = () => {
-        if (failed) {
+        if (unavailable) {
+          cursor.continue()
+          return
+        }
+        if (invalid) {
+          cursor.update(markCurrentPalette(value))
           cursor.continue()
           return
         }
@@ -91,7 +114,7 @@ export const migrateTemplateStorePalette = (store: IDBObjectStore): void => {
           keepAlive()
           return
         }
-        cursor.update({ ...value, indices: migrated, appearance })
+        cursor.update(markCurrentPalette({ ...value, indices: migrated, appearance }))
         cursor.continue()
       }
     }

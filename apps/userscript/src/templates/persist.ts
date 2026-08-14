@@ -7,7 +7,13 @@ import {
   MAX_TEMPLATE_ID_LENGTH,
   MAX_TEMPLATE_NAME_LENGTH,
 } from './import.js'
-import { migrateTemplateStorePalette } from './palette-migration.js'
+import {
+  hasCurrentPalette,
+  markCurrentPalette,
+  migrateTemplateStorePalette,
+  remapPaletteIndices,
+  remapStoredAppearance,
+} from './palette-migration.js'
 
 /**
  * Local templates on disk.
@@ -226,13 +232,13 @@ export const saveTemplate = async (
         // Metadata-only mutations keep the already-cloned durable value. Re-wrapping a multi-MB
         // ArrayBuffer in a Blob copies it and makes every move/toggle/appearance change rewrite all
         // pixels even though this PR has no pixel-editing mutation.
-        templates.put({ ...metadata, revision, indices: currentIndices })
+        templates.put(markCurrentPalette({ ...metadata, revision, indices: currentIndices }))
       } else {
         const bytes =
           indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
             ? (indices.buffer as ArrayBuffer)
             : indices.slice().buffer
-        templates.put({ ...metadata, revision, indices: new Blob([bytes]) })
+        templates.put(markCurrentPalette({ ...metadata, revision, indices: new Blob([bytes]) }))
       }
     },
     true,
@@ -333,7 +339,11 @@ const boundedStoredCandidate = (
 }
 
 type HydrationResult =
-  | { readonly status: 'loaded'; readonly template: unknown }
+  | {
+      readonly status: 'loaded'
+      readonly template: unknown
+      readonly migrated?: Record<string, unknown>
+    }
   | { readonly status: 'invalid' }
   | { readonly status: 'unavailable' }
 
@@ -388,27 +398,53 @@ const loadBatch = (
 const hydrateCandidate = async (
   candidate: Record<string, unknown> & { indices: Uint8Array | StoredBlob },
 ): Promise<HydrationResult> => {
-  if (isUint8Array(candidate.indices)) {
+  const finish = (indices: Uint8Array): HydrationResult => {
+    if (hasCurrentPalette(candidate)) {
+      return {
+        status: 'loaded',
+        template: { ...candidate, revision: candidate.revision ?? 0, indices },
+      }
+    }
+    const remapped = remapPaletteIndices(indices)
+    const migrated = markCurrentPalette({
+      ...candidate,
+      indices: new Blob([remapped.buffer as ArrayBuffer]),
+      appearance: remapStoredAppearance(candidate.appearance),
+    })
     return {
       status: 'loaded',
-      template: { ...candidate, revision: candidate.revision ?? 0 },
+      template: { ...migrated, revision: candidate.revision ?? 0, indices: remapped },
+      migrated,
     }
+  }
+  if (isUint8Array(candidate.indices)) {
+    return finish(candidate.indices)
   }
   try {
     const buffer = await candidate.indices.arrayBuffer()
     if (buffer.byteLength !== candidate.indices.size) return { status: 'invalid' }
-    return {
-      status: 'loaded',
-      template: {
-        ...candidate,
-        revision: candidate.revision ?? 0,
-        indices: new Uint8Array(buffer),
-      },
-    }
+    return finish(new Uint8Array(buffer))
   } catch (error) {
     warn('install', `could not read local template ${String(candidate.id)}`, String(error))
     return { status: 'unavailable' }
   }
+}
+
+const persistLoadedPaletteMigration = async (
+  candidate: Record<string, unknown>,
+  migrated: Record<string, unknown>,
+): Promise<void> => {
+  const id = candidate.id
+  if (typeof id !== 'string') return
+  await writeVersioned(
+    id,
+    storedRevision(candidate),
+    (templates, _revision, current) => {
+      if (typeof current !== 'object' || current === null || hasCurrentPalette(current)) return
+      templates.put(migrated)
+    },
+    false,
+  )
 }
 
 export type LoadTemplateResult =
@@ -472,6 +508,9 @@ export const loadTemplate = async (
       const hydrated = await hydrateCandidate(value)
       if (hydrated.status === 'invalid') {
         return { status: 'invalid', revision: storedRevision(value) }
+      }
+      if (hydrated.status === 'loaded' && hydrated.migrated !== undefined) {
+        void persistLoadedPaletteMigration(value, hydrated.migrated)
       }
       return hydrated
     } finally {
@@ -596,6 +635,9 @@ export const loadTemplates = async (
         }
         const hydrated = await hydrateCandidate(candidate)
         if (hydrated.status === 'loaded') {
+          if (hydrated.migrated !== undefined) {
+            void persistLoadedPaletteMigration(candidate, hydrated.migrated)
+          }
           templates.push(hydrated.template)
         } else {
           templates.push({

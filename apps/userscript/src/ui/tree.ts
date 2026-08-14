@@ -63,7 +63,7 @@ export interface TreeCallbacks {
     draggedKey: string,
     parentKey: string | null,
     beforeKey: string | null,
-  ) => void
+  ) => Promise<string | null>
   /**
    * Something was dropped at a place in a server's tree: which folder, and what it lands before.
    *
@@ -77,13 +77,18 @@ export interface TreeCallbacks {
     nodeId: string | null,
     draggedKey: string,
     beforeKey: string | null,
-  ) => void
+  ) => Promise<string | null>
 }
 
 let activeTreeKey: string | null = null
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
-let renameDraft: { key: string; value: string } | null = null
+let renameDraft: {
+  key: string
+  value: string
+  selectionStart: number
+  selectionEnd: number
+} | null = null
 const MAX_RENDERED_ROWS = 2_000
 
 /**
@@ -527,16 +532,26 @@ const moveKey = (
   after: boolean,
   allKeys: readonly string[] = keys,
 ): 'moved' | 'unchanged' | 'too-many' => {
+  const inserting = !allKeys.includes(from)
+  const orderedKeys = inserting ? [from, ...keys] : keys
+  const orderedAllKeys = inserting ? [from, ...allKeys] : allKeys
   // `customOrder` is a flat rank list, so preserving an arbitrary filtered sibling order currently
   // requires writing every sibling. Bound that synchronous GM storage write to the same number of
   // rows the UI can render until the persisted format can represent sparse relative positions.
-  if (allKeys.length > MAX_RENDERED_ROWS) return 'too-many'
+  if (orderedAllKeys.length > MAX_RENDERED_ROWS) return 'too-many'
+  if (inserting && allKeys.length === 0) {
+    setState({
+      customOrder: replaceSiblingOrder(getState().customOrder, orderedAllKeys, orderedAllKeys),
+    })
+    return 'moved'
+  }
   const next =
     allKeys === keys
-      ? reorderedSiblings(keys, from, to, after)
-      : reorderedVisibleSiblings(allKeys, keys, from, to, after)
-  if (next === null || next.every((key, index) => key === allKeys[index])) return 'unchanged'
-  setState({ customOrder: replaceSiblingOrder(getState().customOrder, allKeys, next) })
+      ? reorderedSiblings(orderedKeys, from, to, after)
+      : reorderedVisibleSiblings(orderedAllKeys, orderedKeys, from, to, after)
+  if (next === null || (!inserting && next.every((key, index) => key === orderedAllKeys[index])))
+    return 'unchanged'
+  setState({ customOrder: replaceSiblingOrder(getState().customOrder, orderedAllKeys, next) })
   return 'moved'
 }
 
@@ -546,13 +561,8 @@ const placeAmongVisibleSiblings = (
   from: string,
   beforeKey: string | null,
 ): 'moved' | 'unchanged' | 'too-many' => {
-  if (!allKeys.includes(from)) {
-    placeKey(from, beforeKey)
-    return 'moved'
-  }
   const without = visibleKeys.filter((key) => key !== from)
-  const target = beforeKey ?? without.at(-1)
-  if (target === undefined) return 'unchanged'
+  const target = beforeKey ?? without.at(-1) ?? from
   return moveKey(visibleKeys, from, target, beforeKey === null, allKeys)
 }
 
@@ -738,7 +748,11 @@ interface RowOptions {
    * the highlight was answering a question the placeholder had answered better.
    */
   readonly onDropAt?:
-    | ((draggedKey: string, parentKey: string | null, beforeKey: string | null) => void)
+    | ((
+        draggedKey: string,
+        parentKey: string | null,
+        beforeKey: string | null,
+      ) => Promise<string | null>)
     | undefined
   /** When present, the row reflects this instead of the tree's own disabled set. */
   readonly checked?: boolean | undefined
@@ -792,7 +806,14 @@ const treeRow = (options: RowOptions): HTMLElement => {
   const name = document.createElement('span')
   if (editing) {
     const startingRename = renameDraft?.key !== options.key
-    if (startingRename) renameDraft = { key: options.key, value: options.name }
+    if (startingRename) {
+      renameDraft = {
+        key: options.key,
+        value: options.name,
+        selectionStart: 0,
+        selectionEnd: options.name.length,
+      }
+    }
     input.type = 'text'
     input.dataset.caelestisRename = ''
     input.className = 'input input-xs input-bordered'
@@ -800,16 +821,24 @@ const treeRow = (options: RowOptions): HTMLElement => {
     input.style.flex = '1'
     input.style.minWidth = '0'
     input.addEventListener('click', (event) => event.stopPropagation())
-    input.addEventListener('input', () => {
-      if (renameDraft?.key === options.key) renameDraft.value = input.value
-    })
+    const retainRenameDraft = (): void => {
+      if (renameDraft?.key !== options.key) return
+      renameDraft.value = input.value
+      renameDraft.selectionStart = input.selectionStart ?? input.value.length
+      renameDraft.selectionEnd = input.selectionEnd ?? input.value.length
+    }
+    input.addEventListener('input', retainRenameDraft)
+    input.addEventListener('select', retainRenameDraft)
     row.appendChild(input)
     requestAnimationFrame(() => {
       input.focus()
       if (startingRename) {
         input.select()
       } else {
-        input.setSelectionRange(input.value.length, input.value.length)
+        input.setSelectionRange(
+          renameDraft?.selectionStart ?? input.value.length,
+          renameDraft?.selectionEnd ?? input.value.length,
+        )
       }
     })
   } else {
@@ -1041,7 +1070,31 @@ const treeRow = (options: RowOptions): HTMLElement => {
       beforeKey: resolved.beforeKey,
       apply: (draggedKey, parentKey, beforeKey) => {
         if (reparenting) {
-          placeKey(draggedKey, beforeKey)
+          const visibleSiblings = options.siblings
+          const allSiblings = options.orderingSiblings?.() ?? visibleSiblings
+          if (allSiblings.length + 1 > MAX_RENDERED_ROWS) {
+            options.onError('This level has too many rows to save a custom order safely.')
+            return
+          }
+          void place(draggedKey, parentKey, beforeKey).then(
+            (destinationKey) => {
+              if (destinationKey === null) return
+              const result = placeAmongVisibleSiblings(
+                visibleSiblings,
+                allSiblings,
+                destinationKey,
+                beforeKey,
+              )
+              if (result === 'too-many') {
+                options.onError('This level has too many rows to save a custom order safely.')
+              }
+              options.rerender()
+            },
+            (error: unknown) => {
+              options.onError(`Could not move that row. ${String(error)}`)
+              options.rerender()
+            },
+          )
         } else {
           const result = placeAmongVisibleSiblings(
             options.siblings,
@@ -1054,7 +1107,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
             return
           }
         }
-        place(draggedKey, parentKey, beforeKey)
+        if (!reparenting) void place(draggedKey, parentKey, beforeKey)
       },
       rerender: options.rerender,
     }
@@ -1117,7 +1170,11 @@ interface TreeItem {
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly onDropAt?:
-    | ((draggedKey: string, parentKey: string | null, beforeKey: string | null) => void)
+    | ((
+        draggedKey: string,
+        parentKey: string | null,
+        beforeKey: string | null,
+      ) => Promise<string | null>)
     | undefined
 }
 
@@ -1366,16 +1423,17 @@ export const treeContents = (
          *
          * `canReparent` stays off, so nothing can be filed *inside* a category by dragging.
          */
-        onDropAt: (draggedKey, parentKey, beforeKey) => {
+        onDropAt: async (draggedKey, parentKey, beforeKey) => {
           // Another category, reordering among its own kind.
           if (parentKey === null && keys.includes(draggedKey)) {
-            return
+            return null
           }
           // Landing just under a server's own row means its top level, which is otherwise
           // unreachable: every other destination is a folder, and "no folder" has no other row.
           if (parentKey === key && server !== undefined && canEdit) {
-            callbacks.onDropInServer(server, null, draggedKey, beforeKey)
+            return await callbacks.onDropInServer(server, null, draggedKey, beforeKey)
           }
+          return null
         },
         canReparent: canEdit && !isLocal,
         // A category is a group like a folder is: switching it off takes everything under it off
@@ -1439,13 +1497,13 @@ export const treeContents = (
           draggedKey: string,
           dropParent: string | null,
           beforeKey: string | null,
-        ): void => {
+        ): Promise<string | null> => {
           const into =
             dropParent === null || dropParent === key
               ? null
               : known.find((node) => nodeTreeKey(server, node.id) === dropParent)?.id
-          if (into === undefined) return
-          callbacks.onDropInServer(server, into, draggedKey, beforeKey)
+          if (into === undefined) return Promise.resolve(null)
+          return callbacks.onDropInServer(server, into, draggedKey, beforeKey)
         }
 
         /**
