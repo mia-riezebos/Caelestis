@@ -262,6 +262,17 @@ export const reorderedVisibleSiblings = (
   to: string,
   after: boolean,
 ): readonly string[] | null => {
+  if (!allKeys.includes(from)) {
+    // An inserted row owns no full-list slot yet. Translate its visible boundary directly into the
+    // complete order instead of inventing a shared slot that would displace a hidden sibling.
+    if (visibleKeys.length === 0) return [from, ...allKeys]
+    if (!visibleKeys.includes(to)) return null
+    const index = allKeys.indexOf(to)
+    if (index === -1) return null
+    const next = [...allKeys]
+    next.splice(after ? index + 1 : index, 0, from)
+    return next
+  }
   const visible = reorderedSiblings(visibleKeys, from, to, after)
   if (visible === null) return null
   const visibleSet = new Set(visibleKeys)
@@ -519,25 +530,18 @@ const moveKey = (
   allKeys: readonly string[] = keys,
 ): 'moved' | 'unchanged' | 'too-many' => {
   const inserting = !allKeys.includes(from)
-  const orderedKeys = inserting ? [from, ...keys] : keys
-  const orderedAllKeys = inserting ? [from, ...allKeys] : allKeys
+  const affectedKeys = inserting ? [...allKeys, from] : allKeys
   // `customOrder` is a flat rank list, so preserving an arbitrary filtered sibling order currently
   // requires writing every sibling. Bound that synchronous GM storage write to the same number of
   // rows the UI can render until the persisted format can represent sparse relative positions.
-  if (orderedAllKeys.length > MAX_RENDERED_ROWS) return 'too-many'
-  if (inserting && allKeys.length === 0) {
-    setState({
-      customOrder: replaceSiblingOrder(getState().customOrder, orderedAllKeys, orderedAllKeys),
-    })
-    return 'moved'
-  }
+  if (affectedKeys.length > MAX_RENDERED_ROWS) return 'too-many'
   const next =
-    allKeys === keys
-      ? reorderedSiblings(orderedKeys, from, to, after)
-      : reorderedVisibleSiblings(orderedAllKeys, orderedKeys, from, to, after)
-  if (next === null || (!inserting && next.every((key, index) => key === orderedAllKeys[index])))
+    allKeys === keys && !inserting
+      ? reorderedSiblings(keys, from, to, after)
+      : reorderedVisibleSiblings(allKeys, keys, from, to, after)
+  if (next === null || (!inserting && next.every((key, index) => key === allKeys[index])))
     return 'unchanged'
-  setState({ customOrder: replaceSiblingOrder(getState().customOrder, orderedAllKeys, next) })
+  setState({ customOrder: replaceSiblingOrder(getState().customOrder, affectedKeys, next) })
   return 'moved'
 }
 

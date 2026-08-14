@@ -226,6 +226,7 @@ export const saveTemplate = async (
           ? current.indices
           : undefined
       const reusable =
+        hasCurrentPalette(current) &&
         (isUint8Array(currentIndices) || isStoredBlob(currentIndices)) &&
         candidateIndexPixels(current) === indices.length
       if (reusable) {

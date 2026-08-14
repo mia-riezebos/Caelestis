@@ -397,7 +397,7 @@ describe('local template persistence', () => {
     expect(durablePixels.arrayBuffer).not.toHaveBeenCalled()
   })
 
-  it('does not mark reused unremapped pixels as current during a metadata-only update', async () => {
+  it('rewrites an unmarked record wholly into the current palette generation', async () => {
     const durablePixels = {
       size: 1,
       arrayBuffer: vi.fn(async () => new Uint8Array([17]).buffer),
@@ -417,17 +417,37 @@ describe('local template persistence', () => {
     vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
     const { saveTemplate } = await import('./persist.js')
 
-    const saving = saveTemplate(stored({ id: 'test', revision: 1, visible: false }) as never, 1)
+    const saving = saveTemplate(
+      stored({
+        id: 'test',
+        revision: 1,
+        visible: false,
+        indices: Uint8Array.from([19]),
+        appearance: { hiddenColours: [19] },
+      }) as never,
+      1,
+    )
     opening.onsuccess?.(new Event('success'))
     await Promise.resolve()
     templateRequest.onsuccess?.(new Event('success'))
     transaction.oncomplete?.(new Event('complete'))
 
     await expect(saving).resolves.toEqual({ status: 'saved', revision: 2 })
-    expect(templateStore.put).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'test', revision: 2, indices: durablePixels }),
+    const written = templateStore.put.mock.calls[0]?.[0] as {
+      appearance: unknown
+      indices: Blob
+      paletteMigration: number
+    }
+    expect(written).toEqual(
+      expect.objectContaining({
+        id: 'test',
+        revision: 2,
+        appearance: { hiddenColours: [19] },
+        indices: expect.any(Blob),
+        paletteMigration: 4,
+      }),
     )
-    expect(templateStore.put.mock.calls[0]?.[0]).not.toHaveProperty('paletteMigration')
+    expect([...new Uint8Array(await written.indices.arrayBuffer())]).toEqual([19])
     expect(durablePixels.arrayBuffer).not.toHaveBeenCalled()
   })
 
