@@ -468,11 +468,16 @@ export const primeFromCache = async (rerender: () => void): Promise<void> => {
       nodesByServer.set(entry.url, entry.nodes)
       rowIdentityByServer.set(entry.url, `${entry.serverId}:${entry.season}`)
       templatesByServer.set(entry.url, entry.templates ?? [])
+      // The renderer needs the folder tree too, and it needs it now rather than after the first
+      // fetch: a template restored from cache into a folder switched off last session would
+      // otherwise draw until the manifest came back and said which folder it was in.
+      //
+      // Only when nothing has been rendered yet, which is what `replace` means. Installed
+      // unconditionally, a cache read that came back after a network refresh put the cached
+      // ancestry over the fresh one, so a folder moved since that snapshot took its old parent's
+      // visibility until something asked again.
+      rememberNodes(entry.url, entry.nodes)
     }
-    // The renderer needs the folder tree too, and it needs it now rather than after the first
-    // fetch: a template restored from cache into a folder switched off last session would
-    // otherwise draw until the manifest came back and said which folder it was in.
-    rememberNodes(entry.url, entry.nodes)
     if (
       !replace &&
       templatesByServer.get(entry.url) === undefined &&

@@ -798,11 +798,18 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     }
     // A wrong token and an unreachable server are different problems with different fixes, so they
     // must not share a message.
-    status.className = 'text-xs text-error'
-    status.textContent =
+    const message =
       next.status === 'needs-token'
         ? 'That token was not accepted. Ask whoever runs the server for a current one.'
         : `Could not reach the server. ${next.error ?? ''}`.trim()
+    // A background redraw during the probe leaves this row's status element detached, and writing
+    // the failure into it put the answer somewhere nobody can see. Say it out loud instead.
+    if (!status.isConnected) {
+      toast(message, 'error')
+      return
+    }
+    status.className = 'text-xs text-error'
+    status.textContent = message
   }
 
   submit.addEventListener('click', () => void attempt())

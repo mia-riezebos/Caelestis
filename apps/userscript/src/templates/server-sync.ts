@@ -224,6 +224,16 @@ export const serverTemplateKey = (serverUrl: string, id: string): string => `srv
 const inFlight = new Set<string>()
 
 /**
+ * The version each key's newest manifest asked for.
+ *
+ * A download that is already running is skipped rather than restarted, which is right — but the
+ * manifest that arrives while it runs may have replaced or deleted that template, and installing
+ * the finished download then put back artwork nobody publishes any more. This is what the far side
+ * of the download checks itself against.
+ */
+const latestVersion = new Map<string, string>()
+
+/**
  * Which generation of a server's connection a download belongs to.
  *
  * A chunk request outlives the connection that asked for it. Disconnecting takes the server's
@@ -272,6 +282,10 @@ export const syncServerTemplates = async (
     if (held.serverUrl !== server.url) continue
     if (!wanted.has(held.id)) forgetServerTemplate(held.id)
   }
+  for (const key of [...latestVersion.keys()]) {
+    if (key.startsWith(`srv:${server.url}:`) && !wanted.has(key)) latestVersion.delete(key)
+  }
+  for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
   const generation = generationOf(server.url)
   for (const [key, template] of wanted) {
@@ -295,6 +309,10 @@ export const syncServerTemplates = async (
       // The connection this download belongs to may have ended, or a later poll may have taken over
       // this template, while the chunks were in the air.
       if (generationOf(server.url) !== generation) return
+      // A newer manifest landed while the chunks were in the air, and it no longer asks for this
+      // version — or no longer asks for this template at all. Installing now would draw artwork
+      // that has already been replaced, or bring a deleted overlay back.
+      if (latestVersion.get(key) !== template.version) continue
       if (!hasRoomForServerTemplate(key)) continue
       // `putServerTemplate` awaits the restore and then slices every tile, which is the expensive
       // part and therefore the widest window for a disconnect to land in. Asked again on the far

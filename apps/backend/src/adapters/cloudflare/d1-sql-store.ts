@@ -730,16 +730,26 @@ export class D1SqlStore implements SqlStore {
         and(eq(templates.id, templateId), eq(templates.nodeId, existing.nodeId)) ?? predicate
     }
 
-    const result = await this.database
-      .update(templates)
-      .set({
-        ...(patch.name === undefined ? {} : { name: patch.name }),
-        ...(patch.nodeId === undefined ? {} : { nodeId: patch.nodeId }),
-        ...(patch.publishedAt === undefined ? {} : { publishedAt: patch.publishedAt }),
-        updatedAtMs: updatedAt,
-      })
-      .where(predicate)
-    return Number(result.meta.changes) > 0
+    try {
+      const result = await this.database
+        .update(templates)
+        .set({
+          ...(patch.name === undefined ? {} : { name: patch.name }),
+          ...(patch.nodeId === undefined ? {} : { nodeId: patch.nodeId }),
+          ...(patch.publishedAt === undefined ? {} : { publishedAt: patch.publishedAt }),
+          updatedAtMs: updatedAt,
+        })
+        .where(predicate)
+      return Number(result.meta.changes) > 0
+    } catch (error) {
+      // The destination was read above, and another administrator can delete it between that read
+      // and this write. Translated like the other two races in this file, so the one path that
+      // could still answer 500 instead of a typed error no longer can.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new NodeNotFoundError(`node does not exist: ${patch.nodeId ?? ''}`)
+      }
+      throw error
+    }
   }
 
   async deleteTemplate(templateId: string): Promise<boolean> {
