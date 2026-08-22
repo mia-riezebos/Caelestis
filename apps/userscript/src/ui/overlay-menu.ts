@@ -1364,10 +1364,16 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     box.disabled = locked
     box.setAttribute('aria-label', `Use default ${label.toLowerCase()}`)
     box.addEventListener('change', () => {
-      void setOwnsGroup(id, group, !box.checked).then(() => {
-        if (menuNode?.isConnected === true && menuOwner === id) menuNode.remove()
-        rerender()
-      })
+      // The redraw is owed whether or not the write landed: the box has already moved, and a
+      // storage failure that leaves it moved is the checkbox lying about what was saved.
+      void setOwnsGroup(id, group, !box.checked)
+        .catch((error: unknown) => {
+          warn('install', `could not change ${group} ownership`, String(error))
+        })
+        .finally(() => {
+          if (menuNode?.isConnected === true && menuOwner === id) menuNode.remove()
+          rerender()
+        })
     })
     defaultsBoxes.set(group, box)
     const text = document.createElement('span')

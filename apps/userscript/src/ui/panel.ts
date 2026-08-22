@@ -49,7 +49,7 @@ import { beginMove, reserveMove, stopMoveForDeletion } from '../templates/move.j
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
-import { isPaintOpen } from '../wplace-paint.js'
+import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
 import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
 import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
@@ -2243,4 +2243,12 @@ export const installPanel = (): void => {
   // change.
   onStateChange(refreshView)
   onLocalChange(refreshView)
+  // Opening wplace's paint drawer changes what the appearance grid is showing without changing any
+  // state of ours, so neither listener above hears it and the grid sat showing the switches the
+  // mode had already overridden. Only that view: the tree is expensive to rebuild and a colour
+  // click while painting would rebuild it every time.
+  onPaintSelectionChange(() => {
+    syncColourModeState()
+    if (currentView === 'appearance') refreshView()
+  })
 }

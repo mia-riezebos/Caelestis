@@ -888,6 +888,11 @@ let chasing = 0
  *
  * One request per tile, at most a few at a time, and only for tiles something is actually asking
  * about. That is the same request their own client makes, at a fraction of the rate.
+ *
+ * One attempt, whether or not it works. A tile that answers 404 or 429 answers that way to the next
+ * request too, and re-chasing on failure meant a frame-rate retry loop against wplace with four
+ * requests permanently in flight. Nothing is lost by giving up: this only front-runs wplace's own
+ * refetch, which lands about ten seconds later and captures the tile anyway.
  */
 const CHASE_LIMIT = 4
 
@@ -913,7 +918,6 @@ export const ensureTilePixels = (tile: TileCoord): void => {
       warn('fetch', `could not chase tile ${tile.x}/${tile.y}`, String(error))
     } finally {
       chasing--
-      if (!pixelsOfTile.has(key)) chased.delete(key)
     }
   })()
 }

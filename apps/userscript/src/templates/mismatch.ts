@@ -105,6 +105,12 @@ const coverageTotals = new Map<
   Pick<Cached, 'asserted' | 'key' | 'templateSource'> & { readonly unpainted: number }
 >()
 
+/**
+ * A cache key is `${templateId}|${x}/${y}`, and only the tile half has a known shape. A server
+ * template's id is `srv:<url>:<id>`, so the last separator is the split, never the first.
+ */
+const templateIdOf = (cacheKey: string): string => cacheKey.slice(0, cacheKey.lastIndexOf('|'))
+
 const forgetCoverage = (cacheKey: string): void => {
   const entry = coverage.get(cacheKey)
   if (entry === undefined) return
@@ -123,7 +129,7 @@ const forgetCoverage = (cacheKey: string): void => {
 }
 
 const rememberCoverage = (cacheKey: string, entry: Cached): void => {
-  const templateId = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
+  const templateId = templateIdOf(cacheKey)
   for (const [heldKey, held] of coverage) {
     if (
       held.templateId === templateId &&
@@ -218,8 +224,11 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
   scanDeadline = performance.now() + Math.max(deadline.timeRemaining(), 1)
   for (const cacheKey of [...stale]) {
     if (performance.now() >= scanDeadline) break
-    const [id, coords] = cacheKey.split('|')
-    const [x, y] = (coords ?? '').split('/').map(Number)
+    const id = templateIdOf(cacheKey)
+    const [x, y] = cacheKey
+      .slice(id.length + 1)
+      .split('/')
+      .map(Number)
     const template = localTemplates().find((candidate) => candidate.id === id)
     if (template === undefined || x === undefined || y === undefined) {
       stale.delete(cacheKey)
@@ -503,7 +512,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     // Counted whether or not this patch changes anything, so a scan in flight can see that the
     // ground moved under it and drop its result rather than writing a pre-paint answer over it.
     patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
-    const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
+    const id = templateIdOf(cacheKey)
     const template = localTemplates().find((candidate) => candidate.id === id)
     if (template === undefined || entry.templateSource !== template.indices) continue
 

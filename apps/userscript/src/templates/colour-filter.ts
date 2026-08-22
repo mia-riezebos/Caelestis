@@ -21,8 +21,21 @@ import { type Appearance, drawableIndices } from './appearance.js'
  */
 
 /** Everything except `keep`. */
-const allBut = (keep: number | null): readonly number[] =>
-  keep === null ? [] : drawableIndices().filter((index) => index !== keep)
+const allBut = (keep: number): readonly number[] =>
+  drawableIndices().filter((index) => index !== keep)
+
+/**
+ * The colour the mode is following, or null when it is not driving.
+ *
+ * Null covers an open paint drawer with nothing picked yet. The mode has nothing to follow there,
+ * so the hand-set switches stay in charge — hiding everything *except* a colour that does not exist
+ * came out as hiding nothing, which switched the user's own hidden colours back on.
+ */
+const followedColour = (): number | null => {
+  const state = getState()
+  if (!state.onlySelectedColour || !isPaintOpen()) return null
+  return selectedColour()
+}
 
 /**
  * The globally hidden set, with the "only selected" mode applied.
@@ -33,10 +46,8 @@ const allBut = (keep: number | null): readonly number[] =>
  * lining up the one colour you are placing, and there is no such colour before you start.
  */
 export const globalHiddenColours = (): readonly number[] => {
-  const state = getState()
-  if (!state.onlySelectedColour) return state.hiddenColours
-  if (!isPaintOpen()) return state.hiddenColours
-  return allBut(selectedColour())
+  const keep = followedColour()
+  return keep === null ? getState().hiddenColours : allBut(keep)
 }
 
 /**
@@ -50,8 +61,9 @@ export const globalHiddenColours = (): readonly number[] => {
  * rather than a property of a template, so it belongs to the view.
  */
 export const hiddenColoursFor = (own: Appearance | null): readonly number[] => {
+  const keep = followedColour()
+  if (keep !== null) return allBut(keep)
   const state = getState()
-  if (state.onlySelectedColour && isPaintOpen()) return allBut(selectedColour())
   return own === null ? state.hiddenColours : own.hiddenColours
 }
 
