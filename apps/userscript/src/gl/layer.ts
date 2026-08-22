@@ -204,6 +204,9 @@ const uploadPalette = (
  * valid import can be thousands of pixels on a side while a device reports a limit of 8192, so the
  * limit is asked for rather than assumed.
  */
+/** Templates already reported as too large, so the warning is said once rather than every frame. */
+const tooLarge = new Set<string>()
+
 const fitsInATexture = (gl: WebGL2RenderingContext, width: number, height: number): boolean => {
   const limit = gl.getParameter(gl.MAX_TEXTURE_SIZE) as unknown
   // A context that will not say has not said no. Refusing on an unreadable limit would take every
@@ -399,10 +402,16 @@ export const overlayLayer = {
       let entry = gpu.get(template.id)
       if (entry === undefined) {
         if (!fitsInATexture(gl, template.width, template.height)) {
-          warn(
-            'install',
-            `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
-          )
+          // Once per template. A template with no entry takes this branch on every frame, and a
+          // warning that reaches the console unconditionally would evict every other diagnostic
+          // from the ring within seconds.
+          if (!tooLarge.has(template.id)) {
+            tooLarge.add(template.id)
+            warn(
+              'install',
+              `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
+            )
+          }
           continue
         }
         const indices = gl.createTexture()
@@ -424,6 +433,18 @@ export const overlayLayer = {
         entry.width !== template.width ||
         entry.height !== template.height
       ) {
+        // This branch exists because the size can change: a replacement version arrives under the
+        // same id with whatever dimensions the server sent. The same limit applies to it.
+        if (!fitsInATexture(gl, template.width, template.height)) {
+          if (!tooLarge.has(template.id)) {
+            tooLarge.add(template.id)
+            warn(
+              'install',
+              `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
+            )
+          }
+          continue
+        }
         uploadIndices(gl, entry.indices, template.width, template.height, template.indices)
         entry.source = template.indices
         entry.width = template.width

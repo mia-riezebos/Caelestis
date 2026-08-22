@@ -78,8 +78,8 @@ export const assembleManifest = async (
     .sort((left, right) => left.id.localeCompare(right.id))
 
   // The wire caps a manifest at 200,000 chunks in total, and nothing on the write path enforces an
-  // aggregate: 512 chunks per template is bounded, the number of published templates in a season is
-  // not, so ~391 of them cross the line. Past it, every client rejects the 200 this would return.
+  // aggregate: 400 chunks per template is bounded, the number of published templates in a season is
+  // not, so ~500 of them cross the line. Past it, every client rejects the 200 this would return.
   //
   // INTERIM. Failing here turns a silent client-side break into a server-side error naming the
   // cause, which is strictly better but still an outage for that season's manifest. The real fix is

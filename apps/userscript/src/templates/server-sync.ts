@@ -296,6 +296,9 @@ export const syncServerTemplates = async (
       // this template, while the chunks were in the air.
       if (generationOf(server.url) !== generation) return
       if (!hasRoomForServerTemplate(key)) continue
+      // `putServerTemplate` awaits the restore and then slices every tile, which is the expensive
+      // part and therefore the widest window for a disconnect to land in. Asked again on the far
+      // side, and the template is taken straight back out if the answer changed while it ran.
       await putServerTemplate({
         id: key,
         name: template.name,
@@ -317,6 +320,12 @@ export const syncServerTemplates = async (
         serverNodeId: template.nodeId,
         serverVersion: template.version,
       })
+      // Disconnected while it was slicing: take back out what has just gone in, so the store never
+      // keeps an overlay whose server has no row left to poll or switch it off.
+      if (generationOf(server.url) !== generation) {
+        forgetServerTemplate(key)
+        return
+      }
       count('server:template drawn from chunks')
     } catch (error) {
       warn('install', `could not sync server template ${template.name}`, String(error))

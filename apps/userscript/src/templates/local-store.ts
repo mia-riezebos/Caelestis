@@ -559,9 +559,12 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     revision: revision === undefined ? 0 : (revision as number),
     folderId: typeof folderId === 'string' ? folderId : null,
     appearance: normaliseAppearance(appearance),
+    // "It has an appearance, so it chose one" holds for a record written by this model. A record
+    // from before it carries `shape`, and every template got one whether or not anyone touched it,
+    // so reading that as a deliberate choice would detach it from the global sliders for good.
     owns:
       owns === undefined
-        ? appearance == null
+        ? appearance == null || (typeof appearance === 'object' && 'shape' in appearance)
           ? []
           : APPEARANCE_GROUPS
         : (owns as AppearanceGroup[]),
@@ -861,13 +864,6 @@ const committedRevision = (result: SaveResult): number | null =>
   result.status === 'saved' ? result.revision : null
 
 /**
- * Put a template published by a server into the store, replacing any earlier copy of it.
- *
- * Its local switches survive the replacement: whether it is showing and how it is drawn are this
- * browser's opinions about someone else's template, and re-syncing pixels is no reason to discard
- * them. Everything else — the name, where it sits, the pixels — comes from the server.
- */
-/**
  * Is there room for this server template, before anything is downloaded for it?
  *
  * `putServerTemplate` refuses past the budget, but only after its caller has fetched and decoded the
@@ -879,6 +875,13 @@ export const hasRoomForServerTemplate = (id: string): boolean =>
   templates.has(id) ||
   [...templates.values()].filter(isServerTemplate).length < MAX_SERVER_TEMPLATES
 
+/**
+ * Put a template published by a server into the store, replacing any earlier copy of it.
+ *
+ * Its local switches survive the replacement: whether it is showing and how it is drawn are this
+ * browser's opinions about someone else's template, and re-syncing pixels is no reason to discard
+ * them. Everything else — the name, where it sits, the pixels — comes from the server.
+ */
 export const putServerTemplate = async (
   template: ImportedTemplate & {
     serverUrl: string

@@ -301,7 +301,7 @@ export const coloursSection = (
    * user's finger or a colour picker is open. That one goes through the panel's guarded refresh,
    * which stands down in both cases; the direct `rerender` stays for the redraws a click asks for.
    */
-  refreshLater: () => void = rerender,
+  refreshLater: () => void,
 ): HTMLElement => {
   const wrap = document.createElement('div')
   // Colours get bought mid-session. Showing this pane is exactly the moment a stale "Owned" is

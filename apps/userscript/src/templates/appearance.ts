@@ -182,11 +182,18 @@ export const DEFAULT_APPEARANCE: Appearance = {
 export const normaliseAppearance = (raw: unknown): Appearance | null => {
   if (raw === null || typeof raw !== 'object') return null
   const source = raw as Record<string, unknown>
+  // A record written before the deformable pixel carries `shape`, and its `size` was ignored whenever
+  // that shape was `full` — which is what every template got by default. Reading those numbers now
+  // would draw every upgraded overlay at a third of its size, so a legacy record keeps its position
+  // and opacity and takes the current defaults for the stamp the old model never used.
+  const legacy = 'shape' in source
   const number = (key: string, fallback: number, min: number, max: number): number => {
     const value = source[key]
     if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
     return Math.min(max, Math.max(min, value))
   }
+  const stamped = (key: string, fallback: number, min: number, max: number): number =>
+    legacy ? fallback : number(key, fallback, min, max)
   const hidden = Array.isArray(source.hiddenColours)
     ? [
         ...new Set(
@@ -198,8 +205,8 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
       ].slice(0, PALETTE_SIZE)
     : []
   return {
-    size: number('size', DEFAULT_APPEARANCE.size, 0.05, 2),
-    radius: number('radius', DEFAULT_APPEARANCE.radius, 0, 1),
+    size: stamped('size', DEFAULT_APPEARANCE.size, 0.05, 2),
+    radius: stamped('radius', DEFAULT_APPEARANCE.radius, 0, 1),
     translateX: number('translateX', DEFAULT_APPEARANCE.translateX, -1, 1),
     translateY: number('translateY', DEFAULT_APPEARANCE.translateY, -1, 1),
     rotation: number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),

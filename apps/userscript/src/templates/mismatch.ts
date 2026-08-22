@@ -349,7 +349,18 @@ interface PendingScan {
    * until a repaint happened to start a second scan.
    */
   readonly signature: string
+  /**
+   * How many patches the tile had taken when the job was built.
+   *
+   * A scan snapshots the draft layer into its job. A paint landing while it runs patches the cached
+   * answer, and the reply then overwrote that patch with a result computed against the pre-paint
+   * draft — matching on every other term, so nothing ever rescanned it.
+   */
+  readonly patches: number
 }
+
+/** Patches applied per cache key, so a scan can tell whether the ground moved under it. */
+const patchCount = new Map<string, number>()
 
 const inFlight = new Map<string, PendingScan>()
 
@@ -362,23 +373,27 @@ const requestScan = (
 ): void => {
   const templateSource = template.indices
   const asked = signature(template)
+  const patchesAtStart = patchCount.get(cacheKey) ?? 0
   const pending = inFlight.get(cacheKey)
   if (
     pending?.pixels === pixels &&
     pending.templateSource === templateSource &&
-    pending.signature === asked
+    pending.signature === asked &&
+    pending.patches === patchesAtStart
   ) {
     stale.delete(cacheKey)
     return
   }
-  inFlight.set(cacheKey, { pixels, templateSource, signature: asked })
+  inFlight.set(cacheKey, { pixels, templateSource, signature: asked, patches: patchesAtStart })
   stale.delete(cacheKey)
   void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
     const current = inFlight.get(cacheKey)
     const isCurrent =
       current?.pixels === pixels &&
       current.templateSource === templateSource &&
-      current.signature === asked
+      current.signature === asked &&
+      current.patches === patchesAtStart &&
+      (patchCount.get(cacheKey) ?? 0) === patchesAtStart
     if (isCurrent) inFlight.delete(cacheKey)
     if (!isCurrent) return
     if (outcome === null) {
@@ -471,15 +486,23 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
  * The rebuild is over the tile's own mismatches rather than its pixels, which is the difference
  * between thousands and a million.
  */
-const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void => {
-  // The write says what was drafted. What matters is the effective colour, which falls back to the
-  // server's pixel wherever the draft has nothing — undrafting a pixel is a change too.
+const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): void => {
+  // What matters is the effective colour: the draft where there is one, the server's pixel where
+  // there is not. The announced value cannot stand in for either, because two producers announce
+  // through the same channel — a write announces what was drafted, and a tile re-read announces
+  // what the server now says. Reading the second as a draft put a marker back on a pixel the user's
+  // own draft still covers.
   const server = tilePixels(tile)
+  const draft = draftPixels(tile)
   const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
+  const drafted = draft === null ? UNPAINTED : (draft[at] as number)
   const placed =
     drafted !== UNPAINTED ? drafted : server === null ? UNPAINTED : (server[at] as number)
   for (const [cacheKey, entry] of [...cache]) {
     if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
+    // Counted whether or not this patch changes anything, so a scan in flight can see that the
+    // ground moved under it and drop its result rather than writing a pre-paint answer over it.
+    patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
     const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
     const template = localTemplates().find((candidate) => candidate.id === id)
     if (template === undefined || entry.templateSource !== template.indices) continue
