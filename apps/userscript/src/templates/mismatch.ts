@@ -80,35 +80,85 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
   const appearance = appearanceOf(template)
   if (!appearance.markUnpainted) return false
   const key = signature(template)
-  let asserted = 0
-  let unpainted = 0
-  for (const [cacheKey, entry] of coverage) {
-    if (
-      !cacheKey.startsWith(`${template.id}|`) ||
-      entry.key !== key ||
-      entry.templateSource !== template.indices
-    )
-      continue
-    asserted += entry.asserted
-    unpainted += entry.unpainted
-  }
-  if (asserted === 0) return false
-  return unpainted / asserted <= appearance.unpaintedLimit
+  const total = coverageTotals.get(template.id)
+  if (
+    total === undefined ||
+    total.asserted === 0 ||
+    total.key !== key ||
+    total.templateSource !== template.indices
+  )
+    return false
+  return total.unpainted / total.asserted <= appearance.unpaintedLimit
 }
 
 const cache = new Map<string, Cached>()
 const KEEP_ANSWERS = 128
 const coverage = new Map<
   string,
+  Pick<Cached, 'asserted' | 'key' | 'templateSource'> & {
+    readonly templateId: string
+    readonly unpainted: number
+  }
+>()
+const coverageTotals = new Map<
+  string,
   Pick<Cached, 'asserted' | 'key' | 'templateSource'> & { readonly unpainted: number }
 >()
+
+const forgetCoverage = (cacheKey: string): void => {
+  const entry = coverage.get(cacheKey)
+  if (entry === undefined) return
+  coverage.delete(cacheKey)
+  const total = coverageTotals.get(entry.templateId)
+  if (
+    total === undefined ||
+    total.key !== entry.key ||
+    total.templateSource !== entry.templateSource
+  )
+    return
+  const asserted = total.asserted - entry.asserted
+  const unpainted = total.unpainted - entry.unpainted
+  if (asserted === 0) coverageTotals.delete(entry.templateId)
+  else coverageTotals.set(entry.templateId, { ...total, asserted, unpainted })
+}
+
+const rememberCoverage = (cacheKey: string, entry: Cached): void => {
+  const templateId = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
+  for (const [heldKey, held] of coverage) {
+    if (
+      held.templateId === templateId &&
+      (held.templateSource !== entry.templateSource || held.key !== entry.key)
+    ) {
+      forgetCoverage(heldKey)
+    }
+  }
+  forgetCoverage(cacheKey)
+  const unpainted = entry.unpainted.length / 3
+  coverage.set(cacheKey, {
+    asserted: entry.asserted,
+    key: entry.key,
+    templateId,
+    templateSource: entry.templateSource,
+    unpainted,
+  })
+  const total = coverageTotals.get(templateId)
+  coverageTotals.set(templateId, {
+    asserted: (total?.asserted ?? 0) + entry.asserted,
+    key: entry.key,
+    templateSource: entry.templateSource,
+    unpainted: (total?.unpainted ?? 0) + unpainted,
+  })
+}
 
 const remember = (cacheKey: string, entry: Cached): void => {
   cache.delete(cacheKey)
   cache.set(cacheKey, entry)
   while (cache.size > KEEP_ANSWERS) {
     const oldest = cache.keys().next()
-    if (!oldest.done) cache.delete(oldest.value)
+    if (!oldest.done) {
+      cache.delete(oldest.value)
+      forgetCoverage(oldest.value)
+    }
   }
 }
 
@@ -273,21 +323,7 @@ const store = (
   outcome: ScanOutcome,
 ): Cached => {
   const entry: Cached = { source, templateSource, key, ...outcome, both: null }
-  const id = cacheKey.slice(0, cacheKey.lastIndexOf('|'))
-  for (const [heldKey, held] of coverage) {
-    if (
-      heldKey.startsWith(`${id}|`) &&
-      (held.templateSource !== templateSource || held.key !== key)
-    ) {
-      coverage.delete(heldKey)
-    }
-  }
-  coverage.set(cacheKey, {
-    asserted: entry.asserted,
-    key: entry.key,
-    templateSource: entry.templateSource,
-    unpainted: entry.unpainted.length / 3,
-  })
+  rememberCoverage(cacheKey, entry)
   remember(cacheKey, entry)
   count('mismatch:tiles scanned')
   count('mismatch:pixels marked', outcome.wrong.length / 3)
@@ -317,8 +353,12 @@ const requestScan = (
 ): void => {
   const templateSource = template.indices
   const pending = inFlight.get(cacheKey)
-  if (pending?.pixels === pixels && pending.templateSource === templateSource) return
+  if (pending?.pixels === pixels && pending.templateSource === templateSource) {
+    stale.delete(cacheKey)
+    return
+  }
   inFlight.set(cacheKey, { pixels, templateSource })
+  stale.delete(cacheKey)
   void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
     const current = inFlight.get(cacheKey)
     const isCurrent = current?.pixels === pixels && current.templateSource === templateSource
@@ -330,6 +370,7 @@ const requestScan = (
       scheduleIdleScan()
       return
     }
+    stale.delete(cacheKey)
     store(cacheKey, pixels, templateSource, key, outcome)
     changed++
     notifyChanged()
@@ -364,6 +405,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     existing.templateSource === template.indices &&
     existing.key === key
   ) {
+    stale.delete(cacheKey)
     remember(cacheKey, existing)
     return answerFrom(existing, countsUnpainted(template))
   }
@@ -486,12 +528,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, drafted: number): void
       asserted: entry.asserted,
       both: null,
     }
-    coverage.set(cacheKey, {
-      asserted: patched.asserted,
-      key: patched.key,
-      templateSource: patched.templateSource,
-      unpainted: patched.unpainted.length / 3,
-    })
+    rememberCoverage(cacheKey, patched)
     remember(cacheKey, patched)
     changed++
     count(belongs === null ? 'mismatch:pixel fixed' : `mismatch:pixel became ${belongs}`)
@@ -522,8 +559,9 @@ export const forgetMismatches = (id: string): void => {
     if (key.startsWith(`${id}|`)) cache.delete(key)
   }
   for (const key of [...coverage.keys()]) {
-    if (key.startsWith(`${id}|`)) coverage.delete(key)
+    if (key.startsWith(`${id}|`)) forgetCoverage(key)
   }
+  coverageTotals.delete(id)
   for (const key of [...inFlight.keys()]) {
     if (key.startsWith(`${id}|`)) inFlight.delete(key)
   }

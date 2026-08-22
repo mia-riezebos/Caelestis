@@ -462,7 +462,9 @@ export interface SqlStore {
   ): Promise<boolean>
 
   /**
-   * Rename a template, move it to another node, or both. Returns false when the id does not exist.
+   * Rename a template, move it to another node, or both. Returns false when the id does not exist,
+   * or when a guarded move loses a race with another move or delete. A caller that distinguishes
+   * those outcomes must re-read the row.
    *
    * Unlike `renameNode` this rewrites nothing else: a template is a leaf, so it carries no
    * materialized path and nothing hangs beneath it. Moving one is a single column.

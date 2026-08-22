@@ -1802,7 +1802,8 @@ const renderControls = (
   }
   if (heldByKey !== null && !onPage(heldByKey)) heldByKey = null
   // Only when a gesture's own control has gone.
-  if (openFor !== null && menuNode !== null && !heldWithin(menuNode)) flushDrafts(openFor)
+  if (openFor !== null && menuNode !== null && !heldWithin(menuNode) && !isColourPickerOpen())
+    flushDrafts(openFor)
   // A hide that was already queued elsewhere lands after the placement has started, leaving the
   // user positioning something invisible. The later action wins: the placement is abandoned.
   // While something is being placed, the keyboard is not on a gear.

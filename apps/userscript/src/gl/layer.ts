@@ -244,8 +244,15 @@ export const overlayLayer = {
   renderingMode: '2d' as const,
 
   onAdd(_map: unknown, gl: WebGL2RenderingContext): void {
-    program = link(gl)
+    // `onAdd` can belong to a replacement map and therefore a replacement context without the old
+    // map ever delivering `onRemove`. None of these handles may cross that context boundary. The old
+    // context owns their cleanup; our only safe action here is to forget them and rebuild.
+    program = null
+    quad = null
+    vao = null
     uniforms.clear()
+    gpu.clear()
+    program = link(gl)
     if (program === null) return
     quad = gl.createBuffer()
     vao = gl.createVertexArray()

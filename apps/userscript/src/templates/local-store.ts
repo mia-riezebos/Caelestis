@@ -7,7 +7,13 @@ import {
 } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
-import { getState, isScopeVisible, localFolderChainVisible, setScopeVisible } from '../state.js'
+import {
+  getGlobalAppearance,
+  getState,
+  isScopeVisible,
+  localFolderChainVisible,
+  setScopeVisible,
+} from '../state.js'
 import {
   APPEARANCE_GROUPS,
   type Appearance,
@@ -277,7 +283,7 @@ export const isTemplateVisible = (template: PlacedTemplate): boolean => {
  */
 export const appearanceOf = (template: PlacedTemplate): Appearance => {
   const state = getState()
-  const global: Appearance = { ...state.appearance, hiddenColours: state.hiddenColours }
+  const global: Appearance = { ...getGlobalAppearance(), hiddenColours: state.hiddenColours }
   const own = template.appearance
   if (own === null || template.owns.length === 0) return global
 

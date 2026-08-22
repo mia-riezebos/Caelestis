@@ -95,6 +95,8 @@ export const isColourPickerOpen = (): boolean => document.getElementById(POPOVER
 interface SwatchOptions {
   /** Announced to a screen reader, since the swatch itself has nothing to read out. */
   readonly label: string
+  /** Stable identity for a surface that rebuilds its controls while restoring focus. */
+  readonly controlKey?: string
   /** A transient value for a surface that keeps in-progress edits outside the DOM. */
   readonly onPreview?: (next: string) => void
   /** Called after the picker stops suppressing its owner's redraws. */
@@ -112,7 +114,7 @@ interface SwatchOptions {
 export const colourSwatch = (
   value: string,
   onChange: (next: string) => void,
-  { label, onPreview, onClose }: SwatchOptions,
+  { label, controlKey, onPreview, onClose }: SwatchOptions,
 ): HTMLButtonElement => {
   const button = document.createElement('button')
   button.type = 'button'
@@ -123,6 +125,7 @@ export const colourSwatch = (
   button.setAttribute('aria-haspopup', 'dialog')
   button.setAttribute('aria-label', `${label}: ${value}`)
   button.title = value
+  if (controlKey !== undefined) button.dataset.caelestisControl = controlKey
 
   const show = (next: string): void => {
     button.style.backgroundColor = next
@@ -368,7 +371,7 @@ const openPicker = (
    * it, dismissing the picker drops focus on `<body>` and the next Tab starts again from the top of
    * the page rather than from the row that was being edited.
    */
-  const close = (restoreFocus: boolean): void => {
+  const close = (restoreFocus: boolean, deferRedraw = false): void => {
     if (closeOpenPicker !== close) return
     commit()
     pop.remove()
@@ -377,7 +380,12 @@ const openPicker = (
     window.removeEventListener('resize', reposition)
     closeOpenPicker = null
     if (restoreFocus) anchor.focus()
-    onClose?.()
+    // An outside press is still in window capture. Rebuilding the owner's surface here removes the
+    // pressed target before the event can reach it, so let that dispatch finish first. Escape has no
+    // downstream pointer target and can redraw immediately; the anchor's control key lets its owner
+    // carry focus onto the replacement swatch during that rebuild.
+    if (deferRedraw) setTimeout(() => onClose?.(), 0)
+    else onClose?.()
   }
   const outside = (event: PointerEvent): void => {
     if (
@@ -385,7 +393,7 @@ const openPicker = (
       (pop.contains(event.target) || anchor.contains(event.target))
     )
       return
-    close(false)
+    close(false, true)
   }
   const onKey = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return

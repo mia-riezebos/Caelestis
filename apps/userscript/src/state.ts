@@ -664,7 +664,18 @@ export const loadState = (): State => {
 
 export const getState = (): State => state
 
+/** The global appearance currently shown on the map, including an uncommitted slider gesture. */
+let globalAppearancePreview: Appearance | null = null
+
+export const getGlobalAppearance = (): Appearance => globalAppearancePreview ?? state.appearance
+
+/** Preview a global appearance without serialising or notifying state subscribers. */
+export const previewGlobalAppearance = (appearance: Appearance | null): void => {
+  globalAppearancePreview = appearance
+}
+
 export const setState = (patch: Partial<State>): State => {
+  if (patch.appearance !== undefined) globalAppearancePreview = null
   state = { ...state, ...patch }
   writeRaw(JSON.stringify(state))
   notifyStateListeners()

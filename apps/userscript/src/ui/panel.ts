@@ -17,6 +17,7 @@ import {
   onStateChange,
   type ProgressPlacement,
   patchTemplate,
+  previewGlobalAppearance,
   probeServer,
   refreshStoredServers,
   removeLocalFolder,
@@ -141,6 +142,17 @@ const PANEL_TITLE = APP_NAME
 const BUTTON_TOOLTIP = `${APP_NAME} — shared templates`
 
 type View = 'tree' | 'settings' | 'appearance'
+
+const MOVES_RANGE = new Set([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+])
 
 /** The header title for each view, and `null` where the panel keeps its own name. */
 const VIEW_TITLE: Record<View, string | null> = {
@@ -825,13 +837,38 @@ const appearanceView = (): HTMLElement => {
     readout.style.flex = '0 0 auto'
     readout.style.textAlign = 'right'
     readout.textContent = control.format(state.appearance[control.key])
-    input.addEventListener('input', () => {
+    let dirty = false
+    let keyHeld = false
+    const commit = (): void => {
+      if (!dirty) return
+      dirty = false
       const next = Number(input.value)
-      readout.textContent = control.format(next)
       // Read the live value rather than the one captured when this row was built, so dragging one
       // slider cannot revert another.
       setState({ appearance: { ...getState().appearance, [control.key]: next } })
+    }
+    input.addEventListener('input', () => {
+      dirty = true
+      const next = Number(input.value)
+      readout.textContent = control.format(next)
+      previewGlobalAppearance({ ...getState().appearance, [control.key]: next })
+      redraw()
     })
+    input.addEventListener('keydown', (event) => {
+      if (MOVES_RANGE.has(event.key)) keyHeld = true
+    })
+    input.addEventListener('change', () => {
+      if (!keyHeld) commit()
+    })
+    input.addEventListener('keyup', (event) => {
+      if (!MOVES_RANGE.has(event.key)) return
+      keyHeld = false
+      commit()
+    })
+    for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      input.addEventListener(ending, commit)
+    }
+    input.addEventListener('blur', () => setTimeout(commit, 0))
     row.append(name, input, readout)
     sliders.appendChild(row)
   }

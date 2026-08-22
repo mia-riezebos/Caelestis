@@ -1560,6 +1560,7 @@ describe('a held slider holds its own menu, not the next one', () => {
     square.dispatchEvent(
       new PointerEvent('pointermove', { pointerId: 7, clientX: 50, clientY: 50 }),
     )
+    rerender()
     square.dispatchEvent(
       new PointerEvent('pointermove', { pointerId: 7, clientX: 80, clientY: 20 }),
     )

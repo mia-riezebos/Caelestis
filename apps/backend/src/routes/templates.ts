@@ -188,7 +188,10 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     }
     try {
       if (!(await ports.sql.updateTemplate(templateId, patch, now))) {
-        return c.json({ error: 'not found' }, 404)
+        if ((await ports.sql.readTemplate(templateId)) === null) {
+          return c.json({ error: 'not found' }, 404)
+        }
+        return c.json({ error: 'template changed concurrently' }, 409)
       }
     } catch (error) {
       if (error instanceof NodeNotFoundError || error instanceof InvalidNodeParentError) {

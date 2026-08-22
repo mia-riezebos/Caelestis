@@ -160,6 +160,7 @@ const track = (
 
 const swatch = (
   label: string,
+  controlKey: MarkerColourKey,
   value: string,
   onChange: (next: string) => void,
   onPreview?: (next: string) => void,
@@ -167,6 +168,7 @@ const swatch = (
 ): HTMLElement =>
   colourSwatch(value, onChange, {
     label,
+    controlKey,
     ...(onPreview === undefined ? {} : { onPreview }),
     ...(onClose === undefined ? {} : { onClose }),
   })
@@ -243,6 +245,7 @@ export const mismatchSettings = (
       'Colour',
       swatch(
         'Marker colour',
+        'markerColour',
         values.markerColour,
         (next) => {
           if (draftColour !== undefined && !draftColour.clear('markerColour')) return
@@ -353,6 +356,7 @@ const markedInRow = (
   cell.appendChild(
     swatch(
       'Colour for other colours',
+      'otherColour',
       values.otherColour ?? values.markerColour,
       (next) => {
         if (draftColour !== undefined && !draftColour.clear('otherColour')) return
