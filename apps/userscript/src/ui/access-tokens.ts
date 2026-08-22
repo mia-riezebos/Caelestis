@@ -5,6 +5,7 @@ import {
   listAccessTokens,
   revokeAccessToken,
 } from '../state.js'
+import { whileBusy } from './button.js'
 import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
 import { showNewToken } from './token-dialog.js'
@@ -157,10 +158,11 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
       label.focus()
       return
     }
-    create.classList.add('btn-disabled')
     note.style.display = 'none'
-    const result = await createAccessToken(server, name, scope.value as ScopeId)
-    create.classList.remove('btn-disabled')
+    const result = await whileBusy(create, () =>
+      createAccessToken(server, name, scope.value as ScopeId),
+    )
+    if (result === null) return
     if (!result.ok) {
       note.style.display = ''
       note.textContent = result.message

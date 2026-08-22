@@ -45,12 +45,13 @@ import {
   setTemplateFolder,
   templateAsPng,
 } from '../templates/local-store.js'
-import { beginMove, reserveMove, stopMoveForDeletion } from '../templates/move.js'
+import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
 import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
+import { whileBusy } from './button.js'
 import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
@@ -126,6 +127,15 @@ const PANEL_ID = 'caelestis-panel'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
 const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
+/**
+ * Every way a pointer gesture stops.
+ *
+ * `pointerup` alone is the happy path. A gesture the browser takes back for a system swipe fires
+ * `pointercancel` instead, and one whose capture is stolen fires `lostpointercapture` — both leave a
+ * drag running forever if only the first is listened for.
+ */
+const ENDINGS = ['pointerup', 'pointercancel', 'lostpointercapture'] as const
+
 const panelWidthForViewport = (wanted: number): number =>
   Math.min(maximumPanelWidth(), Math.max(minimumPanelWidth(), wanted))
 
@@ -734,11 +744,10 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   const attempt = async (): Promise<void> => {
     const value = code.value.trim()
     if (value === '') return
-    submit.classList.add('btn-disabled')
     status.className = 'text-xs opacity-60'
     status.textContent = 'Checking…'
-    const next = await probeServer(server.url, value)
-    submit.classList.remove('btn-disabled')
+    const next = await whileBusy(submit, () => probeServer(server.url, value))
+    if (next === null) return
     if (next.status === 'connected') {
       upsertServer(next)
       // Closed again, because what was open for is done. Left open, a row that opened itself would
@@ -868,9 +877,7 @@ const appearanceView = (): HTMLElement => {
       keyHeld = false
       commit()
     })
-    for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-      input.addEventListener(ending, commit)
-    }
+    for (const ending of ENDINGS) input.addEventListener(ending, commit)
     input.addEventListener('blur', () => setTimeout(commit, 0))
     row.append(name, input, readout)
     sliders.appendChild(row)
@@ -925,12 +932,11 @@ const settingsView = (): HTMLElement => {
   const connect = async (): Promise<void> => {
     const value = url.value.trim()
     if (value === '') return
-    add.classList.add('btn-disabled')
     status.style.display = ''
     status.className = 'text-xs px-3 pb-2 opacity-60'
     status.textContent = 'Connecting…'
-    const server = await probeServer(value, null)
-    add.classList.remove('btn-disabled')
+    const server = await whileBusy(add, () => probeServer(value, null))
+    if (server === null) return
     if (server.status === 'unreachable') {
       status.className = 'text-xs px-3 pb-2 text-error'
       status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
@@ -1284,13 +1290,12 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Move'
   go.addEventListener('click', () => {
-    void (async () => {
-      go.classList.add('btn-disabled')
+    void whileBusy(go, async () => {
       const result = await patchTemplate(server, templateId, { nodeId: chooser.value })
       box.remove()
       if (!result.ok) toast(result.message, 'error')
       await refreshNodes(server, rerender)
-    })()
+    })
   })
   buttons.append(cancel, go)
   box.append(label, chooser, buttons)
@@ -1596,10 +1601,9 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Replace'
   go.addEventListener('click', () => {
-    void (async () => {
-      const source = sources.find((candidate) => candidate.id === chooser.value)
-      if (source === undefined) return
-      go.classList.add('btn-disabled')
+    const source = sources.find((candidate) => candidate.id === chooser.value)
+    if (source === undefined) return
+    void whileBusy(go, async () => {
       label.textContent = 'Encoding…'
       const png = await templateAsPng(source)
       if (png === null) {
@@ -1618,7 +1622,7 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
       if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
       else toast(result.message, 'error')
       await refreshNodes(server, rerender)
-    })()
+    })
   })
   buttons.append(cancel, go)
   box.append(label, chooser, note, buttons)
@@ -1879,11 +1883,17 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Copy'
   go.addEventListener('click', () => {
-    void (async () => {
-      const [url, nodeId] = (chooser.value ?? '').split('|')
-      const server = targets.find((candidate) => candidate.url === url)
-      if (server === undefined || nodeId === undefined) return
-      go.classList.add('btn-disabled')
+    const [url, nodeId] = (chooser.value ?? '').split('|')
+    const server = targets.find((candidate) => candidate.url === url)
+    if (server === undefined || nodeId === undefined) return
+    // The same refusal Delete makes, for the same reason: this dialog stays open while the map is
+    // used, and a placement in progress means the stored origin is the one being dragged away
+    // from. Copying it would put the template on the server at a position nobody chose.
+    if (movingId() === template.id) {
+      toast(`Finish placing “${template.name}” before copying it.`, 'warning')
+      return
+    }
+    void whileBusy(go, async () => {
       label.textContent = 'Encoding…'
       const png = await templateAsPng(template)
       if (png === null) {
@@ -1906,7 +1916,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
       } else {
         toast(result.message, 'error')
       }
-    })()
+    })
   })
   buttons.append(cancel, go)
   box.append(label, chooser, buttons)
@@ -1980,8 +1990,34 @@ const buildPanel = (): HTMLElement => {
 
   const handle = document.createElement('div')
   handle.className = 'caelestis-resize'
+  // A separator that can be moved is a splitter, and a splitter has to be reachable and readable:
+  // the role and the label alone announced a control that could not be focused or operated, which
+  // is a promise the 6px strip could not keep.
   handle.setAttribute('role', 'separator')
   handle.setAttribute('aria-label', 'Resize panel')
+  handle.setAttribute('aria-orientation', 'vertical')
+  handle.tabIndex = 0
+  const noteWidth = (width: number): void => {
+    handle.setAttribute('aria-valuenow', String(Math.round(width)))
+    handle.setAttribute('aria-valuemin', String(Math.round(minimumPanelWidth())))
+    handle.setAttribute('aria-valuemax', String(Math.round(maximumPanelWidth())))
+  }
+  noteWidth(getState().panelWidth)
+  const KEYBOARD_STEP_PX = 16
+  handle.addEventListener('keydown', (event) => {
+    const step =
+      event.key === 'ArrowLeft'
+        ? KEYBOARD_STEP_PX
+        : event.key === 'ArrowRight'
+          ? -KEYBOARD_STEP_PX
+          : 0
+    if (step === 0) return
+    event.preventDefault()
+    const next = panelWidthForViewport(panel.getBoundingClientRect().width + step)
+    panel.style.width = `${next}px`
+    noteWidth(next)
+    setState({ panelWidth: Math.round(next) })
+  })
   handle.addEventListener('pointerdown', (event) => {
     event.preventDefault()
     handle.classList.add('caelestis-resizing')
@@ -1998,15 +2034,19 @@ const buildPanel = (): HTMLElement => {
       // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
       const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
       panel.style.width = `${next}px`
+      noteWidth(next)
     }
+    // The same three endings every other drag here listens for. Ending on `pointerup` alone left a
+    // cancelled drag — the browser claiming the pointer for a system gesture — with `pointermove`
+    // still bound, so the panel went on resizing under a pointer nobody was pressing.
     const done = (): void => {
       handle.classList.remove('caelestis-resizing')
       window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', done)
+      for (const ending of ENDINGS) window.removeEventListener(ending, done)
       setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
     }
     window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', done)
+    for (const ending of ENDINGS) window.addEventListener(ending, done)
   })
   panel.appendChild(handle)
 
