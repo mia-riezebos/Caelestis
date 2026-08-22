@@ -164,6 +164,9 @@ const remember = (cacheKey: string, entry: Cached): void => {
     if (!oldest.done) {
       cache.delete(oldest.value)
       forgetCoverage(oldest.value)
+      // The counter is only meaningful while an answer or a scan refers to it. Kept past both, it
+      // was the one structure here with no bound, growing with every tile ever painted on.
+      if (!inFlight.has(oldest.value)) patchCount.delete(oldest.value)
     }
   }
 }
@@ -507,11 +510,19 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
   const drafted = draft === null ? UNPAINTED : (draft[at] as number)
   const placed =
     drafted !== UNPAINTED ? drafted : server === null ? UNPAINTED : (server[at] as number)
+  // Counted whether or not this patch changes anything, so a scan in flight can see that the ground
+  // moved under it and drop its result rather than writing a pre-paint answer over it.
+  //
+  // Over both maps, not just the cache. A template's first scan has no cached answer yet, only an
+  // in-flight one, so counting cache keys alone left exactly that scan uncountable: a paint landing
+  // during it changed nothing the identity checks look at, and the pre-paint answer was cached and
+  // then reused indefinitely.
+  const suffix = `|${tile.x}/${tile.y}`
+  for (const key of new Set([...cache.keys(), ...inFlight.keys()])) {
+    if (key.endsWith(suffix)) patchCount.set(key, (patchCount.get(key) ?? 0) + 1)
+  }
   for (const [cacheKey, entry] of [...cache]) {
-    if (!cacheKey.endsWith(`|${tile.x}/${tile.y}`)) continue
-    // Counted whether or not this patch changes anything, so a scan in flight can see that the
-    // ground moved under it and drop its result rather than writing a pre-paint answer over it.
-    patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
+    if (!cacheKey.endsWith(suffix)) continue
     const id = templateIdOf(cacheKey)
     const template = localTemplates().find((candidate) => candidate.id === id)
     if (template === undefined || entry.templateSource !== template.indices) continue
@@ -613,6 +624,9 @@ export const forgetMismatches = (id: string): void => {
   coverageTotals.delete(id)
   for (const key of [...inFlight.keys()]) {
     if (key.startsWith(`${id}|`)) inFlight.delete(key)
+  }
+  for (const key of [...patchCount.keys()]) {
+    if (key.startsWith(`${id}|`)) patchCount.delete(key)
   }
   for (const key of [...stale]) {
     if (key.startsWith(`${id}|`)) stale.delete(key)

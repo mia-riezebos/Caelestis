@@ -1832,16 +1832,26 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
         // Straight into whichever Local folder was clicked. Importing from a folder's own button
         // and then finding the result at the top level would make the button a lie.
         const folderId = localFolderIdOf(target)
+        // Each record stands or falls on its own. Rolling the whole file back on one failure meant
+        // importing two templates with one slot left admitted the first, hit the cap on the second,
+        // and then deleted the first as well — a success thrown away to tidy up after a failure
+        // that had nothing to do with it.
         const admitted: string[] = []
+        const failed: string[] = []
         try {
           for (const template of imported) {
-            await addLocalTemplate(template)
-            admitted.push(template.id)
-            if (folderId !== null && !(await setTemplateFolder(template.id, folderId))) {
-              throw new Error(`could not move ${template.name} into the selected folder`)
+            try {
+              await addLocalTemplate(template)
+              admitted.push(template.id)
+              if (folderId !== null && !(await setTemplateFolder(template.id, folderId)))
+                failed.push(`${template.name} was imported, but not into that folder`)
+            } catch (error) {
+              failed.push(`${template.name}: ${String(error)}`)
             }
           }
           rerender()
+          if (failed.length > 0) toast(failed.join('. '), 'error')
+          if (!admitted.includes(first.id)) return
 
           const moved = first.moved
           toast(
@@ -1865,7 +1875,6 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
             navigateTo(centreOf(first))
           }
         } catch (error) {
-          for (const id of admitted) await removeLocalTemplate(id)
           rerender()
           throw error
         } finally {
