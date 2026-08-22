@@ -70,13 +70,21 @@ const CSS = `
   border-radius: 999px;
   opacity: 0.5;
 }
+/* Hidden until pointed at, but only where pointing is a thing. A device with no hover capability
+   never matches the reveal, so an unconditional zero opacity left every row action permanently
+   invisible and still exactly as tappable as before — a hit area you cannot aim at. wplace is
+   played on phones, so that is most of them. */
 .caelestis-actions {
-  opacity: 0;
   transition: opacity 100ms ease-out;
 }
-.caelestis-row:hover .caelestis-actions,
-.caelestis-row:focus-within .caelestis-actions {
-  opacity: 1;
+@media (hover: hover) {
+  .caelestis-actions {
+    opacity: 0;
+  }
+  .caelestis-row:hover .caelestis-actions,
+  .caelestis-row:focus-within .caelestis-actions {
+    opacity: 1;
+  }
 }
 /* The swatch grid steps between powers of two rather than flowing with auto-fill.
    auto-fill with minmax gives whatever column count happens to fit, so the palette reflowed into

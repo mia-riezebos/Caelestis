@@ -117,6 +117,16 @@ const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation
 }
 
 export const initMarkers = (gl: WebGL2RenderingContext): void => {
+  // Forget the old context's handles before claiming this one, exactly as `layer.ts` does. Claiming
+  // first and overwriting them only on the success path meant a compile or link that failed — which
+  // is what every `create*` returns on a context lost to a GPU-process crash, and precisely when
+  // MapLibre re-runs this lifecycle — left `owner` naming the new context while the handles still
+  // belonged to the old one. Every frame then bound foreign objects, and the old context's objects
+  // could never be freed because the guard in `releaseMarkers` no longer recognised them.
+  program = null
+  buffer = null
+  vao = null
+  uniforms.clear()
   owner = gl
   const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX)
   const fragment = compile(gl, gl.FRAGMENT_SHADER, FRAGMENT)

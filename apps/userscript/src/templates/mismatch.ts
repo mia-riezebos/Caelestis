@@ -396,20 +396,20 @@ const requestScan = (
     stale.delete(cacheKey)
     return
   }
-  inFlight.set(cacheKey, { pixels, templateSource, signature: asked, patches: patchesAtStart })
+  // Identity by object, so the reply can tell "the entry is still mine" from "the answer is still
+  // good". Those are different questions and folding them together leaked: a scan invalidated by a
+  // paint left its entry behind, and `PendingScan.pixels` is the captured tile — a megabyte, pinned
+  // for the session once the tile cache had evicted its own copy.
+  const mine: PendingScan = { pixels, templateSource, signature: asked, patches: patchesAtStart }
+  inFlight.set(cacheKey, mine)
   stale.delete(cacheKey)
   void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
-    const current = inFlight.get(cacheKey)
-    const isCurrent =
-      current?.pixels === pixels &&
-      current.templateSource === templateSource &&
-      current.signature === asked &&
-      current.patches === patchesAtStart &&
-      (patchCount.get(cacheKey) ?? 0) === patchesAtStart
-    if (isCurrent) inFlight.delete(cacheKey)
-    if (!isCurrent) return
-    if (outcome === null) {
-      // No worker to be had. The inline path picks this up on the next frame, within its budget.
+    // A later request replaced the entry, so it owns this key now and this reply is nobody's.
+    if (inFlight.get(cacheKey) !== mine) return
+    inFlight.delete(cacheKey)
+    if (outcome === null || (patchCount.get(cacheKey) ?? 0) !== patchesAtStart) {
+      // Either no worker to be had, or the ground moved under this scan while it ran. Both mean the
+      // answer is not usable and the tile still needs one, so ask again rather than dropping it.
       stale.add(cacheKey)
       scheduleIdleScan()
       return
