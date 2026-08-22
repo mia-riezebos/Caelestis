@@ -402,15 +402,35 @@ const treeView = (): HTMLElement => {
  * colour picker counts even though it is not in the panel — it is anchored to a swatch that is, so
  * rebuilding would detach it from its own anchor. Its close callback requests the deferred redraw.
  */
+let owedRefresh = false
+
 const refreshView = (): void => {
   if (!open) return
-  if (isColourPickerOpen()) return
   const root = document.getElementById(PANEL_ID)
   if (root === null) return
-  if (root.querySelector('.caelestis-dragging') !== null) return
-  const active = document.activeElement
-  if (root.contains(active) && active instanceof HTMLInputElement) return
+  const held =
+    isColourPickerOpen() ||
+    root.querySelector('.caelestis-dragging') !== null ||
+    (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
+  if (held) {
+    owedRefresh = true
+    return
+  }
+  owedRefresh = false
   showView(currentView)
+}
+
+/**
+ * Pay back a redraw that was declined while something was being held.
+ *
+ * Suppressing a redraw is a debt. Without this the panel simply lost it: a template arriving from a
+ * server while a name was being typed, or a keybind pressed mid-drag, stayed invisible until some
+ * unrelated change happened to redraw the view. Deferred by a tick because both events that call it
+ * fire *before* the thing they announce has finished letting go.
+ */
+const repayRefresh = (): void => {
+  if (!owedRefresh) return
+  setTimeout(refreshView, 0)
 }
 
 const settingRow = (label: string, hint: string | null, control: HTMLElement): HTMLElement => {
@@ -2295,6 +2315,8 @@ export const installPanel = (): void => {
   // change.
   onStateChange(refreshView)
   onLocalChange(refreshView)
+  for (const ending of ['dragend', 'focusout'])
+    document.addEventListener(ending, repayRefresh, true)
   // Opening wplace's paint drawer changes what the appearance grid is showing without changing any
   // state of ours, so neither listener above hears it and the grid sat showing the switches the
   // mode had already overridden. Only that view: the tree is expensive to rebuild and a colour
