@@ -2,7 +2,7 @@
 
 Type: grilling
 Status: open
-Blocked by: 13, 17
+Blocked by: 17
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/19
 
 ## Question

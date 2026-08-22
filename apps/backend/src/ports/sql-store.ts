@@ -1,4 +1,10 @@
-import { type Millis, type PixelBounds, type Seconds, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import {
+  type Millis,
+  type PixelBounds,
+  type Seconds,
+  WORLD_PIXELS,
+  WORLD_TILES,
+} from '@caelestis/shared'
 import { SCOPES, type Scope } from '../auth/tokens.js'
 
 /**
@@ -232,6 +238,17 @@ export interface TemplateVersionRecord {
   }[]
 }
 
+/** A template's own row: what it is called and where it sits, with no pixels attached. */
+export interface TemplateRecord {
+  readonly id: string
+  readonly nodeId: string
+  readonly name: string
+  readonly currentVersionId: string | null
+  readonly published: boolean
+  readonly createdAt: Millis
+  readonly updatedAt: Millis
+}
+
 export interface NodeRecord {
   readonly id: string
   readonly season: number
@@ -240,6 +257,12 @@ export interface NodeRecord {
   readonly name: string
   readonly description: string | null
   readonly createdAt: Millis
+}
+
+/** Everything a cascading delete removed, so a caller can say what it did. */
+export interface NodeDeletion {
+  readonly nodes: number
+  readonly templates: number
 }
 
 export interface ManifestTemplateRecord {
@@ -251,10 +274,12 @@ export interface ManifestTemplateRecord {
   readonly totalPixels: number
   readonly published: boolean
   readonly createdAt: Millis
+  readonly updatedAt: Millis
 }
 
 export interface ManifestTileRecord {
   readonly templateId: string
+  readonly versionId: string
   readonly tileX: number
   readonly tileY: number
   readonly hash: string
@@ -285,6 +310,10 @@ export class NodeNotFoundError extends Error {
   override readonly name = 'NodeNotFoundError'
 }
 
+export class TemplateNotFoundError extends Error {
+  override readonly name = 'TemplateNotFoundError'
+}
+
 /**
  * A new version of an existing template that is not a version of the same thing.
  *
@@ -311,7 +340,45 @@ export class NodeNotEmptyError extends Error {
   override readonly name = 'NodeNotEmptyError'
 }
 
+/**
+ * What a template edit may change, beside its pixels.
+ *
+ * Pixels are not here on purpose: replacing them is `insertTemplateVersion`, which mints a new
+ * version id and a new chunk index. Everything in this patch leaves the chunks exactly where they
+ * are, which is the whole reason `updatedAt` exists alongside the version.
+ *
+ * An absent field is "leave it alone", which is why every one is optional rather than nullable —
+ * neither a name nor a parent can be cleared, only replaced.
+ */
+export interface TemplatePatch {
+  readonly name?: string
+  /** Moving a template to another node. Rejected with `NodeNotFoundError` if it does not exist. */
+  readonly nodeId?: string
+  /** Null unpublishes; absent leaves publication alone. */
+  readonly publishedAt?: Millis | null
+}
+
+/**
+ * What an admin has renamed this server to, or nulls where they have not.
+ *
+ * Null is "not decided" and falls back to the deployment's own configuration — which is different
+ * from an empty string, and is why these are nullable rather than defaulted.
+ */
+export interface ServerSettings {
+  readonly name: string | null
+  readonly description: string | null
+}
+
 export interface SqlStore {
+  /** The operator's overrides. Nulls throughout when nobody has set anything. */
+  readServerSettings(): Promise<ServerSettings>
+
+  /** Update only the supplied fields; explicit null clears the configured override. */
+  writeServerSettings(patch: {
+    readonly name?: string
+    readonly description?: string | null
+  }): Promise<void>
+
   /**
    * Insert a node, and answer with the row as stored.
    *
@@ -349,15 +416,73 @@ export interface SqlStore {
    */
   renameNode(nodeId: string, name: string, segment: string): Promise<NodeRecord | null>
 
+  /**
+   * Re-parent a node and rewrite the paths of everything beneath it.
+   *
+   * Returns false when the node does not exist. Throws `InvalidNodeParentError` when the destination
+   * does not exist, belongs to another season, or is the node itself or one of its own descendants;
+   * `NodePathConflictError` when the new path collides with a sibling.
+   */
+  moveNode(
+    nodeId: string,
+    parentId: string | null,
+    path: string,
+    patch?: { readonly name?: string },
+  ): Promise<boolean>
+
   deleteNode(nodeId: string): Promise<void>
 
+  deleteNodeCascade(nodeId: string): Promise<NodeDeletion>
+
+  /** How much a cascading delete would remove, without removing it. */
+  countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }>
+
   /** Atomically add a version, its tile index, and make it the template's current version. */
-  insertTemplateVersion(version: TemplateVersionRecord): Promise<void>
+  insertTemplateVersion(
+    version: TemplateVersionRecord,
+    options?: { readonly requireExisting?: boolean },
+  ): Promise<void>
 
   /** A version with its template metadata and complete tile index, or null if absent. */
   readTemplateVersion(versionId: string): Promise<TemplateVersionRecord | null>
 
-  setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean>
+  /**
+   * A template's own row, without a version or a tile index.
+   *
+   * What "does this exist, and where does it live" needs, which is every edit and a new version —
+   * none of which care what the pixels currently are. `readTemplateVersion` answers a different
+   * question and reads the whole chunk index to do it.
+   */
+  readTemplate(templateId: string): Promise<TemplateRecord | null>
+
+  setTemplatePublishedAt(
+    templateId: string,
+    publishedAt: Millis | null,
+    updatedAt: Millis,
+  ): Promise<boolean>
+
+  /**
+   * Rename a template, move it to another node, or both. Returns false when the id does not exist,
+   * or when a guarded move loses a race with another move or delete. A caller that distinguishes
+   * those outcomes must re-read the row.
+   *
+   * Unlike `renameNode` this rewrites nothing else: a template is a leaf, so it carries no
+   * materialized path and nothing hangs beneath it. Moving one is a single column.
+   *
+   * Throws `NodeNotFoundError` when the destination node does not exist — otherwise a typo would
+   * silently orphan a template into a node nobody can navigate to.
+   */
+  updateTemplate(templateId: string, patch: TemplatePatch, updatedAt: Millis): Promise<boolean>
+
+  /**
+   * Delete a template with every version and tile index it owns. Returns false if it was not there.
+   *
+   * **Chunks are deliberately left behind.** They are content-addressed and shared: two templates
+   * with the same region, or two versions of one template that differ elsewhere, refer to the same
+   * blob. Deleting by hash here would corrupt whatever else pointed at it, so reclaiming storage is
+   * a sweep over hashes no version references — a separate job, and a safe one to never run.
+   */
+  deleteTemplate(templateId: string): Promise<boolean>
 
   listManifestTemplates(
     season: number,

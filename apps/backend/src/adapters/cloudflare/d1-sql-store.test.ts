@@ -1,4 +1,4 @@
-import { millis, seconds } from '@wts/shared'
+import { millis, seconds } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
 import {
@@ -336,7 +336,7 @@ describe('D1SqlStore', () => {
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700);
+      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
       INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(
@@ -389,6 +389,35 @@ describe('D1SqlStore', () => {
     expect(d1.batchStatements - before).toBeLessThanOrEqual(50)
   })
 
+  it('deletes contribution rows before their template', async () => {
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+    await store.insertTemplateVersion(templateVersion())
+    d1.sqlite
+      .prepare('INSERT INTO contributions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(1, 'template-1', 0, 'c'.repeat(64), 1, 1, 1, 0)
+
+    await expect(store.deleteTemplate('template-1')).resolves.toBe(true)
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM contributions').get()).toEqual({
+      count: 0,
+    })
+  })
+
+  it('deletes a subtree whose root path exceeds D1s LIKE pattern limit', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const path = `/${'deep'.repeat(15)}`
+    await store.insertNode({ ...base, id: 'deep-root', parentId: null, path, name: 'Deep root' })
+    await store.insertNode({
+      ...base,
+      id: 'deep-child',
+      parentId: 'deep-root',
+      path: `${path}/child`,
+      name: 'Child',
+    })
+
+    await expect(store.deleteNodeCascade('deep-root')).resolves.toEqual({ nodes: 2, templates: 0 })
+    await expect(store.listNodes(1)).resolves.toEqual([])
+  })
+
   it('orders tokens minted in the same millisecond by hash, as the port promises', async () => {
     // SQL leaves equal ORDER BY keys unspecified, so the adapters could return different arrays for
     // one input — the memory store applies the port's tiebreak and D1 did not. Date.now() is
@@ -436,8 +465,8 @@ describe('D1SqlStore', () => {
     await store.insertTemplateVersion(
       templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
     )
-    await store.setTemplatePublishedAt('template-1', millis(5_000))
-    await store.setTemplatePublishedAt('other', millis(5_000))
+    await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const ids = async (includeUnpublished: boolean): Promise<string[]> =>
       (await store.listManifestTemplates(1, includeUnpublished)).map((row) => row.id).sort()
@@ -462,8 +491,8 @@ describe('D1SqlStore', () => {
     await store.insertTemplateVersion(
       templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
     )
-    await store.setTemplatePublishedAt('template-1', millis(5_000))
-    await store.setTemplatePublishedAt('other', millis(5_000))
+    await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const owners = async (includeUnpublished: boolean): Promise<string[]> =>
       [

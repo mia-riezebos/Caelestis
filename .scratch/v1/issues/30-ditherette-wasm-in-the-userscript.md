@@ -2,7 +2,7 @@
 
 Type: grilling
 Status: deferred — v3 or later
-Blocked by: 19, 29
+Blocked by: 19
 GitHub: —
 
 ## Question

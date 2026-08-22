@@ -1,4 +1,10 @@
-import { decodePng, encodeIndexedPng, millis, PALETTE_RGB, type PixelBounds } from '@wts/shared'
+import {
+  decodePng,
+  encodeIndexedPng,
+  millis,
+  PALETTE_RGB,
+  type PixelBounds,
+} from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -19,6 +25,10 @@ class CountingBlobStore implements BlobStore {
 
   async get(namespace: BlobNamespace, hash: string): Promise<Uint8Array | null> {
     return this.inner.get(namespace, hash)
+  }
+
+  async delete(namespace: BlobNamespace, hashes: readonly string[]): Promise<void> {
+    return this.inner.delete(namespace, hashes)
   }
 
   async hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>> {
@@ -113,13 +123,13 @@ describe('storeTemplate', () => {
     expect(ports.blobs.hasAllCalls.every(({ hashes }) => hashes.length === 1)).toBe(true)
   })
 
-  it('refuses an upload spanning more than 512 tiles before encoding or storing chunks', async () => {
+  it('refuses an upload spanning more than 400 tiles before encoding or storing chunks', async () => {
     const ports = await harness()
-    const png = await encodeIndexedPng(513_000, 1, new Uint8Array(513_000))
+    const png = await encodeIndexedPng(401_000, 1, new Uint8Array(401_000))
 
     const error = await storeTemplate(ports, input(png)).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(StoreTemplateError)
-    expect(error).toHaveProperty('message', expect.stringMatching(/more than the 512/))
+    expect(error).toHaveProperty('message', expect.stringMatching(/more than the 400/))
     expect(ports.blobs.hasAllCalls).toHaveLength(0)
     expect(ports.blobs.puts).toHaveLength(0)
   })

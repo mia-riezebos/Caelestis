@@ -60,6 +60,13 @@ CREATE TABLE `painters` (
 	`seen_at_ms` integer NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE `server_settings` (
+	`id` integer PRIMARY KEY NOT NULL,
+	`name` text,
+	`description` text,
+	CONSTRAINT "server_settings_single_row_check" CHECK("server_settings"."id" = 1)
+);
+--> statement-breakpoint
 CREATE TABLE `telemetry_buckets` (
 	`template_id` text NOT NULL,
 	`resolution` integer NOT NULL,
@@ -121,6 +128,7 @@ CREATE TABLE `templates` (
 	`created_with_token` text NOT NULL,
 	`created_by_user_id` integer,
 	`created_at_ms` integer NOT NULL,
+	`updated_at_ms` integer NOT NULL,
 	FOREIGN KEY (`node_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`current_version_id`,`id`) REFERENCES `template_versions`(`id`,`template_id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "templates_created_with_token_check" CHECK(typeof("templates"."created_with_token") = 'text' AND length("templates"."created_with_token") = 64

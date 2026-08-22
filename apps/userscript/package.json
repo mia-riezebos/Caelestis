@@ -1,5 +1,5 @@
 {
-  "name": "@wts/userscript",
+  "name": "@caelestis/userscript",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,12 @@
     "clean": "rm -rf dist .turbo",
     "test": "vitest run",
     "inject": "node dev-inject.mjs",
-    "inject:watch": "node dev-inject.mjs --watch"
+    "inject:watch": "node dev-inject.mjs --watch",
+    "browser": "node chromium.mjs",
+    "browser:relaunch": "node chromium.mjs --relaunch"
   },
   "dependencies": {
-    "@wts/shared": "workspace:*"
+    "@caelestis/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/greasemonkey": "^4.0.7",

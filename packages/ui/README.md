@@ -1,4 +1,4 @@
-# @wts/ui
+# @caelestis/ui
 
 Web components shared by the userscript and the SvelteKit frontend.
 

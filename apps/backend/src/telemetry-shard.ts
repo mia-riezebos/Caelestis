@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
-import { type Millis, millis, type Seconds, seconds } from '@wts/shared'
+import { type Millis, millis, type Seconds, seconds } from '@caelestis/shared'
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import {
   type CounterDelta,

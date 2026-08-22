@@ -1,8 +1,9 @@
-import type { ServerInfo } from '@wts/shared'
+import type { ServerInfo } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import { assembleManifest } from '../manifest/assemble.js'
 import type { Ports } from '../ports/index.js'
+import { resolveServerInfo } from './server.js'
 
 // Wplace's first and current canvas is season 0; later seasons increment from there.
 const SEASON_NUMBER = /^(?:0|[1-9]\d*)$/
@@ -28,7 +29,10 @@ export const createManifestRoutes = (
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
 
     const manifest = await assembleManifest(ports, {
-      server: options.server,
+      // Resolved rather than the configured value: the manifest carries the server's name too, and
+      // a rename that showed up on `/server` but not here would leave the tree labelled with the
+      // old one — which is exactly where anyone would look to check the rename worked.
+      server: await resolveServerInfo(ports, options.server),
       season,
       includeUnpublished: c.get('caller').scope === 'admin',
     })

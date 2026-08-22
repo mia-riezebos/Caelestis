@@ -20,7 +20,7 @@ importers:
 
   apps/backend:
     dependencies:
-      '@wts/shared':
+      '@caelestis/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       drizzle-orm:
@@ -30,15 +30,15 @@ importers:
         specifier: ^4.6.0
         version: 4.12.33
     devDependencies:
+      '@caelestis/wire-schema':
+        specifier: workspace:*
+        version: link:../../packages/wire-schema
       '@cloudflare/workers-types':
         specifier: ^5.20260722.1
         version: 5.20260801.1
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
-      '@wts/wire-schema':
-        specifier: workspace:*
-        version: link:../../packages/wire-schema
       drizzle-kit:
         specifier: 0.31.10
         version: 0.31.10
@@ -59,7 +59,7 @@ importers:
 
   apps/userscript:
     dependencies:
-      '@wts/shared':
+      '@caelestis/shared':
         specifier: workspace:*
         version: link:../../packages/shared
     devDependencies:
@@ -95,7 +95,7 @@ importers:
 
   packages/wire-schema:
     dependencies:
-      '@wts/shared':
+      '@caelestis/shared':
         specifier: workspace:*
         version: link:../shared
       effect:

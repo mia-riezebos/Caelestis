@@ -5,11 +5,11 @@ compatibility_flags = ["nodejs_compat"]
 
 [[r2_buckets]]
 binding = "BLOBS"
-bucket_name = "wts-blobs"
+bucket_name = "caelestis-blobs"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "wts"
+database_name = "caelestis"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "./migrations"
 
@@ -24,8 +24,8 @@ new_sqlite_classes = ["TelemetryShard"]
 [vars]
 SHARD_STRATEGY = "single"
 SERVER_ID = "00000000-0000-7000-8000-000000000000"
-SERVER_NAME = "Wplace Template Server"
-SERVER_DESCRIPTION = "A self-hosted Wplace template server"
+SERVER_NAME = "Template Server"
+SERVER_DESCRIPTION = "A self-hosted wplace template server"
 # The canvas season this deployment serves. /manifest is season-scoped and ServerInfo carries no
 # season, so a later-season server has to say so here or it answers with season 0's.
 SEASON = "0"

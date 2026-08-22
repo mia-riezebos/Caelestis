@@ -1,5 +1,5 @@
 {
-  "name": "@wts/backend",
+  "name": "@caelestis/backend",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,14 +12,14 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@wts/shared": "workspace:*",
+    "@caelestis/shared": "workspace:*",
     "drizzle-orm": "0.45.2",
     "hono": "^4.6.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
     "@types/node": "^26.1.2",
-    "@wts/wire-schema": "workspace:*",
+    "@caelestis/wire-schema": "workspace:*",
     "drizzle-kit": "0.31.10",
     "effect": "4.0.0-beta.102",
     "typescript": "^5.7.0",

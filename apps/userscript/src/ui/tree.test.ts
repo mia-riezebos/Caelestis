@@ -3,7 +3,6 @@ import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState 
 import {
   canRetryNodeRefresh,
   forgetServerTree,
-  localSiblingKeys,
   nodeSiblingItems,
   nodeTreeKey,
   orderedItems,
@@ -15,6 +14,15 @@ import {
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
+
+const manifest = (
+  info: { readonly id: string; readonly name: string; readonly auth: 'none' },
+  nodes: readonly unknown[] = [],
+): Response =>
+  new Response(
+    JSON.stringify({ version: 'v1', season: 0, server: info, nodes, templates: [], tiles: [] }),
+    { status: 200 },
+  )
 
 afterEach(() => {
   forgetServerTree('https://public.example.com')
@@ -94,7 +102,10 @@ const callbacks = {
   onDelete: vi.fn(),
   onContextMenu: vi.fn(),
   onGoTo: vi.fn(),
+  onPlace: vi.fn(),
   onCopyToServer: vi.fn(),
+  onMoveLocal: vi.fn(),
+  onDropInServer: vi.fn(),
   onError: vi.fn(),
 }
 
@@ -204,7 +215,7 @@ describe('tree identity and ordering', () => {
     const rebuilt = refreshNodes(connected, rebuiltView)
     await Promise.resolve()
     expect(fetch).toHaveBeenCalledOnce()
-    release?.(new Response('[]', { status: 200 }))
+    release?.(manifest({ id: SERVER_ID, name: 'Example', auth: 'none' }))
     await Promise.all([first, rebuilt])
     await Promise.resolve()
 
@@ -212,7 +223,7 @@ describe('tree identity and ordering', () => {
     expect(rebuiltView).toHaveBeenCalledOnce()
   })
 
-  it('defers the rerender when reusing nodes from the admin probe', async () => {
+  it('defers the rerender while refreshing the public manifest', async () => {
     const info = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
     vi.stubGlobal(
       'fetch',
@@ -232,7 +243,8 @@ describe('tree identity and ordering', () => {
             { status: 200 },
           ),
         )
-        .mockResolvedValueOnce(new Response('[]', { status: 200 })),
+        .mockResolvedValueOnce(new Response('[]', { status: 200 }))
+        .mockResolvedValueOnce(manifest(info)),
     )
     const connected = await probeServer('https://example.com', null)
     setState({ servers: [connected] })
@@ -244,7 +256,7 @@ describe('tree identity and ordering', () => {
     await Promise.resolve()
 
     expect(rerender).toHaveBeenCalledOnce()
-    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(fetch).toHaveBeenCalledTimes(4)
   })
 
   it('bypasses the connect-time probe snapshot for a forced admin refresh', async () => {
@@ -268,7 +280,7 @@ describe('tree identity and ordering', () => {
           ),
         )
         .mockResolvedValueOnce(new Response(null, { status: 200 }))
-        .mockResolvedValueOnce(new Response('[]', { status: 200 })),
+        .mockResolvedValueOnce(manifest(info)),
     )
     const connected = await probeServer('https://example.com', null)
     setState({ servers: [connected] })
@@ -277,7 +289,7 @@ describe('tree identity and ordering', () => {
 
     expect(fetch).toHaveBeenCalledTimes(4)
     expect(fetch).toHaveBeenLastCalledWith(
-      'https://example.com/admin/nodes?season=0',
+      'https://example.com/manifest?season=0',
       expect.any(Object),
     )
     expect(peekProbedNodes(connected)).toBeUndefined()
@@ -355,7 +367,8 @@ describe('tree identity and ordering', () => {
           ),
         )
         .mockResolvedValueOnce(new Response(null, { status: 200 }))
-        .mockResolvedValueOnce(new Response(null, { status: 403 })),
+        .mockResolvedValueOnce(new Response(null, { status: 403 }))
+        .mockResolvedValueOnce(manifest(info, nodes)),
     )
     const connected = await probeServer('https://example.com', null)
     setState({ servers: [connected] })
@@ -367,22 +380,9 @@ describe('tree identity and ordering', () => {
     expect(downgraded === undefined ? undefined : peekProbedNodes(downgraded)).toEqual(nodes)
   })
 
-  it('offers folder retry only to a connection that can perform it', () => {
+  it('offers manifest retry to every connected server', () => {
     expect(canRetryNodeRefresh(server(SERVER_ID, 0))).toBe(true)
-    expect(canRetryNodeRefresh({ ...server(SERVER_ID, 0), isAdmin: false })).toBe(false)
-  })
-
-  it('reorders only visible local siblings while search is active', () => {
-    expect(
-      localSiblingKeys(
-        [
-          { id: 'one', name: 'match one' },
-          { id: 'two', name: 'hidden' },
-          { id: 'three', name: 'match three' },
-        ],
-        'match',
-      ),
-    ).toEqual(['local:one', 'local:three'])
+    expect(canRetryNodeRefresh({ ...server(SERVER_ID, 0), isAdmin: false })).toBe(true)
   })
 
   it('retains manifest folders for a connected server without admin scope', async () => {
@@ -414,13 +414,14 @@ describe('tree identity and ordering', () => {
             { status: 200 },
           ),
         )
-        .mockResolvedValueOnce(new Response(null, { status: 403 })),
+        .mockResolvedValueOnce(new Response(null, { status: 403 }))
+        .mockResolvedValueOnce(manifest(info, nodes)),
     )
     const connected = await probeServer('https://public.example.com', null)
     setState({ servers: [connected] })
 
     await expect(refreshNodes(connected, vi.fn())).resolves.toEqual({ ok: true })
-    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(fetch).toHaveBeenCalledTimes(4)
   })
 
   it('renders cached folders alongside an unreachable connection warning', async () => {
@@ -431,18 +432,15 @@ describe('tree identity and ordering', () => {
       'fetch',
       vi.fn(() =>
         Promise.resolve(
-          new Response(
-            JSON.stringify([
-              {
-                id: NODE_ID,
-                parentId: null,
-                path: '/cached',
-                name: 'Cached folder',
-                createdAt: 1_750_000_000_000,
-              },
-            ]),
-            { status: 200 },
-          ),
+          manifest({ id: SERVER_ID, name: 'Example', auth: 'none' }, [
+            {
+              id: NODE_ID,
+              parentId: null,
+              path: '/cached',
+              name: 'Cached folder',
+              createdAt: 1_750_000_000_000,
+            },
+          ]),
         ),
       ),
     )

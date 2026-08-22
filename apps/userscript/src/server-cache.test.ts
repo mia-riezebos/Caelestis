@@ -20,7 +20,7 @@ describe('server cache persistence', () => {
     const loading = loadServerCache(['https://example.com'])
     opening.onblocked?.(new Event('blocked') as IDBVersionChangeEvent)
     await expect(loading).resolves.toEqual([])
-    expect(open).toHaveBeenCalledWith('caelestis', 3)
+    expect(open).toHaveBeenCalledWith('caelestis', 4)
 
     opening.onsuccess?.(new Event('success'))
     expect(database.close).toHaveBeenCalledOnce()

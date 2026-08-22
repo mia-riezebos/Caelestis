@@ -1,8 +1,8 @@
 # v1 viewing modes & render scale
 
 Type: prototype
-Status: open
-Blocked by: 13, 09
+Status: resolved
+Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/15
 
 ## Question
@@ -54,3 +54,52 @@ To decide alongside the rest of this ticket:
 - Whether "hide unowned" is a single switch or just a preset over the per-colour toggles.
 - Whether progress figures respect colour filters. They should not — hiding a colour is a display
   choice, not a scope change — but it needs saying, because the opposite is a plausible expectation.
+
+## Answer — 2026-08-08: there are no modes, and no render scale
+
+**Every pixel is a square, and the controls deform it.** A mode list turned out to be a handful of
+frozen points in that space with worse names — "Dot" is a full-radius stamp at a small size, "Corner"
+is a rotated stamp translated into a corner and clipped, and "Full" and "Square" were the same shape
+at two sizes, split only because one had a cheaper render path. So the shape picker is gone and what
+ships is the space itself:
+
+| Control | Range | Notes |
+| --- | --- | --- |
+| Size | 0.1–2 | Above 1 is *cropped* by the cell, not drawn larger — which is what makes clean corner wedges and half-cell triangles reachable at all |
+| Rounding | 0–1 | 0 is a square, 1 is a circle |
+| Offset X / Y | ±1 cell | Applied **before** rotation, so it runs along the stamp's own axes |
+| Rotation | 0–90° | 45° turns squares into diamonds |
+| Opacity | 0.05–1 | Applied at draw time, so it never forces a re-stamp |
+
+Order is translate-then-rotate, both about the cell's centre, and each stamp is clipped to its own
+cell — which is what makes partial corners possible without bleeding into the neighbour.
+
+- **Anchors dissolved into Offset X/Y.** Nine named anchors are nine points on a continuous plane.
+- **Render scale `S` does not exist.** There is no per-tile buffer, so the S=5/100MB question is
+  moot. Resolution comes from a 64px stamp mask scaled to whatever a cell measures on screen, so the
+  shape is resolution-independent in the way a vector is — the earlier design carved shapes out of a
+  3×3 pixel block, which is why a "33% stamp" was one blurred device pixel. See `13-render-path`.
+- **Raw sliders, plus presets where presets earn it.** The sliders are the whole space; the only
+  presets that survived are on the *colour* axis, where they are shortcuts for a set of switches
+  (All / Free / Premium / Owned).
+- **Two control surfaces, as `29-per-overlay-map-controls` proposed.** The panel owns the global
+  axis and the defaults; the per-overlay menu owns one overlay. Appearance later moved to its own
+  page behind a palette button rather than living in settings.
+
+### Per-colour toggles, as built
+
+All four sub-questions above are answered:
+
+- They live on their own page, not in the tree — a different axis, as suspected.
+- The grid shows **all** palette colours, not just present ones. A list that changes as templates
+  toggle is a list you cannot learn.
+- "Hide unowned" is a **preset** (`Owned`), alongside All / Free / Premium. `/me`'s
+  `extraColorsBitmap` feeds it, and it disables itself rather than lying when we could not ask.
+- A per-overlay filter is an **override** of the global set, never a union — an overlay with an
+  opinion answers to its own switches only.
+- **"Only the selected colour" is a mode, not a preset**: it follows wplace's own selection while
+  their drawer is open, writes nothing, and restores whatever was underneath when switched off. It
+  and a preset can be lit at once, because they answer different questions.
+- Progress and mismatch marking read the **switches**, not what is on screen — `claimedHiddenFor`
+  exists precisely to see past the mode. A hand-filtered colour asserts nothing; a colour hidden for
+  this minute still does. Which settles the last bullet the way it predicted.

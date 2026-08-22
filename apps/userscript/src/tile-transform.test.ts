@@ -1,4 +1,4 @@
-import { decodePng } from '@wts/shared'
+import { decodePng } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { counters } from './debug.js'
 import {

@@ -1,4 +1,4 @@
-import { millis } from '@wts/shared'
+import { millis } from '@caelestis/shared'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
@@ -62,7 +62,7 @@ describe('server and manifest routes', () => {
     await sql.insertTemplateVersion(
       template('01890f3a-6b7c-7def-8123-456789abcde3', '01890f3a-6b7c-7def-8123-456789abcde4', 1),
     )
-    await sql.setTemplatePublishedAt(published.templateId, createdAt)
+    await sql.setTemplatePublishedAt(published.templateId, createdAt, createdAt)
     await sql.insertAccessToken({
       tokenHash: await hashToken(MEMBER),
       label: 'Member',
@@ -176,5 +176,65 @@ describe('server and manifest routes', () => {
     }
     expect(admin.templates.map(({ published }) => published)).toEqual([true, false])
     expect(admin.version).not.toBe(member.version)
+  })
+
+  describe('renaming the server', () => {
+    const patch = (body: Record<string, unknown>, token = BOOTSTRAP) =>
+      app.request('/admin/server', {
+        method: 'PATCH',
+        headers: { ...bearer(token).headers, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    it('renames it for everyone, without a redeploy', async () => {
+      expect((await patch({ name: 'Caelestis' })).status).toBe(200)
+
+      const info = (await (await app.request('/server')).json()) as { name: string }
+      expect(info.name).toBe('Caelestis')
+      const manifest = (await (await app.request('/manifest', bearer(MEMBER))).json()) as {
+        server: { name: string }
+      }
+      // The manifest carries the name too, and it is where anyone would look to check a rename
+      // worked — so a rename visible on one and not the other is worse than no rename at all.
+      expect(manifest.server.name).toBe('Caelestis')
+    })
+
+    it('leaves the description alone when only the name is set', async () => {
+      await patch({ name: 'Caelestis' })
+      const info = (await (await app.request('/server')).json()) as { description?: string }
+      expect(info.description).toBe(serverOptions.serverDescription)
+    })
+
+    it('clears a description back to the deployment default when set to null', async () => {
+      await patch({ description: 'Set by an admin' })
+      expect(
+        ((await (await app.request('/server')).json()) as { description?: string }).description,
+      ).toBe('Set by an admin')
+
+      await patch({ description: null })
+
+      // Null is "undecided", not "empty": it falls back to what the deployment configured.
+      expect(
+        ((await (await app.request('/server')).json()) as { description?: string }).description,
+      ).toBe(serverOptions.serverDescription)
+    })
+
+    it('refuses a blank name, and a patch that sets nothing', async () => {
+      expect((await patch({ name: '   ' })).status).toBe(400)
+      expect((await patch({})).status).toBe(400)
+    })
+
+    it('refuses a member, and anyone without a token at all', async () => {
+      expect((await patch({ name: 'Nope' }, MEMBER)).status).toBe(403)
+      const anonymous = await app.request('/admin/server', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Nope' }),
+      })
+      expect(anonymous.status).toBe(401)
+      // And the read stays public throughout, which is what a userscript needs to decide whether
+      // it has to ask for a code.
+      expect((await app.request('/server')).status).toBe(200)
+    })
   })
 })

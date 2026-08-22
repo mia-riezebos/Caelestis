@@ -80,3 +80,37 @@ meaningless and a plain downscaled raster should take over.
 
 **Position on record: ship the raster path first.** It is proven, decoupled from their internals,
 and cannot break when they ship a frontend update. Vector as v2, once the map library is known.
+
+## Amendment — 2026-08-08: vector shipped, and culling comes from their own matrix
+
+The position above was overtaken. v1 renders in a MapLibre custom layer inside wplace's own canvas —
+see `13-render-path` for the decision and `14-v1-viewing-modes` for what replaced the mode list. The
+parameterisation this ticket settled as `{shape, size k, anchor, opacity}` is now
+`{size, radius, offsetX, offsetY, rotation, opacity}`: shape and anchor both dissolved into it.
+
+Two parts of this model changed shape:
+
+- **Culling is not a tile-index lookup any more.** It is the set of tile quads wplace drew this
+  frame, recovered from the projection matrix they uploaded. A tile nobody drew is a tile we cannot
+  and need not draw over, so the cull is exact rather than computed — and it is also the coordinate
+  reference everything else reads: where a per-overlay button goes, which canvas pixel is under the
+  cursor, where an imported image lands.
+- **The zoom threshold survives in two halves.** Below 3 device pixels per cell, shapes stop being
+  drawn and pixels render solid. Below 1:1, the shader takes 4×4 taps — wplace never mipmap
+  (`generateMipmap: 0`, measured), so the moiré at small scales is ours to fix.
+
+### Colour filtering is part of this model, not a UI detail
+
+Which colours an overlay draws has three inputs and a strict precedence:
+
+1. **The wildcard** (index 63) asserts nothing and is never drawn.
+2. **Hand-switched colours** — the global set, or an overlay's own set as a full **override** of it,
+   never a union. An overlay with an opinion answers to its own switches only.
+3. **Follow-the-selection** — a *mode*, not a filter: it shows only the colour wplace has selected,
+   lasts while their drawer is open, writes nothing, and restores what was underneath when switched
+   off. Each scope's mode beats that scope's own switches and reaches no further.
+
+The distinction between (2) and (3) is load-bearing beyond rendering. A colour switched off by hand
+is one the user has said to stop caring about, so nothing asserts it — no mismatch marker, and the
+colour picker defers to wplace there. A colour hidden by the mode has said no such thing, so both
+read straight past it. `hiddenColoursFor` answers the first question, `claimedHiddenFor` the second.

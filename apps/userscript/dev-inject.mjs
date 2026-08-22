@@ -1,17 +1,17 @@
 /**
  * Run the built userscript in Chromium without installing it in a userscript manager.
  *
- * Chromium must already be running with `--remote-debugging-port=9222`:
+ * A Chromium with the debugging port open is started automatically if one is not already running —
+ * see `chromium.mjs`. The one case it cannot fix by itself is a Chromium that is *already* running
+ * without the port, since the port can only be set at launch; pass `--relaunch` to quit and restart
+ * it, or do that by hand.
  *
- *   osascript -e 'tell application "Chromium" to quit'
- *   open -a Chromium --args --remote-debugging-port=9222
- *
- * Then:
  *   node apps/userscript/dev-inject.mjs                  # build once, inject, hold the tab open
  *   node apps/userscript/dev-inject.mjs --watch          # rebuild and reload on every source change
  *   node apps/userscript/dev-inject.mjs --url '...'      # start somewhere other than the default view
  *   node apps/userscript/dev-inject.mjs --shot out.png   # screenshot after settling, then exit
  *   node apps/userscript/dev-inject.mjs --verbose        # include wplace's own console output
+ *   node apps/userscript/dev-inject.mjs --relaunch       # restart a Chromium that lacks the port
  *
  * What this is and is not: the bundle is installed with
  * `Page.addScriptToEvaluateOnNewDocument`, which runs in the page's main world before any page
@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process'
 import { readFileSync, watch, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ensureChromium } from './chromium.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const BUNDLE = join(here, 'dist/wplace-template-server.user.js')
@@ -34,11 +35,24 @@ const flag = (name, fallback) => {
   const index = argv.indexOf(name)
   return index === -1 ? fallback : (argv[index + 1] ?? fallback)
 }
+
+/**
+ * Accept the mangled flag pnpm produces.
+ *
+ * `pnpm inject --watch` arrives here as `-atch`: pnpm claims the `-w` for its own `--workspace-root`
+ * and forwards the remainder. That injected once and then sat there looking like a watcher which had
+ * stopped noticing saves. Taking it as written means the obvious command works.
+ */
+if (argv.includes('-atch')) argv[argv.indexOf('-atch')] = '--watch'
 const watching = argv.includes('--watch')
 /** Pass --verbose to see wplace's own console output alongside ours. */
 const verbose = argv.includes('--verbose')
+/** Quit an already-running Chromium that has no debugging port, rather than refusing to continue. */
+const relaunch = argv.includes('--relaunch')
 const shotPath = flag('--shot', null)
-const url = flag('--url', 'https://wplace.live/?lat=52.37&lng=4.90&zoom=11')
+// No coordinates by default. wplace restores its own last position on load, so pinning a lat/lng
+// only overrode it and dropped every run in the same unrelated place.
+const url = flag('--url', 'https://wplace.live/')
 const settleMs = Number(flag('--settle', shotPath ? 12_000 : 4_000))
 
 const build = () =>
@@ -75,11 +89,11 @@ class Tab {
   #pending = new Map()
 
   static async open() {
+    // Start a debuggable Chromium if there is not one already, so this needs no setup by hand.
+    await ensureChromium({ relaunch })
     const res = await fetch(`${CDP}/json/new?about:blank`, { method: 'PUT' })
     if (!res.ok) {
-      throw new Error(
-        `could not open a tab (${res.status}). Is Chromium running with --remote-debugging-port=9222?`,
-      )
+      throw new Error(`could not open a tab (${res.status})`)
     }
     const target = await res.json()
     const tab = new Tab()
@@ -100,9 +114,9 @@ class Tab {
       }
       if (message.method === 'Runtime.consoleAPICalled') {
         const text = message.params.args.map(renderArg).join(' ')
-        // Match the prefix, not the exact tag. Every debug line is `[wts:fetch]`, `[wts:texture]`
-        // and so on, and filtering on `[wts]` silently dropped every one of them.
-        if (text.includes('[wts') || verbose) {
+        // Match the prefix, not the exact tag. Every debug line is `[caelestis:fetch]`, `[caelestis:texture]`
+        // and so on, and filtering on `[caelestis]` silently dropped every one of them.
+        if (text.includes('[caelestis') || verbose) {
           const kind = message.params.type
           const mark = kind === 'warning' ? '  page!' : kind === 'error' ? '  page*' : '  page>'
           console.log(`${mark} ${text}`)

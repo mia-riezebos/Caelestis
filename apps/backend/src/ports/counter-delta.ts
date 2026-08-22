@@ -1,4 +1,4 @@
-import { type Seconds, seconds } from '@wts/shared'
+import { type Seconds, seconds } from '@caelestis/shared'
 import {
   type CounterDelta,
   EXPIRES_AFTER_SECONDS,

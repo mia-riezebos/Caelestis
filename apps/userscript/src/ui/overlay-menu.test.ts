@@ -29,6 +29,9 @@ const harness = vi.hoisted(() => ({
   cssPixelsPerCanvasPixel: vi.fn(() => ({ x: 1, y: 1 })),
   setAppearance: vi.fn(async (_id: string, _appearance: Appearance) => true),
   setLocalVisible: vi.fn(async (_id: string, _visible: boolean) => true),
+  setOwnsGroup: vi.fn(async () => true),
+  ownsGroup: vi.fn(() => true),
+  appearanceOf: vi.fn((template: { appearance: Appearance }) => template.appearance),
 }))
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
@@ -36,14 +39,24 @@ vi.mock('../main.js', () => ({
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
   screenPointFor: harness.screenPointFor,
 }))
-vi.mock('../state.js', () => ({ removeTreeStateKeys: harness.removeTreeStateKeys }))
+vi.mock('../state.js', () => ({
+  getState: () => ({
+    hiddenColours: [],
+    onlySelectedColour: false,
+  }),
+  removeTreeStateKeys: harness.removeTreeStateKeys,
+  setState: vi.fn(),
+}))
 vi.mock('../templates/local-store.js', () => ({
+  appearanceOf: harness.appearanceOf,
   isDeletingLocal: harness.isDeletingLocal,
   localTemplates: harness.localTemplates,
+  ownsGroup: harness.ownsGroup,
   previewOriginFor: harness.previewOriginFor,
   removeLocalTemplate: harness.removeLocalTemplate,
   setAppearance: harness.setAppearance,
   setLocalVisible: harness.setLocalVisible,
+  setOwnsGroup: harness.setOwnsGroup,
 }))
 vi.mock('../templates/move.js', () => ({
   abort: harness.abortMove,
@@ -87,19 +100,19 @@ const template = (overrides: Overrides = {}) => ({
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
 const gear = (id: string): HTMLButtonElement => {
-  const button = document.getElementById(`wts-overlay-button-${id}`)
+  const button = document.getElementById(`caelestis-overlay-button-${id}`)
   if (button === null) throw new Error(`no gear button for ${id}`)
   return button as HTMLButtonElement
 }
 
 const menu = (): HTMLElement => {
-  const el = document.getElementById('wts-overlay-menu')
+  const el = document.getElementById('caelestis-overlay-menu')
   if (el === null) throw new Error('no overlay menu')
   return el
 }
 
 const byKey = (key: string): HTMLElement => {
-  const el = menu().querySelector(`[data-wts-control="${key}"]`)
+  const el = menu().querySelector(`[data-caelestis-control="${key}"]`)
   if (el === null) throw new Error(`no control keyed ${key}`)
   return el as HTMLElement
 }
@@ -119,7 +132,11 @@ const drag = (input: HTMLInputElement, to: string): void => {
   input.dispatchEvent(new Event('change'))
 }
 
-const errorText = (): string | null => menu().querySelector('[data-wts-error]')?.textContent ?? null
+/** Choose a corner-rounding value through #65's deformable-pixel control. */
+const setRadius = (to = '1'): void => drag(byKey('radius') as HTMLInputElement, to)
+
+const errorText = (): string | null =>
+  menu().querySelector('[data-caelestis-error]')?.textContent ?? null
 
 let mapCanvas: HTMLCanvasElement
 let render: (rerender: () => void, canvas: HTMLCanvasElement) => void
@@ -144,8 +161,8 @@ afterEach(() => {
   Element.prototype.getBoundingClientRect = measuresAsZero
   // Close anything still open *before* discarding the module: an open menu holds a window-level
   // Escape listener, and a discarded instance's listener keeps firing against stale state.
-  const open = document.getElementById('wts-overlay-menu')
-  const close = open?.querySelector('[data-wts-control="close"]')
+  const open = document.getElementById('caelestis-overlay-menu')
+  const close = open?.querySelector('[data-caelestis-control="close"]')
   if (close instanceof HTMLElement) close.click()
   vi.resetModules()
   vi.clearAllMocks()
@@ -183,14 +200,14 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    byText(menu(), 'Dot').click()
+    setRadius()
     rerender()
     byKey('swatch:1').click()
     release()
     await settle()
 
     // The second write must carry the first one's shape, not put it back to `full`.
-    expect(appearanceWritten(1)).toMatchObject({ shape: 'circle', hiddenColours: [1] })
+    expect(appearanceWritten(1)).toMatchObject({ radius: 1, hiddenColours: [1] })
   })
 
   it('composes a queued edit against the store the earlier write left behind', async () => {
@@ -215,7 +232,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    byText(menu(), 'Dot').click()
+    setRadius()
     byKey('swatch:1').click()
     release()
     await settle()
@@ -264,19 +281,6 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     expect(harness.setLocalVisible).toHaveBeenNthCalledWith(2, 'a', true)
   })
 
-  it('reveals size and anchor once a sub-pixel shape is chosen', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    expect(menu().querySelector('[aria-label="Anchor"]')).toBeNull()
-
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
-    rerender()
-
-    expect(menu().querySelector('[aria-label="Anchor"]')).not.toBeNull()
-  })
-
   it('rebuilds for the template whose gear was clicked', () => {
     harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
     rerender()
@@ -317,6 +321,23 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
 
     // The element is not replaced under the pointer; the value it holds is in `drafts` either way.
     expect(byKey('opacity')).toBe(before)
+  })
+
+  it('keeps the Mismatches Size track under the pointer on input', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const before = menu().querySelector<HTMLInputElement>(
+      'input[type="range"]:not([data-caelestis-control])',
+    )
+    if (before === null) throw new Error('no Mismatches Size track')
+
+    before.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    before.value = '17'
+    before.dispatchEvent(new Event('input'))
+
+    expect(menu().querySelector('input[type="range"]:not([data-caelestis-control])')).toBe(before)
   })
 
   it('moves an unfocused slider to a value changed elsewhere', () => {
@@ -362,12 +383,12 @@ describe('controls are reconciled against the templates that exist', () => {
     rerender()
     gear('a').click()
     rerender()
-    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
 
     harness.localTemplates.mockReturnValue([])
     rerender()
 
-    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
   })
 
   it('strips every control when the map host is gone', () => {
@@ -379,8 +400,8 @@ describe('controls are reconciled against the templates that exist', () => {
 
     rerender()
 
-    expect(document.getElementById('wts-overlay-button-a')).toBeNull()
-    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
   })
 
   it('gives no control to a template that is entirely off screen', () => {
@@ -393,8 +414,8 @@ describe('controls are reconciled against the templates that exist', () => {
 
     rerender()
 
-    expect(document.getElementById('wts-overlay-button-a')).not.toBeNull()
-    expect(document.getElementById('wts-overlay-button-far')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-a')).not.toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-far')).toBeNull()
   })
 
   it('drops the ordering key when the delete goes through', async () => {
@@ -421,7 +442,7 @@ describe('refused writes are reported rather than swallowed', () => {
     byKey('confirm-delete').click()
     await settle()
 
-    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
     expect(errorText()).toContain('Could not delete')
     expect(harness.removeTreeStateKeys).not.toHaveBeenCalled()
   })
@@ -436,7 +457,7 @@ describe('refused writes are reported rather than swallowed', () => {
     byKey('move').click()
 
     expect(harness.beginMove).not.toHaveBeenCalled()
-    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
     expect(errorText()).toContain('placement already in progress')
   })
 })
@@ -452,7 +473,9 @@ describe('a rebuild does not take the interaction with it', () => {
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('swatch:5')
+    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe(
+      'swatch:5',
+    )
   })
 
   it('moves focus into the menu when it opens', () => {
@@ -462,22 +485,11 @@ describe('a rebuild does not take the interaction with it', () => {
     gear('a').click()
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('hide')
+    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe('hide')
   })
 })
 
-describe('the exclusive choices behave like the radiogroups they announce', () => {
-  it('is a single tab stop with the selected option on it', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    const shapes = [...menu().querySelectorAll('[role="radio"]')] as HTMLElement[]
-    expect(shapes.filter((cell) => cell.tabIndex === 0)).toHaveLength(1)
-    expect(byKey('Shape:full').tabIndex).toBe(0)
-  })
-
+describe('the menu controls announce their state', () => {
   it('does not contradict its own label on the hide toggle', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -538,7 +550,7 @@ describe('placement and geometry', () => {
    */
   const menuMeasures = (content: number, width = 240): void => {
     Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
-      const isMenu = this instanceof HTMLElement && this.dataset.wtsSignature !== undefined
+      const isMenu = this instanceof HTMLElement && this.dataset.caelestisSignature !== undefined
       // Honours whatever cap the module has just written, as a browser does. A stub returning a
       // fixed height makes measured and rendered identical by construction, which is the one thing
       // the placement arithmetic must not assume.
@@ -651,8 +663,8 @@ describe('deferred work stays tied to the template that asked for it', () => {
     release()
     await settle()
 
-    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
-    expect(menu().dataset.wtsTemplate).toBe('b')
+    expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
+    expect(menu().dataset.caelestisTemplate).toBe('b')
   })
 
   it('keeps a carried delete question naming the template as it is now', () => {
@@ -665,7 +677,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect(menu().querySelector('[data-wts-confirm]')?.textContent).toContain('renamed.png')
+    expect(menu().querySelector('[data-caelestis-confirm]')?.textContent).toContain('renamed.png')
   })
 
   it('lets the latest visibility request own the intent through an ABA sequence', async () => {
@@ -701,14 +713,14 @@ describe('deferred work stays tied to the template that asked for it', () => {
     gear('a').click()
     rerender()
 
-    byText(menu(), 'Dot').click()
+    setRadius()
     byKey('swatch:1').click()
     await settle()
 
     // The colour landed and the shape did not. One shared `appearance` bucket would let the
     // colour's success clear the shape's banner, and the overlay ends up Full with nothing said.
-    expect(errorText()).toContain('Could not change shape')
-    expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
+    expect(errorText()).toContain('Could not change rounding')
+    expect((byKey('radius') as HTMLInputElement).value).toBe('0')
   })
 
   it('clears a refused write once the same property succeeds', async () => {
@@ -719,10 +731,10 @@ describe('deferred work stays tied to the template that asked for it', () => {
     gear('a').click()
     rerender()
 
-    byText(menu(), 'Dot').click()
+    setRadius()
     await settle()
-    expect(errorText()).toContain('Could not change shape')
-    byText(menu(), 'Corner').click()
+    expect(errorText()).toContain('Could not change rounding')
+    setRadius('0.5')
     await settle()
 
     expect(errorText()).toBeNull()
@@ -760,7 +772,7 @@ describe('focus goes somewhere deliberate', () => {
     byText(menu(), 'Cancel').click()
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('delete')
+    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe('delete')
   })
 
   it('announces the destructive question rather than a bare Delete', () => {
@@ -771,7 +783,7 @@ describe('focus goes somewhere deliberate', () => {
 
     byKey('delete').click()
 
-    const box = menu().querySelector('[data-wts-confirm]')
+    const box = menu().querySelector('[data-caelestis-confirm]')
     expect(box?.getAttribute('role')).toBe('alertdialog')
     expect(box?.getAttribute('aria-label')).toContain('This cannot be undone')
   })
@@ -794,7 +806,7 @@ describe('an outcome is reported whatever else has happened since', () => {
 
     byKey('hide').click()
     // Anything at all, while the hide is still in flight.
-    byText(menu(), 'Dot').click()
+    setRadius()
     release()
     await settle()
 
@@ -810,12 +822,12 @@ describe('an outcome is reported whatever else has happened since', () => {
     gear('a').click()
     rerender()
 
-    byText(menu(), 'Dot').click()
+    setRadius()
     await settle()
 
-    expect(errorText()).toContain('Could not change shape')
+    expect(errorText()).toContain('Could not change rounding')
     // Intent released: the menu must not keep asserting a shape that was never saved.
-    expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
+    expect((byKey('radius') as HTMLInputElement).value).toBe('0')
   })
 
   it('reports a refusal that arrived while the template was off screen', async () => {
@@ -925,19 +937,17 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     rerender()
 
     const opacity = byKey('opacity') as HTMLInputElement
-    expect(opacity.min).toBe('0')
-    expect(opacity.value).toBe('0')
+    expect(opacity.min).toBe('0.05')
+    expect(opacity.value).toBe('0.05')
   })
 
   it('represents the default size exactly rather than snapping off it', () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
 
-    // A stepped grid of 0.05 from 0.1 excludes 1/3, so the browser snaps the thumb to 0.35 while
-    // the readout still says 33% — and refreshSliders then rewrites it on every frame.
-    expect(Number((byKey('size') as HTMLInputElement).value)).toBe(1 / 3)
+    expect(Number((byKey('size') as HTMLInputElement).value)).toBe(1)
   })
 })
 
@@ -951,7 +961,7 @@ describe('the menu is ours and has a keyboard exit', () => {
     byKey('hide').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     rerender()
 
-    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
     expect(document.activeElement).toBe(gear('a'))
   })
 
@@ -1010,21 +1020,6 @@ describe('a delete under way owns the template', () => {
 })
 
 describe('interaction outranks a repaint', () => {
-  it('carries the tab stop with arrow-key focus', () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-
-    // Leaving the stop on the selected option makes Shift+Tab land back inside the group.
-    expect((byKey('Shape:square') as HTMLButtonElement).tabIndex).toBe(0)
-    expect((byKey('Shape:full') as HTMLButtonElement).tabIndex).toBe(-1)
-  })
-
   it('does not arm a focus jump when the question is already open', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1040,7 +1035,7 @@ describe('interaction outranks a repaint', () => {
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).not.toBe(
+    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).not.toBe(
       'confirm-delete',
     )
   })
@@ -1084,7 +1079,9 @@ describe('failure messages are resolved when they are shown', () => {
     byKey('move').click()
     rerender()
 
-    const messages = [...menu().querySelectorAll('[data-wts-error]')].map((el) => el.textContent)
+    const messages = [...menu().querySelectorAll('[data-caelestis-error]')].map(
+      (el) => el.textContent,
+    )
     expect(messages).toHaveLength(2)
     expect(messages.join(' ')).toContain('Could not change visibility')
     expect(messages.join(' ')).toContain('placement already in progress')
@@ -1099,13 +1096,13 @@ describe('failure messages are resolved when they are shown', () => {
 
     byKey('hide').click()
     await settle()
-    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+    expect(menu().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
 
     byKey('swatch:1').click()
     await settle()
 
     // A rebuild reconstructs the node; a fresh role="alert" would read the old failure out again.
-    expect(menu().querySelector('[data-wts-error]')?.hasAttribute('role')).toBe(false)
+    expect(menu().querySelector('[data-caelestis-error]')?.hasAttribute('role')).toBe(false)
   })
 })
 
@@ -1173,7 +1170,7 @@ describe('nothing is stranded by a held slider or a running delete', () => {
 
     // A `disabled` button cannot hold focus, so confirming from the keyboard would drop it to the
     // document at the exact moment a destructive action is running.
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe(
+    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe(
       'confirm-delete',
     )
     expect(byKey('confirm-delete').getAttribute('aria-disabled')).toBe('true')
@@ -1181,7 +1178,7 @@ describe('nothing is stranded by a held slider or a running delete', () => {
 
   it('stops offering the appearance controls while the delete runs', () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
@@ -1191,7 +1188,6 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     rerender()
 
     // The store refuses these anyway, leaving a meaningless banner beside "Deleting…".
-    expect(byKey('Shape:full').getAttribute('aria-disabled')).toBe('true')
     // `readonly` does nothing to a range in any browser, so the lock has to refuse the gesture.
     const opacity = byKey('opacity') as HTMLInputElement
     expect(opacity.getAttribute('aria-disabled')).toBe('true')
@@ -1216,7 +1212,7 @@ describe('the delete question is retracted by the gestures that dismiss it', () 
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 })
 
@@ -1259,31 +1255,33 @@ describe('an edit carries the change, not a resolved snapshot', () => {
     gear('a').click()
     rerender()
 
-    byText(menu(), 'Dot').click()
+    setRadius()
     byKey('hide').click()
     await settle()
 
     // One shared intent, released only by its latest owner, keeps asserting the refused shape for
     // as long as the visibility write is outstanding — and that one never resolves.
-    expect(byKey('Shape:full').getAttribute('aria-checked')).toBe('true')
-    expect(errorText()).toContain('Could not change shape')
+    expect((byKey('radius') as HTMLInputElement).value).toBe('0')
+    expect(errorText()).toContain('Could not change rounding')
   })
 
   it('names the property a refusal is about', async () => {
     harness.setAppearance.mockResolvedValue(false)
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
 
-    byText(menu(), 'Full').click()
+    setRadius('0')
     await settle()
     const size = byKey('size') as HTMLInputElement
     drag(size, '0.5')
     await settle()
 
-    const messages = [...menu().querySelectorAll('[data-wts-error]')].map((el) => el.textContent)
-    expect(messages.join(' ')).toContain('shape')
+    const messages = [...menu().querySelectorAll('[data-caelestis-error]')].map(
+      (el) => el.textContent,
+    )
+    expect(messages.join(' ')).toContain('rounding')
     expect(messages.join(' ')).toContain('size')
   })
 })
@@ -1337,7 +1335,7 @@ describe('a delete owns the template whichever surface started it', () => {
     rerender()
 
     // Without it the controls are all disabled with nothing on screen explaining why.
-    expect(menu().querySelector('[data-wts-confirm]')).not.toBeNull()
+    expect(menu().querySelector('[data-caelestis-confirm]')).not.toBeNull()
   })
 
   it('opens onto a control that can take focus while a delete runs', () => {
@@ -1349,7 +1347,7 @@ describe('a delete owns the template whichever surface started it', () => {
     rerender()
 
     // Hide is disabled during a delete, and a disabled control cannot hold focus.
-    expect((document.activeElement as HTMLElement | null)?.dataset.wtsControl).toBe('close')
+    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe('close')
   })
 
   it('forgets a template deleted while the map was detached', () => {
@@ -1415,7 +1413,7 @@ describe('repeating an action is never silently a no-op', () => {
   })
 
   it('writes once for a held arrow key, not once per repeat', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
@@ -1487,7 +1485,7 @@ describe('a held slider holds its own menu, not the next one', () => {
 
     // Two touches: one holding A's thumb, one tapping B's gear. Keeping A's menu would park A's
     // handlers beside B — the wrong-template failure this relay opened with.
-    expect(menu().dataset.wtsTemplate).toBe('b')
+    expect(menu().dataset.caelestisTemplate).toBe('b')
     expect(menu().textContent).toContain('beta.png')
   })
 
@@ -1509,9 +1507,71 @@ describe('a held slider holds its own menu, not the next one', () => {
     rerender()
     await settle()
 
-    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
     // And the value the user had reached is not simply thrown away with the node.
     expect(appearanceWritten(0).opacity).toBe(0.62)
+  })
+
+  it('commits a marker range when the menu is torn down mid-drag', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const markerSize = menu().querySelector<HTMLInputElement>(
+      'input[type="range"]:not([data-caelestis-control])',
+    )
+    if (markerSize === null) throw new Error('no Mismatches Size track')
+
+    markerSize.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    markerSize.value = '17'
+    markerSize.dispatchEvent(new Event('input'))
+    const host = mapCanvas.parentElement
+    mapCanvas.remove()
+    rerender()
+    host?.appendChild(mapCanvas)
+    rerender()
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).markerSize).toBe(17)
+  })
+
+  it('commits one colour for a picker drag rather than every movement', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { markMismatch: true } })])
+    rerender()
+    gear('a').click()
+    rerender()
+    const swatch = menu().querySelector<HTMLButtonElement>('button[aria-label^="Marker colour:"]')
+    if (swatch === null) throw new Error('no marker colour swatch')
+    swatch.click()
+    const square = document.querySelector<HTMLElement>('.caelestis-cp-sv')
+    if (square === null) throw new Error('no colour picker square')
+    square.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }) as DOMRect
+    let captured: number | null = null
+    square.setPointerCapture = (pointerId) => {
+      captured = pointerId
+    }
+    square.hasPointerCapture = (pointerId) => captured === pointerId
+
+    square.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 7, clientX: 10, clientY: 90 }),
+    )
+    square.dispatchEvent(
+      new PointerEvent('pointermove', { pointerId: 7, clientX: 50, clientY: 50 }),
+    )
+    rerender()
+    square.dispatchEvent(
+      new PointerEvent('pointermove', { pointerId: 7, clientX: 80, clientY: 20 }),
+    )
+    await settle()
+
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+    square.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7 }))
+    await settle()
+
+    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
+    expect(appearanceWritten(0).markerColour).toBe('#cc2929')
   })
 })
 
@@ -1522,13 +1582,13 @@ describe('a refusal retires only when its own subject is satisfied', () => {
     rerender()
     gear('a').click()
     rerender()
-    byText(menu(), 'Dot').click()
+    setRadius()
     await settle()
-    expect(errorText()).toContain('Could not change shape')
+    expect(errorText()).toContain('Could not change rounding')
 
     // Another tab sets the very shape this refusal was about. Revision is irrelevant — a pending
     // image never persists one at all.
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
 
     expect(errorText()).toBeNull()
@@ -1593,7 +1653,7 @@ describe('the menu belongs to us, and to one template at a time', () => {
 
     // ✕ and Escape both retract it; walking away via another gear must not be the one that leaves
     // a live destructive button waiting.
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 
   it('does not flip a swatch back while its own write is landing', async () => {
@@ -1623,7 +1683,7 @@ describe('a condemned template is condemned everywhere', () => {
     rerender()
     gear('a').click()
     rerender()
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
 
     // A delete started from the panel, with the record still present for its IndexedDB round trip.
     harness.isDeletingLocal.mockReturnValue(true)
@@ -1649,14 +1709,14 @@ describe('a condemned template is condemned everywhere', () => {
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 })
 
 describe('a locked slider arms nothing', () => {
   it('does not block rebuilds after a refused press', () => {
     harness.isDeletingLocal.mockReturnValue(true)
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
@@ -1667,7 +1727,7 @@ describe('a locked slider arms nothing', () => {
       new PointerEvent('pointerdown', { pointerId: 1, cancelable: true }),
     )
     harness.localTemplates.mockReturnValue([
-      template({ name: 'renamed.png', appearance: { shape: 'circle' } }),
+      template({ name: 'renamed.png', appearance: { radius: 1 } }),
     ])
     rerender()
 
@@ -1767,7 +1827,7 @@ describe('refusals track the world, not our own render schedule', () => {
     rerender()
     gear('a').click()
     rerender()
-    byText(menu(), 'Dot').click()
+    setRadius()
     await settle()
     byKey('close').click()
     // Closing puts focus on the gear, which keeps it alive on its own; this is about the refusal.
@@ -1775,21 +1835,21 @@ describe('refusals track the world, not our own render schedule', () => {
     // Hidden, and kept reachable only by the refusal.
     harness.localTemplates.mockReturnValue([template({ visible: false })])
     rerender()
-    expect(document.getElementById('wts-overlay-button-a')).not.toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-a')).not.toBeNull()
 
     // Another surface sets the very shape that was refused, on this render.
     harness.localTemplates.mockReturnValue([
-      template({ visible: false, appearance: { shape: 'circle' } }),
+      template({ visible: false, appearance: { radius: 1 } }),
     ])
     rerender()
 
-    expect(document.getElementById('wts-overlay-button-a')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
   })
 })
 
 describe('more than one thing can be happening at once', () => {
   it('does not take a second pointer’s slider away when the first releases', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
@@ -1814,7 +1874,7 @@ describe('more than one thing can be happening at once', () => {
   })
 
   it('writes an interrupted pair of drafts once each', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
@@ -1866,13 +1926,13 @@ describe('more than one thing can be happening at once', () => {
 
     byKey('hide').click()
     await settle()
-    const first = menu().querySelector('[data-wts-error]')
+    const first = menu().querySelector('[data-caelestis-error]')
     byKey('hide').click()
     await settle()
 
     // Only Move used to get a second announcement; a deliberate retry of anything deserves one.
-    expect(menu().querySelector('[data-wts-error]')).not.toBe(first)
-    expect(menu().querySelector('[data-wts-error]')?.getAttribute('role')).toBe('alert')
+    expect(menu().querySelector('[data-caelestis-error]')).not.toBe(first)
+    expect(menu().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
   })
 })
 
@@ -1951,14 +2011,14 @@ describe('identity cannot be forged by data or by the host', () => {
     rerender()
     gear('a|b').click()
     rerender()
-    expect(menu().dataset.wtsTemplate).toBe('a|b')
+    expect(menu().dataset.caelestisTemplate).toBe('a|b')
 
     gear('a').click()
     rerender()
 
     // A joined signature makes these one string, so the old menu is reused — with its Delete still
     // pointed at the first template.
-    expect(menu().dataset.wtsTemplate).toBe('a')
+    expect(menu().dataset.caelestisTemplate).toBe('a')
   })
 
   it('ends a gesture whose control the host removed on its own', async () => {
@@ -1999,7 +2059,7 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
     await settle()
 
     // Committing synchronously on blur rebuilds the menu and removes the button mid-click.
-    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
     expect(appearanceWritten(0).opacity).toBe(0.6)
   })
 
@@ -2014,28 +2074,7 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     rerender()
 
-    expect(document.getElementById('wts-overlay-menu')).toBeNull()
-  })
-
-  it('selects with the arrow keys, and writes once when the key comes up', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    // The role announces selection-follows-focus, so it has to actually select.
-    expect(byKey('Shape:square').getAttribute('aria-checked')).toBe('true')
-    expect(harness.setAppearance).not.toHaveBeenCalled()
-
-    byKey('Shape:square').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
-    await settle()
-
-    // ...but `shape` is the stamped-tile cache key, so the durable write waits for the release.
-    expect(harness.setAppearance).toHaveBeenCalledTimes(1)
-    expect(appearanceWritten(0).shape).toBe('square')
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
   })
 })
 
@@ -2103,8 +2142,8 @@ describe('an action waits for the state it depends on', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     rerender()
 
-    expect(document.getElementById('wts-overlay-menu')).not.toBeNull()
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
+    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 
   it('still exits when another page listener prevented the Escape', () => {
@@ -2119,7 +2158,7 @@ describe('an action waits for the state it depends on', () => {
     window.dispatchEvent(event)
     rerender()
 
-    expect(document.getElementById('wts-overlay-menu')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
   })
 })
 
@@ -2158,7 +2197,7 @@ describe('showing an overlay in order to move it', () => {
     release()
     await settle()
 
-    expect(menu().dataset.wtsTemplate).toBe('b')
+    expect(menu().dataset.caelestisTemplate).toBe('b')
   })
 
   it('ignores a second Move while the first is still showing', async () => {
@@ -2221,30 +2260,6 @@ describe('showing an overlay in order to move it', () => {
   })
 })
 
-describe('an arrow-key selection is state, like a drag', () => {
-  it('survives a rebuild that arrives before the key comes up', async () => {
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').focus()
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    // A rename rebuilds the menu; removing a focused element fires no blur, so the selection would
-    // simply vanish if it lived in the group's closure.
-    harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
-    rerender()
-
-    expect(byKey('Shape:square').getAttribute('aria-checked')).toBe('true')
-    byKey('Shape:square').dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
-    await settle()
-
-    expect(appearanceWritten(0).shape).toBe('square')
-  })
-})
-
 describe('a Move that lands late does not barge in', () => {
   it('does not start placing behind another template’s menu', async () => {
     let release = (): void => {}
@@ -2282,7 +2297,7 @@ describe('a Move that lands late does not barge in', () => {
     // `move.ts` treats dialog controls as page controls, so a placement behind B's open menu would
     // have its own Enter and Escape ignored.
     expect(harness.beginMove).not.toHaveBeenCalled()
-    expect(menu().dataset.wtsTemplate).toBe('b')
+    expect(menu().dataset.caelestisTemplate).toBe('b')
   })
 })
 
@@ -2329,28 +2344,8 @@ describe('a placement only survives while its overlay does', () => {
 })
 
 describe('gestures settle when their control stops being reachable', () => {
-  it('commits a radio choice when the owner changes with no blur', async () => {
-    harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
-    rerender()
-    gear('a').click()
-    rerender()
-
-    byKey('Shape:full').dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-    )
-    // A touch browser need not focus a button, so switching menus can produce no blur at all.
-    gear('b').click()
-    rerender()
-    await settle()
-
-    expect(harness.setAppearance).toHaveBeenCalledWith(
-      'a',
-      expect.objectContaining({ shape: 'square' }),
-    )
-  })
-
   it('does not drop another slider’s fallback when one is detached', async () => {
-    harness.localTemplates.mockReturnValue([template({ appearance: { shape: 'circle' } })])
+    harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()

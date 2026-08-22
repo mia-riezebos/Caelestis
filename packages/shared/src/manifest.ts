@@ -52,6 +52,18 @@ export interface Template {
   readonly chunks: readonly Chunk[]
   readonly published: boolean
   readonly createdAt: Millis
+  /**
+   * When anything about this template last changed — pixels, name, parent, or published state.
+   *
+   * `version` already answers "are my chunks current", because a new version is a new id and the
+   * chunk list moves with it. It cannot answer "has anything changed", since renaming a template or
+   * moving it to another node leaves every chunk exactly where it was. A client holding a local copy
+   * needs both: one to decide whether to re-download pixels, and one to decide whether to touch the
+   * copy at all.
+   *
+   * Equal to `createdAt` until the first edit.
+   */
+  readonly updatedAt: Millis
 }
 
 /** Global canvas pixel coordinates, inclusive of `min`, exclusive of `max`. */

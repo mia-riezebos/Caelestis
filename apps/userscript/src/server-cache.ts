@@ -1,5 +1,6 @@
 import { warn } from './debug.js'
 import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
+import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 
 /**
  * What a server told us, kept between sessions.
@@ -15,7 +16,7 @@ import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
 const DB_NAME = 'caelestis'
 const STORE = 'server-cache'
 // Shared with local template persistence. Opening an older version after v3 exists is a VersionError.
-const VERSION = 3
+const VERSION = 4
 
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
@@ -27,19 +28,73 @@ export interface CachedServer {
   readonly fetchedAt: number
   /** ETag from the manifest, so a refetch can be a 304. */
   readonly etag?: string
+  readonly templates?: readonly ServerTemplate[]
+}
+
+export interface ServerTemplate {
+  readonly id: string
+  readonly nodeId: string
+  readonly name: string
+  readonly version: string
+  readonly published: boolean
+  readonly updatedAt: number
+  readonly bbox: {
+    readonly minX: number
+    readonly minY: number
+    readonly maxX: number
+    readonly maxY: number
+  }
+  readonly chunks: readonly { readonly tile: string; readonly hash: string }[]
+}
+
+const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefined => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_TREE_NODES) return undefined
+  const templates: ServerTemplate[] = []
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null) return undefined
+    const candidate = raw as Partial<ServerTemplate>
+    const bbox = candidate.bbox
+    if (
+      typeof candidate.id !== 'string' ||
+      typeof candidate.nodeId !== 'string' ||
+      typeof candidate.name !== 'string' ||
+      typeof candidate.version !== 'string' ||
+      typeof candidate.published !== 'boolean' ||
+      !Number.isFinite(candidate.updatedAt) ||
+      typeof bbox !== 'object' ||
+      bbox === null ||
+      ![bbox.minX, bbox.minY, bbox.maxX, bbox.maxY].every(Number.isSafeInteger) ||
+      !Array.isArray(candidate.chunks) ||
+      candidate.chunks.some(
+        (chunk) =>
+          typeof chunk !== 'object' ||
+          chunk === null ||
+          typeof chunk.tile !== 'string' ||
+          typeof chunk.hash !== 'string',
+      )
+    )
+      return undefined
+    templates.push(candidate as ServerTemplate)
+  }
+  return templates
 }
 
 const open = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
     let abandoned = false
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result
       // The local-template store lives in the same database and must survive this upgrade.
       if (!db.objectStoreNames.contains('local-templates')) {
         db.createObjectStore('local-templates', { keyPath: 'id' })
       }
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'url' })
+      if (event.oldVersion < 4) {
+        const templates = request.transaction?.objectStore('local-templates')
+        if (templates !== undefined) migrateTemplateStorePalette(templates)
+      }
     }
     request.onblocked = () => {
       abandoned = true
@@ -105,6 +160,7 @@ const cachedServerFrom = (
   // Check the cheap aggregate boundary before walking and copying a large untrusted node array.
   if (!Array.isArray(candidate.nodes) || candidate.nodes.length > remainingNodes) return null
   const nodes = validateTreeNodes(candidate.nodes)
+  const templates = cachedTemplatesFrom(candidate.templates)
   if (
     candidate.url !== expectedUrl ||
     typeof candidate.serverId !== 'string' ||
@@ -121,6 +177,7 @@ const cachedServerFrom = (
     season: Number(candidate.season),
     nodes,
     fetchedAt: Number(candidate.fetchedAt),
+    ...(templates === undefined ? {} : { templates }),
     ...(typeof candidate.etag === 'string' ? { etag: candidate.etag } : {}),
   }
 }

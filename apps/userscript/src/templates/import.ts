@@ -7,7 +7,7 @@ import {
   uuidV7,
   WORLD_PIXELS,
   WORLD_TILES,
-} from '@wts/shared'
+} from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 
 /**

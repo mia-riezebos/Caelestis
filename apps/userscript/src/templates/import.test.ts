@@ -1,4 +1,4 @@
-import { TRANSPARENT_INDEX } from '@wts/shared'
+import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const rgba = (...pixels: Array<[number, number, number, number]>): Uint8ClampedArray =>

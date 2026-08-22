@@ -10,11 +10,20 @@ import {
   type TileKey,
   tileKey,
   uuidV7,
-} from '@wts/shared'
+  WORLD_PIXELS,
+} from '@caelestis/shared'
 import type { Ports, TemplateVersionRecord } from '../ports/index.js'
-import { NodeNotFoundError } from '../ports/index.js'
+import { NodeNotFoundError, TemplateIdentityError, TemplateNotFoundError } from '../ports/index.js'
 
 export interface StoreTemplateInput {
+  /**
+   * The template these pixels belong to, or absent to mint a new one.
+   *
+   * Supplying it is what makes this a *new version* of something that already exists: the chunks are
+   * re-sliced and re-uploaded, a fresh version id becomes current, and the template's own row keeps
+   * its name, parent, published state and creation date.
+   */
+  readonly templateId?: string
   readonly nodeId: string
   readonly name: string
   readonly createdWithToken: string
@@ -23,6 +32,8 @@ export interface StoreTemplateInput {
   readonly originX: number
   readonly originY: number
   readonly png: Uint8Array
+  /** Publication state to echo for a replacement; new templates default to unpublished. */
+  readonly published?: boolean
 }
 
 export interface StoredTemplate {
@@ -32,18 +43,23 @@ export interface StoredTemplate {
   readonly totalPixels: number
   readonly chunks: readonly { readonly tile: TileKey; readonly hash: string }[]
   readonly report: QuantiseReport
-  readonly published: false
+  readonly published: boolean
 }
 
 /**
  * Tiles one upload may cover.
  *
  * Every chunk costs an R2 HEAD, an R2 PUT, a compression and a share of a D1 batch statement, so the
- * bound is on the pipeline rather than on the image: 512 tiles is a 512,000-pixel span in one
- * dimension, far beyond a placed template, and keeps the batch, the subrequest count and the
- * concurrent compressions comfortably inside a Worker invocation.
+ * bound is on the pipeline rather than on the image: 400 tiles is a 400,000-pixel span in one
+ * dimension, far beyond a placed template.
+ *
+ * The number comes from the Workers Free plan's 1,000 internal subrequests, which R2 and D1 binding
+ * calls both count against. `hasAll` is one HEAD per distinct hash, because R2 has no bulk existence
+ * operation, and a first upload has no hash already present — so the worst case is 400 HEADs, 400
+ * PUTs and roughly twenty batch statements, a little over 800. At 512 the same upload asked for more
+ * than a thousand and failed after writing part of its chunks, leaving those orphaned.
  */
-const MAX_TEMPLATE_CHUNKS = 512
+const MAX_TEMPLATE_CHUNKS = 400
 
 /** An upload the pipeline refuses for a reason the client can act on — answered as 400, not 500. */
 export class StoreTemplateError extends Error {
@@ -71,6 +87,36 @@ export const storeTemplate = async (
     )
   }
 
+  if (input.templateId !== undefined) {
+    const existing = await ports.sql.readTemplate(input.templateId)
+    if (existing === null) {
+      throw new TemplateNotFoundError(`template does not exist: ${input.templateId}`)
+    }
+    if (existing.name !== input.name) {
+      throw new TemplateIdentityError(
+        `template ${input.templateId} is named ${existing.name}, not ${input.name}`,
+      )
+    }
+    if (existing.currentVersionId !== null) {
+      const current = await ports.sql.readTemplateVersion(existing.currentVersionId)
+      if (current === null) {
+        throw new TemplateNotFoundError(
+          `current version does not exist: ${existing.currentVersionId}`,
+        )
+      }
+      const span = (min: number, max: number) => (max >= min ? max - min : WORLD_PIXELS - min + max)
+      const wasWidth = span(current.bbox.minX, current.bbox.maxX)
+      const wasHeight = current.bbox.maxY - current.bbox.minY
+      const nowWidth = span(sliced.bbox.minX, sliced.bbox.maxX)
+      const nowHeight = sliced.bbox.maxY - sliced.bbox.minY
+      if (wasWidth !== nowWidth || wasHeight !== nowHeight) {
+        throw new TemplateIdentityError(
+          `template ${input.templateId} is ${wasWidth}x${wasHeight}, not ${nowWidth}x${nowHeight}`,
+        )
+      }
+    }
+  }
+
   const encodedChunks = await Promise.all(
     sliced.chunks.map(async (chunk) => {
       const png = await encodeIndexedPng(chunk.width, chunk.height, chunk.indices)
@@ -88,7 +134,7 @@ export const storeTemplate = async (
     }),
   )
 
-  const templateId = uuidV7()
+  const templateId = input.templateId ?? uuidV7()
   const versionId = uuidV7()
   const createdAt = millis(Date.now())
   const versionChunks = encodedChunks.map(({ chunk, hash }) => ({
@@ -108,7 +154,9 @@ export const storeTemplate = async (
     totalPixels: sliced.totalPixels,
     chunks: versionChunks,
   }
-  await ports.sql.insertTemplateVersion(version)
+  await ports.sql.insertTemplateVersion(version, {
+    requireExisting: input.templateId !== undefined,
+  })
 
   return {
     templateId,
@@ -120,6 +168,6 @@ export const storeTemplate = async (
       hash,
     })),
     report,
-    published: false,
+    published: input.published ?? false,
   }
 }

@@ -1,4 +1,4 @@
-import { millis, tileKey, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { millis, tileKey, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -69,6 +69,7 @@ const validTemplate = {
   chunks: [{ tile: '325/1781', hash: HASH }],
   published: true,
   createdAt: MILLIS,
+  updatedAt: MILLIS,
 }
 
 const validNode = {
@@ -552,6 +553,7 @@ describe('cross-field and time-unit schemas', () => {
         })),
         published: true,
         createdAt: MILLIS,
+        updatedAt: MILLIS,
       }
     })
     const manifest = {

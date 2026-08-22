@@ -1,6 +1,9 @@
-import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { discardResponseBody } from './response.js'
+import type { ServerTemplate } from './server-cache.js'
+import { type Appearance, DEFAULT_APPEARANCE, normaliseAppearance } from './templates/appearance.js'
+import { remapPaletteColours, remapStoredAppearance } from './templates/palette-migration.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
 /**
@@ -15,7 +18,8 @@ import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
  * somewhere a real alliance token belongs — see the note in `handoff-userscript-browser.md`.
  */
 
-const STORAGE_KEY = 'caelestis.state.v1'
+const STORAGE_KEY = 'caelestis.state.v2'
+const LEGACY_STORAGE_KEY = 'caelestis.state.v1'
 
 export type ServerAuthMode = 'none' | 'access_token'
 
@@ -50,6 +54,14 @@ export interface ConnectedServer {
   } | null
 }
 
+/** A browser-local folder; its metadata is small enough to live in userscript state. */
+export interface LocalFolder {
+  readonly id: string
+  readonly parentId: string | null
+  readonly name: string
+  readonly visible: boolean
+}
+
 export interface TreeNode {
   readonly id: string
   readonly parentId: string | null
@@ -73,6 +85,10 @@ export interface State {
   readonly progress: ProgressPlacement
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
+  readonly onlySelectedColour: boolean
+  readonly localFolders: readonly LocalFolder[]
+  readonly hiddenScopes: readonly string[]
+  readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
 }
@@ -85,6 +101,10 @@ const DEFAULT_STATE: State = {
   sort: DEFAULT_SORT,
   progress: 'inline',
   hiddenColours: [],
+  onlySelectedColour: false,
+  localFolders: [],
+  hiddenScopes: [],
+  appearance: DEFAULT_APPEARANCE,
   reportPaints: false,
   shareTiles: false,
 }
@@ -100,6 +120,8 @@ const MAX_CUSTOM_ORDER = 200_000
 const MIN_EPOCH_MILLISECONDS = 1_577_836_800_000 // 2020-01-01
 const MAX_EPOCH_MILLISECONDS = 4_102_444_800_000 // 2100-01-01
 export const MAX_CONNECTED_SERVERS = 32
+/** As many browser-local folders as a reload will restore. Written past, the rest is dropped. */
+export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
 const REMOTE_TIMEOUT_MS = 10_000
 const LARGE_TRANSFER_TIMEOUT_MS = 120_000
@@ -142,7 +164,35 @@ const readBoundedJson = async (response: Response, maxBytes: number): Promise<un
   } finally {
     reader.releaseLock()
   }
-  return text === '' ? null : JSON.parse(text)
+  // A body that is not JSON is a body we have nothing to read, not a failure of the call: an error
+  // page still carries its status, and that is what the caller reports. Only the cap throws.
+  try {
+    return text === '' ? null : JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Every call to a configured server, with the one timeout they all share.
+ *
+ * `read` runs inside the timeout on purpose. Headers arriving is not the exchange finishing, and a
+ * server that answers promptly and then dribbles its body forever is the shape this is here to
+ * bound; clearing the timer when `fetch` resolves would leave exactly that case unguarded.
+ */
+const remoteCall = async <T>(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+  read: (response: Response) => Promise<T>,
+): Promise<T> => {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
+  try {
+    return await read(await fetch(input, { ...init, signal: controller.signal }))
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 const remoteJson = async (
@@ -150,21 +200,11 @@ const remoteJson = async (
   init: RequestInit = {},
   maxBytes = MUTATION_JSON_BYTES,
   timeoutMs = REMOTE_TIMEOUT_MS,
-): Promise<{ response: Response; body: unknown }> => {
-  const controller = new AbortController()
-  const external = init.signal
-  const forwardAbort = (): void => controller.abort(external?.reason)
-  if (external?.aborted) forwardAbort()
-  else external?.addEventListener('abort', forwardAbort, { once: true })
-  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
-  try {
-    const response = await fetch(input, { ...init, signal: controller.signal })
-    return { response, body: await readBoundedJson(response, maxBytes) }
-  } finally {
-    clearTimeout(timeout)
-    external?.removeEventListener('abort', forwardAbort)
-  }
-}
+): Promise<{ response: Response; body: unknown }> =>
+  await remoteCall(input, init, timeoutMs, async (response) => ({
+    response,
+    body: await readBoundedJson(response, maxBytes),
+  }))
 
 const serverInfoFrom = (value: unknown): ServerInfo | null => {
   if (!isRecord(value)) return null
@@ -284,13 +324,9 @@ type ManifestBbox = {
   readonly maxY: number
 }
 
-const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> =>
-  bbox.minX < bbox.maxX
-    ? [{ start: bbox.minX, end: bbox.maxX }]
-    : [
-        { start: bbox.minX, end: WORLD_PIXELS },
-        { start: 0, end: bbox.maxX },
-      ]
+const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> => [
+  { start: bbox.minX, end: bbox.maxX },
+]
 
 const tileCoordinates = (tile: string): { x: number; y: number } => {
   const separator = tile.indexOf('/')
@@ -373,6 +409,9 @@ const manifestContentsValid = (
       Number(minX) >= WORLD_PIXELS ||
       Number(maxX) < 1 ||
       Number(maxX) > WORLD_PIXELS ||
+      // `minX > maxX` is the wire's way of saying the box wraps through zero, and the assembler
+      // already reads it as two spans. Requiring low-to-high in x rejected every conforming server
+      // that publishes a template across the antimeridian, and took the whole manifest with it.
       Number(minX) === Number(maxX) ||
       Number(minY) < 0 ||
       Number(minY) >= WORLD_PIXELS ||
@@ -439,10 +478,14 @@ const manifestProbeFrom = (
 // biome-ignore lint/suspicious/noExplicitAny: the GM_* API only exists under a userscript manager
 const gm = globalThis as any
 
-const readRaw = (): string | null => {
+const readRaw = (): { readonly value: string; readonly legacyPalette: boolean } | null => {
   try {
-    if (typeof gm.GM_getValue === 'function') return gm.GM_getValue(STORAGE_KEY, null)
-    return localStorage.getItem(STORAGE_KEY)
+    const read = (key: string): string | null =>
+      typeof gm.GM_getValue === 'function' ? gm.GM_getValue(key, null) : localStorage.getItem(key)
+    const current = read(STORAGE_KEY)
+    if (current !== null) return { value: current, legacyPalette: false }
+    const legacy = read(LEGACY_STORAGE_KEY)
+    return legacy === null ? null : { value: legacy, legacyPalette: true }
   } catch (error) {
     warn('install', 'could not read stored state', String(error))
     return null
@@ -476,12 +519,12 @@ const notifyStateListeners = (): void => {
 }
 
 export const loadState = (): State => {
-  const raw = readRaw()
-  if (raw === null) return state
+  const storedRaw = readRaw()
+  if (storedRaw === null) return state
   try {
     // Spread over the defaults rather than trusting the stored shape: a build that adds a field
     // must not be broken by state written before it existed.
-    const parsed: unknown = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(storedRaw.value)
     if (!isRecord(parsed)) throw new TypeError('stored state is not an object')
     const stored = parsed as Partial<State>
     const servers: ConnectedServer[] = []
@@ -547,22 +590,71 @@ export const loadState = (): State => {
       stored.sort?.field === 'name'
         ? { field: 'name', direction: stored.sort.direction === 'desc' ? 'desc' : 'asc' }
         : DEFAULT_SORT
-    const hiddenColours = Array.isArray(stored.hiddenColours)
-      ? [
-          ...new Set(
-            stored.hiddenColours.filter(
-              (index): index is number =>
-                Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
-            ),
-          ),
-        ]
+    const storedHiddenColours = Array.isArray(stored.hiddenColours)
+      ? stored.hiddenColours.filter((index): index is number => Number.isSafeInteger(index))
       : []
+    const hiddenColours =
+      storedHiddenColours.length > 0
+        ? [
+            ...new Set(
+              (storedRaw.legacyPalette
+                ? remapPaletteColours(storedHiddenColours)
+                : storedHiddenColours
+              ).filter(
+                (index): index is number =>
+                  Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
+              ),
+            ),
+          ]
+        : []
     const panelWidth =
       typeof stored.panelWidth === 'number' && Number.isFinite(stored.panelWidth)
         ? Math.min(720, Math.max(260, stored.panelWidth))
         : DEFAULT_STATE.panelWidth
     const progress: ProgressPlacement =
       stored.progress === 'expanded' || stored.progress === 'hidden' ? stored.progress : 'inline'
+    const localFolders: LocalFolder[] = []
+    const folderIds = new Set<string>()
+    if (Array.isArray(stored.localFolders)) {
+      for (const candidate of stored.localFolders) {
+        if (
+          !isRecord(candidate) ||
+          typeof candidate.id !== 'string' ||
+          candidate.id.length > 128 ||
+          folderIds.has(candidate.id) ||
+          typeof candidate.name !== 'string' ||
+          candidate.name.length < 1 ||
+          candidate.name.length > 256 ||
+          (candidate.parentId !== null && typeof candidate.parentId !== 'string')
+        )
+          continue
+        folderIds.add(candidate.id)
+        localFolders.push({
+          id: candidate.id,
+          parentId: candidate.parentId,
+          name: candidate.name,
+          // Records written before folder visibility existed were visible.
+          visible: candidate.visible !== false,
+        })
+        if (localFolders.length >= MAX_LOCAL_FOLDERS) break
+      }
+    }
+    const storedHiddenScopes = Array.isArray(stored.hiddenScopes)
+      ? stored.hiddenScopes.filter(
+          (key): key is string => typeof key === 'string' && key.length <= 2_048,
+        )
+      : []
+    const hiddenScopes = [
+      ...new Set(
+        storedHiddenScopes.flatMap((key) => {
+          const legacyNodeId = key.startsWith('node:') ? key.slice('node:'.length) : ''
+          if (!UUID_V7.test(legacyNodeId)) return [key]
+          // The old key hid this node id without naming a server. Preserve that meaning for every
+          // connection that existed with the setting, then store only the collision-safe form.
+          return servers.map((server) => `node:${encodeURIComponent(server.url)}:${legacyNodeId}`)
+        }),
+      ),
+    ].slice(0, MAX_CUSTOM_ORDER)
     state = {
       ...DEFAULT_STATE,
       servers,
@@ -572,10 +664,20 @@ export const loadState = (): State => {
       sort,
       progress,
       hiddenColours,
+      onlySelectedColour: stored.onlySelectedColour === true,
+      localFolders,
+      hiddenScopes,
+      appearance:
+        normaliseAppearance(
+          storedRaw.legacyPalette
+            ? remapStoredAppearance(stored.appearance ?? null)
+            : (stored.appearance ?? null),
+        ) ?? DEFAULT_APPEARANCE,
       reportPaints: stored.reportPaints === true,
       shareTiles: stored.shareTiles === true,
     }
     log('install', 'state loaded', { servers: state.servers.length })
+    if (storedRaw.legacyPalette) writeRaw(JSON.stringify(state))
     notifyStateListeners()
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
@@ -585,7 +687,18 @@ export const loadState = (): State => {
 
 export const getState = (): State => state
 
+/** The global appearance currently shown on the map, including an uncommitted slider gesture. */
+let globalAppearancePreview: Appearance | null = null
+
+export const getGlobalAppearance = (): Appearance => globalAppearancePreview ?? state.appearance
+
+/** Preview a global appearance without serialising or notifying state subscribers. */
+export const previewGlobalAppearance = (appearance: Appearance | null): void => {
+  globalAppearancePreview = appearance
+}
+
 export const setState = (patch: Partial<State>): State => {
+  if (patch.appearance !== undefined) globalAppearancePreview = null
   state = { ...state, ...patch }
   writeRaw(JSON.stringify(state))
   notifyStateListeners()
@@ -594,6 +707,109 @@ export const setState = (patch: Partial<State>): State => {
 
 export const onStateChange = (listener: (next: State) => void): void => {
   listeners.push(listener)
+}
+
+const localFolderId = (): string =>
+  `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
+
+export const createLocalFolder = (parentId: string | null, name: string): LocalFolder => {
+  const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
+  setState({ localFolders: [...getState().localFolders, folder] })
+  return folder
+}
+
+/** An id for a folder that has not been added yet, so a batch can wire up its own parents. */
+export const nextLocalFolderId = (): string => localFolderId()
+
+/**
+ * Add many folders in one write.
+ *
+ * `setState` serialises the whole state, so adding a folder at a time costs the square of the
+ * number of folders. Moving a server branch of any real size into Local did exactly that and locked
+ * the tab up for the duration.
+ *
+ * Refused rather than truncated past the limit, because the limit is what a reload will restore: a
+ * write that goes over it looks like it worked until the next session, which quietly loses the rest.
+ */
+export const addLocalFolders = (folders: readonly LocalFolder[]): boolean => {
+  if (folders.length === 0) return true
+  const existing = getState().localFolders
+  if (existing.length + folders.length > MAX_LOCAL_FOLDERS) return false
+  setState({ localFolders: [...existing, ...folders] })
+  return true
+}
+
+export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)
+
+export const setScopeVisible = (key: string, visible: boolean): void => {
+  const hidden = getState().hiddenScopes
+  if (visible === !hidden.includes(key)) return
+  setState({
+    hiddenScopes: visible ? hidden.filter((candidate) => candidate !== key) : [...hidden, key],
+  })
+}
+
+export const setLocalFolderVisible = (id: string, visible: boolean): void => {
+  setState({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, visible } : folder,
+    ),
+  })
+}
+
+export const localFolderChainVisible = (folderId: string | null): boolean => {
+  if (!isScopeVisible('local')) return false
+  const folders = getState().localFolders
+  let walk = folderId
+  const seen = new Set<string>()
+  while (walk !== null) {
+    if (seen.has(walk)) return true
+    seen.add(walk)
+    const folder = folders.find((candidate) => candidate.id === walk)
+    if (folder === undefined) return true
+    if (folder.visible === false) return false
+    walk = folder.parentId
+  }
+  return true
+}
+
+export const renameLocalFolder = (id: string, name: string): void => {
+  const trimmed = name.trim()
+  if (trimmed === '') return
+  setState({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, name: trimmed } : folder,
+    ),
+  })
+}
+
+export const removeLocalFolder = (id: string): void => {
+  const folders = getState().localFolders
+  const folder = folders.find((candidate) => candidate.id === id)
+  if (folder === undefined) return
+  setState({
+    localFolders: folders
+      .filter((candidate) => candidate.id !== id)
+      .map((candidate) =>
+        candidate.parentId === id ? { ...candidate, parentId: folder.parentId } : candidate,
+      ),
+  })
+}
+
+export const moveLocalFolder = (id: string, parentId: string | null): void => {
+  if (id === parentId) return
+  const folders = getState().localFolders
+  let walk = parentId
+  // Bounded by the number of folders, because the list comes back from storage and every other
+  // reader in this file treats that as something to check rather than trust. A chain longer than
+  // the list is a cycle, and an unbounded walk up one hangs the tab instead of refusing the move.
+  for (let step = 0; walk !== null; step++) {
+    if (walk === id || step > folders.length) return
+    walk = folders.find((candidate) => candidate.id === walk)?.parentId ?? null
+  }
+  setState({
+    localFolders: folders.map((folder) => (folder.id === id ? { ...folder, parentId } : folder)),
+  })
 }
 
 /** Replace one server in place, keyed by url, preserving the order of the rest. */
@@ -631,6 +847,13 @@ export const removeTreeStateKeys = (keys: ReadonlySet<string>): void => {
   }
 }
 
+/** Drop visibility state that belongs to a disconnected source. */
+export const forgetScopes = (keys: Iterable<string>): void => {
+  const drop = new Set(keys)
+  const hiddenScopes = getState().hiddenScopes.filter((key) => !drop.has(key))
+  if (hiddenScopes.length !== getState().hiddenScopes.length) setState({ hiddenScopes })
+}
+
 export type NodeListResult =
   | { readonly ok: true; readonly nodes: readonly TreeNode[] }
   | { readonly ok: false; readonly message: string; readonly status?: number }
@@ -644,14 +867,12 @@ const fetchNodes = async (
   base: string,
   token: string | null,
   season: number,
-  signal?: AbortSignal,
 ): Promise<NodeListResult> => {
   try {
     const { response, body } = await remoteJson(
       `${base}/admin/nodes?season=${season}`,
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        ...(signal === undefined ? {} : { signal }),
       },
       TREE_JSON_BYTES,
       LARGE_TRANSFER_TIMEOUT_MS,
@@ -672,28 +893,22 @@ const probeAdminScope = async (
   base: string,
   token: string | null,
   season: number,
-  signal?: AbortSignal,
 ): Promise<boolean> => {
-  const controller = new AbortController()
-  const forwardAbort = (): void => controller.abort(signal?.reason)
-  if (signal?.aborted) forwardAbort()
-  else signal?.addEventListener('abort', forwardAbort, { once: true })
-  const timeout = setTimeout(
-    () => controller.abort(new Error('request timed out')),
-    LARGE_TRANSFER_TIMEOUT_MS,
-  )
   try {
-    const response = await fetch(`${base}/admin/nodes?season=${season}`, {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-    await discardResponseBody(response)
-    return response.ok
+    // The status is the whole answer, so the body is thrown away unread. Parsing it measured the
+    // full folder tree against the 64 KB cap meant for a one-line mutation reply, and any server
+    // with a real tree therefore reported that our token could only read it.
+    return await remoteCall(
+      `${base}/admin/nodes?season=${season}`,
+      { headers: token === null ? {} : { authorization: `Bearer ${token}` } },
+      LARGE_TRANSFER_TIMEOUT_MS,
+      async (response) => {
+        await discardResponseBody(response)
+        return response.ok
+      },
+    )
   } catch {
     return false
-  } finally {
-    clearTimeout(timeout)
-    signal?.removeEventListener('abort', forwardAbort)
   }
 }
 
@@ -717,11 +932,7 @@ export const peekProbedNodes = (server: ConnectedServer): readonly TreeNode[] | 
  * needed *before* asking anyone for one. Asking for a code up front is the likeliest way to lose
  * someone on first run — most servers will not want one.
  */
-export const probeServer = async (
-  url: string,
-  token: string | null,
-  signal?: AbortSignal,
-): Promise<ConnectedServer> => {
+export const probeServer = async (url: string, token: string | null): Promise<ConnectedServer> => {
   let base: string
   try {
     base = canonicalServerUrl(url)
@@ -742,7 +953,6 @@ export const probeServer = async (
       `${base}/server`,
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        ...(signal === undefined ? {} : { signal }),
       },
       SERVER_JSON_BYTES,
     )
@@ -781,7 +991,6 @@ export const probeServer = async (
         `${base}/manifest`,
         {
           headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
-          ...(signal === undefined ? {} : { signal }),
         },
         TREE_JSON_BYTES,
         LARGE_TRANSFER_TIMEOUT_MS,
@@ -824,7 +1033,7 @@ export const probeServer = async (
     }
     const manifest = manifestProbeFrom(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
-    const isAdmin = await probeAdminScope(base, effectiveToken, manifest.season, signal)
+    const isAdmin = await probeAdminScope(base, effectiveToken, manifest.season)
     const connected: ConnectedServer = {
       url: base,
       info,
@@ -885,7 +1094,6 @@ export const createNode = async (
   server: ConnectedServer,
   name: string,
   parentId: string | null,
-  signal?: AbortSignal,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
@@ -897,7 +1105,6 @@ export const createNode = async (
         ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
       },
       body: JSON.stringify({ season: server.season, parentId, name }),
-      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) {
       const node = treeNodeFrom(body)
@@ -953,14 +1160,12 @@ export const renameNode = async (
   server: ConnectedServer,
   nodeId: string,
   name: string,
-  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
     const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify({ name }),
-      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
@@ -973,14 +1178,16 @@ export const renameNode = async (
 export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,
-  signal?: AbortSignal,
+  cascade = false,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
-      method: 'DELETE',
-      headers: adminHeaders(server),
-      ...(signal === undefined ? {} : { signal }),
-    })
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/nodes/${nodeId}${cascade ? '?cascade=true' : ''}`,
+      {
+        method: 'DELETE',
+        headers: adminHeaders(server),
+      },
+    )
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     return { ok: false, message: failure(response, isRecord(body) ? body : null) }
@@ -990,12 +1197,9 @@ export const deleteNode = async (
 }
 
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
-export const listNodes = async (
-  server: ConnectedServer,
-  signal?: AbortSignal,
-): Promise<NodeListResult> => {
+export const listNodes = async (server: ConnectedServer): Promise<NodeListResult> => {
   if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
-  const result = await fetchNodes(server.url, server.token, server.season, signal)
+  const result = await fetchNodes(server.url, server.token, server.season)
   if (!result.ok && (result.status === 401 || result.status === 403)) {
     noteAuthFailure(server, result.status)
   }
@@ -1018,7 +1222,6 @@ export const uploadTemplate = async (
     originY: number
     png: Blob
   },
-  signal?: AbortSignal,
 ): Promise<{ ok: true; id: string } | { ok: false; message: string }> => {
   try {
     const form = new FormData()
@@ -1033,7 +1236,6 @@ export const uploadTemplate = async (
         method: 'POST',
         headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
         body: form,
-        ...(signal === undefined ? {} : { signal }),
       },
       MUTATION_JSON_BYTES,
       LARGE_TRANSFER_TIMEOUT_MS,
@@ -1055,6 +1257,343 @@ export const uploadTemplate = async (
           ? body.error
           : `Server said ${response.status}.`,
     }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+export const moveNode = async (
+  server: ConnectedServer,
+  nodeId: string,
+  parentId: string | null,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ parentId }),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+export const countNodeSubtree = async (
+  server: ConnectedServer,
+  nodeId: string,
+): Promise<{ nodes: number; templates: number } | null> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}/subtree`, {
+      headers: adminHeaders(server),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) return null
+    const parsed = body as { nodes?: unknown; templates?: unknown }
+    if (typeof parsed.nodes !== 'number' || typeof parsed.templates !== 'number') return null
+    return { nodes: parsed.nodes, templates: parsed.templates }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Everything a server is publishing: the folder tree and the templates hanging off it.
+ *
+ * One fetch, from `/manifest`, and that endpoint is the right one for **both** — the structure is
+ * not privileged information. Anyone with a read code is meant to see the tree; the admin boundary
+ * is *changing* it, which lives on the `/admin` routes. Reading the tree from `GET /admin/nodes`
+ * put the boundary in the wrong place and left every read-scope member staring at a server with no
+ * folders, and therefore no templates, since a template row is drawn under its folder.
+ *
+ * Answers empty on any failure rather than throwing. A tree that has drawn a stale row is better
+ * than a tree that has thrown, and the cached copy is what it falls back to.
+ */
+export const listServerContents = async (
+  server: ConnectedServer,
+): Promise<{ nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] } | null> => {
+  if (server.info === null || server.season === null) return null
+  try {
+    const { response, body } = await remoteJson(
+      `${server.url}/manifest?season=${server.season}`,
+      { headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` } },
+      TREE_JSON_BYTES,
+      LARGE_TRANSFER_TIMEOUT_MS,
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) return null
+    const manifest = manifestProbeFrom(body, server.info)
+    if (manifest === null || manifest.season !== server.season || !isRecord(body)) return null
+    const templates = (body.templates as readonly Record<string, unknown>[]).map(
+      (template): ServerTemplate => ({
+        id: String(template.id),
+        nodeId: String(template.nodeId),
+        name: String(template.name),
+        version: String(template.version),
+        published: template.published === true,
+        updatedAt:
+          typeof template.updatedAt === 'number'
+            ? template.updatedAt
+            : typeof template.createdAt === 'number'
+              ? template.createdAt
+              : 0,
+        bbox: template.bbox as ServerTemplate['bbox'],
+        chunks: template.chunks as ServerTemplate['chunks'],
+      }),
+    )
+    return { nodes: manifest.nodes, templates }
+  } catch {
+    return null
+  }
+}
+
+/** The folder tree alone, for the admin flows that need somewhere to put something. */
+/**
+ * The folders alone, or null when the server could not be asked.
+ *
+ * Null rather than empty, for the reason spelled out below: a 500 or a timeout answered with an
+ * empty list, so Move claimed the server had one folder, Copy said to create one first, and folder
+ * naming picked a name as though nothing was there.
+ */
+export const listServerNodes = async (
+  server: ConnectedServer,
+): Promise<readonly TreeNode[] | null> => (await listServerContents(server))?.nodes ?? null
+
+/**
+ * The templates alone, or null when the server could not be asked.
+ *
+ * Null and empty are kept apart on purpose. A failed fetch used to answer with an empty list, and
+ * the sync read that as "this server publishes nothing" — so one blip, or a server restarting, took
+ * every template off the canvas and the next success put them back as if they were new.
+ */
+export const listServerTemplates = async (
+  server: ConnectedServer,
+): Promise<readonly ServerTemplate[] | null> =>
+  (await listServerContents(server))?.templates ?? null
+
+export const patchTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+  patch: { name?: string; nodeId?: string; published?: boolean },
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify(patch),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Rename a server — the name every member sees, not a label local to this browser.
+ *
+ * Worth being explicit about, because the row it is edited from looks exactly like the Local one
+ * above it, and that one *is* local. This writes to the server, and the next member to open their
+ * panel sees the new name.
+ *
+ * The local copy is updated from the answer rather than re-probed: the tree is labelled from
+ * `info.name`, and leaving it stale until the next probe would make a rename look like it failed.
+ */
+export const renameServer = async (
+  server: ConnectedServer,
+  name: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  const trimmed = name.trim()
+  if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/server`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ name: trimmed }),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) {
+      return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    }
+    if (server.info !== null) {
+      upsertServer({ ...server, info: { ...server.info, name: trimmed } })
+    }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+export const deleteTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
+      method: 'DELETE',
+      headers: adminHeaders(server),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Replace a published template's pixels, keeping everything else about it.
+ *
+ * The origin travels with the image because a new version is a new slicing — moving artwork on the
+ * canvas is a different picture as far as the chunk index is concerned, not an edit to the old one.
+ */
+export const uploadTemplateVersion = async (
+  server: ConnectedServer,
+  templateId: string,
+  input: { originX: number; originY: number; png: Blob; name: string },
+): Promise<{ ok: true; versionId: string } | { ok: false; message: string }> => {
+  try {
+    const form = new FormData()
+    form.set('png', input.png, `${input.name}.png`)
+    form.set('originX', String(input.originX))
+    form.set('originY', String(input.originY))
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/templates/${templateId}/versions`,
+      {
+        method: 'POST',
+        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        body: form,
+      },
+      MUTATION_JSON_BYTES,
+      // A PNG upload, like the one that creates a template: the ten-second budget is for a request
+      // that carries a sentence, not a megabyte.
+      LARGE_TRANSFER_TIMEOUT_MS,
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) {
+      const versionId = isRecord(body) ? body.versionId : undefined
+      // A 2xx with no usable id is not a success we can report: the server never confirmed what it
+      // stored. `uploadTemplate` rejects the same shape, and Replace announcing "done" on it told
+      // the user their artwork had been replaced on no evidence at all.
+      return typeof versionId === 'string' && UUID_V7.test(versionId)
+        ? { ok: true, versionId }
+        : { ok: false, message: 'The server accepted the upload but did not say what it stored.' }
+    }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * An access token as the server will ever describe it back to us.
+ *
+ * No secret. The plaintext exists once, in the response to the call that mints it, and is never
+ * stored anywhere — the server keeps a hash, so there is nothing to reveal later even if a route
+ * wanted to. Which is the point: a list that could show them would turn one leaked admin session
+ * into every token the server has.
+ */
+interface StoredAccessToken {
+  readonly tokenHash: string
+  readonly label: string
+  readonly scope: 'read' | 'report' | 'admin'
+  readonly createdWithToken: string
+  readonly createdAt: number
+  readonly bootstrap?: false
+}
+
+/** The operator credential is environment-owned and therefore has no revocable token hash. */
+interface BootstrapAccessToken {
+  readonly label: string
+  readonly scope: 'admin'
+  readonly createdAt: number
+  readonly bootstrap: true
+}
+
+export type AccessToken = StoredAccessToken | BootstrapAccessToken
+
+const SCOPES: readonly string[] = ['read', 'report', 'admin']
+
+/**
+ * A configured server is someone else's machine, so its token list is checked rather than trusted:
+ * the panel renders these rows and hands `tokenHash` straight back as a URL path segment.
+ */
+const asAccessToken = (value: unknown): AccessToken | null => {
+  if (!isRecord(value)) return null
+  const { label, scope, createdAt, bootstrap, tokenHash, createdWithToken } = value
+  if (typeof label !== 'string' || typeof createdAt !== 'number') return null
+  if (typeof scope !== 'string' || !SCOPES.includes(scope)) return null
+  if (bootstrap === true) return { label, scope: 'admin', createdAt, bootstrap: true }
+  if (typeof tokenHash !== 'string' || !/^[0-9a-f]{1,128}$/.test(tokenHash)) return null
+  return {
+    tokenHash,
+    label,
+    scope: scope as StoredAccessToken['scope'],
+    createdWithToken: typeof createdWithToken === 'string' ? createdWithToken : '',
+    createdAt,
+  }
+}
+
+export const listAccessTokens = async (
+  server: ConnectedServer,
+): Promise<readonly AccessToken[] | null> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/tokens`, {
+      headers: adminHeaders(server),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) return null
+    const tokens = isRecord(body) ? body.tokens : undefined
+    if (!Array.isArray(tokens)) return []
+    return tokens.map(asAccessToken).filter((token): token is AccessToken => token !== null)
+  } catch {
+    // Null rather than empty, so the panel can say "could not ask" instead of "there are none" —
+    // the difference between those two is the difference between a blip and a server with no way in.
+    return null
+  }
+}
+
+/** Mint one. The `token` in the result is the only time the plaintext will ever exist here. */
+export const createAccessToken = async (
+  server: ConnectedServer,
+  label: string,
+  scope: AccessToken['scope'],
+): Promise<{ ok: true; token: string } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/tokens`, {
+      method: 'POST',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ label, scope }),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    const token = isRecord(body) ? body.token : undefined
+    if (response.ok && typeof token === 'string') return { ok: true, token }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Revoke one, by the hash the list gave us. Revocation deletes the stored token row.
+ */
+export const revokeAccessToken = async (
+  server: ConnectedServer,
+  tokenHash: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/tokens/${encodeURIComponent(tokenHash)}`,
+      {
+        method: 'DELETE',
+        headers: adminHeaders(server),
+      },
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
