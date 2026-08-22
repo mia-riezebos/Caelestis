@@ -89,6 +89,8 @@ void main() {
 }
 `
 
+/** The context these handles belong to; see the same guard in `layer.ts`. */
+let owner: WebGL2RenderingContext | null = null
 let program: WebGLProgram | null = null
 let buffer: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
@@ -115,6 +117,7 @@ const uniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation
 }
 
 export const initMarkers = (gl: WebGL2RenderingContext): void => {
+  owner = gl
   const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX)
   const fragment = compile(gl, gl.FRAGMENT_SHADER, FRAGMENT)
   if (vertex === null || fragment === null) return
@@ -152,6 +155,9 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
 }
 
 export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
+  // A replacement map's `initMarkers` may already have claimed this state; see `layer.ts`.
+  if (owner !== gl) return
+  owner = null
   if (buffer !== null) gl.deleteBuffer(buffer)
   if (vao !== null) gl.deleteVertexArray(vao)
   if (program !== null) gl.deleteProgram(program)

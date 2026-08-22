@@ -785,6 +785,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     status.textContent = 'Checking…'
     const next = await whileBusy(submit, () => probeServer(server.url, value))
     if (next === null) return
+    if (!stillConnected(server)) return
     if (next.status === 'connected') {
       upsertServer(next)
       // Closed again, because what was open for is done. Left open, a row that opened itself would
@@ -2033,6 +2034,9 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
     toast('Could not ask that server what it already has.', 'error')
     return
   }
+  // Asking took a round trip, and the panel was usable throughout it. Writing to a server the user
+  // has since disconnected creates a folder in a place they can no longer see.
+  if (!stillConnected(server)) return
   const name = freeFolderName(new Set(existing.map((node) => node.name.toLowerCase())))
   const result = await createNode(server, name, nodeId)
   if (!result.ok) {
@@ -2209,6 +2213,16 @@ const buildPanel = (): HTMLElement => {
  * scroll one.
  */
 const MAX_DESTINATIONS = 2_000
+
+/**
+ * Whether this connection is still in the list.
+ *
+ * Asked after any await that precedes a write, because the panel stays usable while a slow server
+ * is being talked to. Disconnecting during a token probe used to put the removed server back, since
+ * `upsertServer` cannot tell "update this row" from "add this row".
+ */
+const stillConnected = (server: ConnectedServer): boolean =>
+  getState().servers.some((one) => one.url === server.url)
 
 const scrollerIn = (view: Element | null): HTMLElement | null =>
   view?.querySelector<HTMLElement>('[data-caelestis-scroller]') ??

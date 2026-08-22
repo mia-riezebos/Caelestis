@@ -106,6 +106,16 @@ const corner = (
   into[offset + 5] = v
 }
 
+/**
+ * The context these handles belong to.
+ *
+ * `onAdd` already knows a replacement map can arrive without the old one ever delivering
+ * `onRemove`. The reverse happens too: wplace can build the new map before tearing the old one
+ * down, and an unguarded `onRemove` then deleted the *new* context's handles and nulled its state.
+ * The attachment loop sees the layer already registered and never reinitialises, so nothing draws
+ * again until the page is reloaded.
+ */
+let owner: WebGL2RenderingContext | null = null
 let program: WebGLProgram | null = null
 let quad: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
@@ -271,6 +281,7 @@ export const overlayLayer = {
     vao = null
     uniforms.clear()
     gpu.clear()
+    owner = gl
     program = link(gl)
     if (program === null) return
     quad = gl.createBuffer()
@@ -291,6 +302,10 @@ export const overlayLayer = {
   },
 
   onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
+    // A later `onAdd` has already taken this state over for its own context. Those handles are not
+    // ours to delete, and the context we are being removed from cleans up its own on teardown.
+    if (owner !== gl) return
+    owner = null
     for (const id of [...gpu.keys()]) release(gl, id)
     if (quad !== null) gl.deleteBuffer(quad)
     if (vao !== null) gl.deleteVertexArray(vao)
