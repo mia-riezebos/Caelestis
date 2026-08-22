@@ -248,6 +248,12 @@ const generationOf = (serverUrl: string): number => generations.get(serverUrl) ?
 /** Called when a server's templates are taken away, so anything already downloading for it lands stale. */
 export const endServerGeneration = (serverUrl: string): void => {
   generations.set(serverUrl, generationOf(serverUrl) + 1)
+  // The versions this server had asked for go with it. Kept, they outlive the connection for the
+  // rest of the session, and a second server whose URL extends this one's shares their key prefix.
+  const prefix = serverTemplateKey(serverUrl, '')
+  for (const key of [...latestVersion.keys()]) {
+    if (key.startsWith(prefix)) latestVersion.delete(key)
+  }
 }
 
 /**
@@ -282,8 +288,9 @@ export const syncServerTemplates = async (
     if (held.serverUrl !== server.url) continue
     if (!wanted.has(held.id)) forgetServerTemplate(held.id)
   }
+  const ourPrefix = serverTemplateKey(server.url, '')
   for (const key of [...latestVersion.keys()]) {
-    if (key.startsWith(`srv:${server.url}:`) && !wanted.has(key)) latestVersion.delete(key)
+    if (key.startsWith(ourPrefix) && !wanted.has(key)) latestVersion.delete(key)
   }
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 

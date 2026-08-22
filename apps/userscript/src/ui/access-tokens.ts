@@ -115,6 +115,7 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
   row.className = 'flex gap-2'
 
   const label = document.createElement('input')
+  label.dataset.caelestisDraft = `token-label:${server.url}`
   label.type = 'text'
   label.className = 'input input-sm input-bordered'
   label.style.flex = '1'
@@ -207,19 +208,30 @@ const inFlight = new Map<string, Promise<readonly AccessToken[] | null>>()
 const fetchTokens = (server: ConnectedServer): Promise<readonly AccessToken[] | null> => {
   const running = inFlight.get(server.url)
   if (running !== undefined) return running
-  const run = listAccessTokens(server)
-    .then((tokens) => {
-      if (tokens !== null) cached.set(server.url, tokens)
-      return tokens
-    })
-    .finally(() => inFlight.delete(server.url))
+  const run: Promise<readonly AccessToken[] | null> = listAccessTokens(server).then((tokens) => {
+    // Only while this is still the request the map is holding. Forgetting a disconnected server
+    // removes the entry, and a reply landing after that must not put its labels back.
+    if (tokens !== null && inFlight.get(server.url) === run) cached.set(server.url, tokens)
+    return tokens
+  })
+  void run.finally(() => {
+    if (inFlight.get(server.url) === run) inFlight.delete(server.url)
+  })
   inFlight.set(server.url, run)
   return run
 }
 
-/** Drop what a server said about its tokens, for a server that is no longer connected. */
+/**
+ * Drop what a server said about its tokens, for a server that is no longer connected.
+ *
+ * The in-flight request is dropped with the cache. A server row prefetches its tokens on hover, so
+ * a request is usually already running when the user disconnects, and clearing only the cache let
+ * that reply write the labels straight back in afterwards — past the point where we still have any
+ * right to hold them.
+ */
 export const forgetCachedTokens = (serverUrl: string): void => {
   cached.delete(serverUrl)
+  inFlight.delete(serverUrl)
 }
 
 /**

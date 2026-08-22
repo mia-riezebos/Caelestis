@@ -1626,8 +1626,12 @@ export const treeContents = (
               ...(template.published ? {} : { meta: 'unpublished' }),
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: (on) => {
-                if (drawn !== undefined) return setLocalVisible(drawn.id, on)
+                // Both stores, always. The scope key is the only one that outlives the page — a
+                // server template is memory-only and is re-created from that key on the next load —
+                // so writing only the live store meant switching one back on lasted until reload
+                // and then silently undid itself.
                 setScopeVisible(visibilityKey, on)
+                if (drawn !== undefined) return setLocalVisible(drawn.id, on)
                 return true
               },
               canReparent: canEdit,

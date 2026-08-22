@@ -413,140 +413,147 @@ export const overlayLayer = {
     gl.disable(gl.DEPTH_TEST)
     gl.bindBuffer(gl.ARRAY_BUFFER, quad)
 
-    for (const { template, fade } of visible) {
-      let entry = gpu.get(template.id)
-      if (entry === undefined) {
-        if (!fitsInATexture(gl, template.width, template.height)) {
-          // Once per template. A template with no entry takes this branch on every frame, and a
-          // warning that reaches the console unconditionally would evict every other diagnostic
-          // from the ring within seconds.
-          if (!tooLarge.has(template.id)) {
-            tooLarge.add(template.id)
-            warn(
-              'install',
-              `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
-            )
+    // The restore runs even if the loop throws. `render` catches to keep a bad frame from freezing
+    // MapLibre, but catching after the state has been disturbed and before it is put back means
+    // MapLibre draws the rest of that frame with our program bound, blending forced, depth test off
+    // and the active unit on 1 — which its own state cache believes is 0. Skipping a frame has to
+    // mean skipping it cleanly.
+    try {
+      for (const { template, fade } of visible) {
+        let entry = gpu.get(template.id)
+        if (entry === undefined) {
+          if (!fitsInATexture(gl, template.width, template.height)) {
+            // Once per template. A template with no entry takes this branch on every frame, and a
+            // warning that reaches the console unconditionally would evict every other diagnostic
+            // from the ring within seconds.
+            if (!tooLarge.has(template.id)) {
+              tooLarge.add(template.id)
+              warn(
+                'install',
+                `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
+              )
+            }
+            continue
           }
-          continue
-        }
-        const indices = gl.createTexture()
-        const palette = gl.createTexture()
-        if (indices === null || palette === null) continue
-        uploadIndices(gl, indices, template.width, template.height, template.indices)
-        entry = {
-          indices,
-          palette,
-          width: template.width,
-          height: template.height,
-          source: template.indices,
-          paletteKey: null,
-          paletteMoving: false,
-        }
-        gpu.set(template.id, entry)
-      } else if (
-        entry.source !== template.indices ||
-        entry.width !== template.width ||
-        entry.height !== template.height
-      ) {
-        // This branch exists because the size can change: a replacement version arrives under the
-        // same id with whatever dimensions the server sent. The same limit applies to it.
-        if (!fitsInATexture(gl, template.width, template.height)) {
-          if (!tooLarge.has(template.id)) {
-            tooLarge.add(template.id)
-            warn(
-              'install',
-              `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
-            )
+          const indices = gl.createTexture()
+          const palette = gl.createTexture()
+          if (indices === null || palette === null) continue
+          uploadIndices(gl, indices, template.width, template.height, template.indices)
+          entry = {
+            indices,
+            palette,
+            width: template.width,
+            height: template.height,
+            source: template.indices,
+            paletteKey: null,
+            paletteMoving: false,
           }
-          continue
+          gpu.set(template.id, entry)
+        } else if (
+          entry.source !== template.indices ||
+          entry.width !== template.width ||
+          entry.height !== template.height
+        ) {
+          // This branch exists because the size can change: a replacement version arrives under the
+          // same id with whatever dimensions the server sent. The same limit applies to it.
+          if (!fitsInATexture(gl, template.width, template.height)) {
+            if (!tooLarge.has(template.id)) {
+              tooLarge.add(template.id)
+              warn(
+                'install',
+                `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
+              )
+            }
+            continue
+          }
+          uploadIndices(gl, entry.indices, template.width, template.height, template.indices)
+          entry.source = template.indices
+          entry.width = template.width
+          entry.height = template.height
         }
-        uploadIndices(gl, entry.indices, template.width, template.height, template.indices)
-        entry.source = template.indices
-        entry.width = template.width
-        entry.height = template.height
-      }
 
-      const appearance = appearanceOf(template)
-      const hidden = hiddenColoursFor(appearance)
-      const paletteKey = hidden.join(',')
-      // Re-uploaded while anything in it is still moving, not only when the filter changes: the
-      // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
-      if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
-        const built = buildPalette(template.id, hidden, now)
-        uploadPalette(gl, entry.palette, built.data)
-        entry.paletteKey = paletteKey
-        entry.paletteMoving = built.animating
-        if (built.animating) animating = true
-      }
+        const appearance = appearanceOf(template)
+        const hidden = hiddenColoursFor(appearance)
+        const paletteKey = hidden.join(',')
+        // Re-uploaded while anything in it is still moving, not only when the filter changes: the
+        // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
+        if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
+          const built = buildPalette(template.id, hidden, now)
+          uploadPalette(gl, entry.palette, built.data)
+          entry.paletteKey = paletteKey
+          entry.paletteMoving = built.animating
+          if (built.animating) animating = true
+        }
 
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, entry.indices)
-      gl.uniform1i(uniform(gl, 'u_indices'), 0)
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, entry.indices)
+        gl.uniform1i(uniform(gl, 'u_indices'), 0)
+        gl.activeTexture(gl.TEXTURE1)
+        gl.bindTexture(gl.TEXTURE_2D, entry.palette)
+        gl.uniform1i(uniform(gl, 'u_palette'), 1)
+
+        gl.uniform1f(uniform(gl, 'u_fade'), fade)
+        gl.uniform2f(uniform(gl, 'u_size'), template.width, template.height)
+        gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
+        gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
+        gl.uniform1f(uniform(gl, 'u_stampRadius'), appearance.radius)
+        gl.uniform2f(uniform(gl, 'u_stampOffset'), appearance.translateX, appearance.translateY)
+        gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
+        gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
+
+        const left = template.originX + nudgeX
+        const top = template.originY + nudgeY
+        const right = left + template.width
+        const bottom = top + template.height
+
+        for (const tile of tiles) {
+          const tileLeft = tile.tile.x * TILE_SIZE
+          const tileTop = tile.tile.y * TILE_SIZE
+          // The part of this template that falls inside this tile, in canvas pixels.
+          const cutLeft = Math.max(left, tileLeft)
+          const cutTop = Math.max(top, tileTop)
+          const cutRight = Math.min(right, tileLeft + TILE_SIZE)
+          const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
+          if (cutRight <= cutLeft || cutBottom <= cutTop) continue
+
+          // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
+          // including snapping it to whole device pixels once the map stops moving — is inherited
+          // rather than guessed at.
+          const scaleX = tile.width / TILE_SIZE
+          const scaleY = tile.height / TILE_SIZE
+          const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
+          const screenRight = tile.x + (cutRight - tileLeft) * scaleX
+          const screenTop = tile.y + (cutTop - tileTop) * scaleY
+          const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
+
+          const u0 = (cutLeft - left) / template.width
+          const u1 = (cutRight - left) / template.width
+          const v0 = (cutTop - top) / template.height
+          const v1 = (cutBottom - top) / template.height
+
+          // Strip order: top-left, top-right, bottom-left, bottom-right.
+          corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
+          corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
+          corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
+          corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+        }
+      }
+    } finally {
+      // Put it all back. The active texture unit especially: we leave it on 1 while binding the
+      // palette, and MapLibre binds its own textures expecting to still be on 0.
       gl.activeTexture(gl.TEXTURE1)
-      gl.bindTexture(gl.TEXTURE_2D, entry.palette)
-      gl.uniform1i(uniform(gl, 'u_palette'), 1)
-
-      gl.uniform1f(uniform(gl, 'u_fade'), fade)
-      gl.uniform2f(uniform(gl, 'u_size'), template.width, template.height)
-      gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
-      gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
-      gl.uniform1f(uniform(gl, 'u_stampRadius'), appearance.radius)
-      gl.uniform2f(uniform(gl, 'u_stampOffset'), appearance.translateX, appearance.translateY)
-      gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
-      gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
-
-      const left = template.originX + nudgeX
-      const top = template.originY + nudgeY
-      const right = left + template.width
-      const bottom = top + template.height
-
-      for (const tile of tiles) {
-        const tileLeft = tile.tile.x * TILE_SIZE
-        const tileTop = tile.tile.y * TILE_SIZE
-        // The part of this template that falls inside this tile, in canvas pixels.
-        const cutLeft = Math.max(left, tileLeft)
-        const cutTop = Math.max(top, tileTop)
-        const cutRight = Math.min(right, tileLeft + TILE_SIZE)
-        const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
-        if (cutRight <= cutLeft || cutBottom <= cutTop) continue
-
-        // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
-        // including snapping it to whole device pixels once the map stops moving — is inherited
-        // rather than guessed at.
-        const scaleX = tile.width / TILE_SIZE
-        const scaleY = tile.height / TILE_SIZE
-        const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
-        const screenRight = tile.x + (cutRight - tileLeft) * scaleX
-        const screenTop = tile.y + (cutTop - tileTop) * scaleY
-        const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
-
-        const u0 = (cutLeft - left) / template.width
-        const u1 = (cutRight - left) / template.width
-        const v0 = (cutTop - top) / template.height
-        const v1 = (cutBottom - top) / template.height
-
-        // Strip order: top-left, top-right, bottom-left, bottom-right.
-        corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
-        corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
-        corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
-        corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
-        gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
-      }
+      gl.bindTexture(gl.TEXTURE_2D, null)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, null)
+      gl.bindVertexArray(previousVao)
+      gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
+      gl.useProgram(previousProgram)
+      gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
+      if (!hadBlend) gl.disable(gl.BLEND)
+      if (hadDepth) gl.enable(gl.DEPTH_TEST)
     }
-
-    // Put it all back. The active texture unit especially: we leave it on 1 while binding the
-    // palette, and MapLibre binds its own textures expecting to still be on 0.
-    gl.activeTexture(gl.TEXTURE1)
-    gl.bindTexture(gl.TEXTURE_2D, null)
-    gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, null)
-    gl.bindVertexArray(previousVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-    gl.useProgram(previousProgram)
-    gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
-    if (!hadBlend) gl.disable(gl.BLEND)
-    if (hadDepth) gl.enable(gl.DEPTH_TEST)
     askForAnotherFrame()
   },
 }
