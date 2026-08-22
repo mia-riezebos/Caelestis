@@ -324,7 +324,10 @@ const treeView = (): HTMLElement => {
           onDelete: (target) => void applyDelete(target, rerenderTree),
           onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
           onGoTo: goTo,
-          onPlace: (id) => beginMove(id, rerenderTree),
+          onPlace: (id) => {
+            if (!beginMove(id, rerenderTree))
+              toast('Finish the placement already in progress, then move this one.', 'warning')
+          },
           onCopyToServer: (id) => void copyToServer(id, rerenderTree),
           onError: (message) => toast(message, 'error'),
           onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
@@ -786,7 +789,11 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     if (value === '') return
     status.className = 'text-xs opacity-60'
     status.textContent = 'Checking…'
-    const next = await whileBusy(submit, () => probeServer(server.url, value))
+    const next = await whileBusy(
+      submit,
+      () => probeServer(server.url, value),
+      `server:probe:${server.url}`,
+    )
     if (next === null) return
     if (!stillConnected(server)) return
     if (next.status === 'connected') {
@@ -984,7 +991,10 @@ const settingsView = (): HTMLElement => {
     status.style.display = ''
     status.className = 'text-xs px-3 pb-2 opacity-60'
     status.textContent = 'Connecting…'
-    const server = await whileBusy(add, () => probeServer(value, null))
+    // Keyed on the URL being probed rather than on the button, because the settings pane is rebuilt
+    // on any state change and hands back a fresh enabled one — the case `whileBusy`'s own docstring
+    // names, and these two probes are the example in it.
+    const server = await whileBusy(add, () => probeServer(value, null), `server:probe:${value}`)
     if (server === null) return
     if (server.status === 'unreachable') {
       status.className = 'text-xs px-3 pb-2 text-error'
@@ -1556,6 +1566,14 @@ const dropOnServerNode = async (
   if (draggedKey.startsWith('local:')) {
     const local = allLocal().find((candidate) => candidate.id === draggedKey.slice('local:'.length))
     if (local === undefined) return null
+    // The refusal the Copy dialog makes, for the same reason: while a placement is running the
+    // stored origin is the position being dragged away from, so publishing it puts the template on
+    // the server where nobody chose. A drag onto a server folder is the same upload by another
+    // gesture, and it had no guard at all.
+    if (movingId() === local.id) {
+      toast(`Finish placing “${local.name}” before copying it.`, 'warning')
+      return null
+    }
     const png = await templateAsPng(local)
     if (png === null) {
       toast('Could not encode that template.', 'error')
@@ -1839,7 +1857,17 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
           ]
         : [
             ['search', 'Go to', () => void goTo(templateId)],
-            ['move', 'Move', () => beginMove(templateId, rerender)],
+            [
+              'move',
+              'Move',
+              () => {
+                // `beginMove` refuses while another placement is running, while the template is
+                // mid-delete, and when it has gone. Dropping that answer made the menu entry do
+                // nothing at all, with no placement and no explanation.
+                if (!beginMove(templateId, rerender))
+                  toast('Finish the placement already in progress, then move this one.', 'warning')
+              },
+            ],
             ['uploadFile', 'Copy to a server', () => void copyToServer(templateId, rerender)],
             rename,
             remove,
@@ -2218,6 +2246,11 @@ const buildPanel = (): HTMLElement => {
   }
   noteWidth(getState().panelWidth)
   const KEYBOARD_STEP_PX = 16
+  // Held, then committed — the same shape the appearance sliders in this file use. Autorepeat is
+  // about thirty keydowns a second and each `setState` serialises the whole state, writes it to
+  // storage and rebuilds the view, so committing per keypress made holding an arrow key thirty
+  // full panel rebuilds a second. The width itself follows the key; only the record waits.
+  let held = false
   handle.addEventListener('keydown', (event) => {
     const step =
       event.key === 'ArrowLeft'
@@ -2227,11 +2260,18 @@ const buildPanel = (): HTMLElement => {
           : 0
     if (step === 0) return
     event.preventDefault()
+    held = true
     const next = panelWidthForViewport(panel.getBoundingClientRect().width + step)
     panel.style.width = `${next}px`
     noteWidth(next)
-    setState({ panelWidth: Math.round(next) })
   })
+  const commitWidth = (): void => {
+    if (!held) return
+    held = false
+    setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
+  }
+  handle.addEventListener('keyup', commitWidth)
+  handle.addEventListener('blur', commitWidth)
   handle.addEventListener('pointerdown', (event) => {
     event.preventDefault()
     handle.classList.add('caelestis-resizing')
