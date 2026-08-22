@@ -313,21 +313,22 @@ const treeView = (): HTMLElement => {
   body.dataset.caelestisScroller = ''
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
   const renderTree = (): void => {
+    activeTreeRender = renderTree
     body.replaceChildren(
       treeContents(
         {
           onAddServer: () => showView('settings'),
-          onCreateFolder: (target) => void createFolder(target, renderTree),
-          onImportTemplate: (target) => void importTemplate(target, renderTree),
-          onRename: (target, name) => void applyRename(target, name, renderTree),
-          onDelete: (target) => void applyDelete(target, renderTree),
-          onContextMenu: (target, event) => openContextMenu(target, event, renderTree),
+          onCreateFolder: (target) => void createFolder(target, rerenderTree),
+          onImportTemplate: (target) => void importTemplate(target, rerenderTree),
+          onRename: (target, name) => void applyRename(target, name, rerenderTree),
+          onDelete: (target) => void applyDelete(target, rerenderTree),
+          onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
           onGoTo: goTo,
-          onPlace: (id) => beginMove(id, renderTree),
-          onCopyToServer: (id) => void copyToServer(id, renderTree),
+          onPlace: (id) => beginMove(id, rerenderTree),
+          onCopyToServer: (id) => void copyToServer(id, rerenderTree),
           onError: (message) => toast(message, 'error'),
           onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
-            dropOnServerNode(server, nodeId, draggedKey, beforeKey, renderTree),
+            dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
           onMoveLocal: async (draggedKey, parentKey, _beforeKey) => {
             // `local` is the root of the category; `lf:<id>` is a folder within it.
             const parentFolderId =
@@ -338,11 +339,11 @@ const treeView = (): HTMLElement => {
               return await moveBranch(
                 draggedKey,
                 { kind: 'local', folderId: parentFolderId },
-                renderTree,
+                rerenderTree,
               )
             }
             if (draggedKey.startsWith('st:')) {
-              return await copyServerTemplateToLocal(draggedKey, parentFolderId, renderTree)
+              return await copyServerTemplateToLocal(draggedKey, parentFolderId, rerenderTree)
             }
             // Reparent first, then place. One drop target, two kinds of passenger — which it is
             // comes from the dragged row's own key, so nothing else has to care.
@@ -2347,6 +2348,19 @@ const MAX_DESTINATIONS = 2_000
  */
 const stillConnected = (server: ConnectedServer): boolean =>
   getState().servers.some((one) => one.url === server.url)
+
+/**
+ * Whichever tree is currently on screen.
+ *
+ * Every row callback closes over the `renderTree` of the build that created it, and `setState`
+ * notifies synchronously — so an action that writes state before it redraws (expanding a collapsed
+ * parent, say) has had the whole view replaced underneath it, and its own closure then paints an
+ * element that is no longer in the document. Routing through this makes a stale closure redraw the
+ * live tree instead of a detached one.
+ */
+let activeTreeRender: (() => void) | null = null
+
+const rerenderTree = (): void => activeTreeRender?.()
 
 const scrollerIn = (view: Element | null): HTMLElement | null =>
   view?.querySelector<HTMLElement>('[data-caelestis-scroller]') ??
