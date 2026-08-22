@@ -909,10 +909,19 @@ export const ensureTilePixels = (tile: TileCoord): void => {
       if (realm === null) return
       const response = await realm.fetch.call(realm, url, { signal: AbortSignal.timeout(15_000) })
       if (!response.ok) return
+      // Decoded through our own tap, which recognises the blob our fetch tap just tagged and
+      // captures the tile itself. Calling `capture` again here converted every chased tile twice: a
+      // second million-pixel canvas read, per tile, on the one path that runs at page load while
+      // the whole viewport is being backfilled. The bitmap is closed because nothing else will.
       const bitmap = (await Reflect.apply(realm.createImageBitmap, realm, [
         await response.blob(),
       ])) as ImageBitmap
-      capture(tile, bitmap)
+      // Our own tap decoded that, recognised the blob our fetch tap tagged, and captured the tile
+      // before this resolved. Converting again unconditionally read a second million-pixel canvas
+      // per chased tile, on the one path that runs at page load while the whole viewport is being
+      // backfilled. Only do it if the tap did not — it will not have if it failed to install.
+      if (!pixelsOfTile.has(key)) capture(tile, bitmap)
+      bitmap.close()
       count('pixels:chased a tile we missed')
     } catch (error) {
       warn('fetch', `could not chase tile ${tile.x}/${tile.y}`, String(error))
@@ -1244,30 +1253,45 @@ const capture = (
   from: 'tile' | 'preview' = 'tile',
 ): void => {
   if (!capturePixels) return
-  if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) return
+  /**
+   * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
+   *
+   * Their service worker substitutes a 1x1 transparent PNG for an absent tile, and
+   * `normalizeMissingTileResponse` above makes us produce the same thing for a 404. Declining it
+   * left the tile with no entry at all, which is not the same answer: markers over it never
+   * appeared, `markUnpainted` could never mark a fully unpainted tile — the one case it exists for
+   * — and the renderer went on asking for a repaint four times a second forever, waiting for pixels
+   * that were never coming. An empty tile is a real answer and gets recorded as one.
+   */
+  const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
+  if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return
   try {
-    const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
-    const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (context === null) return
-    context.drawImage(bitmap, 0, 0)
-    const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
-    const table = indexTable()
     const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
-    for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
-      // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
-      // that is not in the table can only be something we do not model — treated as unpainted rather
-      // than guessed at.
-      const index =
-        data[i + 3] === 0
-          ? UNPAINTED
-          : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
-            UNPAINTED)
-      // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
-      if (from === 'preview') {
-        const x = p % TILE_SIZE
-        indices[flipRow((p - x) / TILE_SIZE) * TILE_SIZE + x] = index
-      } else {
-        indices[p] = index
+    if (empty) {
+      indices.fill(UNPAINTED)
+    } else {
+      const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (context === null) return
+      context.drawImage(bitmap, 0, 0)
+      const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
+      const table = indexTable()
+      for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
+        // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
+        // that is not in the table can only be something we do not model — treated as unpainted rather
+        // than guessed at.
+        const index =
+          data[i + 3] === 0
+            ? UNPAINTED
+            : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
+              UNPAINTED)
+        // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
+        if (from === 'preview') {
+          const x = p % TILE_SIZE
+          indices[flipRow((p - x) / TILE_SIZE) * TILE_SIZE + x] = index
+        } else {
+          indices[p] = index
+        }
       }
     }
 
