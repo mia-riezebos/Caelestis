@@ -313,7 +313,6 @@ const treeView = (): HTMLElement => {
   body.dataset.caelestisScroller = ''
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
   const renderTree = (): void => {
-    activeTreeRender = renderTree
     body.replaceChildren(
       treeContents(
         {
@@ -353,10 +352,10 @@ const treeView = (): HTMLElement => {
             if (draggedKey.startsWith('local:')) {
               if (!(await setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId))) {
                 toast('Could not move that template into the folder.', 'error')
-                renderTree()
+                rerenderTree()
                 return null
               }
-              renderTree()
+              rerenderTree()
               return draggedKey
             } else if (draggedKey.startsWith('lf:')) {
               const folderId = draggedKey.slice('lf:'.length)
@@ -369,7 +368,7 @@ const treeView = (): HTMLElement => {
             return null
           },
         },
-        renderTree,
+        rerenderTree,
         searchQuery,
       ),
     )
@@ -380,12 +379,18 @@ const treeView = (): HTMLElement => {
     if (searchTimer !== null) clearTimeout(searchTimer)
     searchTimer = setTimeout(() => {
       searchTimer = null
-      renderTree()
+      rerenderTree()
     }, 100)
   })
+  // Claimed here rather than inside `renderTree`, because a closure that is still holding a
+  // reference will go on being called after its view is gone — `primeFromCache` resolves from
+  // IndexedDB long after a state change may have rebuilt everything. Claiming on call let that
+  // stale closure take the tree back and every redraw after it painted a detached element, which is
+  // the very failure the indirection was added to stop.
+  activeTreeRender = renderTree
   renderTree()
   // Paint what the servers said last time, then let a live fetch replace it.
-  void primeFromCache(renderTree)
+  void primeFromCache(rerenderTree)
 
   view.append(toolbar, body)
   return view
@@ -2239,7 +2244,7 @@ const buildPanel = (): HTMLElement => {
   handle.setAttribute('aria-label', 'Resize panel')
   handle.setAttribute('aria-orientation', 'vertical')
   handle.tabIndex = 0
-  const noteWidth = noteResizeRange
+  const noteWidth = (width: number): void => noteResizeRange(width, handle)
   noteWidth(getState().panelWidth)
   const KEYBOARD_STEP_PX = 16
   // Held, then committed — the same shape the appearance sliders in this file use. Autorepeat is
@@ -2395,7 +2400,8 @@ const stillConnected = (server: ConnectedServer): boolean =>
 /**
  * Whichever tree is currently on screen.
  *
- * Every row callback closes over the `renderTree` of the build that created it, and `setState`
+ * Every row callback would otherwise close over the `renderTree` of the build that created it, and
+ * `setState`
  * notifies synchronously — so an action that writes state before it redraws (expanding a collapsed
  * parent, say) has had the whole view replaced underneath it, and its own closure then paints an
  * element that is no longer in the document. Routing through this makes a stale closure redraw the
@@ -2411,8 +2417,13 @@ const rerenderTree = (): void => activeTreeRender?.()
  * Module-level because the bounds come from the viewport: a window resize moves them, and that
  * handler lives outside the builder that made the handle.
  */
-const noteResizeRange = (width: number): void => {
-  const handle = document.getElementById(PANEL_ID)?.querySelector('.caelestis-resize')
+const noteResizeRange = (width: number, known?: Element): void => {
+  // The caller passes the handle when it has one. The lookup is for the window-resize listener,
+  // which lives outside the builder — and it was also the reason the range never appeared at all:
+  // `buildPanel` sets the initial value before its caller has put the panel in the document, so the
+  // lookup found nothing and a `separator` that had just been made operable announced no range
+  // until the first drag. Passing it also keeps a drag from doing two DOM lookups per pointermove.
+  const handle = known ?? document.getElementById(PANEL_ID)?.querySelector('.caelestis-resize')
   if (handle === null || handle === undefined) return
   handle.setAttribute('aria-valuenow', String(Math.round(width)))
   handle.setAttribute('aria-valuemin', String(Math.round(minimumPanelWidth())))

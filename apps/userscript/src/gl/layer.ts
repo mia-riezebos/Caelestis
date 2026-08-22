@@ -553,8 +553,10 @@ export const overlayLayer = {
       gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
       if (!hadBlend) gl.disable(gl.BLEND)
       if (hadDepth) gl.enable(gl.DEPTH_TEST)
+      // Inside the restore, because a fade in progress asks for the frame that continues it. Left
+      // outside, a throw mid-loop skipped the request and the fade stalled until the map next moved.
+      askForAnotherFrame()
     }
-    askForAnotherFrame()
   },
 }
 

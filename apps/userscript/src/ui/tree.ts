@@ -1625,13 +1625,18 @@ export const treeContents = (
               muted: !template.published,
               ...(template.published ? {} : { meta: 'unpublished' }),
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
-              setVisible: (on) => {
-                // Both stores, always. The scope key is the only one that outlives the page — a
-                // server template is memory-only and is re-created from that key on the next load —
+              setVisible: async (on) => {
+                // Both stores, because the scope key is the only one that outlives the page — a
+                // server template is memory-only and is re-created from that key on the next load,
                 // so writing only the live store meant switching one back on lasted until reload
                 // and then silently undid itself.
+                //
+                // The one that can refuse goes first. `setLocalVisible` returns false while the
+                // template is being deleted, when a re-slice throws, and when the source budget or
+                // a CAS write refuses — and the row is told so and put back. Persisting before
+                // asking meant the next page load applied the change the user had been told failed.
+                if (drawn !== undefined && !(await setLocalVisible(drawn.id, on))) return false
                 setScopeVisible(visibilityKey, on)
-                if (drawn !== undefined) return setLocalVisible(drawn.id, on)
                 return true
               },
               canReparent: canEdit,

@@ -460,14 +460,20 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
   gl.disable(gl.DEPTH_TEST)
 
-  for (const one of work) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
-
-  gl.bindVertexArray(previousVao)
-  gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-  gl.useProgram(previousProgram)
-  gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
-  if (!hadBlend) gl.disable(gl.BLEND)
-  if (hadDepth) gl.enable(gl.DEPTH_TEST)
+  // The same rule as `layer.ts`: `render` catches so a bad frame cannot freeze MapLibre, and
+  // catching after the state is disturbed but before it is put back leaves MapLibre drawing the
+  // rest of that frame with our program bound, blending forced and depth test off. Skipping a frame
+  // has to mean skipping it cleanly, in both files.
+  try {
+    for (const one of work) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+  } finally {
+    gl.bindVertexArray(previousVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
+    gl.useProgram(previousProgram)
+    gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
+    if (!hadBlend) gl.disable(gl.BLEND)
+    if (hadDepth) gl.enable(gl.DEPTH_TEST)
+  }
 
   if (deferred && now >= nextRetry) {
     nextRetry = now + RETRY_MS

@@ -61,9 +61,29 @@ const read = (): void => {
   for (const listener of listeners) listener()
 }
 
+/**
+ * Once per frame, not once per mutation batch.
+ *
+ * `read` scans the whole document for `[id^="color-"]`, which is an unindexed attribute-prefix
+ * match, and wplace's own app re-renders its chrome continuously — so the unbatched version ran a
+ * full-document scan on every one of its mutations. The rail observer in `panel.ts` was fixed the
+ * same way for the same actor. Nothing is lost: opening a drawer and picking a colour happen on
+ * human timescales, and a frame is far finer than that.
+ */
+let queued = false
+
+const queueRead = (): void => {
+  if (queued) return
+  queued = true
+  requestAnimationFrame(() => {
+    queued = false
+    read()
+  })
+}
+
 const observe = (): void => {
   read()
-  const observer = new MutationObserver(read)
+  const observer = new MutationObserver(queueRead)
   observer.observe(document.documentElement, {
     subtree: true,
     childList: true,
