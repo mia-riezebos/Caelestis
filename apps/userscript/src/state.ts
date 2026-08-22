@@ -162,7 +162,13 @@ const readBoundedJson = async (response: Response, maxBytes: number): Promise<un
   } finally {
     reader.releaseLock()
   }
-  return text === '' ? null : JSON.parse(text)
+  // A body that is not JSON is a body we have nothing to read, not a failure of the call: an error
+  // page still carries its status, and that is what the caller reports. Only the cap throws.
+  try {
+    return text === '' ? null : JSON.parse(text)
+  } catch {
+    return null
+  }
 }
 
 const remoteJson = async (
@@ -859,7 +865,7 @@ const probeAdminScope = async (
     LARGE_TRANSFER_TIMEOUT_MS,
   )
   try {
-    const response = await fetch(`${base}/admin/nodes?season=${season}`, {
+    const { response, body } = await remoteJson(`${base}/admin/nodes?season=${season}`, {
       headers: token === null ? {} : { authorization: `Bearer ${token}` },
       signal: controller.signal,
     })
@@ -1245,14 +1251,14 @@ export const moveNode = async (
   parentId: string | null,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/nodes/${nodeId}`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify({ parentId }),
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -1263,14 +1269,14 @@ export const countNodeSubtree = async (
   nodeId: string,
 ): Promise<{ nodes: number; templates: number } | null> => {
   try {
-    const response = await fetch(`${server.url}/admin/nodes/${nodeId}/subtree`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}/subtree`, {
       headers: adminHeaders(server),
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
-    const body = (await response.json()) as { nodes?: unknown; templates?: unknown }
-    if (typeof body.nodes !== 'number' || typeof body.templates !== 'number') return null
-    return { nodes: body.nodes, templates: body.templates }
+    const parsed = body as { nodes?: unknown; templates?: unknown }
+    if (typeof parsed.nodes !== 'number' || typeof parsed.templates !== 'number') return null
+    return { nodes: parsed.nodes, templates: parsed.templates }
   } catch {
     return null
   }
@@ -1348,14 +1354,14 @@ export const patchTemplate = async (
   patch: { name?: string; nodeId?: string; published?: boolean },
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/templates/${templateId}`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify(patch),
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -1378,14 +1384,14 @@ export const renameServer = async (
   const trimmed = name.trim()
   if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
   try {
-    const response = await fetch(`${server.url}/admin/server`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/server`, {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify({ name: trimmed }),
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) {
-      return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+      return { ok: false, message: failure(response, isRecord(body) ? body : null) }
     }
     if (server.info !== null) {
       upsertServer({ ...server, info: { ...server.info, name: trimmed } })
@@ -1401,13 +1407,13 @@ export const deleteTemplate = async (
   templateId: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/templates/${templateId}`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
       method: 'DELETE',
       headers: adminHeaders(server),
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -1429,17 +1435,24 @@ export const uploadTemplateVersion = async (
     form.set('png', input.png, `${input.name}.png`)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
-    const response = await fetch(`${server.url}/admin/templates/${templateId}/versions`, {
-      method: 'POST',
-      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
-      body: form,
-    })
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/templates/${templateId}/versions`,
+      {
+        method: 'POST',
+        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        body: form,
+      },
+      MUTATION_JSON_BYTES,
+      // A PNG upload, like the one that creates a template: the ten-second budget is for a request
+      // that carries a sentence, not a megabyte.
+      LARGE_TRANSFER_TIMEOUT_MS,
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) {
-      const body = (await response.json()) as { versionId?: string }
-      return { ok: true, versionId: body.versionId ?? '' }
+      const versionId = isRecord(body) ? body.versionId : undefined
+      return { ok: true, versionId: typeof versionId === 'string' ? versionId : '' }
     }
-    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -1472,15 +1485,40 @@ interface BootstrapAccessToken {
 
 export type AccessToken = StoredAccessToken | BootstrapAccessToken
 
+const SCOPES: readonly string[] = ['read', 'report', 'admin']
+
+/**
+ * A configured server is someone else's machine, so its token list is checked rather than trusted:
+ * the panel renders these rows and hands `tokenHash` straight back as a URL path segment.
+ */
+const asAccessToken = (value: unknown): AccessToken | null => {
+  if (!isRecord(value)) return null
+  const { label, scope, createdAt, bootstrap, tokenHash, createdWithToken } = value
+  if (typeof label !== 'string' || typeof createdAt !== 'number') return null
+  if (typeof scope !== 'string' || !SCOPES.includes(scope)) return null
+  if (bootstrap === true) return { label, scope: 'admin', createdAt, bootstrap: true }
+  if (typeof tokenHash !== 'string' || !/^[0-9a-f]{1,128}$/.test(tokenHash)) return null
+  return {
+    tokenHash,
+    label,
+    scope: scope as StoredAccessToken['scope'],
+    createdWithToken: typeof createdWithToken === 'string' ? createdWithToken : '',
+    createdAt,
+  }
+}
+
 export const listAccessTokens = async (
   server: ConnectedServer,
 ): Promise<readonly AccessToken[] | null> => {
   try {
-    const response = await fetch(`${server.url}/admin/tokens`, { headers: adminHeaders(server) })
+    const { response, body } = await remoteJson(`${server.url}/admin/tokens`, {
+      headers: adminHeaders(server),
+    })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
-    const body = (await response.json()) as { tokens?: readonly AccessToken[] }
-    return body.tokens ?? []
+    const tokens = isRecord(body) ? body.tokens : undefined
+    if (!Array.isArray(tokens)) return []
+    return tokens.map(asAccessToken).filter((token): token is AccessToken => token !== null)
   } catch {
     // Null rather than empty, so the panel can say "could not ask" instead of "there are none" —
     // the difference between those two is the difference between a blip and a server with no way in.
@@ -1495,18 +1533,15 @@ export const createAccessToken = async (
   scope: AccessToken['scope'],
 ): Promise<{ ok: true; token: string } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/tokens`, {
+    const { response, body } = await remoteJson(`${server.url}/admin/tokens`, {
       method: 'POST',
       headers: adminHeaders(server),
       body: JSON.stringify({ label, scope }),
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
-    const body = (await response.json().catch(() => null)) as {
-      token?: string
-      error?: string
-    } | null
-    if (response.ok && typeof body?.token === 'string') return { ok: true, token: body.token }
-    return { ok: false, message: failure(response, body) }
+    const token = isRecord(body) ? body.token : undefined
+    if (response.ok && typeof token === 'string') return { ok: true, token }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -1520,13 +1555,16 @@ export const revokeAccessToken = async (
   tokenHash: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const response = await fetch(`${server.url}/admin/tokens/${tokenHash}`, {
-      method: 'DELETE',
-      headers: adminHeaders(server),
-    })
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/tokens/${encodeURIComponent(tokenHash)}`,
+      {
+        method: 'DELETE',
+        headers: adminHeaders(server),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, await response.json().catch(() => null)) }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
