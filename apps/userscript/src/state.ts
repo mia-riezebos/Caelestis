@@ -171,26 +171,38 @@ const readBoundedJson = async (response: Response, maxBytes: number): Promise<un
   }
 }
 
+/**
+ * Every call to a configured server, with the one timeout they all share.
+ *
+ * `read` runs inside the timeout on purpose. Headers arriving is not the exchange finishing, and a
+ * server that answers promptly and then dribbles its body forever is the shape this is here to
+ * bound; clearing the timer when `fetch` resolves would leave exactly that case unguarded.
+ */
+const remoteCall = async <T>(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+  read: (response: Response) => Promise<T>,
+): Promise<T> => {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
+  try {
+    return await read(await fetch(input, { ...init, signal: controller.signal }))
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 const remoteJson = async (
   input: string,
   init: RequestInit = {},
   maxBytes = MUTATION_JSON_BYTES,
   timeoutMs = REMOTE_TIMEOUT_MS,
-): Promise<{ response: Response; body: unknown }> => {
-  const controller = new AbortController()
-  const external = init.signal
-  const forwardAbort = (): void => controller.abort(external?.reason)
-  if (external?.aborted) forwardAbort()
-  else external?.addEventListener('abort', forwardAbort, { once: true })
-  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
-  try {
-    const response = await fetch(input, { ...init, signal: controller.signal })
-    return { response, body: await readBoundedJson(response, maxBytes) }
-  } finally {
-    clearTimeout(timeout)
-    external?.removeEventListener('abort', forwardAbort)
-  }
-}
+): Promise<{ response: Response; body: unknown }> =>
+  await remoteCall(input, init, timeoutMs, async (response) => ({
+    response,
+    body: await readBoundedJson(response, maxBytes),
+  }))
 
 const serverInfoFrom = (value: unknown): ServerInfo | null => {
   if (!isRecord(value)) return null
@@ -826,14 +838,12 @@ const fetchNodes = async (
   base: string,
   token: string | null,
   season: number,
-  signal?: AbortSignal,
 ): Promise<NodeListResult> => {
   try {
     const { response, body } = await remoteJson(
       `${base}/admin/nodes?season=${season}`,
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        ...(signal === undefined ? {} : { signal }),
       },
       TREE_JSON_BYTES,
       LARGE_TRANSFER_TIMEOUT_MS,
@@ -854,28 +864,22 @@ const probeAdminScope = async (
   base: string,
   token: string | null,
   season: number,
-  signal?: AbortSignal,
 ): Promise<boolean> => {
-  const controller = new AbortController()
-  const forwardAbort = (): void => controller.abort(signal?.reason)
-  if (signal?.aborted) forwardAbort()
-  else signal?.addEventListener('abort', forwardAbort, { once: true })
-  const timeout = setTimeout(
-    () => controller.abort(new Error('request timed out')),
-    LARGE_TRANSFER_TIMEOUT_MS,
-  )
   try {
-    const { response, body } = await remoteJson(`${base}/admin/nodes?season=${season}`, {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-    await discardResponseBody(response)
-    return response.ok
+    // The status is the whole answer, so the body is thrown away unread. Parsing it measured the
+    // full folder tree against the 64 KB cap meant for a one-line mutation reply, and any server
+    // with a real tree therefore reported that our token could only read it.
+    return await remoteCall(
+      `${base}/admin/nodes?season=${season}`,
+      { headers: token === null ? {} : { authorization: `Bearer ${token}` } },
+      LARGE_TRANSFER_TIMEOUT_MS,
+      async (response) => {
+        await discardResponseBody(response)
+        return response.ok
+      },
+    )
   } catch {
     return false
-  } finally {
-    clearTimeout(timeout)
-    signal?.removeEventListener('abort', forwardAbort)
   }
 }
 
@@ -899,11 +903,7 @@ export const peekProbedNodes = (server: ConnectedServer): readonly TreeNode[] | 
  * needed *before* asking anyone for one. Asking for a code up front is the likeliest way to lose
  * someone on first run — most servers will not want one.
  */
-export const probeServer = async (
-  url: string,
-  token: string | null,
-  signal?: AbortSignal,
-): Promise<ConnectedServer> => {
+export const probeServer = async (url: string, token: string | null): Promise<ConnectedServer> => {
   let base: string
   try {
     base = canonicalServerUrl(url)
@@ -924,7 +924,6 @@ export const probeServer = async (
       `${base}/server`,
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        ...(signal === undefined ? {} : { signal }),
       },
       SERVER_JSON_BYTES,
     )
@@ -963,7 +962,6 @@ export const probeServer = async (
         `${base}/manifest`,
         {
           headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
-          ...(signal === undefined ? {} : { signal }),
         },
         TREE_JSON_BYTES,
         LARGE_TRANSFER_TIMEOUT_MS,
@@ -1006,7 +1004,7 @@ export const probeServer = async (
     }
     const manifest = manifestProbeFrom(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
-    const isAdmin = await probeAdminScope(base, effectiveToken, manifest.season, signal)
+    const isAdmin = await probeAdminScope(base, effectiveToken, manifest.season)
     const connected: ConnectedServer = {
       url: base,
       info,
@@ -1067,7 +1065,6 @@ export const createNode = async (
   server: ConnectedServer,
   name: string,
   parentId: string | null,
-  signal?: AbortSignal,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
@@ -1079,7 +1076,6 @@ export const createNode = async (
         ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
       },
       body: JSON.stringify({ season: server.season, parentId, name }),
-      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) {
       const node = treeNodeFrom(body)
@@ -1135,14 +1131,12 @@ export const renameNode = async (
   server: ConnectedServer,
   nodeId: string,
   name: string,
-  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
     const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify({ name }),
-      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
@@ -1156,7 +1150,6 @@ export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,
   cascade = false,
-  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
     const { response, body } = await remoteJson(
@@ -1164,7 +1157,6 @@ export const deleteNode = async (
       {
         method: 'DELETE',
         headers: adminHeaders(server),
-        ...(signal === undefined ? {} : { signal }),
       },
     )
     if (response.ok) return { ok: true }
@@ -1176,12 +1168,9 @@ export const deleteNode = async (
 }
 
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
-export const listNodes = async (
-  server: ConnectedServer,
-  signal?: AbortSignal,
-): Promise<NodeListResult> => {
+export const listNodes = async (server: ConnectedServer): Promise<NodeListResult> => {
   if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
-  const result = await fetchNodes(server.url, server.token, server.season, signal)
+  const result = await fetchNodes(server.url, server.token, server.season)
   if (!result.ok && (result.status === 401 || result.status === 403)) {
     noteAuthFailure(server, result.status)
   }
@@ -1204,7 +1193,6 @@ export const uploadTemplate = async (
     originY: number
     png: Blob
   },
-  signal?: AbortSignal,
 ): Promise<{ ok: true; id: string } | { ok: false; message: string }> => {
   try {
     const form = new FormData()
@@ -1219,7 +1207,6 @@ export const uploadTemplate = async (
         method: 'POST',
         headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
         body: form,
-        ...(signal === undefined ? {} : { signal }),
       },
       MUTATION_JSON_BYTES,
       LARGE_TRANSFER_TIMEOUT_MS,

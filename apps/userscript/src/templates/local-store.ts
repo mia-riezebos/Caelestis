@@ -2148,11 +2148,7 @@ const buildStamp = async (
  * previewed locally is byte-identical to what is stored — no second opinion from a second
  * quantiser on the way through.
  */
-export const templateAsPng = async (
-  template: PlacedTemplate,
-  signal?: AbortSignal,
-): Promise<Blob | null> => {
-  const encoded = await encodeIndexedPng(template.width, template.height, template.indices, signal)
-  signal?.throwIfAborted()
+export const templateAsPng = async (template: PlacedTemplate): Promise<Blob | null> => {
+  const encoded = await encodeIndexedPng(template.width, template.height, template.indices)
   return new Blob([Uint8Array.from(encoded)], { type: 'image/png' })
 }
