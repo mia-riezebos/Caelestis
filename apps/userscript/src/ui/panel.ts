@@ -41,6 +41,7 @@ import {
   forgetServerTemplates,
   localTemplates,
   onLocalChange,
+  previewOriginFor,
   removeLocalTemplate,
   renameLocalTemplate,
   setTemplateFolder,
@@ -1061,9 +1062,26 @@ const freeFolderName = (taken: ReadonlySet<string>): string => {
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
 
+/**
+ * Show me where this is.
+ *
+ * An import that has never been placed has a stored origin, but it is the map centre it was dropped
+ * at rather than anywhere the user chose, and while it is being positioned the origin that matters
+ * is the live preview. Going to the stored one flew away from the thing being placed.
+ */
 const goTo = (templateId: string): void => {
   const template = localTemplates().find((candidate) => candidate.id === templateId)
-  if (template !== undefined) navigateTo(centreOf(template))
+  if (template === undefined) return
+  const preview = previewOriginFor(templateId)
+  if (preview !== null) {
+    navigateTo(centreOf({ ...template, originX: preview.x, originY: preview.y }))
+    return
+  }
+  if (template.source === 'image' && !template.everPlaced) {
+    toast(`“${template.name}” has not been placed yet.`, 'warning')
+    return
+  }
+  navigateTo(centreOf(template))
 }
 
 const applyRename = async (
@@ -1646,13 +1664,25 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
   const cancel = document.createElement('button')
   cancel.className = 'btn btn-xs btn-ghost'
   cancel.textContent = 'Cancel'
-  cancel.addEventListener('click', () => box.remove())
+  // Cancel has to mean it. Encoding a large template takes long enough to change your mind during,
+  // and removing the box alone left the upload running to completion behind a dialog that was gone.
+  let cancelled = false
+  cancel.addEventListener('click', () => {
+    cancelled = true
+    box.remove()
+  })
   const go = document.createElement('button')
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Replace'
   go.addEventListener('click', () => {
-    const source = sources.find((candidate) => candidate.id === chooser.value)
-    if (source === undefined) return
+    // Read fresh rather than using the list captured when the dialog opened: it has been on screen
+    // while the map was in use, and the template may have been moved, renamed or redrawn since.
+    const source = allLocal().find((candidate) => candidate.id === chooser.value)
+    if (source === undefined) {
+      toast('That template is no longer here.', 'error')
+      box.remove()
+      return
+    }
     void whileBusy(go, async () => {
       label.textContent = 'Encoding…'
       const png = await templateAsPng(source)
@@ -1661,6 +1691,7 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
         box.remove()
         return
       }
+      if (cancelled) return
       label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
       const result = await uploadTemplateVersion(server, templateId, {
         originX: source.originX,
@@ -1964,7 +1995,12 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   const cancel = document.createElement('button')
   cancel.className = 'btn btn-xs btn-ghost'
   cancel.textContent = 'Cancel'
-  cancel.addEventListener('click', () => box.remove())
+  // As in Replace: Cancel stops the upload, not just the dialog.
+  let cancelled = false
+  cancel.addEventListener('click', () => {
+    cancelled = true
+    box.remove()
+  })
   const go = document.createElement('button')
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Copy'
@@ -1984,20 +2020,28 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
       toast(`Finish placing “${template.name}” before copying it.`, 'warning')
       return
     }
+    // Read fresh: this dialog has been open while the map was in use.
+    const current = allLocal().find((candidate) => candidate.id === templateId)
+    if (current === undefined) {
+      toast(`“${template.name}” is no longer here.`, 'error')
+      box.remove()
+      return
+    }
     void whileBusy(go, async () => {
       label.textContent = 'Encoding…'
-      const png = await templateAsPng(template)
+      const png = await templateAsPng(current)
       if (png === null) {
         toast('Could not encode that template.', 'error')
         box.remove()
         return
       }
+      if (cancelled) return
       label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
       const result = await uploadTemplate(server, {
         nodeId,
-        name: template.name,
-        originX: template.originX,
-        originY: template.originY,
+        name: current.name,
+        originX: current.originX,
+        originY: current.originY,
         png,
       })
       box.remove()
