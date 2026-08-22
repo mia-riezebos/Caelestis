@@ -21,10 +21,19 @@ import { spawn } from 'node:child_process'
 
 const CDP = 'http://127.0.0.1:9222'
 const PORT_ARG = '--remote-debugging-port=9222'
+/**
+ * How to recognise a running browser.
+ *
+ * On Linux this is matched against the process *name* rather than the whole command line. `-f` and
+ * a bare alternation matched anything whose arguments merely mentioned Chromium — an editor with a
+ * file open, a shell in a directory called `chromium`, and this script itself, whose own path ends
+ * in `chromium.mjs`. `--relaunch` then killed the run that issued it.
+ */
 const PROCESS_PATTERN =
   process.platform === 'darwin'
     ? 'Chromium.app/Contents/MacOS/Chromium'
-    : '(chromium|chromium-browser|google-chrome)'
+    : '(chromium|chromium-browser|google-chrome|chrome)'
+const MATCH_ARGS = process.platform === 'darwin' ? ['-f'] : ['-x']
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -47,6 +56,24 @@ const run = (command, args) =>
     child.on('error', () => resolve(false))
   })
 
+/**
+ * Start a browser and let go of it.
+ *
+ * `open -a` on macOS returns as soon as the app is asked to start, but a Linux `chromium` stays in
+ * the foreground for the whole session — awaiting its exit meant the script hung until the user
+ * closed the browser it had just opened. Success here is "the process started", and the port check
+ * that follows is what decides whether it worked.
+ */
+const launch = (command, args) =>
+  new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: 'ignore', detached: true })
+    child.on('error', () => resolve(false))
+    child.on('spawn', () => {
+      child.unref()
+      resolve(true)
+    })
+  })
+
 const output = (command, args) =>
   new Promise((resolve) => {
     const child = spawn(command, args)
@@ -60,7 +87,7 @@ const output = (command, args) =>
 
 /** A Chromium process that is not ours, i.e. one started without the port. */
 const runningWithoutPort = async () => {
-  const found = await output('pgrep', ['-f', PROCESS_PATTERN])
+  const found = await output('pgrep', [...MATCH_ARGS, PROCESS_PATTERN])
   return found !== ''
 }
 
@@ -91,7 +118,7 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
     if (process.platform === 'darwin') {
       await run('osascript', ['-e', 'tell application "Chromium" to quit'])
     } else {
-      await run('pkill', ['-f', PROCESS_PATTERN])
+      await run('pkill', [...MATCH_ARGS, PROCESS_PATTERN])
     }
     // Quitting is not instant, and relaunching too early gets the arguments dropped again.
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -109,7 +136,7 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
   // and let the port decide.
   let launched = false
   for (const [command, args] of LAUNCHERS) {
-    if (await run(command, args)) {
+    if (await launch(command, args)) {
       launched = true
       break
     }
@@ -131,7 +158,7 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
     const restart =
       process.platform === 'darwin'
         ? `  osascript -e 'tell application "Chromium" to quit'\n  open -a Chromium --args ${PORT_ARG}`
-        : `  pkill -f '${PROCESS_PATTERN}'\n  chromium ${PORT_ARG}`
+        : `  pkill -x '${PROCESS_PATTERN}'\n  chromium ${PORT_ARG}`
     throw new Error(
       'Chromium is already running without the debugging port, and the port can only be set at\n' +
         'launch — the arguments are dropped when the app is already open. Pass --relaunch to quit\n' +

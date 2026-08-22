@@ -2271,7 +2271,19 @@ export const installPanel = (): void => {
     if (!rail.contains(railButton())) rail.append(railButton(), colourModeButton())
     positionRail()
   }
-  new MutationObserver(sync).observe(document.body, { childList: true, subtree: true })
+  // Once per frame, not once per mutation. `sync` walks every button in the document looking for
+  // their rail and then measures it, and wplace is a live map that mutates its DOM continuously —
+  // so the unbatched version ran a full-document scan and forced a layout on every one of them.
+  let queued = false
+  const queueSync = (): void => {
+    if (queued) return
+    queued = true
+    requestAnimationFrame(() => {
+      queued = false
+      sync()
+    })
+  }
+  new MutationObserver(queueSync).observe(document.body, { childList: true, subtree: true })
   window.addEventListener('resize', () => {
     positionRail()
     const panel = document.getElementById(PANEL_ID)

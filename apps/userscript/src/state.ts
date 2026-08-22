@@ -772,10 +772,13 @@ export const removeLocalFolder = (id: string): void => {
 
 export const moveLocalFolder = (id: string, parentId: string | null): void => {
   if (id === parentId) return
-  let walk = parentId
   const folders = getState().localFolders
-  while (walk !== null) {
-    if (walk === id) return
+  let walk = parentId
+  // Bounded by the number of folders, because the list comes back from storage and every other
+  // reader in this file treats that as something to check rather than trust. A chain longer than
+  // the list is a cycle, and an unbounded walk up one hangs the tab instead of refusing the move.
+  for (let step = 0; walk !== null; step++) {
+    if (walk === id || step > folders.length) return
     walk = folders.find((candidate) => candidate.id === walk)?.parentId ?? null
   }
   setState({

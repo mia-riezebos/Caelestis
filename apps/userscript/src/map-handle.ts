@@ -29,7 +29,6 @@ import { pageWindow } from './page-world.js'
 
 /** Assigned by MapLibre's `Map` during `_setupContainer`. Measured: `_canvasContainer` fires. */
 const WITNESS_PROPERTIES = ['_canvasContainer', '_controlContainer', '_canvas'] as const
-const RELEASE_AFTER_MS = 30_000
 
 let captured: MapLike | null = null
 
@@ -66,11 +65,20 @@ const pageProto = (realm: Window & typeof globalThis = pageWindow()): object =>
 const installed = new Set<string>()
 const ours = new Map<string, PropertyDescriptor>()
 let installedPrototype: object | null = null
-let releaseTimer: ReturnType<typeof setTimeout> | null = null
 
+/**
+ * The traps come off when the map is caught, and not on a clock.
+ *
+ * There was a thirty-second release timer here that bounded nothing: `main.ts` re-attaches every
+ * second, so the traps went back on thirty seconds after each expiry for as long as the page was
+ * open. Making that bound real is worse than dropping it — this setter is the only way the map is
+ * ever found, so a MapLibre that constructs late would be missed for the rest of the session and
+ * every overlay with it.
+ *
+ * Holding them costs close to nothing. They are three MapLibre-private names, and the setter's
+ * whole job is to complete the assignment exactly as an ordinary property write would.
+ */
 const removeTraps = (): void => {
-  if (releaseTimer !== null) clearTimeout(releaseTimer)
-  releaseTimer = null
   const prototype = installedPrototype
   for (const property of installed) {
     if (prototype === null) continue
@@ -137,7 +145,6 @@ export const installMapCapture = (realm: Window & typeof globalThis = pageWindow
       // A property already defined non-configurably is not worth fighting over; the others remain.
     }
   }
-  if (installed.size > 0) releaseTimer = setTimeout(removeTraps, RELEASE_AFTER_MS)
 }
 
 export const getMap = (): MapLike | null => captured

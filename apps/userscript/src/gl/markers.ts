@@ -184,21 +184,31 @@ export interface MarkerStyle {
 /**
  * How many device pixels one CSS pixel is, right now.
  *
- * Read per draw rather than captured once: dragging a window between a laptop's own display and an
- * external monitor changes it without reloading the page, and a marker that stayed the size it was
- * on the other screen is exactly the bug this is here to avoid.
+ * Never captured once and kept: dragging a window between a laptop's own display and an external
+ * monitor changes it without reloading the page, and a marker that stayed the size it was on the
+ * other screen is exactly the bug this is here to avoid.
  *
  * Falls back to the drawing buffer against the canvas's CSS width, because that is what MapLibre
  * itself sized the buffer by — on a page that has overridden `devicePixelRatio`, the buffer is the
  * honest answer and `window.devicePixelRatio` is not.
+ *
+ * That fallback is a layout read, and this is called once per tile per frame — twelve hundred
+ * forced reflows a second on a full screen of tiles. So the answer is held against the buffer size
+ * it was measured at. MapLibre keeps the buffer at CSS size times the ratio, so nothing that would
+ * change this number can change it without also resizing the buffer: the cache catches the monitor
+ * move it exists for and costs one comparison the rest of the time.
  */
+let cachedScale: { canvas: unknown; buffer: number; scale: number } | null = null
+
 const deviceScale = (gl: WebGL2RenderingContext): number => {
   const canvas = gl.canvas
-  if (canvas instanceof HTMLCanvasElement) {
-    const width = canvas.getBoundingClientRect().width
-    if (width > 0) return gl.drawingBufferWidth / width
-  }
-  return window.devicePixelRatio || 1
+  const buffer = gl.drawingBufferWidth
+  if (cachedScale !== null && cachedScale.canvas === canvas && cachedScale.buffer === buffer)
+    return cachedScale.scale
+  const measured = canvas instanceof HTMLCanvasElement ? canvas.getBoundingClientRect().width : 0
+  const scale = measured > 0 ? buffer / measured : window.devicePixelRatio || 1
+  cachedScale = { canvas, buffer, scale }
+  return scale
 }
 
 /**

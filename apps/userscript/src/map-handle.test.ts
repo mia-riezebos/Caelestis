@@ -102,15 +102,6 @@ describe('installMapCapture', () => {
     expect(witnessDescriptor()).toBeDefined()
   })
 
-  it('stops changing Object.prototype after a bounded initial capture window', () => {
-    installMapCapture()
-
-    vi.advanceTimersByTime(30_000)
-
-    expect(witnessDescriptor()).toBeUndefined()
-    expect(getMap()).toBeNull()
-  })
-
   it('does not remove a setter that replaces ours after capture', () => {
     installMapCapture()
     ;(mapLike() as Record<string, unknown>)[WITNESS] = {}
