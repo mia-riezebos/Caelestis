@@ -196,6 +196,22 @@ const uploadPalette = (
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 }
 
+/**
+ * Will this device take a texture of this size?
+ *
+ * An oversized `texImage2D` records a GL error rather than throwing, so the upload looks like it
+ * worked and the sampler reads nothing: the overlay draws blank and the cache never retries it. A
+ * valid import can be thousands of pixels on a side while a device reports a limit of 8192, so the
+ * limit is asked for rather than assumed.
+ */
+const fitsInATexture = (gl: WebGL2RenderingContext, width: number, height: number): boolean => {
+  const limit = gl.getParameter(gl.MAX_TEXTURE_SIZE) as unknown
+  // A context that will not say has not said no. Refusing on an unreadable limit would take every
+  // overlay off the map to avoid a size almost nothing reaches.
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return true
+  return width <= limit && height <= limit
+}
+
 /** Upload a template's indices once, as one byte per pixel. */
 const uploadIndices = (
   gl: WebGL2RenderingContext,
@@ -382,6 +398,13 @@ export const overlayLayer = {
     for (const { template, fade } of visible) {
       let entry = gpu.get(template.id)
       if (entry === undefined) {
+        if (!fitsInATexture(gl, template.width, template.height)) {
+          warn(
+            'install',
+            `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
+          )
+          continue
+        }
         const indices = gl.createTexture()
         const palette = gl.createTexture()
         if (indices === null || palette === null) continue

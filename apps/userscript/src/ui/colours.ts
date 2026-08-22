@@ -292,11 +292,21 @@ export const onlySelectedToggle = (
   return button
 }
 
-export const coloursSection = (rerender: () => void): HTMLElement => {
+export const coloursSection = (
+  rerender: () => void,
+  /**
+   * The redraw for anything that lands later.
+   *
+   * `/me` answers after the pane is built, so its redraw can arrive while a slider is under the
+   * user's finger or a colour picker is open. That one goes through the panel's guarded refresh,
+   * which stands down in both cases; the direct `rerender` stays for the redraws a click asks for.
+   */
+  refreshLater: () => void = rerender,
+): HTMLElement => {
   const wrap = document.createElement('div')
   // Colours get bought mid-session. Showing this pane is exactly the moment a stale "Owned" is
   // visible, so ask again — rate-limited, and it only redraws if the answer moved.
-  refreshAccount(rerender)
+  refreshAccount(refreshLater)
   // What is actually hidden right now, so the grid agrees with the canvas while a mode is driving
   // it rather than showing the switches the mode is overriding.
   const hidden = new Set(globalHiddenColours())

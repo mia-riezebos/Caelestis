@@ -340,6 +340,15 @@ const store = (
 interface PendingScan {
   readonly pixels: Uint8Array
   readonly templateSource: Uint8Array
+  /**
+   * What the job was asked about, beyond the two byte arrays.
+   *
+   * The origin, the moved count and the hidden colours all change the answer while leaving both
+   * arrays identical: moving a template or turning a colour off during a scan produced a reply that
+   * matched on identity and was stored under its old signature, so obsolete markers stayed on screen
+   * until a repaint happened to start a second scan.
+   */
+  readonly signature: string
 }
 
 const inFlight = new Map<string, PendingScan>()
@@ -352,16 +361,24 @@ const requestScan = (
   key: string,
 ): void => {
   const templateSource = template.indices
+  const asked = signature(template)
   const pending = inFlight.get(cacheKey)
-  if (pending?.pixels === pixels && pending.templateSource === templateSource) {
+  if (
+    pending?.pixels === pixels &&
+    pending.templateSource === templateSource &&
+    pending.signature === asked
+  ) {
     stale.delete(cacheKey)
     return
   }
-  inFlight.set(cacheKey, { pixels, templateSource })
+  inFlight.set(cacheKey, { pixels, templateSource, signature: asked })
   stale.delete(cacheKey)
   void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
     const current = inFlight.get(cacheKey)
-    const isCurrent = current?.pixels === pixels && current.templateSource === templateSource
+    const isCurrent =
+      current?.pixels === pixels &&
+      current.templateSource === templateSource &&
+      current.signature === asked
     if (isCurrent) inFlight.delete(cacheKey)
     if (!isCurrent) return
     if (outcome === null) {

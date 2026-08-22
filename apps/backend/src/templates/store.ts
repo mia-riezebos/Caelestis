@@ -50,11 +50,16 @@ export interface StoredTemplate {
  * Tiles one upload may cover.
  *
  * Every chunk costs an R2 HEAD, an R2 PUT, a compression and a share of a D1 batch statement, so the
- * bound is on the pipeline rather than on the image: 512 tiles is a 512,000-pixel span in one
- * dimension, far beyond a placed template, and keeps the batch, the subrequest count and the
- * concurrent compressions comfortably inside a Worker invocation.
+ * bound is on the pipeline rather than on the image: 400 tiles is a 400,000-pixel span in one
+ * dimension, far beyond a placed template.
+ *
+ * The number comes from the Workers Free plan's 1,000 internal subrequests, which R2 and D1 binding
+ * calls both count against. `hasAll` is one HEAD per distinct hash, because R2 has no bulk existence
+ * operation, and a first upload has no hash already present — so the worst case is 400 HEADs, 400
+ * PUTs and roughly twenty batch statements, a little over 800. At 512 the same upload asked for more
+ * than a thousand and failed after writing part of its chunks, leaving those orphaned.
  */
-const MAX_TEMPLATE_CHUNKS = 512
+const MAX_TEMPLATE_CHUNKS = 400
 
 /** An upload the pipeline refuses for a reason the client can act on — answered as 400, not 500. */
 export class StoreTemplateError extends Error {

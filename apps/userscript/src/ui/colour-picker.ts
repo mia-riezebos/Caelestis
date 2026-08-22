@@ -384,8 +384,15 @@ const openPicker = (
     // pressed target before the event can reach it, so let that dispatch finish first. Escape has no
     // downstream pointer target and can redraw immediately; the anchor's control key lets its owner
     // carry focus onto the replacement swatch during that rebuild.
-    if (deferRedraw) setTimeout(() => onClose?.(), 0)
-    else onClose?.()
+    if (deferRedraw) {
+      // Only if nothing has opened since. Clicking the other swatch closes this picker during
+      // capture and opens that one on the click itself, so a redraw fired a tick later would tear
+      // down the surface holding the new picker's anchor — leaving it positioned against a detached
+      // element and its focus return aimed at a removed button.
+      setTimeout(() => {
+        if (closeOpenPicker === null) onClose?.()
+      }, 0)
+    } else onClose?.()
   }
   const outside = (event: PointerEvent): void => {
     if (

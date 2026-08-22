@@ -867,6 +867,18 @@ const committedRevision = (result: SaveResult): number | null =>
  * browser's opinions about someone else's template, and re-syncing pixels is no reason to discard
  * them. Everything else — the name, where it sits, the pixels — comes from the server.
  */
+/**
+ * Is there room for this server template, before anything is downloaded for it?
+ *
+ * `putServerTemplate` refuses past the budget, but only after its caller has fetched and decoded the
+ * pixels. A server is free to advertise a manifest far larger than the budget, so the caller needs to
+ * know before it spends the work — replacing one already held always has room, since it takes the
+ * slot it is already in.
+ */
+export const hasRoomForServerTemplate = (id: string): boolean =>
+  templates.has(id) ||
+  [...templates.values()].filter(isServerTemplate).length < MAX_SERVER_TEMPLATES
+
 export const putServerTemplate = async (
   template: ImportedTemplate & {
     serverUrl: string

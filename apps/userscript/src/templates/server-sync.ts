@@ -11,6 +11,7 @@ import type { ServerTemplate } from '../server-cache.js'
 import { type ConnectedServer, getState, listServerContents, onStateChange } from '../state.js'
 import {
   forgetServerTemplate,
+  hasRoomForServerTemplate,
   localTemplates,
   putServerTemplate,
   updateServerTemplateMetadata,
@@ -223,6 +224,23 @@ export const serverTemplateKey = (serverUrl: string, id: string): string => `srv
 const inFlight = new Set<string>()
 
 /**
+ * Which generation of a server's connection a download belongs to.
+ *
+ * A chunk request outlives the connection that asked for it. Disconnecting takes the server's
+ * templates away, and a download still in the air then put one back — an overlay with no server row
+ * left to poll it or turn it off, until the page reloads. The generation moves when the connection
+ * does, so a reply that comes back into a different one is dropped rather than drawn.
+ */
+const generations = new Map<string, number>()
+
+const generationOf = (serverUrl: string): number => generations.get(serverUrl) ?? 0
+
+/** Called when a server's templates are taken away, so anything already downloading for it lands stale. */
+export const endServerGeneration = (serverUrl: string): void => {
+  generations.set(serverUrl, generationOf(serverUrl) + 1)
+}
+
+/**
  * Bring one server's templates onto the canvas, and take away what it no longer has.
  *
  * Unpublished ones are drawn too, and the scope sorts that out by itself: the manifest only lists
@@ -255,6 +273,7 @@ export const syncServerTemplates = async (
     if (!wanted.has(held.id)) forgetServerTemplate(held.id)
   }
 
+  const generation = generationOf(server.url)
   for (const [key, template] of wanted) {
     const held = localTemplates().find((candidate) => candidate.id === key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
@@ -265,10 +284,18 @@ export const syncServerTemplates = async (
       continue
     }
     if (inFlight.has(key)) continue
+    // Asked before the download, not after. A server may advertise a manifest far larger than the
+    // rendering budget, and decoding a template only to have the store refuse it means an
+    // `ImageBitmap` built for every one of them on every poll.
+    if (!hasRoomForServerTemplate(key)) continue
     inFlight.add(key)
     try {
       const built = await assemble(server, template)
       if (built === null) continue
+      // The connection this download belongs to may have ended, or a later poll may have taken over
+      // this template, while the chunks were in the air.
+      if (generationOf(server.url) !== generation) return
+      if (!hasRoomForServerTemplate(key)) continue
       await putServerTemplate({
         id: key,
         name: template.name,

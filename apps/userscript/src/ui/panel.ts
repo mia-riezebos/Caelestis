@@ -48,7 +48,7 @@ import {
 import { beginMove, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
-import { forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
+import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen } from '../wplace-paint.js'
 import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
 import { isColourPickerOpen } from './colour-picker.js'
@@ -587,6 +587,9 @@ const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
  * longer refer to anything.
  */
 const disconnectServer = (server: ConnectedServer): void => {
+  // Anything already downloading for this server lands stale rather than drawing an overlay with no
+  // server row left to control it.
+  endServerGeneration(server.url)
   forgetServerTemplates(server.url)
   const hashes = forgetServerRows(server.url)
   const nodes = forgetNodes(server.url)
@@ -895,7 +898,7 @@ const appearanceView = (): HTMLElement => {
   view.appendChild(markers)
 
   view.appendChild(sectionHeader('Colours', 'palette'))
-  view.appendChild(coloursSection(rerender))
+  view.appendChild(coloursSection(rerender, refreshView))
   return view
 }
 
