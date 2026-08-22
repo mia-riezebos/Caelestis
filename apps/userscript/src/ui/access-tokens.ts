@@ -161,8 +161,10 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
       return
     }
     note.style.display = 'none'
-    const result = await whileBusy(create, () =>
-      createAccessToken(server, name, scope.value as ScopeId),
+    const result = await whileBusy(
+      create,
+      () => createAccessToken(server, name, scope.value as ScopeId),
+      `token:create:${server.url}`,
     )
     if (result === null) return
     if (!result.ok) {

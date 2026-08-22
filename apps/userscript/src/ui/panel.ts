@@ -1,4 +1,4 @@
-import { nodeSlug } from '@caelestis/shared'
+import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { redraw, viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
@@ -1376,12 +1376,16 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Move'
   go.addEventListener('click', () => {
-    void whileBusy(go, async () => {
-      const result = await patchTemplate(server, templateId, { nodeId: chooser.value })
-      box.remove()
-      if (!result.ok) toast(result.message, 'error')
-      await refreshNodes(server, rerender)
-    })
+    void whileBusy(
+      go,
+      async () => {
+        const result = await patchTemplate(server, templateId, { nodeId: chooser.value })
+        box.remove()
+        if (!result.ok) toast(result.message, 'error')
+        await refreshNodes(server, rerender)
+      },
+      `template:move:${templateId}`,
+    )
   })
   buttons.append(cancel, go)
   box.append(label, chooser, truncated, buttons)
@@ -1649,9 +1653,31 @@ const publishedStateOf = (target: TreeTarget): boolean =>
 const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, templateId } = target
   if (server === null || templateId === undefined) return
-  const sources = allLocal()
+  // A new version has to be the same size as the one it replaces; the server refuses anything else
+  // and there is nothing the user can do about it after the fact. Offering every Local template
+  // meant most choices were an unavoidable 409 presented as a valid option.
+  const current = serverTemplateAt(server.url, templateId)
+  const span = (min: number, max: number) => (max >= min ? max - min : WORLD_PIXELS - min + max)
+  const wanted =
+    current === null
+      ? null
+      : {
+          width: span(current.bbox.minX, current.bbox.maxX),
+          height: current.bbox.maxY - current.bbox.minY,
+        }
+  const sources =
+    wanted === null
+      ? allLocal()
+      : allLocal().filter(
+          (candidate) => candidate.width === wanted.width && candidate.height === wanted.height,
+        )
   if (sources.length === 0) {
-    toast('Import the new artwork into Local first, and place it where it belongs.', 'warning')
+    toast(
+      wanted === null
+        ? 'Import the new artwork into Local first, and place it where it belongs.'
+        : `Replacing this needs a Local template that is exactly ${wanted.width}x${wanted.height}.`,
+      'warning',
+    )
     return
   }
 
@@ -1701,27 +1727,31 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
       box.remove()
       return
     }
-    void whileBusy(go, async () => {
-      label.textContent = 'Encoding…'
-      const png = await templateAsPng(source)
-      if (png === null) {
-        toast('Could not encode that template.', 'error')
+    void whileBusy(
+      go,
+      async () => {
+        label.textContent = 'Encoding…'
+        const png = await templateAsPng(source)
+        if (png === null) {
+          toast('Could not encode that template.', 'error')
+          box.remove()
+          return
+        }
+        if (cancelled) return
+        label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
+        const result = await uploadTemplateVersion(server, templateId, {
+          originX: source.originX,
+          originY: source.originY,
+          name: source.name,
+          png,
+        })
         box.remove()
-        return
-      }
-      if (cancelled) return
-      label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-      const result = await uploadTemplateVersion(server, templateId, {
-        originX: source.originX,
-        originY: source.originY,
-        name: source.name,
-        png,
-      })
-      box.remove()
-      if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
-      else toast(result.message, 'error')
-      await refreshNodes(server, rerender)
-    })
+        if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
+        else toast(result.message, 'error')
+        await refreshNodes(server, rerender)
+      },
+      `template:replace:${templateId}`,
+    )
   })
   buttons.append(cancel, go)
   box.append(label, chooser, note, buttons)
@@ -2045,31 +2075,35 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
       box.remove()
       return
     }
-    void whileBusy(go, async () => {
-      label.textContent = 'Encoding…'
-      const png = await templateAsPng(current)
-      if (png === null) {
-        toast('Could not encode that template.', 'error')
+    void whileBusy(
+      go,
+      async () => {
+        label.textContent = 'Encoding…'
+        const png = await templateAsPng(current)
+        if (png === null) {
+          toast('Could not encode that template.', 'error')
+          box.remove()
+          return
+        }
+        if (cancelled) return
+        label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
+        const result = await uploadTemplate(server, {
+          nodeId,
+          name: current.name,
+          originX: current.originX,
+          originY: current.originY,
+          png,
+        })
         box.remove()
-        return
-      }
-      if (cancelled) return
-      label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-      const result = await uploadTemplate(server, {
-        nodeId,
-        name: current.name,
-        originX: current.originX,
-        originY: current.originY,
-        png,
-      })
-      box.remove()
-      if (result.ok) {
-        toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
-        await refreshNodes(server, rerender)
-      } else {
-        toast(result.message, 'error')
-      }
-    })
+        if (result.ok) {
+          toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
+          await refreshNodes(server, rerender)
+        } else {
+          toast(result.message, 'error')
+        }
+      },
+      `template:copy:${templateId}`,
+    )
   })
   buttons.append(cancel, go)
   box.append(label, chooser, truncated, buttons)
