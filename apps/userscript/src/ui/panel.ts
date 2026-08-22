@@ -308,6 +308,7 @@ const treeView = (): HTMLElement => {
   )
 
   const body = document.createElement('div')
+  body.dataset.caelestisScroller = ''
   Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
   const renderTree = (): void => {
     body.replaceChildren(
@@ -418,7 +419,21 @@ const refreshView = (): void => {
     return
   }
   owedRefresh = false
+  // What the user has typed survives the rebuild. A view is rebuilt from stored state, and a field
+  // being filled in is not stored state yet, so redrawing over it threw the half-typed address away
+  // — most visibly on the blur that pays this debt back, which is exactly when a rebuild lands.
+  const drafts = new Map<string, string>()
+  for (const field of root.querySelectorAll<HTMLInputElement>('[data-caelestis-draft]')) {
+    const key = field.dataset.caelestisDraft
+    if (key !== undefined && field.value !== '') drafts.set(key, field.value)
+  }
   showView(currentView)
+  if (drafts.size === 0) return
+  for (const field of root.querySelectorAll<HTMLInputElement>('[data-caelestis-draft]')) {
+    const draft = field.dataset.caelestisDraft
+    const kept = draft === undefined ? undefined : drafts.get(draft)
+    if (kept !== undefined) field.value = kept
+  }
 }
 
 /**
@@ -739,6 +754,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   const codeRow = document.createElement('div')
   codeRow.className = 'flex gap-2'
   const code = document.createElement('input')
+  code.dataset.caelestisDraft = `token:${server.url}`
   code.type = 'password'
   code.autocomplete = 'off'
   code.className = 'input input-sm input-bordered'
@@ -938,6 +954,7 @@ const settingsView = (): HTMLElement => {
   const addRow = document.createElement('div')
   addRow.className = 'px-3 pb-2 flex gap-2'
   const url = document.createElement('input')
+  url.dataset.caelestisDraft = 'add-server'
   url.type = 'url'
   url.className = 'input input-sm input-bordered'
   url.style.flex = '1'
@@ -1298,12 +1315,19 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   label.textContent = `Move “${target.name}” to:`
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
-  for (const node of destinations) {
+  for (const node of destinations.slice(0, MAX_DESTINATIONS)) {
     const option = document.createElement('option')
     option.value = node.id
     option.textContent = node.path
     chooser.appendChild(option)
   }
+  const truncated = document.createElement('span')
+  truncated.className = 'opacity-60'
+  truncated.textContent =
+    destinations.length > MAX_DESTINATIONS
+      ? `Showing the first ${MAX_DESTINATIONS} of ${destinations.length} folders.`
+      : ''
+  truncated.style.display = destinations.length > MAX_DESTINATIONS ? '' : 'none'
 
   const buttons = document.createElement('div')
   buttons.className = 'flex gap-2 justify-end'
@@ -1323,7 +1347,7 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
     })
   })
   buttons.append(cancel, go)
-  box.append(label, chooser, buttons)
+  box.append(label, chooser, truncated, buttons)
   panel.appendChild(box)
 }
 
@@ -1885,18 +1909,24 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   label.textContent = `Copy “${template.name}” to:`
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
-  let unreachable = 0
-  for (const server of targets) {
-    const nodes = await listServerNodes(server)
-    if (nodes === null) {
-      unreachable++
-      continue
-    }
+  // All of them at once. Asked one after another, a single server sitting on its 120-second
+  // transfer timeout made Copy look inert for two minutes, and thirty-two of them serialised.
+  const listed = await Promise.all(
+    targets.map(async (server) => [server, await listServerNodes(server)] as const),
+  )
+  const unreachable = listed.filter(([, nodes]) => nodes === null).length
+  let offered = 0
+  let available = 0
+  for (const [server, nodes] of listed) {
+    if (nodes === null) continue
+    available += nodes.length
     for (const node of nodes) {
+      if (offered >= MAX_DESTINATIONS) break
       const option = document.createElement('option')
       option.value = `${server.url}|${node.id}`
       option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
       chooser.appendChild(option)
+      offered++
     }
   }
   if (chooser.options.length === 0) {
@@ -1909,6 +1939,16 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     return
   }
 
+  const truncated = document.createElement('span')
+  truncated.className = 'opacity-60'
+  if (available > offered) {
+    truncated.textContent = `Showing the first ${offered} of ${available} folders.`
+  } else if (unreachable > 0) {
+    truncated.textContent = `${unreachable} server${unreachable === 1 ? '' : 's'} could not be asked.`
+  } else {
+    truncated.style.display = 'none'
+  }
+
   const buttons = document.createElement('div')
   buttons.className = 'flex gap-2 justify-end'
   const cancel = document.createElement('button')
@@ -1919,7 +1959,12 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   go.className = 'btn btn-xs btn-primary'
   go.textContent = 'Copy'
   go.addEventListener('click', () => {
-    const [url, nodeId] = (chooser.value ?? '').split('|')
+    // Split at the last separator, not the first: a node id is a UUID and never contains one, but a
+    // server URL legally can — `new URL` leaves `|` in a path exactly as typed.
+    const chosen = chooser.value ?? ''
+    const cut = chosen.lastIndexOf('|')
+    const url = cut === -1 ? '' : chosen.slice(0, cut)
+    const nodeId = cut === -1 ? undefined : chosen.slice(cut + 1)
     const server = targets.find((candidate) => candidate.url === url)
     if (server === undefined || nodeId === undefined) return
     // The same refusal Delete makes, for the same reason: this dialog stays open while the map is
@@ -1955,7 +2000,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     })
   })
   buttons.append(cancel, go)
-  box.append(label, chooser, buttons)
+  box.append(label, chooser, truncated, buttons)
   panel.appendChild(box)
 }
 
@@ -2148,6 +2193,27 @@ const buildPanel = (): HTMLElement => {
   return panel
 }
 
+/**
+ * The element that actually scrolls in a view, which is not always the view.
+ *
+ * The tree keeps its toolbar fixed and scrolls a child, so reading `scrollTop` off the view root
+ * read zero every time and the position was never restored — in the one view long enough for that
+ * to matter. A view whose root is its own scroller is unmarked and answers itself.
+ */
+/**
+ * How many destinations a chooser will render.
+ *
+ * A server may legally answer with `MAX_TREE_NODES` folders, and building a hundred thousand
+ * `<option>` elements synchronously locks the tab for as long as it takes. A dropdown stopped being
+ * a usable way to pick long before this many anyway; past it the answer is to type a path, not to
+ * scroll one.
+ */
+const MAX_DESTINATIONS = 2_000
+
+const scrollerIn = (view: Element | null): HTMLElement | null =>
+  view?.querySelector<HTMLElement>('[data-caelestis-scroller]') ??
+  (view instanceof HTMLElement ? view : null)
+
 const showView = (view: View): void => {
   const staying = currentView === view
   currentView = view
@@ -2164,13 +2230,14 @@ const showView = (view: View): void => {
    * next one meant scrolling down again. Switching *between* views still starts at the top, which is
    * right: that is a new thing to read, not the same one redrawn.
    */
-  const previous = body.firstElementChild
-  const scrollTop = staying && previous instanceof HTMLElement ? previous.scrollTop : 0
+  const previous = scrollerIn(body.firstElementChild)
+  const scrollTop = staying && previous !== null ? previous.scrollTop : 0
 
   const next =
     view === 'settings' ? settingsView() : view === 'appearance' ? appearanceView() : treeView()
   body.replaceChildren(next)
-  if (scrollTop > 0) next.scrollTop = scrollTop
+  const scroller = scrollerIn(next)
+  if (scrollTop > 0 && scroller !== null) scroller.scrollTop = scrollTop
   title.textContent = VIEW_TITLE[view] ?? PANEL_TITLE
 
   const back = panel?.querySelector<HTMLElement>('[data-caelestis-back]')
