@@ -120,6 +120,8 @@ const MAX_CUSTOM_ORDER = 200_000
 const MIN_EPOCH_MILLISECONDS = 1_577_836_800_000 // 2020-01-01
 const MAX_EPOCH_MILLISECONDS = 4_102_444_800_000 // 2100-01-01
 export const MAX_CONNECTED_SERVERS = 32
+/** As many browser-local folders as a reload will restore. Written past, the rest is dropped. */
+export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
 const REMOTE_TIMEOUT_MS = 10_000
 const LARGE_TRANSFER_TIMEOUT_MS = 120_000
@@ -634,7 +636,7 @@ export const loadState = (): State => {
           // Records written before folder visibility existed were visible.
           visible: candidate.visible !== false,
         })
-        if (localFolders.length >= MAX_CONNECTED_SERVERS * 1_000) break
+        if (localFolders.length >= MAX_LOCAL_FOLDERS) break
       }
     }
     const storedHiddenScopes = Array.isArray(stored.hiddenScopes)
@@ -714,6 +716,27 @@ export const createLocalFolder = (parentId: string | null, name: string): LocalF
   const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
   setState({ localFolders: [...getState().localFolders, folder] })
   return folder
+}
+
+/** An id for a folder that has not been added yet, so a batch can wire up its own parents. */
+export const nextLocalFolderId = (): string => localFolderId()
+
+/**
+ * Add many folders in one write.
+ *
+ * `setState` serialises the whole state, so adding a folder at a time costs the square of the
+ * number of folders. Moving a server branch of any real size into Local did exactly that and locked
+ * the tab up for the duration.
+ *
+ * Refused rather than truncated past the limit, because the limit is what a reload will restore: a
+ * write that goes over it looks like it worked until the next session, which quietly loses the rest.
+ */
+export const addLocalFolders = (folders: readonly LocalFolder[]): boolean => {
+  if (folders.length === 0) return true
+  const existing = getState().localFolders
+  if (existing.length + folders.length > MAX_LOCAL_FOLDERS) return false
+  setState({ localFolders: [...existing, ...folders] })
+  return true
 }
 
 export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)

@@ -1,12 +1,15 @@
 import { warn } from '../debug.js'
 import {
+  addLocalFolders,
   type ConnectedServer,
-  createLocalFolder,
   createNode,
   deleteNode as deleteNodeOnServer,
   deleteTemplate as deleteTemplateOnServer,
   getState,
+  type LocalFolder,
   listServerNodes,
+  MAX_LOCAL_FOLDERS,
+  nextLocalFolderId,
   removeLocalFolder,
   type TreeNode,
   uploadTemplate,
@@ -191,6 +194,11 @@ export const transplant = async (
   let nodes = 0
   let templates = 0
 
+  // Local folders are built in memory and written once. `setState` serialises the whole state, so
+  // one write per folder costs the square of the branch: a server branch of any real size locked
+  // the tab up before any of it appeared.
+  const madeLocally: LocalFolder[] = []
+
   for (const folder of inCreationOrder(branch)) {
     const parent =
       folder.parentId === null
@@ -204,9 +212,20 @@ export const transplant = async (
       if (!created.ok) return { ok: false, nodes, templates, message: created.message }
       mapped.set(folder.id, created.node.id)
     } else {
-      mapped.set(folder.id, createLocalFolder(parent, folder.name).id)
+      const id = nextLocalFolderId()
+      madeLocally.push({ id, parentId: parent, name: folder.name, visible: true })
+      mapped.set(folder.id, id)
     }
     nodes++
+  }
+
+  if (!addLocalFolders(madeLocally)) {
+    return {
+      ok: false,
+      nodes: 0,
+      templates: 0,
+      message: `That branch has more folders than Local can hold (${MAX_LOCAL_FOLDERS}).`,
+    }
   }
 
   for (const carried of branch.templates) {
