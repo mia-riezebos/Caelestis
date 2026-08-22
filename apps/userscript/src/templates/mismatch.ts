@@ -175,14 +175,30 @@ const remember = (cacheKey: string, entry: Cached): void => {
 let changed = 0
 
 const changeListeners: Array<() => void> = []
+
+/**
+ * One notification per task, however many answers changed in it.
+ *
+ * The listener is a full redraw, and a tile re-read announces every pixel that moved — so a
+ * neighbouring group painting two hundred pixels of your template produced two hundred synchronous
+ * repaints inside a single microtask, each one measuring and repositioning every overlay control.
+ * Coalescing is safe because the listener asks "draw the current state", not "draw this change".
+ */
+let notifyScheduled = false
+
 const notifyChanged = (): void => {
-  for (const listener of changeListeners) {
-    try {
-      listener()
-    } catch {
-      count('mismatch:listener-failed')
+  if (notifyScheduled) return
+  notifyScheduled = true
+  queueMicrotask(() => {
+    notifyScheduled = false
+    for (const listener of changeListeners) {
+      try {
+        listener()
+      } catch {
+        count('mismatch:listener-failed')
+      }
     }
-  }
+  })
 }
 
 /**
@@ -517,14 +533,31 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
   // in-flight one, so counting cache keys alone left exactly that scan uncountable: a paint landing
   // during it changed nothing the identity checks look at, and the pre-paint answer was cached and
   // then reused indefinitely.
+  // The keys for this tile, collected once. Usually one or two, against a cache of 128 — so this is
+  // both the snapshot the loop below needs and far less than copying the whole cache per pixel.
+  //
+  // A snapshot rather than a live iteration, because `remember` deletes and re-inserts the key it
+  // patches, which would move it behind a live iterator and show it to us twice, and can evict a
+  // different key while we are walking.
   const suffix = `|${tile.x}/${tile.y}`
-  for (const key of new Set([...cache.keys(), ...inFlight.keys()])) {
-    if (key.endsWith(suffix)) patchCount.set(key, (patchCount.get(key) ?? 0) + 1)
+  const keys: string[] = []
+  for (const key of cache.keys()) {
+    if (key.endsWith(suffix)) keys.push(key)
   }
-  for (const [cacheKey, entry] of [...cache]) {
-    if (!cacheKey.endsWith(suffix)) continue
+  for (const key of keys) patchCount.set(key, (patchCount.get(key) ?? 0) + 1)
+  for (const key of inFlight.keys()) {
+    if (key.endsWith(suffix) && !cache.has(key)) patchCount.set(key, (patchCount.get(key) ?? 0) + 1)
+  }
+  // Read once. This runs per announced pixel, and a tile re-read announces every pixel that moved —
+  // hundreds to thousands in one go. `localTemplates()` copies and sorts the whole list, so asking
+  // it per cache key per pixel was the cost of the whole function, several hundred thousand
+  // copy-and-sorts on the decode path for one busy tile.
+  const templates = localTemplates()
+  for (const cacheKey of keys) {
+    const entry = cache.get(cacheKey)
+    if (entry === undefined) continue
     const id = templateIdOf(cacheKey)
-    const template = localTemplates().find((candidate) => candidate.id === id)
+    const template = templates.find((candidate) => candidate.id === id)
     if (template === undefined || entry.templateSource !== template.indices) continue
 
     const localX = x - template.originX
