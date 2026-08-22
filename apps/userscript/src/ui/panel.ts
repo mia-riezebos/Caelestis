@@ -2239,11 +2239,7 @@ const buildPanel = (): HTMLElement => {
   handle.setAttribute('aria-label', 'Resize panel')
   handle.setAttribute('aria-orientation', 'vertical')
   handle.tabIndex = 0
-  const noteWidth = (width: number): void => {
-    handle.setAttribute('aria-valuenow', String(Math.round(width)))
-    handle.setAttribute('aria-valuemin', String(Math.round(minimumPanelWidth())))
-    handle.setAttribute('aria-valuemax', String(Math.round(maximumPanelWidth())))
-  }
+  const noteWidth = noteResizeRange
   noteWidth(getState().panelWidth)
   const KEYBOARD_STEP_PX = 16
   // Held, then committed — the same shape the appearance sliders in this file use. Autorepeat is
@@ -2272,7 +2268,13 @@ const buildPanel = (): HTMLElement => {
   }
   handle.addEventListener('keyup', commitWidth)
   handle.addEventListener('blur', commitWidth)
+  let resizing = false
   handle.addEventListener('pointerdown', (event) => {
+    // Primary button, primary pointer, one at a time. Without this a right-click or a second touch
+    // on the 6px strip started a resize that followed the pointer until the next `pointerup`, and
+    // each extra press bound another set of move and ending listeners.
+    if (!event.isPrimary || event.button !== 0 || resizing) return
+    resizing = true
     event.preventDefault()
     handle.classList.add('caelestis-resizing')
     // Capture is an optimisation, not a requirement — synthetic pointers can lack a capturable id,
@@ -2294,6 +2296,7 @@ const buildPanel = (): HTMLElement => {
     // cancelled drag — the browser claiming the pointer for a system gesture — with `pointermove`
     // still bound, so the panel went on resizing under a pointer nobody was pressing.
     const done = (): void => {
+      resizing = false
       handle.classList.remove('caelestis-resizing')
       window.removeEventListener('pointermove', move)
       for (const ending of ENDINGS) window.removeEventListener(ending, done)
@@ -2401,6 +2404,20 @@ const stillConnected = (server: ConnectedServer): boolean =>
 let activeTreeRender: (() => void) | null = null
 
 const rerenderTree = (): void => activeTreeRender?.()
+
+/**
+ * What the splitter reports to assistive technology.
+ *
+ * Module-level because the bounds come from the viewport: a window resize moves them, and that
+ * handler lives outside the builder that made the handle.
+ */
+const noteResizeRange = (width: number): void => {
+  const handle = document.getElementById(PANEL_ID)?.querySelector('.caelestis-resize')
+  if (handle === null || handle === undefined) return
+  handle.setAttribute('aria-valuenow', String(Math.round(width)))
+  handle.setAttribute('aria-valuemin', String(Math.round(minimumPanelWidth())))
+  handle.setAttribute('aria-valuemax', String(Math.round(maximumPanelWidth())))
+}
 
 const scrollerIn = (view: Element | null): HTMLElement | null =>
   view?.querySelector<HTMLElement>('[data-caelestis-scroller]') ??
@@ -2586,7 +2603,11 @@ export const installPanel = (): void => {
   window.addEventListener('resize', () => {
     positionRail()
     const panel = document.getElementById(PANEL_ID)
-    if (panel !== null) panel.style.width = `${panelWidthForViewport(getState().panelWidth)}px`
+    if (panel === null) return
+    const width = panelWidthForViewport(getState().panelWidth)
+    panel.style.width = `${width}px`
+    // The bounds are derived from the viewport, so they moved too.
+    noteResizeRange(width)
   })
   onStateChange(syncColourModeState)
   // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a
