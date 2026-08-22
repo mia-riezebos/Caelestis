@@ -85,6 +85,7 @@ const serverBranch = async (
   templatesOf: (nodeId: string) => ReadonlyArray<{ id: string; name: string }>,
 ): Promise<Branch | null> => {
   const nodes = await listServerNodes(server)
+  if (nodes === null) return null
   const root = nodes.find((node) => node.id === rootId)
   if (root === undefined) return null
 

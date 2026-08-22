@@ -1323,8 +1323,16 @@ export const listServerContents = async (
 }
 
 /** The folder tree alone, for the admin flows that need somewhere to put something. */
-export const listServerNodes = async (server: ConnectedServer): Promise<readonly TreeNode[]> =>
-  (await listServerContents(server))?.nodes ?? []
+/**
+ * The folders alone, or null when the server could not be asked.
+ *
+ * Null rather than empty, for the reason spelled out below: a 500 or a timeout answered with an
+ * empty list, so Move claimed the server had one folder, Copy said to create one first, and folder
+ * naming picked a name as though nothing was there.
+ */
+export const listServerNodes = async (
+  server: ConnectedServer,
+): Promise<readonly TreeNode[] | null> => (await listServerContents(server))?.nodes ?? null
 
 /**
  * The templates alone, or null when the server could not be asked.
@@ -1440,7 +1448,12 @@ export const uploadTemplateVersion = async (
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) {
       const versionId = isRecord(body) ? body.versionId : undefined
-      return { ok: true, versionId: typeof versionId === 'string' ? versionId : '' }
+      // A 2xx with no usable id is not a success we can report: the server never confirmed what it
+      // stored. `uploadTemplate` rejects the same shape, and Replace announcing "done" on it told
+      // the user their artwork had been replaced on no evidence at all.
+      return typeof versionId === 'string' && UUID_V7.test(versionId)
+        ? { ok: true, versionId }
+        : { ok: false, message: 'The server accepted the upload but did not say what it stored.' }
     }
     return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {

@@ -8,6 +8,7 @@ import {
 import { whileBusy } from './button.js'
 import { confirmDestructive } from './confirm.js'
 import { icon } from './icons.js'
+import { toast } from './toast.js'
 import { showNewToken } from './token-dialog.js'
 
 /**
@@ -95,7 +96,8 @@ const tokenRow = (server: ConnectedServer, token: AccessToken, reload: () => voi
         confirmLabel: 'Delete',
       })
       if (!sure) return
-      await revokeAccessToken(server, token.tokenHash)
+      const result = await revokeAccessToken(server, token.tokenHash)
+      if (!result.ok) toast(result.message, 'error')
       reload()
     })()
   })

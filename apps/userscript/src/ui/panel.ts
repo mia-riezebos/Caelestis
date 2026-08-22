@@ -12,6 +12,7 @@ import {
   getState,
   listServerNodes,
   loadState,
+  MAX_CONNECTED_SERVERS,
   moveLocalFolder,
   moveNode as moveNodeOnServer,
   onStateChange,
@@ -61,6 +62,7 @@ import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
+import { PANEL_ID, toast } from './toast.js'
 import { type Destination, type Source, transplant } from './transplant.js'
 import {
   findServerNode,
@@ -123,7 +125,6 @@ const findRail = (): { rail: Element; after: Element } | null => {
   return null
 }
 const BUTTON_ID = 'caelestis-rail-button'
-const PANEL_ID = 'caelestis-panel'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
 const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
@@ -962,7 +963,23 @@ const settingsView = (): HTMLElement => {
       status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
       return
     }
-    upsertServer(server)
+    const fail = (message: string): void => {
+      status.className = 'text-xs px-3 pb-2 text-error'
+      status.textContent = message
+    }
+    // This probe was anonymous, so writing it over a URL that is already connected replaces a
+    // working token with nothing: a protected server drops to "needs a token" and an open one loses
+    // its admin credential. Adding a server you already have is a no-op with an explanation.
+    if (getState().servers.some((one) => one.url === server.url)) {
+      fail(`${server.url} is already connected.`)
+      return
+    }
+    // `upsertServer` refuses past the limit. Ignoring that cleared the field and redrew the view, so
+    // the thirty-third server looked added and simply was not there.
+    if (!upsertServer(server)) {
+      fail(`Already connected to ${MAX_CONNECTED_SERVERS} servers. Disconnect one first.`)
+      return
+    }
     url.value = ''
     // Re-render so the new server's row appears — it is what carries the status badge and, when the
     // server wants one, the access-token field. Without this the panel reported "needs a token" and
@@ -1011,25 +1028,6 @@ const settingsView = (): HTMLElement => {
   return view
 }
 
-/** A transient message anchored to the panel, so an action can report without a dialog. */
-const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'info'): void => {
-  const panel = document.getElementById(PANEL_ID)
-  if (panel === null) return
-  panel.querySelector('[data-caelestis-toast]')?.remove()
-  const el = document.createElement('div')
-  el.setAttribute('data-caelestis-toast', '')
-  el.className =
-    kind === 'error'
-      ? 'alert alert-error text-xs'
-      : kind === 'warning'
-        ? 'alert alert-warning text-xs'
-        : 'alert alert-info text-xs'
-  Object.assign(el.style, { margin: '0 0.5rem 0.5rem', padding: '0.5rem 0.75rem' })
-  el.textContent = message
-  panel.appendChild(el)
-  setTimeout(() => el.remove(), 6000)
-}
-
 /** A name nobody has to type: "New folder", then "New folder 2", and so on. */
 const freeFolderName = (taken: ReadonlySet<string>): string => {
   const base = 'New folder'
@@ -1057,7 +1055,10 @@ const applyRename = async (
 ): Promise<void> => {
   const templateId = localTemplateId(target)
   if (templateId !== null) {
-    await renameLocalTemplate(templateId, name)
+    // Reported, like the two server paths below it. A storage refusal used to just put the old name
+    // back with no explanation, which reads as the rename never having been typed.
+    if (!(await renameLocalTemplate(templateId, name)))
+      toast('Could not save that name. The old one is still there.', 'error')
     rerender()
     return
   }
@@ -1275,6 +1276,10 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   const { server, templateId } = target
   if (server === null || templateId === undefined) return
   const nodes = await listServerNodes(server)
+  if (nodes === null) {
+    toast('Could not ask that server where its folders are.', 'error')
+    return
+  }
   const destinations = nodes.filter((node) => node.id !== target.nodeId)
   if (destinations.length === 0) {
     toast('There is nowhere else to put it — this server has one folder.', 'warning')
@@ -1880,8 +1885,14 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   label.textContent = `Copy “${template.name}” to:`
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
+  let unreachable = 0
   for (const server of targets) {
-    for (const node of await listServerNodes(server)) {
+    const nodes = await listServerNodes(server)
+    if (nodes === null) {
+      unreachable++
+      continue
+    }
+    for (const node of nodes) {
       const option = document.createElement('option')
       option.value = `${server.url}|${node.id}`
       option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
@@ -1889,7 +1900,12 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     }
   }
   if (chooser.options.length === 0) {
-    toast('Create a folder on the server first — a template has to live somewhere.', 'warning')
+    toast(
+      unreachable > 0
+        ? 'Could not ask any of those servers where their folders are.'
+        : 'Create a folder on the server first — a template has to live somewhere.',
+      unreachable > 0 ? 'error' : 'warning',
+    )
     return
   }
 
@@ -1968,6 +1984,10 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
   const existing = await listServerNodes(server)
+  if (existing === null) {
+    toast('Could not ask that server what it already has.', 'error')
+    return
+  }
   const name = freeFolderName(new Set(existing.map((node) => node.name.toLowerCase())))
   const result = await createNode(server, name, nodeId)
   if (!result.ok) {
