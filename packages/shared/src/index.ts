@@ -22,6 +22,7 @@ export {
   sliceTemplate,
   type TemplateChunk,
 } from './slice.js'
+export * from './slug.js'
 export * from './telemetry.js'
 export * from './tiles.js'
 export * from './time.js'

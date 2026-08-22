@@ -1,3 +1,4 @@
+import { nodeSlug } from '@caelestis/shared'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { redraw, viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
@@ -1048,12 +1049,22 @@ const settingsView = (): HTMLElement => {
 }
 
 /** A name nobody has to type: "New folder", then "New folder 2", and so on. */
-const freeFolderName = (taken: ReadonlySet<string>): string => {
+/**
+ * A name nobody has to type: "New folder", then "New folder 2", and so on.
+ *
+ * `key` is how the caller's world decides two names are the same one. Local folders compare
+ * lowercased display names; a server compares the path segment it derives, so `New-folder` and
+ * `New folder` collide there and do not here.
+ */
+const freeFolderName = (
+  taken: ReadonlySet<string>,
+  key: (name: string) => string = (name) => name.toLowerCase(),
+): string => {
   const base = 'New folder'
-  if (!taken.has(base.toLowerCase())) return base
+  if (!taken.has(key(base))) return base
   for (let n = 2; n < 500; n++) {
     const candidate = `${base} ${n}`
-    if (!taken.has(candidate.toLowerCase())) return candidate
+    if (!taken.has(key(candidate))) return candidate
   }
   return `${base} ${Date.now()}`
 }
@@ -2065,11 +2076,25 @@ const localFolderIdOf = (target: TreeTarget): string | null =>
 const isLocalTarget = (target: TreeTarget): boolean =>
   target.server === null && (target.key === 'local' || target.key.startsWith('lf:'))
 
+/**
+ * Make sure the row about to be created will be on screen.
+ *
+ * Creating inside a collapsed folder put the new child straight into rename mode, the tree never
+ * rendered it, and the rename state was cleared by the next draw. The user saw nothing happen and
+ * found a default-named folder later.
+ */
+const expandForNewChild = (key: string): void => {
+  const collapsed = getState().collapsed
+  if (!collapsed.includes(key)) return
+  setState({ collapsed: collapsed.filter((one) => one !== key) })
+}
+
 const createFolder = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, nodeId } = target
   if (isLocalTarget(target)) {
     // Nested under whichever Local folder was clicked, or at the top when it was Local itself.
     const parentId = localFolderIdOf(target)
+    expandForNewChild(target.key)
     const taken = new Set(getState().localFolders.map((folder) => folder.name.toLowerCase()))
     const folder = createLocalFolder(parentId, freeFolderName(taken))
     startRenaming(`lf:${folder.id}`)
@@ -2090,7 +2115,12 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   // Asking took a round trip, and the panel was usable throughout it. Writing to a server the user
   // has since disconnected creates a folder in a place they can no longer see.
   if (!stillConnected(server)) return
-  const name = freeFolderName(new Set(existing.map((node) => node.name.toLowerCase())))
+  // Compared as the server will store them, and only against siblings. Matching display names
+  // treated `New-folder` and `New folder` as different while the backend slugs both to
+  // `new-folder`, so the chosen name came back as a path conflict instead of becoming "New folder 2".
+  const siblings = existing.filter((node) => node.parentId === nodeId)
+  const name = freeFolderName(new Set(siblings.map((node) => nodeSlug(node.name))), nodeSlug)
+  expandForNewChild(target.key)
   const result = await createNode(server, name, nodeId)
   if (!result.ok) {
     toast(result.message, 'error')

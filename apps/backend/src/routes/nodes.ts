@@ -1,4 +1,4 @@
-import { millis, uuidV7 } from '@caelestis/shared'
+import { millis, nodeSlug, uuidV7 } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { NodeRecord, Ports } from '../ports/index.js'
@@ -35,17 +35,11 @@ const parseSeason = (value: unknown): number | null => {
  *
  * The name keeps every character the caller sent; only the derived path is narrowed. A name with
  * nothing but astral letters therefore slugs to nothing and is refused, which the route reports.
+ *
+ * It lives in `@caelestis/shared` because it is an agreement rather than a local detail: a client
+ * that picks names without knowing this rule picks names this route then rejects.
  */
-const ASTRAL = /[\u{10000}-\u{10FFFF}]/gu
-
-const slug = (name: string): string =>
-  name
-    .trim()
-    .toLowerCase()
-    .replace(ASTRAL, '-')
-    .replace(/[^\p{L}\p{N}.]+/gu, '-')
-    .replace(/^[^\p{L}\p{N}]+/u, '')
-    .trim()
+const slug = nodeSlug
 
 const publicNode = ({ season: _season, description, ...node }: NodeRecord) =>
   description === null ? node : { ...node, description }

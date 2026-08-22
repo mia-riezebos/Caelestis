@@ -407,7 +407,10 @@ const manifestContentsValid = (
       Number(minX) >= WORLD_PIXELS ||
       Number(maxX) < 1 ||
       Number(maxX) > WORLD_PIXELS ||
-      Number(minX) >= Number(maxX) ||
+      // `minX > maxX` is the wire's way of saying the box wraps through zero, and the assembler
+      // already reads it as two spans. Requiring low-to-high in x rejected every conforming server
+      // that publishes a template across the antimeridian, and took the whole manifest with it.
+      Number(minX) === Number(maxX) ||
       Number(minY) < 0 ||
       Number(minY) >= WORLD_PIXELS ||
       Number(maxY) < 1 ||
