@@ -139,6 +139,63 @@ describe('access-token pagination', () => {
     expect(section.textContent).toContain('Refreshed')
   })
 
+  it('loads the retained next page after a background first-page refresh fails', async () => {
+    let finishRefresh = (_value: unknown): void => undefined
+    let finishMore = (_value: unknown): void => undefined
+    const cursor = `3:${'c'.repeat(64)}`
+    state.listAccessTokens
+      .mockResolvedValueOnce({
+        tokens: [token('Retained', '4'.repeat(64))],
+        nextCursor: cursor,
+      })
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishRefresh = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishMore = resolve
+          }),
+      )
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const first = accessTokenSection(server)
+    document.body.appendChild(first)
+    await vi.waitFor(() => expect(first.textContent).toContain('Retained'))
+
+    const section = accessTokenSection(server)
+    document.body.replaceChildren(section)
+    await vi.waitFor(() => expect(state.listAccessTokens).toHaveBeenCalledTimes(2))
+    buttonNamed(section, 'Load more').click()
+    finishRefresh(null)
+
+    await vi.waitFor(() => expect(state.listAccessTokens).toHaveBeenCalledTimes(3))
+    finishMore({ tokens: [token('Later', '3'.repeat(64))], nextCursor: null })
+    await vi.waitFor(() => expect(section.textContent).toContain('Later'))
+    expect(notices.toast).toHaveBeenCalledTimes(1)
+    expect(notices.toast).toHaveBeenCalledWith(
+      'Could not refresh the token list — showing the last result.',
+      'error',
+    )
+  })
+
+  it('can load past an accepted empty first page', async () => {
+    const cursor = `3:${'c'.repeat(64)}`
+    state.listAccessTokens
+      .mockResolvedValueOnce({ tokens: [], nextCursor: cursor })
+      .mockResolvedValueOnce({ tokens: [token('Later', '3'.repeat(64))], nextCursor: null })
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const section = accessTokenSection(server)
+    document.body.appendChild(section)
+    await vi.waitFor(() => expect(section.textContent).toContain('No tokens on this page.'))
+
+    buttonNamed(section, 'Load more').click()
+
+    await vi.waitFor(() => expect(section.textContent).toContain('Later'))
+  })
+
   it('does not report a failed request after its replacement refresh succeeds', async () => {
     let finishStale = (_value: unknown): void => undefined
     state.listAccessTokens

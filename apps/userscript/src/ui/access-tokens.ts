@@ -255,8 +255,8 @@ const fetchTokens = (
   // then be erased when the older first-page response replaces the cache.
   const refreshing = state.inFlight.get(null)
   if (cursor !== null && refreshing !== undefined) {
-    return refreshing.then((page) => {
-      if (page === null || connections.get(server.url) !== state) return null
+    return refreshing.then(() => {
+      if (connections.get(server.url) !== state) return null
       if (state.cached?.nextCursor !== cursor) return state.cached ?? null
       return fetchTokens(server, cursor)
     })
@@ -363,11 +363,12 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
     if (tokens.length === 0) {
       const empty = document.createElement('p')
       empty.className = 'text-xs opacity-60'
-      empty.textContent = 'No tokens yet. Anyone with the address can read this server.'
+      empty.textContent =
+        page.nextCursor === null
+          ? 'No tokens yet. Anyone with the address can read this server.'
+          : 'No tokens on this page.'
       list.appendChild(empty)
-      return
-    }
-    for (const token of tokens) list.appendChild(tokenRow(server, token, reload))
+    } else for (const token of tokens) list.appendChild(tokenRow(server, token, reload))
     if (page.nextCursor !== null) {
       const more = document.createElement('button')
       more.className = 'btn btn-xs btn-ghost self-start'
