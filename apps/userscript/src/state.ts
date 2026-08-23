@@ -1679,8 +1679,8 @@ export const renameServer = async (
       return { ok: false, message: failure(response, isRecord(body) ? body : null) }
     }
     const current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (server.info !== null && current !== undefined && sameServerConnection(current, server)) {
-      upsertServer({ ...current, info: { ...server.info, name: trimmed } })
+    if (current !== undefined && current.info !== null && sameServerConnection(current, server)) {
+      upsertServer({ ...current, info: { ...current.info, name: trimmed } })
     }
     return { ok: true }
   } catch (error) {
