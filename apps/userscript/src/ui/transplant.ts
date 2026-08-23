@@ -304,7 +304,16 @@ export const transplant = async (
         }
       }
     }
-    for (const folder of [...inCreationOrder(branch)].reverse()) removeLocalFolder(folder.id)
+    for (const folder of [...inCreationOrder(branch)].reverse()) {
+      if (!removeLocalFolder(folder.id)) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Moved the templates, but could not remove Local folder “${folder.name}”.`,
+        }
+      }
+    }
   }
 
   const destinationRootId = mapped.get(source.kind === 'local' ? source.folderId : source.nodeId)

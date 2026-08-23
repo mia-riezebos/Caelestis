@@ -801,8 +801,7 @@ const localFolderId = (): string =>
 export const createLocalFolder = (parentId: string | null, name: string): LocalFolder | null => {
   if (getState().localFolders.length >= MAX_LOCAL_FOLDERS) return null
   const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
-  setState({ localFolders: [...getState().localFolders, folder] })
-  return folder
+  return setStateDurably({ localFolders: [...getState().localFolders, folder] }) ? folder : null
 }
 
 /** An id for a folder that has not been added yet, so a batch can wire up its own parents. */
@@ -822,8 +821,7 @@ export const addLocalFolders = (folders: readonly LocalFolder[]): boolean => {
   if (folders.length === 0) return true
   const existing = getState().localFolders
   if (existing.length + folders.length > MAX_LOCAL_FOLDERS) return false
-  setState({ localFolders: [...existing, ...folders] })
-  return true
+  return setStateDurably({ localFolders: [...existing, ...folders] })
 }
 
 export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)
@@ -870,13 +868,12 @@ export const setServerTemplatePreference = (
   })
 }
 
-export const setLocalFolderVisible = (id: string, visible: boolean): void => {
-  setState({
+export const setLocalFolderVisible = (id: string, visible: boolean): boolean =>
+  setStateDurably({
     localFolders: getState().localFolders.map((folder) =>
       folder.id === id ? { ...folder, visible } : folder,
     ),
   })
-}
 
 export const localFolderChainVisible = (folderId: string | null): boolean => {
   if (!isScopeVisible('local')) return false
@@ -897,19 +894,18 @@ export const localFolderChainVisible = (folderId: string | null): boolean => {
 export const renameLocalFolder = (id: string, name: string): boolean => {
   const trimmed = name.trim()
   if (trimmed === '' || trimmed.length > 256) return false
-  setState({
+  return setStateDurably({
     localFolders: getState().localFolders.map((folder) =>
       folder.id === id ? { ...folder, name: trimmed } : folder,
     ),
   })
-  return true
 }
 
-export const removeLocalFolder = (id: string): void => {
+export const removeLocalFolder = (id: string): boolean => {
   const folders = getState().localFolders
   const folder = folders.find((candidate) => candidate.id === id)
-  if (folder === undefined) return
-  setState({
+  if (folder === undefined) return true
+  return setStateDurably({
     localFolders: folders
       .filter((candidate) => candidate.id !== id)
       .map((candidate) =>
@@ -918,18 +914,19 @@ export const removeLocalFolder = (id: string): void => {
   })
 }
 
-export const moveLocalFolder = (id: string, parentId: string | null): void => {
-  if (id === parentId) return
+export const moveLocalFolder = (id: string, parentId: string | null): boolean => {
+  if (id === parentId) return false
   const folders = getState().localFolders
+  if (!folders.some((folder) => folder.id === id)) return false
   let walk = parentId
   // Bounded by the number of folders, because the list comes back from storage and every other
   // reader in this file treats that as something to check rather than trust. A chain longer than
   // the list is a cycle, and an unbounded walk up one hangs the tab instead of refusing the move.
   for (let step = 0; walk !== null; step++) {
-    if (walk === id || step > folders.length) return
+    if (walk === id || step > folders.length) return false
     walk = folders.find((candidate) => candidate.id === walk)?.parentId ?? null
   }
-  setState({
+  return setStateDurably({
     localFolders: folders.map((folder) => (folder.id === id ? { ...folder, parentId } : folder)),
   })
 }

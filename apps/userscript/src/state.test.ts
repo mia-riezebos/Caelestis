@@ -328,6 +328,39 @@ describe('server state boundaries', () => {
     expect(renameLocalFolder('folder-0', 'x'.repeat(257))).toBe(false)
   })
 
+  it('leaves every Local folder edit unchanged when persistence rejects it', async () => {
+    const persist = vi.fn()
+    vi.stubGlobal('GM_setValue', persist)
+    const {
+      addLocalFolders,
+      createLocalFolder,
+      getState,
+      moveLocalFolder,
+      removeLocalFolder,
+      renameLocalFolder,
+      setLocalFolderVisible,
+      setState,
+    } = await import('./state.js')
+    const folders = [
+      { id: 'root', parentId: null, name: 'Root', visible: true },
+      { id: 'child', parentId: 'root', name: 'Child', visible: true },
+    ]
+    setState({ localFolders: folders })
+    persist.mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+
+    expect(createLocalFolder(null, 'Created')).toBeNull()
+    expect(addLocalFolders([{ id: 'added', parentId: null, name: 'Added', visible: true }])).toBe(
+      false,
+    )
+    expect(setLocalFolderVisible('root', false)).toBe(false)
+    expect(renameLocalFolder('root', 'Renamed')).toBe(false)
+    expect(moveLocalFolder('child', null)).toBe(false)
+    expect(removeLocalFolder('root')).toBe(false)
+    expect(getState().localFolders).toEqual(folders)
+  })
+
   it('does not retain cached identity after a different server answers at the same URL', async () => {
     const replacementInfo = {
       id: '019fed50-87a1-7523-a88c-bdeafad49699',

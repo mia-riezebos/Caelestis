@@ -36,8 +36,16 @@ const LAYER_ID = 'caelestis-overlay'
 /** Their marker layer. Ours goes immediately before it. */
 const BEFORE_LAYER = 'pixel-hover'
 
+interface IndexGpuTile {
+  readonly texture: WebGLTexture
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
 interface TemplateGpu {
-  readonly indices: WebGLTexture
+  readonly indices: readonly IndexGpuTile[]
   readonly palette: WebGLTexture
   width: number
   height: number
@@ -207,23 +215,13 @@ const uploadPalette = (
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 }
 
-/**
- * Will this device take a texture of this size?
- *
- * An oversized `texImage2D` records a GL error rather than throwing, so the upload looks like it
- * worked and the sampler reads nothing: the overlay draws blank and the cache never retries it. A
- * valid import can be thousands of pixels on a side while a device reports a limit of 8192, so the
- * limit is asked for rather than assumed.
- */
-/** Templates already reported as too large, so the warning is said once rather than every frame. */
-const tooLarge = new Set<string>()
-
-const fitsInATexture = (gl: WebGL2RenderingContext, width: number, height: number): boolean => {
+/** Maximum side this context accepts, falling back to one whole-template upload in test shims. */
+const textureLimit = (gl: WebGL2RenderingContext, width: number, height: number): number => {
   const limit = gl.getParameter(gl.MAX_TEXTURE_SIZE) as unknown
-  // A context that will not say has not said no. Refusing on an unreadable limit would take every
-  // overlay off the map to avoid a size almost nothing reaches.
-  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return true
-  return width <= limit && height <= limit
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
+    return Math.max(width, height)
+  }
+  return Math.max(1, Math.floor(limit))
 }
 
 /** Upload a template's indices once, as one byte per pixel. */
@@ -255,10 +253,43 @@ const uploadIndices = (
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 }
 
+/** Split accepted templates into textures this particular device can upload. */
+const uploadIndexTiles = (
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+  indices: Uint8Array,
+): readonly IndexGpuTile[] | null => {
+  const limit = textureLimit(gl, width, height)
+  const uploaded: IndexGpuTile[] = []
+  for (let y = 0; y < height; y += limit) {
+    const tileHeight = Math.min(limit, height - y)
+    for (let x = 0; x < width; x += limit) {
+      const tileWidth = Math.min(limit, width - x)
+      const texture = gl.createTexture()
+      if (texture === null) {
+        for (const tile of uploaded) gl.deleteTexture(tile.texture)
+        return null
+      }
+      let pixels = indices
+      if (x !== 0 || y !== 0 || tileWidth !== width || tileHeight !== height) {
+        pixels = new Uint8Array(tileWidth * tileHeight)
+        for (let row = 0; row < tileHeight; row++) {
+          const start = (y + row) * width + x
+          pixels.set(indices.subarray(start, start + tileWidth), row * tileWidth)
+        }
+      }
+      uploadIndices(gl, texture, tileWidth, tileHeight, pixels)
+      uploaded.push({ texture, x, y, width: tileWidth, height: tileHeight })
+    }
+  }
+  return uploaded
+}
+
 const release = (gl: WebGL2RenderingContext, id: string): void => {
   const existing = gpu.get(id)
   if (existing === undefined) return
-  gl.deleteTexture(existing.indices)
+  for (const tile of existing.indices) gl.deleteTexture(tile.texture)
   gl.deleteTexture(existing.palette)
   gpu.delete(id)
 }
@@ -422,24 +453,23 @@ export const overlayLayer = {
     try {
       for (const { template, fade } of visible) {
         let entry = gpu.get(template.id)
+        const sourceChanged =
+          entry !== undefined &&
+          (entry.source !== template.indices ||
+            entry.width !== template.width ||
+            entry.height !== template.height)
+        if (sourceChanged) {
+          release(gl, template.id)
+          entry = undefined
+        }
         if (entry === undefined) {
-          if (!fitsInATexture(gl, template.width, template.height)) {
-            // Once per template. A template with no entry takes this branch on every frame, and a
-            // warning that reaches the console unconditionally would evict every other diagnostic
-            // from the ring within seconds.
-            if (!tooLarge.has(template.id)) {
-              tooLarge.add(template.id)
-              warn(
-                'install',
-                `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
-              )
-            }
+          const palette = gl.createTexture()
+          if (palette === null) continue
+          const indices = uploadIndexTiles(gl, template.width, template.height, template.indices)
+          if (indices === null) {
+            gl.deleteTexture(palette)
             continue
           }
-          const indices = gl.createTexture()
-          const palette = gl.createTexture()
-          if (indices === null || palette === null) continue
-          uploadIndices(gl, indices, template.width, template.height, template.indices)
           entry = {
             indices,
             palette,
@@ -450,27 +480,6 @@ export const overlayLayer = {
             paletteMoving: false,
           }
           gpu.set(template.id, entry)
-        } else if (
-          entry.source !== template.indices ||
-          entry.width !== template.width ||
-          entry.height !== template.height
-        ) {
-          // This branch exists because the size can change: a replacement version arrives under the
-          // same id with whatever dimensions the server sent. The same limit applies to it.
-          if (!fitsInATexture(gl, template.width, template.height)) {
-            if (!tooLarge.has(template.id)) {
-              tooLarge.add(template.id)
-              warn(
-                'install',
-                `“${template.name}” is ${template.width}x${template.height}, larger than this device can draw`,
-              )
-            }
-            continue
-          }
-          uploadIndices(gl, entry.indices, template.width, template.height, template.indices)
-          entry.source = template.indices
-          entry.width = template.width
-          entry.height = template.height
         }
 
         const appearance = appearanceOf(template)
@@ -486,15 +495,11 @@ export const overlayLayer = {
           if (built.animating) animating = true
         }
 
-        gl.activeTexture(gl.TEXTURE0)
-        gl.bindTexture(gl.TEXTURE_2D, entry.indices)
-        gl.uniform1i(uniform(gl, 'u_indices'), 0)
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, entry.palette)
         gl.uniform1i(uniform(gl, 'u_palette'), 1)
 
         gl.uniform1f(uniform(gl, 'u_fade'), fade)
-        gl.uniform2f(uniform(gl, 'u_size'), template.width, template.height)
         gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
         gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
         gl.uniform1f(uniform(gl, 'u_stampRadius'), appearance.radius)
@@ -502,44 +507,54 @@ export const overlayLayer = {
         gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
         gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
 
-        const top = template.originY + nudgeY
-        const bottom = top + template.height
+        const templateTop = template.originY + nudgeY
 
-        for (const span of horizontalSpans(template)) {
-          const left = span.worldStart + nudgeX
-          const right = span.worldEnd + nudgeX
-          for (const tile of tiles) {
-            const tileLeft = tile.tile.x * TILE_SIZE
-            const tileTop = tile.tile.y * TILE_SIZE
-            // The part of this template run that falls inside this tile, in canvas pixels.
-            const cutLeft = Math.max(left, tileLeft)
-            const cutTop = Math.max(top, tileTop)
-            const cutRight = Math.min(right, tileLeft + TILE_SIZE)
-            const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
-            if (cutRight <= cutLeft || cutBottom <= cutTop) continue
+        for (const source of entry.indices) {
+          gl.activeTexture(gl.TEXTURE0)
+          gl.bindTexture(gl.TEXTURE_2D, source.texture)
+          gl.uniform1i(uniform(gl, 'u_indices'), 0)
+          gl.uniform2f(uniform(gl, 'u_size'), source.width, source.height)
+          const top = templateTop + source.y
+          const bottom = top + source.height
+          for (const span of horizontalSpans(template)) {
+            const sourceStart = Math.max(source.x, span.sourceStart)
+            const sourceEnd = Math.min(source.x + source.width, span.sourceEnd)
+            if (sourceEnd <= sourceStart) continue
+            const left = span.worldStart + sourceStart - span.sourceStart + nudgeX
+            const right = span.worldStart + sourceEnd - span.sourceStart + nudgeX
+            for (const tile of tiles) {
+              const tileLeft = tile.tile.x * TILE_SIZE
+              const tileTop = tile.tile.y * TILE_SIZE
+              // The part of this template run that falls inside this tile, in canvas pixels.
+              const cutLeft = Math.max(left, tileLeft)
+              const cutTop = Math.max(top, tileTop)
+              const cutRight = Math.min(right, tileLeft + TILE_SIZE)
+              const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
+              if (cutRight <= cutLeft || cutBottom <= cutTop) continue
 
-            // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
-            // including snapping it to whole device pixels once the map stops moving — is inherited
-            // rather than guessed at.
-            const scaleX = tile.width / TILE_SIZE
-            const scaleY = tile.height / TILE_SIZE
-            const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
-            const screenRight = tile.x + (cutRight - tileLeft) * scaleX
-            const screenTop = tile.y + (cutTop - tileTop) * scaleY
-            const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
+              // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
+              // including snapping it to whole device pixels once the map stops moving — is inherited
+              // rather than guessed at.
+              const scaleX = tile.width / TILE_SIZE
+              const scaleY = tile.height / TILE_SIZE
+              const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
+              const screenRight = tile.x + (cutRight - tileLeft) * scaleX
+              const screenTop = tile.y + (cutTop - tileTop) * scaleY
+              const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
 
-            const u0 = (span.sourceStart + cutLeft - left) / template.width
-            const u1 = (span.sourceStart + cutRight - left) / template.width
-            const v0 = (cutTop - top) / template.height
-            const v1 = (cutBottom - top) / template.height
+              const u0 = (sourceStart - source.x + cutLeft - left) / source.width
+              const u1 = (sourceStart - source.x + cutRight - left) / source.width
+              const v0 = (cutTop - top) / source.height
+              const v1 = (cutBottom - top) / source.height
 
-            // Strip order: top-left, top-right, bottom-left, bottom-right.
-            corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
-            corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
-            corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
-            corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
-            gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+              // Strip order: top-left, top-right, bottom-left, bottom-right.
+              corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
+              corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
+              corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
+              corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
+              gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+            }
           }
         }
       }

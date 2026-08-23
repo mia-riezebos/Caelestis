@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   triggerRepaint: vi.fn(),
   indices: new Uint8Array([0]),
+  width: 1,
+  height: 1,
   fade: { value: 0, done: false },
 }))
 
@@ -28,8 +30,8 @@ vi.mock('../templates/local-store.js', () => ({
       id: 'visible-template',
       originX: 0,
       originY: 0,
-      width: 1,
-      height: 1,
+      width: harness.width,
+      height: harness.height,
       indices: harness.indices,
       appearance: null,
     },
@@ -84,6 +86,7 @@ const gl = () =>
     TEXTURE0: 31,
     TEXTURE1: 32,
     TRIANGLE_STRIP: 33,
+    MAX_TEXTURE_SIZE: 34,
     drawingBufferWidth: 1_000,
     drawingBufferHeight: 1_000,
     createShader: vi.fn(() => ({})),
@@ -106,6 +109,7 @@ const gl = () =>
     enableVertexAttribArray: vi.fn(),
     vertexAttribPointer: vi.fn(),
     createTexture: vi.fn(() => ({})),
+    deleteTexture: vi.fn(),
     bindTexture: vi.fn(),
     pixelStorei: vi.fn(),
     texImage2D: vi.fn(),
@@ -129,6 +133,9 @@ const gl = () =>
 beforeEach(() => {
   vi.clearAllMocks()
   harness.fade = { value: 0, done: false }
+  harness.indices = new Uint8Array([0])
+  harness.width = 1
+  harness.height = 1
 })
 
 describe('overlay layer', () => {
@@ -155,5 +162,23 @@ describe('overlay layer', () => {
     overlayLayer.draw(replacement, null)
 
     expect(replacement.texImage2D).toHaveBeenCalledTimes(2)
+  })
+
+  it('tiles an accepted template across the device texture limit', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.indices = new Uint8Array([0, 1, 2])
+    harness.width = 3
+    harness.height = 1
+    const context = gl()
+    vi.mocked(context.getParameter).mockImplementation((parameter) =>
+      parameter === context.MAX_TEXTURE_SIZE ? 2 : null,
+    )
+    overlayLayer.onAdd(null, context)
+
+    overlayLayer.draw(context, null)
+
+    expect(context.texImage2D).toHaveBeenCalledTimes(3)
+    expect(context.drawArrays).toHaveBeenCalledTimes(2)
   })
 })

@@ -1730,10 +1730,7 @@ export const treeContents = (
             kind: 'folder',
             childrenOf: folder.id,
             visible: folder.visible,
-            setVisible: (on) => {
-              setLocalFolderVisible(folder.id, on)
-              return true
-            },
+            setVisible: (on) => setLocalFolderVisible(folder.id, on),
             canReparent: true,
             onDropAt: callbacks.onMoveLocal,
             onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),

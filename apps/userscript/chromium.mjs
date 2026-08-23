@@ -32,10 +32,11 @@ const CHROME_PROFILE_ARG = `--user-data-dir=${join(homedir(), '.caelestis-chrome
  * file open, a shell in a directory called `chromium`, and this script itself, whose own path ends
  * in `chromium.mjs`. `--relaunch` then killed the run that issued it.
  */
-const PROCESS_PATTERN =
-  process.platform === 'darwin'
+export const processPatternFor = (platform = process.platform) =>
+  platform === 'darwin'
     ? 'Chromium.app/Contents/MacOS/Chromium'
-    : '(chromium|chromium-browser|google-chrome|chrome)'
+    : '(chromium|chromium-browse|chromium-browser|google-chrome|chrome)'
+const PROCESS_PATTERN = processPatternFor()
 const MATCH_ARGS = process.platform === 'darwin' ? ['-f'] : ['-x']
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -112,6 +113,33 @@ export const launchersFor = (platform = process.platform) =>
 
 const LAUNCHERS = launchersFor()
 
+/**
+ * Give each installed browser a bounded chance to open CDP before trying the next fallback.
+ *
+ * `spawn` proves only that an executable was found. Distribution wrappers can accept the spawn and
+ * immediately reject the flags; treating that as the launch result made every later candidate dead
+ * code on machines that happened to have such a wrapper first in PATH.
+ */
+export const launchFirstReady = async (
+  launchers,
+  start = launch,
+  ready = cdpReady,
+  pause = sleep,
+  attemptsPerLauncher = 20,
+) => {
+  let launched = false
+  for (const [command, args] of launchers) {
+    if (!(await start(command, args))) continue
+    launched = true
+    for (let attempt = 0; attempt < attemptsPerLauncher; attempt++) {
+      const version = await ready()
+      if (version !== null) return { version, launched }
+      await pause(250)
+    }
+  }
+  return { version: null, launched }
+}
+
 /** @internal The `--relaunch` contract deliberately bypasses an otherwise reusable CDP session. */
 export const mayReuseExistingBrowser = (already, relaunch) => already !== null && !relaunch
 
@@ -143,23 +171,12 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
   // "already running without the port" and refuse to do the very thing that would have worked.
   // Launching is harmless in every state — `open -a` on a running app just focuses it — so try it
   // and let the port decide.
-  let launched = false
-  for (const [command, args] of LAUNCHERS) {
-    if (await launch(command, args)) {
-      launched = true
-      break
-    }
+  const { version, launched } = await launchFirstReady(LAUNCHERS)
+  if (version !== null) {
+    if (!quiet) console.log(`chromium started on 9222 (${version})`)
+    return true
   }
   if (!launched) throw new Error('could not launch Chromium — is it installed?')
-
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const version = await cdpReady()
-    if (version !== null) {
-      if (!quiet) console.log(`chromium started on 9222 (${version})`)
-      return true
-    }
-    await sleep(250)
-  }
 
   // The port never came up. If a Chromium is running, this is the one situation that cannot be
   // fixed from here, and it is worth saying so precisely rather than reporting a timeout.

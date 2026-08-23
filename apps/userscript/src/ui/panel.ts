@@ -362,11 +362,11 @@ const treeView = (): HTMLElement => {
               return draggedKey
             } else if (draggedKey.startsWith('lf:')) {
               const folderId = draggedKey.slice('lf:'.length)
-              moveLocalFolder(folderId, parentFolderId)
-              return getState().localFolders.find((folder) => folder.id === folderId)?.parentId ===
-                parentFolderId
-                ? draggedKey
-                : null
+              if (!moveLocalFolder(folderId, parentFolderId)) {
+                toast('Could not save that folder move.', 'error')
+                return null
+              }
+              return draggedKey
             }
             return null
           },
@@ -646,11 +646,11 @@ const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
  * things that describe them, then the bytes they were built from, then the preferences that can no
  * longer refer to anything.
  */
-const disconnectServer = (server: ConnectedServer): void => {
+const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   // Anything already downloading for this server lands stale rather than drawing an overlay with no
   // server row left to control it.
   endServerGeneration(server.url)
-  forgetServerTemplates(server.url)
+  await forgetServerTemplates(server.url)
   const hashes = forgetServerRows(server.url)
   const nodes = forgetNodes(server.url)
   forgetChunks(hashes)
@@ -843,7 +843,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
   disconnect.className = 'btn btn-sm btn-ghost text-error'
   disconnect.style.marginTop = '0.75rem'
   disconnect.textContent = 'Disconnect'
-  disconnect.addEventListener('click', () => disconnectServer(server))
+  disconnect.addEventListener('click', () => void disconnectServer(server))
   body.appendChild(disconnect)
 
   wrap.appendChild(body)
@@ -1138,7 +1138,7 @@ const applyRename = async (
   const folderId = localFolderIdOf(target)
   if (folderId !== null) {
     if (!renameLocalFolder(folderId, name))
-      toast('Folder names must be between 1 and 256 characters.', 'error')
+      toast('Could not save that folder name. Use between 1 and 256 characters.', 'error')
     rerender()
     return
   }
@@ -1263,7 +1263,11 @@ const applyDelete = async (
       rerender()
       return
     }
-    removeLocalFolder(folderId)
+    if (!removeLocalFolder(folderId)) {
+      toast(`Everything was moved out, but “${target.name}” could not be deleted.`, 'error')
+      rerender()
+      return
+    }
     removeTreeStateKeys(new Set([target.key]))
     rerender()
     return
@@ -2177,7 +2181,10 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
     const taken = new Set(getState().localFolders.map((folder) => folder.name.toLowerCase()))
     const folder = createLocalFolder(parentId, freeFolderName(taken))
     if (folder === null) {
-      toast(`Local folders are limited to ${MAX_LOCAL_FOLDERS.toLocaleString()}.`, 'error')
+      toast(
+        `Could not save that folder. Local supports up to ${MAX_LOCAL_FOLDERS.toLocaleString()}.`,
+        'error',
+      )
       return
     }
     startRenaming(`lf:${folder.id}`)

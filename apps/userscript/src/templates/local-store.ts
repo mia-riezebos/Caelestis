@@ -1180,26 +1180,26 @@ export const updateServerTemplateMetadata = async (
   await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || !isServerTemplate(existing)) return false
-    const trimmed = name.trim()
-    if (trimmed === '' || trimmed.length > MAX_TEMPLATE_NAME_LENGTH) return false
-    if (existing.name === trimmed && existing.serverNodeId === serverNodeId) return true
-    templates.set(id, { ...existing, name: trimmed, serverNodeId })
+    if (name.length === 0 || name.length > MAX_TEMPLATE_NAME_LENGTH) return false
+    if (existing.name === name && existing.serverNodeId === serverNodeId) return true
+    templates.set(id, { ...existing, name, serverNodeId })
     notify()
     return true
   })
 
 /** Drop a server template we hold, because the server has stopped publishing it. */
-export const forgetServerTemplate = (id: string): void => {
-  const existing = templates.get(id)
-  if (existing === undefined || !isServerTemplate(existing)) return
-  releaseRetainedTiles(existing.tiles)
-  retainedIndexPixels -= existing.indices.length
-  desiredVisibility.delete(id)
-  clearStamped(id)
-  previewOrigins.delete(id)
-  templates.delete(id)
-  notify()
-}
+export const forgetServerTemplate = async (id: string): Promise<void> =>
+  await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || !isServerTemplate(existing)) return
+    releaseRetainedTiles(existing.tiles)
+    retainedIndexPixels -= existing.indices.length
+    desiredVisibility.delete(id)
+    clearStamped(id)
+    previewOrigins.delete(id)
+    templates.delete(id)
+    notify()
+  })
 
 /**
  * Forget everything one server published, and free the bitmaps with it.
@@ -1209,19 +1209,26 @@ export const forgetServerTemplate = (id: string): void => {
  * on the canvas, belonging to a server that is no longer in the list and with no row anywhere to
  * switch them off from.
  */
-export const forgetServerTemplates = (serverUrl: string): void => {
-  let removed = false
-  for (const template of [...templates.values()]) {
-    if (template.serverUrl !== serverUrl) continue
-    releaseRetainedTiles(template.tiles)
-    retainedIndexPixels -= template.indices.length
-    desiredVisibility.delete(template.id)
-    clearStamped(template.id)
-    previewOrigins.delete(template.id)
-    templates.delete(template.id)
-    removed = true
-  }
-  if (removed) notify()
+export const forgetServerTemplates = async (serverUrl: string): Promise<void> => {
+  const ids = [...templates.values()]
+    .filter((template) => template.serverUrl === serverUrl)
+    .map(({ id }) => id)
+  if (ids.length === 0) return
+  await writeManyInOrder(ids, async () => {
+    let removed = false
+    for (const id of ids) {
+      const template = templates.get(id)
+      if (template === undefined || template.serverUrl !== serverUrl) continue
+      releaseRetainedTiles(template.tiles)
+      retainedIndexPixels -= template.indices.length
+      desiredVisibility.delete(template.id)
+      clearStamped(template.id)
+      previewOrigins.delete(template.id)
+      templates.delete(template.id)
+      removed = true
+    }
+    if (removed) notify()
+  })
 }
 
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {

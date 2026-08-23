@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({
   getState: vi.fn(() => ({ localFolders: [] })),
   listServerNodes: vi.fn(),
   nextLocalFolderId: vi.fn(() => 'local-folder'),
-  removeLocalFolder: vi.fn(),
+  removeLocalFolder: vi.fn(() => true),
   uploadTemplate: vi.fn(),
 }))
 const store = vi.hoisted(() => ({
@@ -73,5 +73,42 @@ describe('branch transplant', () => {
     )
     expect(state.addLocalFolders).not.toHaveBeenCalled()
     expect(store.copyAsLocalTemplate).not.toHaveBeenCalled()
+  })
+
+  it('does not copy or delete a server branch when Local folder persistence fails', async () => {
+    const server = {
+      url: 'https://example.test',
+      info: null,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+    }
+    state.listServerNodes.mockResolvedValue([
+      { id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 },
+    ])
+    store.localTemplates.mockReturnValue([
+      {
+        id: 'srv:https://example.test:template',
+        name: 'Template',
+        originX: 0,
+        originY: 0,
+        width: 1,
+        height: 1,
+      },
+    ])
+    state.addLocalFolders.mockReturnValueOnce(false)
+    const { transplant } = await import('./transplant.js')
+
+    await expect(
+      transplant(
+        { kind: 'server', server, nodeId: 'root' },
+        { kind: 'local', folderId: null },
+        () => [{ id: 'template', name: 'Template' }],
+      ),
+    ).resolves.toEqual(expect.objectContaining({ ok: false, templates: 0 }))
+    expect(store.copyAsLocalTemplate).not.toHaveBeenCalled()
+    expect(state.deleteTemplate).not.toHaveBeenCalled()
+    expect(state.deleteNode).not.toHaveBeenCalled()
   })
 })

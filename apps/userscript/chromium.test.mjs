@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { launchersFor, mayReuseExistingBrowser } from './chromium.mjs'
+import {
+  launchersFor,
+  launchFirstReady,
+  mayReuseExistingBrowser,
+  processPatternFor,
+} from './chromium.mjs'
 
 describe('Chromium launcher policy', () => {
   it('uses a non-default persistent profile for the Google Chrome fallback', () => {
@@ -14,5 +19,31 @@ describe('Chromium launcher policy', () => {
     expect(mayReuseExistingBrowser('Chrome/140', false)).toBe(true)
     expect(mayReuseExistingBrowser('Chrome/140', true)).toBe(false)
     expect(mayReuseExistingBrowser(null, false)).toBe(false)
+  })
+
+  it('tries the next installed browser when a spawned candidate never opens CDP', async () => {
+    const started = []
+    let active = ''
+    const result = await launchFirstReady(
+      [
+        ['chromium', ['--flag']],
+        ['google-chrome', ['--flag']],
+      ],
+      async (command) => {
+        started.push(command)
+        active = command
+        return true
+      },
+      async () => (active === 'google-chrome' ? 'Chrome/140' : null),
+      async () => undefined,
+      2,
+    )
+
+    expect(result).toEqual({ version: 'Chrome/140', launched: true })
+    expect(started).toEqual(['chromium', 'google-chrome'])
+  })
+
+  it('matches Linux chromium-browser despite the kernel process-name limit', () => {
+    expect(processPatternFor('linux')).toContain('chromium-browse')
   })
 })

@@ -1436,7 +1436,7 @@ describe('local template lifecycle', () => {
       store.setAppearance(serverTemplate.id, { ...store.appearanceOf(current), opacity: 0.25 }),
     ).resolves.toBe(true)
 
-    store.forgetServerTemplate(serverTemplate.id)
+    await store.forgetServerTemplate(serverTemplate.id)
     await store.putServerTemplate({ ...serverTemplate, serverVersion: 'version-2' })
 
     expect(store.localTemplates()[0]).toMatchObject({
@@ -1489,14 +1489,80 @@ describe('local template lifecycle', () => {
     )
     await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
     current = false
-    store.forgetServerTemplates(serverTemplate.serverUrl)
+    const forgetting = store.forgetServerTemplates(serverTemplate.serverUrl)
     const replacement = store.putServerTemplate({ ...serverTemplate, serverVersion: 'version-3' })
     pending.resolve(bitmap(1_000, 1_000))
 
     await expect(stale).resolves.toBe(false)
+    await expect(forgetting).resolves.toBeUndefined()
     await expect(replacement).resolves.toBe(true)
     expect(store.localTemplates()).toHaveLength(1)
     expect(store.localTemplates()[0]?.serverVersion).toBe('version-3')
+  })
+
+  it('orders manifest removal after an in-flight server visibility write', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: 'srv:https://example.test:template-1' }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-1',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+    await store.setLocalVisible(serverTemplate.id, false)
+    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
+    const pending = deferOneBitmap()
+
+    const revealing = store.setLocalVisible(serverTemplate.id, true)
+    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
+    const forgetting = store.forgetServerTemplate(serverTemplate.id)
+    pending.resolve(bitmap(1_000, 1_000))
+
+    await expect(revealing).resolves.toBe(true)
+    await expect(forgetting).resolves.toBeUndefined()
+    expect(store.localTemplates()).toHaveLength(0)
+  })
+
+  it('orders disconnect cleanup after all in-flight server visibility writes', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: 'srv:https://example.test:template-1' }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-1',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+    await store.setLocalVisible(serverTemplate.id, false)
+    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
+    const pending = deferOneBitmap()
+
+    const revealing = store.setLocalVisible(serverTemplate.id, true)
+    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
+    const forgetting = store.forgetServerTemplates(serverTemplate.serverUrl)
+    pending.resolve(bitmap(1_000, 1_000))
+
+    await expect(revealing).resolves.toBe(true)
+    await expect(forgetting).resolves.toBeUndefined()
+    expect(store.localTemplates()).toHaveLength(0)
+  })
+
+  it('preserves legal whitespace server names while refreshing their folder', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: 'srv:https://example.test:template-1', name: 'Before' }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-before',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+
+    await expect(
+      store.updateServerTemplateMetadata(serverTemplate.id, '   ', 'folder-after'),
+    ).resolves.toBe(true)
+    expect(store.localTemplates()[0]).toMatchObject({ name: '   ', serverNodeId: 'folder-after' })
   })
 
   it('keeps live server visibility unchanged when its scope cannot be saved', async () => {

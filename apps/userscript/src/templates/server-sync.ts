@@ -330,7 +330,7 @@ const syncServerTemplatesOnce = async (
 
   for (const held of localTemplates()) {
     if (held.serverUrl !== server.url) continue
-    if (!wanted.has(held.id)) forgetServerTemplate(held.id)
+    if (!wanted.has(held.id)) await forgetServerTemplate(held.id)
   }
   const ourPrefix = serverTemplateKey(server.url, '')
   for (const key of [...latestVersion.keys()]) {
