@@ -1223,8 +1223,11 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
       const server = snapshot[cursor++]
       if (server === undefined) return
       const refreshed = await probeServer(server.url, server.token)
-      if (getState().servers.find((candidate) => candidate.url === server.url) !== server) continue
-      upsertServer(refreshed)
+      const current = getState().servers.find((candidate) => candidate.url === server.url)
+      if (current === undefined || !sameServerConnection(current, server)) continue
+      // A cosmetic replacement can land while the probe is in flight. Preserve that newer local
+      // metadata while still applying the probe's current connectivity, season, and scope result.
+      upsertServer(current === server ? refreshed : { ...refreshed, info: current.info })
       try {
         onRefreshed?.()
       } catch (error) {
@@ -1289,11 +1292,11 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
 })
 
 const noteAuthFailure = (server: ConnectedServer, status: number): void => {
-  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined || !sameServerConnection(current, server)) return
   const needsToken = status === 401
   const replacement: ConnectedServer = {
-    ...server,
-    token: server.token,
+    ...current,
     status: needsToken ? 'needs-token' : 'connected',
     error: needsToken ? 'authorization expired' : 'admin access required',
     isAdmin: false,
@@ -1592,22 +1595,26 @@ export const listServerContents = async (
   }
 }
 
+export type ServerNodesResult =
+  | { readonly status: 'ok'; readonly nodes: readonly TreeNode[] }
+  | { readonly status: 'unreachable' | 'not-admitted' }
+
 /** The folder tree alone, for the admin flows that need somewhere to put something. */
 /**
- * The folders alone, or null when the server could not be asked.
+ * The admitted folders, with network failure kept distinct from a successful unsafe snapshot.
  *
- * Null rather than empty, for the reason spelled out below: a 500 or a timeout answered with an
- * empty list, so Move claimed the server had one folder, Copy said to create one first, and folder
- * naming picked a name as though nothing was there.
+ * Empty is a real server answer. A failed fetch used to answer with an empty list, so Move claimed
+ * the server had one folder, Copy said to create one first, and folder naming picked a name as
+ * though nothing was there. Aggregate refusal is different again: the server answered, but using
+ * rows the tree and canvas refused would let admin actions commit against state the UI cannot show.
  */
-export const listServerNodes = async (
-  server: ConnectedServer,
-): Promise<readonly TreeNode[] | null> => {
+export const listServerNodes = async (server: ConnectedServer): Promise<ServerNodesResult> => {
   const contents = await listServerContents(server)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (contents === null || current === undefined || !sameServerConnection(current, server))
-    return null
-  return admittedServerContentsFor(current)?.nodes ?? null
+    return { status: 'unreachable' }
+  const admitted = admittedServerContentsFor(current)
+  return admitted === null ? { status: 'not-admitted' } : { status: 'ok', nodes: admitted.nodes }
 }
 
 /**

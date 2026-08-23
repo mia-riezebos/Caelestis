@@ -1,0 +1,127 @@
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const state = vi.hoisted(() => ({
+  createAccessToken: vi.fn(async () => ({ ok: true as const, token: 'secret' })),
+  listAccessTokens: vi.fn(),
+  revokeAccessToken: vi.fn(async () => ({ ok: true as const })),
+}))
+const notices = vi.hoisted(() => ({ toast: vi.fn() }))
+
+vi.mock('../state.js', () => state)
+vi.mock('./button.js', () => ({
+  whileBusy: async (_button: HTMLElement, operation: () => Promise<unknown>) => await operation(),
+}))
+vi.mock('./confirm.js', () => ({ confirmDestructive: vi.fn(async () => true) }))
+vi.mock('./icons.js', () => ({ icon: () => document.createElement('span') }))
+vi.mock('./toast.js', () => notices)
+vi.mock('./token-dialog.js', () => ({ showNewToken: vi.fn(async () => {}) }))
+
+const server = {
+  url: 'https://example.com',
+  info: {
+    id: '019fed50-87a1-7523-a88c-bdeafad49681',
+    name: 'Example',
+    auth: 'access_token' as const,
+  },
+  token: 'admin-token',
+  status: 'connected' as const,
+  isAdmin: true,
+  season: 0,
+  lastVerified: { serverId: '019fed50-87a1-7523-a88c-bdeafad49681', season: 0 },
+}
+
+const token = (label: string, tokenHash: string) => ({
+  tokenHash,
+  label,
+  scope: 'read' as const,
+  createdWithToken: 'bootstrap',
+  createdAt: 1_800_000_000_000,
+})
+
+const buttonNamed = (root: ParentNode, name: string): HTMLButtonElement => {
+  const button = [...root.querySelectorAll('button')].find(
+    (candidate) => candidate.textContent === name,
+  )
+  if (!(button instanceof HTMLButtonElement)) throw new Error(`missing ${name} button`)
+  return button
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  document.body.replaceChildren()
+})
+
+afterEach(async () => {
+  const { forgetCachedTokens } = await import('./access-tokens.js')
+  forgetCachedTokens(server.url)
+})
+
+describe('access-token pagination', () => {
+  it('does not coalesce a first-page refresh with an in-flight later page', async () => {
+    let finishMore = (_value: unknown): void => undefined
+    let finishReload = (_value: unknown): void => undefined
+    const firstCursor = `1:${'a'.repeat(64)}`
+    const refreshedCursor = `2:${'b'.repeat(64)}`
+    state.listAccessTokens
+      .mockResolvedValueOnce({
+        tokens: [token('Initial', '1'.repeat(64))],
+        nextCursor: firstCursor,
+      })
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishMore = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishReload = resolve
+          }),
+      )
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const section = accessTokenSection(server)
+    document.body.appendChild(section)
+    await vi.waitFor(() => expect(section.textContent).toContain('Initial'))
+
+    buttonNamed(section, 'Load more').click()
+    const input = section.querySelector('input')
+    if (!(input instanceof HTMLInputElement)) throw new Error('missing token label input')
+    input.value = 'Fresh'
+    buttonNamed(section, 'Create').click()
+    await vi.waitFor(() => expect(state.listAccessTokens).toHaveBeenCalledTimes(3))
+    expect(state.listAccessTokens.mock.calls.map((call) => call[1])).toEqual([
+      null,
+      firstCursor,
+      null,
+    ])
+
+    finishReload({ tokens: [token('Fresh', '2'.repeat(64))], nextCursor: refreshedCursor })
+    await vi.waitFor(() => expect(section.textContent).toContain('Fresh'))
+    const refreshedMore = buttonNamed(section, 'Load more')
+    finishMore({ tokens: [token('Stale page', '3'.repeat(64))], nextCursor: null })
+    await vi.waitFor(() => expect(refreshedMore.isConnected).toBe(false))
+    expect(section.textContent).not.toContain('Stale page')
+    expect(section.textContent).toContain('Fresh')
+  })
+
+  it('keeps admitted rows visible when loading the next page fails', async () => {
+    state.listAccessTokens
+      .mockResolvedValueOnce({
+        tokens: [token('Still visible', '4'.repeat(64))],
+        nextCursor: `3:${'c'.repeat(64)}`,
+      })
+      .mockResolvedValueOnce(null)
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const section = accessTokenSection(server)
+    document.body.appendChild(section)
+    await vi.waitFor(() => expect(section.textContent).toContain('Still visible'))
+
+    buttonNamed(section, 'Load more').click()
+
+    await vi.waitFor(() => expect(notices.toast).toHaveBeenCalled())
+    expect(section.textContent).toContain('Still visible')
+    expect(buttonNamed(section, 'Load more').disabled).toBe(false)
+  })
+})

@@ -33,6 +33,7 @@ import {
   renameLocalFolder,
   renameNode as renameNodeOnServer,
   renameServer as renameServerOnServer,
+  type ServerNodesResult,
   setState,
   uploadTemplate,
   uploadTemplateVersion,
@@ -1403,11 +1404,12 @@ const applyDelete = async (
 const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, templateId } = target
   if (server === null || templateId === undefined) return
-  const nodes = await listServerNodes(server)
-  if (nodes === null) {
-    toast('Could not ask that server where its folders are.', 'error')
+  const listed = await listServerNodes(server)
+  if (listed.status !== 'ok') {
+    toast(serverNodesFailure(listed), 'error')
     return
   }
+  const { nodes } = listed
   const destinations = nodes.filter((node) => node.id !== target.nodeId)
   if (destinations.length === 0) {
     toast('There is nowhere else to put it — this server has one folder.', 'warning')
@@ -2099,11 +2101,13 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   const listed = await Promise.all(
     targets.map(async (server) => [server, await listServerNodes(server)] as const),
   )
-  const unreachable = listed.filter(([, nodes]) => nodes === null).length
+  const unreachable = listed.filter(([, result]) => result.status === 'unreachable').length
+  const notAdmitted = listed.filter(([, result]) => result.status === 'not-admitted').length
   let offered = 0
   let available = 0
-  for (const [server, nodes] of listed) {
-    if (nodes === null) continue
+  for (const [server, result] of listed) {
+    if (result.status !== 'ok') continue
+    const { nodes } = result
     available += nodes.length
     for (const node of nodes) {
       if (offered >= MAX_DESTINATIONS) break
@@ -2118,8 +2122,10 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     toast(
       unreachable > 0
         ? 'Could not ask any of those servers where their folders are.'
-        : 'Create a folder on the server first — a template has to live somewhere.',
-      unreachable > 0 ? 'error' : 'warning',
+        : notAdmitted > 0
+          ? 'Cannot use those folders while connected server data exceeds the client safety limits.'
+          : 'Create a folder on the server first — a template has to live somewhere.',
+      unreachable > 0 || notAdmitted > 0 ? 'error' : 'warning',
     )
     return
   }
@@ -2251,11 +2257,12 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   }
   // No dialog: pick a free name, create it, and drop straight into renaming it. Asking for a name
   // before the thing exists is a question with no context; renaming one that is on screen is not.
-  const existing = await listServerNodes(server)
-  if (existing === null) {
-    toast('Could not ask that server what it already has.', 'error')
+  const listed = await listServerNodes(server)
+  if (listed.status !== 'ok') {
+    toast(serverNodesFailure(listed), 'error')
     return
   }
+  const existing = listed.nodes
   // Asking took a round trip, and the panel was usable throughout it. Writing to a server the user
   // has since disconnected creates a folder in a place they can no longer see.
   if (!stillConnected(server)) return
@@ -2455,6 +2462,11 @@ const buildPanel = (): HTMLElement => {
  * scroll one.
  */
 const MAX_DESTINATIONS = 2_000
+
+const serverNodesFailure = (result: Exclude<ServerNodesResult, { status: 'ok' }>): string =>
+  result.status === 'unreachable'
+    ? 'Could not ask that server for its current folders.'
+    : 'Cannot use those folders while connected server data exceeds the client safety limits.'
 
 /**
  * Whether this connection is still in the list.

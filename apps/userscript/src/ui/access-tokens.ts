@@ -204,18 +204,32 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
  * writing them to disk would mean the answer outliving the admin rights that were allowed to see it.
  */
 const cached = new Map<string, AccessTokenPage>()
-const inFlight = new Map<string, Promise<AccessTokenPage | null>>()
+const inFlight = new Map<string, Map<string | null, Promise<AccessTokenPage | null>>>()
+const cacheGeneration = new Map<string, number>()
 
 const fetchTokens = (
   server: ConnectedServer,
   cursor: string | null = null,
 ): Promise<AccessTokenPage | null> => {
-  const running = inFlight.get(server.url)
+  let requests = inFlight.get(server.url)
+  if (requests === undefined) {
+    requests = new Map()
+    inFlight.set(server.url, requests)
+  }
+  const running = requests.get(cursor)
   if (running !== undefined) return running
+  const generation =
+    cursor === null
+      ? (cacheGeneration.get(server.url) ?? 0) + 1
+      : (cacheGeneration.get(server.url) ?? 0)
+  if (cursor === null) cacheGeneration.set(server.url, generation)
   const run: Promise<AccessTokenPage | null> = listAccessTokens(server, cursor).then((page) => {
     // Only while this is still the request the map is holding. Forgetting a disconnected server
     // removes the entry, and a reply landing after that must not put its labels back.
-    if (page === null || inFlight.get(server.url) !== run) return page
+    if (page === null || inFlight.get(server.url)?.get(cursor) !== run) return page
+    // A first-page refresh supersedes every later page already in flight, even when a mutation did
+    // not happen to change the first page's cursor. Its response came from the older inventory.
+    if (cacheGeneration.get(server.url) !== generation) return cached.get(server.url) ?? null
     if (cursor === null) {
       cached.set(server.url, page)
       return page
@@ -227,9 +241,12 @@ const fetchTokens = (
     return combined
   })
   void run.finally(() => {
-    if (inFlight.get(server.url) === run) inFlight.delete(server.url)
+    const current = inFlight.get(server.url)
+    if (current?.get(cursor) !== run) return
+    current.delete(cursor)
+    if (current.size === 0) inFlight.delete(server.url)
   })
-  inFlight.set(server.url, run)
+  requests.set(cursor, run)
   return run
 }
 
@@ -244,6 +261,7 @@ const fetchTokens = (
 export const forgetCachedTokens = (serverUrl: string): void => {
   cached.delete(serverUrl)
   inFlight.delete(serverUrl)
+  cacheGeneration.delete(serverUrl)
 }
 
 /**
@@ -301,7 +319,14 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
       more.textContent = 'Load more'
       more.addEventListener('click', () => {
         more.disabled = true
-        void fetchTokens(server, page.nextCursor).then((next) => draw(next, reload))
+        void fetchTokens(server, page.nextCursor).then((next) => {
+          if (next === null) {
+            more.disabled = false
+            toast('Could not load more tokens — try again.', 'error')
+            return
+          }
+          draw(next, reload)
+        })
       })
       list.appendChild(more)
     }

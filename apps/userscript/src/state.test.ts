@@ -415,7 +415,7 @@ describe('server state boundaries', () => {
     await poll
     finishPicker(new Response(JSON.stringify({ ...manifest, nodes: [olderNode] }), { status: 200 }))
 
-    await expect(picker).resolves.toEqual([newerNode])
+    await expect(picker).resolves.toEqual({ status: 'ok', nodes: [newerNode] })
   })
 
   it('keeps folder helpers on the retained tree when the newest manifest is rejected', async () => {
@@ -455,8 +455,28 @@ describe('server state boundaries', () => {
       if (contents.nodes[0]?.name !== 'Rejected') admitServerContents(connected, contents)
     })
 
-    await expect(listServerNodes(server)).resolves.toEqual([acceptedNode])
-    await expect(listServerNodes(server)).resolves.toEqual([acceptedNode])
+    await expect(listServerNodes(server)).resolves.toEqual({ status: 'ok', nodes: [acceptedNode] })
+    await expect(listServerNodes(server)).resolves.toEqual({ status: 'ok', nodes: [acceptedNode] })
+  })
+
+  it('distinguishes a successful unadmitted manifest from an unreachable server', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async () => new Response(JSON.stringify(manifest), { status: 200 })),
+    )
+    const { listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+
+    await expect(listServerNodes(server)).resolves.toEqual({ status: 'not-admitted' })
   })
 
   it('does not carry admitted contents into a replacement connection at the same URL', async () => {
@@ -510,6 +530,45 @@ describe('server state boundaries', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       `https://example.com/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
     )
+  })
+
+  it('applies an auth failure from a request that predates a cosmetic server rename', async () => {
+    let finishList = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishList = resolve
+            }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+    )
+    const { getState, listAccessTokens, renameServer, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+
+    const listing = listAccessTokens(server)
+    await expect(renameServer(server, 'Renamed')).resolves.toEqual({ ok: true })
+    finishList(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }))
+    await expect(listing).resolves.toBeNull()
+
+    expect(getState().servers[0]).toMatchObject({
+      info: { name: 'Renamed' },
+      status: 'connected',
+      isAdmin: false,
+      error: 'admin access required',
+    })
   })
 
   it('publishes an in-flight manifest through a cosmetic server metadata replacement', async () => {

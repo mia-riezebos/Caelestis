@@ -32,6 +32,29 @@ beforeEach(() => {
 })
 
 describe('branch transplant', () => {
+  it('reports an aggregate admission refusal separately from a server failure', async () => {
+    const server = {
+      url: 'https://example.test',
+      info: null,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+    }
+    state.listServerNodes.mockResolvedValue({ status: 'not-admitted' })
+    const { transplant } = await import('./transplant.js')
+
+    await expect(
+      transplant(
+        { kind: 'server', server, nodeId: 'root' },
+        { kind: 'local', folderId: null },
+        () => [],
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ ok: false, message: expect.stringContaining('safety limits') }),
+    )
+  })
+
   it('refuses a wrapped branch before creating Local destination folders', async () => {
     const server = {
       url: 'https://example.test',
@@ -41,9 +64,10 @@ describe('branch transplant', () => {
       isAdmin: false,
       season: 0,
     }
-    state.listServerNodes.mockResolvedValue([
-      { id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 },
-    ])
+    state.listServerNodes.mockResolvedValue({
+      status: 'ok',
+      nodes: [{ id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 }],
+    })
     store.localTemplates.mockReturnValue([
       {
         id: 'srv:https://example.test:template',
@@ -84,9 +108,10 @@ describe('branch transplant', () => {
       isAdmin: false,
       season: 0,
     }
-    state.listServerNodes.mockResolvedValue([
-      { id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 },
-    ])
+    state.listServerNodes.mockResolvedValue({
+      status: 'ok',
+      nodes: [{ id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 }],
+    })
     store.localTemplates.mockReturnValue([
       {
         id: 'srv:https://example.test:template',

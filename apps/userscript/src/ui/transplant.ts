@@ -83,13 +83,25 @@ const localId = (): string =>
 const drawnFor = (serverUrl: string, templateId: string): PlacedTemplate | undefined =>
   localTemplates().find((candidate) => candidate.id === serverTemplateKey(serverUrl, templateId))
 
+interface BranchReadFailure {
+  readonly error: string
+}
+
 const serverBranch = async (
   server: ConnectedServer,
   rootId: string,
   templatesOf: (nodeId: string) => ReadonlyArray<{ id: string; name: string }>,
-): Promise<Branch | null> => {
-  const nodes = await listServerNodes(server)
-  if (nodes === null) return null
+): Promise<Branch | BranchReadFailure | null> => {
+  const listed = await listServerNodes(server)
+  if (listed.status !== 'ok') {
+    return {
+      error:
+        listed.status === 'unreachable'
+          ? 'Could not ask the source server for its current folders.'
+          : 'Cannot use the source folders while connected server data exceeds the client safety limits.',
+    }
+  }
+  const { nodes } = listed
   const root = nodes.find((node) => node.id === rootId)
   if (root === undefined) return null
 
@@ -180,6 +192,9 @@ export const transplant = async (
       : await serverBranch(source.server, source.nodeId, (nodeId) =>
           templatesOf(source.server, nodeId),
         )
+  if (branch !== null && 'error' in branch) {
+    return { ok: false, nodes: 0, templates: 0, message: branch.error }
+  }
   if (branch === null) {
     return {
       ok: false,
