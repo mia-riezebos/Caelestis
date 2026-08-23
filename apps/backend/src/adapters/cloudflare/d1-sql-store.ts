@@ -515,11 +515,11 @@ export class D1SqlStore implements SqlStore {
     options: { readonly requireExisting?: boolean } = {},
   ): Promise<void> {
     assertValidTemplateVersion(version)
-    if ((await this.readNode(version.nodeId)) === null) {
+    if (options.requireExisting !== true && (await this.readNode(version.nodeId)) === null) {
       throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
     }
-    // A version replaces content in place, so it has to be a version of the same thing: same name,
-    // same dimensions. Position may move and the hash obviously differs. See TemplateIdentityError.
+    // A version replaces content in place, so it has to keep the same dimensions. Name and parent
+    // are live template metadata and may legitimately change while the pixels are being encoded.
     const previous = await this.database
       .select({
         name: templates.name,
@@ -534,11 +534,6 @@ export class D1SqlStore implements SqlStore {
       .limit(1)
     const existing = previous[0]
     if (existing !== undefined) {
-      if (existing.name !== version.name) {
-        throw new TemplateIdentityError(
-          `template ${version.templateId} is named ${existing.name}, not ${version.name}`,
-        )
-      }
       if (existing.minX !== null && existing.maxX !== null) {
         const span = (min: number, max: number) =>
           max >= min ? max - min : WORLD_PIXELS - min + max

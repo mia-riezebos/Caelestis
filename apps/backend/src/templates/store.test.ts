@@ -123,6 +123,46 @@ describe('storeTemplate', () => {
     expect(ports.blobs.hasAllCalls.every(({ hashes }) => hashes.length === 1)).toBe(true)
   })
 
+  it('replaces pixels after the template moves away from its former folder', async () => {
+    const ports = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const first = await storeTemplate(ports, input(png))
+    const destination = '01890f3e-7b2c-7abc-8def-0123456789ac'
+    await ports.sql.insertNode({
+      id: destination,
+      season: 1,
+      parentId: null,
+      path: '/destination',
+      name: 'Destination',
+      description: null,
+      createdAt: millis(Date.now()),
+    })
+    await ports.sql.updateTemplate(first.templateId, { nodeId: destination }, millis(Date.now()))
+    await ports.sql.deleteNode(NODE_ID)
+
+    await expect(
+      storeTemplate(ports, { ...input(png), templateId: first.templateId }),
+    ).resolves.toMatchObject({ templateId: first.templateId })
+    await expect(ports.sql.readTemplate(first.templateId)).resolves.toMatchObject({
+      nodeId: destination,
+    })
+  })
+
+  it('reports the live publication state after a concurrent replacement', async () => {
+    const ports = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const first = await storeTemplate(ports, input(png))
+    const insert = ports.sql.insertTemplateVersion.bind(ports.sql)
+    ports.sql.insertTemplateVersion = async (...args) => {
+      await insert(...args)
+      await ports.sql.setTemplatePublishedAt(first.templateId, millis(2_000), millis(2_000))
+    }
+
+    await expect(
+      storeTemplate(ports, { ...input(png), templateId: first.templateId }),
+    ).resolves.toMatchObject({ published: true })
+  })
+
   it('refuses an upload spanning more than 400 tiles before encoding or storing chunks', async () => {
     const ports = await harness()
     const png = await encodeIndexedPng(401_000, 1, new Uint8Array(401_000))

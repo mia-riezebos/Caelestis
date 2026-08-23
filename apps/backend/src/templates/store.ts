@@ -32,8 +32,6 @@ export interface StoreTemplateInput {
   readonly originX: number
   readonly originY: number
   readonly png: Uint8Array
-  /** Publication state to echo for a replacement; new templates default to unpublished. */
-  readonly published?: boolean
 }
 
 export interface StoredTemplate {
@@ -70,8 +68,10 @@ export const storeTemplate = async (
   ports: Pick<Ports, 'blobs' | 'sql'>,
   input: StoreTemplateInput,
 ): Promise<StoredTemplate> => {
-  const node = await ports.sql.readNode(input.nodeId)
-  if (node === null) throw new NodeNotFoundError(`node does not exist: ${input.nodeId}`)
+  if (input.templateId === undefined) {
+    const node = await ports.sql.readNode(input.nodeId)
+    if (node === null) throw new NodeNotFoundError(`node does not exist: ${input.nodeId}`)
+  }
 
   const { width, height, pixels } = await decodePng(input.png)
   const { indices, report } = quantiseToPalette(pixels)
@@ -91,11 +91,6 @@ export const storeTemplate = async (
     const existing = await ports.sql.readTemplate(input.templateId)
     if (existing === null) {
       throw new TemplateNotFoundError(`template does not exist: ${input.templateId}`)
-    }
-    if (existing.name !== input.name) {
-      throw new TemplateIdentityError(
-        `template ${input.templateId} is named ${existing.name}, not ${input.name}`,
-      )
     }
     if (existing.currentVersionId !== null) {
       const current = await ports.sql.readTemplateVersion(existing.currentVersionId)
@@ -157,6 +152,10 @@ export const storeTemplate = async (
   await ports.sql.insertTemplateVersion(version, {
     requireExisting: input.templateId !== undefined,
   })
+  const installed = await ports.sql.readTemplate(templateId)
+  if (installed === null) {
+    throw new TemplateNotFoundError(`template does not exist: ${templateId}`)
+  }
 
   return {
     templateId,
@@ -168,6 +167,6 @@ export const storeTemplate = async (
       hash,
     })),
     report,
-    published: input.published ?? false,
+    published: installed.published,
   }
 }

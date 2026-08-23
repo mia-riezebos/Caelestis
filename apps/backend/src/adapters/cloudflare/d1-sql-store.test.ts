@@ -418,6 +418,27 @@ describe('D1SqlStore', () => {
     expect(d1.batchStatements - before).toBeLessThanOrEqual(50)
   })
 
+  it('replaces an existing template without validating its stale submitted folder or name', async () => {
+    const base = { season: 1, parentId: null, description: null, createdAt: millis(1_000) }
+    await store.insertNode({ ...base, id: 'node-1', path: '/old', name: 'Old' })
+    await store.insertNode({ ...base, id: 'node-2', path: '/new', name: 'New' })
+    await store.insertTemplateVersion(templateVersion())
+    await store.updateTemplate('template-1', { nodeId: 'node-2', name: 'Renamed' }, millis(2_000))
+    await store.deleteNode('node-1')
+
+    await expect(
+      store.insertTemplateVersion(
+        templateVersion({ versionId: 'version-2', createdAt: millis(3_000) }),
+        { requireExisting: true },
+      ),
+    ).resolves.toBeUndefined()
+    await expect(store.readTemplate('template-1')).resolves.toMatchObject({
+      nodeId: 'node-2',
+      name: 'Renamed',
+      currentVersionId: 'version-2',
+    })
+  })
+
   it('deletes contribution rows before their template', async () => {
     d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
     await store.insertTemplateVersion(templateVersion())

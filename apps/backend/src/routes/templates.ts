@@ -125,7 +125,6 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
         originX: parsedOriginX,
         originY: parsedOriginY,
         png: new Uint8Array(await png.arrayBuffer()),
-        published: existing.published,
       })
       return c.json(result, 201)
     } catch (error) {

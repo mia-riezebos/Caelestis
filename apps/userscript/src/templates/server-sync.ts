@@ -368,34 +368,35 @@ const syncServerTemplatesOnce = async (
       // `putServerTemplate` awaits the restore and then slices every tile, which is the expensive
       // part and therefore the widest window for a disconnect to land in. Asked again on the far
       // side, and the template is taken straight back out if the answer changed while it ran.
-      await putServerTemplate({
-        id: key,
-        name: template.name,
-        source: 'image',
-        originX: template.bbox.minX,
-        originY: template.bbox.minY,
-        width: built.width,
-        height: built.height,
-        indices: built.indices,
-        // The server quantised on ingest, so nothing moved on the way here and every pixel it
-        // carries is one it asserts.
-        moved: 0,
-        opaque: built.indices.reduce(
-          (total, index) => (index === TRANSPARENT_INDEX ? total : total + 1),
-          0,
-        ),
-        serverUrl: server.url,
-        serverTemplateId: template.id,
-        serverNodeId: template.nodeId,
-        serverVersion: template.version,
-        wrapX: template.bbox.minX > template.bbox.maxX,
-      })
-      // Disconnected while it was slicing: take back out what has just gone in, so the store never
-      // keeps an overlay whose server has no row left to poll or switch it off.
-      if (generationOf(server.url) !== generation) {
-        forgetServerTemplate(key)
-        return
-      }
+      const installed = await putServerTemplate(
+        {
+          id: key,
+          name: template.name,
+          source: 'image',
+          originX: template.bbox.minX,
+          originY: template.bbox.minY,
+          width: built.width,
+          height: built.height,
+          indices: built.indices,
+          // The server quantised on ingest, so nothing moved on the way here and every pixel it
+          // carries is one it asserts.
+          moved: 0,
+          opaque: built.indices.reduce(
+            (total, index) => (index === TRANSPARENT_INDEX ? total : total + 1),
+            0,
+          ),
+          serverUrl: server.url,
+          serverTemplateId: template.id,
+          serverNodeId: template.nodeId,
+          serverVersion: template.version,
+          wrapX: template.bbox.minX > template.bbox.maxX,
+        },
+        () =>
+          generationOf(server.url) === generation &&
+          !signal.aborted &&
+          latestVersion.get(key) === template.version,
+      )
+      if (!installed) return
       count('server:template drawn from chunks')
     } catch (error) {
       warn('install', `could not sync server template ${template.name}`, String(error))

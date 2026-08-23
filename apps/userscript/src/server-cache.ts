@@ -1,5 +1,11 @@
 import { warn } from './debug.js'
-import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
+import {
+  MAX_MANIFEST_CHUNKS,
+  MAX_MANIFEST_TEMPLATES,
+  MAX_TREE_NODES,
+  type TreeNode,
+  validateTreeNodes,
+} from './state.js'
 import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 
 /**
@@ -49,7 +55,7 @@ export interface ServerTemplate {
 
 const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefined => {
   if (value === undefined) return undefined
-  if (!Array.isArray(value) || value.length > MAX_TREE_NODES) return undefined
+  if (!Array.isArray(value) || value.length > MAX_MANIFEST_TEMPLATES) return undefined
   const templates: ServerTemplate[] = []
   for (const raw of value) {
     if (typeof raw !== 'object' || raw === null) return undefined
@@ -153,21 +159,25 @@ export const forgetServer = async (url: string): Promise<void> => {
 const cachedServerFrom = (
   raw: unknown,
   expectedUrl: string,
-  remainingNodes: number,
+  remaining: { readonly nodes: number; readonly templates: number; readonly chunks: number },
 ): CachedServer | null => {
   if (typeof raw !== 'object' || raw === null) return null
   const candidate = raw as Partial<CachedServer>
   // Check the cheap aggregate boundary before walking and copying a large untrusted node array.
-  if (!Array.isArray(candidate.nodes) || candidate.nodes.length > remainingNodes) return null
+  if (!Array.isArray(candidate.nodes) || candidate.nodes.length > remaining.nodes) return null
   const nodes = validateTreeNodes(candidate.nodes)
   const templates = cachedTemplatesFrom(candidate.templates)
+  const templateCount = templates?.length ?? 0
+  const chunkCount = templates?.reduce((total, template) => total + template.chunks.length, 0) ?? 0
   if (
     candidate.url !== expectedUrl ||
     typeof candidate.serverId !== 'string' ||
     !Number.isSafeInteger(candidate.season) ||
     Number(candidate.season) < 0 ||
     !Number.isFinite(candidate.fetchedAt) ||
-    nodes === null
+    nodes === null ||
+    templateCount > remaining.templates ||
+    chunkCount > remaining.chunks
   ) {
     return null
   }
@@ -194,18 +204,25 @@ export const loadServerCache = async (
         const transaction = db.transaction(STORE, 'readonly')
         const store = transaction.objectStore(STORE)
         const valid: CachedServer[] = []
-        let remainingNodes = MAX_TREE_NODES
+        const remaining = {
+          nodes: MAX_TREE_NODES,
+          templates: MAX_MANIFEST_TEMPLATES,
+          chunks: MAX_MANIFEST_CHUNKS,
+        }
         let index = 0
         const readNext = (): void => {
-          if (index >= unique.length || remainingNodes === 0) return
+          if (index >= unique.length || remaining.nodes === 0) return
           const expectedUrl = unique[index++]
           if (expectedUrl === undefined) return
           const request = store.get(expectedUrl)
           request.onsuccess = () => {
-            const entry = cachedServerFrom(request.result, expectedUrl, remainingNodes)
+            const entry = cachedServerFrom(request.result, expectedUrl, remaining)
             if (entry !== null) {
               valid.push(entry)
-              remainingNodes -= entry.nodes.length
+              remaining.nodes -= entry.nodes.length
+              remaining.templates -= entry.templates?.length ?? 0
+              remaining.chunks -=
+                entry.templates?.reduce((total, template) => total + template.chunks.length, 0) ?? 0
             }
             // Issue the next read from this success callback so IndexedDB keeps the transaction
             // active, while only one structured-cloned cache record is live at a time.

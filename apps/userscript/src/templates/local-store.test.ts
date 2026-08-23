@@ -1417,6 +1417,60 @@ describe('local template lifecycle', () => {
     })
   })
 
+  it('serializes a server refresh ahead of a concurrent visibility change', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: `srv:${encodeURIComponent('https://example.test')}:template-1` }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-1',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
+    const pending = deferOneBitmap()
+
+    const refreshing = store.putServerTemplate({ ...serverTemplate, serverVersion: 'version-2' })
+    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
+    const hiding = store.setLocalVisible(serverTemplate.id, false)
+    pending.resolve(bitmap(1_000, 1_000))
+
+    await expect(refreshing).resolves.toBe(true)
+    await expect(hiding).resolves.toBe(true)
+    expect(store.localTemplates()[0]).toMatchObject({ serverVersion: 'version-2', visible: false })
+    expect(store.localTemplates()[0]?.tiles.size).toBe(0)
+  })
+
+  it('does not let an obsolete server install replace a reconnected generation', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: `srv:${encodeURIComponent('https://example.test')}:template-1` }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-1',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
+    const pending = deferOneBitmap()
+    let current = true
+
+    const stale = store.putServerTemplate(
+      { ...serverTemplate, serverVersion: 'version-2' },
+      () => current,
+    )
+    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
+    current = false
+    store.forgetServerTemplates(serverTemplate.serverUrl)
+    const replacement = store.putServerTemplate({ ...serverTemplate, serverVersion: 'version-3' })
+    pending.resolve(bitmap(1_000, 1_000))
+
+    await expect(stale).resolves.toBe(false)
+    await expect(replacement).resolves.toBe(true)
+    expect(store.localTemplates()).toHaveLength(1)
+    expect(store.localTemplates()[0]?.serverVersion).toBe('version-3')
+  })
+
   it('keeps live server visibility unchanged when its scope cannot be saved', async () => {
     const store = await import('./local-store.js')
     const serverTemplate = {

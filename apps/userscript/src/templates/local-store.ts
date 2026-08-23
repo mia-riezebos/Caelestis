@@ -1116,51 +1116,59 @@ export const putServerTemplate = async (
     serverVersion: string
     wrapX?: boolean
   },
-): Promise<void> => {
+  /** Checked after every awaited step, immediately before the live row may change. */
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> => {
   const restoring = restoreInFlight
   if (restoring !== null) await restoring
-  const existing = templates.get(template.id)
-  if (existing !== undefined && !isServerTemplate(existing)) {
-    throw new RangeError('server template id collides with a local template')
-  }
-  if (
-    existing === undefined &&
-    [...templates.values()].filter(isServerTemplate).length >= MAX_SERVER_TEMPLATES
-  ) {
-    throw new RangeError('server template count exceeds the local rendering budget')
-  }
-  const visible = existing?.visible ?? isScopeVisible(template.id)
-  const preference = existing === undefined ? serverTemplatePreference(template.id) : undefined
-  const tiles = visible ? await slice(template) : new Map<string, TileLevels>()
-  const priorTileCount = existing?.tiles.size ?? 0
-  const priorPixels = existing?.indices.length ?? 0
-  const pixelIncrease = template.indices.length - priorPixels
-  if (
-    retainedIndexPixels + pendingIndexPixels + pixelIncrease > MAX_LOCAL_INDEX_PIXELS ||
-    !claimSourceReplacement(priorTileCount, tiles.size)
-  ) {
-    releaseCandidateTiles(tiles)
-    throw new RangeError('server templates exceed the local rendering budget')
-  }
-  templates.set(template.id, {
-    ...template,
-    tiles,
-    // Whether someone else's template is on *your* canvas is your decision and nobody else's, so it
-    // is read back from this browser's own record rather than defaulted. Without that, re-syncing —
-    // which happens on every poll, and on every hot reload of a dev server — quietly switched a
-    // hidden template back on, and a page load forgot the choice entirely.
-    visible,
-    everPlaced: true,
-    appearance: existing !== undefined ? existing.appearance : (preference?.appearance ?? null),
-    revision: existing?.revision ?? 0,
-    owns: existing !== undefined ? existing.owns : (preference?.owns ?? []),
-    folderId: null,
+  return await writeInOrder(template.id, async () => {
+    if (!isCurrent()) return false
+    const existing = templates.get(template.id)
+    if (existing !== undefined && !isServerTemplate(existing)) {
+      throw new RangeError('server template id collides with a local template')
+    }
+    if (
+      existing === undefined &&
+      [...templates.values()].filter(isServerTemplate).length >= MAX_SERVER_TEMPLATES
+    ) {
+      throw new RangeError('server template count exceeds the local rendering budget')
+    }
+    const visible = existing?.visible ?? isScopeVisible(template.id)
+    const preference = existing === undefined ? serverTemplatePreference(template.id) : undefined
+    const tiles = visible ? await slice(template) : new Map<string, TileLevels>()
+    if (!isCurrent()) {
+      if (visible) releaseCandidateTiles(tiles)
+      return false
+    }
+    const priorTileCount = existing?.tiles.size ?? 0
+    const priorPixels = existing?.indices.length ?? 0
+    const pixelIncrease = template.indices.length - priorPixels
+    if (
+      retainedIndexPixels + pendingIndexPixels + pixelIncrease > MAX_LOCAL_INDEX_PIXELS ||
+      !claimSourceReplacement(priorTileCount, tiles.size)
+    ) {
+      releaseCandidateTiles(tiles)
+      throw new RangeError('server templates exceed the local rendering budget')
+    }
+    templates.set(template.id, {
+      ...template,
+      tiles,
+      // Whether someone else's template is on *your* canvas is your decision and nobody else's, so
+      // it is read back from this browser's own record rather than defaulted.
+      visible,
+      everPlaced: true,
+      appearance: existing !== undefined ? existing.appearance : (preference?.appearance ?? null),
+      revision: existing?.revision ?? 0,
+      owns: existing !== undefined ? existing.owns : (preference?.owns ?? []),
+      folderId: null,
+    })
+    retainedIndexPixels += pixelIncrease
+    installSourceReplacement(priorTileCount, tiles.size)
+    if (existing !== undefined) closeTiles(existing.tiles)
+    clearStamped(template.id)
+    notify()
+    return true
   })
-  retainedIndexPixels += pixelIncrease
-  installSourceReplacement(priorTileCount, tiles.size)
-  if (existing !== undefined) closeTiles(existing.tiles)
-  clearStamped(template.id)
-  notify()
 }
 
 /** Refresh server-owned metadata without rebuilding unchanged pixels. */

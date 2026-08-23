@@ -4,6 +4,8 @@ import {
   getState,
   isScopeVisible,
   listServerContents,
+  MAX_MANIFEST_CHUNKS,
+  MAX_MANIFEST_TEMPLATES,
   MAX_TREE_NODES,
   removeTreeStateKeys,
   setLocalFolderVisible,
@@ -45,6 +47,16 @@ export interface TreeTarget {
    */
   readonly templateId?: string
 }
+
+/** @internal Arithmetic seam for the aggregate cost of all connected manifest rows. */
+export const manifestAggregateWithinBudget = (
+  retainedTemplates: number,
+  retainedChunks: number,
+  nextTemplates: number,
+  nextChunks: number,
+): boolean =>
+  retainedTemplates + nextTemplates <= MAX_MANIFEST_TEMPLATES &&
+  retainedChunks + nextChunks <= MAX_MANIFEST_CHUNKS
 
 export interface TreeCallbacks {
   readonly onAddServer: () => void
@@ -411,14 +423,29 @@ const refreshOnce = async (
   // later admin-only consumer resurrect older folders after this refresh has already succeeded.
   takeProbedNodes(server)
   let retainedNodes = 0
+  let retainedTemplates = 0
+  let retainedChunks = 0
   for (const candidate of getState().servers) {
     if (candidate.url === server.url) continue
-    retainedNodes += rowsFor(candidate)?.nodes.length ?? 0
+    const retained = rowsFor(candidate)
+    retainedNodes += retained?.nodes.length ?? 0
+    retainedTemplates += retained?.templates.length ?? 0
+    retainedChunks +=
+      retained?.templates.reduce((total, template) => total + template.chunks.length, 0) ?? 0
   }
   if (retainedNodes + nodes.length > MAX_TREE_NODES) {
     return {
       ok: false,
       message: `Connected server folders exceed the ${MAX_TREE_NODES.toLocaleString()}-node client limit.`,
+    }
+  }
+  const nextChunks = templates.reduce((total, template) => total + template.chunks.length, 0)
+  if (
+    !manifestAggregateWithinBudget(retainedTemplates, retainedChunks, templates.length, nextChunks)
+  ) {
+    return {
+      ok: false,
+      message: 'Connected server templates exceed the client manifest memory budget.',
     }
   }
   nodesByServer.set(server.url, nodes)

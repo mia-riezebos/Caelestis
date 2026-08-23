@@ -309,7 +309,7 @@ export class MemorySqlStore implements SqlStore {
     options: { readonly requireExisting?: boolean } = {},
   ): Promise<void> {
     assertValidTemplateVersion(version)
-    if (!this.nodes.has(version.nodeId)) {
+    if (options.requireExisting !== true && !this.nodes.has(version.nodeId)) {
       throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
     }
     if (this.templateVersions.has(version.versionId)) {
@@ -333,11 +333,6 @@ export class MemorySqlStore implements SqlStore {
       })
       const was = current === undefined ? null : dimensions(current.bbox)
       const now = dimensions(version.bbox)
-      if (previous.name !== version.name) {
-        throw new TemplateIdentityError(
-          `template ${version.templateId} is named ${previous.name}, not ${version.name}`,
-        )
-      }
       if (was !== null && (was.width !== now.width || was.height !== now.height)) {
         throw new TemplateIdentityError(
           `template ${version.templateId} is ${was.width}x${was.height}, not ${now.width}x${now.height}`,

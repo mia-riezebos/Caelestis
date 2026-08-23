@@ -10,7 +10,7 @@ const store = vi.hoisted(() => ({
   forgetServerTemplate: vi.fn(),
   hasRoomForServerTemplate: vi.fn(() => true),
   localTemplates: vi.fn(() => []),
-  putServerTemplate: vi.fn(),
+  putServerTemplate: vi.fn(async () => true),
   updateServerTemplateMetadata: vi.fn(),
 }))
 

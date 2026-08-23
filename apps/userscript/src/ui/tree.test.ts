@@ -3,6 +3,7 @@ import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState 
 import {
   canRetryNodeRefresh,
   forgetServerTree,
+  manifestAggregateWithinBudget,
   nodeSiblingItems,
   nodeTreeKey,
   orderedItems,
@@ -119,6 +120,12 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
 })
 
 describe('tree identity and ordering', () => {
+  it('bounds templates and chunks across all connected manifests', () => {
+    expect(manifestAggregateWithinBudget(99_999, 199_999, 1, 1)).toBe(true)
+    expect(manifestAggregateWithinBudget(100_000, 0, 1, 0)).toBe(false)
+    expect(manifestAggregateWithinBudget(0, 200_000, 0, 1)).toBe(false)
+  })
+
   it('does not admit a key from another sibling group', () => {
     expect(reorderedSiblings(['a', 'b'], 'foreign', 'b', false)).toBeNull()
     expect(reorderedSiblings(['a', 'b'], 'a', 'b', true)).toEqual(['b', 'a'])
