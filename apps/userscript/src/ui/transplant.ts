@@ -281,6 +281,41 @@ const transplantWhileDestinationHeld = async (
     templates,
     message: `The source version of “${carried.template.name}” changed, so the move stopped before the next write.`,
   })
+  const sourceFolderIds = new Set(branch.folders.map((folder) => folder.id))
+  const sourceTemplateIds = new Set(branch.templates.map((carried) => carried.sourceId))
+  const sourceBranchIsCurrent = (): boolean => {
+    if (source.kind === 'server') return branch.templates.every(sourceTemplateIsCurrent)
+    const folders = getState().localFolders
+    return (
+      branch.folders.every((folder) => {
+        const current = folders.find((candidate) => candidate.id === folder.id)
+        return (
+          current !== undefined &&
+          current.parentId === folder.sourceParentId &&
+          current.name === folder.name
+        )
+      }) &&
+      !folders.some(
+        (folder) =>
+          folder.parentId !== null &&
+          sourceFolderIds.has(folder.parentId) &&
+          !sourceFolderIds.has(folder.id),
+      ) &&
+      branch.templates.every(sourceTemplateIsCurrent) &&
+      !localTemplates().some(
+        (template) =>
+          template.folderId !== null &&
+          sourceFolderIds.has(template.folderId) &&
+          !sourceTemplateIds.has(template.id),
+      )
+    )
+  }
+  const sourceBranchChanged = (): TransplantResult => ({
+    ok: false,
+    nodes,
+    templates,
+    message: `The source branch “${branch.name}” changed, so the move stopped before the next write.`,
+  })
 
   // Local folders are built in memory and written once. `setState` serialises the whole state, so
   // one write per folder costs the square of the branch: a server branch of any real size locked
@@ -288,6 +323,7 @@ const transplantWhileDestinationHeld = async (
   const madeLocally: LocalFolder[] = []
 
   for (const folder of inCreationOrder(branch)) {
+    if (!sourceBranchIsCurrent()) return sourceBranchChanged()
     const parent =
       folder.parentId === null
         ? destination.kind === 'server'
@@ -299,6 +335,7 @@ const transplantWhileDestinationHeld = async (
       if (!connectionsAreCurrent()) return connectionChanged()
       const created = await createNode(destination.server, folder.name, parent)
       if (!created.ok) return { ok: false, nodes, templates, message: created.message }
+      if (!sourceBranchIsCurrent()) return sourceBranchChanged()
       mapped.set(folder.id, created.node.id)
     } else {
       const id = nextLocalFolderId()
@@ -336,7 +373,7 @@ const transplantWhileDestinationHeld = async (
   for (const carried of branch.templates) {
     const target = mapped.get(carried.folderId)
     if (target === undefined) continue
-    if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
+    if (!sourceBranchIsCurrent()) return sourceBranchChanged()
     if (destination.kind === 'server') {
       if (!connectionsAreCurrent()) return connectionChanged()
       const png = await templateAsPng(carried.template)
@@ -399,7 +436,7 @@ const transplantWhileDestinationHeld = async (
     }
     // The source can advance while the destination write itself awaits. Stop before beginning the
     // next template rather than discovering the changed earlier row only during final cleanup.
-    if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
+    if (!sourceBranchIsCurrent()) return sourceBranchChanged()
     templates++
   }
 
@@ -460,7 +497,7 @@ const transplantWhileDestinationHeld = async (
     for (const carried of branch.templates) {
       const changed = sourceFolderChanged()
       if (changed !== null) return changed
-      if (!isCurrentTemplate(carried.template)) {
+      if (!sourceTemplateIsCurrent(carried)) {
         return {
           ok: false,
           nodes,

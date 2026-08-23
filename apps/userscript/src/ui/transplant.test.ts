@@ -43,6 +43,7 @@ beforeEach(() => {
   state.addLocalFolders.mockReturnValue(true)
   store.isCurrentTemplate.mockReturnValue(true)
   store.leaseLocalTemplate.mockReturnValue(vi.fn())
+  store.localTemplates.mockReturnValue([])
 })
 
 describe('branch transplant', () => {
@@ -437,7 +438,7 @@ describe('branch transplant', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         ok: false,
-        message: expect.stringContaining('received new content'),
+        message: expect.stringContaining('source branch'),
       }),
     )
     expect(state.removeLocalFolder).not.toHaveBeenCalled()

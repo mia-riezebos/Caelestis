@@ -1692,8 +1692,7 @@ export const patchTemplate = async (
  * The local copy is updated from the answer rather than re-probed: the tree is labelled from
  * `info.name`, and leaving it stale until the next probe would make a rename look like it failed.
  */
-const serverRenameSequence = new Map<string, number>()
-const latestAppliedServerRename = new Map<string, number>()
+const activeServerRenames = new Set<string>()
 
 export const renameServer = async (
   server: ConnectedServer,
@@ -1701,8 +1700,10 @@ export const renameServer = async (
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   const trimmed = name.trim()
   if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
-  const request = (serverRenameSequence.get(server.url) ?? 0) + 1
-  serverRenameSequence.set(server.url, request)
+  if (activeServerRenames.has(server.url)) {
+    return { ok: false, message: 'A rename for this server is already in progress.' }
+  }
+  activeServerRenames.add(server.url)
   try {
     const { response, body } = await remoteJson(`${server.url}/admin/server`, {
       method: 'PATCH',
@@ -1718,15 +1719,15 @@ export const renameServer = async (
       current !== undefined &&
       current.info !== null &&
       server.info !== null &&
-      current.info.id === server.info.id &&
-      request > (latestAppliedServerRename.get(server.url) ?? 0)
+      current.info.id === server.info.id
     ) {
-      latestAppliedServerRename.set(server.url, request)
       upsertServer({ ...current, info: { ...current.info, name: trimmed } })
     }
     return { ok: true }
   } catch (error) {
     return { ok: false, message: String(error) }
+  } finally {
+    activeServerRenames.delete(server.url)
   }
 }
 
