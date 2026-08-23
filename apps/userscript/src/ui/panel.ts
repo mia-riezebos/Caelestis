@@ -14,6 +14,7 @@ import {
   forgetAdmittedServerContents,
   forgetScopes,
   getState,
+  isCurrentServerConnection,
   listServerNodes,
   loadState,
   MAX_CONNECTED_SERVERS,
@@ -34,7 +35,6 @@ import {
   renameNode as renameNodeOnServer,
   renameServer as renameServerOnServer,
   type ServerNodesResult,
-  sameServerConnection,
   setState,
   uploadTemplate,
   uploadTemplateVersion,
@@ -1581,7 +1581,7 @@ const copyServerTemplateToLocal = async (
   const drawn = allLocal().find(
     (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
   )
-  if (drawn === undefined) {
+  if (drawn === undefined || drawn.serverVersion !== found.template.version) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
   }
@@ -1599,6 +1599,16 @@ const copyServerTemplateToLocal = async (
   })
   if (!confirmed) return null
 
+  if (!stillConnected(source)) {
+    toast('That server connection changed before the move began.', 'warning')
+    return null
+  }
+  const currentSourceTemplate = serverTemplateAt(source.url, templateId)
+  if (currentSourceTemplate === null || drawn.serverVersion !== currentSourceTemplate.version) {
+    toast('That template has not finished loading its current version yet.', 'warning')
+    return null
+  }
+
   const copied = await copyAsLocalTemplate(
     drawn,
     `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
@@ -1613,6 +1623,12 @@ const copyServerTemplateToLocal = async (
     toast('Copied into Local, but could not keep the new copy for the move.', 'error')
     rerender()
     return null
+  }
+  if (!stillConnected(source)) {
+    releaseCopied()
+    toast('Copied into Local, but the source connection changed and was kept.', 'warning')
+    rerender()
+    return `local:${copied.id}`
   }
   const removed = await deleteTemplateOnServer(source, templateId).finally(releaseCopied)
   if (!removed.ok) toast(`Copied into Local, but ${removed.message}`, 'error')
@@ -1661,6 +1677,10 @@ const dropOnServerNode = async (
       toast(`“${local.name}” changed while it was being encoded — try again.`, 'warning')
       return null
     }
+    if (!stillConnected(server)) {
+      toast('That destination server was disconnected or replaced.', 'warning')
+      return null
+    }
     const result = await uploadTemplate(server, {
       nodeId,
       name: local.name,
@@ -1699,12 +1719,22 @@ const dropOnServerNode = async (
   })
   if (!confirmed) return null
 
+  if (!stillConnected(source) || !stillConnected(server)) {
+    toast('A server connection changed before the move began.', 'warning')
+    return null
+  }
+
   // The pixels come from the copy already on the canvas, which is the assembled result of that
   // server's own chunks — so a cross-server move needs no second download.
+  const currentSourceTemplate = serverTemplateAt(source.url, templateId)
   const drawn = allLocal().find(
     (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
   )
-  if (drawn === undefined) {
+  if (
+    currentSourceTemplate === null ||
+    drawn === undefined ||
+    drawn.serverVersion !== currentSourceTemplate.version
+  ) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
   }
@@ -1714,9 +1744,14 @@ const dropOnServerNode = async (
     return null
   }
 
+  if (!stillConnected(source) || !stillConnected(server)) {
+    toast('A server connection changed while the template was being prepared.', 'warning')
+    return null
+  }
+
   const uploaded = await uploadTemplate(server, {
     nodeId,
-    name: found.template.name,
+    name: currentSourceTemplate.name,
     originX: drawn.originX,
     originY: drawn.originY,
     png,
@@ -1725,6 +1760,13 @@ const dropOnServerNode = async (
     // Nothing has been removed yet, so a failure here leaves both sides exactly as they were.
     toast(uploaded.message, 'error')
     return null
+  }
+  if (!stillConnected(source) || !stillConnected(server)) {
+    toast(
+      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
+      'warning',
+    )
+    return serverTemplateTreeKey(server, uploaded.id)
   }
   const removed = await deleteTemplateOnServer(source, templateId)
   if (!removed.ok) {
@@ -1809,8 +1851,8 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
   const cancel = document.createElement('button')
   cancel.className = 'btn btn-xs btn-ghost'
   cancel.textContent = 'Cancel'
-  // Cancel has to mean it. Encoding a large template takes long enough to change your mind during,
-  // and removing the box alone left the upload running to completion behind a dialog that was gone.
+  // Cancel is honoured while the image is being prepared. Once the request begins the server may
+  // commit it even if the browser aborts, so the button is disabled at that boundary.
   let cancelled = false
   cancel.addEventListener('click', () => {
     cancelled = true
@@ -1847,6 +1889,12 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
           return
         }
         if (cancelled) return
+        if (!stillConnected(server)) {
+          toast('That server was disconnected or replaced.', 'warning')
+          return
+        }
+        cancel.disabled = true
+        cancel.classList.add('btn-disabled')
         label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
         const result = await uploadTemplateVersion(server, templateId, {
           originX: source.originX,
@@ -2166,7 +2214,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   const cancel = document.createElement('button')
   cancel.className = 'btn btn-xs btn-ghost'
   cancel.textContent = 'Cancel'
-  // As in Replace: Cancel stops the upload, not just the dialog.
+  // As in Replace, cancellation is available until the request crosses its commit boundary.
   let cancelled = false
   cancel.addEventListener('click', () => {
     cancelled = true
@@ -2213,6 +2261,12 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
           return
         }
         if (cancelled) return
+        if (!stillConnected(server)) {
+          toast('That destination server was disconnected or replaced.', 'warning')
+          return
+        }
+        cancel.disabled = true
+        cancel.classList.add('btn-disabled')
         label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
         const result = await uploadTemplate(server, {
           nodeId,
@@ -2500,8 +2554,7 @@ const serverNodesFailure = (result: Exclude<ServerNodesResult, { status: 'ok' }>
  * is being talked to. Disconnecting during a token probe used to put the removed server back, since
  * `upsertServer` cannot tell "update this row" from "add this row".
  */
-const stillConnected = (server: ConnectedServer): boolean =>
-  getState().servers.some((one) => sameServerConnection(one, server))
+const stillConnected = (server: ConnectedServer): boolean => isCurrentServerConnection(server)
 
 /**
  * Whichever tree is currently on screen.

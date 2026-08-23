@@ -71,6 +71,10 @@ export const sameServerConnection = (left: ConnectedServer, right: ConnectedServ
     ? right.info === null
     : right.info !== null && left.info.id === right.info.id && left.info.auth === right.info.auth)
 
+/** Whether this immutable connection snapshot is still the configured lifetime for its URL. */
+export const isCurrentServerConnection = (server: ConnectedServer): boolean =>
+  getState().servers.some((candidate) => sameServerConnection(candidate, server))
+
 /** A browser-local folder; its metadata is small enough to live in userscript state. */
 export interface LocalFolder {
   readonly id: string

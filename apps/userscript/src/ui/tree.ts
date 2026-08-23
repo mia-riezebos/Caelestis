@@ -350,7 +350,7 @@ export const findServerNode = (key: string): { serverUrl: string; node: TreeNode
 export const templatesOfNode = (
   serverUrl: string,
   nodeId: string,
-): ReadonlyArray<{ id: string; name: string }> => {
+): ReadonlyArray<{ id: string; name: string; version: string }> => {
   const server = getState().servers.find((candidate) => candidate.url === serverUrl)
   return server === undefined
     ? []

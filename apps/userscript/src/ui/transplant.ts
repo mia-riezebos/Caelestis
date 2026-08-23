@@ -5,6 +5,7 @@ import {
   deleteNode as deleteNodeOnServer,
   deleteTemplate as deleteTemplateOnServer,
   getState,
+  isCurrentServerConnection,
   type LocalFolder,
   leaseLocalFolder,
   listServerNodes,
@@ -65,7 +66,12 @@ export interface TransplantResult {
 /** One branch, flattened: each folder with the templates directly inside it. */
 interface Branch {
   readonly name: string
-  readonly folders: ReadonlyArray<{ id: string; parentId: string | null; name: string }>
+  readonly folders: ReadonlyArray<{
+    id: string
+    parentId: string | null
+    sourceParentId: string | null
+    name: string
+  }>
   readonly templates: ReadonlyArray<{
     folderId: string
     template: PlacedTemplate
@@ -83,8 +89,15 @@ const localId = (): string =>
  * to move it would be a second copy of something already in memory. Missing means "not yet", and
  * the move is refused rather than half-made.
  */
-const drawnFor = (serverUrl: string, templateId: string): PlacedTemplate | undefined =>
-  localTemplates().find((candidate) => candidate.id === serverTemplateKey(serverUrl, templateId))
+const drawnFor = (
+  serverUrl: string,
+  template: { id: string; version: string },
+): PlacedTemplate | undefined =>
+  localTemplates().find(
+    (candidate) =>
+      candidate.id === serverTemplateKey(serverUrl, template.id) &&
+      candidate.serverVersion === template.version,
+  )
 
 interface BranchReadFailure {
   readonly error: string
@@ -93,7 +106,7 @@ interface BranchReadFailure {
 const serverBranch = async (
   server: ConnectedServer,
   rootId: string,
-  templatesOf: (nodeId: string) => ReadonlyArray<{ id: string; name: string }>,
+  templatesOf: (nodeId: string) => ReadonlyArray<{ id: string; name: string; version: string }>,
 ): Promise<Branch | BranchReadFailure | null> => {
   const listed = await listServerNodes(server)
   if (listed.status !== 'ok') {
@@ -131,13 +144,14 @@ const serverBranch = async (
   const folders = within.map((node: TreeNode) => ({
     id: node.id,
     parentId: node.id === rootId ? null : node.parentId,
+    sourceParentId: node.parentId,
     name: node.name,
   }))
 
   const templates: Array<{ folderId: string; template: PlacedTemplate; sourceId: string }> = []
   for (const node of within) {
     for (const published of templatesOf(node.id)) {
-      const drawn = drawnFor(server.url, published.id)
+      const drawn = drawnFor(server.url, published)
       if (drawn === undefined) return null
       templates.push({ folderId: node.id, template: drawn, sourceId: published.id })
     }
@@ -163,6 +177,7 @@ const localBranch = (rootId: string): Branch | null => {
     .map((folder) => ({
       id: folder.id,
       parentId: folder.id === rootId ? null : folder.parentId,
+      sourceParentId: folder.parentId,
       name: folder.name,
     }))
   const templates = localTemplates()
@@ -178,7 +193,7 @@ const localBranch = (rootId: string): Branch | null => {
 /** Folders first, parents before children, so a destination parent always exists when needed. */
 const inCreationOrder = (branch: Branch): Branch['folders'] => {
   const done = new Set<string>()
-  const out: Array<{ id: string; parentId: string | null; name: string }> = []
+  const out: Array<Branch['folders'][number]> = []
   let guard = branch.folders.length + 1
   while (out.length < branch.folders.length && guard-- > 0) {
     for (const folder of branch.folders) {
@@ -204,7 +219,7 @@ const transplantWhileDestinationHeld = async (
   templatesOf: (
     server: ConnectedServer,
     nodeId: string,
-  ) => ReadonlyArray<{ id: string; name: string }>,
+  ) => ReadonlyArray<{ id: string; name: string; version: string }>,
   destinationLeases: Array<() => void>,
   destinationTemplateLeases: Array<() => void>,
 ): Promise<TransplantResult> => {
@@ -243,6 +258,16 @@ const transplantWhileDestinationHeld = async (
   let nodes = 0
   let templates = 0
 
+  const connectionsAreCurrent = (): boolean =>
+    (source.kind === 'local' || isCurrentServerConnection(source.server)) &&
+    (destination.kind === 'local' || isCurrentServerConnection(destination.server))
+  const connectionChanged = (): TransplantResult => ({
+    ok: false,
+    nodes,
+    templates,
+    message: 'A server connection changed during the move, so it stopped before the next write.',
+  })
+
   // Local folders are built in memory and written once. `setState` serialises the whole state, so
   // one write per folder costs the square of the branch: a server branch of any real size locked
   // the tab up before any of it appeared.
@@ -257,6 +282,7 @@ const transplantWhileDestinationHeld = async (
         : (mapped.get(folder.parentId) ?? null)
 
     if (destination.kind === 'server') {
+      if (!connectionsAreCurrent()) return connectionChanged()
       const created = await createNode(destination.server, folder.name, parent)
       if (!created.ok) return { ok: false, nodes, templates, message: created.message }
       mapped.set(folder.id, created.node.id)
@@ -297,6 +323,7 @@ const transplantWhileDestinationHeld = async (
     const target = mapped.get(carried.folderId)
     if (target === undefined) continue
     if (destination.kind === 'server') {
+      if (!connectionsAreCurrent()) return connectionChanged()
       const png = await templateAsPng(carried.template)
       if (png === null) {
         return {
@@ -314,6 +341,7 @@ const transplantWhileDestinationHeld = async (
           message: `“${carried.template.name}” changed while it was being copied.`,
         }
       }
+      if (!connectionsAreCurrent()) return connectionChanged()
       const uploaded = await uploadTemplate(destination.server, {
         nodeId: target,
         name: carried.template.name,
@@ -359,6 +387,7 @@ const transplantWhileDestinationHeld = async (
   // Everything arrived. Only now is the source touched.
   if (source.kind === 'server') {
     for (const carried of branch.templates) {
+      if (!connectionsAreCurrent()) return connectionChanged()
       const removed = await deleteTemplateOnServer(source.server, carried.sourceId)
       if (!removed.ok) {
         return {
@@ -371,6 +400,7 @@ const transplantWhileDestinationHeld = async (
     }
     // Deepest first, because a server refuses to delete a node that still holds anything.
     for (const folder of [...inCreationOrder(branch)].reverse()) {
+      if (!connectionsAreCurrent()) return connectionChanged()
       const removed = await deleteNodeOnServer(source.server, folder.id)
       if (!removed.ok) {
         return {
@@ -382,7 +412,34 @@ const transplantWhileDestinationHeld = async (
       }
     }
   } else {
+    if (!connectionsAreCurrent()) return connectionChanged()
+    const removedSourceFolders = new Set<string>()
+    const changedSourceFolder = (): Branch['folders'][number] | undefined =>
+      branch.folders.find((folder) => {
+        if (removedSourceFolders.has(folder.id)) return false
+        const current = getState().localFolders.find((candidate) => candidate.id === folder.id)
+        return (
+          current === undefined ||
+          current.parentId !== folder.sourceParentId ||
+          current.name !== folder.name
+        )
+      })
+    const sourceFolderChanged = (): TransplantResult | null => {
+      const changed = changedSourceFolder()
+      return changed === undefined
+        ? null
+        : {
+            ok: false,
+            nodes,
+            templates,
+            message: `Copied, but Local folder “${changed.name}” changed at the source and was kept.`,
+          }
+    }
+    const changedBeforeCleanup = sourceFolderChanged()
+    if (changedBeforeCleanup !== null) return changedBeforeCleanup
     for (const carried of branch.templates) {
+      const changed = sourceFolderChanged()
+      if (changed !== null) return changed
       if (!isCurrentTemplate(carried.template)) {
         return {
           ok: false,
@@ -401,6 +458,8 @@ const transplantWhileDestinationHeld = async (
       }
     }
     for (const folder of [...inCreationOrder(branch)].reverse()) {
+      const changed = sourceFolderChanged()
+      if (changed !== null) return changed
       if (localTemplates().some((template) => template.folderId === folder.id)) {
         return {
           ok: false,
@@ -417,6 +476,7 @@ const transplantWhileDestinationHeld = async (
           message: `Moved the templates, but could not remove Local folder “${folder.name}”.`,
         }
       }
+      removedSourceFolders.add(folder.id)
     }
   }
 
@@ -447,7 +507,7 @@ export const transplant = async (
   templatesOf: (
     server: ConnectedServer,
     nodeId: string,
-  ) => ReadonlyArray<{ id: string; name: string }>,
+  ) => ReadonlyArray<{ id: string; name: string; version: string }>,
 ): Promise<TransplantResult> => {
   const activeSource = sourceKey(source)
   if (activeSources.has(activeSource)) {

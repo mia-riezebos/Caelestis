@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
       localFolders: Array<{ id: string; parentId: string | null; name: string; visible: boolean }>
     } => ({ localFolders: [] }),
   ),
+  isCurrentServerConnection: vi.fn(() => true),
   leaseLocalFolder: vi.fn(() => vi.fn()),
   listServerNodes: vi.fn(),
   nextLocalFolderId: vi.fn(() => 'local-folder'),
@@ -119,6 +120,7 @@ describe('branch transplant', () => {
       {
         id: 'srv:https://example.test:template',
         name: 'Across the seam',
+        serverVersion: 'version',
         originX: 2_047_999,
         originY: 0,
         width: 2,
@@ -132,7 +134,7 @@ describe('branch transplant', () => {
       transplant(
         { kind: 'server', server, nodeId: 'root' },
         { kind: 'local', folderId: null },
-        () => [{ id: 'template', name: 'Across the seam' }],
+        () => [{ id: 'template', name: 'Across the seam', version: 'version' }],
       ),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -163,6 +165,7 @@ describe('branch transplant', () => {
       {
         id: 'srv:https://example.test:template',
         name: 'Template',
+        serverVersion: 'version',
         originX: 0,
         originY: 0,
         width: 1,
@@ -176,7 +179,7 @@ describe('branch transplant', () => {
       transplant(
         { kind: 'server', server, nodeId: 'root' },
         { kind: 'local', folderId: null },
-        () => [{ id: 'template', name: 'Template' }],
+        () => [{ id: 'template', name: 'Template', version: 'version' }],
       ),
     ).resolves.toEqual(expect.objectContaining({ ok: false, templates: 0 }))
     expect(store.copyAsLocalTemplate).not.toHaveBeenCalled()
@@ -201,6 +204,7 @@ describe('branch transplant', () => {
       {
         id: 'srv:https://example.test:template',
         name: 'Template',
+        serverVersion: 'version',
         originX: 0,
         originY: 0,
         width: 1,
@@ -214,7 +218,7 @@ describe('branch transplant', () => {
       transplant(
         { kind: 'server', server, nodeId: 'root' },
         { kind: 'local', folderId: null },
-        () => [{ id: 'template', name: 'Template' }],
+        () => [{ id: 'template', name: 'Template', version: 'version' }],
       ),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -248,6 +252,7 @@ describe('branch transplant', () => {
       {
         id: 'srv:https://example.test:template',
         name: 'Template',
+        serverVersion: 'version',
         originX: 0,
         originY: 0,
         width: 1,
@@ -268,7 +273,7 @@ describe('branch transplant', () => {
     const moving = transplant(
       { kind: 'server', server, nodeId: 'root' },
       { kind: 'local', folderId: 'destination' },
-      () => [{ id: 'template', name: 'Template' }],
+      () => [{ id: 'template', name: 'Template', version: 'version' }],
     )
 
     expect(state.leaseLocalFolder).toHaveBeenCalledWith('destination')
@@ -330,7 +335,13 @@ describe('branch transplant', () => {
       nodes: [{ id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 }],
     })
     store.localTemplates.mockReturnValue([
-      { id: 'srv:https://example.test:template', name: 'Template', originX: 0, originY: 0 },
+      {
+        id: 'srv:https://example.test:template',
+        name: 'Template',
+        serverVersion: 'version',
+        originX: 0,
+        originY: 0,
+      },
     ])
     store.copyAsLocalTemplate.mockResolvedValue({ id: 'copied' })
     store.setTemplateFolder.mockResolvedValue(true)
@@ -349,7 +360,7 @@ describe('branch transplant', () => {
     const moving = transplant(
       { kind: 'server', server, nodeId: 'root' },
       { kind: 'local', folderId: null },
-      () => [{ id: 'template', name: 'Template' }],
+      () => [{ id: 'template', name: 'Template', version: 'version' }],
     )
     await vi.waitFor(() => expect(state.deleteTemplate).toHaveBeenCalledOnce())
     expect(store.leaseLocalTemplate).toHaveBeenCalledWith('copied')
