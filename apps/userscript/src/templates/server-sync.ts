@@ -11,11 +11,11 @@ import type { ServerTemplate } from '../server-cache.js'
 import {
   type ConnectedServer,
   getState,
+  isCurrentServerConnection,
   isLatestServerContents,
   listServerContents,
   onStateChange,
   type ServerContents,
-  sameServerConnection,
 } from '../state.js'
 import { ByteCache } from './byte-cache.js'
 import {
@@ -324,8 +324,7 @@ const syncServerTemplatesOnce = async (
   known?: readonly ServerTemplate[],
   snapshotCurrent: () => boolean = () => true,
 ): Promise<void> => {
-  const connectionCurrent = (): boolean =>
-    getState().servers.some((candidate) => sameServerConnection(candidate, server))
+  const connectionCurrent = (): boolean => isCurrentServerConnection(server)
   if (server.status !== 'connected' || !connectionCurrent() || !snapshotCurrent()) return
   const generation = generationOf(server.url)
   const signal = generationSignal(server.url, generation)
@@ -482,7 +481,7 @@ export const syncServerTemplates = async (
 ): Promise<void> => {
   // Immutable state rows may change cosmetic server metadata in place. Credentials, deployment,
   // season, scope, and connectivity define the lifetime that is allowed to continue this work.
-  if (!getState().servers.some((candidate) => sameServerConnection(candidate, server))) return
+  if (!isCurrentServerConnection(server)) return
   if (snapshotCurrent?.() === false) return
   const pending = pendingServerSyncs.get(server.url)
   // A blind poll carries no newer state of its own. If a mutation has already queued the manifest
@@ -542,15 +541,13 @@ export const installServerSync = (): void => {
     const connected = getState().servers.filter((server) => server.status === 'connected')
     if (
       connected.length === lastConnected.length &&
-      connected.every((server) =>
-        lastConnected.some((previous) => sameServerConnection(server, previous)),
-      )
+      lastConnected.every((previous) => isCurrentServerConnection(previous))
     ) {
       lastConnected = connected
       return
     }
     for (const previous of lastConnected) {
-      if (!connected.some((server) => sameServerConnection(server, previous))) {
+      if (!isCurrentServerConnection(previous)) {
         endServerGeneration(previous.url)
       }
     }

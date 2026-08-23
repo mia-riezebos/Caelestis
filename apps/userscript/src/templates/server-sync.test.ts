@@ -1,8 +1,20 @@
 import { sha256Hex } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+interface MockServer {
+  readonly url: string
+  readonly token: string | null
+  readonly status: string
+  readonly isAdmin: boolean
+  readonly season: number | null
+  readonly info: { readonly id: string; readonly name?: string; readonly auth: string } | null
+}
+
 const state = vi.hoisted(() => ({
-  getState: vi.fn((): { servers: readonly object[] } => ({ servers: [] })),
+  getState: vi.fn((): { servers: readonly MockServer[] } => ({ servers: [] })),
+  isCurrentServerConnection: vi.fn((server: MockServer) =>
+    state.getState().servers.some((candidate) => state.sameServerConnection(candidate, server)),
+  ),
   isLatestServerContents: vi.fn(() => true),
   listServerContents: vi.fn(),
   onStateChange: vi.fn(),

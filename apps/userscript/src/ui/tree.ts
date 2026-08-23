@@ -2,6 +2,7 @@ import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cac
 import {
   type ConnectedServer,
   getState,
+  isCurrentServerConnection,
   isLatestServerContents,
   isScopeVisible,
   listServerContents,
@@ -10,7 +11,6 @@ import {
   MAX_TREE_NODES,
   removeTreeStateKeys,
   type ServerContents,
-  sameServerConnection,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
@@ -414,7 +414,7 @@ const refreshOnce = async (
   // emptying itself — a server that blinks should not take its folders off your screen.
   if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
   const current = getState().servers.find((candidate) => candidate.url === server.url)
-  if (current === undefined || !sameServerConnection(current, server)) {
+  if (current === undefined || !isCurrentServerConnection(server)) {
     return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
   }
   if (refreshGeneration.get(server.url) !== generation) {
@@ -465,7 +465,7 @@ export const rememberServerContents = (
   contents: ServerContents,
 ): NodeRefreshResult => {
   const current = getState().servers.find((candidate) => candidate.url === server.url)
-  if (current === undefined || !sameServerConnection(current, server)) {
+  if (current === undefined || !isCurrentServerConnection(server)) {
     return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
   }
   const { nodes, templates } = contents

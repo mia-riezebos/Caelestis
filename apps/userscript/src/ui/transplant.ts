@@ -395,6 +395,9 @@ const transplantWhileDestinationHeld = async (
         }
       }
     }
+    // The source can advance while the destination write itself awaits. Stop before beginning the
+    // next template rather than discovering the changed earlier row only during final cleanup.
+    if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
     templates++
   }
 

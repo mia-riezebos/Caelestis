@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
   createAccessToken: vi.fn(async () => ({ ok: true as const, token: 'secret' })),
+  isCurrentServerConnection: vi.fn(() => true),
   listAccessTokens: vi.fn(),
   revokeAccessToken: vi.fn(async () => ({ ok: true as const })),
   sameServerConnection: vi.fn(

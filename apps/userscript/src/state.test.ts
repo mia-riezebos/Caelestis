@@ -649,7 +649,9 @@ describe('server state boundaries', () => {
           }),
       ),
     )
-    const { listServerContents, onServerContents, setState } = await import('./state.js')
+    const { listServerContents, onServerContents, setState, upsertServer } = await import(
+      './state.js'
+    )
     const server = {
       url: 'https://example.com',
       info: serverInfo,
@@ -665,7 +667,7 @@ describe('server state boundaries', () => {
     setState({ servers: [server] })
 
     const pending = listServerContents(server)
-    setState({ servers: [renamed] })
+    upsertServer(renamed)
     finish(new Response(JSON.stringify(manifest), { status: 200 }))
     const contents = await pending
 

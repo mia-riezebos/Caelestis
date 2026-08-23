@@ -3,6 +3,7 @@ import {
   type AccessTokenPage,
   type ConnectedServer,
   createAccessToken,
+  isCurrentServerConnection,
   listAccessTokens,
   revokeAccessToken,
   sameServerConnection,
@@ -220,7 +221,14 @@ const connections = new Map<string, TokenConnectionState>()
 
 const connectionState = (server: ConnectedServer): TokenConnectionState => {
   const current = connections.get(server.url)
-  if (current !== undefined && sameServerConnection(current.server, server)) return current
+  // A stale detached caller must neither inherit nor replace cache state for a reconnected row.
+  if (!isCurrentServerConnection(server)) return { server, inFlight: new Map(), generation: 0 }
+  if (
+    current !== undefined &&
+    isCurrentServerConnection(current.server) &&
+    sameServerConnection(current.server, server)
+  )
+    return current
   const replacement: TokenConnectionState = { server, inFlight: new Map(), generation: 0 }
   connections.set(server.url, replacement)
   return replacement

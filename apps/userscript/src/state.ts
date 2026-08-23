@@ -1256,7 +1256,7 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
       if (server === undefined) return
       const refreshed = await probeServer(server.url, server.token)
       const current = getState().servers.find((candidate) => candidate.url === server.url)
-      if (current === undefined || !sameServerConnection(current, server)) continue
+      if (current === undefined || !isCurrentServerConnection(server)) continue
       // A cosmetic replacement can land while the probe is in flight. Preserve that newer local
       // metadata while still applying the probe's current connectivity, season, and scope result.
       upsertServer(current === server ? refreshed : { ...refreshed, info: current.info })
@@ -1325,7 +1325,7 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
 
 const noteAuthFailure = (server: ConnectedServer, status: number): void => {
   const current = getState().servers.find((candidate) => candidate.url === server.url)
-  if (current === undefined || !sameServerConnection(current, server)) return
+  if (current === undefined || !isCurrentServerConnection(server)) return
   const needsToken = status === 401
   const replacement: ConnectedServer = {
     ...current,
@@ -1547,7 +1547,7 @@ export const admitServerContents = (server: ConnectedServer, contents: ServerCon
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (
     current === undefined ||
-    !sameServerConnection(current, server) ||
+    !isCurrentServerConnection(server) ||
     !isLatestServerContents(server.url, contents)
   )
     return false
@@ -1557,12 +1557,10 @@ export const admitServerContents = (server: ConnectedServer, contents: ServerCon
 
 /** The admitted snapshot belonging to this exact connection lifetime, if one exists. */
 export const admittedServerContentsFor = (server: ConnectedServer): ServerContents | null => {
-  const current = getState().servers.find((candidate) => candidate.url === server.url)
   const admitted = admittedServerContents.get(server.url)
-  return current !== undefined &&
-    admitted !== undefined &&
-    sameServerConnection(current, server) &&
-    sameServerConnection(admitted.server, current)
+  return admitted !== undefined &&
+    isCurrentServerConnection(server) &&
+    isCurrentServerConnection(admitted.server)
     ? admitted.contents
     : null
 }
@@ -1609,7 +1607,7 @@ export const listServerContents = async (
     const current = getState().servers.find((candidate) => candidate.url === server.url)
     if (
       current !== undefined &&
-      sameServerConnection(current, server) &&
+      isCurrentServerConnection(server) &&
       request > (latestManifestResponse.get(server.url) ?? 0)
     ) {
       latestManifestResponse.set(server.url, request)
@@ -1643,7 +1641,7 @@ export type ServerNodesResult =
 export const listServerNodes = async (server: ConnectedServer): Promise<ServerNodesResult> => {
   const contents = await listServerContents(server)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
-  if (contents === null || current === undefined || !sameServerConnection(current, server))
+  if (contents === null || current === undefined || !isCurrentServerConnection(server))
     return { status: 'unreachable' }
   const admitted = admittedServerContentsFor(current)
   return admitted === null ? { status: 'not-admitted' } : { status: 'ok', nodes: admitted.nodes }
@@ -1711,7 +1709,7 @@ export const renameServer = async (
       return { ok: false, message: failure(response, isRecord(body) ? body : null) }
     }
     const current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (current !== undefined && current.info !== null && sameServerConnection(current, server)) {
+    if (current !== undefined && current.info !== null && isCurrentServerConnection(server)) {
       upsertServer({ ...current, info: { ...current.info, name: trimmed } })
     }
     return { ok: true }
