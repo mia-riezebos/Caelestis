@@ -291,6 +291,30 @@ describe('local template lifecycle', () => {
     })
   })
 
+  it('repairs a cross-tab assignment whose Local folder was deleted', async () => {
+    persistence.loadTemplates.mockResolvedValueOnce([
+      {
+        ...template({ id: 'orphaned', source: 'marble' }),
+        visible: false,
+        everPlaced: true,
+        folderId: 'deleted-in-another-tab',
+        revision: 4,
+      },
+    ])
+    const { setState } = await import('../state.js')
+    setState({ localFolders: [] })
+    const store = await import('./local-store.js')
+
+    await store.restoreLocalTemplates()
+
+    expect(persistence.saveTemplateFolders).toHaveBeenCalledWith([
+      { id: 'orphaned', expectedRevision: 4, folderId: null },
+    ])
+    expect(store.localTemplates()).toEqual([
+      expect.objectContaining({ id: 'orphaned', folderId: null, revision: 5 }),
+    ])
+  })
+
   it('retries past a transient hydration failure without deleting its durable record', async () => {
     persistence.loadTemplates
       .mockResolvedValueOnce([

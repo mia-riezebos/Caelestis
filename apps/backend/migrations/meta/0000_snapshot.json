@@ -242,6 +242,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "delete_token": {
+          "name": "delete_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at_ms": {
           "name": "created_at_ms",
           "type": "integer",

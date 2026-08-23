@@ -8,7 +8,13 @@ import {
 } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
-import { type ConnectedServer, getState, listServerContents, onStateChange } from '../state.js'
+import {
+  type ConnectedServer,
+  getState,
+  isLatestServerContents,
+  listServerContents,
+  onStateChange,
+} from '../state.js'
 import { ByteCache } from './byte-cache.js'
 import {
   forgetServerTemplate,
@@ -308,14 +314,19 @@ const syncServerTemplatesOnce = async (
   server: ConnectedServer,
   /** The manifest's templates, when the caller has just read them and would only re-read them. */
   known?: readonly ServerTemplate[],
+  snapshotCurrent: () => boolean = () => true,
 ): Promise<void> => {
-  if (server.status !== 'connected') return
+  if (server.status !== 'connected' || !snapshotCurrent()) return
   const generation = generationOf(server.url)
   const signal = generationSignal(server.url, generation)
   let available = known ?? null
   if (known === undefined) {
     const contents = await listServerContents(server)
     if (generationOf(server.url) !== generation || signal.aborted) return
+    if (contents !== null) {
+      snapshotCurrent = () => isLatestServerContents(server.url, contents)
+      if (!snapshotCurrent()) return
+    }
     // The folders as well as the templates, because a template's visibility answers to the folders
     // above it and this is the only place that learns of them changing between polls.
     if (contents !== null) rememberNodes(server.url, contents.nodes)
@@ -324,11 +335,13 @@ const syncServerTemplatesOnce = async (
   // Could not ask, so nothing is known and nothing changes. Treating this as an empty server took
   // every template off the canvas on a single blip and put them back looking newly arrived.
   if (available === null) return
+  if (!snapshotCurrent()) return
   const wanted = new Map(
     available.map((template) => [serverTemplateKey(server.url, template.id), template]),
   )
 
   for (const held of localTemplates()) {
+    if (!snapshotCurrent()) return
     if (held.serverUrl !== server.url) continue
     if (!wanted.has(held.id)) await forgetServerTemplate(held.id)
   }
@@ -339,7 +352,7 @@ const syncServerTemplatesOnce = async (
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
   for (const [key, template] of wanted) {
-    if (generationOf(server.url) !== generation || signal.aborted) return
+    if (generationOf(server.url) !== generation || signal.aborted || !snapshotCurrent()) return
     const held = localTemplates().find((candidate) => candidate.id === key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
     // rebuild. Names and folder membership still arrive through the manifest because neither
@@ -359,7 +372,7 @@ const syncServerTemplatesOnce = async (
       if (built === null) continue
       // The connection this download belongs to may have ended, or a later poll may have taken over
       // this template, while the chunks were in the air.
-      if (generationOf(server.url) !== generation) return
+      if (generationOf(server.url) !== generation || !snapshotCurrent()) return
       // A newer manifest landed while the chunks were in the air, and it no longer asks for this
       // version — or no longer asks for this template at all. Installing now would draw artwork
       // that has already been replaced, or bring a deleted overlay back.
@@ -394,6 +407,7 @@ const syncServerTemplatesOnce = async (
         () =>
           generationOf(server.url) === generation &&
           !signal.aborted &&
+          snapshotCurrent() &&
           latestVersion.get(key) === template.version,
       )
       if (!installed) return
@@ -409,6 +423,7 @@ const syncServerTemplatesOnce = async (
 interface PendingServerSync {
   readonly server: ConnectedServer
   readonly known?: readonly ServerTemplate[]
+  readonly snapshotCurrent?: () => boolean
 }
 
 /** The newest request per server. Slow downloads must never make minute polls pile up behind them. */
@@ -425,7 +440,7 @@ const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
       const requested = pendingServerSyncs.get(serverUrl)
       if (requested === undefined) return
       pendingServerSyncs.delete(serverUrl)
-      await syncServerTemplatesOnce(requested.server, requested.known)
+      await syncServerTemplatesOnce(requested.server, requested.known, requested.snapshotCurrent)
     }
   })()
   serverSyncRuns.set(serverUrl, running)
@@ -445,18 +460,30 @@ const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
 export const syncServerTemplates = async (
   server: ConnectedServer,
   known?: readonly ServerTemplate[],
+  snapshotCurrent?: () => boolean,
 ): Promise<void> => {
   // State replaces the connection object when a URL is removed or reconnected. Exact identity also
   // keeps a callback from the former connection from publishing its old manifest into the new one.
   if (!getState().servers.includes(server)) return
+  if (snapshotCurrent?.() === false) return
   const pending = pendingServerSyncs.get(server.url)
   // A blind poll carries no newer state of its own. If a mutation has already queued the manifest
   // it just read, keep that authoritative snapshot instead of replacing it with a request that may
   // fail or return a stale intermediary. A later explicit snapshot still replaces an older one.
   if (known === undefined && pending?.known !== undefined) {
-    pendingServerSyncs.set(server.url, { server, known: pending.known })
+    pendingServerSyncs.set(server.url, {
+      server,
+      known: pending.known,
+      ...(pending.snapshotCurrent === undefined
+        ? {}
+        : { snapshotCurrent: pending.snapshotCurrent }),
+    })
   } else {
-    pendingServerSyncs.set(server.url, { server, ...(known === undefined ? {} : { known }) })
+    pendingServerSyncs.set(server.url, {
+      server,
+      ...(known === undefined ? {} : { known }),
+      ...(snapshotCurrent === undefined ? {} : { snapshotCurrent }),
+    })
   }
   while (pendingServerSyncs.has(server.url) || serverSyncRuns.has(server.url)) {
     await ensureServerSyncRun(server.url)

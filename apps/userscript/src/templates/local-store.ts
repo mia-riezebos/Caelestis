@@ -1520,7 +1520,33 @@ const restoreStoredTemplates = async (): Promise<void> => {
       try {
         // Earlier builds could persist 0x0, non-finite, out-of-world, or fully transparent records.
         // Validate each independently so one bad legacy entry cannot prevent every good restore.
-        const template = normaliseStoredTemplate(rawTemplate)
+        let template = normaliseStoredTemplate(rawTemplate)
+        if (
+          template.folderId !== null &&
+          !getState().localFolders.some((folder) => folder.id === template.folderId)
+        ) {
+          // Folder state and template records live in different stores. Another tab can delete the
+          // folder while this record's assignment commits, so no process-local lease can make the two
+          // writes atomic. A missing parent has one deterministic recovery: top-level Local, which is
+          // also where deleting a folder promises to move its contents.
+          const repaired = await saveTemplateFolders([
+            { id: template.id, expectedRevision: template.revision, folderId: null },
+          ])
+          if (repaired.status === 'conflict') {
+            seenRevisions.delete(template.id)
+            retryAfterGap = true
+            continue
+          }
+          const revision =
+            repaired.status === 'saved'
+              ? (repaired.revisions.get(template.id) ?? template.revision)
+              : template.revision
+          if (repaired.status === 'unavailable') {
+            warn('install', `could not durably repair missing folder for ${template.name}`)
+          }
+          template = { ...template, folderId: null, revision }
+          seenRevisions.set(template.id, revision)
+        }
         if (templates.has(template.id) || pendingAdds.has(template.id)) {
           warn('install', `could not restore ${template.name}: local template id already exists`)
           continue

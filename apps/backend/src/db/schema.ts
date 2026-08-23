@@ -44,6 +44,8 @@ export const nodes = sqliteTable(
     path: text('path').notNull(),
     name: text('name').notNull(),
     description: text('description'),
+    /** Ephemeral claim tying a confirmed cascade snapshot to its atomic delete batch. */
+    deleteToken: text('delete_token'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
   // Within a season, path is the prefix-rollup key and subtree-rewrite key. Two nodes sharing one

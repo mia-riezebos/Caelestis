@@ -8,6 +8,7 @@ import {
   NodeNotFoundError,
   NodePathConflictError,
   NodePathTooLongError,
+  NodeSubtreeChangedError,
 } from '../ports/index.js'
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -210,14 +211,23 @@ export const createNodeRoutes = (ports: Pick<Ports, 'sql'>, auth: AuthOptions) =
       return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
     }
     if (c.req.query('cascade') === 'true') {
+      const expectedNodes = parseSeason(c.req.query('expectedNodes'))
+      const expectedTemplates = parseSeason(c.req.query('expectedTemplates'))
+      if (expectedNodes === null || expectedNodes < 1 || expectedTemplates === null) {
+        return c.json({ error: 'cascade requires non-negative expected counts' }, 400)
+      }
       try {
-        const deleted = await sql.deleteNodeCascade(nodeId)
+        const deleted = await sql.deleteNodeCascade(nodeId, {
+          nodes: expectedNodes,
+          templates: expectedTemplates,
+        })
         // R2 and D1 have no shared transaction. Deleting blobs after the D1 commit can race a new
         // reference and corrupt it; retaining content-addressed blobs is the safe interim until a
         // durable, retryable garbage collector can prove a hash remains unreferenced.
         return c.json({ nodes: deleted.nodes, templates: deleted.templates, chunks: 0 })
       } catch (error) {
         if (error instanceof NodeNotFoundError) return c.json({ error: 'not found' }, 404)
+        if (error instanceof NodeSubtreeChangedError) return c.json({ error: error.message }, 409)
         throw error
       }
     }

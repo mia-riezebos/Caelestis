@@ -310,6 +310,11 @@ export class NodeNotFoundError extends Error {
   override readonly name = 'NodeNotFoundError'
 }
 
+/** The subtree no longer matches the snapshot an administrator confirmed deleting. */
+export class NodeSubtreeChangedError extends Error {
+  override readonly name = 'NodeSubtreeChangedError'
+}
+
 export class TemplateNotFoundError extends Error {
   override readonly name = 'TemplateNotFoundError'
 }
@@ -432,7 +437,7 @@ export interface SqlStore {
 
   deleteNode(nodeId: string): Promise<void>
 
-  deleteNodeCascade(nodeId: string): Promise<NodeDeletion>
+  deleteNodeCascade(nodeId: string, expected: NodeDeletion): Promise<NodeDeletion>
 
   /** How much a cascading delete would remove, without removing it. */
   countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }>

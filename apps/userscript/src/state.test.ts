@@ -310,6 +310,49 @@ describe('server state boundaries', () => {
     ).resolves.toBeNull()
   })
 
+  it('orders overlapping manifest responses across tree refreshes and polls', async () => {
+    let finishFirst = (_response: Response): void => undefined
+    let finishSecond = (_response: Response): void => undefined
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finishFirst = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finishSecond = resolve
+          }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const { isLatestServerContents, listServerContents } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+
+    const first = listServerContents(server)
+    const second = listServerContents(server)
+    finishSecond(new Response(JSON.stringify(manifest), { status: 200 }))
+    const newer = await second
+    finishFirst(new Response(JSON.stringify(manifest), { status: 200 }))
+    const older = await first
+
+    expect(newer).not.toBeNull()
+    expect(older).not.toBeNull()
+    if (newer === null || older === null) throw new Error('expected valid manifests')
+    expect(isLatestServerContents(server.url, newer)).toBe(true)
+    expect(isLatestServerContents(server.url, older)).toBe(false)
+  })
+
   it('refuses local folder writes that the next load would discard', async () => {
     vi.stubGlobal('GM_setValue', vi.fn())
     const { createLocalFolder, MAX_LOCAL_FOLDERS, renameLocalFolder, setState } = await import(

@@ -18,6 +18,7 @@ import {
   NodePathConflictError,
   NodePathTooLongError,
   type NodeRecord,
+  NodeSubtreeChangedError,
   type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
@@ -274,7 +275,7 @@ export class MemorySqlStore implements SqlStore {
     return { nodes: nodeIds.size, templates }
   }
 
-  async deleteNodeCascade(nodeId: string): Promise<NodeDeletion> {
+  async deleteNodeCascade(nodeId: string, expected: NodeDeletion): Promise<NodeDeletion> {
     const node = this.nodes.get(nodeId)
     if (node === undefined) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
     const prefix = `${node.path}/`
@@ -292,6 +293,9 @@ export class MemorySqlStore implements SqlStore {
         .filter(([, template]) => nodeIds.has(template.nodeId))
         .map(([templateId]) => templateId),
     )
+    if (nodeIds.size !== expected.nodes || templateIds.size !== expected.templates) {
+      throw new NodeSubtreeChangedError('node subtree changed after it was counted')
+    }
     // The collections do not enforce foreign keys, but this deliberately follows D1's safe order:
     // remove versions, then their templates, and only then their nodes.
     for (const [versionId, version] of this.templateVersions) {

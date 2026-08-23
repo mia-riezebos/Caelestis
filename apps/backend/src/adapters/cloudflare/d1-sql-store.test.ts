@@ -93,6 +93,69 @@ describe('D1SqlStore', () => {
     })
   })
 
+  it('renames under the live parent when a move lands before its batch', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    await store.insertNode({
+      ...base,
+      id: 'old-parent',
+      parentId: null,
+      path: '/old',
+      name: 'Old',
+    })
+    await store.insertNode({
+      ...base,
+      id: 'new-parent',
+      parentId: null,
+      path: '/new',
+      name: 'New',
+    })
+    await store.insertNode({
+      ...base,
+      id: 'source',
+      parentId: 'old-parent',
+      path: '/old/source',
+      name: 'Source',
+    })
+    d1.runBeforeNextBatch(() => {
+      d1.sqlite
+        .prepare(
+          "UPDATE nodes SET parent_id = 'new-parent', path = '/new/source' WHERE id = 'source'",
+        )
+        .run()
+    })
+
+    await store.renameNode('source', 'Renamed', 'renamed')
+
+    await expect(store.readNode('source')).resolves.toMatchObject({
+      parentId: 'new-parent',
+      path: '/new/renamed',
+      name: 'Renamed',
+    })
+  })
+
+  it('uses the live subtree path when a rename lands before cascade deletion', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    await store.insertNode({ ...base, id: 'root', parentId: null, path: '/root', name: 'Root' })
+    await store.insertNode({
+      ...base,
+      id: 'child',
+      parentId: 'root',
+      path: '/root/child',
+      name: 'Child',
+    })
+    d1.runBeforeNextBatch(() => {
+      d1.sqlite.prepare("UPDATE nodes SET path = '/renamed' WHERE id = 'root'").run()
+      d1.sqlite.prepare("UPDATE nodes SET path = '/renamed/child' WHERE id = 'child'").run()
+    })
+
+    await expect(store.deleteNodeCascade('root', { nodes: 2, templates: 0 })).resolves.toEqual({
+      nodes: 2,
+      templates: 0,
+    })
+    await expect(store.readNode('root')).resolves.toBeNull()
+    await expect(store.readNode('child')).resolves.toBeNull()
+  })
+
   it('maps an oversized composed path to the port error', async () => {
     // The route bounds the path it derived, but the prefix actually written comes from the parent
     // row — which a rename may have lengthened since. D1 hit `nodes_path_check` and let a bare error
@@ -195,7 +258,7 @@ describe('D1SqlStore', () => {
 
   it('writes a template, version, tile index and current pointer in one batch', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     const version = templateVersion()
 
@@ -217,7 +280,7 @@ describe('D1SqlStore', () => {
 
   it('rolls the whole template write back when one tile row fails', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     const firstTile = { tileX: 0, tileY: 0, hash: 'a'.repeat(64) }
     const duplicateTile = { tileX: 0, tileY: 0, hash: 'b'.repeat(64) }
@@ -364,7 +427,7 @@ describe('D1SqlStore', () => {
     // and no author — only its versions recorded one. Attribution is the same pair a report is
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, 1);
+      INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
       INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
       INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
@@ -396,7 +459,9 @@ describe('D1SqlStore', () => {
       tileY: 0,
       hash: index.toString(16).padStart(64, '0'),
     }))
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('bulk-node', 1, NULL, '/bulk', 'Bulk', NULL, 1)")
+    d1.sqlite.exec(
+      "INSERT INTO nodes VALUES ('bulk-node', 1, NULL, '/bulk', 'Bulk', NULL, NULL, 1)",
+    )
     const before = d1.batchStatements
 
     await store.insertTemplateVersion({
@@ -440,7 +505,7 @@ describe('D1SqlStore', () => {
   })
 
   it('deletes contribution rows before their template', async () => {
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
     await store.insertTemplateVersion(templateVersion())
     d1.sqlite
       .prepare('INSERT INTO contributions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -464,7 +529,9 @@ describe('D1SqlStore', () => {
       name: 'Child',
     })
 
-    await expect(store.deleteNodeCascade('deep-root')).resolves.toEqual({ nodes: 2, templates: 0 })
+    await expect(store.deleteNodeCascade('deep-root', { nodes: 2, templates: 0 })).resolves.toEqual(
+      { nodes: 2, templates: 0 },
+    )
     await expect(store.listNodes(1)).resolves.toEqual([])
   })
 
@@ -503,10 +570,10 @@ describe('D1SqlStore', () => {
   // whole suite green. A client asking for a manifest is the actor.
   it('lists only published templates of the asked-for season', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, NULL, 1)")
       .run()
     await store.insertTemplateVersion(templateVersion())
     await store.insertTemplateVersion(
@@ -529,10 +596,10 @@ describe('D1SqlStore', () => {
 
   it('lists only tiles of published templates of the asked-for season', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, NULL, 1)")
       .run()
     await store.insertTemplateVersion(templateVersion())
     await store.insertTemplateVersion(

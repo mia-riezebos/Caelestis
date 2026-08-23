@@ -82,7 +82,7 @@ describe.each(adapters)('$name node cascade contract', ({ make }) => {
     const count = await store.countNodeSubtree('root')
     expect(count).toEqual({ nodes: 3, templates: 2 })
 
-    const deleted = await store.deleteNodeCascade('root')
+    const deleted = await store.deleteNodeCascade('root', count)
     expect(deleted).toMatchObject(count)
     await expect(store.readNode('root')).resolves.toBeNull()
     await expect(store.readNode('child')).resolves.toBeNull()

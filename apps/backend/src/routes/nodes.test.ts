@@ -358,10 +358,13 @@ describe('node routes', () => {
     expect(count.status).toBe(200)
     await expect(count.json()).resolves.toEqual({ nodes: 3, templates: 2 })
 
-    const deleted = await app.request(`/admin/nodes/${root.body.id}?cascade=true`, {
-      method: 'DELETE',
-      headers: bearer,
-    })
+    const deleted = await app.request(
+      `/admin/nodes/${root.body.id}?cascade=true&expectedNodes=3&expectedTemplates=2`,
+      {
+        method: 'DELETE',
+        headers: bearer,
+      },
+    )
     expect(deleted.status).toBe(200)
     await expect(deleted.json()).resolves.toEqual({ nodes: 3, templates: 2, chunks: 0 })
 
@@ -381,5 +384,23 @@ describe('node routes', () => {
       { headers: bearer },
     )
     expect(response.status).toBe(404)
+  })
+
+  it('refuses a cascade when the subtree changed after confirmation', async () => {
+    const { app, sql } = harness()
+    const root = await createNode(app, { season: 1, parentId: null, name: 'Root' })
+    const count = await sql.countNodeSubtree(root.body.id)
+    await createNode(app, { season: 1, parentId: root.body.id, name: 'Late child' })
+
+    const response = await app.request(
+      `/admin/nodes/${root.body.id}?cascade=true&expectedNodes=${count.nodes}&expectedTemplates=${count.templates}`,
+      { method: 'DELETE', headers: bearer },
+    )
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({
+      error: 'node subtree changed after it was counted',
+    })
+    await expect(sql.readNode(root.body.id)).resolves.not.toBeNull()
   })
 })

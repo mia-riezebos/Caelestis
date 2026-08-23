@@ -2,6 +2,7 @@ import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cac
 import {
   type ConnectedServer,
   getState,
+  isLatestServerContents,
   isScopeVisible,
   listServerContents,
   MAX_MANIFEST_CHUNKS,
@@ -416,6 +417,9 @@ const refreshOnce = async (
   if (refreshGeneration.get(server.url) !== generation) {
     return { ok: false, message: 'A newer refresh replaced this one.', superseded: true }
   }
+  if (!isLatestServerContents(server.url, contents)) {
+    return { ok: false, message: 'A newer manifest replaced this one.', superseded: true }
+  }
   const { nodes, templates } = contents
   const identity = serverIdentity(server)
   if (identity === null) return { ok: false, message: 'The server identity is unavailable.' }
@@ -468,7 +472,7 @@ const refreshOnce = async (
   // Handing over the manifest we just read, rather than letting the sync fetch its own: they are the
   // same document, requested a millisecond apart, and the second one can only disagree with the
   // first by being newer than the tree that is already on screen.
-  void syncServerTemplates(server, templates)
+  void syncServerTemplates(server, templates, () => isLatestServerContents(server.url, contents))
   return { ok: true }
 }
 

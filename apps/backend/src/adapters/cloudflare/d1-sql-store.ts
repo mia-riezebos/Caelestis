@@ -29,6 +29,7 @@ import {
   NodePathConflictError,
   NodePathTooLongError,
   type NodeRecord,
+  NodeSubtreeChangedError,
   READ_BUCKETS_CHUNK_SIZE,
   type ServerSettings,
   type SqlStore,
@@ -245,17 +246,14 @@ export class D1SqlStore implements SqlStore {
     // `/b` and its children at `/a/c`. The batch was atomic the whole time; the value it was built
     // from was not.
     //
-    // The destination is composed from the parent's path for the same reason. `parentId` cannot
-    // change here, so the parent row is a stable place to ask.
+    // The destination is composed from the node's live parent for the same reason. A concurrent move
+    // can change `parentId` after the guard read; carrying the old id into this batch leaves the new
+    // parent pointer paired with a path under the old parent.
     //
-    // Untested on purpose: `insertNode` composes the same way, so no tree holds a child whose prefix
-    // differs from its parent's, and the only thing this guards is a concurrent ancestor rename —
-    // which a single-threaded suite cannot stage. A test that seeded the mismatch through the store
-    // would be testing a state the stores no longer allow.
-    const parentPath =
-      node.parentId === null
-        ? sql`''`
-        : sql`coalesce((select path from nodes where id = ${node.parentId}), '')`
+    // The D1 test seam stages a move immediately before this batch, which pins the live-parent rule
+    // without seeding a hierarchy the store itself would otherwise refuse to create.
+    const liveParentId = sql`(select parent_id from nodes where id = ${nodeId})`
+    const parentPath = sql`coalesce((select path from nodes where id = ${liveParentId}), '')`
     const destination = sql`${parentPath} || '/' || ${segment}`
     const oldPath = sql`(select path from nodes where id = ${nodeId})`
 
@@ -458,21 +456,36 @@ export class D1SqlStore implements SqlStore {
     return { nodes: nodeRows[0]?.count ?? 0, templates: templateRows[0]?.count ?? 0 }
   }
 
-  async deleteNodeCascade(nodeId: string): Promise<NodeDeletion> {
+  async deleteNodeCascade(nodeId: string, expected: NodeDeletion): Promise<NodeDeletion> {
     const node = await this.readNode(nodeId)
     if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
-    const subtree = or(
+    // Every statement reads the root path inside the same transaction. Carrying `node.path` from the
+    // read above lets a concurrent rename/move make the batch select the root by id but miss its
+    // descendants, and the final delete then loses to their foreign keys.
+    const rootPath = sql`(select path from nodes where id = ${nodeId})`
+    const liveSubtree = or(
       eq(nodes.id, nodeId),
-      and(eq(nodes.season, node.season), pathStartsWith(`${node.path}/`)),
+      and(eq(nodes.season, node.season), pathStartsWith(sql`${rootPath} || '/'`)),
     )
-    const [nodeRows, templateRows] = await Promise.all([
-      this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
-      this.database
-        .select({ count: sql<number>`count(*)` })
-        .from(templates)
-        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
-        .where(subtree),
-    ])
+    const liveNodeCount = sql`(select count(*) from ${nodes} where ${liveSubtree})`
+    const liveTemplateCount = sql`(
+      select count(*) from ${templates}
+      inner join ${nodes} on ${nodes.id} = ${templates.nodeId}
+      where ${liveSubtree}
+    )`
+    const token = crypto.randomUUID()
+    const claimed = this.database
+      .update(nodes)
+      .set({ deleteToken: token })
+      .where(
+        and(
+          eq(nodes.id, nodeId),
+          sql`${liveNodeCount} = ${expected.nodes}`,
+          sql`${liveTemplateCount} = ${expected.templates}`,
+        ),
+      )
+    const hasClaim = sql`(select delete_token from nodes where id = ${nodeId}) = ${token}`
+    const subtree = and(liveSubtree, hasClaim)
 
     const subtreeNodeIds = this.database.select({ id: nodes.id }).from(nodes).where(subtree)
     const subtreeTemplateIds = this.database
@@ -489,6 +502,7 @@ export class D1SqlStore implements SqlStore {
     // the rows it refers to. Tiles go before the versions they belong to, and nodes remain until the
     // templates no longer refer to them. One batch means no caller can observe a half-deleted tree.
     const statements = [
+      claimed,
       this.database
         .update(templates)
         .set({ currentVersionId: null })
@@ -502,12 +516,15 @@ export class D1SqlStore implements SqlStore {
       this.database.delete(templates).where(inArray(templates.id, subtreeTemplateIds)),
       this.database.delete(nodes).where(subtree),
     ] as const
-    await this.database.batch(statements)
-
-    return {
-      nodes: nodeRows[0]?.count ?? 0,
-      templates: templateRows[0]?.count ?? 0,
+    const results = await this.database.batch(statements)
+    if (Number(results[0]?.meta.changes) === 0) {
+      if ((await this.readNode(nodeId)) === null) {
+        throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+      }
+      throw new NodeSubtreeChangedError('node subtree changed after it was counted')
     }
+
+    return expected
   }
 
   async insertTemplateVersion(

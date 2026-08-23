@@ -45,6 +45,7 @@ CREATE TABLE `nodes` (
 	`path` text NOT NULL,
 	`name` text NOT NULL,
 	`description` text,
+	`delete_token` text,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "nodes_path_check" CHECK("nodes"."path" GLOB '/*' AND "nodes"."path" NOT GLOB '*[%_]*'

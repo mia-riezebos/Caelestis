@@ -35,6 +35,7 @@ export {
   NodePathConflictError,
   NodePathTooLongError,
   type NodeRecord,
+  NodeSubtreeChangedError,
   READ_BUCKETS_CHUNK_SIZE,
   type ServerSettings,
   type SqlStore,

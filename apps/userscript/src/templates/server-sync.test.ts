@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
   getState: vi.fn((): { servers: readonly object[] } => ({ servers: [] })),
+  isLatestServerContents: vi.fn(() => true),
   listServerContents: vi.fn(),
   onStateChange: vi.fn(),
 }))
@@ -33,6 +34,7 @@ beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   state.getState.mockReturnValue({ servers: [connected] })
+  state.isLatestServerContents.mockReturnValue(true)
 })
 
 describe('server template sync', () => {
@@ -135,6 +137,17 @@ describe('server template sync', () => {
     await Promise.all([first, mutation, blindPoll])
 
     expect(state.listServerContents).toHaveBeenCalledOnce()
+  })
+
+  it('drops a manifest response superseded by a newer request', async () => {
+    state.listServerContents.mockResolvedValueOnce({ nodes: [], templates: [] })
+    state.isLatestServerContents.mockReturnValueOnce(false)
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    await syncServerTemplates(connected)
+
+    expect(store.forgetServerTemplate).not.toHaveBeenCalled()
+    expect(store.putServerTemplate).not.toHaveBeenCalled()
   })
 
   it('aborts an obsolete chunk drain and lets the same URL reconnect immediately', async () => {

@@ -1318,16 +1318,17 @@ export const renameNode = async (
 export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,
-  cascade = false,
+  expected: { readonly nodes: number; readonly templates: number } | null = null,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(
-      `${server.url}/admin/nodes/${nodeId}${cascade ? '?cascade=true' : ''}`,
-      {
-        method: 'DELETE',
-        headers: adminHeaders(server),
-      },
-    )
+    const cascade =
+      expected === null
+        ? ''
+        : `?cascade=true&expectedNodes=${expected.nodes}&expectedTemplates=${expected.templates}`
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}${cascade}`, {
+      method: 'DELETE',
+      headers: adminHeaders(server),
+    })
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     return { ok: false, message: failure(response, isRecord(body) ? body : null) }
@@ -1450,10 +1451,27 @@ export const countNodeSubtree = async (
  * Answers empty on any failure rather than throwing. A tree that has drawn a stale row is better
  * than a tree that has thrown, and the cached copy is what it falls back to.
  */
+export interface ServerContents {
+  readonly nodes: readonly TreeNode[]
+  readonly templates: readonly ServerTemplate[]
+}
+
+const manifestRequests = new Map<string, number>()
+const latestManifestResponse = new Map<string, number>()
+const manifestResponseOf = new WeakMap<ServerContents, number>()
+
+/** Whether this snapshot is still the newest successful manifest response for its server. */
+export const isLatestServerContents = (serverUrl: string, contents: ServerContents): boolean => {
+  const response = manifestResponseOf.get(contents)
+  return response === undefined || response === latestManifestResponse.get(serverUrl)
+}
+
 export const listServerContents = async (
   server: ConnectedServer,
-): Promise<{ nodes: readonly TreeNode[]; templates: readonly ServerTemplate[] } | null> => {
+): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
+  const request = (manifestRequests.get(server.url) ?? 0) + 1
+  manifestRequests.set(server.url, request)
   try {
     const { response, body } = await remoteJson(
       `${server.url}/manifest?season=${server.season}`,
@@ -1482,7 +1500,13 @@ export const listServerContents = async (
         chunks: template.chunks as ServerTemplate['chunks'],
       }),
     )
-    return { nodes: manifest.nodes, templates }
+    const contents: ServerContents = { nodes: manifest.nodes, templates }
+    latestManifestResponse.set(
+      server.url,
+      Math.max(latestManifestResponse.get(server.url) ?? 0, request),
+    )
+    manifestResponseOf.set(contents, request)
+    return contents
   } catch {
     return null
   }
@@ -1498,7 +1522,10 @@ export const listServerContents = async (
  */
 export const listServerNodes = async (
   server: ConnectedServer,
-): Promise<readonly TreeNode[] | null> => (await listServerContents(server))?.nodes ?? null
+): Promise<readonly TreeNode[] | null> => {
+  const contents = await listServerContents(server)
+  return contents === null || !isLatestServerContents(server.url, contents) ? null : contents.nodes
+}
 
 /**
  * The templates alone, or null when the server could not be asked.
@@ -1509,8 +1536,12 @@ export const listServerNodes = async (
  */
 export const listServerTemplates = async (
   server: ConnectedServer,
-): Promise<readonly ServerTemplate[] | null> =>
-  (await listServerContents(server))?.templates ?? null
+): Promise<readonly ServerTemplate[] | null> => {
+  const contents = await listServerContents(server)
+  return contents === null || !isLatestServerContents(server.url, contents)
+    ? null
+    : contents.templates
+}
 
 export const patchTemplate = async (
   server: ConnectedServer,

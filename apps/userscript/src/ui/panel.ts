@@ -1336,7 +1336,11 @@ const applyDelete = async (
 
   // Cascade only where there is something to cascade. An empty folder deletes as it always did, so
   // a server that does not know the flag still answers.
-  const result = await deleteNodeOnServer(target.server, target.nodeId, contents !== null)
+  const result = await deleteNodeOnServer(
+    target.server,
+    target.nodeId,
+    contents === null ? null : holding,
+  )
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)
 }
