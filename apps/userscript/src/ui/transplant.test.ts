@@ -168,8 +168,11 @@ describe('branch transplant', () => {
     store.setTemplateFolder.mockResolvedValue(true)
     state.deleteTemplate.mockResolvedValue({ ok: true })
     state.deleteNode.mockResolvedValue({ ok: true })
-    const release = vi.fn()
-    state.leaseLocalFolder.mockReturnValueOnce(release)
+    const releaseDestination = vi.fn()
+    const releaseCreated = vi.fn()
+    state.leaseLocalFolder
+      .mockReturnValueOnce(releaseDestination)
+      .mockReturnValueOnce(releaseCreated)
     const { transplant } = await import('./transplant.js')
 
     const moving = transplant(
@@ -179,15 +182,17 @@ describe('branch transplant', () => {
     )
 
     expect(state.leaseLocalFolder).toHaveBeenCalledWith('destination')
-    expect(release).not.toHaveBeenCalled()
+    expect(releaseDestination).not.toHaveBeenCalled()
     finishListing({
       status: 'ok',
       nodes: [{ id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 }],
     })
     await expect(moving).resolves.toEqual(expect.objectContaining({ ok: true }))
+    expect(state.leaseLocalFolder).toHaveBeenCalledWith('local-folder')
     expect(state.deleteTemplate).toHaveBeenCalled()
     expect(state.deleteNode).toHaveBeenCalled()
-    expect(release).toHaveBeenCalledOnce()
+    expect(releaseCreated).toHaveBeenCalledOnce()
+    expect(releaseDestination).toHaveBeenCalledOnce()
   })
 
   it('reports a partial move when a source server folder remains', async () => {

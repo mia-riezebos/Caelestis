@@ -185,6 +185,7 @@ const transplantWhileDestinationHeld = async (
     server: ConnectedServer,
     nodeId: string,
   ) => ReadonlyArray<{ id: string; name: string }>,
+  destinationLeases: Array<() => void>,
 ): Promise<TransplantResult> => {
   const branch =
     source.kind === 'local'
@@ -253,6 +254,22 @@ const transplantWhileDestinationHeld = async (
       templates: 0,
       message: `That branch has more folders than Local can hold (${MAX_LOCAL_FOLDERS}).`,
     }
+  }
+  // `addLocalFolders` notifies the tree, which makes this new skeleton visible while templates are
+  // copied one at a time. Pin every new folder synchronously before the first await, so deleting a
+  // row mid-copy cannot invalidate a later assignment. No user event can run between the batch and
+  // these leases.
+  for (const folder of madeLocally) {
+    const release = leaseLocalFolder(folder.id)
+    if (release === null) {
+      return {
+        ok: false,
+        nodes,
+        templates: 0,
+        message: `The new Local folder “${folder.name}” could not be kept for the move.`,
+      }
+    }
+    destinationLeases.push(release)
   }
 
   for (const carried of branch.templates) {
@@ -376,9 +393,10 @@ export const transplant = async (
       message: 'The destination Local folder no longer exists.',
     }
   }
+  const destinationLeases = releaseDestination === null ? [] : [releaseDestination]
   try {
-    return await transplantWhileDestinationHeld(source, destination, templatesOf)
+    return await transplantWhileDestinationHeld(source, destination, templatesOf, destinationLeases)
   } finally {
-    releaseDestination?.()
+    for (const release of destinationLeases.reverse()) release()
   }
 }

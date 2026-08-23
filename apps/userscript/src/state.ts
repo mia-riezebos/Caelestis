@@ -1816,7 +1816,9 @@ export const listAccessTokens = async (
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
     const tokens = isRecord(body) ? body.tokens : undefined
-    const nextCursor = isRecord(body) ? body.nextCursor : undefined
+    // Pagination was added after the token-list route. Older and third-party servers legitimately
+    // omit the field, which means the one page they returned is the last one.
+    const nextCursor = isRecord(body) ? (body.nextCursor ?? null) : null
     if (
       !Array.isArray(tokens) ||
       (nextCursor !== null && (typeof nextCursor !== 'string' || !TOKEN_CURSOR.test(nextCursor)))

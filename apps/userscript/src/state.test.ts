@@ -510,6 +510,7 @@ describe('server state boundaries', () => {
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ tokens: [], nextCursor: null }), { status: 200 }),
       )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tokens: [] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     const { listAccessTokens } = await import('./state.js')
     const server = {
@@ -527,6 +528,7 @@ describe('server state boundaries', () => {
       tokens: [],
       nextCursor: null,
     })
+    await expect(listAccessTokens(server)).resolves.toEqual({ tokens: [], nextCursor: null })
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       `https://example.com/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
     )

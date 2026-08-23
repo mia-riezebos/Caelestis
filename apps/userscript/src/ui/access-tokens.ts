@@ -388,8 +388,13 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
     }
   }
 
+  let reloadGeneration = 0
   const reload: ReloadTokens = (supersede = false): void => {
+    const generation = ++reloadGeneration
     void fetchTokens(server, null, supersede).then((page) => {
+      // A forced post-mutation reload may make an older caller follow this same promise. Only the
+      // caller that requested the current generation should redraw or report its outcome.
+      if (generation !== reloadGeneration) return
       if (page !== null) {
         draw(page, reload)
         return

@@ -225,6 +225,42 @@ describe('access-token pagination', () => {
     expect(notices.toast).not.toHaveBeenCalled()
   })
 
+  it('reports a failed replacement refresh only once to superseded callers', async () => {
+    let finishStale = (_value: unknown): void => undefined
+    let finishReplacement = (_value: unknown): void => undefined
+    state.listAccessTokens
+      .mockResolvedValueOnce({ tokens: [token('Before', '1'.repeat(64))], nextCursor: null })
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishStale = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishReplacement = resolve
+          }),
+      )
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const first = accessTokenSection(server)
+    document.body.appendChild(first)
+    await vi.waitFor(() => expect(first.textContent).toContain('Before'))
+
+    const section = accessTokenSection(server)
+    document.body.replaceChildren(section)
+    const input = section.querySelector('input')
+    if (!(input instanceof HTMLInputElement)) throw new Error('missing token label input')
+    input.value = 'After'
+    buttonNamed(section, 'Create').click()
+    await vi.waitFor(() => expect(state.listAccessTokens).toHaveBeenCalledTimes(3))
+
+    finishStale(null)
+    finishReplacement(null)
+    await vi.waitFor(() => expect(notices.toast).toHaveBeenCalled())
+    expect(notices.toast).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps cached rows visible when a first-page refresh fails', async () => {
     state.listAccessTokens
       .mockResolvedValueOnce({ tokens: [token('Retained', '1'.repeat(64))], nextCursor: null })
