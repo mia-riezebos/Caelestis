@@ -150,6 +150,50 @@ describe('branch transplant', () => {
     expect(state.deleteNode).not.toHaveBeenCalled()
   })
 
+  it('reports a Local template-capacity refusal without escaping the result protocol', async () => {
+    const server = {
+      url: 'https://example.test',
+      info: null,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    state.listServerNodes.mockResolvedValue({
+      status: 'ok',
+      nodes: [{ id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 }],
+    })
+    store.localTemplates.mockReturnValue([
+      {
+        id: 'srv:https://example.test:template',
+        name: 'Template',
+        originX: 0,
+        originY: 0,
+        width: 1,
+        height: 1,
+      },
+    ])
+    store.copyAsLocalTemplate.mockRejectedValue(new RangeError('too many local templates'))
+    const { transplant } = await import('./transplant.js')
+
+    await expect(
+      transplant(
+        { kind: 'server', server, nodeId: 'root' },
+        { kind: 'local', folderId: null },
+        () => [{ id: 'template', name: 'Template' }],
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        nodes: 1,
+        templates: 0,
+        message: expect.stringContaining('too many local templates'),
+      }),
+    )
+    expect(state.deleteTemplate).not.toHaveBeenCalled()
+    expect(state.deleteNode).not.toHaveBeenCalled()
+  })
+
   it('holds a Local destination lease across the source read and deletion', async () => {
     const server = {
       url: 'https://example.test',

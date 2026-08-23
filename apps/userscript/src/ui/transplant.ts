@@ -306,7 +306,17 @@ const transplantWhileDestinationHeld = async (
       })
       if (!uploaded.ok) return { ok: false, nodes, templates, message: uploaded.message }
     } else {
-      const copied = await copyAsLocalTemplate(carried.template, localId())
+      let copied: PlacedTemplate
+      try {
+        copied = await copyAsLocalTemplate(carried.template, localId())
+      } catch (error) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Could not copy “${carried.template.name}” into Local: ${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
       const releaseCopied = leaseLocalTemplate(copied.id)
       if (releaseCopied === null) {
         return {
