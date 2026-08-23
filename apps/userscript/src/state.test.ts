@@ -532,6 +532,71 @@ describe('server state boundaries', () => {
     )
   })
 
+  it('rejects a token page containing a malformed row', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({
+              tokens: [
+                {
+                  tokenHash: 'a'.repeat(64),
+                  label: 'wrong timestamp shape',
+                  scope: 'read',
+                  createdWithToken: 'bootstrap',
+                  createdAt: '2026-08-23T00:00:00Z',
+                },
+              ],
+              nextCursor: `1:${'b'.repeat(64)}`,
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+    const { listAccessTokens } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+
+    await expect(listAccessTokens(server)).resolves.toBeNull()
+  })
+
+  it('does not resurrect a disconnected server when a rename finishes', async () => {
+    let finish = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finish = resolve
+          }),
+      ),
+    )
+    const { getState, removeServer, renameServer, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+
+    const renaming = renameServer(server, 'Renamed')
+    removeServer(server.url)
+    finish(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    await expect(renaming).resolves.toEqual({ ok: true })
+    expect(getState().servers).toEqual([])
+  })
+
   it('applies an auth failure from a request that predates a cosmetic server rename', async () => {
     let finishList = (_response: Response): void => undefined
     vi.stubGlobal(

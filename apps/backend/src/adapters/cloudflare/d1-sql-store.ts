@@ -1,5 +1,5 @@
 import { type Millis, seconds, WORLD_PIXELS } from '@caelestis/shared'
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, type SQL, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, or, type SQL, sql } from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -13,10 +13,10 @@ import {
 } from '../../db/schema.js'
 import {
   type AccessToken,
+  type AccessTokenQuery,
   assertValidBuckets,
   assertValidTemplateVersion,
   type BucketQuery,
-  compareAccessTokens,
   compareBuckets,
   InvalidNodeParentError,
   MAX_NODE_PATH_LENGTH,
@@ -946,16 +946,26 @@ export class D1SqlStore implements SqlStore {
     return row === undefined ? null : toAccessToken(row)
   }
 
-  async listAccessTokens(): Promise<readonly AccessToken[]> {
-    const rows = await this.database
+  async listAccessTokens(query: AccessTokenQuery = {}): Promise<readonly AccessToken[]> {
+    const after = query.after
+    const ordered = this.database
       .select()
       .from(accessTokens)
-      .orderBy(desc(accessTokens.createdAtMs))
-    // Re-sorted rather than trusted: SQL leaves equal created_at_ms unspecified, and the port
-    // promises one order both adapters return. The JS sort is a total order, so it does all of the
-    // work — reversing the ORDER BY above changes nothing observable. The clause stays because
-    // asking SQLite for the order we want is cheaper than making it sort a shuffled result.
-    return rows.map(toAccessToken).sort(compareAccessTokens)
+      .where(
+        after === undefined
+          ? undefined
+          : or(
+              lt(accessTokens.createdAtMs, after.createdAt),
+              and(
+                eq(accessTokens.createdAtMs, after.createdAt),
+                gt(accessTokens.tokenHash, after.tokenHash),
+              ),
+            ),
+      )
+      .orderBy(desc(accessTokens.createdAtMs), asc(accessTokens.tokenHash))
+      .$dynamic()
+    const rows = await (query.limit === undefined ? ordered : ordered.limit(query.limit))
+    return rows.map(toAccessToken)
   }
 
   async revokeAccessToken(tokenHash: string): Promise<void> {

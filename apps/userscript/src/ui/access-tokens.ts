@@ -5,6 +5,7 @@ import {
   createAccessToken,
   listAccessTokens,
   revokeAccessToken,
+  sameServerConnection,
 } from '../state.js'
 import { whileBusy } from './button.js'
 import { confirmDestructive } from './confirm.js'
@@ -203,50 +204,82 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
  * Held in memory only. These are the labels of a server's keys, and they are cheap to re-ask for;
  * writing them to disk would mean the answer outliving the admin rights that were allowed to see it.
  */
-const cached = new Map<string, AccessTokenPage>()
-const inFlight = new Map<string, Map<string | null, Promise<AccessTokenPage | null>>>()
-const cacheGeneration = new Map<string, number>()
+interface TokenConnectionState {
+  readonly server: ConnectedServer
+  cached?: AccessTokenPage
+  readonly inFlight: Map<string | null, Promise<AccessTokenPage | null>>
+  generation: number
+}
+
+const connections = new Map<string, TokenConnectionState>()
+
+const connectionState = (server: ConnectedServer): TokenConnectionState => {
+  const current = connections.get(server.url)
+  if (current !== undefined && sameServerConnection(current.server, server)) return current
+  const replacement: TokenConnectionState = { server, inFlight: new Map(), generation: 0 }
+  connections.set(server.url, replacement)
+  return replacement
+}
+
+const cursorParts = (cursor: string): { createdAt: number; tokenHash: string } => {
+  const split = cursor.indexOf(':')
+  return { createdAt: Number(cursor.slice(0, split)), tokenHash: cursor.slice(split + 1) }
+}
+
+/** Whether next is strictly later in the backend's newest-first keyset order. */
+const cursorAdvances = (cursor: string, next: string): boolean => {
+  const previous = cursorParts(cursor)
+  const following = cursorParts(next)
+  return (
+    following.createdAt < previous.createdAt ||
+    (following.createdAt === previous.createdAt && following.tokenHash > previous.tokenHash)
+  )
+}
+
+const tokenKey = (token: AccessToken): string =>
+  token.bootstrap === true ? 'bootstrap' : token.tokenHash
 
 const fetchTokens = (
   server: ConnectedServer,
   cursor: string | null = null,
 ): Promise<AccessTokenPage | null> => {
-  let requests = inFlight.get(server.url)
-  if (requests === undefined) {
-    requests = new Map()
-    inFlight.set(server.url, requests)
-  }
-  const running = requests.get(cursor)
+  const state = connectionState(server)
+  const running = state.inFlight.get(cursor)
   if (running !== undefined) return running
-  const generation =
-    cursor === null
-      ? (cacheGeneration.get(server.url) ?? 0) + 1
-      : (cacheGeneration.get(server.url) ?? 0)
-  if (cursor === null) cacheGeneration.set(server.url, generation)
+  const generation = cursor === null ? state.generation + 1 : state.generation
+  if (cursor === null) state.generation = generation
   const run: Promise<AccessTokenPage | null> = listAccessTokens(server, cursor).then((page) => {
     // Only while this is still the request the map is holding. Forgetting a disconnected server
     // removes the entry, and a reply landing after that must not put its labels back.
-    if (page === null || inFlight.get(server.url)?.get(cursor) !== run) return page
+    if (
+      page === null ||
+      connections.get(server.url) !== state ||
+      state.inFlight.get(cursor) !== run
+    )
+      return page
     // A first-page refresh supersedes every later page already in flight, even when a mutation did
     // not happen to change the first page's cursor. Its response came from the older inventory.
-    if (cacheGeneration.get(server.url) !== generation) return cached.get(server.url) ?? null
+    if (state.generation !== generation) return state.cached ?? null
     if (cursor === null) {
-      cached.set(server.url, page)
+      state.cached = page
       return page
     }
-    const previous = cached.get(server.url)
+    const previous = state.cached
     if (previous?.nextCursor !== cursor) return previous ?? null
-    const combined = { tokens: [...previous.tokens, ...page.tokens], nextCursor: page.nextCursor }
-    cached.set(server.url, combined)
+    if (page.nextCursor !== null && !cursorAdvances(cursor, page.nextCursor)) return null
+    const known = new Set(previous.tokens.map(tokenKey))
+    const combined = {
+      tokens: [...previous.tokens, ...page.tokens.filter((token) => !known.has(tokenKey(token)))],
+      nextCursor: page.nextCursor,
+    }
+    state.cached = combined
     return combined
   })
   void run.finally(() => {
-    const current = inFlight.get(server.url)
-    if (current?.get(cursor) !== run) return
-    current.delete(cursor)
-    if (current.size === 0) inFlight.delete(server.url)
+    if (connections.get(server.url) !== state || state.inFlight.get(cursor) !== run) return
+    state.inFlight.delete(cursor)
   })
-  requests.set(cursor, run)
+  state.inFlight.set(cursor, run)
   return run
 }
 
@@ -259,9 +292,7 @@ const fetchTokens = (
  * right to hold them.
  */
 export const forgetCachedTokens = (serverUrl: string): void => {
-  cached.delete(serverUrl)
-  inFlight.delete(serverUrl)
-  cacheGeneration.delete(serverUrl)
+  connections.delete(serverUrl)
 }
 
 /**
@@ -272,7 +303,7 @@ export const forgetCachedTokens = (serverUrl: string): void => {
  * later anyway. Nothing is drawn from this; it only warms the cache above.
  */
 export const prefetchAccessTokens = (server: ConnectedServer): void => {
-  if (!server.isAdmin || cached.has(server.url)) return
+  if (!server.isAdmin || connectionState(server).cached !== undefined) return
   void fetchTokens(server)
 }
 
@@ -336,7 +367,7 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
     void fetchTokens(server).then((page) => draw(page, reload))
   }
 
-  const known = cached.get(server.url)
+  const known = connectionState(server).cached
   if (known === undefined) {
     const status = document.createElement('p')
     status.className = 'text-xs opacity-60'

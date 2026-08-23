@@ -34,6 +34,7 @@ import {
   renameNode as renameNodeOnServer,
   renameServer as renameServerOnServer,
   type ServerNodesResult,
+  sameServerConnection,
   setState,
   uploadTemplate,
   uploadTemplateVersion,
@@ -2476,7 +2477,7 @@ const serverNodesFailure = (result: Exclude<ServerNodesResult, { status: 'ok' }>
  * `upsertServer` cannot tell "update this row" from "add this row".
  */
 const stillConnected = (server: ConnectedServer): boolean =>
-  getState().servers.some((one) => one.url === server.url)
+  getState().servers.some((one) => sameServerConnection(one, server))
 
 /**
  * Whichever tree is currently on screen.

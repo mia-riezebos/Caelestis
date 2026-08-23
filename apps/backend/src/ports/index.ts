@@ -16,6 +16,8 @@ export {
 } from './counter-store.js'
 export {
   type AccessToken,
+  type AccessTokenCursor,
+  type AccessTokenQuery,
   assertValidAccessToken,
   assertValidBuckets,
   assertValidTemplateVersion,

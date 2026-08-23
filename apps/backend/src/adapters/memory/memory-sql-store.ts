@@ -1,6 +1,7 @@
 import { type Millis, WORLD_PIXELS } from '@caelestis/shared'
 import {
   type AccessToken,
+  type AccessTokenQuery,
   assertValidAccessToken,
   assertValidBuckets,
   assertValidTemplateVersion,
@@ -511,8 +512,19 @@ export class MemorySqlStore implements SqlStore {
     return token === undefined ? null : { ...token }
   }
 
-  async listAccessTokens(): Promise<readonly AccessToken[]> {
-    return [...this.tokens.values()].sort(compareAccessTokens).map((token) => ({ ...token }))
+  async listAccessTokens(query: AccessTokenQuery = {}): Promise<readonly AccessToken[]> {
+    const ordered = [...this.tokens.values()].sort(compareAccessTokens)
+    const after = query.after
+    const remaining =
+      after === undefined
+        ? ordered
+        : ordered.filter(
+            (token) =>
+              token.createdAt < after.createdAt ||
+              (token.createdAt === after.createdAt && token.tokenHash > after.tokenHash),
+          )
+    const page = query.limit === undefined ? remaining : remaining.slice(0, query.limit)
+    return page.map((token) => ({ ...token }))
   }
 
   async revokeAccessToken(tokenHash: string): Promise<void> {

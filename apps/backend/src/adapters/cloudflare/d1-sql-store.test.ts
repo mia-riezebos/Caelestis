@@ -554,6 +554,12 @@ describe('D1SqlStore', () => {
       { label: 'b' },
       { label: 'c' },
     ])
+    await expect(
+      store.listAccessTokens({
+        after: { createdAt: millis(1_000), tokenHash: 'b'.repeat(64) },
+        limit: 1,
+      }),
+    ).resolves.toMatchObject([{ label: 'c' }])
   })
 
   it('rejects a replayed event id regardless of the claimed user', () => {

@@ -5,6 +5,16 @@ const state = vi.hoisted(() => ({
   createAccessToken: vi.fn(async () => ({ ok: true as const, token: 'secret' })),
   listAccessTokens: vi.fn(),
   revokeAccessToken: vi.fn(async () => ({ ok: true as const })),
+  sameServerConnection: vi.fn(
+    (left: typeof server, right: typeof server) =>
+      left.url === right.url &&
+      left.token === right.token &&
+      left.status === right.status &&
+      left.isAdmin === right.isAdmin &&
+      left.season === right.season &&
+      left.info.id === right.info.id &&
+      left.info.auth === right.info.auth,
+  ),
 }))
 const notices = vi.hoisted(() => ({ toast: vi.fn() }))
 
@@ -58,6 +68,55 @@ afterEach(async () => {
 })
 
 describe('access-token pagination', () => {
+  it('does not share an in-flight request with a replacement credential', async () => {
+    let finishOld = (_value: unknown): void => undefined
+    state.listAccessTokens
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishOld = resolve
+          }),
+      )
+      .mockResolvedValueOnce({
+        tokens: [token('New credential', '9'.repeat(64))],
+        nextCursor: null,
+      })
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const oldSection = accessTokenSection(server)
+    const replacement = { ...server, token: 'replacement-admin-token' }
+    const newSection = accessTokenSection(replacement)
+    document.body.append(oldSection, newSection)
+
+    await vi.waitFor(() => expect(state.listAccessTokens).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(newSection.textContent).toContain('New credential'))
+    finishOld({ tokens: [token('Old credential', '8'.repeat(64))], nextCursor: null })
+    await Promise.resolve()
+    expect(newSection.textContent).not.toContain('Old credential')
+  })
+
+  it('rejects a non-advancing cursor without duplicating rows', async () => {
+    const cursor = `3:${'c'.repeat(64)}`
+    state.listAccessTokens
+      .mockResolvedValueOnce({
+        tokens: [token('Only once', '4'.repeat(64))],
+        nextCursor: cursor,
+      })
+      .mockResolvedValueOnce({
+        tokens: [token('Only once', '4'.repeat(64))],
+        nextCursor: cursor,
+      })
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const section = accessTokenSection(server)
+    document.body.appendChild(section)
+    await vi.waitFor(() => expect(section.textContent).toContain('Only once'))
+
+    buttonNamed(section, 'Load more').click()
+
+    await vi.waitFor(() => expect(notices.toast).toHaveBeenCalled())
+    expect(section.textContent?.match(/Only once/g)).toHaveLength(1)
+    expect(buttonNamed(section, 'Load more').disabled).toBe(false)
+  })
+
   it('does not coalesce a first-page refresh with an in-flight later page', async () => {
     let finishMore = (_value: unknown): void => undefined
     let finishReload = (_value: unknown): void => undefined

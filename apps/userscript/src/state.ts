@@ -1678,8 +1678,9 @@ export const renameServer = async (
     if (!response.ok) {
       return { ok: false, message: failure(response, isRecord(body) ? body : null) }
     }
-    if (server.info !== null) {
-      upsertServer({ ...server, info: { ...server.info, name: trimmed } })
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (server.info !== null && current !== undefined && sameServerConnection(current, server)) {
+      upsertServer({ ...current, info: { ...server.info, name: trimmed } })
     }
     return { ok: true }
   } catch (error) {
@@ -1821,10 +1822,9 @@ export const listAccessTokens = async (
       (nextCursor !== null && (typeof nextCursor !== 'string' || !TOKEN_CURSOR.test(nextCursor)))
     )
       return null
-    return {
-      tokens: tokens.map(asAccessToken).filter((token): token is AccessToken => token !== null),
-      nextCursor,
-    }
+    const parsed = tokens.map(asAccessToken)
+    if (parsed.some((token) => token === null)) return null
+    return { tokens: parsed as AccessToken[], nextCursor }
   } catch {
     // Null rather than empty, so the panel can say "could not ask" instead of "there are none" —
     // the difference between those two is the difference between a blip and a server with no way in.

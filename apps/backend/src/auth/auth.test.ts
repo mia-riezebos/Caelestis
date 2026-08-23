@@ -128,7 +128,7 @@ describe('the admin token surface', () => {
     for (let index = 0; index < 250; index++) {
       await sql.insertAccessToken({
         tokenHash: index.toString(16).padStart(64, '0'),
-        label: `operator-${index}-${'x'.repeat(110)}`,
+        label: '\u0000'.repeat(128),
         scope: 'read',
         createdWithToken: 'bootstrap',
         createdAt: millis(2_000_000 - index),
@@ -154,7 +154,7 @@ describe('the admin token surface', () => {
       cursor = page.nextCursor
     } while (cursor !== null)
 
-    expect(pageSizes).toEqual([100, 100, 50])
+    expect(pageSizes).toEqual([50, 50, 50, 50, 50])
     expect(seen.size).toBe(250)
   })
 

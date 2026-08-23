@@ -214,6 +214,17 @@ export interface AccessToken {
   readonly createdAt: Millis
 }
 
+/** The last row of a token page, used for a stable newest-first keyset scan. */
+export interface AccessTokenCursor {
+  readonly createdAt: Millis
+  readonly tokenHash: string
+}
+
+export interface AccessTokenQuery {
+  readonly after?: AccessTokenCursor
+  readonly limit?: number
+}
+
 export interface TemplateVersionRecord {
   readonly templateId: string
   readonly nodeId: string
@@ -511,10 +522,10 @@ export interface SqlStore {
   readAccessToken(tokenHash: string): Promise<AccessToken | null>
 
   /**
-   * Every stored token, newest first, tie-broken by hash. Never returns plaintext, which is not
-   * stored. Revoked tokens are absent, not listed: revocation deletes the row.
+   * Stored tokens newest first, tie-broken by hash. A query can continue strictly after a cursor and
+   * bound the returned rows, so HTTP pagination never has to load the complete inventory.
    */
-  listAccessTokens(): Promise<readonly AccessToken[]>
+  listAccessTokens(query?: AccessTokenQuery): Promise<readonly AccessToken[]>
 
   /**
    * Revoke a token by deleting it, idempotently.

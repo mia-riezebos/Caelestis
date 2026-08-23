@@ -5,8 +5,8 @@ import { hashToken, mintToken, SCOPES, type Scope } from '../auth/tokens.js'
 import type { AccessToken } from '../ports/index.js'
 
 const MAX_LABEL_LENGTH = 128
-/** A page of maximally sized public rows remains comfortably below the userscript's 64 KiB cap. */
-const TOKEN_PAGE_SIZE = 100
+/** Even 128 control characters per label remain below the userscript's 64 KiB JSON cap. */
+const TOKEN_PAGE_SIZE = 50
 
 const BOOTSTRAP_HASH = 'bootstrap'
 
@@ -23,7 +23,7 @@ const isScope = (value: unknown): value is Scope =>
   typeof value === 'string' && (SCOPES as readonly string[]).includes(value)
 
 interface TokenCursor {
-  readonly createdAt: number
+  readonly createdAt: ReturnType<typeof millis>
   readonly tokenHash: string
 }
 
@@ -32,7 +32,9 @@ const parseCursor = (value: string | undefined): TokenCursor | null | undefined 
   const match = /^(0|[1-9]\d*):([0-9a-f]{64})$/.exec(value)
   if (match === null) return null
   const createdAt = Number(match[1])
-  return Number.isSafeInteger(createdAt) ? { createdAt, tokenHash: match[2] as string } : null
+  return Number.isSafeInteger(createdAt)
+    ? { createdAt: millis(createdAt), tokenHash: match[2] as string }
+    : null
 }
 
 const tokenCursor = (token: AccessToken): string => `${token.createdAt}:${token.tokenHash}`
@@ -80,20 +82,13 @@ export const createTokenRoutes = (auth: AuthOptions) => {
   routes.get('/', async (c) => {
     const cursor = parseCursor(c.req.query('cursor'))
     if (cursor === null) return c.json({ error: 'cursor is invalid' }, 400)
-    const stored = (await auth.sql.listAccessTokens()).map(publicView)
-    const remaining =
-      cursor === undefined
-        ? stored
-        : stored.filter(
-            // Cursor by the promised total order rather than by offset. A revoke between pages does
-            // not move every later row backwards, and a newly minted (newer) token waits for refresh.
-            (token) =>
-              token.createdAt < cursor.createdAt ||
-              (token.createdAt === cursor.createdAt && token.tokenHash > cursor.tokenHash),
-          )
-    const page = remaining.slice(0, TOKEN_PAGE_SIZE)
+    const stored = await auth.sql.listAccessTokens({
+      ...(cursor === undefined ? {} : { after: cursor }),
+      limit: TOKEN_PAGE_SIZE + 1,
+    })
+    const page = stored.slice(0, TOKEN_PAGE_SIZE).map(publicView)
     const nextCursor =
-      remaining.length > TOKEN_PAGE_SIZE && page.length > 0
+      stored.length > TOKEN_PAGE_SIZE && page.length > 0
         ? tokenCursor(page[page.length - 1] as AccessToken)
         : null
     const bootstrap = auth.bootstrapAdminToken
