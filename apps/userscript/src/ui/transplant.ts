@@ -267,6 +267,18 @@ const transplantWhileDestinationHeld = async (
     templates,
     message: 'A server connection changed during the move, so it stopped before the next write.',
   })
+  const sourceTemplateIsCurrent = (carried: Branch['templates'][number]): boolean =>
+    source.kind === 'local' ||
+    templatesOf(source.server, carried.folderId).some(
+      (candidate) =>
+        candidate.id === carried.sourceId && candidate.version === carried.template.serverVersion,
+    )
+  const sourceTemplateChanged = (carried: Branch['templates'][number]): TransplantResult => ({
+    ok: false,
+    nodes,
+    templates,
+    message: `The source version of “${carried.template.name}” changed, so the move stopped before the next write.`,
+  })
 
   // Local folders are built in memory and written once. `setState` serialises the whole state, so
   // one write per folder costs the square of the branch: a server branch of any real size locked
@@ -322,6 +334,7 @@ const transplantWhileDestinationHeld = async (
   for (const carried of branch.templates) {
     const target = mapped.get(carried.folderId)
     if (target === undefined) continue
+    if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
     if (destination.kind === 'server') {
       if (!connectionsAreCurrent()) return connectionChanged()
       const png = await templateAsPng(carried.template)
@@ -341,6 +354,7 @@ const transplantWhileDestinationHeld = async (
           message: `“${carried.template.name}” changed while it was being copied.`,
         }
       }
+      if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
       if (!connectionsAreCurrent()) return connectionChanged()
       const uploaded = await uploadTemplate(destination.server, {
         nodeId: target,
@@ -388,6 +402,7 @@ const transplantWhileDestinationHeld = async (
   if (source.kind === 'server') {
     for (const carried of branch.templates) {
       if (!connectionsAreCurrent()) return connectionChanged()
+      if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
       const removed = await deleteTemplateOnServer(source.server, carried.sourceId)
       if (!removed.ok) {
         return {

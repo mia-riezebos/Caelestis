@@ -71,9 +71,31 @@ export const sameServerConnection = (left: ConnectedServer, right: ConnectedServ
     ? right.info === null
     : right.info !== null && left.info.id === right.info.id && left.info.auth === right.info.auth)
 
+/**
+ * Runtime identity for one configured connection lifetime.
+ *
+ * It is deliberately not persisted: removing a server and later probing the same URL starts a new
+ * lifetime even when every wire value happens to be equal. Immutable replacements made while the
+ * row remains configured inherit the token in {@link upsertServer}.
+ */
+const serverConnectionLifetimes = new WeakMap<ConnectedServer, object>()
+
+const serverConnectionLifetime = (server: ConnectedServer): object => {
+  const existing = serverConnectionLifetimes.get(server)
+  if (existing !== undefined) return existing
+  const created = {}
+  serverConnectionLifetimes.set(server, created)
+  return created
+}
+
 /** Whether this immutable connection snapshot is still the configured lifetime for its URL. */
-export const isCurrentServerConnection = (server: ConnectedServer): boolean =>
-  getState().servers.some((candidate) => sameServerConnection(candidate, server))
+export const isCurrentServerConnection = (server: ConnectedServer): boolean => {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined) return false
+  if (current === server) return true
+  const lifetime = serverConnectionLifetimes.get(server)
+  return lifetime !== undefined && serverConnectionLifetimes.get(current) === lifetime
+}
 
 /** A browser-local folder; its metadata is small enough to live in userscript state. */
 export interface LocalFolder {
@@ -974,6 +996,12 @@ export const upsertServer = (server: ConnectedServer): boolean => {
     current?.lastVerified != null &&
     (server.info === null || server.info.id === current.lastVerified.serverId)
   const next = canRetainIdentity ? { ...server, lastVerified: current.lastVerified } : server
+  const lifetime =
+    current !== undefined && sameServerConnection(current, server)
+      ? serverConnectionLifetime(current)
+      : {}
+  serverConnectionLifetimes.set(server, lifetime)
+  serverConnectionLifetimes.set(next, lifetime)
   setState({
     servers: index === -1 ? [...servers, next] : servers.map((s, i) => (i === index ? next : s)),
   })

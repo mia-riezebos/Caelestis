@@ -1624,6 +1624,13 @@ const copyServerTemplateToLocal = async (
     rerender()
     return null
   }
+  const latestSourceTemplate = serverTemplateAt(source.url, templateId)
+  if (latestSourceTemplate === null || drawn.serverVersion !== latestSourceTemplate.version) {
+    releaseCopied()
+    toast('Copied into Local, but the source version changed and was kept.', 'warning')
+    rerender()
+    return `local:${copied.id}`
+  }
   if (!stillConnected(source)) {
     releaseCopied()
     toast('Copied into Local, but the source connection changed and was kept.', 'warning')
@@ -1744,6 +1751,11 @@ const dropOnServerNode = async (
     return null
   }
 
+  const readySourceTemplate = serverTemplateAt(source.url, templateId)
+  if (readySourceTemplate === null || drawn.serverVersion !== readySourceTemplate.version) {
+    toast('That template changed while it was being prepared.', 'warning')
+    return null
+  }
   if (!stillConnected(source) || !stillConnected(server)) {
     toast('A server connection changed while the template was being prepared.', 'warning')
     return null
@@ -1751,7 +1763,7 @@ const dropOnServerNode = async (
 
   const uploaded = await uploadTemplate(server, {
     nodeId,
-    name: currentSourceTemplate.name,
+    name: readySourceTemplate.name,
     originX: drawn.originX,
     originY: drawn.originY,
     png,
@@ -1766,6 +1778,11 @@ const dropOnServerNode = async (
       `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
       'warning',
     )
+    return serverTemplateTreeKey(server, uploaded.id)
+  }
+  const latestSourceTemplate = serverTemplateAt(source.url, templateId)
+  if (latestSourceTemplate === null || drawn.serverVersion !== latestSourceTemplate.version) {
+    toast(`Copied to ${destinationName}, but the source version changed and was kept.`, 'warning')
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const removed = await deleteTemplateOnServer(source, templateId)
@@ -1888,7 +1905,9 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
           toast(`“${source.name}” changed while it was being encoded — try again.`, 'warning')
           return
         }
-        if (cancelled) return
+        // Closing the panel or opening another Replace removes this exact dialog. Its detached
+        // continuation owns no visible Cancel control and must not cross the request boundary.
+        if (cancelled || !box.isConnected) return
         if (!stillConnected(server)) {
           toast('That server was disconnected or replaced.', 'warning')
           return
@@ -2260,7 +2279,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
           toast(`“${current.name}” changed while it was being encoded — try again.`, 'warning')
           return
         }
-        if (cancelled) return
+        // The dialog may have been replaced or its panel closed while encoding. Only the exact
+        // still-visible operation is allowed to cross the upload boundary.
+        if (cancelled || !box.isConnected) return
         if (!stillConnected(server)) {
           toast('That destination server was disconnected or replaced.', 'warning')
           return
