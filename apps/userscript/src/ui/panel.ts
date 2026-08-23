@@ -95,6 +95,7 @@ import {
   serverTemplateTreeKey,
   startRenaming,
   type TreeTarget,
+  templatesForServer,
   templatesOfNode,
   treeContents,
 } from './tree.js'
@@ -1548,8 +1549,11 @@ const moveBranch = async (
       : { kind: 'server', server: sourceServer, nodeId: sourceId }
 
   toast('Moving…')
-  const result = await transplant(source, destination, (server, nodeId) =>
-    templatesOfNode(server.url, nodeId),
+  const result = await transplant(
+    source,
+    destination,
+    (server, nodeId) => templatesOfNode(server.url, nodeId),
+    (server) => templatesForServer(server.url),
   )
   if (result.ok) toast(result.message)
   else toast(result.message, 'error')

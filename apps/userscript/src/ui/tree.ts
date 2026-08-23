@@ -117,6 +117,7 @@ const nodesByServer = new Map<string, readonly TreeNode[]>()
 
 /** Templates per server, from the manifest, on the same terms as the nodes above. */
 const templatesByServer = new Map<string, readonly ServerTemplate[]>()
+const NO_SERVER_TEMPLATES: readonly ServerTemplate[] = []
 /** Verified identity belonging to the rows cached at each URL. */
 const rowIdentityByServer = new Map<string, string>()
 
@@ -335,6 +336,14 @@ export const serverTemplateAt = (serverUrl: string, id: string): ServerTemplate 
     : (rowsFor(server)?.templates.find((template) => template.id === id) ?? null)
 }
 
+/** The immutable manifest template array currently backing one server's tree rows. */
+export const templatesForServer = (serverUrl: string): readonly ServerTemplate[] => {
+  const server = getState().servers.find((candidate) => candidate.url === serverUrl)
+  return server === undefined
+    ? NO_SERVER_TEMPLATES
+    : (rowsFor(server)?.templates ?? NO_SERVER_TEMPLATES)
+}
+
 /** Which server holds a folder row — the same scoped-key lookup as `findServerTemplate`. */
 export const findServerNode = (key: string): { serverUrl: string; node: TreeNode } | null => {
   for (const server of getState().servers) {
@@ -351,10 +360,7 @@ export const templatesOfNode = (
   serverUrl: string,
   nodeId: string,
 ): ReadonlyArray<{ id: string; name: string; version: string }> => {
-  const server = getState().servers.find((candidate) => candidate.url === serverUrl)
-  return server === undefined
-    ? []
-    : (rowsFor(server)?.templates.filter((template) => template.nodeId === nodeId) ?? [])
+  return templatesForServer(serverUrl).filter((template) => template.nodeId === nodeId)
 }
 
 /**

@@ -11,7 +11,7 @@ import {
   listServerNodes,
   MAX_LOCAL_FOLDERS,
   nextLocalFolderId,
-  removeLocalFolder,
+  removeLocalFolders,
   type TreeNode,
   uploadTemplate,
 } from '../state.js'
@@ -79,6 +79,16 @@ interface Branch {
   }>
 }
 
+interface PublishedTemplate {
+  readonly id: string
+  readonly name: string
+  readonly version: string
+}
+
+interface LocatedPublishedTemplate extends PublishedTemplate {
+  readonly nodeId: string
+}
+
 const localId = (): string =>
   `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
 
@@ -106,7 +116,8 @@ interface BranchReadFailure {
 const serverBranch = async (
   server: ConnectedServer,
   rootId: string,
-  templatesOf: (nodeId: string) => ReadonlyArray<{ id: string; name: string; version: string }>,
+  templatesOf: (nodeId: string) => readonly PublishedTemplate[],
+  templatesForServer?: () => readonly LocatedPublishedTemplate[],
 ): Promise<Branch | BranchReadFailure | null> => {
   const listed = await listServerNodes(server)
   if (listed.status !== 'ok') {
@@ -148,9 +159,21 @@ const serverBranch = async (
     name: node.name,
   }))
 
+  let templatesByNode: ReadonlyMap<string, readonly PublishedTemplate[]> | null = null
+  if (templatesForServer !== undefined) {
+    const grouped = new Map<string, PublishedTemplate[]>()
+    for (const template of templatesForServer()) {
+      const siblings = grouped.get(template.nodeId) ?? []
+      siblings.push(template)
+      grouped.set(template.nodeId, siblings)
+    }
+    templatesByNode = grouped
+  }
   const templates: Array<{ folderId: string; template: PlacedTemplate; sourceId: string }> = []
   for (const node of within) {
-    for (const published of templatesOf(node.id)) {
+    const publishedInNode =
+      templatesByNode === null ? templatesOf(node.id) : (templatesByNode.get(node.id) ?? [])
+    for (const published of publishedInNode) {
       const drawn = drawnFor(server.url, published)
       if (drawn === undefined) return null
       templates.push({ folderId: node.id, template: drawn, sourceId: published.id })
@@ -233,18 +256,21 @@ const inCreationOrder = (branch: Branch): Branch['folders'] => {
 const transplantWhileDestinationHeld = async (
   source: Source,
   destination: Destination,
-  templatesOf: (
-    server: ConnectedServer,
-    nodeId: string,
-  ) => ReadonlyArray<{ id: string; name: string; version: string }>,
+  templatesOf: (server: ConnectedServer, nodeId: string) => readonly PublishedTemplate[],
+  templatesForServer:
+    | ((server: ConnectedServer) => readonly LocatedPublishedTemplate[])
+    | undefined,
   destinationLeases: Array<() => void>,
   destinationTemplateLeases: Array<() => void>,
 ): Promise<TransplantResult> => {
   const branch =
     source.kind === 'local'
       ? localBranch(source.folderId)
-      : await serverBranch(source.server, source.nodeId, (nodeId) =>
-          templatesOf(source.server, nodeId),
+      : await serverBranch(
+          source.server,
+          source.nodeId,
+          (nodeId) => templatesOf(source.server, nodeId),
+          templatesForServer === undefined ? undefined : () => templatesForServer(source.server),
         )
   if (branch !== null && 'error' in branch) {
     return { ok: false, nodes: 0, templates: 0, message: branch.error }
@@ -284,14 +310,34 @@ const transplantWhileDestinationHeld = async (
     templates,
     message: 'A server connection changed during the move, so it stopped before the next write.',
   })
-  const sourceTemplateIsCurrent = (carried: Branch['templates'][number]): boolean =>
-    source.kind === 'local'
-      ? isCurrentTemplate(carried.template) && movingId() !== carried.template.id
-      : templatesOf(source.server, carried.folderId).some(
-          (candidate) =>
-            candidate.id === carried.sourceId &&
-            candidate.version === carried.template.serverVersion,
-        )
+  let indexedServerTemplates: readonly LocatedPublishedTemplate[] | null = null
+  let serverTemplateById = new Map<string, LocatedPublishedTemplate>()
+  const currentServerTemplate = (id: string): LocatedPublishedTemplate | undefined => {
+    if (source.kind === 'local' || templatesForServer === undefined) return undefined
+    const current = templatesForServer(source.server)
+    if (current !== indexedServerTemplates) {
+      indexedServerTemplates = current
+      serverTemplateById = new Map(current.map((template) => [template.id, template]))
+    }
+    return serverTemplateById.get(id)
+  }
+  const sourceTemplateIsCurrent = (carried: Branch['templates'][number]): boolean => {
+    if (source.kind === 'local') {
+      return isCurrentTemplate(carried.template) && movingId() !== carried.template.id
+    }
+    if (templatesForServer === undefined) {
+      return templatesOf(source.server, carried.folderId).some(
+        (candidate) =>
+          candidate.id === carried.sourceId && candidate.version === carried.template.serverVersion,
+      )
+    }
+    const current = currentServerTemplate(carried.sourceId)
+    return (
+      current !== undefined &&
+      current.nodeId === carried.folderId &&
+      current.version === carried.template.serverVersion
+    )
+  }
   const sourceTemplateChanged = (carried: Branch['templates'][number]): TransplantResult => ({
     ok: false,
     nodes,
@@ -500,33 +546,15 @@ const transplantWhileDestinationHeld = async (
     }
   } else {
     if (!connectionsAreCurrent()) return connectionChanged()
-    const removedSourceFolders = new Set<string>()
-    const changedSourceFolder = (): Branch['folders'][number] | undefined =>
-      branch.folders.find((folder) => {
-        if (removedSourceFolders.has(folder.id)) return false
-        const current = getState().localFolders.find((candidate) => candidate.id === folder.id)
-        return (
-          current === undefined ||
-          current.parentId !== folder.sourceParentId ||
-          current.name !== folder.name
-        )
-      })
-    const sourceFolderChanged = (): TransplantResult | null => {
-      const changed = changedSourceFolder()
-      return changed === undefined
-        ? null
-        : {
-            ok: false,
-            nodes,
-            templates,
-            message: `Copied, but Local folder “${changed.name}” changed at the source and was kept.`,
-          }
-    }
-    const changedBeforeCleanup = sourceFolderChanged()
-    if (changedBeforeCleanup !== null) return changedBeforeCleanup
+    const sourceFoldersChanged = (): TransplantResult => ({
+      ok: false,
+      nodes,
+      templates,
+      message: `Copied, but Local source folder “${branch.name}” changed and was kept.`,
+    })
+    if (!sourceFoldersAreCurrent()) return sourceFoldersChanged()
     for (const carried of branch.templates) {
-      const changed = sourceFolderChanged()
-      if (changed !== null) return changed
+      if (!sourceFoldersAreCurrent()) return sourceFoldersChanged()
       if (!sourceTemplateIsCurrent(carried)) {
         return {
           ok: false,
@@ -544,29 +572,26 @@ const transplantWhileDestinationHeld = async (
         }
       }
     }
-    for (const folder of [...inCreationOrder(branch)].reverse()) {
-      const changed = sourceFolderChanged()
-      if (changed !== null) return changed
-      if (
-        getState().localFolders.some((candidate) => candidate.parentId === folder.id) ||
-        localTemplates().some((template) => template.folderId === folder.id)
-      ) {
-        return {
-          ok: false,
-          nodes,
-          templates,
-          message: `Moved the original templates, but Local folder “${folder.name}” received new content and was kept.`,
-        }
+    if (!sourceFoldersAreCurrent()) return sourceFoldersChanged()
+    if (
+      localTemplates().some(
+        (template) => template.folderId !== null && sourceFolderIds.has(template.folderId),
+      )
+    ) {
+      return {
+        ok: false,
+        nodes,
+        templates,
+        message: `Moved the original templates, but Local source folder “${branch.name}” received new content and was kept.`,
       }
-      if (!removeLocalFolder(folder.id)) {
-        return {
-          ok: false,
-          nodes,
-          templates,
-          message: `Moved the templates, but could not remove Local folder “${folder.name}”.`,
-        }
+    }
+    if (!removeLocalFolders(sourceFolderIds)) {
+      return {
+        ok: false,
+        nodes,
+        templates,
+        message: `Moved the templates, but could not remove Local source folder “${branch.name}”.`,
       }
-      removedSourceFolders.add(folder.id)
     }
   }
 
@@ -594,10 +619,8 @@ const sourceKey = (source: Source): string =>
 export const transplant = async (
   source: Source,
   destination: Destination,
-  templatesOf: (
-    server: ConnectedServer,
-    nodeId: string,
-  ) => ReadonlyArray<{ id: string; name: string; version: string }>,
+  templatesOf: (server: ConnectedServer, nodeId: string) => readonly PublishedTemplate[],
+  templatesForServer?: (server: ConnectedServer) => readonly LocatedPublishedTemplate[],
 ): Promise<TransplantResult> => {
   const activeSource = sourceKey(source)
   if (activeSources.has(activeSource)) {
@@ -633,6 +656,7 @@ export const transplant = async (
       source,
       destination,
       templatesOf,
+      templatesForServer,
       destinationLeases,
       destinationTemplateLeases,
     )

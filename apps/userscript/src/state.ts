@@ -968,6 +968,25 @@ export const removeLocalFolder = (id: string): boolean => {
   })
 }
 
+/** Remove a fully validated folder set in one durable write. */
+export const removeLocalFolders = (ids: ReadonlySet<string>): boolean => {
+  if (ids.size === 0) return true
+  const folders = getState().localFolders
+  const existing = new Set(folders.map((folder) => folder.id))
+  for (const id of ids) {
+    if (!existing.has(id) || (localFolderLeases.get(id) ?? 0) > 0) return false
+  }
+  // A child outside the set would be silently detached by a bulk delete. The transplant caller
+  // checks this just before the call, and this refusal keeps the helper safe at the commit boundary.
+  if (
+    folders.some(
+      (folder) => !ids.has(folder.id) && folder.parentId !== null && ids.has(folder.parentId),
+    )
+  )
+    return false
+  return setStateDurably({ localFolders: folders.filter((folder) => !ids.has(folder.id)) })
+}
+
 export const moveLocalFolder = (id: string, parentId: string | null): boolean => {
   if (id === parentId) return false
   const folders = getState().localFolders

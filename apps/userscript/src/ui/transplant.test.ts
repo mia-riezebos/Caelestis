@@ -14,7 +14,7 @@ const state = vi.hoisted(() => ({
   leaseLocalFolder: vi.fn(() => vi.fn()),
   listServerNodes: vi.fn(),
   nextLocalFolderId: vi.fn(() => 'local-folder'),
-  removeLocalFolder: vi.fn(() => true),
+  removeLocalFolders: vi.fn(() => true),
   uploadTemplate: vi.fn(),
 }))
 const store = vi.hoisted(() => ({
@@ -41,6 +41,7 @@ beforeEach(() => {
   state.getState.mockReturnValue({ localFolders: [] })
   state.leaseLocalFolder.mockReturnValue(vi.fn())
   state.addLocalFolders.mockReturnValue(true)
+  state.removeLocalFolders.mockReturnValue(true)
   store.isCurrentTemplate.mockReturnValue(true)
   store.leaseLocalTemplate.mockReturnValue(vi.fn())
   store.localTemplates.mockReturnValue([])
@@ -405,7 +406,7 @@ describe('branch transplant', () => {
       }),
     )
     expect(store.removeLocalTemplate).not.toHaveBeenCalled()
-    expect(state.removeLocalFolder).not.toHaveBeenCalled()
+    expect(state.removeLocalFolders).not.toHaveBeenCalled()
   })
 
   it('keeps a Local folder that receives content after its snapshot', async () => {
@@ -441,7 +442,7 @@ describe('branch transplant', () => {
         message: expect.stringContaining('source branch'),
       }),
     )
-    expect(state.removeLocalFolder).not.toHaveBeenCalled()
+    expect(state.removeLocalFolders).not.toHaveBeenCalled()
   })
 
   it('refuses a second transplant while the same source is active', async () => {
