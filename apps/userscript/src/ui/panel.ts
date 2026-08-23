@@ -17,6 +17,7 @@ import {
   MAX_LOCAL_FOLDERS,
   moveLocalFolder,
   moveNode as moveNodeOnServer,
+  onServerContents,
   onStateChange,
   type ProgressPlacement,
   patchTemplate,
@@ -76,6 +77,7 @@ import {
   nodeTreeKey,
   primeFromCache,
   refreshNodes,
+  rememberServerContents,
   serverTemplateAt,
   serverTemplateTreeKey,
   startRenaming,
@@ -449,6 +451,12 @@ const refreshView = (): void => {
     if (kept !== undefined) field.value = kept
   }
 }
+
+// A manifest belongs to the tree even when a background poll or an admin helper requested it.
+// Keeping this subscription outside a view builder avoids adding another listener on every rebuild.
+onServerContents((server, contents) => {
+  if (rememberServerContents(server, contents).ok) refreshView()
+})
 
 /**
  * Pay back a redraw that was declined while something was being held.

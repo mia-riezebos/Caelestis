@@ -968,6 +968,10 @@ export const upsertServer = (server: ConnectedServer): boolean => {
 export const removeServer = (url: string): void => {
   const key = `server:${url}`
   const templatePrefix = `srv:${encodeURIComponent(url)}:`
+  // Response ordering and its retained repair snapshot belong to this connection lifetime.
+  manifestRequests.delete(url)
+  latestManifestResponse.delete(url)
+  latestManifestContents.delete(url)
   setState({
     servers: getState().servers.filter((s) => s.url !== url),
     customOrder: getState().customOrder.filter((candidate) => candidate !== key),
@@ -1458,7 +1462,23 @@ export interface ServerContents {
 
 const manifestRequests = new Map<string, number>()
 const latestManifestResponse = new Map<string, number>()
+const latestManifestContents = new Map<string, ServerContents>()
 const manifestResponseOf = new WeakMap<ServerContents, number>()
+const serverContentsListeners = new Set<
+  (server: ConnectedServer, contents: ServerContents) => void
+>()
+
+/** Observe each newest successful manifest, no matter which UI or poll requested it. */
+export const onServerContents = (
+  listener: (server: ConnectedServer, contents: ServerContents) => void,
+): (() => void) => {
+  serverContentsListeners.add(listener)
+  return () => serverContentsListeners.delete(listener)
+}
+
+/** The newest successful full manifest retained for repairing a superseded reconciliation. */
+export const latestServerContents = (serverUrl: string): ServerContents | null =>
+  latestManifestContents.get(serverUrl) ?? null
 
 /** Whether this snapshot is still the newest successful manifest response for its server. */
 export const isLatestServerContents = (serverUrl: string, contents: ServerContents): boolean => {
@@ -1501,11 +1521,18 @@ export const listServerContents = async (
       }),
     )
     const contents: ServerContents = { nodes: manifest.nodes, templates }
-    latestManifestResponse.set(
-      server.url,
-      Math.max(latestManifestResponse.get(server.url) ?? 0, request),
-    )
     manifestResponseOf.set(contents, request)
+    if (request > (latestManifestResponse.get(server.url) ?? 0)) {
+      latestManifestResponse.set(server.url, request)
+      latestManifestContents.set(server.url, contents)
+      for (const listener of serverContentsListeners) {
+        try {
+          listener(server, contents)
+        } catch (error) {
+          warn('install', 'could not publish fresh manifest contents', String(error))
+        }
+      }
+    }
     return contents
   } catch {
     return null

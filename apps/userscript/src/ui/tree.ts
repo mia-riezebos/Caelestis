@@ -9,6 +9,7 @@ import {
   MAX_MANIFEST_TEMPLATES,
   MAX_TREE_NODES,
   removeTreeStateKeys,
+  type ServerContents,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
@@ -420,6 +421,27 @@ const refreshOnce = async (
   if (!isLatestServerContents(server.url, contents)) {
     return { ok: false, message: 'A newer manifest replaced this one.', superseded: true }
   }
+  const remembered = rememberServerContents(server, contents)
+  if (!remembered.ok) return remembered
+  const { templates } = contents
+  // Every caller of this is a mutation that just landed — a publish, an upload, a delete. Waiting
+  // out the poll to see it on the canvas would make each of those feel like it had not worked.
+  //
+  // Handing over the manifest we just read, rather than letting the sync fetch its own: they are the
+  // same document, requested a millisecond apart, and the second one can only disagree with the
+  // first by being newer than the tree that is already on screen.
+  void syncServerTemplates(server, templates, () => isLatestServerContents(server.url, contents))
+  return { ok: true }
+}
+
+/** Retain one live manifest for the tree, irrespective of which consumer requested it. */
+export const rememberServerContents = (
+  server: ConnectedServer,
+  contents: ServerContents,
+): NodeRefreshResult => {
+  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+    return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
+  }
   const { nodes, templates } = contents
   const identity = serverIdentity(server)
   if (identity === null) return { ok: false, message: 'The server identity is unavailable.' }
@@ -466,13 +488,6 @@ const refreshOnce = async (
       fetchedAt: Date.now(),
     })
   }
-  // Every caller of this is a mutation that just landed — a publish, an upload, a delete. Waiting
-  // out the poll to see it on the canvas would make each of those feel like it had not worked.
-  //
-  // Handing over the manifest we just read, rather than letting the sync fetch its own: they are the
-  // same document, requested a millisecond apart, and the second one can only disagree with the
-  // first by being newer than the tree that is already on screen.
-  void syncServerTemplates(server, templates, () => isLatestServerContents(server.url, contents))
   return { ok: true }
 }
 

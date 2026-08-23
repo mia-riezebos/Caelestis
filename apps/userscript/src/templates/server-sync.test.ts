@@ -4,13 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const state = vi.hoisted(() => ({
   getState: vi.fn((): { servers: readonly object[] } => ({ servers: [] })),
   isLatestServerContents: vi.fn(() => true),
+  latestServerContents: vi.fn(),
   listServerContents: vi.fn(),
   onStateChange: vi.fn(),
 }))
 const store = vi.hoisted(() => ({
   forgetServerTemplate: vi.fn(),
   hasRoomForServerTemplate: vi.fn(() => true),
-  localTemplates: vi.fn(() => []),
+  localTemplates: vi.fn(
+    (): Array<{ id: string; serverUrl?: string; serverVersion?: string }> => [],
+  ),
   putServerTemplate: vi.fn(async () => true),
   updateServerTemplateMetadata: vi.fn(),
 }))
@@ -35,6 +38,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   state.getState.mockReturnValue({ servers: [connected] })
   state.isLatestServerContents.mockReturnValue(true)
+  state.latestServerContents.mockReturnValue(null)
+  store.localTemplates.mockReturnValue([])
 })
 
 describe('server template sync', () => {
@@ -148,6 +153,48 @@ describe('server template sync', () => {
 
     expect(store.forgetServerTemplate).not.toHaveBeenCalled()
     expect(store.putServerTemplate).not.toHaveBeenCalled()
+  })
+
+  it('queues the newest full snapshot when superseded during removal', async () => {
+    let releaseForget = (): void => undefined
+    let current = true
+    const template = {
+      id: 'template',
+      nodeId: 'folder-b',
+      name: 'Template',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [],
+    }
+    const held = {
+      id: 'srv:https%3A%2F%2Fexample.test:template',
+      serverUrl: connected.url,
+      serverVersion: 'v1',
+    }
+    store.localTemplates.mockReturnValue([held])
+    store.forgetServerTemplate.mockImplementationOnce(
+      async () =>
+        await new Promise<void>((resolve) => {
+          releaseForget = resolve
+        }),
+    )
+    const latest = { nodes: [], templates: [template] }
+    state.latestServerContents.mockReturnValue(latest)
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    const syncing = syncServerTemplates(connected, [], () => current)
+    await vi.waitFor(() => expect(store.forgetServerTemplate).toHaveBeenCalledOnce())
+    current = false
+    releaseForget()
+    await syncing
+
+    expect(store.updateServerTemplateMetadata).toHaveBeenCalledWith(
+      held.id,
+      template.name,
+      template.nodeId,
+    )
   })
 
   it('aborts an obsolete chunk drain and lets the same URL reconnect immediately', async () => {

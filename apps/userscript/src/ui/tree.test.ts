@@ -8,13 +8,16 @@ import {
   nodeTreeKey,
   orderedItems,
   refreshNodes,
+  rememberServerContents,
   reorderedSiblings,
   reorderedVisibleSiblings,
+  serverTemplateAt,
   treeContents,
 } from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
+const TEMPLATE_A = '019fed50-87a1-7523-a88c-bdeafad49683'
 
 const manifest = (
   info: { readonly id: string; readonly name: string; readonly auth: 'none' },
@@ -124,6 +127,34 @@ describe('tree identity and ordering', () => {
     expect(manifestAggregateWithinBudget(99_999, 199_999, 1, 1)).toBe(true)
     expect(manifestAggregateWithinBudget(100_000, 0, 1, 0)).toBe(false)
     expect(manifestAggregateWithinBudget(0, 200_000, 0, 1)).toBe(false)
+  })
+
+  it('replaces tree rows when a manifest was fetched outside refreshNodes', () => {
+    const connected = server(SERVER_ID, 0)
+    setState({ servers: [connected] })
+    const template = {
+      id: TEMPLATE_A,
+      nodeId: 'folder-a',
+      name: 'Template',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [],
+    }
+
+    expect(rememberServerContents(connected, { nodes: [], templates: [template] })).toEqual({
+      ok: true,
+    })
+    expect(serverTemplateAt(connected.url, TEMPLATE_A)?.nodeId).toBe('folder-a')
+
+    expect(
+      rememberServerContents(connected, {
+        nodes: [],
+        templates: [{ ...template, nodeId: 'folder-b' }],
+      }),
+    ).toEqual({ ok: true })
+    expect(serverTemplateAt(connected.url, TEMPLATE_A)?.nodeId).toBe('folder-b')
   })
 
   it('does not admit a key from another sibling group', () => {

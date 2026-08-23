@@ -12,6 +12,7 @@ import {
   type ConnectedServer,
   getState,
   isLatestServerContents,
+  latestServerContents,
   listServerContents,
   onStateChange,
 } from '../state.js'
@@ -341,9 +342,16 @@ const syncServerTemplatesOnce = async (
   )
 
   for (const held of localTemplates()) {
-    if (!snapshotCurrent()) return
+    if (!snapshotCurrent()) {
+      queueLatestSnapshot(server)
+      return
+    }
     if (held.serverUrl !== server.url) continue
     if (!wanted.has(held.id)) await forgetServerTemplate(held.id)
+  }
+  if (!snapshotCurrent()) {
+    queueLatestSnapshot(server)
+    return
   }
   const ourPrefix = serverTemplateKey(server.url, '')
   for (const key of [...latestVersion.keys()]) {
@@ -429,6 +437,21 @@ interface PendingServerSync {
 /** The newest request per server. Slow downloads must never make minute polls pile up behind them. */
 const pendingServerSyncs = new Map<string, PendingServerSync>()
 const serverSyncRuns = new Map<string, Promise<void>>()
+
+/** Queue the full snapshot that made an in-progress reconciliation stale. */
+const queueLatestSnapshot = (server: ConnectedServer): void => {
+  if (!getState().servers.includes(server)) return
+  const latest = latestServerContents(server.url)
+  if (latest === null || !isLatestServerContents(server.url, latest)) return
+  const pending = pendingServerSyncs.get(server.url)
+  // An explicit refresh may already have queued the same or a newer authoritative snapshot.
+  if (pending?.known !== undefined) return
+  pendingServerSyncs.set(server.url, {
+    server,
+    known: latest.templates,
+    snapshotCurrent: () => isLatestServerContents(server.url, latest),
+  })
+}
 
 const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
   const existing = serverSyncRuns.get(serverUrl)

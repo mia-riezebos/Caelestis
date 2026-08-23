@@ -328,7 +328,10 @@ describe('server state boundaries', () => {
           }),
       )
     vi.stubGlobal('fetch', fetchMock)
-    const { isLatestServerContents, listServerContents } = await import('./state.js')
+    const { isLatestServerContents, latestServerContents, listServerContents, onServerContents } =
+      await import('./state.js')
+    const observed = vi.fn()
+    onServerContents(observed)
     const server = {
       url: 'https://example.com',
       info: serverInfo,
@@ -351,6 +354,9 @@ describe('server state boundaries', () => {
     if (newer === null || older === null) throw new Error('expected valid manifests')
     expect(isLatestServerContents(server.url, newer)).toBe(true)
     expect(isLatestServerContents(server.url, older)).toBe(false)
+    expect(latestServerContents(server.url)).toBe(newer)
+    expect(observed).toHaveBeenCalledOnce()
+    expect(observed).toHaveBeenCalledWith(server, newer)
   })
 
   it('refuses local folder writes that the next load would discard', async () => {
