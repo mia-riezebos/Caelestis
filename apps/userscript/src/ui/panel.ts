@@ -1,7 +1,7 @@
 import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { redraw, viewportCentre } from '../main.js'
-import { forgetServer } from '../server-cache.js'
+import { forgetServer, type ServerTemplate } from '../server-cache.js'
 import {
   admitServerContents,
   admittedServerContentsFor,
@@ -1572,6 +1572,14 @@ const moveBranch = async (
  * The pixels come from the copy already drawn, so nothing is downloaded twice — and if it has not
  * finished arriving there is nothing to move yet, which is worth saying rather than half-doing.
  */
+const sameServerTemplateRevision = (left: ServerTemplate, right: ServerTemplate): boolean =>
+  left.id === right.id &&
+  left.nodeId === right.nodeId &&
+  left.name === right.name &&
+  left.version === right.version &&
+  left.published === right.published &&
+  left.updatedAt === right.updatedAt
+
 const copyServerTemplateToLocal = async (
   templateKey: string,
   folderId: string | null,
@@ -1629,9 +1637,12 @@ const copyServerTemplateToLocal = async (
     return null
   }
   const latestSourceTemplate = serverTemplateAt(source.url, templateId)
-  if (latestSourceTemplate === null || drawn.serverVersion !== latestSourceTemplate.version) {
+  if (
+    latestSourceTemplate === null ||
+    !sameServerTemplateRevision(currentSourceTemplate, latestSourceTemplate)
+  ) {
     releaseCopied()
-    toast('Copied into Local, but the source version changed and was kept.', 'warning')
+    toast('Copied into Local, but the source changed and was kept.', 'warning')
     rerender()
     return `local:${copied.id}`
   }
@@ -1756,7 +1767,10 @@ const dropOnServerNode = async (
   }
 
   const readySourceTemplate = serverTemplateAt(source.url, templateId)
-  if (readySourceTemplate === null || drawn.serverVersion !== readySourceTemplate.version) {
+  if (
+    readySourceTemplate === null ||
+    !sameServerTemplateRevision(currentSourceTemplate, readySourceTemplate)
+  ) {
     toast('That template changed while it was being prepared.', 'warning')
     return null
   }
@@ -1784,9 +1798,30 @@ const dropOnServerNode = async (
     )
     return serverTemplateTreeKey(server, uploaded.id)
   }
+  if (readySourceTemplate.published) {
+    const published = await patchTemplate(server, uploaded.id, { published: true })
+    if (!published.ok) {
+      toast(
+        `Copied to ${destinationName} as a draft, but could not publish it; the source was kept.`,
+        'error',
+      )
+      await refreshNodes(server, rerender)
+      return serverTemplateTreeKey(server, uploaded.id)
+    }
+  }
+  if (!stillConnected(source) || !stillConnected(server)) {
+    toast(
+      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
+      'warning',
+    )
+    return serverTemplateTreeKey(server, uploaded.id)
+  }
   const latestSourceTemplate = serverTemplateAt(source.url, templateId)
-  if (latestSourceTemplate === null || drawn.serverVersion !== latestSourceTemplate.version) {
-    toast(`Copied to ${destinationName}, but the source version changed and was kept.`, 'warning')
+  if (
+    latestSourceTemplate === null ||
+    !sameServerTemplateRevision(readySourceTemplate, latestSourceTemplate)
+  ) {
+    toast(`Copied to ${destinationName}, but the source changed and was kept.`, 'warning')
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const removed = await deleteTemplateOnServer(source, templateId)

@@ -11,6 +11,7 @@ import {
   listServerNodes,
   MAX_LOCAL_FOLDERS,
   nextLocalFolderId,
+  patchTemplate,
   removeLocalFolders,
   type TreeNode,
   uploadTemplate,
@@ -76,6 +77,11 @@ interface Branch {
     folderId: string
     template: PlacedTemplate
     sourceId: string
+    sourceRevision: {
+      readonly name: string
+      readonly published: boolean
+      readonly updatedAt: number
+    } | null
   }>
 }
 
@@ -83,10 +89,14 @@ interface PublishedTemplate {
   readonly id: string
   readonly name: string
   readonly version: string
+  readonly published?: boolean
+  readonly updatedAt?: number
 }
 
 interface LocatedPublishedTemplate extends PublishedTemplate {
   readonly nodeId: string
+  readonly published: boolean
+  readonly updatedAt: number
 }
 
 const localId = (): string =>
@@ -169,14 +179,26 @@ const serverBranch = async (
     }
     templatesByNode = grouped
   }
-  const templates: Array<{ folderId: string; template: PlacedTemplate; sourceId: string }> = []
+  const templates: Array<Branch['templates'][number]> = []
   for (const node of within) {
     const publishedInNode =
       templatesByNode === null ? templatesOf(node.id) : (templatesByNode.get(node.id) ?? [])
     for (const published of publishedInNode) {
       const drawn = drawnFor(server.url, published)
       if (drawn === undefined) return null
-      templates.push({ folderId: node.id, template: drawn, sourceId: published.id })
+      templates.push({
+        folderId: node.id,
+        template: drawn,
+        sourceId: published.id,
+        sourceRevision:
+          typeof published.published === 'boolean' && typeof published.updatedAt === 'number'
+            ? {
+                name: published.name,
+                published: published.published,
+                updatedAt: published.updatedAt,
+              }
+            : null,
+      })
     }
   }
   return { name: root.name, folders, templates }
@@ -217,6 +239,7 @@ const localBranch = (rootId: string): Branch | null => {
       folderId: template.folderId as string,
       template,
       sourceId: template.id,
+      sourceRevision: null,
     }))
   return { name: root.name, folders, templates }
 }
@@ -332,10 +355,15 @@ const transplantWhileDestinationHeld = async (
       )
     }
     const current = currentServerTemplate(carried.sourceId)
+    const revision = carried.sourceRevision
     return (
       current !== undefined &&
       current.nodeId === carried.folderId &&
-      current.version === carried.template.serverVersion
+      current.version === carried.template.serverVersion &&
+      (revision === null ||
+        (current.name === revision.name &&
+          current.published === revision.published &&
+          current.updatedAt === revision.updatedAt))
     )
   }
   const sourceTemplateChanged = (carried: Branch['templates'][number]): TransplantResult => ({
@@ -473,12 +501,25 @@ const transplantWhileDestinationHeld = async (
       if (!connectionsAreCurrent()) return connectionChanged()
       const uploaded = await uploadTemplate(destination.server, {
         nodeId: target,
-        name: carried.template.name,
+        name: carried.sourceRevision?.name ?? carried.template.name,
         originX: carried.template.originX,
         originY: carried.template.originY,
         png,
       })
       if (!uploaded.ok) return { ok: false, nodes, templates, message: uploaded.message }
+      if (carried.sourceRevision?.published === true) {
+        if (!sourceBranchIsCurrent()) return sourceBranchChanged()
+        if (!connectionsAreCurrent()) return connectionChanged()
+        const published = await patchTemplate(destination.server, uploaded.id, { published: true })
+        if (!published.ok) {
+          return {
+            ok: false,
+            nodes,
+            templates,
+            message: `Copied “${carried.template.name}” as a draft, but could not publish it at the destination.`,
+          }
+        }
+      }
     } else {
       let copied: PlacedTemplate
       try {

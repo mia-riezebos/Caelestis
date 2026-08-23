@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   leaseLocalFolder: vi.fn(() => vi.fn()),
   listServerNodes: vi.fn(),
   nextLocalFolderId: vi.fn(() => 'local-folder'),
+  patchTemplate: vi.fn(),
   removeLocalFolders: vi.fn(() => true),
   uploadTemplate: vi.fn(),
 }))
