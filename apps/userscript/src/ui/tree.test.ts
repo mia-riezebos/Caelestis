@@ -145,6 +145,7 @@ describe('tree identity and ordering', () => {
 
     expect(rememberServerContents(connected, { nodes: [], templates: [template] })).toEqual({
       ok: true,
+      changed: true,
     })
     expect(serverTemplateAt(connected.url, TEMPLATE_A)?.nodeId).toBe('folder-a')
 
@@ -153,8 +154,15 @@ describe('tree identity and ordering', () => {
         nodes: [],
         templates: [{ ...template, nodeId: 'folder-b' }],
       }),
-    ).toEqual({ ok: true })
+    ).toEqual({ ok: true, changed: true })
     expect(serverTemplateAt(connected.url, TEMPLATE_A)?.nodeId).toBe('folder-b')
+
+    expect(
+      rememberServerContents(connected, {
+        nodes: [],
+        templates: [{ ...template, nodeId: 'folder-b', bbox: { ...template.bbox }, chunks: [] }],
+      }),
+    ).toEqual({ ok: true, changed: false })
   })
 
   it('does not admit a key from another sibling group', () => {

@@ -12,7 +12,6 @@ import {
   type ConnectedServer,
   getState,
   isLatestServerContents,
-  latestServerContents,
   listServerContents,
   onStateChange,
 } from '../state.js'
@@ -317,16 +316,26 @@ const syncServerTemplatesOnce = async (
   known?: readonly ServerTemplate[],
   snapshotCurrent: () => boolean = () => true,
 ): Promise<void> => {
-  if (server.status !== 'connected' || !snapshotCurrent()) return
+  const connectionCurrent = (): boolean =>
+    getState().servers.find((candidate) => candidate.url === server.url) === server
+  if (server.status !== 'connected' || !connectionCurrent() || !snapshotCurrent()) return
   const generation = generationOf(server.url)
   const signal = generationSignal(server.url, generation)
+  const current = (): boolean =>
+    connectionCurrent() &&
+    generationOf(server.url) === generation &&
+    !signal.aborted &&
+    snapshotCurrent()
   let available = known ?? null
   if (known === undefined) {
     const contents = await listServerContents(server)
-    if (generationOf(server.url) !== generation || signal.aborted) return
+    if (!current()) return
     if (contents !== null) {
       snapshotCurrent = () => isLatestServerContents(server.url, contents)
-      if (!snapshotCurrent()) return
+      if (!current()) return
+      // The manifest event may already have queued this exact snapshot for both the tree and canvas.
+      // Let the serialized drain consume it once instead of reconciling it here and once again.
+      if (pendingServerSyncs.get(server.url)?.known === contents.templates) return
     }
     // The folders as well as the templates, because a template's visibility answers to the folders
     // above it and this is the only place that learns of them changing between polls.
@@ -336,23 +345,17 @@ const syncServerTemplatesOnce = async (
   // Could not ask, so nothing is known and nothing changes. Treating this as an empty server took
   // every template off the canvas on a single blip and put them back looking newly arrived.
   if (available === null) return
-  if (!snapshotCurrent()) return
+  if (!current()) return
   const wanted = new Map(
     available.map((template) => [serverTemplateKey(server.url, template.id), template]),
   )
 
   for (const held of localTemplates()) {
-    if (!snapshotCurrent()) {
-      queueLatestSnapshot(server)
-      return
-    }
+    if (!current()) return
     if (held.serverUrl !== server.url) continue
     if (!wanted.has(held.id)) await forgetServerTemplate(held.id)
   }
-  if (!snapshotCurrent()) {
-    queueLatestSnapshot(server)
-    return
-  }
+  if (!current()) return
   const ourPrefix = serverTemplateKey(server.url, '')
   for (const key of [...latestVersion.keys()]) {
     if (key.startsWith(ourPrefix) && !wanted.has(key)) latestVersion.delete(key)
@@ -360,13 +363,14 @@ const syncServerTemplatesOnce = async (
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
   for (const [key, template] of wanted) {
-    if (generationOf(server.url) !== generation || signal.aborted || !snapshotCurrent()) return
+    if (!current()) return
     const held = localTemplates().find((candidate) => candidate.id === key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
     // rebuild. Names and folder membership still arrive through the manifest because neither
     // changes the pixel version.
     if (held !== undefined && held.serverVersion === template.version) {
       await updateServerTemplateMetadata(key, template.name, template.nodeId)
+      if (!current()) return
       continue
     }
     if (inFlight.get(key) === generation) continue
@@ -380,7 +384,7 @@ const syncServerTemplatesOnce = async (
       if (built === null) continue
       // The connection this download belongs to may have ended, or a later poll may have taken over
       // this template, while the chunks were in the air.
-      if (generationOf(server.url) !== generation || !snapshotCurrent()) return
+      if (!current()) return
       // A newer manifest landed while the chunks were in the air, and it no longer asks for this
       // version — or no longer asks for this template at all. Installing now would draw artwork
       // that has already been replaced, or bring a deleted overlay back.
@@ -412,11 +416,7 @@ const syncServerTemplatesOnce = async (
           serverVersion: template.version,
           wrapX: template.bbox.minX > template.bbox.maxX,
         },
-        () =>
-          generationOf(server.url) === generation &&
-          !signal.aborted &&
-          snapshotCurrent() &&
-          latestVersion.get(key) === template.version,
+        () => current() && latestVersion.get(key) === template.version,
       )
       if (!installed) return
       count('server:template drawn from chunks')
@@ -437,21 +437,6 @@ interface PendingServerSync {
 /** The newest request per server. Slow downloads must never make minute polls pile up behind them. */
 const pendingServerSyncs = new Map<string, PendingServerSync>()
 const serverSyncRuns = new Map<string, Promise<void>>()
-
-/** Queue the full snapshot that made an in-progress reconciliation stale. */
-const queueLatestSnapshot = (server: ConnectedServer): void => {
-  if (!getState().servers.includes(server)) return
-  const latest = latestServerContents(server.url)
-  if (latest === null || !isLatestServerContents(server.url, latest)) return
-  const pending = pendingServerSyncs.get(server.url)
-  // An explicit refresh may already have queued the same or a newer authoritative snapshot.
-  if (pending?.known !== undefined) return
-  pendingServerSyncs.set(server.url, {
-    server,
-    known: latest.templates,
-    snapshotCurrent: () => isLatestServerContents(server.url, latest),
-  })
-}
 
 const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
   const existing = serverSyncRuns.get(serverUrl)
@@ -544,15 +529,21 @@ export const installServerSync = (): void => {
    * manifest fetch, which is the same request the tree makes anyway.
    */
   onStateChange(() => {
-    const connected = getState()
-      .servers.filter((server) => server.status === 'connected')
-      .map((server) => server.url)
-      .join(' ')
-    if (connected === lastConnected) return
+    const connected = getState().servers.filter((server) => server.status === 'connected')
+    if (
+      connected.length === lastConnected.length &&
+      connected.every((server, index) => server === lastConnected[index])
+    )
+      return
+    for (const previous of lastConnected) {
+      if (connected.find((server) => server.url === previous.url) !== previous) {
+        endServerGeneration(previous.url)
+      }
+    }
     lastConnected = connected
     syncAll()
   })
 }
 
 /** Which servers were connected last time state changed, so an unrelated setting does not resync. */
-let lastConnected = ''
+let lastConnected: readonly ConnectedServer[] = []

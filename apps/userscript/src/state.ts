@@ -968,10 +968,9 @@ export const upsertServer = (server: ConnectedServer): boolean => {
 export const removeServer = (url: string): void => {
   const key = `server:${url}`
   const templatePrefix = `srv:${encodeURIComponent(url)}:`
-  // Response ordering and its retained repair snapshot belong to this connection lifetime.
-  manifestRequests.delete(url)
+  // Request ids are process-wide and monotonic, so an old response can never tie a request made
+  // after this URL reconnects. Only the answer belonging to the ended connection is forgotten.
   latestManifestResponse.delete(url)
-  latestManifestContents.delete(url)
   setState({
     servers: getState().servers.filter((s) => s.url !== url),
     customOrder: getState().customOrder.filter((candidate) => candidate !== key),
@@ -1436,8 +1435,14 @@ export const countNodeSubtree = async (
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
     const parsed = body as { nodes?: unknown; templates?: unknown }
-    if (typeof parsed.nodes !== 'number' || typeof parsed.templates !== 'number') return null
-    return { nodes: parsed.nodes, templates: parsed.templates }
+    if (
+      !Number.isSafeInteger(parsed.nodes) ||
+      (parsed.nodes as number) < 1 ||
+      !Number.isSafeInteger(parsed.templates) ||
+      (parsed.templates as number) < 0
+    )
+      return null
+    return { nodes: parsed.nodes as number, templates: parsed.templates as number }
   } catch {
     return null
   }
@@ -1460,9 +1465,8 @@ export interface ServerContents {
   readonly templates: readonly ServerTemplate[]
 }
 
-const manifestRequests = new Map<string, number>()
+let manifestRequestSequence = 0
 const latestManifestResponse = new Map<string, number>()
-const latestManifestContents = new Map<string, ServerContents>()
 const manifestResponseOf = new WeakMap<ServerContents, number>()
 const serverContentsListeners = new Set<
   (server: ConnectedServer, contents: ServerContents) => void
@@ -1476,10 +1480,6 @@ export const onServerContents = (
   return () => serverContentsListeners.delete(listener)
 }
 
-/** The newest successful full manifest retained for repairing a superseded reconciliation. */
-export const latestServerContents = (serverUrl: string): ServerContents | null =>
-  latestManifestContents.get(serverUrl) ?? null
-
 /** Whether this snapshot is still the newest successful manifest response for its server. */
 export const isLatestServerContents = (serverUrl: string, contents: ServerContents): boolean => {
   const response = manifestResponseOf.get(contents)
@@ -1490,8 +1490,7 @@ export const listServerContents = async (
   server: ConnectedServer,
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
-  const request = (manifestRequests.get(server.url) ?? 0) + 1
-  manifestRequests.set(server.url, request)
+  const request = ++manifestRequestSequence
   try {
     const { response, body } = await remoteJson(
       `${server.url}/manifest?season=${server.season}`,
@@ -1522,9 +1521,9 @@ export const listServerContents = async (
     )
     const contents: ServerContents = { nodes: manifest.nodes, templates }
     manifestResponseOf.set(contents, request)
-    if (request > (latestManifestResponse.get(server.url) ?? 0)) {
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current === server && request > (latestManifestResponse.get(server.url) ?? 0)) {
       latestManifestResponse.set(server.url, request)
-      latestManifestContents.set(server.url, contents)
       for (const listener of serverContentsListeners) {
         try {
           listener(server, contents)

@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const state = vi.hoisted(() => ({
   getState: vi.fn((): { servers: readonly object[] } => ({ servers: [] })),
   isLatestServerContents: vi.fn(() => true),
-  latestServerContents: vi.fn(),
   listServerContents: vi.fn(),
   onStateChange: vi.fn(),
 }))
@@ -38,7 +37,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   state.getState.mockReturnValue({ servers: [connected] })
   state.isLatestServerContents.mockReturnValue(true)
-  state.latestServerContents.mockReturnValue(null)
   store.localTemplates.mockReturnValue([])
 })
 
@@ -180,21 +178,58 @@ describe('server template sync', () => {
           releaseForget = resolve
         }),
     )
-    const latest = { nodes: [], templates: [template] }
-    state.latestServerContents.mockReturnValue(latest)
     const { syncServerTemplates } = await import('./server-sync.js')
 
     const syncing = syncServerTemplates(connected, [], () => current)
     await vi.waitFor(() => expect(store.forgetServerTemplate).toHaveBeenCalledOnce())
     current = false
+    const repair = syncServerTemplates(connected, [template])
     releaseForget()
-    await syncing
+    await Promise.all([syncing, repair])
 
     expect(store.updateServerTemplateMetadata).toHaveBeenCalledWith(
       held.id,
       template.name,
       template.nodeId,
     )
+  })
+
+  it('stops an active drain when its connection object is replaced', async () => {
+    let releaseForget = (): void => undefined
+    const wanted = {
+      id: 'wanted',
+      nodeId: 'folder',
+      name: 'Wanted',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [],
+    }
+    store.localTemplates.mockReturnValue([
+      { id: 'srv:https%3A%2F%2Fexample.test:obsolete', serverUrl: connected.url },
+      {
+        id: 'srv:https%3A%2F%2Fexample.test:wanted',
+        serverUrl: connected.url,
+        serverVersion: 'v1',
+      },
+    ])
+    store.forgetServerTemplate.mockImplementationOnce(
+      async () =>
+        await new Promise<void>((resolve) => {
+          releaseForget = resolve
+        }),
+    )
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    const syncing = syncServerTemplates(connected, [wanted])
+    await vi.waitFor(() => expect(store.forgetServerTemplate).toHaveBeenCalledOnce())
+    state.getState.mockReturnValue({ servers: [{ ...connected, token: 'replacement' }] })
+    releaseForget()
+    await syncing
+
+    expect(store.updateServerTemplateMetadata).not.toHaveBeenCalled()
+    expect(store.putServerTemplate).not.toHaveBeenCalled()
   })
 
   it('aborts an obsolete chunk drain and lets the same URL reconnect immediately', async () => {

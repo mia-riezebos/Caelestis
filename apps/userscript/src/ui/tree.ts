@@ -18,7 +18,7 @@ import {
 } from '../state.js'
 import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
-import { serverTemplateKey, syncServerTemplates } from '../templates/server-sync.js'
+import { serverTemplateKey } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
 import { isReorderable } from './sort.js'
 
@@ -373,7 +373,7 @@ export const templatesOfNode = (
  * and the next pass sees the same gap. Sharing the in-flight promise makes that one request.
  */
 export type NodeRefreshResult =
-  | { readonly ok: true }
+  | { readonly ok: true; readonly changed?: boolean }
   | { readonly ok: false; readonly message: string; readonly superseded?: true }
 const refreshing = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
@@ -423,16 +423,39 @@ const refreshOnce = async (
   }
   const remembered = rememberServerContents(server, contents)
   if (!remembered.ok) return remembered
-  const { templates } = contents
-  // Every caller of this is a mutation that just landed — a publish, an upload, a delete. Waiting
-  // out the poll to see it on the canvas would make each of those feel like it had not worked.
-  //
-  // Handing over the manifest we just read, rather than letting the sync fetch its own: they are the
-  // same document, requested a millisecond apart, and the second one can only disagree with the
-  // first by being newer than the tree that is already on screen.
-  void syncServerTemplates(server, templates, () => isLatestServerContents(server.url, contents))
   return { ok: true }
 }
+
+const sameNode = (left: TreeNode, right: TreeNode): boolean =>
+  left.id === right.id &&
+  left.parentId === right.parentId &&
+  left.path === right.path &&
+  left.name === right.name &&
+  left.createdAt === right.createdAt
+
+const sameTemplate = (left: ServerTemplate, right: ServerTemplate): boolean =>
+  left.id === right.id &&
+  left.nodeId === right.nodeId &&
+  left.name === right.name &&
+  left.version === right.version &&
+  left.published === right.published &&
+  left.updatedAt === right.updatedAt &&
+  left.bbox.minX === right.bbox.minX &&
+  left.bbox.minY === right.bbox.minY &&
+  left.bbox.maxX === right.bbox.maxX &&
+  left.bbox.maxY === right.bbox.maxY &&
+  left.chunks.length === right.chunks.length &&
+  left.chunks.every(
+    (chunk, index) =>
+      chunk.tile === right.chunks[index]?.tile && chunk.hash === right.chunks[index]?.hash,
+  )
+
+const sameRows = <T>(
+  left: readonly T[],
+  right: readonly T[],
+  same: (left: T, right: T) => boolean,
+): boolean =>
+  left.length === right.length && left.every((entry, index) => same(entry, right[index] as T))
 
 /** Retain one live manifest for the tree, irrespective of which consumer requested it. */
 export const rememberServerContents = (
@@ -474,6 +497,14 @@ export const rememberServerContents = (
       message: 'Connected server templates exceed the client manifest memory budget.',
     }
   }
+  const previous = rowsFor(server)
+  if (
+    previous !== undefined &&
+    sameRows(previous.nodes, nodes, sameNode) &&
+    sameRows(previous.templates, templates, sameTemplate)
+  ) {
+    return { ok: true, changed: false }
+  }
   nodesByServer.set(server.url, nodes)
   rememberNodes(server.url, nodes)
   templatesByServer.set(server.url, templates)
@@ -488,7 +519,7 @@ export const rememberServerContents = (
       fetchedAt: Date.now(),
     })
   }
-  return { ok: true }
+  return { ok: true, changed: true }
 }
 
 /**

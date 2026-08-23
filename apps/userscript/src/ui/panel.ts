@@ -11,6 +11,7 @@ import {
   deleteTemplate as deleteTemplateOnServer,
   forgetScopes,
   getState,
+  isLatestServerContents,
   listServerNodes,
   loadState,
   MAX_CONNECTED_SERVERS,
@@ -55,7 +56,12 @@ import {
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
-import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
+import {
+  endServerGeneration,
+  forgetChunks,
+  serverTemplateKey,
+  syncServerTemplates,
+} from '../templates/server-sync.js'
 import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
 import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
 import { whileBusy } from './button.js'
@@ -452,10 +458,24 @@ const refreshView = (): void => {
   }
 }
 
-// A manifest belongs to the tree even when a background poll or an admin helper requested it.
-// Keeping this subscription outside a view builder avoids adding another listener on every rebuild.
+let manifestTreeRefreshQueued = false
+const queueManifestTreeRefresh = (): void => {
+  if (manifestTreeRefreshQueued) return
+  manifestTreeRefreshQueued = true
+  queueMicrotask(() => {
+    manifestTreeRefreshQueued = false
+    if (open && currentView === 'tree') rerenderTree()
+  })
+}
+
+// Every newest manifest belongs to both consumers, irrespective of whether a poll, tree refresh, or
+// admin helper requested it. Keeping this outside a view builder installs exactly one coordinator.
 onServerContents((server, contents) => {
-  if (rememberServerContents(server, contents).ok) refreshView()
+  const remembered = rememberServerContents(server, contents)
+  void syncServerTemplates(server, contents.templates, () =>
+    isLatestServerContents(server.url, contents),
+  )
+  if (remembered.ok && remembered.changed === true) queueManifestTreeRefresh()
 })
 
 /**
@@ -1309,13 +1329,14 @@ const applyDelete = async (
    * something holding forty templates is the kind of wrong that only shows up afterwards.
    */
   const holding = await countNodeSubtree(target.server, target.nodeId)
+  if (holding === null) {
+    toast(`Could not count what is inside “${target.name}”, so the folder was kept.`, 'error')
+    return
+  }
   const inside =
-    holding === null
+    holding.nodes === 1 && holding.templates === 0
       ? null
-      : {
-          folders: Math.max(0, holding.nodes - 1),
-          templates: holding.templates,
-        }
+      : { folders: holding.nodes - 1, templates: holding.templates }
   const contents =
     inside === null || (inside.folders === 0 && inside.templates === 0)
       ? null
@@ -1347,7 +1368,7 @@ const applyDelete = async (
   const result = await deleteNodeOnServer(
     target.server,
     target.nodeId,
-    contents === null ? null : holding,
+    inside === null ? null : holding,
   )
   if (!result.ok) toast(result.message, 'error')
   await refreshNodes(target.server, rerender)

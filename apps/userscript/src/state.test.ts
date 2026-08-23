@@ -328,8 +328,9 @@ describe('server state boundaries', () => {
           }),
       )
     vi.stubGlobal('fetch', fetchMock)
-    const { isLatestServerContents, latestServerContents, listServerContents, onServerContents } =
-      await import('./state.js')
+    const { isLatestServerContents, listServerContents, onServerContents, setState } = await import(
+      './state.js'
+    )
     const observed = vi.fn()
     onServerContents(observed)
     const server = {
@@ -341,6 +342,7 @@ describe('server state boundaries', () => {
       season: 0,
       lastVerified: { serverId: SERVER_ID, season: 0 },
     }
+    setState({ servers: [server] })
 
     const first = listServerContents(server)
     const second = listServerContents(server)
@@ -354,9 +356,83 @@ describe('server state boundaries', () => {
     if (newer === null || older === null) throw new Error('expected valid manifests')
     expect(isLatestServerContents(server.url, newer)).toBe(true)
     expect(isLatestServerContents(server.url, older)).toBe(false)
-    expect(latestServerContents(server.url)).toBe(newer)
     expect(observed).toHaveBeenCalledOnce()
     expect(observed).toHaveBeenCalledWith(server, newer)
+  })
+
+  it('does not let an old connection response suppress the first response after reconnect', async () => {
+    let finishOld = (_response: Response): void => undefined
+    let finishNew = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishOld = resolve
+            }),
+        )
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishNew = resolve
+            }),
+        ),
+    )
+    const { listServerContents, onServerContents, removeServer, setState } = await import(
+      './state.js'
+    )
+    const oldConnection = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    const newConnection = { ...oldConnection, token: 'new', isAdmin: false }
+    const observed = vi.fn()
+    onServerContents(observed)
+    setState({ servers: [oldConnection] })
+
+    const oldRequest = listServerContents(oldConnection)
+    removeServer(oldConnection.url)
+    setState({ servers: [newConnection] })
+    const newRequest = listServerContents(newConnection)
+    finishOld(new Response(JSON.stringify(manifest), { status: 200 }))
+    await oldRequest
+    finishNew(new Response(JSON.stringify(manifest), { status: 200 }))
+    const newest = await newRequest
+
+    expect(newest).not.toBeNull()
+    expect(observed).toHaveBeenCalledOnce()
+    expect(observed).toHaveBeenCalledWith(newConnection, newest)
+  })
+
+  it.each([
+    { nodes: 0, templates: 0 },
+    { nodes: 1.5, templates: 0 },
+    { nodes: 1, templates: -1 },
+    { nodes: 1, templates: 0.5 },
+  ])('rejects malformed subtree counts: $nodes nodes, $templates templates', async (body) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })),
+    )
+    const { countNodeSubtree } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+
+    await expect(countNodeSubtree(server, NODE_A)).resolves.toBeNull()
   })
 
   it('refuses local folder writes that the next load would discard', async () => {
