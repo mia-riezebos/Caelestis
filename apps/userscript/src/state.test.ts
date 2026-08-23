@@ -599,6 +599,46 @@ describe('server state boundaries', () => {
     expect(getState().servers).toEqual([])
   })
 
+  it('keeps newer server metadata learned while a rename response was delayed', async () => {
+    let finishRename = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishRename = resolve
+            }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...serverInfo, name: 'Newer external name' }), {
+            status: 200,
+          }),
+        ),
+    )
+    const { getState, removeServer, renameServer, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+
+    const renaming = renameServer(server, 'Delayed name')
+    removeServer(server.url)
+    setState({
+      servers: [{ ...server, info: { ...serverInfo, name: 'Newer external name' } }],
+    })
+    finishRename(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    await expect(renaming).resolves.toEqual({ ok: true })
+    expect(getState().servers[0]?.info?.name).toBe('Newer external name')
+  })
+
   it('applies an auth failure from a request that predates a cosmetic server rename', async () => {
     let finishList = (_response: Response): void => undefined
     vi.stubGlobal(

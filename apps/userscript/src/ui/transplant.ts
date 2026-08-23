@@ -283,12 +283,16 @@ const transplantWhileDestinationHeld = async (
   })
   const sourceFolderIds = new Set(branch.folders.map((folder) => folder.id))
   const sourceTemplateIds = new Set(branch.templates.map((carried) => carried.sourceId))
-  const sourceBranchIsCurrent = (): boolean => {
-    if (source.kind === 'server') return branch.templates.every(sourceTemplateIsCurrent)
+  let checkedLocalFolders: readonly LocalFolder[] | null = null
+  let checkedLocalFoldersAreCurrent = false
+  const sourceFoldersAreCurrent = (): boolean => {
     const folders = getState().localFolders
-    return (
+    if (folders === checkedLocalFolders) return checkedLocalFoldersAreCurrent
+    checkedLocalFolders = folders
+    const byId = new Map(folders.map((folder) => [folder.id, folder]))
+    checkedLocalFoldersAreCurrent =
       branch.folders.every((folder) => {
-        const current = folders.find((candidate) => candidate.id === folder.id)
+        const current = byId.get(folder.id)
         return (
           current !== undefined &&
           current.parentId === folder.sourceParentId &&
@@ -300,7 +304,13 @@ const transplantWhileDestinationHeld = async (
           folder.parentId !== null &&
           sourceFolderIds.has(folder.parentId) &&
           !sourceFolderIds.has(folder.id),
-      ) &&
+      )
+    return checkedLocalFoldersAreCurrent
+  }
+  const sourceBranchIsCurrent = (): boolean => {
+    if (source.kind === 'server') return branch.templates.every(sourceTemplateIsCurrent)
+    return (
+      sourceFoldersAreCurrent() &&
       branch.templates.every(sourceTemplateIsCurrent) &&
       !localTemplates().some(
         (template) =>
@@ -322,8 +332,11 @@ const transplantWhileDestinationHeld = async (
   // the tab up before any of it appeared.
   const madeLocally: LocalFolder[] = []
 
+  // A Local destination is built synchronously below. Nothing can change the server source during
+  // that batch, so one check protects the whole loop without rescanning a large manifest per folder.
+  if (destination.kind === 'local' && !sourceBranchIsCurrent()) return sourceBranchChanged()
   for (const folder of inCreationOrder(branch)) {
-    if (!sourceBranchIsCurrent()) return sourceBranchChanged()
+    if (destination.kind === 'server' && !sourceBranchIsCurrent()) return sourceBranchChanged()
     const parent =
       folder.parentId === null
         ? destination.kind === 'server'

@@ -1689,8 +1689,9 @@ export const patchTemplate = async (
  * above it, and that one *is* local. This writes to the server, and the next member to open their
  * panel sees the new name.
  *
- * The local copy is updated from the answer rather than re-probed: the tree is labelled from
- * `info.name`, and leaving it stale until the next probe would make a rename look like it failed.
+ * The local copy is refreshed from public server metadata after the write. The mutation response
+ * has no revision, so applying the submitted name directly could overwrite a newer rename learned
+ * by a connection that replaced this one while the response was delayed.
  */
 const activeServerRenames = new Set<string>()
 
@@ -1715,13 +1716,34 @@ export const renameServer = async (
       return { ok: false, message: failure(response, isRecord(body) ? body : null) }
     }
     const current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (
-      current !== undefined &&
-      current.info !== null &&
-      server.info !== null &&
-      current.info.id === server.info.id
-    ) {
-      upsertServer({ ...current, info: { ...current.info, name: trimmed } })
+    if (current !== undefined && current.info !== null && server.info !== null) {
+      let refreshed: ServerInfo | null = null
+      try {
+        const metadata = await remoteJson(`${current.url}/server`, {}, SERVER_JSON_BYTES)
+        if (metadata.response.ok) refreshed = serverInfoFrom(metadata.body)
+      } catch {
+        // The PATCH already committed. A failed cosmetic refresh must not turn success into failure.
+      }
+      const latest = getState().servers.find((candidate) => candidate.url === server.url)
+      if (
+        latest !== undefined &&
+        latest.info !== null &&
+        isCurrentServerConnection(current) &&
+        refreshed !== null &&
+        refreshed.id === server.info.id &&
+        latest.info.id === refreshed.id
+      ) {
+        upsertServer({ ...latest, info: refreshed })
+      } else if (
+        latest !== undefined &&
+        latest.info !== null &&
+        isCurrentServerConnection(server) &&
+        latest.info.id === server.info.id
+      ) {
+        // Preserve the immediate feedback when the metadata read alone failed. This fallback is
+        // safe only in the connection lifetime that submitted the write.
+        upsertServer({ ...latest, info: { ...latest.info, name: trimmed } })
+      }
     }
     return { ok: true }
   } catch (error) {
