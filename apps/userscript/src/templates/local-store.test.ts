@@ -1375,19 +1375,47 @@ describe('local template lifecycle', () => {
     const before = store.localTemplates()[0]
     const bitmapCalls = vi.mocked(createImageBitmap).mock.calls.length
 
-    expect(
+    await expect(
       store.updateServerTemplateMetadata(
         'srv:https://example.test:template-1',
         'After',
         'folder-after',
       ),
-    ).toBe(true)
+    ).resolves.toBe(true)
 
     const after = store.localTemplates()[0]
     expect(after).toMatchObject({ name: 'After', serverNodeId: 'folder-after' })
     expect(after?.indices).toBe(before?.indices)
     expect(after?.tiles).toBe(before?.tiles)
     expect(createImageBitmap).toHaveBeenCalledTimes(bitmapCalls)
+  })
+
+  it('serializes same-version server metadata after an in-flight user mutation', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: 'srv:https://example.test:template-1', name: 'Before' }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-before',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+
+    const hiding = store.setLocalVisible(serverTemplate.id, false)
+    await Promise.resolve()
+    const refreshing = store.updateServerTemplateMetadata(
+      serverTemplate.id,
+      'After',
+      'folder-after',
+    )
+
+    await expect(hiding).resolves.toBe(true)
+    await expect(refreshing).resolves.toBe(true)
+    expect(store.localTemplates()[0]).toMatchObject({
+      name: 'After',
+      serverNodeId: 'folder-after',
+      visible: false,
+    })
   })
 
   it('keeps server appearance preferences after removal and republication', async () => {

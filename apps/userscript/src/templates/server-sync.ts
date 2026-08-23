@@ -345,7 +345,7 @@ const syncServerTemplatesOnce = async (
     // rebuild. Names and folder membership still arrive through the manifest because neither
     // changes the pixel version.
     if (held !== undefined && held.serverVersion === template.version) {
-      updateServerTemplateMetadata(key, template.name, template.nodeId)
+      await updateServerTemplateMetadata(key, template.name, template.nodeId)
       continue
     }
     if (inFlight.get(key) === generation) continue
