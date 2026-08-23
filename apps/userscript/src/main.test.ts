@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const harness = vi.hoisted(() => ({
   tileFrame: null as ((frame: unknown) => void) | null,
   localListeners: [] as Array<() => void>,
+  previewListeners: [] as Array<() => void>,
   stateListeners: [] as Array<() => void>,
   paintListeners: [] as Array<() => void>,
   mismatchListeners: [] as Array<() => void>,
@@ -40,6 +41,7 @@ vi.mock('./templates/local-store.js', () => ({
   isTemplateVisible: vi.fn(() => true),
   localTemplates: vi.fn(() => []),
   onLocalChange: (listener: () => void) => harness.localListeners.push(listener),
+  onLocalPreviewChange: (listener: () => void) => harness.previewListeners.push(listener),
   ownsGroup: vi.fn(() => false),
   restoreLocalTemplates: vi.fn(),
   setAppearance: vi.fn(),
@@ -87,6 +89,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   harness.tileFrame = null
   harness.localListeners = []
+  harness.previewListeners = []
   harness.stateListeners = []
   harness.paintListeners = []
   harness.mismatchListeners = []
@@ -134,6 +137,19 @@ describe('GL frame lifecycle', () => {
     harness.triggerRepaint.mockClear()
 
     harness.localListeners.at(-1)?.()
+
+    expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
+  })
+
+  it('repaints without publishing a durable change for placement previews', async () => {
+    await load()
+    const canvas = document.createElement('canvas')
+    harness.tileFrame?.(frame(canvas))
+    harness.renderOverlayControls.mockClear()
+    harness.triggerRepaint.mockClear()
+
+    harness.previewListeners.at(-1)?.()
 
     expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
     expect(harness.triggerRepaint).toHaveBeenCalledOnce()

@@ -136,6 +136,7 @@ const previewOrigins = new Map<string, { x: number; y: number }>()
 const deleting = new Set<string>()
 const pendingAdds = new Set<string>()
 const listeners: Array<() => void> = []
+const previewListeners: Array<() => void> = []
 const MAX_LOCAL_TEMPLATES = 64
 const MAX_SERVER_TEMPLATES = 64
 const MAX_LOCAL_INDEX_PIXELS = 64 * 1024 * 1024
@@ -318,6 +319,22 @@ const displayOrder = (): readonly PlacedTemplate[] => {
 export const onLocalChange = (listener: () => void): void => {
   listeners.push(listener)
 }
+export const onLocalPreviewChange = (listener: () => void): void => {
+  previewListeners.push(listener)
+}
+
+const notifyListeners = (subscribers: readonly (() => void)[], what: string): void => {
+  for (const listener of subscribers) {
+    try {
+      listener()
+    } catch (error) {
+      try {
+        warn('install', `${what} listener failed`, String(error))
+      } catch {}
+    }
+  }
+}
+
 const notify = (): void => {
   templateRevision++
   // Mirror a summary onto the window so the dev harness can assert on placement without reaching
@@ -341,16 +358,10 @@ const notify = (): void => {
       warn('install', 'could not update local template diagnostics', String(error))
     } catch {}
   }
-  for (const listener of listeners) {
-    try {
-      listener()
-    } catch (error) {
-      try {
-        warn('install', 'local template listener failed', String(error))
-      } catch {}
-    }
-  }
+  notifyListeners(listeners, 'local template')
 }
+
+const notifyPreview = (): void => notifyListeners(previewListeners, 'local preview')
 
 export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
 
@@ -404,7 +415,7 @@ export const previewLocalTemplate = (id: string, originX: number, originY: numbe
   const y = Math.round(originY)
   validatePlacement(existing, x, y)
   previewOrigins.set(id, { x, y })
-  notify()
+  notifyPreview()
   return true
 }
 
@@ -413,7 +424,7 @@ export const previewOriginFor = (id: string): { x: number; y: number } | null =>
 
 export const clearLocalPreview = (id: string): boolean => {
   if (!previewOrigins.delete(id)) return templates.has(id)
-  notify()
+  notifyPreview()
   return true
 }
 
@@ -1918,6 +1929,9 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
   // Already gone — by this id's own earlier deletion, most likely — which is the outcome asked for.
   if (existing === undefined) return !templates.has(id)
+  // Server rows are owned by their remote source. `forgetServerTemplate` is the sync lifecycle;
+  // Local deletion must never make one disappear temporarily and then reappear on the next poll.
+  if (isServerTemplate(existing)) return false
   if (deleting.has(id)) return false
   // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
   // behind this delete and resurrect the record.

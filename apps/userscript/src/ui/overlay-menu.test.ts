@@ -50,6 +50,7 @@ vi.mock('../state.js', () => ({
 vi.mock('../templates/local-store.js', () => ({
   appearanceOf: harness.appearanceOf,
   isDeletingLocal: harness.isDeletingLocal,
+  isServerTemplate: (template: { serverUrl?: string }) => template.serverUrl !== undefined,
   localTemplates: harness.localTemplates,
   ownsGroup: harness.ownsGroup,
   previewOriginFor: harness.previewOriginFor,
@@ -83,6 +84,7 @@ type Overrides = {
   originX?: number
   originY?: number
   width?: number
+  serverUrl?: string
 }
 
 const template = (overrides: Overrides = {}) => ({
@@ -94,6 +96,7 @@ const template = (overrides: Overrides = {}) => ({
   originX: overrides.originX ?? 0,
   originY: overrides.originY ?? 0,
   appearance: { ...DEFAULT_APPEARANCE, ...overrides.appearance },
+  ...(overrides.serverUrl === undefined ? {} : { serverUrl: overrides.serverUrl }),
 })
 
 /** Flush the microtask queue, however many turns the store's continuation chain actually takes. */
@@ -952,6 +955,17 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
 })
 
 describe('the menu is ours and has a keyboard exit', () => {
+  it('keeps Local-only move and delete actions off server-owned overlays', () => {
+    harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(menu().querySelector('[data-caelestis-control="move"]')).toBeNull()
+    expect(menu().querySelector('[data-caelestis-control="delete"]')).toBeNull()
+    expect(menu().querySelector('[data-caelestis-control="hide"]')).not.toBeNull()
+  })
+
   it('closes on Escape and hands focus back to the gear', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()

@@ -558,6 +558,10 @@ describe('local template lifecycle', () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
     vi.clearAllMocks()
+    const durableChanged = vi.fn()
+    const previewChanged = vi.fn()
+    store.onLocalChange(durableChanged)
+    store.onLocalPreviewChange(previewChanged)
 
     expect(store.previewLocalTemplate(added.id, 30, 40)).toBe(true)
 
@@ -566,6 +570,8 @@ describe('local template lifecycle', () => {
     expect(store.displayTemplates()[0]).toMatchObject({ originX: 30, originY: 40 })
     expect(createImageBitmap).not.toHaveBeenCalled()
     expect(persistence.saveTemplate).not.toHaveBeenCalled()
+    expect(durableChanged).not.toHaveBeenCalled()
+    expect(previewChanged).toHaveBeenCalledOnce()
   })
 
   it('rejects placements that extend outside the native world', async () => {
@@ -1408,6 +1414,8 @@ describe('local template lifecycle', () => {
     expect([...(wrapped?.tiles.keys() ?? [])].sort()).toEqual(['0/0', '2047/0'])
     expect(store.canCopyAsLocalTemplate(wrapped)).toBe(false)
     expect(store.canCopyAsLocalTemplate({ ...wrapped, originX: 10 })).toBe(true)
+    await expect(store.removeLocalTemplate(wrapped.id)).resolves.toBe(false)
+    expect(store.localTemplates()).toContain(wrapped)
     expect(bitmapInputs).toHaveLength(2)
     expect(bitmapInputs[0]?.data[999 * 4 + 3]).toBe(255)
     expect(bitmapInputs[1]?.data[3]).toBe(255)

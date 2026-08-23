@@ -16,6 +16,7 @@ import {
   isTemplateVisible,
   localTemplates,
   onLocalChange,
+  onLocalPreviewChange,
   ownsGroup,
   restoreLocalTemplates,
   setAppearance,
@@ -342,6 +343,7 @@ const main = (): void => {
   onFrame((frame) => renderOverlayControls(repaint, frame.canvas))
   onTileFrame(draw)
   onLocalChange(redraw)
+  onLocalPreviewChange(redraw)
   onStateChange(redraw)
   step('panel', () => {
     if (document.readyState === 'loading') {

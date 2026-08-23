@@ -4,6 +4,7 @@ import { canvasPixelAt, cssPixelsPerCanvasPixel, isMapInteractionTarget, repaint
 import {
   clearLocalPreview,
   isDeletingLocal,
+  isServerTemplate,
   localTemplates,
   onLocalReconciliation,
   placeLocalTemplate,
@@ -318,7 +319,7 @@ export const beginMove = (
   // than each caller having to remember.
   if (isDeletingLocal(id)) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
-  if (template === undefined) return false
+  if (template === undefined || isServerTemplate(template)) return false
   placements += 1
   const nextSession: MoveSession = {
     id,

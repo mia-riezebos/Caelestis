@@ -12,6 +12,7 @@ import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
   appearanceOf,
   isDeletingLocal,
+  isServerTemplate,
   localTemplates,
   ownsGroup,
   type PlacedTemplate,
@@ -1320,13 +1321,14 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
 
   const actions = document.createElement('div')
   actions.className = 'grid gap-1'
-  actions.style.gridTemplateColumns = 'repeat(3, 1fr)'
+  const localActions = isServerTemplate(template) ? [hide] : [hide, move, remove]
+  actions.style.gridTemplateColumns = `repeat(${localActions.length}, 1fr)`
   actions.style.padding = '0.5rem 0 0.25rem'
-  for (const action of [hide, move, remove]) {
+  for (const action of localActions) {
     action.classList.remove('btn-xs', 'btn-circle')
     action.style.height = '2.75rem'
   }
-  actions.append(hide, move, remove)
+  actions.append(...localActions)
   menu.appendChild(actions)
 
   // Directly under the header, next to the buttons that raised them. Appending to the end of a menu

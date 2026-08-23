@@ -1,10 +1,10 @@
-import { WORLD_PIXELS } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   canvasPixelAt: vi.fn(() => ({ x: 2, y: 3 })),
   cssPixelsPerCanvasPixel: vi.fn(() => ({ x: 1, y: 1 })),
   isDeletingLocal: vi.fn((_id: string) => false),
+  isServerTemplate: vi.fn((template: { serverUrl?: string }) => template.serverUrl !== undefined),
   clearLocalPreview: vi.fn(() => true),
   repaint: vi.fn(),
   isMapInteractionTarget: vi.fn(() => true),
@@ -26,6 +26,7 @@ vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
 vi.mock('./local-store.js', () => ({
   clearLocalPreview: harness.clearLocalPreview,
   isDeletingLocal: harness.isDeletingLocal,
+  isServerTemplate: harness.isServerTemplate,
   localTemplates: harness.localTemplates,
   onLocalReconciliation: (id: string, observer: () => void) => {
     const observers = harness.reconciliationObservers.get(id) ?? new Set<() => void>()
@@ -101,6 +102,16 @@ describe('template placement controls', () => {
     expect(moves.beginMove('test', vi.fn())).toBe(true)
     expect(moves.beginMove('test', vi.fn())).toBe(false)
     await moves.commit()
+  })
+
+  it('does not offer Local placement for a server-owned template', async () => {
+    harness.localTemplates.mockReturnValue([
+      { ...harness.localTemplates()[0], serverUrl: 'https://example.test' },
+    ])
+    const moves = await import('./move.js')
+
+    expect(moves.beginMove('test', vi.fn())).toBe(false)
+    expect(harness.previewLocalTemplate).not.toHaveBeenCalled()
   })
 
   it('reserves the placement slot across asynchronous import preparation', async () => {
@@ -225,47 +236,6 @@ describe('template placement controls', () => {
     await vi.waitFor(() => expect(harness.previewLocalTemplate).toHaveBeenCalled())
 
     expect(harness.previewLocalTemplate).toHaveBeenCalledWith('test', 0, 0)
-  })
-
-  it('moves and hit-tests a wrapped overlay on both sides of the antimeridian', async () => {
-    harness.localTemplates.mockReturnValue([
-      {
-        id: 'wrapped',
-        name: 'Wrapped',
-        source: 'image',
-        originX: WORLD_PIXELS - 2,
-        originY: 0,
-        width: 5,
-        height: 10,
-        wrapX: true,
-        serverUrl: 'https://example.test',
-        everPlaced: true,
-        revision: 1,
-      },
-    ])
-    harness.canvasPixelAt.mockReturnValue({ x: 0, y: 3 })
-    const moves = await import('./move.js')
-    moves.beginMove('wrapped', vi.fn())
-    const pointerdown = listeners.get('pointerdown')
-    const pointerup = listeners.get('pointerup')
-    if (pointerdown === undefined || pointerup === undefined) throw new Error('expected listeners')
-    const drag = {
-      button: 0,
-      pointerId: 1,
-      target: { tagName: 'CANVAS', closest: vi.fn(() => null) },
-      clientX: 1,
-      clientY: 3,
-      preventDefault: vi.fn(),
-      stopPropagation: vi.fn(),
-    }
-
-    pointerdown(drag as unknown as Event)
-    expect(drag.preventDefault).toHaveBeenCalledOnce()
-    pointerup({ ...drag, preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as Event)
-
-    const middle = { ...drag, button: 1, pointerId: 2, preventDefault: vi.fn() }
-    pointerdown(middle as unknown as Event)
-    expect(harness.previewLocalTemplate).toHaveBeenLastCalledWith('wrapped', WORLD_PIXELS - 2, 0)
   })
 
   it('uses CSS pixel scale for modifier drags on high-DPI canvases', async () => {
