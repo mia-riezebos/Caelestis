@@ -204,7 +204,12 @@ export class MemorySqlStore implements SqlStore {
       }
     }
 
-    const segment = proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
+    // A parent-only move keeps the node's live path segment. The route's proposed path comes from
+    // an earlier read and may carry the slug from a rename this store has already observed.
+    const segment =
+      patch.name === undefined
+        ? node.path.slice(node.path.lastIndexOf('/') + 1)
+        : proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
     const path = `${parent?.path ?? ''}/${segment}`
     const oldPrefix = `${node.path}/`
     const foldedPrefix = foldPath(oldPrefix)

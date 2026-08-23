@@ -1389,6 +1389,33 @@ describe('local template lifecycle', () => {
     expect(createImageBitmap).toHaveBeenCalledTimes(bitmapCalls)
   })
 
+  it('keeps server appearance preferences after removal and republication', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: `srv:${encodeURIComponent('https://example.test')}:template-1` }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-1',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+    await expect(store.setOwnsGroup(serverTemplate.id, 'pixels', true)).resolves.toBe(true)
+    const current = store.localTemplates()[0]
+    expect(current).toBeDefined()
+    if (current === undefined) throw new Error('server template was not installed')
+    await expect(
+      store.setAppearance(serverTemplate.id, { ...store.appearanceOf(current), opacity: 0.25 }),
+    ).resolves.toBe(true)
+
+    store.forgetServerTemplate(serverTemplate.id)
+    await store.putServerTemplate({ ...serverTemplate, serverVersion: 'version-2' })
+
+    expect(store.localTemplates()[0]).toMatchObject({
+      appearance: { opacity: 0.25 },
+      owns: ['pixels'],
+    })
+  })
+
   it('places both runs of a wrapped server template into their world tiles', async () => {
     const store = await import('./local-store.js')
     await store.putServerTemplate({

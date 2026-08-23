@@ -94,6 +94,48 @@ describe('server state boundaries', () => {
     )
   })
 
+  it('restores bounded browser-owned preferences for server overlays', async () => {
+    const id = `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() =>
+        JSON.stringify({
+          serverTemplatePreferences: [
+            {
+              id,
+              appearance: {
+                size: 1,
+                radius: 0,
+                translateX: 0,
+                translateY: 0,
+                rotation: 0,
+                opacity: 0.25,
+                hiddenColours: [],
+                markMismatch: false,
+                markUnpainted: false,
+                unpaintedLimit: 0.05,
+                markerColour: '#ffffff',
+                markerSize: 6,
+                dimOthers: false,
+                otherOpacity: 0.25,
+                otherColour: null,
+              },
+              owns: ['pixels'],
+            },
+          ],
+        }),
+      ),
+    )
+    const { loadState, serverTemplatePreference } = await import('./state.js')
+
+    loadState()
+
+    expect(serverTemplatePreference(id)).toMatchObject({
+      appearance: { opacity: 0.25 },
+      owns: ['pixels'],
+    })
+  })
+
   it('bounds persisted and newly connected servers', async () => {
     vi.stubGlobal(
       'GM_getValue',

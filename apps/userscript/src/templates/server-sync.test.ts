@@ -35,6 +35,32 @@ beforeEach(() => {
 })
 
 describe('server template sync', () => {
+  it('bounds a template by both chunk count and cumulative encoded work', async () => {
+    const { syncServerTemplates, templateTransferWithinBudget } = await import('./server-sync.js')
+    const chunks = Array.from({ length: 401 }, (_, index) => ({
+      tile: `${index}/0`,
+      hash: index.toString(16).padStart(64, '0'),
+    }))
+    const template = {
+      id: 'too-wide',
+      nodeId: 'folder',
+      name: 'Too wide',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 401_000, maxY: 1 },
+      chunks,
+    }
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await syncServerTemplates(connected, [template])
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(templateTransferWithinBudget(64 * 1024 * 1024 - 1, 1)).toBe(true)
+    expect(templateTransferWithinBudget(64 * 1024 * 1024, 1)).toBe(false)
+  })
+
   it('uses an encoded server identity that cannot collide with a longer URL', async () => {
     const { serverTemplateKey } = await import('./server-sync.js')
 

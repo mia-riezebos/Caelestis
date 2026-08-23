@@ -14,7 +14,9 @@ import {
   isScopeVisible,
   type LocalFolder,
   localFolderChainVisible,
+  serverTemplatePreference,
   setScopeVisible,
+  setServerTemplatePreference,
 } from '../state.js'
 import {
   APPEARANCE_GROUPS,
@@ -910,7 +912,11 @@ const writeManyInOrder = <T>(ids: readonly string[], write: () => Promise<T>): P
 }
 
 const persist = async (placed: PlacedTemplate): Promise<SaveResult> => {
-  if (isServerTemplate(placed)) return { status: 'saved', revision: placed.revision }
+  if (isServerTemplate(placed)) {
+    return setServerTemplatePreference(placed.id, placed.appearance, placed.owns)
+      ? { status: 'saved', revision: placed.revision }
+      : { status: 'limit' }
+  }
   const { tiles: _tiles, ...rest } = placed
   return await writeInOrder(placed.id, async () => await saveTemplate(rest, null))
 }
@@ -920,7 +926,11 @@ const savePlaced = async (
   expectedRevision: number | null = placed.revision,
   visible: boolean = desiredVisibility.get(placed.id) ?? placed.visible,
 ): Promise<SaveResult> => {
-  if (isServerTemplate(placed)) return { status: 'saved', revision: placed.revision }
+  if (isServerTemplate(placed)) {
+    return setServerTemplatePreference(placed.id, placed.appearance, placed.owns)
+      ? { status: 'saved', revision: placed.revision }
+      : { status: 'limit' }
+  }
   const { tiles: _tiles, ...rest } = placed
   return await saveTemplate({ ...rest, visible }, expectedRevision)
 }
@@ -1120,6 +1130,7 @@ export const putServerTemplate = async (
     throw new RangeError('server template count exceeds the local rendering budget')
   }
   const visible = existing?.visible ?? isScopeVisible(template.id)
+  const preference = existing === undefined ? serverTemplatePreference(template.id) : undefined
   const tiles = visible ? await slice(template) : new Map<string, TileLevels>()
   const priorTileCount = existing?.tiles.size ?? 0
   const priorPixels = existing?.indices.length ?? 0
@@ -1140,9 +1151,9 @@ export const putServerTemplate = async (
     // hidden template back on, and a page load forgot the choice entirely.
     visible,
     everPlaced: true,
-    appearance: existing?.appearance ?? null,
+    appearance: existing !== undefined ? existing.appearance : (preference?.appearance ?? null),
     revision: existing?.revision ?? 0,
-    owns: existing?.owns ?? [],
+    owns: existing !== undefined ? existing.owns : (preference?.owns ?? []),
     folderId: null,
   })
   retainedIndexPixels += pixelIncrease

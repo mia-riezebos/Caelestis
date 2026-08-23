@@ -301,6 +301,16 @@ export class D1SqlStore implements SqlStore {
     proposedPath: string,
     patch: { readonly name?: string } = {},
   ): Promise<boolean> {
+    return await this.moveNodeAttempt(nodeId, parentId, proposedPath, patch, 0)
+  }
+
+  private async moveNodeAttempt(
+    nodeId: string,
+    parentId: string | null,
+    proposedPath: string,
+    patch: { readonly name?: string },
+    attempt: number,
+  ): Promise<boolean> {
     const node = await this.readNode(nodeId)
     if (node === null) return false
 
@@ -318,7 +328,12 @@ export class D1SqlStore implements SqlStore {
       }
     }
 
-    const segment = proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
+    // For a parent-only move, the path segment belongs to the live row rather than to the route's
+    // earlier read. An explicit simultaneous rename still supplies its own requested segment.
+    const segment =
+      patch.name === undefined
+        ? node.path.slice(node.path.lastIndexOf('/') + 1)
+        : proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
     const path = `${parent?.path ?? ''}/${segment}`
     const oldPrefix = `${node.path}/`
     const descendants = and(eq(nodes.season, node.season), pathStartsWith(oldPrefix))
@@ -336,6 +351,10 @@ export class D1SqlStore implements SqlStore {
         ? sql`'/' || ${segment}`
         : sql`(select path from nodes where id = ${parentId}) || '/' || ${segment}`
     const oldPath = sql`(select path from nodes where id = ${nodeId})`
+    // A rename between the guard read and this batch changes both name and path. Do not combine its
+    // live name with our stale segment: let the batch make no change and retry from the new row.
+    const nodeIsStillCurrent =
+      patch.name === undefined ? sql`${oldPath} = ${node.path}` : sql`1 = 1`
     // Re-evaluate the parent against the node's live path inside each batch statement. Two opposite
     // moves may both pass the reads above, but only the first can still satisfy this predicate once
     // its write makes the other destination a descendant.
@@ -360,6 +379,7 @@ export class D1SqlStore implements SqlStore {
             eq(nodes.season, node.season),
             pathStartsWith(sql`${oldPath} || '/'`),
             parentIsStillValid,
+            nodeIsStillCurrent,
           ),
         ),
       this.database
@@ -369,7 +389,7 @@ export class D1SqlStore implements SqlStore {
           path: destination,
           ...(patch.name === undefined ? {} : { name: patch.name }),
         })
-        .where(and(eq(nodes.id, nodeId), parentIsStillValid)),
+        .where(and(eq(nodes.id, nodeId), parentIsStillValid, nodeIsStillCurrent)),
     ] as const
     try {
       await this.database.batch([statements[0], statements[1]])
@@ -387,6 +407,9 @@ export class D1SqlStore implements SqlStore {
     const moved = await this.readNode(nodeId)
     if (moved === null) return false
     if (moved.parentId !== parentId) {
+      if (patch.name === undefined && attempt < 3) {
+        return await this.moveNodeAttempt(nodeId, parentId, proposedPath, patch, attempt + 1)
+      }
       throw new InvalidNodeParentError('parent node became invalid during the move')
     }
     return true

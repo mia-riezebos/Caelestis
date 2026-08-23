@@ -38,6 +38,14 @@ const CHUNK_CACHE_LIMIT = 512
 const CHUNK_CACHE_BYTES = 64 * 1024 * 1024
 const CHUNK_FETCH_TIMEOUT_MS = 15_000
 const MAX_CHUNK_BYTES = 8 * 1024 * 1024
+/** Matches the server upload boundary; a wider manifest is not one this client can safely drain. */
+const MAX_TEMPLATE_CHUNKS = 400
+/** Encoded work per template. Decoded pixels have their own 64M-pixel bound below. */
+const MAX_TEMPLATE_TRANSFER_BYTES = 64 * 1024 * 1024
+
+/** @internal Arithmetic seam for proving that cached and downloaded chunks share one work budget. */
+export const templateTransferWithinBudget = (used: number, next: number): boolean =>
+  used >= 0 && next >= 0 && used + next <= MAX_TEMPLATE_TRANSFER_BYTES
 
 /** Chunk bytes by hash. Immutable by definition, so nothing here ever needs invalidating. */
 const chunkCache = new ByteCache<string>(CHUNK_CACHE_LIMIT, CHUNK_CACHE_BYTES)
@@ -153,10 +161,17 @@ const assemble = async (
     ? WORLD_PIXELS - template.bbox.minX + template.bbox.maxX
     : template.bbox.maxX - template.bbox.minX
   const height = template.bbox.maxY - template.bbox.minY
-  if (width <= 0 || height <= 0 || width * height > 64_000_000) return null
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    width * height > 64_000_000 ||
+    template.chunks.length > MAX_TEMPLATE_CHUNKS
+  )
+    return null
 
   const indices = new Uint8Array(width * height).fill(TRANSPARENT_INDEX)
   let placed = 0
+  let encodedBytes = 0
   for (const chunk of template.chunks) {
     if (generationSignal.aborted) return null
     const [tileX, tileY] = chunk.tile.split('/').map(Number)
@@ -180,6 +195,8 @@ const assemble = async (
     if (chunkWidth <= 0 || chunkHeight <= 0) return null
     const bytes = await fetchChunk(server, chunk.hash, generationSignal)
     if (bytes === null) return null
+    if (!templateTransferWithinBudget(encodedBytes, bytes.byteLength)) return null
+    encodedBytes += bytes.byteLength
     const decoded = await decodeChunk(bytes, chunkWidth, chunkHeight)
     if (decoded === null) return null
 

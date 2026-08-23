@@ -126,6 +126,11 @@ export class SqliteD1Database {
     this.beforeNextBatch = beforeBatch ?? null
   }
 
+  /** Stage a concurrent write after an adapter's guard reads but before its next atomic batch. */
+  runBeforeNextBatch(callback: () => void): void {
+    this.beforeNextBatch = callback
+  }
+
   async batch<T = unknown>(statements: readonly SqliteD1Statement[]): Promise<D1Result<T>[]> {
     this.batchCalls += 1
     this.batchStatements += statements.length

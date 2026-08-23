@@ -2,7 +2,13 @@ import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/s
 import { log, warn } from './debug.js'
 import { discardResponseBody } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
-import { type Appearance, DEFAULT_APPEARANCE, normaliseAppearance } from './templates/appearance.js'
+import {
+  APPEARANCE_GROUPS,
+  type Appearance,
+  type AppearanceGroup,
+  DEFAULT_APPEARANCE,
+  normaliseAppearance,
+} from './templates/appearance.js'
 import { remapPaletteColours, remapStoredAppearance } from './templates/palette-migration.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
@@ -70,6 +76,13 @@ export interface TreeNode {
   readonly createdAt: number
 }
 
+/** Browser-owned drawing preferences for an overlay whose pixels remain server-owned. */
+export interface ServerTemplatePreference {
+  readonly id: string
+  readonly appearance: Appearance | null
+  readonly owns: readonly AppearanceGroup[]
+}
+
 export type ProgressPlacement = 'inline' | 'expanded' | 'hidden'
 export type ColourPreset = 'all' | 'free' | 'premium' | 'owned'
 
@@ -88,6 +101,7 @@ export interface State {
   readonly onlySelectedColour: boolean
   readonly localFolders: readonly LocalFolder[]
   readonly hiddenScopes: readonly string[]
+  readonly serverTemplatePreferences: readonly ServerTemplatePreference[]
   readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
@@ -104,6 +118,7 @@ const DEFAULT_STATE: State = {
   onlySelectedColour: false,
   localFolders: [],
   hiddenScopes: [],
+  serverTemplatePreferences: [],
   appearance: DEFAULT_APPEARANCE,
   reportPaints: false,
   shareTiles: false,
@@ -120,6 +135,8 @@ const MAX_CUSTOM_ORDER = 200_000
 const MIN_EPOCH_MILLISECONDS = 1_577_836_800_000 // 2020-01-01
 const MAX_EPOCH_MILLISECONDS = 4_102_444_800_000 // 2100-01-01
 export const MAX_CONNECTED_SERVERS = 32
+/** At most every admitted overlay for every configured server may retain a local preference. */
+export const MAX_SERVER_TEMPLATE_PREFERENCES = MAX_CONNECTED_SERVERS * 64
 /** As many browser-local folders as a reload will restore. Written past, the rest is dropped. */
 export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
@@ -673,6 +690,40 @@ export const loadState = (): State => {
     const scopesMigrated =
       hiddenScopes.length !== storedHiddenScopes.length ||
       hiddenScopes.some((key, index) => key !== storedHiddenScopes[index])
+    const serverTemplatePreferences: ServerTemplatePreference[] = []
+    const preferenceIds = new Set<string>()
+    if (Array.isArray(stored.serverTemplatePreferences)) {
+      for (const candidate of stored.serverTemplatePreferences) {
+        if (
+          !isRecord(candidate) ||
+          typeof candidate.id !== 'string' ||
+          !candidate.id.startsWith('srv:') ||
+          candidate.id.length > 2_048 ||
+          preferenceIds.has(candidate.id) ||
+          !Array.isArray(candidate.owns)
+        )
+          continue
+        const appearance =
+          candidate.appearance === null
+            ? null
+            : normaliseAppearance(
+                storedRaw.legacyPalette
+                  ? remapStoredAppearance(candidate.appearance)
+                  : candidate.appearance,
+              )
+        if (candidate.appearance !== null && appearance === null) continue
+        const owns = [
+          ...new Set(
+            candidate.owns.filter((group): group is AppearanceGroup =>
+              APPEARANCE_GROUPS.includes(group as AppearanceGroup),
+            ),
+          ),
+        ]
+        preferenceIds.add(candidate.id)
+        serverTemplatePreferences.push({ id: candidate.id, appearance, owns })
+        if (serverTemplatePreferences.length >= MAX_SERVER_TEMPLATE_PREFERENCES) break
+      }
+    }
     state = {
       ...DEFAULT_STATE,
       servers,
@@ -685,6 +736,7 @@ export const loadState = (): State => {
       onlySelectedColour: stored.onlySelectedColour === true,
       localFolders,
       hiddenScopes,
+      serverTemplatePreferences,
       appearance:
         normaliseAppearance(
           storedRaw.legacyPalette
@@ -766,6 +818,39 @@ export const setScopeVisible = (key: string, visible: boolean): void => {
   setState({
     hiddenScopes: visible ? hidden.filter((candidate) => candidate !== key) : [...hidden, key],
   })
+}
+
+export const serverTemplatePreference = (id: string): ServerTemplatePreference | undefined =>
+  getState().serverTemplatePreferences.find((preference) => preference.id === id)
+
+/** Save browser-owned appearance independently of the server-owned pixels and metadata. */
+export const setServerTemplatePreference = (
+  id: string,
+  appearance: Appearance | null,
+  owns: readonly AppearanceGroup[],
+): boolean => {
+  if (!id.startsWith('srv:') || id.length > 2_048) return false
+  const preferences = getState().serverTemplatePreferences
+  const index = preferences.findIndex((preference) => preference.id === id)
+  if (appearance === null && owns.length === 0) {
+    if (index !== -1) {
+      setState({ serverTemplatePreferences: preferences.filter((_, at) => at !== index) })
+    }
+    return true
+  }
+  if (index === -1 && preferences.length >= MAX_SERVER_TEMPLATE_PREFERENCES) return false
+  const preference: ServerTemplatePreference = {
+    id,
+    appearance,
+    owns: [...new Set(owns)].filter((group) => APPEARANCE_GROUPS.includes(group)),
+  }
+  setState({
+    serverTemplatePreferences:
+      index === -1
+        ? [...preferences, preference]
+        : preferences.map((current, at) => (at === index ? preference : current)),
+  })
+  return true
 }
 
 export const setLocalFolderVisible = (id: string, visible: boolean): void => {
@@ -851,9 +936,13 @@ export const upsertServer = (server: ConnectedServer): boolean => {
 
 export const removeServer = (url: string): void => {
   const key = `server:${url}`
+  const templatePrefix = `srv:${encodeURIComponent(url)}:`
   setState({
     servers: getState().servers.filter((s) => s.url !== url),
     customOrder: getState().customOrder.filter((candidate) => candidate !== key),
+    serverTemplatePreferences: getState().serverTemplatePreferences.filter(
+      (preference) => !preference.id.startsWith(templatePrefix),
+    ),
   })
 }
 

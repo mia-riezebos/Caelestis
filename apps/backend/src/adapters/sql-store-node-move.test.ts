@@ -156,4 +156,17 @@ describe.each(adapters)('$name node move contract', ({ make }) => {
     await expect(store.moveNode('child', null, '/child')).resolves.toBe(true)
     await expect(store.readNode('child')).resolves.toMatchObject({ parentId: null, path: '/child' })
   })
+
+  it('keeps the live segment when a parent-only move receives a stale proposed path', async () => {
+    await store.insertNode(node('destination', '/destination', null))
+    await store.insertNode({ ...node('source', '/beta', null), name: 'Beta' })
+
+    await expect(store.moveNode('source', 'destination', '/destination/alpha')).resolves.toBe(true)
+
+    await expect(store.readNode('source')).resolves.toMatchObject({
+      name: 'Beta',
+      parentId: 'destination',
+      path: '/destination/beta',
+    })
+  })
 })

@@ -64,6 +64,35 @@ describe('D1SqlStore', () => {
     expect((await store.readNode('k'))?.path).toBe('/plain/x')
   })
 
+  it('retries a parent-only move from a rename that lands before its batch', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    await store.insertNode({
+      ...base,
+      id: 'destination',
+      parentId: null,
+      path: '/destination',
+      name: 'Destination',
+    })
+    await store.insertNode({
+      ...base,
+      id: 'source',
+      parentId: null,
+      path: '/alpha',
+      name: 'Alpha',
+    })
+    d1.runBeforeNextBatch(() => {
+      d1.sqlite.prepare("UPDATE nodes SET name = 'Beta', path = '/beta' WHERE id = 'source'").run()
+    })
+
+    await expect(store.moveNode('source', 'destination', '/destination/alpha')).resolves.toBe(true)
+
+    await expect(store.readNode('source')).resolves.toMatchObject({
+      name: 'Beta',
+      parentId: 'destination',
+      path: '/destination/beta',
+    })
+  })
+
   it('maps an oversized composed path to the port error', async () => {
     // The route bounds the path it derived, but the prefix actually written comes from the parent
     // row — which a rename may have lengthened since. D1 hit `nodes_path_check` and let a bare error

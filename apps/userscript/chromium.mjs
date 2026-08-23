@@ -12,15 +12,18 @@
  * is already running it just brings it to the front and silently drops the arguments, so the next
  * connection fails with a timeout that says nothing about why.
  *
- * **The default profile is used deliberately.** A throwaway `--user-data-dir` would launch a browser
- * signed out of wplace, and a signed-out session cannot read `/me`, which is where owned colours come
- * from — so half of what the overlay does would be untestable. The cost is that this drives the same
- * browser a person is using, which is why quitting it is never automatic.
+ * **Chromium uses the default profile deliberately.** A throwaway profile is signed out of wplace,
+ * so it cannot read `/me`, where owned colours come from. Official Google Chrome no longer permits
+ * remote debugging of its default data directory, so that fallback uses one persistent Caelestis
+ * profile instead; sign into wplace there once and later runs retain the session.
  */
 import { spawn } from 'node:child_process'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 const CDP = 'http://127.0.0.1:9222'
 const PORT_ARG = '--remote-debugging-port=9222'
+const CHROME_PROFILE_ARG = `--user-data-dir=${join(homedir(), '.caelestis-chrome-debug')}`
 /**
  * How to recognise a running browser.
  *
@@ -97,18 +100,24 @@ const runningWithoutPort = async () => {
  * macOS goes through `open` so the app bundle is started the way the Finder would, which keeps it a
  * normal foreground app rather than a headless-looking child of this script.
  */
-const LAUNCHERS =
-  process.platform === 'darwin'
+export const launchersFor = (platform = process.platform) =>
+  platform === 'darwin'
     ? [['open', ['-a', 'Chromium', '--args', PORT_ARG]]]
     : [
         ['chromium', [PORT_ARG]],
         ['chromium-browser', [PORT_ARG]],
-        ['google-chrome', [PORT_ARG]],
+        // Chrome 136+ ignores remote-debugging switches against its default data directory.
+        ['google-chrome', [PORT_ARG, CHROME_PROFILE_ARG]],
       ]
+
+const LAUNCHERS = launchersFor()
+
+/** @internal The `--relaunch` contract deliberately bypasses an otherwise reusable CDP session. */
+export const mayReuseExistingBrowser = (already, relaunch) => already !== null && !relaunch
 
 export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) => {
   const already = await cdpReady()
-  if (already !== null) {
+  if (mayReuseExistingBrowser(already, relaunch)) {
     if (!quiet) console.log(`chromium already listening on 9222 (${already})`)
     return true
   }
@@ -158,7 +167,8 @@ export const ensureChromium = async ({ relaunch = false, quiet = false } = {}) =
     const restart =
       process.platform === 'darwin'
         ? `  osascript -e 'tell application "Chromium" to quit'\n  open -a Chromium --args ${PORT_ARG}`
-        : `  pkill -x '${PROCESS_PATTERN}'\n  chromium ${PORT_ARG}`
+        : `  pkill -x '${PROCESS_PATTERN}'\n  chromium ${PORT_ARG}\n` +
+          `  # Google Chrome instead:\n  google-chrome ${PORT_ARG} ${CHROME_PROFILE_ARG}`
     throw new Error(
       'Chromium is already running without the debugging port, and the port can only be set at\n' +
         'launch — the arguments are dropped when the app is already open. Pass --relaunch to quit\n' +
