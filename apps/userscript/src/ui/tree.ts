@@ -1474,7 +1474,9 @@ export const treeContents = (
         // the canvas, and leaves every row inside saying exactly what it said before.
         checked: isScopeVisible(key),
         onToggleChecked: (on) => {
-          setScopeVisible(key, on)
+          if (!setScopeVisible(key, on)) {
+            callbacks.onError(`Could not change visibility for “${target.name}”.`)
+          }
           rerender()
         },
         onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
@@ -1565,10 +1567,7 @@ export const treeContents = (
               childrenOf: node.id,
               createdAt: node.createdAt,
               visible: isScopeVisible(nodeScopeKey(server.url, node.id)),
-              setVisible: (on) => {
-                setScopeVisible(nodeScopeKey(server.url, node.id), on)
-                return true
-              },
+              setVisible: (on) => setScopeVisible(nodeScopeKey(server.url, node.id), on),
               canReparent: canEdit,
               ...(canEdit ? { onDropAt: intoServer } : {}),
               ...(canEdit
@@ -1626,18 +1625,11 @@ export const treeContents = (
               ...(template.published ? {} : { meta: 'unpublished' }),
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: async (on) => {
-                // Both stores, because the scope key is the only one that outlives the page — a
-                // server template is memory-only and is re-created from that key on the next load,
-                // so writing only the live store meant switching one back on lasted until reload
-                // and then silently undid itself.
-                //
-                // The one that can refuse goes first. `setLocalVisible` returns false while the
-                // template is being deleted, when a re-slice throws, and when the source budget or
-                // a CAS write refuses — and the row is told so and put back. Persisting before
-                // asking meant the next page load applied the change the user had been told failed.
-                if (drawn !== undefined && !(await setLocalVisible(drawn.id, on))) return false
-                setScopeVisible(visibilityKey, on)
-                return true
+                // A drawn server row owns the dual commit: live bitmaps and the durable scope either
+                // both move or neither does. Before its pixels arrive there is only the scope.
+                return drawn === undefined
+                  ? setScopeVisible(visibilityKey, on)
+                  : await setLocalVisible(drawn.id, on)
               },
               canReparent: canEdit,
               ...(canEdit ? { onDropAt: intoServer } : {}),

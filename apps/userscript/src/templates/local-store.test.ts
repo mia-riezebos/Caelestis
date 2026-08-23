@@ -1417,6 +1417,27 @@ describe('local template lifecycle', () => {
     })
   })
 
+  it('keeps live server visibility unchanged when its scope cannot be saved', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: `srv:${encodeURIComponent('https://example.test')}:template-1` }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-1',
+      serverVersion: 'version-1',
+    }
+    await store.putServerTemplate(serverTemplate)
+    vi.stubGlobal(
+      'GM_setValue',
+      vi.fn(() => {
+        throw new Error('quota exceeded')
+      }),
+    )
+
+    await expect(store.setLocalVisible(serverTemplate.id, false)).resolves.toBe(false)
+    expect(store.localTemplates()[0]?.visible).toBe(true)
+  })
+
   it('places both runs of a wrapped server template into their world tiles', async () => {
     const store = await import('./local-store.js')
     await store.putServerTemplate({

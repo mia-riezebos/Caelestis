@@ -150,6 +150,19 @@ describe('server state boundaries', () => {
     expect(getState().serverTemplatePreferences).toEqual([])
   })
 
+  it('does not accept a visibility scope when durable storage refuses it', async () => {
+    vi.stubGlobal(
+      'GM_setValue',
+      vi.fn(() => {
+        throw new Error('quota exceeded')
+      }),
+    )
+    const { getState, setScopeVisible } = await import('./state.js')
+
+    expect(setScopeVisible('server:https://example.com', false)).toBe(false)
+    expect(getState().hiddenScopes).toEqual([])
+  })
+
   it('bounds persisted and newly connected servers', async () => {
     vi.stubGlobal(
       'GM_getValue',

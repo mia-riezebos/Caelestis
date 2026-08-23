@@ -828,10 +828,10 @@ export const addLocalFolders = (folders: readonly LocalFolder[]): boolean => {
 
 export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)
 
-export const setScopeVisible = (key: string, visible: boolean): void => {
+export const setScopeVisible = (key: string, visible: boolean): boolean => {
   const hidden = getState().hiddenScopes
-  if (visible === !hidden.includes(key)) return
-  setState({
+  if (visible === !hidden.includes(key)) return true
+  return setStateDurably({
     hiddenScopes: visible ? hidden.filter((candidate) => candidate !== key) : [...hidden, key],
   })
 }

@@ -2032,8 +2032,13 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       }
       revision = committed
     }
+    if (isServerTemplate(existing) && !setScopeVisible(id, visible)) {
+      cancelSourceClaim(existing.tiles.size, tiles.size)
+      if (visible) releaseCandidateTiles(tiles)
+      warn('install', `visibility for ${next.name} was not saved`)
+      return false
+    }
     templates.set(id, { ...next, revision })
-    if (isServerTemplate(existing)) setScopeVisible(id, visible)
     desiredVisibility.delete(id)
     installSourceReplacement(existing.tiles.size, tiles.size)
     closeTiles(existing.tiles)
