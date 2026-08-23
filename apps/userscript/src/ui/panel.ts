@@ -52,6 +52,7 @@ import {
   leaseLocalTemplate,
   localTemplates,
   onLocalChange,
+  type PlacedTemplate,
   previewOriginFor,
   removeLocalTemplate,
   renameLocalTemplate,
@@ -1621,10 +1622,20 @@ const copyServerTemplateToLocal = async (
     return null
   }
 
-  const copied = await copyAsLocalTemplate(
-    drawn,
-    `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
-  )
+  let copied: PlacedTemplate
+  try {
+    copied = await copyAsLocalTemplate(
+      drawn,
+      `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+    )
+  } catch (error) {
+    toast(
+      `Could not copy “${currentSourceTemplate.name}” into Local: ${error instanceof Error ? error.message : String(error)}`,
+      'error',
+    )
+    rerender()
+    return null
+  }
   if (!(await setTemplateFolder(copied.id, folderId))) {
     toast('Copied into Local, but could not put it in that folder.', 'error')
     rerender()
@@ -1796,9 +1807,22 @@ const dropOnServerNode = async (
       `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
       'warning',
     )
+    await refreshNodes(server, rerender)
     return serverTemplateTreeKey(server, uploaded.id)
   }
-  if (readySourceTemplate.published) {
+  const sourceBeforePublish = serverTemplateAt(source.url, templateId)
+  if (
+    sourceBeforePublish === null ||
+    !sameServerTemplateRevision(readySourceTemplate, sourceBeforePublish)
+  ) {
+    toast(
+      `Copied to ${destinationName} as a draft, but the source changed and was kept.`,
+      'warning',
+    )
+    await refreshNodes(server, rerender)
+    return serverTemplateTreeKey(server, uploaded.id)
+  }
+  if (sourceBeforePublish.published) {
     const published = await patchTemplate(server, uploaded.id, { published: true })
     if (!published.ok) {
       toast(
@@ -1814,14 +1838,16 @@ const dropOnServerNode = async (
       `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
       'warning',
     )
+    await refreshNodes(server, rerender)
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const latestSourceTemplate = serverTemplateAt(source.url, templateId)
   if (
     latestSourceTemplate === null ||
-    !sameServerTemplateRevision(readySourceTemplate, latestSourceTemplate)
+    !sameServerTemplateRevision(sourceBeforePublish, latestSourceTemplate)
   ) {
     toast(`Copied to ${destinationName}, but the source changed and was kept.`, 'warning')
+    await refreshNodes(server, rerender)
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const removed = await deleteTemplateOnServer(source, templateId)
