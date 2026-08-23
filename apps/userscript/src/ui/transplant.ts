@@ -268,11 +268,13 @@ const transplantWhileDestinationHeld = async (
     message: 'A server connection changed during the move, so it stopped before the next write.',
   })
   const sourceTemplateIsCurrent = (carried: Branch['templates'][number]): boolean =>
-    source.kind === 'local' ||
-    templatesOf(source.server, carried.folderId).some(
-      (candidate) =>
-        candidate.id === carried.sourceId && candidate.version === carried.template.serverVersion,
-    )
+    source.kind === 'local'
+      ? isCurrentTemplate(carried.template) && movingId() !== carried.template.id
+      : templatesOf(source.server, carried.folderId).some(
+          (candidate) =>
+            candidate.id === carried.sourceId &&
+            candidate.version === carried.template.serverVersion,
+        )
   const sourceTemplateChanged = (carried: Branch['templates'][number]): TransplantResult => ({
     ok: false,
     nodes,

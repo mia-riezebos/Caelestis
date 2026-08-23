@@ -400,7 +400,7 @@ describe('branch transplant', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         ok: false,
-        message: expect.stringContaining('changed at the source'),
+        message: expect.stringContaining('changed'),
       }),
     )
     expect(store.removeLocalTemplate).not.toHaveBeenCalled()

@@ -1692,12 +1692,17 @@ export const patchTemplate = async (
  * The local copy is updated from the answer rather than re-probed: the tree is labelled from
  * `info.name`, and leaving it stale until the next probe would make a rename look like it failed.
  */
+const serverRenameSequence = new Map<string, number>()
+const latestAppliedServerRename = new Map<string, number>()
+
 export const renameServer = async (
   server: ConnectedServer,
   name: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   const trimmed = name.trim()
   if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
+  const request = (serverRenameSequence.get(server.url) ?? 0) + 1
+  serverRenameSequence.set(server.url, request)
   try {
     const { response, body } = await remoteJson(`${server.url}/admin/server`, {
       method: 'PATCH',
@@ -1709,7 +1714,14 @@ export const renameServer = async (
       return { ok: false, message: failure(response, isRecord(body) ? body : null) }
     }
     const current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (current !== undefined && current.info !== null && isCurrentServerConnection(server)) {
+    if (
+      current !== undefined &&
+      current.info !== null &&
+      server.info !== null &&
+      current.info.id === server.info.id &&
+      request > (latestAppliedServerRename.get(server.url) ?? 0)
+    ) {
+      latestAppliedServerRename.set(server.url, request)
       upsertServer({ ...current, info: { ...current.info, name: trimmed } })
     }
     return { ok: true }
