@@ -460,7 +460,10 @@ const transplantWhileDestinationHeld = async (
     for (const folder of [...inCreationOrder(branch)].reverse()) {
       const changed = sourceFolderChanged()
       if (changed !== null) return changed
-      if (localTemplates().some((template) => template.folderId === folder.id)) {
+      if (
+        getState().localFolders.some((candidate) => candidate.parentId === folder.id) ||
+        localTemplates().some((template) => template.folderId === folder.id)
+      ) {
         return {
           ok: false,
           nodes,
