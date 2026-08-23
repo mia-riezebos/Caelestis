@@ -5,6 +5,7 @@ import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
 import { stampContains } from './templates/appearance.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from './templates/local-store.js'
+import { sourceXAt } from './templates/placement.js'
 import { ensureTilePixels, tilePixels } from './tile-transform.js'
 import { isPaintOpen } from './wplace-paint.js'
 
@@ -53,9 +54,9 @@ const overlayIndexAt = (x: number, y: number): number | null => {
   let found: number | null = null
   for (const template of localTemplates()) {
     if (!isTemplateVisible(template)) continue
-    const localX = x - template.originX
+    const localX = sourceXAt(template, x)
     const localY = y - template.originY
-    if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) continue
+    if (localX === null || localY < 0 || localY >= template.height) continue
     const cellX = Math.floor(localX)
     const cellY = Math.floor(localY)
     const index = template.indices[cellY * template.width + cellX]

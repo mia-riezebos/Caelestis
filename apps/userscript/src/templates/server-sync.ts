@@ -218,7 +218,8 @@ export const forgetChunks = (hashes: Iterable<string>): void => {
 }
 
 /** Our id for a server's template, namespaced so two servers cannot collide. */
-export const serverTemplateKey = (serverUrl: string, id: string): string => `srv:${serverUrl}:${id}`
+export const serverTemplateKey = (serverUrl: string, id: string): string =>
+  `srv:${encodeURIComponent(serverUrl)}:${id}`
 
 /** Templates already in flight, so a second sync while one runs does not download everything twice. */
 const inFlight = new Set<string>()
@@ -248,6 +249,7 @@ const generationOf = (serverUrl: string): number => generations.get(serverUrl) ?
 /** Called when a server's templates are taken away, so anything already downloading for it lands stale. */
 export const endServerGeneration = (serverUrl: string): void => {
   generations.set(serverUrl, generationOf(serverUrl) + 1)
+  pendingServerSyncs.delete(serverUrl)
   // The versions this server had asked for go with it. Kept, they outlive the connection for the
   // rest of the session, and a second server whose URL extends this one's shares their key prefix.
   const prefix = serverTemplateKey(serverUrl, '')
@@ -263,7 +265,7 @@ export const endServerGeneration = (serverUrl: string): void => {
  * them for an admin code, so a member never sees one and an admin sees exactly what they are about
  * to publish. Being able to look at a draft on the map before releasing it is the point of a draft.
  */
-export const syncServerTemplates = async (
+const syncServerTemplatesOnce = async (
   server: ConnectedServer,
   /** The manifest's templates, when the caller has just read them and would only re-read them. */
   known?: readonly ServerTemplate[],
@@ -344,6 +346,7 @@ export const syncServerTemplates = async (
         serverTemplateId: template.id,
         serverNodeId: template.nodeId,
         serverVersion: template.version,
+        wrapX: template.bbox.minX > template.bbox.maxX,
       })
       // Disconnected while it was slicing: take back out what has just gone in, so the store never
       // keeps an overlay whose server has no row left to poll or switch it off.
@@ -357,6 +360,50 @@ export const syncServerTemplates = async (
     } finally {
       inFlight.delete(key)
     }
+  }
+}
+
+interface PendingServerSync {
+  readonly server: ConnectedServer
+  readonly known?: readonly ServerTemplate[]
+}
+
+/** The newest request per server. Slow downloads must never make minute polls pile up behind them. */
+const pendingServerSyncs = new Map<string, PendingServerSync>()
+const serverSyncRuns = new Map<string, Promise<void>>()
+
+const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
+  const existing = serverSyncRuns.get(serverUrl)
+  if (existing !== undefined) return existing
+  const running = (async () => {
+    while (true) {
+      const requested = pendingServerSyncs.get(serverUrl)
+      if (requested === undefined) return
+      pendingServerSyncs.delete(serverUrl)
+      await syncServerTemplatesOnce(requested.server, requested.known)
+    }
+  })()
+  serverSyncRuns.set(serverUrl, running)
+  const release = (): void => {
+    if (serverSyncRuns.get(serverUrl) === running) serverSyncRuns.delete(serverUrl)
+  }
+  void running.then(release, release)
+  return running
+}
+
+/**
+ * Bring one server up to date, coalescing any polls that arrive while its current download runs.
+ *
+ * The newest manifest wins. Callers still await the drain that includes their request, while at most
+ * one assembly per server can own network, decode, and bitmap memory at a time.
+ */
+export const syncServerTemplates = async (
+  server: ConnectedServer,
+  known?: readonly ServerTemplate[],
+): Promise<void> => {
+  pendingServerSyncs.set(server.url, { server, ...(known === undefined ? {} : { known }) })
+  while (pendingServerSyncs.has(server.url) || serverSyncRuns.has(server.url)) {
+    await ensureServerSyncRun(server.url)
   }
 }
 

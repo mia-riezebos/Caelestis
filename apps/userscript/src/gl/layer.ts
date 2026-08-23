@@ -4,6 +4,7 @@ import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
+import { horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles } from '../tile-transform.js'
 import { colourFades, templateFades } from './fade.js'
 import { markerLayer } from './markers.js'
@@ -501,43 +502,45 @@ export const overlayLayer = {
         gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
         gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
 
-        const left = template.originX + nudgeX
         const top = template.originY + nudgeY
-        const right = left + template.width
         const bottom = top + template.height
 
-        for (const tile of tiles) {
-          const tileLeft = tile.tile.x * TILE_SIZE
-          const tileTop = tile.tile.y * TILE_SIZE
-          // The part of this template that falls inside this tile, in canvas pixels.
-          const cutLeft = Math.max(left, tileLeft)
-          const cutTop = Math.max(top, tileTop)
-          const cutRight = Math.min(right, tileLeft + TILE_SIZE)
-          const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
-          if (cutRight <= cutLeft || cutBottom <= cutTop) continue
+        for (const span of horizontalSpans(template)) {
+          const left = span.worldStart + nudgeX
+          const right = span.worldEnd + nudgeX
+          for (const tile of tiles) {
+            const tileLeft = tile.tile.x * TILE_SIZE
+            const tileTop = tile.tile.y * TILE_SIZE
+            // The part of this template run that falls inside this tile, in canvas pixels.
+            const cutLeft = Math.max(left, tileLeft)
+            const cutTop = Math.max(top, tileTop)
+            const cutRight = Math.min(right, tileLeft + TILE_SIZE)
+            const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
+            if (cutRight <= cutLeft || cutBottom <= cutTop) continue
 
-          // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
-          // including snapping it to whole device pixels once the map stops moving — is inherited
-          // rather than guessed at.
-          const scaleX = tile.width / TILE_SIZE
-          const scaleY = tile.height / TILE_SIZE
-          const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
-          const screenRight = tile.x + (cutRight - tileLeft) * scaleX
-          const screenTop = tile.y + (cutTop - tileTop) * scaleY
-          const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
+            // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
+            // including snapping it to whole device pixels once the map stops moving — is inherited
+            // rather than guessed at.
+            const scaleX = tile.width / TILE_SIZE
+            const scaleY = tile.height / TILE_SIZE
+            const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
+            const screenRight = tile.x + (cutRight - tileLeft) * scaleX
+            const screenTop = tile.y + (cutTop - tileTop) * scaleY
+            const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
 
-          const u0 = (cutLeft - left) / template.width
-          const u1 = (cutRight - left) / template.width
-          const v0 = (cutTop - top) / template.height
-          const v1 = (cutBottom - top) / template.height
+            const u0 = (span.sourceStart + cutLeft - left) / template.width
+            const u1 = (span.sourceStart + cutRight - left) / template.width
+            const v0 = (cutTop - top) / template.height
+            const v1 = (cutBottom - top) / template.height
 
-          // Strip order: top-left, top-right, bottom-left, bottom-right.
-          corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
-          corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
-          corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
-          corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
-          gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+            // Strip order: top-left, top-right, bottom-left, bottom-right.
+            corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
+            corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
+            corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
+            corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
+            gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+          }
         }
       }
     } finally {

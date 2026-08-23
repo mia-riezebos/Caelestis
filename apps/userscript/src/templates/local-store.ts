@@ -19,6 +19,7 @@ import {
   type Appearance,
   type AppearanceGroup,
   GROUP_FIELDS,
+  legacyAppearanceGroups,
   normaliseAppearance,
 } from './appearance.js'
 import {
@@ -34,9 +35,11 @@ import {
   type SaveResult,
   type StoredTemplate,
   saveTemplate,
+  saveTemplateFolders,
   type TemplateLoadBatch,
   type TemplateLoadFailure,
 } from './persist.js'
+import { horizontalSpans } from './placement.js'
 import { nodeChainVisible } from './server-nodes.js'
 
 /**
@@ -113,6 +116,8 @@ export interface PlacedTemplate extends ImportedTemplate {
   readonly serverNodeId?: string
   /** The version these pixels came from, so a sync knows whether to re-download them. */
   readonly serverVersion?: string
+  /** The source continues at x=0 after reaching the world's east edge. Server templates only. */
+  readonly wrapX?: boolean
 }
 
 /** Whether this template is a copy of something a server publishes. */
@@ -421,8 +426,18 @@ const validatePlacement = (
     throw new RangeError('template dimensions do not match its pixels')
   }
   if (originX < 0 || originY < 0) throw new RangeError('template origin is outside the canvas')
-  if (originX + template.width > WORLD_PIXELS)
-    throw new RangeError('template runs past the east edge')
+  if (originX + template.width > WORLD_PIXELS) {
+    if (
+      !('wrapX' in template) ||
+      template.wrapX !== true ||
+      !('serverUrl' in template) ||
+      typeof template.serverUrl !== 'string' ||
+      template.width >= WORLD_PIXELS ||
+      originX + template.width > WORLD_PIXELS * 2
+    ) {
+      throw new RangeError('template runs past the east edge')
+    }
+  }
   if (originY + template.height > WORLD_PIXELS)
     throw new RangeError('template runs past the south edge')
 }
@@ -564,9 +579,9 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     // so reading that as a deliberate choice would detach it from the global sliders for good.
     owns:
       owns === undefined
-        ? appearance == null || (typeof appearance === 'object' && 'shape' in appearance)
+        ? appearance == null
           ? []
-          : APPEARANCE_GROUPS
+          : legacyAppearanceGroups(appearance)
         : (owns as AppearanceGroup[]),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
@@ -607,67 +622,74 @@ const validateStoredPixels = async (template: StoredTemplate): Promise<void> => 
   if (opaque !== template.opaque) throw new RangeError('template opaque count is invalid')
 }
 
-const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels>> => {
+const slice = async (
+  template: ImportedTemplate & { readonly serverUrl?: string; readonly wrapX?: boolean },
+): Promise<Map<string, TileLevels>> => {
   validatePlacement(template)
   await yieldToBrowser()
-  const firstTileX = Math.floor(template.originX / TILE_SIZE)
   const firstTileY = Math.floor(template.originY / TILE_SIZE)
-  const lastTileX = Math.floor((template.originX + template.width - 1) / TILE_SIZE)
   const lastTileY = Math.floor((template.originY + template.height - 1) / TILE_SIZE)
 
   const out = new Map<string, TileLevels>()
   let scanWork = 0
   try {
     for (let tileY = firstTileY; tileY <= lastTileY; tileY++) {
-      for (let tileX = firstTileX; tileX <= lastTileX; tileX++) {
-        // Allocate a full tile only once a painted source pixel is found. Sparse Marble extents can
-        // cross thousands of empty tile rows; eagerly allocating 4 MB for every empty tile turns a
-        // small valid import into gigabytes of allocation churn.
-        let rgba: Uint8ClampedArray<ArrayBuffer> | null = null
-        const tileLeft = tileX * TILE_SIZE
-        const tileTop = tileY * TILE_SIZE
-        const startX = Math.max(0, tileLeft - template.originX)
-        const startY = Math.max(0, tileTop - template.originY)
-        const endX = Math.min(template.width, tileLeft + TILE_SIZE - template.originX)
-        const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
+      for (const span of horizontalSpans(template)) {
+        const firstTileX = Math.floor(span.worldStart / TILE_SIZE)
+        const lastTileX = Math.floor((span.worldEnd - 1) / TILE_SIZE)
+        for (let tileX = firstTileX; tileX <= lastTileX; tileX++) {
+          // Allocate a full tile only once a painted source pixel is found. Sparse Marble extents can
+          // cross thousands of empty tile rows; eagerly allocating 4 MB for every empty tile turns a
+          // small valid import into gigabytes of allocation churn.
+          let rgba: Uint8ClampedArray<ArrayBuffer> | null = null
+          const tileLeft = tileX * TILE_SIZE
+          const tileTop = tileY * TILE_SIZE
+          const startX = span.sourceStart + Math.max(0, tileLeft - span.worldStart)
+          const startY = Math.max(0, tileTop - template.originY)
+          const endX =
+            span.sourceStart +
+            Math.min(span.sourceEnd - span.sourceStart, tileLeft + TILE_SIZE - span.worldStart)
+          const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
 
-        for (let y = startY; y < endY; y++) {
-          const rowOffset = y * template.width
-          const targetRow = (template.originY + y - tileTop) * TILE_SIZE
-          for (let x = startX; x < endX; x++) {
-            const index = template.indices[rowOffset + x] ?? TRANSPARENT_INDEX
-            if (index === TRANSPARENT_INDEX) continue
-            const colour = WPLACE_PALETTE[index]
-            if (colour === undefined) continue
-            rgba ??= new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
-            const target = (targetRow + (template.originX + x - tileLeft)) * 4
-            rgba[target] = colour.rgb[0]
-            rgba[target + 1] = colour.rgb[1]
-            rgba[target + 2] = colour.rgb[2]
-            rgba[target + 3] = 255
+          for (let y = startY; y < endY; y++) {
+            const rowOffset = y * template.width
+            const targetRow = (template.originY + y - tileTop) * TILE_SIZE
+            for (let x = startX; x < endX; x++) {
+              const index = template.indices[rowOffset + x] ?? TRANSPARENT_INDEX
+              if (index === TRANSPARENT_INDEX) continue
+              const colour = WPLACE_PALETTE[index]
+              if (colour === undefined) continue
+              rgba ??= new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
+              const worldX = span.worldStart + x - span.sourceStart
+              const target = (targetRow + (worldX - tileLeft)) * 4
+              rgba[target] = colour.rgb[0]
+              rgba[target + 1] = colour.rgb[1]
+              rgba[target + 2] = colour.rgb[2]
+              rgba[target + 3] = 255
+            }
+            scanWork += endX - startX
+            if (scanWork >= 250_000) {
+              scanWork = 0
+              await yieldToBrowser()
+            }
           }
-          scanWork += endX - startX
-          if (scanWork >= 250_000) {
-            scanWork = 0
-            await yieldToBrowser()
+          if (rgba === null) continue
+          if (out.size >= MAX_SOURCE_TILES_PER_TEMPLATE) {
+            throw new RangeError('template covers too many painted tiles to render safely')
           }
-        }
-        if (rgba === null) continue
-        if (out.size >= MAX_SOURCE_TILES_PER_TEMPLATE) {
-          throw new RangeError('template covers too many painted tiles to render safely')
-        }
-        // Reserve before allocating the chain. Existing replacement tiles remain counted until
-        // the atomic swap closes them, so the cap covers the actual old-plus-new peak.
-        if (!reserveSourceTile()) {
-          throw new RangeError('local templates exceed the source bitmap memory budget')
-        }
-        try {
-          out.set(`${tileX}/${tileY}`, {
-            levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
-          })
-        } catch (error) {
-          candidateSourceTiles--
-          throw error
+          // Reserve before allocating the chain. Existing replacement tiles remain counted until
+          // the atomic swap closes them, so the cap covers the actual old-plus-new peak.
+          if (!reserveSourceTile()) {
+            throw new RangeError('local templates exceed the source bitmap memory budget')
+          }
+          try {
+            out.set(`${tileX}/${tileY}`, {
+              levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
+            })
+          } catch (error) {
+            candidateSourceTiles--
+            throw error
+          }
         }
       }
     }
@@ -689,6 +711,26 @@ const writeInOrder = <T>(id: string, write: () => Promise<T>): Promise<T> => {
   }
   // Give the cleanup chain both handlers so a failed write cannot create a second, unobserved
   // rejected promise through `finally`.
+  void next.then(release, release)
+  return next
+}
+
+const writeManyInOrder = <T>(ids: readonly string[], write: () => Promise<T>): Promise<T> => {
+  const unique = [...new Set(ids)].sort()
+  const previous = Promise.all(
+    unique.map(async (id) => {
+      try {
+        await (writeTails.get(id) ?? Promise.resolve())
+      } catch {}
+    }),
+  )
+  const next = previous.then(write)
+  for (const id of unique) writeTails.set(id, next)
+  const release = (): void => {
+    for (const id of unique) {
+      if (writeTails.get(id) === next) writeTails.delete(id)
+    }
+  }
   void next.then(release, release)
   return next
 }
@@ -888,6 +930,7 @@ export const putServerTemplate = async (
     serverTemplateId: string
     serverNodeId: string
     serverVersion: string
+    wrapX?: boolean
   },
 ): Promise<void> => {
   const restoring = restoreInFlight
@@ -1617,6 +1660,48 @@ export const setTemplateFolder = async (id: string, folderId: string | null): Pr
   })
 }
 
+/** Move several local templates together. A failed CAS or IndexedDB write moves none of them. */
+export const setTemplatesFolder = async (
+  ids: readonly string[],
+  folderId: string | null,
+): Promise<boolean> => {
+  const unique = [...new Set(ids)]
+  if (unique.length === 0) return true
+  return await writeManyInOrder(unique, async () => {
+    const existing = unique.map((id) => templates.get(id))
+    if (existing.some((template) => template === undefined || deleting.has(template.id))) {
+      return false
+    }
+    const present = existing as PlacedTemplate[]
+    const changed = present.filter((template) => template.folderId !== folderId)
+    if (changed.length === 0) return true
+    const durable = changed.filter((template) => !isPendingImage(template))
+    const result = await saveTemplateFolders(
+      durable.map((template) => ({
+        id: template.id,
+        expectedRevision: template.revision,
+        folderId,
+      })),
+    )
+    if (result.status !== 'saved') {
+      if (result.status === 'conflict') {
+        for (const template of durable) await reconcileConflict(template.id)
+      }
+      warn('install', 'folder changes were not saved as one transaction')
+      return false
+    }
+    for (const template of changed) {
+      templates.set(template.id, {
+        ...template,
+        folderId,
+        revision: result.revisions.get(template.id) ?? template.revision,
+      })
+    }
+    notify()
+    return true
+  })
+}
+
 export const renameLocalTemplate = async (id: string, name: string): Promise<boolean> => {
   const trimmed = name.trim()
   if (trimmed === '' || trimmed.length > MAX_TEMPLATE_NAME_LENGTH) return false
@@ -2109,9 +2194,15 @@ const buildStamp = async (
   const rgba = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
   const tileLeft = tx * TILE_SIZE
   const tileTop = ty * TILE_SIZE
-  const startX = Math.max(0, tileLeft - template.originX)
+  const span = horizontalSpans(template).find(
+    (candidate) => candidate.worldStart < tileLeft + TILE_SIZE && candidate.worldEnd > tileLeft,
+  )
+  if (span === undefined) return null
+  const startX = span.sourceStart + Math.max(0, tileLeft - span.worldStart)
   const startY = Math.max(0, tileTop - template.originY)
-  const endX = Math.min(template.width, tileLeft + TILE_SIZE - template.originX)
+  const endX =
+    span.sourceStart +
+    Math.min(span.sourceEnd - span.sourceStart, tileLeft + TILE_SIZE - span.worldStart)
   const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
   for (let y = startY; y < endY; y++) {
     const rowOffset = y * template.width
@@ -2121,7 +2212,8 @@ const buildStamp = async (
       if (index === TRANSPARENT_INDEX || hidden.has(index)) continue
       const colour = WPLACE_PALETTE[index]
       if (colour === undefined) continue
-      const target = (targetRow + (template.originX + x - tileLeft)) * 4
+      const worldX = span.worldStart + x - span.sourceStart
+      const target = (targetRow + (worldX - tileLeft)) * 4
       rgba[target] = colour.rgb[0]
       rgba[target + 1] = colour.rgb[1]
       rgba[target + 2] = colour.rgb[2]

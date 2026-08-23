@@ -10,6 +10,7 @@ import {
   type PlacedTemplate,
 } from '../templates/local-store.js'
 import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
+import { horizontalSpans } from '../templates/placement.js'
 import {
   currentQuads,
   isDrawingTiles,
@@ -413,7 +414,11 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   const covers = (template: PlacedTemplate, tile: TileQuad): boolean => {
     const left = tile.tile.x * TILE_SIZE
     const top = tile.tile.y * TILE_SIZE
-    if (template.originX >= left + TILE_SIZE || template.originX + template.width <= left)
+    if (
+      !horizontalSpans(template).some(
+        (span) => span.worldStart < left + TILE_SIZE && span.worldEnd > left,
+      )
+    )
       return false
     if (template.originY >= top + TILE_SIZE || template.originY + template.height <= top)
       return false

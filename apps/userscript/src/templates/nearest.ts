@@ -1,5 +1,6 @@
 import { viewportCentre } from '../main.js'
 import { isTemplateVisible, localTemplates, type PlacedTemplate } from './local-store.js'
+import { horizontalCentre, wrappedDeltaX } from './placement.js'
 
 /**
  * Which template a keybind means.
@@ -26,7 +27,7 @@ export const templateAtCentre = (): PlacedTemplate | null => {
   let best: { template: PlacedTemplate; distance: number } | null = null
   for (const template of localTemplates()) {
     if (!isTemplateVisible(template)) continue
-    const dx = template.originX + template.width / 2 - centre.x
+    const dx = wrappedDeltaX(centre.x, horizontalCentre(template))
     const dy = template.originY + template.height / 2 - centre.y
     // Squared, because only the ordering matters and a square root per template does not change it.
     const distance = dx * dx + dy * dy

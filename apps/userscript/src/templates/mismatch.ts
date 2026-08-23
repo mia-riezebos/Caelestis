@@ -17,6 +17,7 @@ import {
 } from './local-store.js'
 import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
 import { forgetInWorker, hasWorker, scanInWorker } from './mismatch-worker.js'
+import { horizontalSpans, sourceXAt } from './placement.js'
 
 /**
  * Which pixels of a template the canvas disagrees with, per tile.
@@ -107,7 +108,7 @@ const coverageTotals = new Map<
 
 /**
  * A cache key is `${templateId}|${x}/${y}`, and only the tile half has a known shape. A server
- * template's id is `srv:<url>:<id>`, so the last separator is the split, never the first.
+ * template's id is `srv:<encoded-url>:<id>`, so the last separator is the split, never the first.
  */
 const templateIdOf = (cacheKey: string): string => cacheKey.slice(0, cacheKey.lastIndexOf('|'))
 
@@ -293,7 +294,7 @@ const assertedHidden = (template: PlacedTemplate): readonly number[] =>
  * lists to hand back, not what goes in them, so neither is a reason to look at a tile again.
  */
 const signature = (template: PlacedTemplate): string =>
-  `${template.originX},${template.originY}|${template.moved}|${assertedHidden(template).join(',')}`
+  `${template.originX},${template.originY},${template.wrapX === true ? 1 : 0}|${template.moved}|${assertedHidden(template).join(',')}`
 
 /**
  * Everything the comparison needs, gathered for whichever thread is going to run it.
@@ -309,7 +310,11 @@ const buildJob = (
   pixels: Uint8Array,
   forWorker: boolean,
 ): ScanJob => {
+  const tileLeft = tile.x * TILE_SIZE
   const tileTop = tile.y * TILE_SIZE
+  const span = horizontalSpans(template).find(
+    (candidate) => candidate.worldStart < tileLeft + TILE_SIZE && candidate.worldEnd > tileLeft,
+  )
   const top = Math.max(template.originY, tileTop)
   const bottom = Math.min(template.originY + template.height, tileTop + TILE_SIZE)
   const bandTop = forWorker ? Math.max(0, Math.min(TILE_SIZE, top - tileTop)) : 0
@@ -325,7 +330,7 @@ const buildJob = (
     indices: null,
     width: template.width,
     height: template.height,
-    originX: template.originX,
+    originX: span === undefined ? template.originX : span.worldStart - span.sourceStart,
     originY: template.originY,
     tileX: tile.x,
     tileY: tile.y,
@@ -560,9 +565,9 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     const template = templates.find((candidate) => candidate.id === id)
     if (template === undefined || entry.templateSource !== template.indices) continue
 
-    const localX = x - template.originX
+    const localX = sourceXAt(template, x)
     const localY = y - template.originY
-    if (localX < 0 || localY < 0 || localX >= template.width || localY >= template.height) continue
+    if (localX === null || localY < 0 || localY >= template.height) continue
     const wanted = template.indices[localY * template.width + localX]
     if (wanted === undefined) continue
 

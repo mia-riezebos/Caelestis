@@ -14,6 +14,7 @@ import {
   listServerNodes,
   loadState,
   MAX_CONNECTED_SERVERS,
+  MAX_LOCAL_FOLDERS,
   moveLocalFolder,
   moveNode as moveNodeOnServer,
   onStateChange,
@@ -46,6 +47,7 @@ import {
   removeLocalTemplate,
   renameLocalTemplate,
   setTemplateFolder,
+  setTemplatesFolder,
   templateAsPng,
 } from '../templates/local-store.js'
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
@@ -652,7 +654,7 @@ const disconnectServer = (server: ConnectedServer): void => {
   const nodes = forgetNodes(server.url)
   forgetChunks(hashes)
   forgetCachedTokens(server.url)
-  const serverTemplatePrefix = `srv:${server.url}:`
+  const serverTemplatePrefix = serverTemplateKey(server.url, '')
   const legacyTreeTemplatePrefix = `st:${encodeURIComponent(server.url)}:`
   forgetScopes([
     `server:${server.url}`,
@@ -1134,7 +1136,8 @@ const applyRename = async (
   }
   const folderId = localFolderIdOf(target)
   if (folderId !== null) {
-    renameLocalFolder(folderId, name)
+    if (!renameLocalFolder(folderId, name))
+      toast('Folder names must be between 1 and 256 characters.', 'error')
     rerender()
     return
   }
@@ -1248,18 +1251,14 @@ const applyDelete = async (
     // folder id, and the tree renders templates by matching their folder to one that exists, so
     // removing the folder anyway would take the template off screen for good.
     const parentId = getState().localFolders.find((f) => f.id === folderId)?.parentId ?? null
-    const stranded: string[] = []
-    for (const template of localTemplates()) {
-      if (template.folderId !== folderId) continue
-      if (!(await setTemplateFolder(template.id, parentId))) stranded.push(template.name)
-    }
-    if (stranded.length > 0) {
-      toast(
-        stranded.length === 1
-          ? `Could not move “${stranded[0]}” out of “${target.name}”, so the folder was kept.`
-          : `Could not move ${stranded.length} templates out of “${target.name}”, so the folder was kept.`,
-        'error',
-      )
+    const children = localTemplates().filter((template) => template.folderId === folderId)
+    if (
+      !(await setTemplatesFolder(
+        children.map(({ id }) => id),
+        parentId,
+      ))
+    ) {
+      toast(`Could not move everything out of “${target.name}”, so the folder was kept.`, 'error')
       rerender()
       return
     }
@@ -2172,6 +2171,10 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
     expandForNewChild(target.key)
     const taken = new Set(getState().localFolders.map((folder) => folder.name.toLowerCase()))
     const folder = createLocalFolder(parentId, freeFolderName(taken))
+    if (folder === null) {
+      toast(`Local folders are limited to ${MAX_LOCAL_FOLDERS.toLocaleString()}.`, 'error')
+      return
+    }
     startRenaming(`lf:${folder.id}`)
     rerender()
     return

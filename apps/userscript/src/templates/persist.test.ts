@@ -366,6 +366,38 @@ describe('local template persistence', () => {
     expect(templateStore.put).not.toHaveBeenCalled()
   })
 
+  it('moves a folder batch atomically when one template has a stale revision', async () => {
+    const requests = new Map([
+      ['first', { result: stored({ id: 'first', revision: 2 }) }],
+      ['stale', { result: stored({ id: 'stale', revision: 4 }) }],
+    ]) as Map<string, { result: unknown; onsuccess?: (event: Event) => void }>
+    const templateStore = {
+      get: vi.fn((id: string) => requests.get(id) as unknown as IDBRequest<unknown>),
+      put: vi.fn(),
+    }
+    const transaction = { objectStore: vi.fn(() => templateStore) } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { saveTemplateFolders } = await import('./persist.js')
+
+    const saving = saveTemplateFolders([
+      { id: 'first', expectedRevision: 2, folderId: null },
+      { id: 'stale', expectedRevision: 3, folderId: null },
+    ])
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    requests.get('first')?.onsuccess?.(new Event('success'))
+    requests.get('stale')?.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+
+    await expect(saving).resolves.toEqual({ status: 'conflict' })
+    expect(templateStore.put).not.toHaveBeenCalled()
+  })
+
   it('reuses durable pixel storage for a metadata-only revision update', async () => {
     const durablePixels = {
       size: 1,

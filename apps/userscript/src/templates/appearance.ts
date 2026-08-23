@@ -194,6 +194,52 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
   }
   const stamped = (key: string, fallback: number, min: number, max: number): number =>
     legacy ? fallback : number(key, fallback, min, max)
+  const legacySize = number('size', 1 / 3, 0.05, 1)
+  const legacyAnchor =
+    typeof source.anchor === 'string' &&
+    ['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'].includes(source.anchor)
+      ? source.anchor
+      : 'c'
+  const anchoredCentre = (size: number): { x: number; y: number } => {
+    const free = 1 - size
+    return {
+      x: legacyAnchor.includes('l') ? -free / 2 : legacyAnchor.includes('r') ? free / 2 : 0,
+      y: legacyAnchor.startsWith('t') ? -free / 2 : legacyAnchor.startsWith('b') ? free / 2 : 0,
+    }
+  }
+  const legacyShape =
+    source.shape === 'square' || source.shape === 'circle' || source.shape === 'triangle'
+      ? source.shape
+      : 'full'
+  const legacyCentre = anchoredCentre(legacySize)
+  const legacyPixels =
+    legacyShape === 'full'
+      ? {
+          size: DEFAULT_APPEARANCE.size,
+          radius: DEFAULT_APPEARANCE.radius,
+          translateX: DEFAULT_APPEARANCE.translateX,
+          translateY: DEFAULT_APPEARANCE.translateY,
+          rotation: DEFAULT_APPEARANCE.rotation,
+        }
+      : legacyShape === 'triangle'
+        ? {
+            // The old right triangle is one quadrant of a diamond centred on its right-angle
+            // corner. Translation happens before rotation in the new model, so rotate that corner
+            // back into the stamp's axes before storing it. Top-left (the old wplace preset) is an
+            // exact match; other anchors retain its scale and placement as closely as this model can.
+            size: Math.min(2, legacySize * Math.SQRT2),
+            radius: 0,
+            translateX: (legacyCentre.x + legacyCentre.y - legacySize) / Math.SQRT2,
+            translateY: (-legacyCentre.x + legacyCentre.y) / Math.SQRT2,
+            rotation: 45,
+          }
+        : {
+            size: legacySize,
+            radius: legacyShape === 'circle' ? 1 : 0,
+            translateX: legacyCentre.x,
+            translateY: legacyCentre.y,
+            rotation: 0,
+          }
   const hidden = Array.isArray(source.hiddenColours)
     ? [
         ...new Set(
@@ -205,11 +251,17 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
       ].slice(0, PALETTE_SIZE)
     : []
   return {
-    size: stamped('size', DEFAULT_APPEARANCE.size, 0.05, 2),
-    radius: stamped('radius', DEFAULT_APPEARANCE.radius, 0, 1),
-    translateX: number('translateX', DEFAULT_APPEARANCE.translateX, -1, 1),
-    translateY: number('translateY', DEFAULT_APPEARANCE.translateY, -1, 1),
-    rotation: number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),
+    size: legacy ? legacyPixels.size : stamped('size', DEFAULT_APPEARANCE.size, 0.05, 2),
+    radius: legacy ? legacyPixels.radius : stamped('radius', DEFAULT_APPEARANCE.radius, 0, 1),
+    translateX: legacy
+      ? legacyPixels.translateX
+      : number('translateX', DEFAULT_APPEARANCE.translateX, -1, 1),
+    translateY: legacy
+      ? legacyPixels.translateY
+      : number('translateY', DEFAULT_APPEARANCE.translateY, -1, 1),
+    rotation: legacy
+      ? legacyPixels.rotation
+      : number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),
     opacity: number('opacity', DEFAULT_APPEARANCE.opacity, 0.05, 1),
     hiddenColours: hidden,
     // `onlySelectedColour` used to live here too. A stored one is simply dropped: the mode is one
@@ -229,6 +281,24 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     otherOpacity: number('otherOpacity', DEFAULT_APPEARANCE.otherOpacity, 0, 1),
     otherColour: colour(source.otherColour),
   }
+}
+
+/** Appearance groups an old stored overlay had changed away from its old defaults. */
+export const legacyAppearanceGroups = (raw: unknown): readonly AppearanceGroup[] => {
+  if (raw === null || typeof raw !== 'object') return []
+  const source = raw as Record<string, unknown>
+  if (!('shape' in source)) return APPEARANCE_GROUPS
+  const groups: AppearanceGroup[] = []
+  if (
+    source.shape !== 'full' ||
+    (source.size !== undefined && source.size !== 1 / 3) ||
+    (source.anchor !== undefined && source.anchor !== 'c') ||
+    (source.opacity !== undefined && source.opacity !== 1)
+  ) {
+    groups.push('pixels')
+  }
+  if (Array.isArray(source.hiddenColours) && source.hiddenColours.length > 0) groups.push('colours')
+  return groups
 }
 
 /** A stored colour, or null. Anything that is not `#rrggbb` is not a colour we wrote. */

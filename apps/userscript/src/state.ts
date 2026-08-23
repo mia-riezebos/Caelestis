@@ -324,9 +324,13 @@ type ManifestBbox = {
   readonly maxY: number
 }
 
-const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> => [
-  { start: bbox.minX, end: bbox.maxX },
-]
+const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> =>
+  bbox.minX < bbox.maxX
+    ? [{ start: bbox.minX, end: bbox.maxX }]
+    : [
+        { start: bbox.minX, end: WORLD_PIXELS },
+        { start: 0, end: bbox.maxX },
+      ]
 
 const tileCoordinates = (tile: string): { x: number; y: number } => {
   const separator = tile.indexOf('/')
@@ -712,7 +716,8 @@ export const onStateChange = (listener: (next: State) => void): void => {
 const localFolderId = (): string =>
   `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
 
-export const createLocalFolder = (parentId: string | null, name: string): LocalFolder => {
+export const createLocalFolder = (parentId: string | null, name: string): LocalFolder | null => {
+  if (getState().localFolders.length >= MAX_LOCAL_FOLDERS) return null
   const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
   setState({ localFolders: [...getState().localFolders, folder] })
   return folder
@@ -773,14 +778,15 @@ export const localFolderChainVisible = (folderId: string | null): boolean => {
   return true
 }
 
-export const renameLocalFolder = (id: string, name: string): void => {
+export const renameLocalFolder = (id: string, name: string): boolean => {
   const trimmed = name.trim()
-  if (trimmed === '') return
+  if (trimmed === '' || trimmed.length > 256) return false
   setState({
     localFolders: getState().localFolders.map((folder) =>
       folder.id === id ? { ...folder, name: trimmed } : folder,
     ),
   })
+  return true
 }
 
 export const removeLocalFolder = (id: string): void => {

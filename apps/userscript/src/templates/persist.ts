@@ -252,6 +252,83 @@ export const saveTemplate = async (
   )
 }
 
+export interface TemplateFolderUpdate {
+  readonly id: string
+  readonly expectedRevision: number
+  readonly folderId: string | null
+}
+
+export type SaveTemplateFoldersResult =
+  | { readonly status: 'saved'; readonly revisions: ReadonlyMap<string, number> }
+  | { readonly status: 'conflict' }
+  | { readonly status: 'unavailable' }
+
+/** Save several folder assignments in one IndexedDB transaction, or none of them. */
+export const saveTemplateFolders = async (
+  updates: readonly TemplateFolderUpdate[],
+): Promise<SaveTemplateFoldersResult> => {
+  if (updates.length === 0) return { status: 'saved', revisions: new Map() }
+  if (new Set(updates.map(({ id }) => id)).size !== updates.length) return { status: 'conflict' }
+  try {
+    const db = await open()
+    try {
+      return await new Promise<SaveTemplateFoldersResult>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readwrite')
+        const templates = transaction.objectStore(STORE)
+        const current = new Map<string, Record<string, unknown>>()
+        let remaining = updates.length
+        let conflict = false
+        let result: SaveTemplateFoldersResult = { status: 'conflict' }
+
+        const finishReads = (): void => {
+          if (remaining !== 0) return
+          if (conflict) return
+          const revisions = new Map<string, number>()
+          for (const update of updates) {
+            const record = current.get(update.id)
+            if (record === undefined) return
+            const revision = update.expectedRevision + 1
+            templates.put({ ...record, folderId: update.folderId, revision })
+            revisions.set(update.id, revision)
+          }
+          result = { status: 'saved', revisions }
+        }
+
+        for (const update of updates) {
+          const request = templates.get(update.id)
+          request.onsuccess = () => {
+            const record = request.result
+            if (
+              typeof record !== 'object' ||
+              record === null ||
+              normaliseRevision((record as { revision?: unknown }).revision) !==
+                update.expectedRevision ||
+              update.expectedRevision >= Number.MAX_SAFE_INTEGER - 1
+            ) {
+              conflict = true
+            } else {
+              current.set(update.id, record as Record<string, unknown>)
+            }
+            remaining--
+            finishReads()
+          }
+          request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
+        }
+        transaction.oncomplete = () => resolve(result)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+      })
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    warn('install', 'local template storage unavailable', String(error))
+    return { status: 'unavailable' }
+  }
+}
+
 export const deleteTemplate = async (
   id: IDBValidKey,
   expectedRevision: number,

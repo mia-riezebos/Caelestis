@@ -35,6 +35,20 @@ const persistence = vi.hoisted(() => ({
       | { status: 'unavailable' }
     > => ({ status: 'saved', revision: (expectedRevision ?? 0) + 1 }),
   ),
+  saveTemplateFolders: vi.fn(
+    async (
+      updates: readonly { id: string; expectedRevision: number; folderId: string | null }[],
+    ): Promise<
+      | { status: 'saved'; revisions: ReadonlyMap<string, number> }
+      | { status: 'conflict' }
+      | { status: 'unavailable' }
+    > => ({
+      status: 'saved',
+      revisions: new Map(
+        updates.map(({ id, expectedRevision }) => [id, expectedRevision + 1] as const),
+      ),
+    }),
+  ),
 }))
 
 vi.mock('./persist.js', () => persistence)
@@ -1366,6 +1380,48 @@ describe('local template lifecycle', () => {
     expect(after?.indices).toBe(before?.indices)
     expect(after?.tiles).toBe(before?.tiles)
     expect(createImageBitmap).toHaveBeenCalledTimes(bitmapCalls)
+  })
+
+  it('places both runs of a wrapped server template into their world tiles', async () => {
+    const store = await import('./local-store.js')
+    await store.putServerTemplate({
+      ...template({
+        id: 'wrapped',
+        originX: WORLD_PIXELS - 1,
+        originY: 0,
+        width: 2,
+        height: 1,
+        indices: new Uint8Array([0, 1]),
+        opaque: 2,
+      }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: 'folder-1',
+      serverVersion: 'version-1',
+      wrapX: true,
+    })
+
+    const [wrapped] = store.localTemplates()
+    expect(wrapped).toBeDefined()
+    expect([...(wrapped?.tiles.keys() ?? [])].sort()).toEqual(['0/0', '2047/0'])
+    expect(bitmapInputs).toHaveLength(2)
+    expect(bitmapInputs[0]?.data[999 * 4 + 3]).toBe(255)
+    expect(bitmapInputs[1]?.data[3]).toBe(255)
+  })
+
+  it('moves several folder children only after their one durable batch succeeds', async () => {
+    const store = await import('./local-store.js')
+    await store.addLocalTemplate(template({ id: 'first' }))
+    await store.addLocalTemplate(template({ id: 'second' }))
+    await store.setTemplateFolder('first', 'old')
+    await store.setTemplateFolder('second', 'old')
+    persistence.saveTemplateFolders.mockResolvedValueOnce({ status: 'unavailable' })
+
+    expect(await store.setTemplatesFolder(['first', 'second'], null)).toBe(false)
+    expect(store.localTemplates().map(({ folderId }) => folderId)).toEqual(['old', 'old'])
+
+    expect(await store.setTemplatesFolder(['first', 'second'], null)).toBe(true)
+    expect(store.localTemplates().map(({ folderId }) => folderId)).toEqual([null, null])
   })
 
   it('renders imported source order from lowest to highest', async () => {

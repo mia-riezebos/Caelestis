@@ -1,3 +1,4 @@
+import { WORLD_PIXELS } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
@@ -137,6 +138,68 @@ describe('server state boundaries', () => {
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
+  })
+
+  it('accepts chunks on both runs of an antimeridian-wrapped template', async () => {
+    const node = {
+      id: NODE_A,
+      parentId: null,
+      path: '/root',
+      name: 'Root',
+      createdAt: 1_800_000_000_000,
+    }
+    const wrappedManifest = {
+      ...manifest,
+      nodes: [node],
+      templates: [
+        {
+          id: '019fed50-87a1-7523-a88c-bdeafad49683',
+          nodeId: NODE_A,
+          name: 'Across the seam',
+          version: '019fed50-87a1-7523-a88c-bdeafad49684',
+          bbox: { minX: WORLD_PIXELS - 1, minY: 0, maxX: 1, maxY: 1 },
+          totalPixels: 2,
+          chunks: [
+            { tile: '2047/0', hash: 'a'.repeat(64) },
+            { tile: '0/0', hash: 'b'.repeat(64) },
+          ],
+          published: true,
+          createdAt: 1_800_000_000_000,
+        },
+      ],
+      tiles: ['0/0', '2047/0'],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(wrappedManifest), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ nodes: [node] }), { status: 200 })),
+    )
+    const { probeServer } = await import('./state.js')
+
+    await expect(probeServer('https://example.com', null)).resolves.toEqual(
+      expect.objectContaining({ status: 'connected', season: 0 }),
+    )
+  })
+
+  it('refuses local folder writes that the next load would discard', async () => {
+    vi.stubGlobal('GM_setValue', vi.fn())
+    const { createLocalFolder, MAX_LOCAL_FOLDERS, renameLocalFolder, setState } = await import(
+      './state.js'
+    )
+    setState({
+      localFolders: Array.from({ length: MAX_LOCAL_FOLDERS }, (_, index) => ({
+        id: `folder-${index}`,
+        parentId: null,
+        name: `Folder ${index}`,
+        visible: true,
+      })),
+    })
+
+    expect(createLocalFolder(null, 'Overflow')).toBeNull()
+    expect(renameLocalFolder('folder-0', 'x'.repeat(257))).toBe(false)
   })
 
   it('does not retain cached identity after a different server answers at the same URL', async () => {
