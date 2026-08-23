@@ -211,20 +211,27 @@ export interface MarkerStyle {
  *
  * That fallback is a layout read, and this is called once per tile per frame — twelve hundred
  * forced reflows a second on a full screen of tiles. So the answer is held against the buffer size
- * it was measured at. MapLibre keeps the buffer at CSS size times the ratio, so nothing that would
- * change this number can change it without also resizing the buffer: the cache catches the monitor
- * move it exists for and costs one comparison the rest of the time.
+ * and browser DPR it was measured at. Browser zoom can change CSS width and DPR while leaving the
+ * backing buffer unchanged, so the DPR is the cheap witness that invalidates that otherwise-stale
+ * entry without putting a layout read back on every tile.
  */
-let cachedScale: { canvas: unknown; buffer: number; scale: number } | null = null
+let cachedScale: { canvas: unknown; buffer: number; dpr: number; scale: number } | null = null
 
-const deviceScale = (gl: WebGL2RenderingContext): number => {
+/** @internal Exported so the zoom-without-buffer-resize invariant can be exercised directly. */
+export const deviceScale = (gl: WebGL2RenderingContext): number => {
   const canvas = gl.canvas
   const buffer = gl.drawingBufferWidth
-  if (cachedScale !== null && cachedScale.canvas === canvas && cachedScale.buffer === buffer)
+  const dpr = window.devicePixelRatio || 1
+  if (
+    cachedScale !== null &&
+    cachedScale.canvas === canvas &&
+    cachedScale.buffer === buffer &&
+    cachedScale.dpr === dpr
+  )
     return cachedScale.scale
   const measured = canvas instanceof HTMLCanvasElement ? canvas.getBoundingClientRect().width : 0
-  const scale = measured > 0 ? buffer / measured : window.devicePixelRatio || 1
-  cachedScale = { canvas, buffer, scale }
+  const scale = measured > 0 ? buffer / measured : dpr
+  cachedScale = { canvas, buffer, dpr, scale }
   return scale
 }
 

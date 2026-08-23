@@ -421,7 +421,12 @@ const manifestContentsValid = (
     if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return false
     if (typeof raw.version !== 'string' || !UUID_V7.test(raw.version)) return false
     if (!Number.isSafeInteger(raw.totalPixels) || Number(raw.totalPixels) <= 0) return false
-    if (typeof raw.published !== 'boolean' || !plausibleMillis(raw.createdAt)) return false
+    if (
+      typeof raw.published !== 'boolean' ||
+      !plausibleMillis(raw.createdAt) ||
+      (raw.updatedAt !== undefined && !plausibleMillis(raw.updatedAt))
+    )
+      return false
     if (!isRecord(raw.bbox)) return false
     const { minX, minY, maxX, maxY } = raw.bbox
     if (
@@ -513,12 +518,14 @@ const readRaw = (): { readonly value: string; readonly legacyPalette: boolean } 
   }
 }
 
-const writeRaw = (value: string): void => {
+const writeRaw = (value: string): boolean => {
   try {
     if (typeof gm.GM_setValue === 'function') gm.GM_setValue(STORAGE_KEY, value)
     else localStorage.setItem(STORAGE_KEY, value)
+    return true
   } catch (error) {
     warn('install', 'could not persist state', String(error))
+    return false
   }
 }
 
@@ -775,6 +782,15 @@ export const setState = (patch: Partial<State>): State => {
   return state
 }
 
+/** Commit only if the browser accepts the durable copy; used where the caller reports save status. */
+const setStateDurably = (patch: Partial<State>): boolean => {
+  const next = { ...state, ...patch }
+  if (!writeRaw(JSON.stringify(next))) return false
+  state = next
+  notifyStateListeners()
+  return true
+}
+
 export const onStateChange = (listener: (next: State) => void): void => {
   listeners.push(listener)
 }
@@ -834,7 +850,9 @@ export const setServerTemplatePreference = (
   const index = preferences.findIndex((preference) => preference.id === id)
   if (appearance === null && owns.length === 0) {
     if (index !== -1) {
-      setState({ serverTemplatePreferences: preferences.filter((_, at) => at !== index) })
+      return setStateDurably({
+        serverTemplatePreferences: preferences.filter((_, at) => at !== index),
+      })
     }
     return true
   }
@@ -844,13 +862,12 @@ export const setServerTemplatePreference = (
     appearance,
     owns: [...new Set(owns)].filter((group) => APPEARANCE_GROUPS.includes(group)),
   }
-  setState({
+  return setStateDurably({
     serverTemplatePreferences:
       index === -1
         ? [...preferences, preference]
         : preferences.map((current, at) => (at === index ? preference : current)),
   })
-  return true
 }
 
 export const setLocalFolderVisible = (id: string, visible: boolean): void => {

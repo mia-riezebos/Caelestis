@@ -1,3 +1,4 @@
+import { sha256Hex } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
@@ -59,6 +60,21 @@ describe('server template sync', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(templateTransferWithinBudget(64 * 1024 * 1024 - 1, 1)).toBe(true)
     expect(templateTransferWithinBudget(64 * 1024 * 1024, 1)).toBe(false)
+  })
+
+  it('does not cache a chunk that exceeds the template remaining transfer budget', async () => {
+    const bytes = new Uint8Array([1, 2])
+    const hash = await sha256Hex(bytes)
+    const fetchMock = vi.fn(async () => new Response(bytes))
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchChunkWithinBudget } = await import('./server-sync.js')
+    const signal = new AbortController().signal
+
+    await expect(fetchChunkWithinBudget(connected, hash, signal, 1)).resolves.toBeNull()
+    await expect(fetchChunkWithinBudget(connected, hash, signal, 2)).resolves.toEqual(bytes)
+    await expect(fetchChunkWithinBudget(connected, hash, signal, 2)).resolves.toEqual(bytes)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('uses an encoded server identity that cannot collide with a longer URL', async () => {

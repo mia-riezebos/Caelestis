@@ -136,6 +136,20 @@ describe('server state boundaries', () => {
     })
   })
 
+  it('does not accept a server preference when durable storage refuses it', async () => {
+    vi.stubGlobal(
+      'GM_setValue',
+      vi.fn(() => {
+        throw new Error('quota exceeded')
+      }),
+    )
+    const { getState, setServerTemplatePreference } = await import('./state.js')
+    const id = `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`
+
+    expect(setServerTemplatePreference(id, null, ['pixels'])).toBe(false)
+    expect(getState().serverTemplatePreferences).toEqual([])
+  })
+
   it('bounds persisted and newly connected servers', async () => {
     vi.stubGlobal(
       'GM_getValue',
@@ -234,6 +248,53 @@ describe('server state boundaries', () => {
     await expect(probeServer('https://example.com', null)).resolves.toEqual(
       expect.objectContaining({ status: 'connected', season: 0 }),
     )
+  })
+
+  it('rejects a present non-finite template update timestamp', async () => {
+    const node = {
+      id: NODE_A,
+      parentId: null,
+      path: '/root',
+      name: 'Root',
+      createdAt: 1_800_000_000_000,
+    }
+    const invalidManifest = {
+      ...manifest,
+      nodes: [node],
+      templates: [
+        {
+          id: TEMPLATE_A,
+          nodeId: NODE_A,
+          name: 'Invalid date',
+          version: '019fed50-87a1-7523-a88c-bdeafad49684',
+          bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+          totalPixels: 1,
+          chunks: [{ tile: '0/0', hash: 'a'.repeat(64) }],
+          published: true,
+          createdAt: 1_800_000_000_000,
+          updatedAt: 0,
+        },
+      ],
+      tiles: ['0/0'],
+    }
+    const body = JSON.stringify(invalidManifest).replace('"updatedAt":0', '"updatedAt":1e309')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { status: 200 })),
+    )
+    const { listServerContents } = await import('./state.js')
+
+    await expect(
+      listServerContents({
+        url: 'https://example.com',
+        info: serverInfo,
+        token: null,
+        status: 'connected',
+        isAdmin: false,
+        season: 0,
+        lastVerified: { serverId: SERVER_ID, season: 0 },
+      }),
+    ).resolves.toBeNull()
   })
 
   it('refuses local folder writes that the next load would discard', async () => {

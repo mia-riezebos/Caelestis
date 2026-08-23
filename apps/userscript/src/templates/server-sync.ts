@@ -50,13 +50,17 @@ export const templateTransferWithinBudget = (used: number, next: number): boolea
 /** Chunk bytes by hash. Immutable by definition, so nothing here ever needs invalidating. */
 const chunkCache = new ByteCache<string>(CHUNK_CACHE_LIMIT, CHUNK_CACHE_BYTES)
 
-const fetchChunk = async (
+/** Fetch one chunk without spending more than this template still has left. */
+export const fetchChunkWithinBudget = async (
   server: ConnectedServer,
   hash: string,
   generationSignal: AbortSignal,
+  remainingBytes: number,
 ): Promise<Uint8Array | null> => {
+  if (!Number.isSafeInteger(remainingBytes) || remainingBytes < 0) return null
   const cached = chunkCache.get(hash)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) return cached.byteLength <= remainingBytes ? cached : null
+  const readLimit = Math.min(MAX_CHUNK_BYTES, remainingBytes)
   try {
     const response = await fetch(`${server.url}/chunks/${hash}`, {
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
@@ -64,7 +68,7 @@ const fetchChunk = async (
     })
     if (!response.ok) return null
     const declared = Number(response.headers.get('content-length'))
-    if (Number.isFinite(declared) && declared > MAX_CHUNK_BYTES) return null
+    if (Number.isFinite(declared) && declared > readLimit) return null
     if (response.body === null) return null
     const reader = response.body.getReader()
     const parts: Uint8Array[] = []
@@ -74,7 +78,7 @@ const fetchChunk = async (
         const part = await reader.read()
         if (part.done) break
         length += part.value.byteLength
-        if (length > MAX_CHUNK_BYTES) {
+        if (length > readLimit) {
           await reader.cancel()
           return null
         }
@@ -91,6 +95,8 @@ const fetchChunk = async (
     }
     // A configured server is not trusted to tell the truth about a content address. Verify before
     // admitting bytes to the global cache, otherwise one server can seed another server's hash.
+    // `readLimit` also means an over-budget template never admits the chunk that would evict useful
+    // entries and make the same rejected version redownload its whole prefix on every poll.
     if ((await sha256Hex(bytes)) !== hash) return null
     chunkCache.set(hash, bytes)
     return bytes
@@ -193,7 +199,12 @@ const assemble = async (
     const chunkWidth = right - left
     const chunkHeight = bottom - top
     if (chunkWidth <= 0 || chunkHeight <= 0) return null
-    const bytes = await fetchChunk(server, chunk.hash, generationSignal)
+    const bytes = await fetchChunkWithinBudget(
+      server,
+      chunk.hash,
+      generationSignal,
+      MAX_TEMPLATE_TRANSFER_BYTES - encodedBytes,
+    )
     if (bytes === null) return null
     if (!templateTransferWithinBudget(encodedBytes, bytes.byteLength)) return null
     encodedBytes += bytes.byteLength

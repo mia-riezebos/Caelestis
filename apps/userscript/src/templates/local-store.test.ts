@@ -155,6 +155,7 @@ beforeEach(() => {
   contextOptions.length = 0
   deferredBitmap = undefined
   vi.stubGlobal('window', {})
+  vi.stubGlobal('GM_setValue', vi.fn())
   vi.stubGlobal('ImageData', TestImageData)
   vi.stubGlobal('OffscreenCanvas', TestCanvas)
   vi.stubGlobal(
