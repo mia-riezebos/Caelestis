@@ -3,12 +3,15 @@ import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn }
 import { redraw, viewportCentre } from '../main.js'
 import { forgetServer } from '../server-cache.js'
 import {
+  admitServerContents,
+  admittedServerContentsFor,
   type ConnectedServer,
   countNodeSubtree,
   createLocalFolder,
   createNode,
   deleteNode as deleteNodeOnServer,
   deleteTemplate as deleteTemplateOnServer,
+  forgetAdmittedServerContents,
   forgetScopes,
   getState,
   listServerNodes,
@@ -30,7 +33,6 @@ import {
   renameLocalFolder,
   renameNode as renameNodeOnServer,
   renameServer as renameServerOnServer,
-  type ServerContents,
   setState,
   uploadTemplate,
   uploadTemplateVersion,
@@ -460,9 +462,6 @@ const refreshView = (): void => {
 }
 
 let manifestTreeRefreshQueued = false
-// This duplicates no manifest data: the tree owns these same admitted arrays. The extra reference is
-// the bounded repair baton that lets a rejected newer response leave both tree and canvas unchanged.
-const acceptedServerContents = new Map<string, ServerContents>()
 const queueManifestTreeRefresh = (): void => {
   if (manifestTreeRefreshQueued) return
   manifestTreeRefreshQueued = true
@@ -477,22 +476,22 @@ const queueManifestTreeRefresh = (): void => {
 onServerContents((server, contents) => {
   const remembered = rememberServerContents(server, contents)
   if (remembered.ok) {
-    acceptedServerContents.set(server.url, contents)
+    admitServerContents(server, contents)
     void syncServerTemplates(
       server,
       contents.templates,
-      () => acceptedServerContents.get(server.url) === contents,
+      () => admittedServerContentsFor(server) === contents,
     )
     if (remembered.changed === true) queueManifestTreeRefresh()
     return
   }
   rejectServerContentsForSync(contents)
-  const accepted = acceptedServerContents.get(server.url)
-  if (accepted !== undefined) {
+  const accepted = admittedServerContentsFor(server)
+  if (accepted !== null) {
     void syncServerTemplates(
       server,
       accepted.templates,
-      () => acceptedServerContents.get(server.url) === accepted,
+      () => admittedServerContentsFor(server) === accepted,
     )
   }
 })
@@ -697,7 +696,7 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   // Anything already downloading for this server lands stale rather than drawing an overlay with no
   // server row left to control it.
   endServerGeneration(server.url)
-  acceptedServerContents.delete(server.url)
+  forgetAdmittedServerContents(server.url)
   // Stop polls and stale refresh callbacks from beginning a replacement generation while cleanup
   // waits for per-template writes.
   removeServer(server.url)

@@ -1,5 +1,6 @@
 import {
   type AccessToken,
+  type AccessTokenPage,
   type ConnectedServer,
   createAccessToken,
   listAccessTokens,
@@ -202,17 +203,28 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
  * Held in memory only. These are the labels of a server's keys, and they are cheap to re-ask for;
  * writing them to disk would mean the answer outliving the admin rights that were allowed to see it.
  */
-const cached = new Map<string, readonly AccessToken[]>()
-const inFlight = new Map<string, Promise<readonly AccessToken[] | null>>()
+const cached = new Map<string, AccessTokenPage>()
+const inFlight = new Map<string, Promise<AccessTokenPage | null>>()
 
-const fetchTokens = (server: ConnectedServer): Promise<readonly AccessToken[] | null> => {
+const fetchTokens = (
+  server: ConnectedServer,
+  cursor: string | null = null,
+): Promise<AccessTokenPage | null> => {
   const running = inFlight.get(server.url)
   if (running !== undefined) return running
-  const run: Promise<readonly AccessToken[] | null> = listAccessTokens(server).then((tokens) => {
+  const run: Promise<AccessTokenPage | null> = listAccessTokens(server, cursor).then((page) => {
     // Only while this is still the request the map is holding. Forgetting a disconnected server
     // removes the entry, and a reply landing after that must not put its labels back.
-    if (tokens !== null && inFlight.get(server.url) === run) cached.set(server.url, tokens)
-    return tokens
+    if (page === null || inFlight.get(server.url) !== run) return page
+    if (cursor === null) {
+      cached.set(server.url, page)
+      return page
+    }
+    const previous = cached.get(server.url)
+    if (previous?.nextCursor !== cursor) return previous ?? null
+    const combined = { tokens: [...previous.tokens, ...page.tokens], nextCursor: page.nextCursor }
+    cached.set(server.url, combined)
+    return combined
   })
   void run.finally(() => {
     if (inFlight.get(server.url) === run) inFlight.delete(server.url)
@@ -263,9 +275,9 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
   const list = document.createElement('div')
   list.className = 'flex flex-col'
 
-  const draw = (tokens: readonly AccessToken[] | null, reload: () => void): void => {
+  const draw = (page: AccessTokenPage | null, reload: () => void): void => {
     list.replaceChildren()
-    if (tokens === null) {
+    if (page === null) {
       const failed = document.createElement('p')
       failed.className = 'text-xs opacity-60'
       // Not "no tokens". A server that could not be asked and a server with no way into it are
@@ -274,6 +286,7 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
       list.appendChild(failed)
       return
     }
+    const { tokens } = page
     if (tokens.length === 0) {
       const empty = document.createElement('p')
       empty.className = 'text-xs opacity-60'
@@ -282,10 +295,20 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
       return
     }
     for (const token of tokens) list.appendChild(tokenRow(server, token, reload))
+    if (page.nextCursor !== null) {
+      const more = document.createElement('button')
+      more.className = 'btn btn-xs btn-ghost self-start'
+      more.textContent = 'Load more'
+      more.addEventListener('click', () => {
+        more.disabled = true
+        void fetchTokens(server, page.nextCursor).then((next) => draw(next, reload))
+      })
+      list.appendChild(more)
+    }
   }
 
   const reload = (): void => {
-    void fetchTokens(server).then((tokens) => draw(tokens, reload))
+    void fetchTokens(server).then((page) => draw(page, reload))
   }
 
   const known = cached.get(server.url)

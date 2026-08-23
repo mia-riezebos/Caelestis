@@ -123,6 +123,41 @@ describe('the admin token surface', () => {
     expect(JSON.stringify(tokens)).not.toContain(created.body.token)
   })
 
+  it('paginates a token inventory whose complete JSON exceeds the client response cap', async () => {
+    const { app, sql } = harness()
+    for (let index = 0; index < 250; index++) {
+      await sql.insertAccessToken({
+        tokenHash: index.toString(16).padStart(64, '0'),
+        label: `operator-${index}-${'x'.repeat(110)}`,
+        scope: 'read',
+        createdWithToken: 'bootstrap',
+        createdAt: millis(2_000_000 - index),
+      })
+    }
+
+    const seen = new Set<string>()
+    let cursor: string | null = null
+    const pageSizes: number[] = []
+    do {
+      const suffix = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+      const response = await app.request(`/admin/tokens${suffix}`, bearer(BOOTSTRAP))
+      const text = await response.text()
+      expect(response.status).toBe(200)
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThan(64 * 1024)
+      const page = JSON.parse(text) as {
+        tokens: Array<{ tokenHash?: string; bootstrap?: boolean }>
+        nextCursor: string | null
+      }
+      const stored = page.tokens.filter((token) => token.bootstrap !== true)
+      pageSizes.push(stored.length)
+      for (const token of stored) seen.add(token.tokenHash as string)
+      cursor = page.nextCursor
+    } while (cursor !== null)
+
+    expect(pageSizes).toEqual([100, 100, 50])
+    expect(seen.size).toBe(250)
+  })
+
   it('lets a minted admin token mint further tokens', async () => {
     // The bootstrap credential exists to hand over to a real one; if the handover does not work it
     // has to stay in the environment forever.

@@ -360,7 +360,7 @@ describe('server state boundaries', () => {
     expect(observed).toHaveBeenCalledWith(server, newer)
   })
 
-  it('keeps a successful folder-picker response when a newer poll wins the sequence race', async () => {
+  it('gives a folder picker the admitted newer tree when its own response loses the race', async () => {
     let finishPicker = (_response: Response): void => undefined
     let finishPoll = (_response: Response): void => undefined
     vi.stubGlobal(
@@ -380,7 +380,8 @@ describe('server state boundaries', () => {
             }),
         ),
     )
-    const { listServerContents, listServerNodes, setState } = await import('./state.js')
+    const { admitServerContents, listServerContents, listServerNodes, onServerContents, setState } =
+      await import('./state.js')
     const server = {
       url: 'https://example.com',
       info: serverInfo,
@@ -391,22 +392,124 @@ describe('server state boundaries', () => {
       lastVerified: { serverId: SERVER_ID, season: 0 },
     }
     setState({ servers: [server] })
-    const node = {
+    const olderNode = {
       id: NODE_A,
       parentId: null,
-      path: '/root',
-      name: 'Root',
+      path: '/old',
+      name: 'Old',
       createdAt: 1_800_000_000_000,
     }
-    const withNode = { ...manifest, nodes: [node] }
+    const newerNode = {
+      ...olderNode,
+      id: '019fed50-87a1-7523-a88c-bdeafad49684',
+      path: '/new',
+      name: 'New',
+    }
+    onServerContents((connected, contents) => {
+      admitServerContents(connected, contents)
+    })
 
     const picker = listServerNodes(server)
     const poll = listServerContents(server)
-    finishPoll(new Response(JSON.stringify(withNode), { status: 200 }))
+    finishPoll(new Response(JSON.stringify({ ...manifest, nodes: [newerNode] }), { status: 200 }))
     await poll
-    finishPicker(new Response(JSON.stringify(withNode), { status: 200 }))
+    finishPicker(new Response(JSON.stringify({ ...manifest, nodes: [olderNode] }), { status: 200 }))
 
-    await expect(picker).resolves.toEqual([node])
+    await expect(picker).resolves.toEqual([newerNode])
+  })
+
+  it('keeps folder helpers on the retained tree when the newest manifest is rejected', async () => {
+    const acceptedNode = {
+      id: NODE_A,
+      parentId: null,
+      path: '/accepted',
+      name: 'Accepted',
+      createdAt: 1_800_000_000_000,
+    }
+    const rejectedNode = { ...acceptedNode, path: '/rejected', name: 'Rejected' }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...manifest, nodes: [acceptedNode] }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...manifest, nodes: [rejectedNode] }), { status: 200 }),
+        ),
+    )
+    const { admitServerContents, listServerNodes, onServerContents, setState } = await import(
+      './state.js'
+    )
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+    onServerContents((connected, contents) => {
+      if (contents.nodes[0]?.name !== 'Rejected') admitServerContents(connected, contents)
+    })
+
+    await expect(listServerNodes(server)).resolves.toEqual([acceptedNode])
+    await expect(listServerNodes(server)).resolves.toEqual([acceptedNode])
+  })
+
+  it('does not carry admitted contents into a replacement connection at the same URL', async () => {
+    const { admitServerContents, admittedServerContentsFor, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    const contents = { nodes: [], templates: [] }
+    setState({ servers: [server] })
+    expect(admitServerContents(server, contents)).toBe(true)
+
+    const replacement = { ...server, token: 'new-token' }
+    setState({ servers: [replacement] })
+
+    expect(admittedServerContentsFor(replacement)).toBeNull()
+  })
+
+  it('reads bounded token pages through the server cursor contract', async () => {
+    const nextCursor = `1800000000000:${'a'.repeat(64)}`
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ tokens: [], nextCursor }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ tokens: [], nextCursor: null }), { status: 200 }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const { listAccessTokens } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+
+    await expect(listAccessTokens(server)).resolves.toEqual({ tokens: [], nextCursor })
+    await expect(listAccessTokens(server, nextCursor)).resolves.toEqual({
+      tokens: [],
+      nextCursor: null,
+    })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `https://example.com/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
+    )
   })
 
   it('publishes an in-flight manifest through a cosmetic server metadata replacement', async () => {

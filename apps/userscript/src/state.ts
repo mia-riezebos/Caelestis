@@ -1479,6 +1479,10 @@ export interface ServerContents {
 let manifestRequestSequence = 0
 const latestManifestResponse = new Map<string, number>()
 const manifestResponseOf = new WeakMap<ServerContents, number>()
+const admittedServerContents = new Map<
+  string,
+  { readonly server: ConnectedServer; readonly contents: ServerContents }
+>()
 const serverContentsListeners = new Set<
   (server: ConnectedServer, contents: ServerContents) => void
 >()
@@ -1495,6 +1499,41 @@ export const onServerContents = (
 export const isLatestServerContents = (serverUrl: string, contents: ServerContents): boolean => {
   const response = manifestResponseOf.get(contents)
   return response === undefined || response === latestManifestResponse.get(serverUrl)
+}
+
+/**
+ * Mark the newest manifest as safe for every consumer to use.
+ *
+ * Aggregate admission belongs to the panel coordinator because it spans all configured servers.
+ * Keeping the winning snapshot here gives admin helpers and the canvas repair path the same answer,
+ * while retaining the connection that earned it prevents a same-URL reconnect from inheriting it.
+ */
+export const admitServerContents = (server: ConnectedServer, contents: ServerContents): boolean => {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (
+    current === undefined ||
+    !sameServerConnection(current, server) ||
+    !isLatestServerContents(server.url, contents)
+  )
+    return false
+  admittedServerContents.set(server.url, { server: current, contents })
+  return true
+}
+
+/** The admitted snapshot belonging to this exact connection lifetime, if one exists. */
+export const admittedServerContentsFor = (server: ConnectedServer): ServerContents | null => {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  const admitted = admittedServerContents.get(server.url)
+  return current !== undefined &&
+    admitted !== undefined &&
+    sameServerConnection(current, server) &&
+    sameServerConnection(admitted.server, current)
+    ? admitted.contents
+    : null
+}
+
+export const forgetAdmittedServerContents = (serverUrl: string): void => {
+  admittedServerContents.delete(serverUrl)
 }
 
 export const listServerContents = async (
@@ -1566,9 +1605,9 @@ export const listServerNodes = async (
 ): Promise<readonly TreeNode[] | null> => {
   const contents = await listServerContents(server)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
-  return contents === null || current === undefined || !sameServerConnection(current, server)
-    ? null
-    : contents.nodes
+  if (contents === null || current === undefined || !sameServerConnection(current, server))
+    return null
+  return admittedServerContentsFor(current)?.nodes ?? null
 }
 
 /**
@@ -1729,7 +1768,13 @@ interface BootstrapAccessToken {
 
 export type AccessToken = StoredAccessToken | BootstrapAccessToken
 
+export interface AccessTokenPage {
+  readonly tokens: readonly AccessToken[]
+  readonly nextCursor: string | null
+}
+
 const SCOPES: readonly string[] = ['read', 'report', 'admin']
+const TOKEN_CURSOR = /^(0|[1-9]\d*):[0-9a-f]{64}$/
 
 /**
  * A configured server is someone else's machine, so its token list is checked rather than trusted:
@@ -1753,16 +1798,26 @@ const asAccessToken = (value: unknown): AccessToken | null => {
 
 export const listAccessTokens = async (
   server: ConnectedServer,
-): Promise<readonly AccessToken[] | null> => {
+  cursor: string | null = null,
+): Promise<AccessTokenPage | null> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/tokens`, {
+    const suffix = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+    const { response, body } = await remoteJson(`${server.url}/admin/tokens${suffix}`, {
       headers: adminHeaders(server),
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
     const tokens = isRecord(body) ? body.tokens : undefined
-    if (!Array.isArray(tokens)) return []
-    return tokens.map(asAccessToken).filter((token): token is AccessToken => token !== null)
+    const nextCursor = isRecord(body) ? body.nextCursor : undefined
+    if (
+      !Array.isArray(tokens) ||
+      (nextCursor !== null && (typeof nextCursor !== 'string' || !TOKEN_CURSOR.test(nextCursor)))
+    )
+      return null
+    return {
+      tokens: tokens.map(asAccessToken).filter((token): token is AccessToken => token !== null),
+      nextCursor,
+    }
   } catch {
     // Null rather than empty, so the panel can say "could not ask" instead of "there are none" —
     // the difference between those two is the difference between a blip and a server with no way in.
