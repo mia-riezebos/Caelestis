@@ -360,6 +360,90 @@ describe('server state boundaries', () => {
     expect(observed).toHaveBeenCalledWith(server, newer)
   })
 
+  it('keeps a successful folder-picker response when a newer poll wins the sequence race', async () => {
+    let finishPicker = (_response: Response): void => undefined
+    let finishPoll = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishPicker = resolve
+            }),
+        )
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishPoll = resolve
+            }),
+        ),
+    )
+    const { listServerContents, listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+    const node = {
+      id: NODE_A,
+      parentId: null,
+      path: '/root',
+      name: 'Root',
+      createdAt: 1_800_000_000_000,
+    }
+    const withNode = { ...manifest, nodes: [node] }
+
+    const picker = listServerNodes(server)
+    const poll = listServerContents(server)
+    finishPoll(new Response(JSON.stringify(withNode), { status: 200 }))
+    await poll
+    finishPicker(new Response(JSON.stringify(withNode), { status: 200 }))
+
+    await expect(picker).resolves.toEqual([node])
+  })
+
+  it('publishes an in-flight manifest through a cosmetic server metadata replacement', async () => {
+    let finish = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finish = resolve
+          }),
+      ),
+    )
+    const { listServerContents, onServerContents, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    const renamed = { ...server, info: { ...serverInfo, name: 'Renamed' } }
+    const observed = vi.fn()
+    onServerContents(observed)
+    setState({ servers: [server] })
+
+    const pending = listServerContents(server)
+    setState({ servers: [renamed] })
+    finish(new Response(JSON.stringify(manifest), { status: 200 }))
+    const contents = await pending
+
+    expect(contents).not.toBeNull()
+    expect(observed).toHaveBeenCalledWith(renamed, contents)
+  })
+
   it('does not let an old connection response suppress the first response after reconnect', async () => {
     let finishOld = (_response: Response): void => undefined
     let finishNew = (_response: Response): void => undefined

@@ -60,6 +60,17 @@ export interface ConnectedServer {
   } | null
 }
 
+/** Whether two immutable state rows still describe the same remote connection lifetime. */
+export const sameServerConnection = (left: ConnectedServer, right: ConnectedServer): boolean =>
+  left.url === right.url &&
+  left.token === right.token &&
+  left.status === right.status &&
+  left.isAdmin === right.isAdmin &&
+  left.season === right.season &&
+  (left.info === null
+    ? right.info === null
+    : right.info !== null && left.info.id === right.info.id && left.info.auth === right.info.auth)
+
 /** A browser-local folder; its metadata is small enough to live in userscript state. */
 export interface LocalFolder {
   readonly id: string
@@ -1522,11 +1533,15 @@ export const listServerContents = async (
     const contents: ServerContents = { nodes: manifest.nodes, templates }
     manifestResponseOf.set(contents, request)
     const current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (current === server && request > (latestManifestResponse.get(server.url) ?? 0)) {
+    if (
+      current !== undefined &&
+      sameServerConnection(current, server) &&
+      request > (latestManifestResponse.get(server.url) ?? 0)
+    ) {
       latestManifestResponse.set(server.url, request)
       for (const listener of serverContentsListeners) {
         try {
-          listener(server, contents)
+          listener(current, contents)
         } catch (error) {
           warn('install', 'could not publish fresh manifest contents', String(error))
         }
@@ -1550,7 +1565,10 @@ export const listServerNodes = async (
   server: ConnectedServer,
 ): Promise<readonly TreeNode[] | null> => {
   const contents = await listServerContents(server)
-  return contents === null || !isLatestServerContents(server.url, contents) ? null : contents.nodes
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  return contents === null || current === undefined || !sameServerConnection(current, server)
+    ? null
+    : contents.nodes
 }
 
 /**

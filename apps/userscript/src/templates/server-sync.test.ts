@@ -6,6 +6,33 @@ const state = vi.hoisted(() => ({
   isLatestServerContents: vi.fn(() => true),
   listServerContents: vi.fn(),
   onStateChange: vi.fn(),
+  sameServerConnection: vi.fn(
+    (
+      left: {
+        url: string
+        token: string | null
+        status: string
+        isAdmin: boolean
+        season: number | null
+        info: { id: string; auth: string } | null
+      },
+      right: {
+        url: string
+        token: string | null
+        status: string
+        isAdmin: boolean
+        season: number | null
+        info: { id: string; auth: string } | null
+      },
+    ) =>
+      left.url === right.url &&
+      left.token === right.token &&
+      left.status === right.status &&
+      left.isAdmin === right.isAdmin &&
+      left.season === right.season &&
+      left.info?.id === right.info?.id &&
+      left.info?.auth === right.info?.auth,
+  ),
 }))
 const store = vi.hoisted(() => ({
   forgetServerTemplate: vi.fn(),
@@ -153,6 +180,21 @@ describe('server template sync', () => {
     expect(store.putServerTemplate).not.toHaveBeenCalled()
   })
 
+  it('does not reconcile a blind manifest rejected by aggregate admission', async () => {
+    const contents = { nodes: [], templates: [] }
+    state.listServerContents.mockResolvedValueOnce(contents)
+    store.localTemplates.mockReturnValue([
+      { id: 'srv:https%3A%2F%2Fexample.test:held', serverUrl: connected.url },
+    ])
+    const { rejectServerContentsForSync, syncServerTemplates } = await import('./server-sync.js')
+    rejectServerContentsForSync(contents)
+
+    await syncServerTemplates(connected)
+
+    expect(store.forgetServerTemplate).not.toHaveBeenCalled()
+    expect(store.putServerTemplate).not.toHaveBeenCalled()
+  })
+
   it('queues the newest full snapshot when superseded during removal', async () => {
     let releaseForget = (): void => undefined
     let current = true
@@ -230,6 +272,37 @@ describe('server template sync', () => {
 
     expect(store.updateServerTemplateMetadata).not.toHaveBeenCalled()
     expect(store.putServerTemplate).not.toHaveBeenCalled()
+  })
+
+  it('keeps active work across a cosmetic server rename', async () => {
+    const template = {
+      id: 'wanted',
+      nodeId: 'folder',
+      name: 'Wanted',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [],
+    }
+    const held = {
+      id: 'srv:https%3A%2F%2Fexample.test:wanted',
+      serverUrl: connected.url,
+      serverVersion: 'v1',
+    }
+    store.localTemplates.mockReturnValue([held])
+    state.getState.mockReturnValue({
+      servers: [{ ...connected, info: { ...connected.info, name: 'Renamed' } }],
+    })
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    await syncServerTemplates(connected, [template])
+
+    expect(store.updateServerTemplateMetadata).toHaveBeenCalledWith(
+      held.id,
+      template.name,
+      template.nodeId,
+    )
   })
 
   it('aborts an obsolete chunk drain and lets the same URL reconnect immediately', async () => {

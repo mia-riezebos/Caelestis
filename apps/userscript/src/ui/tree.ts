@@ -10,6 +10,7 @@ import {
   MAX_TREE_NODES,
   removeTreeStateKeys,
   type ServerContents,
+  sameServerConnection,
   setLocalFolderVisible,
   setScopeVisible,
   setState,
@@ -412,7 +413,8 @@ const refreshOnce = async (
   // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
   // emptying itself — a server that blinks should not take its folders off your screen.
   if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
-  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined || !sameServerConnection(current, server)) {
     return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
   }
   if (refreshGeneration.get(server.url) !== generation) {
@@ -462,7 +464,8 @@ export const rememberServerContents = (
   server: ConnectedServer,
   contents: ServerContents,
 ): NodeRefreshResult => {
-  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined || !sameServerConnection(current, server)) {
     return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
   }
   const { nodes, templates } = contents
@@ -503,6 +506,11 @@ export const rememberServerContents = (
     sameRows(previous.nodes, nodes, sameNode) &&
     sameRows(previous.templates, templates, sameTemplate)
   ) {
+    // Keep the newest parsed arrays as the shared tree/canvas authority without paying for a redraw.
+    // The equivalent prior arrays can then be collected instead of living beside the sync baton.
+    nodesByServer.set(server.url, nodes)
+    templatesByServer.set(server.url, templates)
+    rowIdentityByServer.set(server.url, identity)
     return { ok: true, changed: false }
   }
   nodesByServer.set(server.url, nodes)

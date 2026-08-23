@@ -14,6 +14,8 @@ import {
   isLatestServerContents,
   listServerContents,
   onStateChange,
+  type ServerContents,
+  sameServerConnection,
 } from '../state.js'
 import { ByteCache } from './byte-cache.js'
 import {
@@ -263,6 +265,12 @@ const inFlight = new Map<string, number>()
  * of the download checks itself against.
  */
 const latestVersion = new Map<string, string>()
+const rejectedServerContents = new WeakSet<ServerContents>()
+
+/** Mark a parsed manifest as inadmissible before a blind poll can reconcile it. */
+export const rejectServerContentsForSync = (contents: ServerContents): void => {
+  rejectedServerContents.add(contents)
+}
 
 /**
  * Which generation of a server's connection a download belongs to.
@@ -317,7 +325,7 @@ const syncServerTemplatesOnce = async (
   snapshotCurrent: () => boolean = () => true,
 ): Promise<void> => {
   const connectionCurrent = (): boolean =>
-    getState().servers.find((candidate) => candidate.url === server.url) === server
+    getState().servers.some((candidate) => sameServerConnection(candidate, server))
   if (server.status !== 'connected' || !connectionCurrent() || !snapshotCurrent()) return
   const generation = generationOf(server.url)
   const signal = generationSignal(server.url, generation)
@@ -333,9 +341,11 @@ const syncServerTemplatesOnce = async (
     if (contents !== null) {
       snapshotCurrent = () => isLatestServerContents(server.url, contents)
       if (!current()) return
-      // The manifest event may already have queued this exact snapshot for both the tree and canvas.
-      // Let the serialized drain consume it once instead of reconciling it here and once again.
-      if (pendingServerSyncs.get(server.url)?.known === contents.templates) return
+      if (rejectedServerContents.delete(contents)) return
+      // The manifest coordinator queues either this admitted snapshot or the previous admitted one
+      // when the new response exceeds aggregate budgets. In both cases that explicit authority must
+      // replace this blind result rather than being reconciled after it.
+      if (pendingServerSyncs.get(server.url)?.known !== undefined) return
     }
     // The folders as well as the templates, because a template's visibility answers to the folders
     // above it and this is the only place that learns of them changing between polls.
@@ -470,9 +480,9 @@ export const syncServerTemplates = async (
   known?: readonly ServerTemplate[],
   snapshotCurrent?: () => boolean,
 ): Promise<void> => {
-  // State replaces the connection object when a URL is removed or reconnected. Exact identity also
-  // keeps a callback from the former connection from publishing its old manifest into the new one.
-  if (!getState().servers.includes(server)) return
+  // Immutable state rows may change cosmetic server metadata in place. Credentials, deployment,
+  // season, scope, and connectivity define the lifetime that is allowed to continue this work.
+  if (!getState().servers.some((candidate) => sameServerConnection(candidate, server))) return
   if (snapshotCurrent?.() === false) return
   const pending = pendingServerSyncs.get(server.url)
   // A blind poll carries no newer state of its own. If a mutation has already queued the manifest
@@ -532,11 +542,15 @@ export const installServerSync = (): void => {
     const connected = getState().servers.filter((server) => server.status === 'connected')
     if (
       connected.length === lastConnected.length &&
-      connected.every((server, index) => server === lastConnected[index])
-    )
+      connected.every((server) =>
+        lastConnected.some((previous) => sameServerConnection(server, previous)),
+      )
+    ) {
+      lastConnected = connected
       return
+    }
     for (const previous of lastConnected) {
-      if (connected.find((server) => server.url === previous.url) !== previous) {
+      if (!connected.some((server) => sameServerConnection(server, previous))) {
         endServerGeneration(previous.url)
       }
     }
