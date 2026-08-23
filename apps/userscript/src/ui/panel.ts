@@ -1202,7 +1202,7 @@ const applyRename = async (
     // nothing that caches chunks should be told to re-download them.
     const result = await patchTemplate(target.server, target.templateId, { name })
     if (!result.ok) toast(result.message, 'error')
-    await refreshNodes(target.server, rerender, result.ok)
+    await refreshCurrentNodes(target.server, rerender, true)
     return
   }
   if (target.server !== null && target.nodeId === null) {
@@ -1220,7 +1220,7 @@ const applyRename = async (
   }
   const result = await renameNodeOnServer(target.server, target.nodeId, name)
   if (!result.ok) toast(result.message, 'error')
-  await refreshNodes(target.server, rerender, result.ok)
+  await refreshCurrentNodes(target.server, rerender, true)
 }
 
 /**
@@ -1339,7 +1339,7 @@ const applyDelete = async (
     if (!confirmed) return
     const result = await deleteTemplateOnServer(target.server, target.templateId)
     if (!result.ok) toast(result.message, 'error')
-    await refreshNodes(target.server, rerender, result.ok)
+    await refreshCurrentNodes(target.server, rerender, true)
     return
   }
   if (target.server === null || target.nodeId === null) {
@@ -1396,7 +1396,7 @@ const applyDelete = async (
     inside === null ? null : holding,
   )
   if (!result.ok) toast(result.message, 'error')
-  await refreshNodes(target.server, rerender, result.ok)
+  await refreshCurrentNodes(target.server, rerender, true)
 }
 
 /**
@@ -1463,7 +1463,7 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
         const result = await patchTemplate(server, templateId, { nodeId: chooser.value })
         box.remove()
         if (!result.ok) toast(result.message, 'error')
-        await refreshNodes(server, rerender, result.ok)
+        await refreshCurrentNodes(server, rerender, true)
       },
       `template:move:${templateId}`,
     )
@@ -1525,7 +1525,7 @@ const moveBranch = async (
     if (found !== null && destination.nodeId === found.node.parentId) return draggedKey
     const moved = await moveNodeOnServer(destination.server, sourceId, destination.nodeId)
     if (!moved.ok) toast(moved.message, 'error')
-    await refreshNodes(destination.server, rerender, moved.ok)
+    await refreshCurrentNodes(destination.server, rerender, true)
     return moved.ok ? draggedKey : null
   }
 
@@ -1558,8 +1558,8 @@ const moveBranch = async (
   )
   if (result.ok) toast(result.message)
   else toast(result.message, 'error')
-  if (sourceServer !== null) await refreshNodes(sourceServer, rerender, true)
-  if (destination.kind === 'server') await refreshNodes(destination.server, rerender, true)
+  if (sourceServer !== null) await refreshCurrentNodes(sourceServer, rerender, true)
+  if (destination.kind === 'server') await refreshCurrentNodes(destination.server, rerender, true)
   rerender()
   if (!result.ok || result.destinationRootId === undefined) return null
   return destination.kind === 'server'
@@ -1666,7 +1666,7 @@ const copyServerTemplateToLocal = async (
   const removed = await deleteTemplateOnServer(source, templateId).finally(releaseCopied)
   if (!removed.ok) toast(`Copied into Local, but ${removed.message}`, 'error')
   else toast(`Moved “${found.template.name}” into Local.`)
-  await refreshNodes(source, rerender, removed.ok)
+  await refreshCurrentNodes(source, rerender, true)
   rerender()
   return `local:${copied.id}`
 }
@@ -1723,7 +1723,7 @@ const dropOnServerNode = async (
     })
     if (result.ok) toast(`Uploaded “${local.name}” to ${server.info?.name ?? server.url}.`)
     else toast(result.message, 'error')
-    await refreshNodes(server, rerender, result.ok)
+    await refreshCurrentNodes(server, rerender, true)
     return result.ok ? serverTemplateTreeKey(server, result.id) : null
   }
 
@@ -1736,7 +1736,7 @@ const dropOnServerNode = async (
     if (found.template.nodeId === nodeId) return draggedKey
     const result = await patchTemplate(server, templateId, { nodeId })
     if (!result.ok) toast(result.message, 'error')
-    await refreshNodes(server, rerender, result.ok)
+    await refreshCurrentNodes(server, rerender, true)
     return result.ok ? draggedKey : null
   }
 
@@ -1798,8 +1798,8 @@ const dropOnServerNode = async (
     png,
   })
   if (!uploaded.ok) {
-    // Nothing has been removed yet, so a failure here leaves both sides exactly as they were.
     toast(uploaded.message, 'error')
+    await refreshCurrentNodes(server, rerender, true)
     return null
   }
   if (!stillConnected(source) || !stillConnected(server)) {
@@ -1807,7 +1807,7 @@ const dropOnServerNode = async (
       `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
       'warning',
     )
-    await refreshNodes(server, rerender, true)
+    await refreshCurrentNodes(server, rerender, true)
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const sourceBeforePublish = serverTemplateAt(source.url, templateId)
@@ -1819,7 +1819,7 @@ const dropOnServerNode = async (
       `Copied to ${destinationName} as a draft, but the source changed and was kept.`,
       'warning',
     )
-    await refreshNodes(server, rerender, true)
+    await refreshCurrentNodes(server, rerender, true)
     return serverTemplateTreeKey(server, uploaded.id)
   }
   if (sourceBeforePublish.published) {
@@ -1829,7 +1829,7 @@ const dropOnServerNode = async (
         `Copied to ${destinationName} as a draft, but could not publish it; the source was kept.`,
         'error',
       )
-      await refreshNodes(server, rerender, true)
+      await refreshCurrentNodes(server, rerender, true)
       return serverTemplateTreeKey(server, uploaded.id)
     }
   }
@@ -1838,7 +1838,7 @@ const dropOnServerNode = async (
       `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
       'warning',
     )
-    await refreshNodes(server, rerender, true)
+    await refreshCurrentNodes(server, rerender, true)
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const latestSourceTemplate = serverTemplateAt(source.url, templateId)
@@ -1847,7 +1847,7 @@ const dropOnServerNode = async (
     !sameServerTemplateRevision(sourceBeforePublish, latestSourceTemplate)
   ) {
     toast(`Copied to ${destinationName}, but the source changed and was kept.`, 'warning')
-    await refreshNodes(server, rerender, true)
+    await refreshCurrentNodes(server, rerender, true)
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const removed = await deleteTemplateOnServer(source, templateId)
@@ -1856,8 +1856,8 @@ const dropOnServerNode = async (
   } else {
     toast(`Moved “${found.template.name}” to ${destinationName}.`)
   }
-  await refreshNodes(source, rerender, removed.ok)
-  await refreshNodes(server, rerender, true)
+  await refreshCurrentNodes(source, rerender, true)
+  await refreshCurrentNodes(server, rerender, true)
   return serverTemplateTreeKey(server, uploaded.id)
 }
 
@@ -1989,7 +1989,7 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
         box.remove()
         if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
         else toast(result.message, 'error')
-        await refreshNodes(server, rerender, result.ok)
+        await refreshCurrentNodes(server, rerender, true)
       },
       `template:replace:${templateId}`,
     )
@@ -2009,7 +2009,7 @@ const setServerTemplatePublished = async (
   if (server === null || templateId === undefined) return
   const result = await patchTemplate(server, templateId, { published })
   if (!result.ok) toast(result.message, 'error')
-  await refreshNodes(server, rerender, result.ok)
+  await refreshCurrentNodes(server, rerender, true)
 }
 
 /**
@@ -2362,12 +2362,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
           png,
         })
         box.remove()
-        if (result.ok) {
-          toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
-          await refreshNodes(server, rerender, true)
-        } else {
-          toast(result.message, 'error')
-        }
+        if (result.ok) toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
+        else toast(result.message, 'error')
+        await refreshCurrentNodes(server, rerender, true)
       },
       `template:copy:${templateId}`,
     )
@@ -2440,12 +2437,13 @@ const createFolder = async (target: TreeTarget, rerender: () => void): Promise<v
   const result = await createNode(server, name, nodeId)
   if (!result.ok) {
     toast(result.message, 'error')
+    await refreshCurrentNodes(server, rerender, true)
     return
   }
   // Refresh before rendering: the row we are about to put into rename mode does not exist in the
   // cached node list yet, so re-rendering first would draw a tree without it and drop the rename.
   startRenaming(nodeTreeKey(server, result.node.id))
-  await refreshNodes(server, rerender, true)
+  await refreshCurrentNodes(server, rerender, true)
 }
 
 const buildPanel = (): HTMLElement => {
@@ -2641,6 +2639,17 @@ const serverNodesFailure = (result: Exclude<ServerNodesResult, { status: 'ok' }>
  * `upsertServer` cannot tell "update this row" from "add this row".
  */
 const stillConnected = (server: ConnectedServer): boolean => isCurrentServerConnection(server)
+
+/** Refresh with the connection that is configured now, never credentials captured before an await. */
+const refreshCurrentNodes = async (
+  server: ConnectedServer,
+  rerender: () => void,
+  force = false,
+): Promise<void> => {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined) return
+  await refreshNodes(current, rerender, force)
+}
 
 /**
  * Whichever tree is currently on screen.
