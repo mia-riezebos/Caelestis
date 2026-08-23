@@ -1729,6 +1729,7 @@ export const renameServer = async (
         latest !== undefined &&
         latest.info !== null &&
         isCurrentServerConnection(current) &&
+        latest.info === current.info &&
         refreshed !== null &&
         refreshed.id === server.info.id &&
         latest.info.id === refreshed.id
@@ -1738,6 +1739,8 @@ export const renameServer = async (
         latest !== undefined &&
         latest.info !== null &&
         isCurrentServerConnection(server) &&
+        latest.info === current.info &&
+        refreshed === null &&
         latest.info.id === server.info.id
       ) {
         // Preserve the immediate feedback when the metadata read alone failed. This fallback is

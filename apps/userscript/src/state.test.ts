@@ -599,8 +599,13 @@ describe('server state boundaries', () => {
     expect(getState().servers).toEqual([])
   })
 
-  it('keeps newer server metadata learned while a rename response was delayed', async () => {
+  it('keeps newer server metadata learned while its post-rename read was delayed', async () => {
     let finishRename = (_response: Response): void => undefined
+    let finishMetadata = (_response: Response): void => undefined
+    let metadataStarted = (): void => undefined
+    const readingMetadata = new Promise<void>((resolve) => {
+      metadataStarted = resolve
+    })
     vi.stubGlobal(
       'fetch',
       vi
@@ -611,13 +616,15 @@ describe('server state boundaries', () => {
               finishRename = resolve
             }),
         )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ ...serverInfo, name: 'Newer external name' }), {
-            status: 200,
-          }),
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishMetadata = resolve
+              metadataStarted()
+            }),
         ),
     )
-    const { getState, removeServer, renameServer, setState } = await import('./state.js')
+    const { getState, renameServer, upsertServer } = await import('./state.js')
     const server = {
       url: 'https://example.com',
       info: serverInfo,
@@ -626,14 +633,15 @@ describe('server state boundaries', () => {
       isAdmin: true,
       season: 0,
     }
-    setState({ servers: [server] })
+    upsertServer(server)
 
     const renaming = renameServer(server, 'Delayed name')
-    removeServer(server.url)
-    setState({
-      servers: [{ ...server, info: { ...serverInfo, name: 'Newer external name' } }],
-    })
     finishRename(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    await readingMetadata
+    upsertServer({ ...server, info: { ...serverInfo, name: 'Newer external name' } })
+    finishMetadata(
+      new Response(JSON.stringify({ ...serverInfo, name: 'Delayed name' }), { status: 200 }),
+    )
 
     await expect(renaming).resolves.toEqual({ ok: true })
     expect(getState().servers[0]?.info?.name).toBe('Newer external name')

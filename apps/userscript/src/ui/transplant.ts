@@ -164,12 +164,20 @@ const localBranch = (rootId: string): Branch | null => {
   const root = all.find((folder) => folder.id === rootId)
   if (root === undefined) return null
 
-  const within = new Set<string>([rootId])
-  // Repeated passes rather than recursion: the list is small and a cycle cannot loop this.
-  for (let pass = 0; pass < all.length; pass++) {
-    for (const folder of all) {
-      if (folder.parentId !== null && within.has(folder.parentId)) within.add(folder.id)
-    }
+  const children = new Map<string, string[]>()
+  for (const folder of all) {
+    if (folder.parentId === null) continue
+    const siblings = children.get(folder.parentId) ?? []
+    siblings.push(folder.id)
+    children.set(folder.parentId, siblings)
+  }
+  const within = new Set<string>()
+  const stack = [rootId]
+  while (stack.length > 0) {
+    const id = stack.pop()
+    if (id === undefined || within.has(id)) continue
+    within.add(id)
+    for (const child of children.get(id) ?? []) stack.push(child)
   }
 
   const folders = all
@@ -192,15 +200,24 @@ const localBranch = (rootId: string): Branch | null => {
 
 /** Folders first, parents before children, so a destination parent always exists when needed. */
 const inCreationOrder = (branch: Branch): Branch['folders'] => {
-  const done = new Set<string>()
+  const children = new Map<string | null, Array<Branch['folders'][number]>>()
+  for (const folder of branch.folders) {
+    const siblings = children.get(folder.parentId) ?? []
+    siblings.push(folder)
+    children.set(folder.parentId, siblings)
+  }
   const out: Array<Branch['folders'][number]> = []
-  let guard = branch.folders.length + 1
-  while (out.length < branch.folders.length && guard-- > 0) {
-    for (const folder of branch.folders) {
-      if (done.has(folder.id)) continue
-      if (folder.parentId !== null && !done.has(folder.parentId)) continue
-      done.add(folder.id)
-      out.push(folder)
+  const seen = new Set<string>()
+  const stack = [...(children.get(null) ?? [])].reverse()
+  while (stack.length > 0) {
+    const folder = stack.pop()
+    if (folder === undefined || seen.has(folder.id)) continue
+    seen.add(folder.id)
+    out.push(folder)
+    const descendants = children.get(folder.id) ?? []
+    for (let at = descendants.length - 1; at >= 0; at--) {
+      const child = descendants[at]
+      if (child !== undefined) stack.push(child)
     }
   }
   return out
