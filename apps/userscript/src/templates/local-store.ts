@@ -1110,10 +1110,16 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
  * removed. A server source transfers its immutable indices and tiles to the Local identity after
  * that commit, so a move at the aggregate budget does not need to retain the same artwork twice.
  */
+/** Durable Local placement does not carry the server-only antimeridian representation. */
+export const canCopyAsLocalTemplate = (template: PlacedTemplate): boolean => template.wrapX !== true
+
 export const copyAsLocalTemplate = async (
   template: PlacedTemplate,
   id: string,
 ): Promise<PlacedTemplate> => {
+  if (!canCopyAsLocalTemplate(template)) {
+    throw new RangeError('wrapped server templates cannot be copied into Local')
+  }
   const restoring = restoreInFlight
   if (restoring !== null) await restoring
   const imported: ImportedTemplate = {

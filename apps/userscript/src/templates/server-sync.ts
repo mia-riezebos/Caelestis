@@ -401,7 +401,15 @@ export const syncServerTemplates = async (
   server: ConnectedServer,
   known?: readonly ServerTemplate[],
 ): Promise<void> => {
-  pendingServerSyncs.set(server.url, { server, ...(known === undefined ? {} : { known }) })
+  const pending = pendingServerSyncs.get(server.url)
+  // A blind poll carries no newer state of its own. If a mutation has already queued the manifest
+  // it just read, keep that authoritative snapshot instead of replacing it with a request that may
+  // fail or return a stale intermediary. A later explicit snapshot still replaces an older one.
+  if (known === undefined && pending?.known !== undefined) {
+    pendingServerSyncs.set(server.url, { server, known: pending.known })
+  } else {
+    pendingServerSyncs.set(server.url, { server, ...(known === undefined ? {} : { known }) })
+  }
   while (pendingServerSyncs.has(server.url) || serverSyncRuns.has(server.url)) {
     await ensureServerSyncRun(server.url)
   }

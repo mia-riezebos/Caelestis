@@ -10,6 +10,7 @@ import {
   previewLocalTemplate,
   removeLocalTemplate,
 } from './local-store.js'
+import { horizontalSpans } from './placement.js'
 
 /**
  * Placing a template on the map.
@@ -115,21 +116,28 @@ const isOverTemplate = (clientX: number, clientY: number): boolean => {
   const template = localTemplates().find((candidate) => candidate.id === session?.id)
   if (template === undefined) return false
   return (
-    point.x >= session.x &&
-    point.x < session.x + template.width &&
+    horizontalSpans({ ...template, originX: session.x }).some(
+      (span) => point.x >= span.worldStart && point.x < span.worldEnd,
+    ) &&
     point.y >= session.y &&
     point.y < session.y + template.height
   )
 }
 
 const boundedOrigin = (
-  template: { width: number; height: number },
+  template: { width: number; height: number; wrapX?: boolean },
   x: number,
   y: number,
-): { x: number; y: number } => ({
-  x: Math.min(Math.max(0, Math.round(x)), WORLD_PIXELS - template.width),
-  y: Math.min(Math.max(0, Math.round(y)), WORLD_PIXELS - template.height),
-})
+): { x: number; y: number } => {
+  const roundedX = Math.round(x)
+  return {
+    x:
+      template.wrapX === true
+        ? ((roundedX % WORLD_PIXELS) + WORLD_PIXELS) % WORLD_PIXELS
+        : Math.min(Math.max(0, roundedX), WORLD_PIXELS - template.width),
+    y: Math.min(Math.max(0, Math.round(y)), WORLD_PIXELS - template.height),
+  }
+}
 
 /** Borrow the map's own cursor for as long as placement owns the pointer. */
 const setCursor = (shape: string): void => {

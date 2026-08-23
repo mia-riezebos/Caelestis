@@ -39,6 +39,7 @@ import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
   localTemplates as allLocal,
+  canCopyAsLocalTemplate,
   copyAsLocalTemplate,
   forgetServerTemplates,
   localTemplates,
@@ -1519,6 +1520,10 @@ const copyServerTemplateToLocal = async (
   )
   if (drawn === undefined) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
+    return null
+  }
+  if (!canCopyAsLocalTemplate(drawn)) {
+    toast('Wrapped server templates cannot be moved into Local yet.', 'warning')
     return null
   }
 

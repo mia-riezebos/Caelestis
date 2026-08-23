@@ -66,4 +66,22 @@ describe('server template sync', () => {
 
     expect(state.listServerContents).toHaveBeenCalledTimes(2)
   })
+
+  it('does not let a blind poll displace a pending mutation manifest', async () => {
+    let release = (_value: { nodes: never[]; templates: never[] }): void => undefined
+    const firstContents = new Promise<{ nodes: never[]; templates: never[] }>((resolve) => {
+      release = resolve
+    })
+    state.listServerContents.mockReturnValueOnce(firstContents)
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    const first = syncServerTemplates(connected)
+    await vi.waitFor(() => expect(state.listServerContents).toHaveBeenCalledOnce())
+    const mutation = syncServerTemplates(connected, [])
+    const blindPoll = syncServerTemplates(connected)
+    release({ nodes: [], templates: [] })
+    await Promise.all([first, mutation, blindPoll])
+
+    expect(state.listServerContents).toHaveBeenCalledOnce()
+  })
 })

@@ -648,17 +648,31 @@ export const loadState = (): State => {
           (key): key is string => typeof key === 'string' && key.length <= 2_048,
         )
       : []
+    const migrateServerTemplateScope = (key: string): string => {
+      for (const server of servers) {
+        const prefix = `srv:${server.url}:`
+        if (!key.startsWith(prefix)) continue
+        const templateId = key.slice(prefix.length)
+        if (UUID_V7.test(templateId)) {
+          return `srv:${encodeURIComponent(server.url)}:${templateId}`
+        }
+      }
+      return key
+    }
     const hiddenScopes = [
       ...new Set(
         storedHiddenScopes.flatMap((key) => {
           const legacyNodeId = key.startsWith('node:') ? key.slice('node:'.length) : ''
-          if (!UUID_V7.test(legacyNodeId)) return [key]
+          if (!UUID_V7.test(legacyNodeId)) return [migrateServerTemplateScope(key)]
           // The old key hid this node id without naming a server. Preserve that meaning for every
           // connection that existed with the setting, then store only the collision-safe form.
           return servers.map((server) => `node:${encodeURIComponent(server.url)}:${legacyNodeId}`)
         }),
       ),
     ].slice(0, MAX_CUSTOM_ORDER)
+    const scopesMigrated =
+      hiddenScopes.length !== storedHiddenScopes.length ||
+      hiddenScopes.some((key, index) => key !== storedHiddenScopes[index])
     state = {
       ...DEFAULT_STATE,
       servers,
@@ -681,7 +695,7 @@ export const loadState = (): State => {
       shareTiles: stored.shareTiles === true,
     }
     log('install', 'state loaded', { servers: state.servers.length })
-    if (storedRaw.legacyPalette) writeRaw(JSON.stringify(state))
+    if (storedRaw.legacyPalette || scopesMigrated) writeRaw(JSON.stringify(state))
     notifyStateListeners()
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))

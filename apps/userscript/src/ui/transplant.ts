@@ -15,6 +15,7 @@ import {
   uploadTemplate,
 } from '../state.js'
 import {
+  canCopyAsLocalTemplate,
   copyAsLocalTemplate,
   localTemplates,
   type PlacedTemplate,
@@ -186,6 +187,17 @@ export const transplant = async (
       templates: 0,
       message:
         'Some templates in that folder have not finished loading yet — try again in a moment.',
+    }
+  }
+  if (destination.kind === 'local') {
+    const wrapped = branch.templates.find(({ template }) => !canCopyAsLocalTemplate(template))
+    if (wrapped !== undefined) {
+      return {
+        ok: false,
+        nodes: 0,
+        templates: 0,
+        message: `“${wrapped.template.name}” wraps across the world edge and cannot be moved into Local yet.`,
+      }
     }
   }
 

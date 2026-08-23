@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_A = '019fed50-87a1-7523-a88c-bdeafad49682'
+const TEMPLATE_A = '019fed50-87a1-7523-a88c-bdeafad49683'
 
 const serverInfo = { id: SERVER_ID, name: 'Caelestis', auth: 'none' as const }
 const manifest = {
@@ -33,6 +34,8 @@ describe('server state boundaries', () => {
   })
 
   it('does not trust persisted connectivity or scope but retains cache identity', async () => {
+    const persist = vi.fn()
+    vi.stubGlobal('GM_setValue', persist)
     vi.stubGlobal(
       'GM_getValue',
       vi.fn(() =>
@@ -49,6 +52,7 @@ describe('server state boundaries', () => {
           ],
           customOrder: [`node:${NODE_A}`, 'local:kept'],
           collapsed: ['local', 'server:https://example.com'],
+          hiddenScopes: [`srv:https://example.com:${TEMPLATE_A}`],
         }),
       ),
     )
@@ -65,6 +69,12 @@ describe('server state boundaries', () => {
     ])
     expect(loadState().customOrder).toEqual(['local:kept'])
     expect(loadState().collapsed).toEqual(['local', 'server:https://example.com'])
+    expect(loadState().hiddenScopes).toEqual([
+      `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`,
+    ])
+    expect(JSON.parse(String(persist.mock.calls[0]?.[1])).hiddenScopes).toEqual([
+      `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`,
+    ])
   })
 
   it('notifies paint subscribers after restoring persisted order', async () => {
