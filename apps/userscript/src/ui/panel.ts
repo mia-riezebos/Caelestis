@@ -1463,7 +1463,7 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
         const result = await patchTemplate(server, templateId, { nodeId: chooser.value })
         box.remove()
         if (!result.ok) toast(result.message, 'error')
-        await refreshCurrentNodes(server, rerender, true)
+        void refreshCurrentNodes(server, rerender, true)
       },
       `template:move:${templateId}`,
     )
@@ -1558,8 +1558,12 @@ const moveBranch = async (
   )
   if (result.ok) toast(result.message)
   else toast(result.message, 'error')
-  if (sourceServer !== null) await refreshCurrentNodes(sourceServer, rerender, true)
-  if (destination.kind === 'server') await refreshCurrentNodes(destination.server, rerender, true)
+  await Promise.all([
+    sourceServer === null ? undefined : refreshCurrentNodes(sourceServer, rerender, true),
+    destination.kind === 'local'
+      ? undefined
+      : refreshCurrentNodes(destination.server, rerender, true),
+  ])
   rerender()
   if (!result.ok || result.destinationRootId === undefined) return null
   return destination.kind === 'server'
@@ -1856,8 +1860,10 @@ const dropOnServerNode = async (
   } else {
     toast(`Moved “${found.template.name}” to ${destinationName}.`)
   }
-  await refreshCurrentNodes(source, rerender, true)
-  await refreshCurrentNodes(server, rerender, true)
+  await Promise.all([
+    refreshCurrentNodes(source, rerender, true),
+    refreshCurrentNodes(server, rerender, true),
+  ])
   return serverTemplateTreeKey(server, uploaded.id)
 }
 
@@ -1989,7 +1995,7 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
         box.remove()
         if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
         else toast(result.message, 'error')
-        await refreshCurrentNodes(server, rerender, true)
+        void refreshCurrentNodes(server, rerender, true)
       },
       `template:replace:${templateId}`,
     )
@@ -2364,7 +2370,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         box.remove()
         if (result.ok) toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
         else toast(result.message, 'error')
-        await refreshCurrentNodes(server, rerender, true)
+        void refreshCurrentNodes(server, rerender, true)
       },
       `template:copy:${templateId}`,
     )

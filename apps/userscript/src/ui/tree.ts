@@ -383,6 +383,7 @@ export type NodeRefreshResult =
   | { readonly ok: true; readonly changed?: boolean }
   | { readonly ok: false; readonly message: string; readonly superseded?: true }
 const refreshing = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
+const refreshControllers = new Map<string, AbortController>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
 const nodeErrors = new WeakMap<ConnectedServer, string>()
 const refreshGeneration = new Map<string, number>()
@@ -392,6 +393,9 @@ export const refreshNodes = async (
   rerender: () => void,
   force = false,
 ): Promise<NodeRefreshResult> => {
+  if (!isCurrentServerConnection(server)) {
+    return { ok: false, message: 'The server connection changed before refresh.', superseded: true }
+  }
   const pending = refreshing.get(server)
   if (!force && pending !== undefined) {
     const result = await pending
@@ -400,11 +404,15 @@ export const refreshNodes = async (
   }
   const generation = (refreshGeneration.get(server.url) ?? 0) + 1
   refreshGeneration.set(server.url, generation)
+  refreshControllers.get(server.url)?.abort(new Error('superseded by a newer refresh'))
+  const controller = new AbortController()
+  refreshControllers.set(server.url, controller)
   refreshedConnections.add(server)
-  const run = refreshOnce(server, generation)
+  const run = refreshOnce(server, generation, controller.signal)
   refreshing.set(server, run)
   const result = await run
   if (refreshing.get(server) === run) refreshing.delete(server)
+  if (refreshControllers.get(server.url) === controller) refreshControllers.delete(server.url)
   if (result.ok) nodeErrors.delete(server)
   else if (result.superseded !== true) nodeErrors.set(server, result.message)
   queueMicrotask(rerender)
@@ -414,11 +422,9 @@ export const refreshNodes = async (
 const refreshOnce = async (
   server: ConnectedServer,
   generation: number,
+  signal: AbortSignal,
 ): Promise<NodeRefreshResult> => {
-  const contents = await listServerContents(server)
-  // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
-  // emptying itself — a server that blinks should not take its folders off your screen.
-  if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
+  const contents = await listServerContents(server, signal)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(server)) {
     return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
@@ -426,6 +432,9 @@ const refreshOnce = async (
   if (refreshGeneration.get(server.url) !== generation) {
     return { ok: false, message: 'A newer refresh replaced this one.', superseded: true }
   }
+  // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
+  // emptying itself — a server that blinks should not take its folders off your screen.
+  if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
   if (!isLatestServerContents(server.url, contents)) {
     return { ok: false, message: 'A newer manifest replaced this one.', superseded: true }
   }

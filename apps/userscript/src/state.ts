@@ -241,11 +241,16 @@ const remoteCall = async <T>(
   read: (response: Response) => Promise<T>,
 ): Promise<T> => {
   const controller = new AbortController()
+  const upstream = init.signal
+  const abortFromUpstream = (): void => controller.abort(upstream?.reason)
+  if (upstream?.aborted) abortFromUpstream()
+  else upstream?.addEventListener('abort', abortFromUpstream, { once: true })
   const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
   try {
     return await read(await fetch(input, { ...init, signal: controller.signal }))
   } finally {
     clearTimeout(timeout)
+    upstream?.removeEventListener('abort', abortFromUpstream)
   }
 }
 
@@ -1590,13 +1595,17 @@ export const forgetAdmittedServerContents = (serverUrl: string): void => {
 
 export const listServerContents = async (
   server: ConnectedServer,
+  signal?: AbortSignal,
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
   const request = ++manifestRequestSequence
   try {
     const { response, body } = await remoteJson(
       `${server.url}/manifest?season=${server.season}`,
-      { headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` } },
+      {
+        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        ...(signal === undefined ? {} : { signal }),
+      },
       TREE_JSON_BYTES,
       LARGE_TRANSFER_TIMEOUT_MS,
     )
