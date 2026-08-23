@@ -5,8 +5,8 @@ import { getState } from '../state.js'
 import { toRgbUnit } from '../templates/appearance.js'
 import {
   appearanceOf,
+  displayTemplates,
   isTemplateVisible,
-  localTemplates,
   type PlacedTemplate,
 } from '../templates/local-store.js'
 import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
@@ -379,7 +379,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   const now = performance.now()
   let animating = false
   const wanted: { template: PlacedTemplate; fade: number }[] = []
-  for (const template of localTemplates()) {
+  for (const template of displayTemplates()) {
     const { value, done } = markerFades.advance(
       template.id,
       appearanceOf(template).markMismatch ? 1 : 0,
@@ -399,7 +399,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     const fade = value * templateFade.value
     if (fade > 0) wanted.push({ template, fade })
   }
-  markerFades.prune(new Set(localTemplates().map((template) => template.id)))
+  markerFades.prune(new Set(displayTemplates().map((template) => template.id)))
   if (animating) {
     const map = getMap() as { triggerRepaint?: () => void } | null
     map?.triggerRepaint?.()

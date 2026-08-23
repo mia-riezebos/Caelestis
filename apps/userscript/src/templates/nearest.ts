@@ -1,5 +1,5 @@
 import { viewportCentre } from '../main.js'
-import { isTemplateVisible, localTemplates, type PlacedTemplate } from './local-store.js'
+import { displayTemplates, isTemplateVisible, type PlacedTemplate } from './local-store.js'
 import { horizontalCentre, wrappedDeltaX } from './placement.js'
 
 /**
@@ -25,7 +25,7 @@ export const templateAtCentre = (): PlacedTemplate | null => {
   const centre = viewportCentre()
   if (centre === null) return null
   let best: { template: PlacedTemplate; distance: number } | null = null
-  for (const template of localTemplates()) {
+  for (const template of displayTemplates()) {
     if (!isTemplateVisible(template)) continue
     const dx = wrappedDeltaX(centre.x, horizontalCentre(template))
     const dy = template.originY + template.height / 2 - centre.y

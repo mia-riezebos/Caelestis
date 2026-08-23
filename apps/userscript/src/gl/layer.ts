@@ -3,7 +3,7 @@ import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
-import { appearanceOf, isTemplateVisible, localTemplates } from '../templates/local-store.js'
+import { appearanceOf, displayTemplates, isTemplateVisible } from '../templates/local-store.js'
 import { horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles } from '../tile-transform.js'
 import { colourFades, templateFades } from './fade.js'
@@ -343,7 +343,7 @@ export const overlayLayer = {
     const bufferWidth = gl.drawingBufferWidth
     const bufferHeight = gl.drawingBufferHeight
 
-    const all = localTemplates()
+    const all = displayTemplates()
     collect(gl, new Set(all.map((template) => template.id)))
 
     // Switched off is a destination, not an exclusion: a template on its way out is still drawn,

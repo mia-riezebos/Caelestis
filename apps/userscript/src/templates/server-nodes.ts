@@ -19,12 +19,23 @@ import { isScopeVisible } from '../state.js'
 
 /** Parent of each node, per server. Null means the server's top level. */
 const parents = new Map<string, Map<string, string | null>>()
+let revision = 0
+
+export const serverNodesRevision = (): number => revision
+
+/** Parent rows in manifest order, for consumers that need to reproduce the server tree. */
+export const serverNodeParents = (
+  serverUrl: string,
+): readonly (readonly [id: string, parentId: string | null])[] => [
+  ...(parents.get(serverUrl)?.entries() ?? []),
+]
 
 export const rememberNodes = (
   serverUrl: string,
   nodes: readonly { id: string; parentId: string | null }[],
 ): void => {
   parents.set(serverUrl, new Map(nodes.map((node) => [node.id, node.parentId])))
+  revision++
 }
 
 /** The scope key a folder's switch writes to, isolated from equal ids on another server. */
@@ -61,5 +72,6 @@ export const nodeChainVisible = (serverUrl: string, nodeId: string | null): bool
 export const forgetNodes = (serverUrl: string): readonly string[] => {
   const byId = parents.get(serverUrl)
   parents.delete(serverUrl)
+  revision++
   return byId === undefined ? [] : [...byId.keys()]
 }

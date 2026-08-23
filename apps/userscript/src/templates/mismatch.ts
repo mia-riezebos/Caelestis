@@ -10,8 +10,8 @@ import {
 import { claimedHiddenFor } from './colour-filter.js'
 import {
   appearanceOf,
+  displayTemplates,
   isTemplateVisible,
-  localTemplates,
   onLocalChange,
   type PlacedTemplate,
 } from './local-store.js'
@@ -249,7 +249,7 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
       .slice(id.length + 1)
       .split('/')
       .map(Number)
-    const template = localTemplates().find((candidate) => candidate.id === id)
+    const template = displayTemplates().find((candidate) => candidate.id === id)
     if (template === undefined || x === undefined || y === undefined) {
       stale.delete(cacheKey)
       continue
@@ -279,7 +279,7 @@ const scheduleIdleScan = (): void => {
  * past us while we were not looking.
  */
 export const wantsTilePixels = (): boolean =>
-  localTemplates().some(
+  displayTemplates().some(
     (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
   )
 
@@ -557,7 +557,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
   // hundreds to thousands in one go. `localTemplates()` copies and sorts the whole list, so asking
   // it per cache key per pixel was the cost of the whole function, several hundred thousand
   // copy-and-sorts on the decode path for one busy tile.
-  const templates = localTemplates()
+  const templates = displayTemplates()
   for (const cacheKey of keys) {
     const entry = cache.get(cacheKey)
     if (entry === undefined) continue
@@ -674,7 +674,7 @@ export const forgetMismatches = (id: string): void => {
 
 let knownTemplateIds = new Set<string>()
 onLocalChange(() => {
-  const current = new Set(localTemplates().map((template) => template.id))
+  const current = new Set(displayTemplates().map((template) => template.id))
   for (const id of knownTemplateIds) {
     if (!current.has(id)) forgetMismatches(id)
   }

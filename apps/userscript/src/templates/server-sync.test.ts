@@ -84,4 +84,39 @@ describe('server template sync', () => {
 
     expect(state.listServerContents).toHaveBeenCalledOnce()
   })
+
+  it('aborts an obsolete chunk drain and lets the same URL reconnect immediately', async () => {
+    let requestedSignal: AbortSignal | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+          await new Promise<Response>((_resolve, reject) => {
+            requestedSignal = init?.signal instanceof AbortSignal ? init.signal : undefined
+            requestedSignal?.addEventListener('abort', () => reject(new Error('aborted')), {
+              once: true,
+            })
+          }),
+      ),
+    )
+    const template = {
+      id: 'template',
+      nodeId: 'folder',
+      name: 'Template',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [{ tile: '0/0', hash: '0'.repeat(64) }],
+    }
+    const { endServerGeneration, syncServerTemplates } = await import('./server-sync.js')
+
+    const stale = syncServerTemplates(connected, [template])
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+    endServerGeneration(connected.url)
+
+    await expect(syncServerTemplates(connected, [])).resolves.toBeUndefined()
+    await expect(stale).resolves.toBeUndefined()
+    expect(requestedSignal?.aborted).toBe(true)
+  })
 })

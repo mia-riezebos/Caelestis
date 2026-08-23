@@ -23,7 +23,7 @@ vi.mock('../templates/local-store.js', () => ({
     hiddenColours: [],
   }),
   isTemplateVisible: () => true,
-  localTemplates: () => [
+  displayTemplates: () => [
     {
       id: 'visible-template',
       originX: 0,

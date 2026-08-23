@@ -563,6 +563,7 @@ describe('local template lifecycle', () => {
 
     expect(store.previewOriginFor(added.id)).toEqual({ x: 30, y: 40 })
     expect(store.localTemplates()[0]?.originX).toBe(10)
+    expect(store.displayTemplates()[0]).toMatchObject({ originX: 30, originY: 40 })
     expect(createImageBitmap).not.toHaveBeenCalled()
     expect(persistence.saveTemplate).not.toHaveBeenCalled()
   })
@@ -1403,7 +1404,10 @@ describe('local template lifecycle', () => {
 
     const [wrapped] = store.localTemplates()
     expect(wrapped).toBeDefined()
+    if (wrapped === undefined) throw new Error('wrapped template was not installed')
     expect([...(wrapped?.tiles.keys() ?? [])].sort()).toEqual(['0/0', '2047/0'])
+    expect(store.canCopyAsLocalTemplate(wrapped)).toBe(false)
+    expect(store.canCopyAsLocalTemplate({ ...wrapped, originX: 10 })).toBe(true)
     expect(bitmapInputs).toHaveLength(2)
     expect(bitmapInputs[0]?.data[999 * 4 + 3]).toBe(255)
     expect(bitmapInputs[1]?.data[3]).toBe(255)
@@ -1430,6 +1434,17 @@ describe('local template lifecycle', () => {
     await store.addLocalTemplate(template({ id: 'low', sortOrder: 0 }))
 
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['low', 'high'])
+  })
+
+  it('uses the durable custom tree order for display stacking', async () => {
+    const store = await import('./local-store.js')
+    const { setState } = await import('../state.js')
+    await store.addLocalTemplate(template({ id: 'high', sortOrder: 10 }))
+    await store.addLocalTemplate(template({ id: 'low', sortOrder: 0 }))
+    setState({ customOrder: ['local:high', 'local:low'] })
+
+    expect(store.localTemplates().map(({ id }) => id)).toEqual(['low', 'high'])
+    expect(store.displayTemplates().map(({ id }) => id)).toEqual(['high', 'low'])
   })
 
   it('selects the smallest mip that is not smaller than the target', async () => {

@@ -9,6 +9,7 @@ import {
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
 import { type ConnectedServer, getState, listServerContents, onStateChange } from '../state.js'
+import { ByteCache } from './byte-cache.js'
 import {
   forgetServerTemplate,
   hasRoomForServerTemplate,
@@ -32,33 +33,26 @@ import { rememberNodes } from './server-nodes.js'
  * somewhere else.
  */
 
-/** Chunk bytes by hash. Immutable by definition, so nothing here ever needs invalidating. */
-const chunkCache = new Map<string, Uint8Array>()
-
-/**
- * How many chunks to keep. A chunk is at most a tile — a megabyte decoded, far less as PNG — and
- * this only holds the encoded bytes, so a few hundred is small and saves re-downloading on every
- * version bump of a template that mostly did not change.
- */
 const CHUNK_CACHE_LIMIT = 512
+/** Encoded cache budget. The entry cap alone permits 512 adversarial 8 MiB responses. */
+const CHUNK_CACHE_BYTES = 64 * 1024 * 1024
 const CHUNK_FETCH_TIMEOUT_MS = 15_000
 const MAX_CHUNK_BYTES = 8 * 1024 * 1024
 
-const rememberChunk = (hash: string, bytes: Uint8Array): void => {
-  if (chunkCache.size >= CHUNK_CACHE_LIMIT) {
-    const oldest = chunkCache.keys().next()
-    if (!oldest.done) chunkCache.delete(oldest.value)
-  }
-  chunkCache.set(hash, bytes)
-}
+/** Chunk bytes by hash. Immutable by definition, so nothing here ever needs invalidating. */
+const chunkCache = new ByteCache<string>(CHUNK_CACHE_LIMIT, CHUNK_CACHE_BYTES)
 
-const fetchChunk = async (server: ConnectedServer, hash: string): Promise<Uint8Array | null> => {
+const fetchChunk = async (
+  server: ConnectedServer,
+  hash: string,
+  generationSignal: AbortSignal,
+): Promise<Uint8Array | null> => {
   const cached = chunkCache.get(hash)
   if (cached !== undefined) return cached
   try {
     const response = await fetch(`${server.url}/chunks/${hash}`, {
       headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
-      signal: AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS),
+      signal: AbortSignal.any([generationSignal, AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS)]),
     })
     if (!response.ok) return null
     const declared = Number(response.headers.get('content-length'))
@@ -90,7 +84,7 @@ const fetchChunk = async (server: ConnectedServer, hash: string): Promise<Uint8A
     // A configured server is not trusted to tell the truth about a content address. Verify before
     // admitting bytes to the global cache, otherwise one server can seed another server's hash.
     if ((await sha256Hex(bytes)) !== hash) return null
-    rememberChunk(hash, bytes)
+    chunkCache.set(hash, bytes)
     return bytes
   } catch {
     return null
@@ -152,6 +146,7 @@ const decodeChunk = async (
 const assemble = async (
   server: ConnectedServer,
   template: ServerTemplate,
+  generationSignal: AbortSignal,
 ): Promise<{ width: number; height: number; indices: Uint8Array } | null> => {
   const wrapsX = template.bbox.minX > template.bbox.maxX
   const width = wrapsX
@@ -163,6 +158,7 @@ const assemble = async (
   const indices = new Uint8Array(width * height).fill(TRANSPARENT_INDEX)
   let placed = 0
   for (const chunk of template.chunks) {
+    if (generationSignal.aborted) return null
     const [tileX, tileY] = chunk.tile.split('/').map(Number)
     if (
       tileX === undefined ||
@@ -182,7 +178,7 @@ const assemble = async (
     const chunkWidth = right - left
     const chunkHeight = bottom - top
     if (chunkWidth <= 0 || chunkHeight <= 0) return null
-    const bytes = await fetchChunk(server, chunk.hash)
+    const bytes = await fetchChunk(server, chunk.hash, generationSignal)
     if (bytes === null) return null
     const decoded = await decodeChunk(bytes, chunkWidth, chunkHeight)
     if (decoded === null) return null
@@ -222,7 +218,7 @@ export const serverTemplateKey = (serverUrl: string, id: string): string =>
   `srv:${encodeURIComponent(serverUrl)}:${id}`
 
 /** Templates already in flight, so a second sync while one runs does not download everything twice. */
-const inFlight = new Set<string>()
+const inFlight = new Map<string, number>()
 
 /**
  * The version each key's newest manifest asked for.
@@ -243,13 +239,28 @@ const latestVersion = new Map<string, string>()
  * does, so a reply that comes back into a different one is dropped rather than drawn.
  */
 const generations = new Map<string, number>()
+const generationControllers = new Map<string, { generation: number; controller: AbortController }>()
 
 const generationOf = (serverUrl: string): number => generations.get(serverUrl) ?? 0
 
+const generationSignal = (serverUrl: string, generation: number): AbortSignal => {
+  const existing = generationControllers.get(serverUrl)
+  if (existing?.generation === generation) return existing.controller.signal
+  existing?.controller.abort()
+  const controller = new AbortController()
+  generationControllers.set(serverUrl, { generation, controller })
+  return controller.signal
+}
+
 /** Called when a server's templates are taken away, so anything already downloading for it lands stale. */
 export const endServerGeneration = (serverUrl: string): void => {
+  generationControllers.get(serverUrl)?.controller.abort()
+  generationControllers.delete(serverUrl)
   generations.set(serverUrl, generationOf(serverUrl) + 1)
   pendingServerSyncs.delete(serverUrl)
+  // A new connection must not queue behind the obsolete drain. The old run's release callback is
+  // identity guarded, so it cannot delete the replacement when it eventually settles.
+  serverSyncRuns.delete(serverUrl)
   // The versions this server had asked for go with it. Kept, they outlive the connection for the
   // rest of the session, and a second server whose URL extends this one's shares their key prefix.
   const prefix = serverTemplateKey(serverUrl, '')
@@ -271,9 +282,12 @@ const syncServerTemplatesOnce = async (
   known?: readonly ServerTemplate[],
 ): Promise<void> => {
   if (server.status !== 'connected') return
+  const generation = generationOf(server.url)
+  const signal = generationSignal(server.url, generation)
   let available = known ?? null
   if (known === undefined) {
     const contents = await listServerContents(server)
+    if (generationOf(server.url) !== generation || signal.aborted) return
     // The folders as well as the templates, because a template's visibility answers to the folders
     // above it and this is the only place that learns of them changing between polls.
     if (contents !== null) rememberNodes(server.url, contents.nodes)
@@ -296,8 +310,8 @@ const syncServerTemplatesOnce = async (
   }
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
-  const generation = generationOf(server.url)
   for (const [key, template] of wanted) {
+    if (generationOf(server.url) !== generation || signal.aborted) return
     const held = localTemplates().find((candidate) => candidate.id === key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
     // rebuild. Names and folder membership still arrive through the manifest because neither
@@ -306,14 +320,14 @@ const syncServerTemplatesOnce = async (
       updateServerTemplateMetadata(key, template.name, template.nodeId)
       continue
     }
-    if (inFlight.has(key)) continue
+    if (inFlight.get(key) === generation) continue
     // Asked before the download, not after. A server may advertise a manifest far larger than the
     // rendering budget, and decoding a template only to have the store refuse it means an
     // `ImageBitmap` built for every one of them on every poll.
     if (!hasRoomForServerTemplate(key)) continue
-    inFlight.add(key)
+    inFlight.set(key, generation)
     try {
-      const built = await assemble(server, template)
+      const built = await assemble(server, template, signal)
       if (built === null) continue
       // The connection this download belongs to may have ended, or a later poll may have taken over
       // this template, while the chunks were in the air.
@@ -358,7 +372,7 @@ const syncServerTemplatesOnce = async (
     } catch (error) {
       warn('install', `could not sync server template ${template.name}`, String(error))
     } finally {
-      inFlight.delete(key)
+      if (inFlight.get(key) === generation) inFlight.delete(key)
     }
   }
 }
@@ -375,8 +389,10 @@ const serverSyncRuns = new Map<string, Promise<void>>()
 const ensureServerSyncRun = (serverUrl: string): Promise<void> => {
   const existing = serverSyncRuns.get(serverUrl)
   if (existing !== undefined) return existing
+  const generation = generationOf(serverUrl)
   const running = (async () => {
     while (true) {
+      if (generationOf(serverUrl) !== generation) return
       const requested = pendingServerSyncs.get(serverUrl)
       if (requested === undefined) return
       pendingServerSyncs.delete(serverUrl)

@@ -4,7 +4,7 @@ import { canvasPixelAt } from './main.js'
 import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
 import { stampContains } from './templates/appearance.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
-import { appearanceOf, isTemplateVisible, localTemplates } from './templates/local-store.js'
+import { appearanceOf, displayTemplates, isTemplateVisible } from './templates/local-store.js'
 import { sourceXAt } from './templates/placement.js'
 import { ensureTilePixels, tilePixels } from './tile-transform.js'
 import { isPaintOpen } from './wplace-paint.js'
@@ -52,7 +52,7 @@ const overlayIndexAt = (x: number, y: number): number | null => {
   // Last match wins: the layer draws templates in this order, so the last one drawn is the one on
   // top, and the one on top is the one being pointed at.
   let found: number | null = null
-  for (const template of localTemplates()) {
+  for (const template of displayTemplates()) {
     if (!isTemplateVisible(template)) continue
     const localX = sourceXAt(template, x)
     const localY = y - template.originY

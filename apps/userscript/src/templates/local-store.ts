@@ -8,9 +8,11 @@ import {
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
 import {
+  type ConnectedServer,
   getGlobalAppearance,
   getState,
   isScopeVisible,
+  type LocalFolder,
   localFolderChainVisible,
   setScopeVisible,
 } from '../state.js'
@@ -40,7 +42,7 @@ import {
   type TemplateLoadFailure,
 } from './persist.js'
 import { horizontalSpans } from './placement.js'
-import { nodeChainVisible } from './server-nodes.js'
+import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './server-nodes.js'
 
 /**
  * Local templates, and the per-tile bitmaps the overlay actually draws.
@@ -195,10 +197,129 @@ const noteReconciliation = (id: string): void => {
 const orderedTemplates = (): PlacedTemplate[] =>
   [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
 
+const customOrdered = <T extends { readonly key: string }>(
+  items: readonly T[],
+  rank: ReadonlyMap<string, number>,
+): readonly T[] => {
+  const ranked: Array<T & { readonly rank: number }> = []
+  const unranked: T[] = []
+  for (const item of items) {
+    const itemRank = rank.get(item.key)
+    if (itemRank === undefined) unranked.push(item)
+    else ranked.push({ ...item, rank: itemRank })
+  }
+  ranked.sort((a, b) => a.rank - b.rank)
+  return [...ranked, ...unranked]
+}
+
+const serverTreeIdentity = (serverUrl: string): string => {
+  const verified = getState().servers.find((server) => server.url === serverUrl)?.lastVerified
+  return verified == null ? 'unknown:unknown' : `${verified.serverId}:${verified.season}`
+}
+
+/** Flatten one tree in the same custom sibling order the panel shows. */
+const flattenTree = (
+  rows: readonly PlacedTemplate[],
+  folders: readonly (readonly [id: string, parentId: string | null])[],
+  folderKey: (id: string) => string,
+  templateKey: (template: PlacedTemplate) => string,
+  templateParent: (template: PlacedTemplate) => string | null,
+  rank: ReadonlyMap<string, number>,
+): readonly PlacedTemplate[] => {
+  const result: PlacedTemplate[] = []
+  const seenFolders = new Set<string>()
+  const seenTemplates = new Set<string>()
+  const foldersByParent = new Map<string | null, string[]>()
+  const templatesByParent = new Map<string | null, PlacedTemplate[]>()
+  for (const [id, parentId] of folders) {
+    const siblings = foldersByParent.get(parentId) ?? []
+    siblings.push(id)
+    foldersByParent.set(parentId, siblings)
+  }
+  for (const template of rows) {
+    const parentId = templateParent(template)
+    const siblings = templatesByParent.get(parentId) ?? []
+    siblings.push(template)
+    templatesByParent.set(parentId, siblings)
+  }
+  const childrenOf = (parentId: string | null) =>
+    customOrdered(
+      [
+        ...(foldersByParent.get(parentId) ?? []).map((id) => ({
+          key: folderKey(id),
+          kind: 'folder' as const,
+          id,
+        })),
+        ...(templatesByParent.get(parentId) ?? []).map((template) => ({
+          key: templateKey(template),
+          kind: 'template' as const,
+          template,
+        })),
+      ],
+      rank,
+    )
+  const stack = [...childrenOf(null)].reverse()
+  while (stack.length > 0) {
+    const child = stack.pop()
+    if (child === undefined) break
+    if (child.kind === 'template') {
+      if (seenTemplates.has(child.template.id)) continue
+      seenTemplates.add(child.template.id)
+      result.push(child.template)
+    } else if (!seenFolders.has(child.id)) {
+      seenFolders.add(child.id)
+      stack.push(...[...childrenOf(child.id)].reverse())
+    }
+  }
+  // Invalid or temporarily incomplete parent data must not make an otherwise valid overlay vanish.
+  for (const template of rows) {
+    if (!seenTemplates.has(template.id)) result.push(template)
+  }
+  return result
+}
+
+const displayOrder = (): readonly PlacedTemplate[] => {
+  const ordered = orderedTemplates()
+  const state = getState()
+  const rank = new Map(state.customOrder.map((key, index) => [key, index]))
+  const categories = [
+    {
+      key: 'local',
+      rows: flattenTree(
+        ordered.filter((template) => !isServerTemplate(template)),
+        state.localFolders.map((folder) => [folder.id, folder.parentId] as const),
+        (id) => `lf:${id}`,
+        (template) => `local:${template.id}`,
+        (template) => template.folderId,
+        rank,
+      ),
+    },
+    ...state.servers.map((server) => {
+      const identity = serverTreeIdentity(server.url)
+      return {
+        key: `server:${server.url}`,
+        rows: flattenTree(
+          ordered.filter((template) => template.serverUrl === server.url),
+          serverNodeParents(server.url),
+          (id) => `node:${encodeURIComponent(server.url)}:${identity}:${id}`,
+          (template) =>
+            `st:${encodeURIComponent(server.url)}:${identity}:${template.serverTemplateId ?? ''}`,
+          (template) => template.serverNodeId ?? null,
+          rank,
+        ),
+      }
+    }),
+  ]
+  const result = customOrdered(categories, rank).flatMap(({ rows }) => rows)
+  const included = new Set(result.map((template) => template.id))
+  return [...result, ...ordered.filter((template) => !included.has(template.id))]
+}
+
 export const onLocalChange = (listener: () => void): void => {
   listeners.push(listener)
 }
 const notify = (): void => {
+  templateRevision++
   // Mirror a summary onto the window so the dev harness can assert on placement without reaching
   // into module state. Metadata only — never the pixels.
   try {
@@ -232,6 +353,48 @@ const notify = (): void => {
 }
 
 export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
+
+let displayOrderCache:
+  | {
+      readonly customOrder: readonly string[]
+      readonly localFolders: readonly LocalFolder[]
+      readonly servers: readonly ConnectedServer[]
+      readonly nodeRevision: number
+      readonly templateRevision: number
+      readonly templates: readonly PlacedTemplate[]
+    }
+  | undefined
+let templateRevision = 0
+
+/** Templates as the canvas and its interactions currently present them: custom order plus previews. */
+export const displayTemplates = (): readonly PlacedTemplate[] => {
+  const state = getState()
+  const nodeRevision = serverNodesRevision()
+  if (
+    displayOrderCache === undefined ||
+    displayOrderCache.customOrder !== state.customOrder ||
+    displayOrderCache.localFolders !== state.localFolders ||
+    displayOrderCache.servers !== state.servers ||
+    displayOrderCache.nodeRevision !== nodeRevision ||
+    displayOrderCache.templateRevision !== templateRevision
+  ) {
+    displayOrderCache = {
+      customOrder: state.customOrder,
+      localFolders: state.localFolders,
+      servers: state.servers,
+      nodeRevision,
+      templateRevision,
+      templates: displayOrder(),
+    }
+  }
+  if (previewOrigins.size === 0) return displayOrderCache.templates
+  return displayOrderCache.templates.map((template) => {
+    const preview = previewOrigins.get(template.id)
+    return preview === undefined
+      ? template
+      : { ...template, originX: preview.x, originY: preview.y }
+  })
+}
 
 /** Transient placement never touches IndexedDB or rebuilds tiles; the renderer translates them. */
 export const previewLocalTemplate = (id: string, originX: number, originY: number): boolean => {
@@ -1111,7 +1274,8 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
  * that commit, so a move at the aggregate budget does not need to retain the same artwork twice.
  */
 /** Durable Local placement does not carry the server-only antimeridian representation. */
-export const canCopyAsLocalTemplate = (template: PlacedTemplate): boolean => template.wrapX !== true
+export const canCopyAsLocalTemplate = (template: PlacedTemplate): boolean =>
+  template.wrapX !== true || template.originX + template.width <= WORLD_PIXELS
 
 export const copyAsLocalTemplate = async (
   template: PlacedTemplate,
