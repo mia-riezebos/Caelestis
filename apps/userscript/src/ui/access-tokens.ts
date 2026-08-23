@@ -250,6 +250,17 @@ const fetchTokens = (
   supersede = false,
 ): Promise<AccessTokenPage | null> => {
   const state = connectionState(server)
+  // A cached page can expose Load more while its first page is refreshing in the background. Wait
+  // for that refresh before following the cached cursor: otherwise the later page can land first and
+  // then be erased when the older first-page response replaces the cache.
+  const refreshing = state.inFlight.get(null)
+  if (cursor !== null && refreshing !== undefined) {
+    return refreshing.then((page) => {
+      if (page === null || connections.get(server.url) !== state) return null
+      if (state.cached?.nextCursor !== cursor) return state.cached ?? null
+      return fetchTokens(server, cursor)
+    })
+  }
   const running = state.inFlight.get(cursor)
   if (running !== undefined && !supersede) return running
   const generation = cursor === null ? state.generation + 1 : state.generation
@@ -257,11 +268,16 @@ const fetchTokens = (
   const run: Promise<AccessTokenPage | null> = listAccessTokens(server, cursor).then((page) => {
     // Only while this is still the request the map is holding. Forgetting a disconnected server
     // removes the entry, and a reply landing after that must not put its labels back.
-    if (page === null || connections.get(server.url) !== state) return null
-    if (state.inFlight.get(cursor) !== run) return state.cached ?? null
+    if (connections.get(server.url) !== state) return null
+    const current = state.inFlight.get(cursor)
+    // A superseded caller should observe the replacement request, including while it is still in
+    // flight. Returning its own failure would make an obsolete callback report an error after the
+    // replacement succeeded (or while it was about to succeed).
+    if (current !== run) return current ?? state.cached ?? null
     // A first-page refresh supersedes every later page already in flight, even when a mutation did
     // not happen to change the first page's cursor. Its response came from the older inventory.
-    if (state.generation !== generation) return state.cached ?? null
+    if (state.generation !== generation) return state.inFlight.get(null) ?? state.cached ?? null
+    if (page === null) return null
     if (cursor === null) {
       state.cached = page
       return page
