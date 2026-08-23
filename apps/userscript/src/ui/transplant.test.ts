@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   deleteNode: vi.fn(),
   deleteTemplate: vi.fn(),
   getState: vi.fn(() => ({ localFolders: [] })),
+  leaseLocalFolder: vi.fn(() => vi.fn()),
   listServerNodes: vi.fn(),
   nextLocalFolderId: vi.fn(() => 'local-folder'),
   removeLocalFolder: vi.fn(() => true),
@@ -135,5 +136,88 @@ describe('branch transplant', () => {
     expect(store.copyAsLocalTemplate).not.toHaveBeenCalled()
     expect(state.deleteTemplate).not.toHaveBeenCalled()
     expect(state.deleteNode).not.toHaveBeenCalled()
+  })
+
+  it('holds a Local destination lease across the source read and deletion', async () => {
+    const server = {
+      url: 'https://example.test',
+      info: null,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    let finishListing = (_value: unknown): void => undefined
+    state.listServerNodes.mockImplementationOnce(
+      async () =>
+        await new Promise((resolve) => {
+          finishListing = resolve
+        }),
+    )
+    store.localTemplates.mockReturnValue([
+      {
+        id: 'srv:https://example.test:template',
+        name: 'Template',
+        originX: 0,
+        originY: 0,
+        width: 1,
+        height: 1,
+      },
+    ])
+    store.copyAsLocalTemplate.mockResolvedValue({ id: 'copied' })
+    store.setTemplateFolder.mockResolvedValue(true)
+    state.deleteTemplate.mockResolvedValue({ ok: true })
+    state.deleteNode.mockResolvedValue({ ok: true })
+    const release = vi.fn()
+    state.leaseLocalFolder.mockReturnValueOnce(release)
+    const { transplant } = await import('./transplant.js')
+
+    const moving = transplant(
+      { kind: 'server', server, nodeId: 'root' },
+      { kind: 'local', folderId: 'destination' },
+      () => [{ id: 'template', name: 'Template' }],
+    )
+
+    expect(state.leaseLocalFolder).toHaveBeenCalledWith('destination')
+    expect(release).not.toHaveBeenCalled()
+    finishListing({
+      status: 'ok',
+      nodes: [{ id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 }],
+    })
+    await expect(moving).resolves.toEqual(expect.objectContaining({ ok: true }))
+    expect(state.deleteTemplate).toHaveBeenCalled()
+    expect(state.deleteNode).toHaveBeenCalled()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('reports a partial move when a source server folder remains', async () => {
+    const server = {
+      url: 'https://example.test',
+      info: null,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    state.listServerNodes.mockResolvedValue({
+      status: 'ok',
+      nodes: [{ id: 'root', parentId: null, path: '/root', name: 'Root', createdAt: 1 }],
+    })
+    store.localTemplates.mockReturnValue([])
+    state.deleteNode.mockResolvedValue({ ok: false, message: 'folder is not empty' })
+    const { transplant } = await import('./transplant.js')
+
+    await expect(
+      transplant(
+        { kind: 'server', server, nodeId: 'root' },
+        { kind: 'local', folderId: null },
+        () => [],
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        message: expect.stringContaining('could not remove source folder “Root”'),
+      }),
+    )
   })
 })

@@ -1,4 +1,3 @@
-import { warn } from '../debug.js'
 import {
   addLocalFolders,
   type ConnectedServer,
@@ -7,6 +6,7 @@ import {
   deleteTemplate as deleteTemplateOnServer,
   getState,
   type LocalFolder,
+  leaseLocalFolder,
   listServerNodes,
   MAX_LOCAL_FOLDERS,
   nextLocalFolderId,
@@ -178,7 +178,7 @@ const inCreationOrder = (branch: Branch): Branch['folders'] => {
  * in a sentence: a server refused a name, a template has not finished loading, a token turned out not
  * to be admin after all.
  */
-export const transplant = async (
+const transplantWhileDestinationHeld = async (
   source: Source,
   destination: Destination,
   templatesOf: (
@@ -306,7 +306,14 @@ export const transplant = async (
     // Deepest first, because a server refuses to delete a node that still holds anything.
     for (const folder of [...inCreationOrder(branch)].reverse()) {
       const removed = await deleteNodeOnServer(source.server, folder.id)
-      if (!removed.ok) warn('install', 'could not remove a source folder', removed.message)
+      if (!removed.ok) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Moved the templates, but could not remove source folder “${folder.name}”: ${removed.message}`,
+        }
+      }
     }
   } else {
     for (const carried of branch.templates) {
@@ -341,5 +348,37 @@ export const transplant = async (
     templates,
     destinationRootId,
     message: `Moved “${branch.name}” — ${nodes} folder${nodes === 1 ? '' : 's'}, ${templates} template${templates === 1 ? '' : 's'}.`,
+  }
+}
+
+/** Keep a Local destination present from the source read through the final source deletion. */
+export const transplant = async (
+  source: Source,
+  destination: Destination,
+  templatesOf: (
+    server: ConnectedServer,
+    nodeId: string,
+  ) => ReadonlyArray<{ id: string; name: string }>,
+): Promise<TransplantResult> => {
+  const releaseDestination =
+    destination.kind === 'local' && destination.folderId !== null
+      ? leaseLocalFolder(destination.folderId)
+      : null
+  if (
+    destination.kind === 'local' &&
+    destination.folderId !== null &&
+    releaseDestination === null
+  ) {
+    return {
+      ok: false,
+      nodes: 0,
+      templates: 0,
+      message: 'The destination Local folder no longer exists.',
+    }
+  }
+  try {
+    return await transplantWhileDestinationHeld(source, destination, templatesOf)
+  } finally {
+    releaseDestination?.()
   }
 }
