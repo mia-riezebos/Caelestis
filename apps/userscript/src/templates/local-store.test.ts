@@ -567,6 +567,20 @@ describe('local template lifecycle', () => {
     expect(persistence.deleteTemplate).not.toHaveBeenCalled()
   })
 
+  it('keeps a Local template alive while a deletion lease is held', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    const release = store.leaseLocalTemplate(added.id)
+
+    expect(release).not.toBeNull()
+    await expect(store.removeLocalTemplate(added.id)).resolves.toBe(false)
+    expect(store.localTemplates()).toContain(added)
+
+    release?.()
+    await expect(store.removeLocalTemplate(added.id)).resolves.toBe(true)
+    expect(store.localTemplates()).toEqual([])
+  })
+
   it('yields while scanning a large sparse source tile', async () => {
     const browserYield = vi.fn(async () => undefined)
     vi.stubGlobal('scheduler', { yield: browserYield })

@@ -137,6 +137,7 @@ const desiredVisibility = new Map<string, boolean>()
 const reconciliationObservers = new Map<string, Set<() => void>>()
 const previewOrigins = new Map<string, { x: number; y: number }>()
 const deleting = new Set<string>()
+const deletionLeases = new Map<string, number>()
 const pendingAdds = new Set<string>()
 const listeners: Array<() => void> = []
 const previewListeners: Array<() => void> = []
@@ -367,6 +368,25 @@ const notify = (): void => {
 const notifyPreview = (): void => notifyListeners(previewListeners, 'local preview')
 
 export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
+
+/** Whether this exact snapshot is still the installed version of its template. */
+export const isCurrentTemplate = (template: PlacedTemplate): boolean =>
+  templates.get(template.id) === template
+
+/** Keep a browser-owned template from being deleted while another copy is still being committed. */
+export const leaseLocalTemplate = (id: string): (() => void) | null => {
+  const template = templates.get(id)
+  if (template === undefined || isServerTemplate(template) || deleting.has(id)) return null
+  deletionLeases.set(id, (deletionLeases.get(id) ?? 0) + 1)
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    const remaining = (deletionLeases.get(id) ?? 1) - 1
+    if (remaining === 0) deletionLeases.delete(id)
+    else deletionLeases.set(id, remaining)
+  }
+}
 
 let displayOrderCache:
   | {
@@ -1999,6 +2019,7 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   // Local deletion must never make one disappear temporarily and then reappear on the next poll.
   if (isServerTemplate(existing)) return false
   if (deleting.has(id)) return false
+  if ((deletionLeases.get(id) ?? 0) > 0) return false
   // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
   // behind this delete and resurrect the record.
   deleting.add(id)
@@ -2496,6 +2517,8 @@ const buildStamp = async (
  * quantiser on the way through.
  */
 export const templateAsPng = async (template: PlacedTemplate): Promise<Blob | null> => {
+  if (!isCurrentTemplate(template)) return null
   const encoded = await encodeIndexedPng(template.width, template.height, template.indices)
+  if (!isCurrentTemplate(template)) return null
   return new Blob([Uint8Array.from(encoded)], { type: 'image/png' })
 }

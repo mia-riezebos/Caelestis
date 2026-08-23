@@ -48,6 +48,8 @@ import {
   canCopyAsLocalTemplate,
   copyAsLocalTemplate,
   forgetServerTemplates,
+  isCurrentTemplate,
+  leaseLocalTemplate,
   localTemplates,
   onLocalChange,
   previewOriginFor,
@@ -1606,7 +1608,13 @@ const copyServerTemplateToLocal = async (
     rerender()
     return null
   }
-  const removed = await deleteTemplateOnServer(source, templateId)
+  const releaseCopied = leaseLocalTemplate(copied.id)
+  if (releaseCopied === null) {
+    toast('Copied into Local, but could not keep the new copy for the move.', 'error')
+    rerender()
+    return null
+  }
+  const removed = await deleteTemplateOnServer(source, templateId).finally(releaseCopied)
   if (!removed.ok) toast(`Copied into Local, but ${removed.message}`, 'error')
   else toast(`Moved “${found.template.name}” into Local.`)
   await refreshNodes(source, rerender)
@@ -1647,6 +1655,10 @@ const dropOnServerNode = async (
     const png = await templateAsPng(local)
     if (png === null) {
       toast('Could not encode that template.', 'error')
+      return null
+    }
+    if (!isCurrentTemplate(local) || movingId() === local.id) {
+      toast(`“${local.name}” changed while it was being encoded — try again.`, 'warning')
       return null
     }
     const result = await uploadTemplate(server, {
@@ -1816,6 +1828,10 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
       box.remove()
       return
     }
+    if (movingId() === source.id) {
+      toast(`Finish placing “${source.name}” before replacing from it.`, 'warning')
+      return
+    }
     void whileBusy(
       go,
       async () => {
@@ -1824,6 +1840,10 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
         if (png === null) {
           toast('Could not encode that template.', 'error')
           box.remove()
+          return
+        }
+        if (!isCurrentTemplate(source) || movingId() === source.id) {
+          toast(`“${source.name}” changed while it was being encoded — try again.`, 'warning')
           return
         }
         if (cancelled) return
@@ -2186,6 +2206,10 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         if (png === null) {
           toast('Could not encode that template.', 'error')
           box.remove()
+          return
+        }
+        if (!isCurrentTemplate(current) || movingId() === current.id) {
+          toast(`“${current.name}” changed while it was being encoded — try again.`, 'warning')
           return
         }
         if (cancelled) return

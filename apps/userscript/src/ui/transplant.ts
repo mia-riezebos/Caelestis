@@ -17,12 +17,15 @@ import {
 import {
   canCopyAsLocalTemplate,
   copyAsLocalTemplate,
+  isCurrentTemplate,
+  leaseLocalTemplate,
   localTemplates,
   type PlacedTemplate,
   removeLocalTemplate,
   setTemplateFolder,
   templateAsPng,
 } from '../templates/local-store.js'
+import { movingId } from '../templates/move.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 
 /**
@@ -186,6 +189,7 @@ const transplantWhileDestinationHeld = async (
     nodeId: string,
   ) => ReadonlyArray<{ id: string; name: string }>,
   destinationLeases: Array<() => void>,
+  destinationTemplateLeases: Array<() => void>,
 ): Promise<TransplantResult> => {
   const branch =
     source.kind === 'local'
@@ -285,6 +289,14 @@ const transplantWhileDestinationHeld = async (
           message: `Could not encode “${carried.template.name}”.`,
         }
       }
+      if (!isCurrentTemplate(carried.template) || movingId() === carried.template.id) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `“${carried.template.name}” changed while it was being copied.`,
+        }
+      }
       const uploaded = await uploadTemplate(destination.server, {
         nodeId: target,
         name: carried.template.name,
@@ -295,6 +307,16 @@ const transplantWhileDestinationHeld = async (
       if (!uploaded.ok) return { ok: false, nodes, templates, message: uploaded.message }
     } else {
       const copied = await copyAsLocalTemplate(carried.template, localId())
+      const releaseCopied = leaseLocalTemplate(copied.id)
+      if (releaseCopied === null) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Copied “${carried.template.name}”, but could not keep the new Local copy.`,
+        }
+      }
+      destinationTemplateLeases.push(releaseCopied)
       if (!(await setTemplateFolder(copied.id, target))) {
         return {
           ok: false,
@@ -334,6 +356,14 @@ const transplantWhileDestinationHeld = async (
     }
   } else {
     for (const carried of branch.templates) {
+      if (!isCurrentTemplate(carried.template)) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Copied, but “${carried.template.name}” changed at the source and was kept.`,
+        }
+      }
       if (!(await removeLocalTemplate(carried.sourceId))) {
         return {
           ok: false,
@@ -344,6 +374,14 @@ const transplantWhileDestinationHeld = async (
       }
     }
     for (const folder of [...inCreationOrder(branch)].reverse()) {
+      if (localTemplates().some((template) => template.folderId === folder.id)) {
+        return {
+          ok: false,
+          nodes,
+          templates,
+          message: `Moved the original templates, but Local folder “${folder.name}” received new content and was kept.`,
+        }
+      }
       if (!removeLocalFolder(folder.id)) {
         return {
           ok: false,
@@ -368,6 +406,13 @@ const transplantWhileDestinationHeld = async (
   }
 }
 
+const activeSources = new Set<string>()
+
+const sourceKey = (source: Source): string =>
+  source.kind === 'local'
+    ? `local:${source.folderId}`
+    : `server:${source.server.url}:${source.nodeId}`
+
 /** Keep a Local destination present from the source read through the final source deletion. */
 export const transplant = async (
   source: Source,
@@ -377,6 +422,16 @@ export const transplant = async (
     nodeId: string,
   ) => ReadonlyArray<{ id: string; name: string }>,
 ): Promise<TransplantResult> => {
+  const activeSource = sourceKey(source)
+  if (activeSources.has(activeSource)) {
+    return {
+      ok: false,
+      nodes: 0,
+      templates: 0,
+      message: 'That folder is already being moved.',
+    }
+  }
+  activeSources.add(activeSource)
   const releaseDestination =
     destination.kind === 'local' && destination.folderId !== null
       ? leaseLocalFolder(destination.folderId)
@@ -386,6 +441,7 @@ export const transplant = async (
     destination.folderId !== null &&
     releaseDestination === null
   ) {
+    activeSources.delete(activeSource)
     return {
       ok: false,
       nodes: 0,
@@ -394,9 +450,18 @@ export const transplant = async (
     }
   }
   const destinationLeases = releaseDestination === null ? [] : [releaseDestination]
+  const destinationTemplateLeases: Array<() => void> = []
   try {
-    return await transplantWhileDestinationHeld(source, destination, templatesOf, destinationLeases)
+    return await transplantWhileDestinationHeld(
+      source,
+      destination,
+      templatesOf,
+      destinationLeases,
+      destinationTemplateLeases,
+    )
   } finally {
+    for (const release of destinationTemplateLeases.reverse()) release()
     for (const release of destinationLeases.reverse()) release()
+    activeSources.delete(activeSource)
   }
 }
