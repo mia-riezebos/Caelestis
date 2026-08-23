@@ -68,6 +68,71 @@ afterEach(async () => {
 })
 
 describe('access-token pagination', () => {
+  it('supersedes an older first-page request after creating a token', async () => {
+    let finishStale = (_value: unknown): void => undefined
+    state.listAccessTokens
+      .mockResolvedValueOnce({ tokens: [token('Before', '1'.repeat(64))], nextCursor: null })
+      .mockImplementationOnce(
+        async () =>
+          await new Promise((resolve) => {
+            finishStale = resolve
+          }),
+      )
+      .mockResolvedValueOnce({ tokens: [token('After', '2'.repeat(64))], nextCursor: null })
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const first = accessTokenSection(server)
+    document.body.appendChild(first)
+    await vi.waitFor(() => expect(first.textContent).toContain('Before'))
+
+    const section = accessTokenSection(server)
+    document.body.replaceChildren(section)
+    const input = section.querySelector('input')
+    if (!(input instanceof HTMLInputElement)) throw new Error('missing token label input')
+    input.value = 'After'
+    buttonNamed(section, 'Create').click()
+
+    await vi.waitFor(() => expect(state.listAccessTokens).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(section.textContent).toContain('After'))
+    finishStale({ tokens: [token('Stale', '3'.repeat(64))], nextCursor: null })
+    await Promise.resolve()
+    expect(section.textContent).toContain('After')
+    expect(section.textContent).not.toContain('Stale')
+  })
+
+  it('keeps cached rows visible when a first-page refresh fails', async () => {
+    state.listAccessTokens
+      .mockResolvedValueOnce({ tokens: [token('Retained', '1'.repeat(64))], nextCursor: null })
+      .mockResolvedValueOnce(null)
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const first = accessTokenSection(server)
+    document.body.appendChild(first)
+    await vi.waitFor(() => expect(first.textContent).toContain('Retained'))
+
+    const section = accessTokenSection(server)
+    document.body.replaceChildren(section)
+
+    await vi.waitFor(() => expect(notices.toast).toHaveBeenCalled())
+    expect(section.textContent).toContain('Retained')
+    expect(section.textContent).not.toContain('Could not read')
+  })
+
+  it('rejects an empty later page that advertises another cursor', async () => {
+    const cursor = `3:${'c'.repeat(64)}`
+    state.listAccessTokens
+      .mockResolvedValueOnce({ tokens: [token('Reachable', '4'.repeat(64))], nextCursor: cursor })
+      .mockResolvedValueOnce({ tokens: [], nextCursor: `2:${'d'.repeat(64)}` })
+    const { accessTokenSection } = await import('./access-tokens.js')
+    const section = accessTokenSection(server)
+    document.body.appendChild(section)
+    await vi.waitFor(() => expect(section.textContent).toContain('Reachable'))
+
+    buttonNamed(section, 'Load more').click()
+
+    await vi.waitFor(() => expect(notices.toast).toHaveBeenCalled())
+    expect(section.textContent).toContain('Reachable')
+    expect(buttonNamed(section, 'Load more').disabled).toBe(false)
+  })
+
   it('does not share an in-flight request with a replacement credential', async () => {
     let finishOld = (_value: unknown): void => undefined
     state.listAccessTokens

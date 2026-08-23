@@ -43,6 +43,7 @@ const SCOPES = [
 const DEFAULT_SCOPE = 'report'
 
 type ScopeId = (typeof SCOPES)[number]['id']
+type ReloadTokens = (supersede?: boolean) => void
 
 const dateText = (at: number): string =>
   at === 0
@@ -50,7 +51,11 @@ const dateText = (at: number): string =>
     : new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 
 /** One token: what it is for, what it may do, and a way to take it away. */
-const tokenRow = (server: ConnectedServer, token: AccessToken, reload: () => void): HTMLElement => {
+const tokenRow = (
+  server: ConnectedServer,
+  token: AccessToken,
+  reload: ReloadTokens,
+): HTMLElement => {
   const row = document.createElement('div')
   row.className = 'flex items-center gap-2'
   row.style.padding = '0.25rem 0'
@@ -100,7 +105,7 @@ const tokenRow = (server: ConnectedServer, token: AccessToken, reload: () => voi
       if (!sure) return
       const result = await revokeAccessToken(server, token.tokenHash)
       if (!result.ok) toast(result.message, 'error')
-      reload()
+      reload(true)
     })()
   })
   row.appendChild(revoke)
@@ -108,7 +113,7 @@ const tokenRow = (server: ConnectedServer, token: AccessToken, reload: () => voi
 }
 
 /** The form for a new one: what to call it, and what it may do. */
-const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement => {
+const newTokenForm = (server: ConnectedServer, reload: ReloadTokens): HTMLElement => {
   const wrap = document.createElement('div')
   wrap.className = 'flex flex-col gap-2'
   wrap.style.marginTop = '0.5rem'
@@ -180,7 +185,7 @@ const newTokenForm = (server: ConnectedServer, reload: () => void): HTMLElement 
     // The list is only refreshed once the dialog is gone. Redrawing the panel behind a modal that
     // holds the one copy of a secret is how the secret gets lost.
     await showNewToken(name, result.token)
-    reload()
+    reload(true)
   }
 
   create.addEventListener('click', () => void submit())
@@ -242,21 +247,18 @@ const tokenKey = (token: AccessToken): string =>
 const fetchTokens = (
   server: ConnectedServer,
   cursor: string | null = null,
+  supersede = false,
 ): Promise<AccessTokenPage | null> => {
   const state = connectionState(server)
   const running = state.inFlight.get(cursor)
-  if (running !== undefined) return running
+  if (running !== undefined && !supersede) return running
   const generation = cursor === null ? state.generation + 1 : state.generation
   if (cursor === null) state.generation = generation
   const run: Promise<AccessTokenPage | null> = listAccessTokens(server, cursor).then((page) => {
     // Only while this is still the request the map is holding. Forgetting a disconnected server
     // removes the entry, and a reply landing after that must not put its labels back.
-    if (
-      page === null ||
-      connections.get(server.url) !== state ||
-      state.inFlight.get(cursor) !== run
-    )
-      return page
+    if (page === null || connections.get(server.url) !== state) return null
+    if (state.inFlight.get(cursor) !== run) return state.cached ?? null
     // A first-page refresh supersedes every later page already in flight, even when a mutation did
     // not happen to change the first page's cursor. Its response came from the older inventory.
     if (state.generation !== generation) return state.cached ?? null
@@ -266,7 +268,11 @@ const fetchTokens = (
     }
     const previous = state.cached
     if (previous?.nextCursor !== cursor) return previous ?? null
-    if (page.nextCursor !== null && !cursorAdvances(cursor, page.nextCursor)) return null
+    if (
+      page.nextCursor !== null &&
+      (page.tokens.length === 0 || !cursorAdvances(cursor, page.nextCursor))
+    )
+      return null
     const known = new Set(previous.tokens.map(tokenKey))
     const combined = {
       tokens: [...previous.tokens, ...page.tokens.filter((token) => !known.has(tokenKey(token)))],
@@ -324,7 +330,9 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
   const list = document.createElement('div')
   list.className = 'flex flex-col'
 
-  const draw = (page: AccessTokenPage | null, reload: () => void): void => {
+  const sectionState = connectionState(server)
+
+  const draw = (page: AccessTokenPage | null, reload: ReloadTokens): void => {
     list.replaceChildren()
     if (page === null) {
       const failed = document.createElement('p')
@@ -363,11 +371,24 @@ export const accessTokenSection = (server: ConnectedServer): HTMLElement => {
     }
   }
 
-  const reload = (): void => {
-    void fetchTokens(server).then((page) => draw(page, reload))
+  const reload: ReloadTokens = (supersede = false): void => {
+    void fetchTokens(server, null, supersede).then((page) => {
+      if (page !== null) {
+        draw(page, reload)
+        return
+      }
+      const retained =
+        connections.get(server.url) === sectionState ? sectionState.cached : undefined
+      if (retained === undefined) {
+        draw(null, reload)
+        return
+      }
+      draw(retained, reload)
+      toast('Could not refresh the token list — showing the last result.', 'error')
+    })
   }
 
-  const known = connectionState(server).cached
+  const known = sectionState.cached
   if (known === undefined) {
     const status = document.createElement('p')
     status.className = 'text-xs opacity-60'
