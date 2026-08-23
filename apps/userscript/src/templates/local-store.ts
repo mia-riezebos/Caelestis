@@ -13,6 +13,7 @@ import {
   getState,
   isScopeVisible,
   type LocalFolder,
+  leaseLocalFolder,
   localFolderChainVisible,
   serverTemplatePreference,
   setScopeVisible,
@@ -1846,26 +1847,32 @@ export const placeLocalTemplate = async (
 
 /** Move a template into a Local folder, or to the top level with null. */
 export const setTemplateFolder = async (id: string, folderId: string | null): Promise<boolean> => {
-  return await writeInOrder(id, async () => {
-    const existing = templates.get(id)
-    if (existing === undefined || deleting.has(id)) return false
-    if (existing.folderId === folderId) return true
-    const next = { ...existing, folderId }
-    let revision = existing.revision
-    if (!isPendingImage(existing)) {
-      const result = await savePlaced(next)
-      const committed = committedRevision(result)
-      if (committed === null) {
-        if (result.status === 'conflict') await reconcileConflict(id)
-        warn('install', `folder change for ${next.name} was not saved`)
-        return false
+  const releaseFolder = folderId === null ? null : leaseLocalFolder(folderId)
+  if (folderId !== null && releaseFolder === null) return false
+  try {
+    return await writeInOrder(id, async () => {
+      const existing = templates.get(id)
+      if (existing === undefined || deleting.has(id)) return false
+      if (existing.folderId === folderId) return true
+      const next = { ...existing, folderId }
+      let revision = existing.revision
+      if (!isPendingImage(existing)) {
+        const result = await savePlaced(next)
+        const committed = committedRevision(result)
+        if (committed === null) {
+          if (result.status === 'conflict') await reconcileConflict(id)
+          warn('install', `folder change for ${next.name} was not saved`)
+          return false
+        }
+        revision = committed
       }
-      revision = committed
-    }
-    templates.set(id, { ...next, revision })
-    notify()
-    return true
-  })
+      templates.set(id, { ...next, revision })
+      notify()
+      return true
+    })
+  } finally {
+    releaseFolder?.()
+  }
 }
 
 /** Move several local templates together. A failed CAS or IndexedDB write moves none of them. */
@@ -1875,39 +1882,45 @@ export const setTemplatesFolder = async (
 ): Promise<boolean> => {
   const unique = [...new Set(ids)]
   if (unique.length === 0) return true
-  return await writeManyInOrder(unique, async () => {
-    const existing = unique.map((id) => templates.get(id))
-    if (existing.some((template) => template === undefined || deleting.has(template.id))) {
-      return false
-    }
-    const present = existing as PlacedTemplate[]
-    const changed = present.filter((template) => template.folderId !== folderId)
-    if (changed.length === 0) return true
-    const durable = changed.filter((template) => !isPendingImage(template))
-    const result = await saveTemplateFolders(
-      durable.map((template) => ({
-        id: template.id,
-        expectedRevision: template.revision,
-        folderId,
-      })),
-    )
-    if (result.status !== 'saved') {
-      if (result.status === 'conflict') {
-        for (const template of durable) await reconcileConflict(template.id)
+  const releaseFolder = folderId === null ? null : leaseLocalFolder(folderId)
+  if (folderId !== null && releaseFolder === null) return false
+  try {
+    return await writeManyInOrder(unique, async () => {
+      const existing = unique.map((id) => templates.get(id))
+      if (existing.some((template) => template === undefined || deleting.has(template.id))) {
+        return false
       }
-      warn('install', 'folder changes were not saved as one transaction')
-      return false
-    }
-    for (const template of changed) {
-      templates.set(template.id, {
-        ...template,
-        folderId,
-        revision: result.revisions.get(template.id) ?? template.revision,
-      })
-    }
-    notify()
-    return true
-  })
+      const present = existing as PlacedTemplate[]
+      const changed = present.filter((template) => template.folderId !== folderId)
+      if (changed.length === 0) return true
+      const durable = changed.filter((template) => !isPendingImage(template))
+      const result = await saveTemplateFolders(
+        durable.map((template) => ({
+          id: template.id,
+          expectedRevision: template.revision,
+          folderId,
+        })),
+      )
+      if (result.status !== 'saved') {
+        if (result.status === 'conflict') {
+          for (const template of durable) await reconcileConflict(template.id)
+        }
+        warn('install', 'folder changes were not saved as one transaction')
+        return false
+      }
+      for (const template of changed) {
+        templates.set(template.id, {
+          ...template,
+          folderId,
+          revision: result.revisions.get(template.id) ?? template.revision,
+        })
+      }
+      notify()
+      return true
+    })
+  } finally {
+    releaseFolder?.()
+  }
 }
 
 export const renameLocalTemplate = async (id: string, name: string): Promise<boolean> => {

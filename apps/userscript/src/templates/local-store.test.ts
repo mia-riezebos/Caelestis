@@ -1620,6 +1620,10 @@ describe('local template lifecycle', () => {
 
   it('moves several folder children only after their one durable batch succeeds', async () => {
     const store = await import('./local-store.js')
+    const { setState } = await import('../state.js')
+    setState({
+      localFolders: [{ id: 'old', parentId: null, name: 'Old', visible: true }],
+    })
     await store.addLocalTemplate(template({ id: 'first' }))
     await store.addLocalTemplate(template({ id: 'second' }))
     await store.setTemplateFolder('first', 'old')
@@ -1631,6 +1635,39 @@ describe('local template lifecycle', () => {
 
     expect(await store.setTemplatesFolder(['first', 'second'], null)).toBe(true)
     expect(store.localTemplates().map(({ folderId }) => folderId)).toEqual([null, null])
+  })
+
+  it('refuses to assign a template to a missing Local folder', async () => {
+    const store = await import('./local-store.js')
+    await store.addLocalTemplate(template({ id: 'template' }))
+
+    expect(await store.setTemplateFolder('template', 'deleted')).toBe(false)
+    expect(store.localTemplates()[0]?.folderId).toBeNull()
+  })
+
+  it('keeps the target folder alive until its template assignment commits', async () => {
+    const store = await import('./local-store.js')
+    const { removeLocalFolder, setState } = await import('../state.js')
+    setState({
+      localFolders: [{ id: 'target', parentId: null, name: 'Target', visible: true }],
+    })
+    await store.addLocalTemplate(template({ id: 'template' }))
+    persistence.saveTemplate.mockClear()
+    let finishSave = (_value: { status: 'saved'; revision: number }): void => undefined
+    persistence.saveTemplate.mockImplementationOnce(
+      async () =>
+        await new Promise<{ status: 'saved'; revision: number }>((resolve) => {
+          finishSave = resolve
+        }),
+    )
+
+    const assigning = store.setTemplateFolder('template', 'target')
+    await vi.waitFor(() => expect(persistence.saveTemplate).toHaveBeenCalledOnce())
+
+    expect(removeLocalFolder('target')).toBe(false)
+    finishSave({ status: 'saved', revision: 2 })
+    await expect(assigning).resolves.toBe(true)
+    expect(store.localTemplates()[0]?.folderId).toBe('target')
   })
 
   it('renders imported source order from lowest to highest', async () => {

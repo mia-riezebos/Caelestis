@@ -361,6 +361,23 @@ describe('server state boundaries', () => {
     expect(getState().localFolders).toEqual(folders)
   })
 
+  it('keeps a Local folder alive while a template assignment holds a lease', async () => {
+    vi.stubGlobal('GM_setValue', vi.fn())
+    const { getState, leaseLocalFolder, removeLocalFolder, setState } = await import('./state.js')
+    setState({
+      localFolders: [{ id: 'target', parentId: null, name: 'Target', visible: true }],
+    })
+
+    const release = leaseLocalFolder('target')
+    expect(release).not.toBeNull()
+    expect(removeLocalFolder('target')).toBe(false)
+    expect(getState().localFolders).toHaveLength(1)
+
+    release?.()
+    expect(removeLocalFolder('target')).toBe(true)
+    expect(getState().localFolders).toEqual([])
+  })
+
   it('does not retain cached identity after a different server answers at the same URL', async () => {
     const replacementInfo = {
       id: '019fed50-87a1-7523-a88c-bdeafad49699',

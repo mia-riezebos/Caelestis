@@ -807,6 +807,22 @@ export const createLocalFolder = (parentId: string | null, name: string): LocalF
 /** An id for a folder that has not been added yet, so a batch can wire up its own parents. */
 export const nextLocalFolderId = (): string => localFolderId()
 
+const localFolderLeases = new Map<string, number>()
+
+/** Keep a folder alive while an asynchronous template assignment commits to it. */
+export const leaseLocalFolder = (id: string): (() => void) | null => {
+  if (!getState().localFolders.some((folder) => folder.id === id)) return null
+  localFolderLeases.set(id, (localFolderLeases.get(id) ?? 0) + 1)
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    const remaining = (localFolderLeases.get(id) ?? 1) - 1
+    if (remaining === 0) localFolderLeases.delete(id)
+    else localFolderLeases.set(id, remaining)
+  }
+}
+
 /**
  * Add many folders in one write.
  *
@@ -905,6 +921,7 @@ export const removeLocalFolder = (id: string): boolean => {
   const folders = getState().localFolders
   const folder = folders.find((candidate) => candidate.id === id)
   if (folder === undefined) return true
+  if ((localFolderLeases.get(id) ?? 0) > 0) return false
   return setStateDurably({
     localFolders: folders
       .filter((candidate) => candidate.id !== id)

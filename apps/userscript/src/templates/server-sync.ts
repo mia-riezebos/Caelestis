@@ -446,6 +446,9 @@ export const syncServerTemplates = async (
   server: ConnectedServer,
   known?: readonly ServerTemplate[],
 ): Promise<void> => {
+  // State replaces the connection object when a URL is removed or reconnected. Exact identity also
+  // keeps a callback from the former connection from publishing its old manifest into the new one.
+  if (!getState().servers.includes(server)) return
   const pending = pendingServerSyncs.get(server.url)
   // A blind poll carries no newer state of its own. If a mutation has already queued the manifest
   // it just read, keep that authoritative snapshot instead of replacing it with a request that may

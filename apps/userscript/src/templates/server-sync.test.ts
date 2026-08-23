@@ -2,7 +2,7 @@ import { sha256Hex } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
-  getState: vi.fn(() => ({ servers: [] })),
+  getState: vi.fn((): { servers: readonly object[] } => ({ servers: [] })),
   listServerContents: vi.fn(),
   onStateChange: vi.fn(),
 }))
@@ -32,10 +32,20 @@ const connected = {
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
-  state.getState.mockReturnValue({ servers: [] })
+  state.getState.mockReturnValue({ servers: [connected] })
 })
 
 describe('server template sync', () => {
+  it('ignores refresh callbacks from a removed or replaced connection', async () => {
+    state.getState.mockReturnValue({ servers: [{ ...connected }] })
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    await syncServerTemplates(connected, [])
+
+    expect(state.listServerContents).not.toHaveBeenCalled()
+    expect(store.putServerTemplate).not.toHaveBeenCalled()
+  })
+
   it('bounds a template by both chunk count and cumulative encoded work', async () => {
     const { syncServerTemplates, templateTransferWithinBudget } = await import('./server-sync.js')
     const chunks = Array.from({ length: 401 }, (_, index) => ({

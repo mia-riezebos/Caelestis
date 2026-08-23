@@ -650,6 +650,9 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   // Anything already downloading for this server lands stale rather than drawing an overlay with no
   // server row left to control it.
   endServerGeneration(server.url)
+  // Stop polls and stale refresh callbacks from beginning a replacement generation while cleanup
+  // waits for per-template writes.
+  removeServer(server.url)
   await forgetServerTemplates(server.url)
   const hashes = forgetServerRows(server.url)
   const nodes = forgetNodes(server.url)
@@ -668,7 +671,6 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   ])
   expandedServers.delete(server.url)
   autoExpanded.delete(server.url)
-  removeServer(server.url)
   void forgetServer(server.url)
   redraw()
   showView('settings')
