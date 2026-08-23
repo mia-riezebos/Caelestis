@@ -108,9 +108,26 @@ const serverBranch = async (
   const root = nodes.find((node) => node.id === rootId)
   if (root === undefined) return null
 
-  // Descendants by materialized path, which is the one question that shape answers cheaply.
-  const prefix = `${root.path}/`
-  const within = nodes.filter((node) => node.id === rootId || node.path.startsWith(prefix))
+  // Follow the hierarchy the manifest validated and the tree renders. Paths are compared with
+  // SQLite's ASCII case fold on the wire, so a compatible server may spell a child prefix with
+  // different ASCII case from its parent; a raw startsWith would silently leave that branch behind.
+  const children = new Map<string, TreeNode[]>()
+  for (const node of nodes) {
+    if (node.parentId === null) continue
+    const siblings = children.get(node.parentId) ?? []
+    siblings.push(node)
+    children.set(node.parentId, siblings)
+  }
+  const within: TreeNode[] = []
+  const seen = new Set<string>()
+  const stack = [root]
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (node === undefined || seen.has(node.id)) continue
+    seen.add(node.id)
+    within.push(node)
+    stack.push(...[...(children.get(node.id) ?? [])].reverse())
+  }
   const folders = within.map((node: TreeNode) => ({
     id: node.id,
     parentId: node.id === rootId ? null : node.parentId,

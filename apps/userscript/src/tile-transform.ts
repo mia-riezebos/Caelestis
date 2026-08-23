@@ -573,7 +573,7 @@ let lastQuads: readonly TileQuad[] = []
  * a fraction of a pixel the instant it settles. Taking the placement from their own draw calls makes
  * that unknowable and irrelevant: we land where they landed, aligned or not.
  */
-export const currentQuads = (): readonly TileQuad[] => (pending.length > 0 ? pending : lastQuads)
+export const currentQuads = (): readonly TileQuad[] => (scheduled ? pending : lastQuads)
 
 const flush = (): void => {
   scheduled = false

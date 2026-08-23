@@ -4,6 +4,7 @@ import { counters } from './debug.js'
 import {
   captureFetchUrlGetters,
   consumeBySize,
+  currentQuads,
   enqueueBySize,
   install,
   isGetFetch,
@@ -871,6 +872,9 @@ describe('transparent browser hooks', () => {
     expect(currentProgramQueries()).toBe(queriesBeforeOtherBind)
     gl.uniformMatrix4fv(otherProjection, false, new Float32Array(tileMatrix(0.5, 0.5, 0.5)))
     gl.drawElements(0, 1, 0, 0)
+    // This is still the same MapLibre task, before the queued flush. The active frame has no raster
+    // tiles, so GL layers must see an empty current frame rather than the prior frame's tile.
+    expect(currentQuads()).toEqual([])
     await Promise.resolve()
     expect(frames).toHaveLength(2)
     expect(frames[1]?.quads).toEqual([])

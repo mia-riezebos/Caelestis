@@ -68,6 +68,40 @@ describe('branch transplant', () => {
     )
   })
 
+  it('collects descendants from parent ids when compatible paths differ in ASCII case', async () => {
+    const server = {
+      url: 'https://source.test',
+      info: null,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    state.listServerNodes.mockResolvedValue({
+      status: 'ok',
+      nodes: [
+        { id: 'root', parentId: null, path: '/Root', name: 'Root', createdAt: 1 },
+        { id: 'child', parentId: 'root', path: '/root/child', name: 'Child', createdAt: 2 },
+      ],
+    })
+    state.nextLocalFolderId.mockReturnValueOnce('local-root').mockReturnValueOnce('local-child')
+    state.deleteNode.mockResolvedValue({ ok: true })
+    const { transplant } = await import('./transplant.js')
+
+    await expect(
+      transplant(
+        { kind: 'server', server, nodeId: 'root' },
+        { kind: 'local', folderId: null },
+        () => [],
+      ),
+    ).resolves.toEqual(expect.objectContaining({ ok: true, nodes: 2 }))
+    expect(state.addLocalFolders).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'local-root', name: 'Root' }),
+      expect.objectContaining({ id: 'local-child', parentId: 'local-root', name: 'Child' }),
+    ])
+    expect(state.deleteNode).toHaveBeenCalledTimes(2)
+  })
+
   it('refuses a wrapped branch before creating Local destination folders', async () => {
     const server = {
       url: 'https://example.test',
