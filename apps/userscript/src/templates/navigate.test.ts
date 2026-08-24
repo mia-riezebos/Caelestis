@@ -1,6 +1,6 @@
 import { WORLD_PIXELS } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { centreOf, navigateTo } from './navigate.js'
+import { centreOf, centreOfBounds, navigateTo } from './navigate.js'
 
 const map = vi.hoisted(() => ({
   current: null as {
@@ -33,6 +33,17 @@ describe('template navigation', () => {
       width: 30,
       height: 50,
     })
+  })
+
+  it('centres a server manifest box that wraps through world zero', () => {
+    expect(
+      centreOfBounds({
+        minX: WORLD_PIXELS - 20,
+        minY: 100,
+        maxX: 10,
+        maxY: 140,
+      }),
+    ).toEqual({ x: WORLD_PIXELS - 5, y: 120, width: 30, height: 40 })
   })
 
   it('flies in-page and respects the zoom floor for a world-scale target', () => {

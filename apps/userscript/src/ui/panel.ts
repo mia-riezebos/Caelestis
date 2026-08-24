@@ -65,7 +65,7 @@ import {
 } from '../templates/local-store.js'
 import { onMismatchesChanged } from '../templates/mismatch.js'
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
-import { centreOf, navigateTo } from '../templates/navigate.js'
+import { centreOf, centreOfBounds, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import {
   endServerGeneration,
@@ -108,6 +108,7 @@ import {
   serverTemplateAt,
   serverTemplateTreeKey,
   startRenaming,
+  type TreeNavigationTarget,
   type TreeTarget,
   templatesForServer,
   templatesOfNode,
@@ -1306,7 +1307,12 @@ const localTemplateId = (target: TreeTarget): string | null =>
  * at rather than anywhere the user chose, and while it is being positioned the origin that matters
  * is the live preview. Going to the stored one flew away from the thing being placed.
  */
-const goTo = (templateId: string): void => {
+const goTo = (target: TreeNavigationTarget): void => {
+  if (target.kind === 'server') {
+    navigateTo(centreOfBounds(target.bbox))
+    return
+  }
+  const { templateId } = target
   const template = localTemplates().find((candidate) => candidate.id === templateId)
   if (template === undefined) return
   const preview = previewOriginFor(templateId)
@@ -2295,7 +2301,7 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
             remove,
           ]
         : [
-            ['search', 'Go to', () => void goTo(templateId)],
+            ['search', 'Go to', () => void goTo({ kind: 'local', templateId })],
             [
               'move',
               'Move',

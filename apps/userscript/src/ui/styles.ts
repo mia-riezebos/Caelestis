@@ -303,7 +303,9 @@ const CSS = `
   color: var(--color-base-content, currentColor);
 }
 .caelestis-progress--inline {
-  flex: 0 0 clamp(3rem, 22%, 5.5rem);
+  flex: 1 1 5.75rem;
+  min-width: 4.5rem;
+  max-width: 6.5rem;
 }
 .caelestis-progress--expanded {
   order: 10;
@@ -328,6 +330,25 @@ const CSS = `
     transparent 0 3px,
     color-mix(in srgb, var(--color-base-content, #64748b) 10%, transparent) 3px 4px
   );
+}
+.caelestis-progress-meter {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  min-width: 0;
+}
+.caelestis-progress-meter > .caelestis-progress-track {
+  flex: 1 1 auto;
+  min-width: 1.75rem;
+}
+.caelestis-progress-percent {
+  flex: 0 0 2rem;
+  text-align: end;
+  font-size: 0.625rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.68;
 }
 .caelestis-progress-segment {
   flex: 0 0 auto;

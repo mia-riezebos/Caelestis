@@ -13,12 +13,16 @@ export const emptyProgress = (total: number): TemplateProgress => ({
 export const completionRatio = (progress: TemplateProgress): number =>
   progress.total <= 0 ? 0 : Math.min(1, Math.max(0, progress.completed / progress.total))
 
+export const completionPercent = (progress: TemplateProgress): number =>
+  Math.round(completionRatio(progress) * 100)
+
 const number = (value: number): string => Math.max(0, value).toLocaleString()
 
 export const progressLabel = (progress: TemplateProgress): string => {
   const classified = `${number(progress.completed)} completed, ${number(progress.mismatched)} mismatched, ${number(progress.unpainted)} unpainted`
-  if (progress.total <= progress.known) return `${classified}.`
-  return `${classified}; ${number(progress.known)} of ${number(progress.total)} pixels scanned.`
+  const prefix = `${completionPercent(progress)}% complete. `
+  if (progress.total <= progress.known) return `${prefix}${classified}.`
+  return `${prefix}${classified}; ${number(progress.known)} of ${number(progress.total)} pixels scanned.`
 }
 
 /** One three-way meter. Remaining track is deliberately unknown, not a fourth progress segment. */
@@ -45,7 +49,13 @@ export const progressIndicator = (
     segment.style.width = `${Math.min(100, Math.max(0, (value / total) * 100))}%`
     bar.appendChild(segment)
   }
-  root.appendChild(bar)
+  const meter = document.createElement('span')
+  meter.className = 'caelestis-progress-meter'
+  const percent = document.createElement('span')
+  percent.className = 'caelestis-progress-percent'
+  percent.textContent = `${completionPercent(progress)}%`
+  meter.append(bar, percent)
+  root.appendChild(meter)
 
   if (placement === 'expanded') {
     const legend = document.createElement('span')

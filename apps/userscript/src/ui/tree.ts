@@ -70,8 +70,8 @@ export interface TreeCallbacks {
   readonly onRename: (target: TreeTarget, name: string) => void
   readonly onDelete: (target: TreeTarget) => void
   readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
-  /** Frame a local template on the map. */
-  readonly onGoTo: (templateId: string) => void
+  /** Frame a local or not-yet-downloaded server template on the map. */
+  readonly onGoTo: (target: TreeNavigationTarget) => void
   readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
   readonly onError: (message: string) => void
@@ -96,6 +96,10 @@ export interface TreeCallbacks {
     beforeKey: string | null,
   ) => Promise<string | null>
 }
+
+export type TreeNavigationTarget =
+  | { readonly kind: 'local'; readonly templateId: string }
+  | { readonly kind: 'server'; readonly bbox: ServerTemplate['bbox'] }
 
 let activeTreeKey: string | null = null
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
@@ -1969,6 +1973,13 @@ export const treeContents = (
               ...(template.published ? {} : { meta: 'unpublished' }),
               progress:
                 drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn),
+              actions: [
+                {
+                  icon: 'search',
+                  label: 'Go to',
+                  run: () => callbacks.onGoTo({ kind: 'server', bbox: template.bbox }),
+                },
+              ],
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: async (on) => {
                 // A drawn server row owns the dual commit: live bitmaps and the durable scope either
@@ -2097,7 +2108,7 @@ export const treeContents = (
               {
                 icon: 'search',
                 label: 'Go to',
-                run: () => callbacks.onGoTo(template.id),
+                run: () => callbacks.onGoTo({ kind: 'local', templateId: template.id }),
               },
               {
                 icon: 'uploadFile',

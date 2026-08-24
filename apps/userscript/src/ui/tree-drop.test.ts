@@ -52,7 +52,7 @@ const serverNode = (id: string, name: string) => ({
   createdAt: 1_750_000_000_000,
 })
 
-const serverTemplate = (id: string, nodeId: string, name: string, updatedAt: number) => ({
+const serverTemplate = (id: string, nodeId: string | null, name: string, updatedAt: number) => ({
   id,
   nodeId,
   name,
@@ -64,6 +64,49 @@ const serverTemplate = (id: string, nodeId: string, name: string, updatedAt: num
 })
 
 describe('tree drag and drop', () => {
+  it('keeps a fly-to action on server template rows', () => {
+    const server = connectedServer()
+    setState({
+      servers: [server],
+      localFolders: [],
+      customOrder: [],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    rememberServerContents(server, {
+      nodes: [],
+      templates: [serverTemplate(TEMPLATE_A_ID, null, 'Template', 1)],
+    })
+    const onGoTo = vi.fn()
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo,
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+
+    const tree = treeContents(callbacks, vi.fn())
+    const row = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+    )
+    const flyTo = row?.querySelector<HTMLButtonElement>('[aria-label="Go to"]')
+
+    expect(flyTo).not.toBeNull()
+    flyTo?.click()
+    expect(onGoTo).toHaveBeenCalledWith({
+      kind: 'server',
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+    })
+  })
+
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {
     const server = connectedServer()
     const source = serverNode(SOURCE_NODE_ID, 'Source')
