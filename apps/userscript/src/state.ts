@@ -221,6 +221,19 @@ const releaseManifestRead = (): void => {
   else next.grant()
 }
 
+const gatedManifestJson = async (
+  input: string,
+  init: RequestInit,
+): Promise<{ response: Response; body: unknown }> => {
+  const admission = acquireManifestRead()
+  if (admission !== true && !(await admission)) throw new Error('manifest read cancelled')
+  try {
+    return await remoteJson(input, init, TREE_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS)
+  } finally {
+    releaseManifestRead()
+  }
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
@@ -1235,14 +1248,9 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
     const fetchManifest = (credential: string | null) =>
-      remoteJson(
-        `${base}/manifest`,
-        {
-          headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
-        },
-        TREE_JSON_BYTES,
-        LARGE_TRANSFER_TIMEOUT_MS,
-      )
+      gatedManifestJson(`${base}/manifest`, {
+        headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
+      })
     let effectiveToken = token
     let { response: authed, body: manifestBody } = await fetchManifest(effectiveToken)
     if (
@@ -1410,23 +1418,15 @@ const failure = (response: Response, body: Record<string, unknown> | null): stri
 type UploadFailure = { readonly ok: false; readonly message: string; readonly ambiguous?: true }
 
 interface PendingUploadAmbiguity {
-  readonly server: ConnectedServer
   readonly afterManifestRequest: number
 }
 
 const pendingUploadAmbiguities = new Map<string, PendingUploadAmbiguity>()
-const activeUploads = new Map<
-  string,
-  { readonly server: ConnectedServer; readonly token: object }
->()
+const activeUploads = new Map<string, { readonly token: object }>()
 
 const pendingUploadFailure = (server: ConnectedServer): UploadFailure | null => {
   const pending = pendingUploadAmbiguities.get(server.url)
   if (pending === undefined) return null
-  if (!isCurrentServerConnection(pending.server) || !isCurrentServerConnection(server)) {
-    pendingUploadAmbiguities.delete(server.url)
-    return null
-  }
   return {
     ok: false,
     message: 'A previous upload may have completed. Refresh this server before uploading again.',
@@ -1435,20 +1435,16 @@ const pendingUploadFailure = (server: ConnectedServer): UploadFailure | null => 
 }
 
 const markUploadAmbiguous = (server: ConnectedServer, message: string): UploadFailure => {
+  const existing = pendingUploadAmbiguities.get(server.url)
   pendingUploadAmbiguities.set(server.url, {
-    server,
-    afterManifestRequest: manifestRequestSequence,
+    afterManifestRequest: Math.max(existing?.afterManifestRequest ?? 0, manifestRequestSequence),
   })
   return { ok: false, message, ambiguous: true }
 }
 
 const clearUploadAmbiguity = (server: ConnectedServer, manifestRequest: number): void => {
   const pending = pendingUploadAmbiguities.get(server.url)
-  if (
-    pending !== undefined &&
-    isCurrentServerConnection(pending.server) &&
-    manifestRequest > pending.afterManifestRequest
-  ) {
+  if (pending !== undefined && manifestRequest > pending.afterManifestRequest) {
     pendingUploadAmbiguities.delete(server.url)
   }
 }
@@ -1462,11 +1458,11 @@ const beginUpload = (
   const pending = pendingUploadFailure(server)
   if (pending !== null) return { failure: pending }
   const active = activeUploads.get(server.url)
-  if (active !== undefined && isCurrentServerConnection(active.server)) {
+  if (active !== undefined) {
     return { failure: { ok: false, message: 'Another upload to this server is still running.' } }
   }
   const token = {}
-  activeUploads.set(server.url, { server, token })
+  activeUploads.set(server.url, { token })
   return { token }
 }
 
@@ -1686,6 +1682,8 @@ export const admitServerContents = (server: ConnectedServer, contents: ServerCon
   )
     return false
   admittedServerContents.set(server.url, { server: current, contents })
+  const request = manifestResponseOf.get(contents)
+  if (request !== undefined) clearUploadAmbiguity(server, request)
   return true
 }
 
@@ -1749,9 +1747,6 @@ export const listServerContents = async (
     const contents: ServerContents = { nodes: manifest.nodes, templates }
     manifestResponseOf.set(contents, request)
     const current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (current !== undefined && isCurrentServerConnection(server)) {
-      clearUploadAmbiguity(server, request)
-    }
     if (
       current !== undefined &&
       isCurrentServerConnection(server) &&

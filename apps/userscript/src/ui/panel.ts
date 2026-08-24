@@ -699,7 +699,9 @@ const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
  * longer refer to anything.
  */
 const disconnectServer = async (server: ConnectedServer): Promise<void> => {
-  copySetupController?.abort(new Error('copy destination disconnected'))
+  if (copySetupTargets?.has(server.url)) {
+    copySetupController?.abort(new Error('copy destination disconnected'))
+  }
   // Anything already downloading for this server lands stale rather than drawing an overlay with no
   // server row left to control it.
   endServerGeneration(server.url)
@@ -2239,6 +2241,7 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
  */
 let copySetupRunning = false
 let copySetupController: AbortController | null = null
+let copySetupTargets: ReadonlySet<string> | null = null
 const COPY_SETUP_TIMEOUT_MS = 120_000
 
 const copyToServer = async (templateId: string, rerender: () => void): Promise<void> => {
@@ -2268,6 +2271,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   setupCancel.textContent = 'Cancel'
   const setupController = new AbortController()
   copySetupController = setupController
+  copySetupTargets = new Set(targets.map((server) => server.url))
   let setupCancelled = false
   let setupTimedOut = false
   setupCancel.addEventListener('click', () => {
@@ -2294,6 +2298,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   } finally {
     clearTimeout(setupTimeout)
     if (copySetupController === setupController) copySetupController = null
+    if (copySetupController === null) copySetupTargets = null
     copySetupRunning = false
   }
   if (setupController.signal.aborted) {
