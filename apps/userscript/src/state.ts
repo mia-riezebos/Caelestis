@@ -1215,7 +1215,11 @@ export const peekProbedNodes = (server: ConnectedServer): readonly TreeNode[] | 
  * needed *before* asking anyone for one. Asking for a code up front is the likeliest way to lose
  * someone on first run — most servers will not want one.
  */
-export const probeServer = async (url: string, token: string | null): Promise<ConnectedServer> => {
+export const probeServer = async (
+  url: string,
+  token: string | null,
+  options: { readonly supersedeActive?: boolean } = {},
+): Promise<ConnectedServer> => {
   let base: string
   try {
     base = canonicalServerUrl(url)
@@ -1230,7 +1234,20 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
       season: null,
     }
   }
-  activeServerProbes.get(base)?.abort(new Error('superseded by a newer server probe'))
+  const activeProbe = activeServerProbes.get(base)
+  if (activeProbe !== undefined && options.supersedeActive === false) {
+    return {
+      url: base,
+      info: null,
+      token,
+      status: 'unreachable',
+      error: 'superseded by an active foreground server probe',
+      isAdmin: false,
+      season: null,
+      superseded: true,
+    }
+  }
+  activeProbe?.abort(new Error('superseded by a newer server probe'))
   const probeController = new AbortController()
   activeServerProbes.set(base, probeController)
   let observedInfo: ServerInfo | null = null
@@ -1361,7 +1378,7 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
       const server = snapshot[cursor++]
       if (server === undefined) return
       if (!isCurrentServerConnection(server)) continue
-      const refreshed = await probeServer(server.url, server.token)
+      const refreshed = await probeServer(server.url, server.token, { supersedeActive: false })
       if (refreshed.superseded === true) continue
       const current = getState().servers.find((candidate) => candidate.url === server.url)
       if (current === undefined || !isCurrentServerConnection(server)) continue
