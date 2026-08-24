@@ -58,7 +58,7 @@ export const assembleManifest = async (
     // recoverable; the next poll has both.
     .filter(
       (template) =>
-        nodeIds.has(template.nodeId) &&
+        (template.nodeId === null || nodeIds.has(template.nodeId)) &&
         (chunksByVersion.get(`${template.id}:${template.versionId}`)?.length ?? 0) > 0,
     )
     .map((template) => ({

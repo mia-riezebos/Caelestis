@@ -149,12 +149,12 @@ export const UNPAINTED_LIMIT_CONTROL = {
 }
 
 export const DEFAULT_APPEARANCE: Appearance = {
-  size: 1,
+  size: 0.6,
   radius: 0,
   translateX: 0,
   translateY: 0,
   rotation: 0,
-  opacity: 1,
+  opacity: 0.85,
   hiddenColours: [],
   markMismatch: false,
   markUnpainted: false,
@@ -164,8 +164,80 @@ export const DEFAULT_APPEARANCE: Appearance = {
   markerColour: '#ff00ff',
   markerSize: 9,
   dimOthers: true,
-  otherOpacity: 0.35,
+  otherOpacity: 0.15,
   otherColour: null,
+}
+
+export type PixelStylePresetId = 'small' | 'full' | 'corner'
+export type PixelStyle = Pick<
+  Appearance,
+  'size' | 'radius' | 'translateX' | 'translateY' | 'rotation' | 'opacity'
+>
+
+/**
+ * Wplace's three pixel-style shortcuts, expressed through the deformable stamp controls.
+ *
+ * They are shortcuts rather than modes: choosing one fills the six sliders, and moving any slider
+ * afterward simply leaves the preset. This keeps every shape editable instead of hiding behaviour
+ * behind a lasting enum.
+ */
+export const PIXEL_STYLE_PRESETS: ReadonlyArray<{
+  readonly id: PixelStylePresetId
+  readonly label: string
+  readonly values: PixelStyle
+}> = [
+  {
+    id: 'small',
+    label: 'Small pixel',
+    values: {
+      size: 0.6,
+      radius: 0,
+      translateX: 0,
+      translateY: 0,
+      rotation: 0,
+      opacity: 1,
+    },
+  },
+  {
+    id: 'full',
+    label: 'Full pixel',
+    values: {
+      size: 1,
+      radius: 0,
+      translateX: 0,
+      translateY: 0,
+      rotation: 0,
+      opacity: 0.6,
+    },
+  },
+  {
+    id: 'corner',
+    label: 'Corner',
+    values: {
+      size: 1.5,
+      radius: 0,
+      translateX: -0.75,
+      translateY: 0,
+      rotation: 45,
+      opacity: 1,
+    },
+  },
+]
+
+export const pixelStylePresetOf = (appearance: Appearance): PixelStylePresetId | null => {
+  for (const preset of PIXEL_STYLE_PRESETS) {
+    if (
+      preset.values.size === appearance.size &&
+      preset.values.radius === appearance.radius &&
+      preset.values.translateX === appearance.translateX &&
+      preset.values.translateY === appearance.translateY &&
+      preset.values.rotation === appearance.rotation &&
+      preset.values.opacity === appearance.opacity
+    ) {
+      return preset.id
+    }
+  }
+  return null
 }
 
 /**

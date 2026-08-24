@@ -122,7 +122,8 @@ CREATE TABLE `template_versions` (
 CREATE UNIQUE INDEX `template_versions_id_template_idx` ON `template_versions` (`id`,`template_id`);--> statement-breakpoint
 CREATE TABLE `templates` (
 	`id` text PRIMARY KEY NOT NULL,
-	`node_id` text NOT NULL,
+	`season` integer NOT NULL,
+	`node_id` text,
 	`name` text NOT NULL,
 	`current_version_id` text,
 	`published_at` integer,

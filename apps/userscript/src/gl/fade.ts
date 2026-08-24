@@ -57,6 +57,9 @@ const bezier = (a: number, b: number, at: number): number => {
 
 const ease = (t: number): number => (t <= 0 ? 0 : t >= 1 ? 1 : bezier(CONTROL[0], CONTROL[2], t))
 
+/** The shared fade curve at an elapsed duration, for non-opacity motion that must stay in step. */
+export const fadeProgress = (elapsedMs: number): number => ease(elapsedMs / FADE_MS)
+
 interface Fade {
   /** Where the ramp started, so a fade interrupted midway carries on from where it was. */
   readonly from: number
@@ -89,8 +92,7 @@ export const ramps = ({ startAt = 'zero' }: { startAt?: 'zero' | 'target' } = {}
   const fades = new Map<string, Fade>()
 
   const at = (fade: Fade, now: number): number => {
-    const progress = Math.min(Math.max((now - fade.since) / FADE_MS, 0), 1)
-    return fade.from + (fade.to - fade.from) * ease(progress)
+    return fade.from + (fade.to - fade.from) * fadeProgress(now - fade.since)
   }
 
   return {

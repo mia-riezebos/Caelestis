@@ -86,6 +86,27 @@ describe('template routes', () => {
     expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(stored)
   })
 
+  it('stores a template directly under the server root', async () => {
+    const { app } = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const form = templateForm(png)
+    form.delete('nodeId')
+    form.set('season', '1')
+
+    const created = await app.request('/admin/templates', {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(created.status).toBe(201)
+    const manifest = (await (
+      await app.request('/manifest?season=1', bearer(BOOTSTRAP))
+    ).json()) as { templates: Array<{ nodeId: string | null }> }
+    expect(manifest.templates).toHaveLength(1)
+    expect(manifest.templates[0]?.nodeId).toBeNull()
+  })
+
   it('404s an unknown chunk hash', async () => {
     const { app } = await harness()
     const response = await app.request(`/chunks/${'f'.repeat(64)}`, bearer(BOOTSTRAP))
@@ -197,7 +218,7 @@ describe('editing a template', () => {
       templates: Array<{
         id: string
         name: string
-        nodeId: string
+        nodeId: string | null
         version: string
         updatedAt: number
       }>
@@ -238,6 +259,17 @@ describe('editing a template', () => {
     expect(response.status).toBe(200)
     const after = await manifestFor(app)
     expect(after.templates[0]?.nodeId).toBe(destination)
+  })
+
+  it('moves a template directly under the server root', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+
+    const response = await patch(app, template.templateId, { nodeId: null })
+
+    expect(response.status).toBe(200)
+    const after = await manifestFor(app)
+    expect(after.templates[0]?.nodeId).toBeNull()
   })
 
   it('refuses to move a template to a node that does not exist', async () => {

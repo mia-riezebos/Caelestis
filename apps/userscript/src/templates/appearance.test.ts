@@ -6,10 +6,77 @@ import {
   isColourHidden,
   legacyAppearanceGroups,
   normaliseAppearance,
+  PIXEL_STYLE_PRESETS,
+  pixelStylePresetOf,
   stampContains,
 } from './appearance.js'
 
 describe('template appearances', () => {
+  it('starts with the product appearance defaults', () => {
+    expect(DEFAULT_APPEARANCE).toEqual({
+      size: 0.6,
+      radius: 0,
+      translateX: 0,
+      translateY: 0,
+      rotation: 0,
+      opacity: 0.85,
+      hiddenColours: [],
+      markMismatch: false,
+      markUnpainted: false,
+      unpaintedLimit: 0.05,
+      markerColour: '#ff00ff',
+      markerSize: 9,
+      dimOthers: true,
+      otherOpacity: 0.15,
+      otherColour: null,
+    })
+  })
+
+  it('defines the three editable Wplace pixel-style shortcuts', () => {
+    expect(PIXEL_STYLE_PRESETS).toEqual([
+      {
+        id: 'small',
+        label: 'Small pixel',
+        values: {
+          size: 0.6,
+          radius: 0,
+          translateX: 0,
+          translateY: 0,
+          rotation: 0,
+          opacity: 1,
+        },
+      },
+      {
+        id: 'full',
+        label: 'Full pixel',
+        values: {
+          size: 1,
+          radius: 0,
+          translateX: 0,
+          translateY: 0,
+          rotation: 0,
+          opacity: 0.6,
+        },
+      },
+      {
+        id: 'corner',
+        label: 'Corner',
+        values: {
+          size: 1.5,
+          radius: 0,
+          translateX: -0.75,
+          translateY: 0,
+          rotation: 45,
+          opacity: 1,
+        },
+      },
+    ])
+    expect(pixelStylePresetOf({ ...DEFAULT_APPEARANCE, ...PIXEL_STYLE_PRESETS[0]?.values })).toBe(
+      'small',
+    )
+    expect(pixelStylePresetOf(DEFAULT_APPEARANCE)).toBeNull()
+  })
+
   it('always hides transparency and exposes every drawable palette index once', () => {
     expect(isColourHidden(DEFAULT_APPEARANCE, TRANSPARENT_INDEX)).toBe(true)
     expect(isColourHidden({ ...DEFAULT_APPEARANCE, hiddenColours: [2] }, 2)).toBe(true)

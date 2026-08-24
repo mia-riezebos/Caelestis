@@ -1,5 +1,6 @@
 import {
   decodePng,
+  decodeWplaceIndexedPng,
   encodeIndexedPng,
   millis,
   type PixelBounds,
@@ -8,6 +9,7 @@ import {
   sha256Hex,
   sliceTemplate,
   type TileKey,
+  TRANSPARENT_INDEX,
   tileKey,
   uuidV7,
   WORLD_PIXELS,
@@ -24,7 +26,8 @@ export interface StoreTemplateInput {
    * its name, parent, published state and creation date.
    */
   readonly templateId?: string
-  readonly nodeId: string
+  readonly season: number
+  readonly nodeId: string | null
   readonly name: string
   readonly createdWithToken: string
   /** The uploader's wplace account when the client presented one; null for a server-side upload. */
@@ -64,23 +67,48 @@ export class StoreTemplateError extends Error {
   override readonly name = 'StoreTemplateError'
 }
 
+const exactPaletteReport = (indices: Uint8Array): QuantiseReport => {
+  let opaquePixels = 0
+  const used = new Set<number>()
+  for (const index of indices) {
+    if (index === TRANSPARENT_INDEX) continue
+    opaquePixels += 1
+    used.add(index)
+  }
+  return {
+    opaquePixels,
+    movedPixels: 0,
+    distinctColours: used.size,
+    distinctPaletteEntries: used.size,
+    meanDistance: 0,
+    maxDistance: 0,
+  }
+}
+
 export const storeTemplate = async (
   ports: Pick<Ports, 'blobs' | 'sql'>,
   input: StoreTemplateInput,
 ): Promise<StoredTemplate> => {
-  if (input.templateId === undefined) {
+  if (input.templateId === undefined && input.nodeId !== null) {
     const node = await ports.sql.readNode(input.nodeId)
     if (node === null) throw new NodeNotFoundError(`node does not exist: ${input.nodeId}`)
+    if (node.season !== input.season) {
+      throw new NodeNotFoundError(`node does not exist in season ${input.season}: ${input.nodeId}`)
+    }
   }
 
-  const { width, height, pixels } = await decodePng(input.png)
-  const { indices, report } = quantiseToPalette(pixels)
+  const indexed = await decodeWplaceIndexedPng(input.png)
+  const decoded = indexed ?? (await decodePng(input.png))
+  const { width, height } = decoded
+  const { indices, report } =
+    'indices' in decoded
+      ? { indices: decoded.indices, report: exactPaletteReport(decoded.indices) }
+      : quantiseToPalette(decoded.pixels)
   const sliced = sliceTemplate(indices, width, height, input.originX, input.originY)
-  // A cap on tiles, not just on pixels. MAX_PIXELS permits a 1,999,000x2 image, which slices to
-  // ~4,000 chunks: ~170 batch statements against D1's 50 per invocation, ~8,000 R2 subrequests
-  // against a limit of 1,000, and 4,000 concurrent compressions — from an upload a few kilobytes
-  // long, because two rows of one colour deflate to nothing. Raising the row batching moved that
-  // cliff; it did not remove it.
+  // Bound the storage work, not the image area. A 1,999,000x2 image slices to ~4,000 chunks: ~170
+  // batch statements against D1's 50 per invocation, ~8,000 R2 subrequests against a limit of 1,000,
+  // and 4,000 concurrent compressions — from an upload a few kilobytes long, because two rows of one
+  // colour deflate to nothing. A large template covering an ordinary number of tiles remains valid.
   if (sliced.chunks.length > MAX_TEMPLATE_CHUNKS) {
     throw new StoreTemplateError(
       `template covers ${sliced.chunks.length} tiles, more than the ${MAX_TEMPLATE_CHUNKS} one upload may carry`,
@@ -139,6 +167,7 @@ export const storeTemplate = async (
   }))
   const version: TemplateVersionRecord = {
     templateId,
+    season: input.season,
     nodeId: input.nodeId,
     name: input.name,
     versionId,

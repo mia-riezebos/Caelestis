@@ -151,9 +151,8 @@ export const templates = sqliteTable(
   'templates',
   {
     id: text('id').primaryKey(),
-    nodeId: text('node_id')
-      .notNull()
-      .references(() => nodes.id),
+    season: integer('season').notNull(),
+    nodeId: text('node_id').references(() => nodes.id),
     name: text('name').notNull(),
     currentVersionId: text('current_version_id'),
     publishedAt: integer('published_at').$type<Millis>(),

@@ -54,6 +54,7 @@ const harness = async () => {
 }
 
 const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
+  season: 1,
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
   name: 'Test template',
   createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -97,6 +98,18 @@ describe('storeTemplate', () => {
       totalPixels: 4,
       chunks: [{ tileX: 0, tileY: 0, hash: chunk.hash }],
     })
+  })
+
+  it('accepts a real indexed template larger than four million pixels', async () => {
+    const ports = await harness()
+    const width = 1_612
+    const height = 2_584
+    const png = await encodeIndexedPng(width, height, new Uint8Array(width * height))
+
+    const stored = await storeTemplate(ports, input(png))
+
+    expect(stored.totalPixels).toBe(width * height)
+    expect(stored.chunks).toHaveLength(6)
   })
 
   it('stores separate hashes when painted pixels straddle a tile boundary', async () => {

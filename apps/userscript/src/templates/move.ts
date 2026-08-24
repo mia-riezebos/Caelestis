@@ -31,6 +31,8 @@ import { horizontalSpans } from './placement.js'
 
 interface MoveSession {
   readonly id: string
+  /** Server drafts persist their new origin remotely before the local preview is accepted. */
+  readonly persistRemote?: (originX: number, originY: number) => Promise<boolean>
   x: number
   y: number
   dragging: {
@@ -334,6 +336,25 @@ export const beginMove = (
   id: string,
   finished: () => void,
   restoredOrigin?: { readonly x: number; readonly y: number },
+): boolean => begin(id, finished, restoredOrigin)
+
+/**
+ * Place a server-owned draft with the same canvas interaction as a Local template.
+ *
+ * The caller owns the remote write because it also owns server authorization and publication
+ * policy. The placement engine owns only previewing and accepting/reverting the local visual.
+ */
+export const beginServerMove = (
+  id: string,
+  finished: () => void,
+  persistRemote: (originX: number, originY: number) => Promise<boolean>,
+): boolean => begin(id, finished, undefined, persistRemote)
+
+const begin = (
+  id: string,
+  finished: () => void,
+  restoredOrigin?: { readonly x: number; readonly y: number },
+  persistRemote?: (originX: number, originY: number) => Promise<boolean>,
 ): boolean => {
   if (session !== null || finishing || moveReservation !== null) return false
   // A condemned template is still in the store for the whole of its delete, so every surface that
@@ -341,10 +362,15 @@ export const beginMove = (
   // than each caller having to remember.
   if (isDeletingLocal(id)) return false
   const template = localTemplates().find((candidate) => candidate.id === id)
-  if (template === undefined || isServerTemplate(template)) return false
+  if (
+    template === undefined ||
+    (isServerTemplate(template) ? persistRemote === undefined : persistRemote !== undefined)
+  )
+    return false
   placements += 1
   const nextSession: MoveSession = {
     id,
+    ...(persistRemote === undefined ? {} : { persistRemote }),
     x: restoredOrigin?.x ?? template.originX,
     y: restoredOrigin?.y ?? template.originY,
     dragging: null,
@@ -452,8 +478,21 @@ export const commit = async (): Promise<void> => {
     reconciled = true
   })
   try {
+    if (current.persistRemote !== undefined) {
+      if (!(await current.persistRemote(current.x, current.y))) {
+        resumeAfterFailure('server placement')
+        return
+      }
+    }
     if (!(await placeLocalTemplate(current.id, current.x, current.y))) {
       const durable = localTemplates().find((template) => template.id === current.id)
+      // The server already accepted this position. Do not reopen a placement whose next Apply
+      // would create another version; discard the stale preview and let the manifest refresh land.
+      if (current.persistRemote !== undefined) {
+        clearLocalPreview(current.id)
+        finish()
+        return
+      }
       if (durable === undefined || reconciled) {
         finish()
         return

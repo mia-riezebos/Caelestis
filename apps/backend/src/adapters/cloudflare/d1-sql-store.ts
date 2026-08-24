@@ -1,5 +1,19 @@
 import { type Millis, seconds, WORLD_PIXELS } from '@caelestis/shared'
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, or, type SQL, sql } from 'drizzle-orm'
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
@@ -532,8 +546,14 @@ export class D1SqlStore implements SqlStore {
     options: { readonly requireExisting?: boolean } = {},
   ): Promise<void> {
     assertValidTemplateVersion(version)
-    if (options.requireExisting !== true && (await this.readNode(version.nodeId)) === null) {
-      throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+    if (options.requireExisting !== true && version.nodeId !== null) {
+      const destination = await this.readNode(version.nodeId)
+      if (destination === null) {
+        throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+      }
+      if (destination.season !== version.season) {
+        throw new InvalidNodeParentError('destination node belongs to a different season')
+      }
     }
     // A version replaces content in place, so it has to keep the same dimensions. Name and parent
     // are live template metadata and may legitimately change while the pixels are being encoded.
@@ -570,6 +590,7 @@ export class D1SqlStore implements SqlStore {
       .insert(templates)
       .values({
         id: version.templateId,
+        season: version.season,
         nodeId: version.nodeId,
         name: version.name,
         currentVersionId: null,
@@ -640,6 +661,7 @@ export class D1SqlStore implements SqlStore {
     const rows = await this.database
       .select({
         templateId: templates.id,
+        season: templates.season,
         nodeId: templates.nodeId,
         name: templates.name,
         versionId: templateVersions.id,
@@ -667,6 +689,7 @@ export class D1SqlStore implements SqlStore {
 
     return {
       templateId: row.templateId,
+      season: row.season,
       nodeId: row.nodeId,
       name: row.name,
       versionId: row.versionId,
@@ -709,6 +732,7 @@ export class D1SqlStore implements SqlStore {
     const rows = await this.database
       .select({
         id: templates.id,
+        season: templates.season,
         nodeId: templates.nodeId,
         name: templates.name,
         currentVersionId: templates.currentVersionId,
@@ -723,6 +747,7 @@ export class D1SqlStore implements SqlStore {
     if (row === undefined) return null
     return {
       id: row.id,
+      season: row.season,
       nodeId: row.nodeId,
       name: row.name,
       currentVersionId: row.currentVersionId,
@@ -748,21 +773,23 @@ export class D1SqlStore implements SqlStore {
     let predicate = eq(templates.id, templateId)
     if (patch.nodeId !== undefined) {
       const [existing] = await this.database
-        .select({ nodeId: templates.nodeId, season: nodes.season })
+        .select({ nodeId: templates.nodeId, season: templates.season })
         .from(templates)
-        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
         .where(eq(templates.id, templateId))
         .limit(1)
       if (existing === undefined) return false
-      const target = await this.readNode(patch.nodeId)
-      if (target === null) throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
-      if (target.season !== existing.season) {
-        throw new InvalidNodeParentError('destination node belongs to a different season')
+      if (patch.nodeId !== null) {
+        const target = await this.readNode(patch.nodeId)
+        if (target === null) throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+        if (target.season !== existing.season) {
+          throw new InvalidNodeParentError('destination node belongs to a different season')
+        }
       }
       // If another administrator moves or deletes the template after the season check, this write
       // loses instead of applying a stale decision and reporting success.
-      predicate =
-        and(eq(templates.id, templateId), eq(templates.nodeId, existing.nodeId)) ?? predicate
+      const parentUnchanged =
+        existing.nodeId === null ? isNull(templates.nodeId) : eq(templates.nodeId, existing.nodeId)
+      predicate = and(eq(templates.id, templateId), parentUnchanged) ?? predicate
     }
 
     try {
@@ -838,12 +865,11 @@ export class D1SqlStore implements SqlStore {
         updatedAt: templates.updatedAtMs,
       })
       .from(templates)
-      .innerJoin(nodes, eq(nodes.id, templates.nodeId))
       .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
       .where(
         includeUnpublished
-          ? eq(nodes.season, season)
-          : and(eq(nodes.season, season), isNotNull(templates.publishedAt)),
+          ? eq(templates.season, season)
+          : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
       )
 
     return rows.map((row) => ({
@@ -880,11 +906,10 @@ export class D1SqlStore implements SqlStore {
           eq(templates.currentVersionId, templateVersions.id),
         ),
       )
-      .innerJoin(nodes, eq(nodes.id, templates.nodeId))
       .where(
         includeUnpublished
-          ? eq(nodes.season, season)
-          : and(eq(nodes.season, season), isNotNull(templates.publishedAt)),
+          ? eq(templates.season, season)
+          : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
       )
   }
 

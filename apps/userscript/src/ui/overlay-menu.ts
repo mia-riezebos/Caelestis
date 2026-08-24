@@ -1,16 +1,27 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { cssPixelsPerCanvasPixel, screenPointFor } from '../main.js'
-import { getState, removeTreeStateKeys, setState } from '../state.js'
+import {
+  admittedServerContentsFor,
+  type ConnectedServer,
+  deleteTemplate as deleteTemplateOnServer,
+  getState,
+  listServerContents,
+  removeTreeStateKeys,
+  setState,
+  uploadTemplateVersion,
+} from '../state.js'
 import {
   APPEARANCE_CONTROLS,
   type Appearance,
   type AppearanceGroup,
   DEFAULT_APPEARANCE,
+  GROUP_FIELDS,
 } from '../templates/appearance.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
   appearanceOf,
+  forgetServerTemplate,
   isDeletingLocal,
   isServerTemplate,
   localTemplates,
@@ -21,11 +32,14 @@ import {
   setAppearance,
   setLocalVisible,
   setOwnsGroup,
+  templateAsPng,
 } from '../templates/local-store.js'
 import {
   abort as abortMove,
   alreadyAnswered,
   beginMove,
+  beginServerMove,
+  commit as commitMove,
   isFinishing,
   isMoving,
   movingId,
@@ -36,7 +50,10 @@ import { isColourPickerOpen } from './colour-picker.js'
 import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
+import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
+import { pixelStylePresets } from './pixel-style-presets.js'
 import { installStyles } from './styles.js'
+import { PANEL_ID } from './toast.js'
 
 /**
  * The per-overlay menu, anchored to the overlay it configures.
@@ -79,10 +96,13 @@ const BUTTON_PREFIX = 'caelestis-overlay-button-'
 /** Below the panel's z-30: while the drawer is open it is the focused surface and should win. */
 const BUTTON_Z = '28'
 const MENU_Z = '29'
-/** The gear's own height, so the menu hangs under the button rather than over it. */
-const GEAR_SIZE = 28
+/** Match the map rail exactly, so this trigger belongs to the same control family. */
+const MENU_BUTTON_SIZE = RAIL_BUTTON
+const RAIL_GAP = GAP
+const VIEWPORT_EDGE = 8
 /** As tall as the menu is ever allowed to want to be, before the room beside its gear is counted. */
 const NATURAL_MAX_HEIGHT = '70vh'
+const NATURAL_WIDTH = 'min(19.5rem, calc(100vw - 1rem))'
 /**
  * Our controls' identity attribute.
  *
@@ -91,6 +111,24 @@ const NATURAL_MAX_HEIGHT = '70vh'
  * to focus a panel row instead of a control.
  */
 const CONTROL = 'caelestisControl'
+
+/**
+ * The right edge available to controls anchored on the map.
+ *
+ * The main panel is resizable, so reserving its configured/default width is not enough. Its DOM
+ * box is the authority while it exists (the panel removes itself when closed); otherwise the
+ * ordinary button-rail clearance remains the boundary. Keep enough room for one reachable button
+ * in very narrow viewports, even when the panel itself consumes nearly all of the map.
+ */
+const localControlsRightEdge = (): number => {
+  const railEdge = window.innerWidth - CLEAR_OF_RAIL
+  const panel = document.getElementById(PANEL_ID)
+  if (panel === null) return railEdge
+  return Math.max(
+    VIEWPORT_EDGE + MENU_BUTTON_SIZE,
+    Math.min(railEdge, panel.getBoundingClientRect().left - RAIL_GAP),
+  )
+}
 
 /**
  * What a refused write is recorded against.
@@ -107,19 +145,12 @@ type FailureKey =
   | 'delete'
   | 'visible'
   | 'move'
+  | 'server-move'
   | 'move-ready'
   | 'move-stopped'
   | `appearance:${string}`
 
 let openFor: string | null = null
-/**
- * The template whose menu is being torn down right now.
- *
- * A teardown flushes pending edits, and settling one repaints synchronously — a pass that sees no
- * open menu and would cull the gear of a hidden overlay before the close is finished putting the
- * keyboard back on it.
- */
-let closingFor: string | null = null
 /** The menu we built, held by reference — identity is ours to keep, not to look up by id. */
 let menuNode: HTMLElement | null = null
 /**
@@ -135,6 +166,7 @@ let menuBox: { width: number; height: number } = { width: 0, height: 0 }
 /** The viewport `menuBox` was measured in, so a rotation or a resize is the thing that re-measures. */
 let measuredFor: { width: number; height: number } = { width: 0, height: 0 }
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
+let railActions: HTMLElement[] = []
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
 let focusRequest: string | null = null
 /**
@@ -371,6 +403,24 @@ const queues = new Map<string, Promise<unknown>>()
  */
 const buttons = new Map<string, HTMLElement>()
 
+interface PlacementRail {
+  readonly apply: HTMLButtonElement
+  readonly cancel: HTMLButtonElement
+}
+
+const placementRails = new Map<string, PlacementRail>()
+
+const removePlacementRail = (id: string): void => {
+  const rail = placementRails.get(id)
+  rail?.apply.remove()
+  rail?.cancel.remove()
+  placementRails.delete(id)
+}
+
+const removePlacementRails = (): void => {
+  for (const id of placementRails.keys()) removePlacementRail(id)
+}
+
 /**
  * The last render's repaint callback, so a teardown can still finish a write.
  *
@@ -379,8 +429,6 @@ const buttons = new Map<string, HTMLElement>()
  * old behaviour: the menu showed 85% while the overlay stayed at 40%, indefinitely.
  */
 let lastRerender: (() => void) | null = null
-/** A pass is under way, so anything it disturbs is already this pass's to finish. */
-let painting = false
 
 /**
  * Write out every draft for `id`, because the gesture that would have committed them is over.
@@ -464,6 +512,37 @@ const onPage = (node: Node | null | undefined): boolean => node?.isConnected ===
 
 const templateFor = (id: string): PlacedTemplate | undefined =>
   frameTemplates?.get(id) ?? localTemplates().find((candidate) => candidate.id === id)
+
+interface ServerActionTarget {
+  readonly server: ConnectedServer
+  readonly templateId: string
+  readonly published: boolean
+}
+
+/** The current admin-owned manifest row behind one rendered server overlay. */
+const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | null => {
+  if (!isServerTemplate(template) || template.serverTemplateId === undefined) return null
+  const server = getState().servers.find(
+    (candidate) => candidate.url === template.serverUrl && candidate.isAdmin,
+  )
+  if (server === undefined) return null
+  const remote = admittedServerContentsFor(server)?.templates.find(
+    (candidate) => candidate.id === template.serverTemplateId,
+  )
+  return remote === undefined
+    ? null
+    : { server, templateId: template.serverTemplateId, published: remote.published }
+}
+
+const currentServerActionTargetFor = (id: string): ServerActionTarget | null => {
+  const current = templateFor(id)
+  return current === undefined ? null : serverActionTargetFor(current)
+}
+
+const serverDraftIsEditable = (id: string): boolean => {
+  const target = currentServerActionTargetFor(id)
+  return target !== null && !target.published
+}
 
 /** The template's name as it is *now* — a name captured at build time goes stale on a rename. */
 const nameFor = (id: string): string => templateFor(id)?.name ?? 'this template'
@@ -599,6 +678,7 @@ const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
 }
 
 const forget = (id: string): void => {
+  removePlacementRail(id)
   showingToMove.delete(id)
   // Its near-namesake, and the two counters that go with it: an armed auto-abort watch outliving
   // its template would fire on a later placement of the same id.
@@ -619,6 +699,7 @@ const forget = (id: string): void => {
 const remembered = (): Set<string> =>
   new Set([
     ...buttons.keys(),
+    ...placementRails.keys(),
     ...appearanceIntents.keys(),
     ...visibleIntents.keys(),
     ...queues.keys(),
@@ -715,6 +796,7 @@ const commitVisible = (id: string, next: boolean, rerender: () => void): void =>
 const menuSignature = (template: PlacedTemplate): string => {
   const id = template.id
   const appearance = draftedAppearanceFor(id)
+  const serverTarget = serverActionTargetFor(template)
   // Serialised, not joined on a separator. Ids and names are arbitrary strings, so a `|` they can
   // both contain lets two different templates produce one signature — `{id:"a|b", name:"c"}` and
   // `{id:"a", name:"b|c"}` — and the menu is then reused for the wrong one, handlers and all.
@@ -748,6 +830,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     // beginning or ending while the menu is open otherwise leaves the button announcing the
     // opposite of what it will do.
     movingId() === id,
+    serverTarget === null ? null : [serverTarget.server.url, serverTarget.published],
     [...(failures.get(id) ?? [])]
       .map(
         ([key, text]) =>
@@ -758,6 +841,51 @@ const menuSignature = (template: PlacedTemplate): string => {
 }
 
 const deleteQuestion = (name: string): string => `Delete “${name}”? This cannot be undone.`
+
+/** Store a server draft's new canvas origin as a new immutable pixel version. */
+const moveServerDraft = async (id: string, originX: number, originY: number): Promise<boolean> => {
+  const before = templateFor(id)
+  const target = before === undefined ? null : serverActionTargetFor(before)
+  if (before === undefined || target === null) {
+    recordFailure(id, 'move', () => 'Admin access to this server is no longer available.')
+    return false
+  }
+  if (target.published) {
+    recordFailure(id, 'move', () => 'Unpublish this template before moving it.')
+    return false
+  }
+  const png = await templateAsPng(before)
+  const current = templateFor(id)
+  const currentTarget = current === undefined ? null : serverActionTargetFor(current)
+  if (
+    png === null ||
+    current === undefined ||
+    currentTarget === null ||
+    current.serverVersion !== before.serverVersion
+  ) {
+    recordFailure(id, 'move', () => 'This template changed while it was being prepared. Try again.')
+    return false
+  }
+  if (currentTarget.published) {
+    recordFailure(id, 'move', () => 'Unpublish this template before moving it.')
+    return false
+  }
+  const result = await uploadTemplateVersion(currentTarget.server, currentTarget.templateId, {
+    originX,
+    originY,
+    name: current.name,
+    png,
+  })
+  if (!result.ok) {
+    recordFailure(id, 'move', () => result.message)
+    return false
+  }
+  clearFailure(id, 'move')
+  // The manifest coordinator updates both the tree and the rendered server copy. The placement
+  // engine accepts its local preview immediately; this read supplies the new immutable version.
+  void listServerContents(currentTarget.server)
+  return true
+}
 
 /**
  * A range whose in-progress value lives in module state rather than in the element.
@@ -973,6 +1101,22 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
       rerender()
       return
     }
+    const current = templateFor(id)
+    const serverTarget = current === undefined ? null : serverActionTargetFor(current)
+    if (current !== undefined && isServerTemplate(current)) {
+      if (serverTarget === null) {
+        confirming.delete(id)
+        recordFailure(id, 'delete', () => 'Admin access to this server is no longer available.')
+        rerender()
+        return
+      }
+      if (serverTarget.published) {
+        confirming.delete(id)
+        recordFailure(id, 'delete', () => 'Unpublish this template before deleting it here.')
+        rerender()
+        return
+      }
+    }
     deleting.add(id)
     clearFailure(id, 'delete')
     // Ours to draw, because `deleting` is ours. The store also announces its own guard
@@ -986,17 +1130,40 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
     // resurrecting the record — holding it behind a slow `setLocalVisible` defeats that and leaves
     // the question reading "Deleting…" for as long as the bitmaps take. The store serialises this
     // itself, through `writeInOrder`.
-    void removeLocalTemplate(id).then(
+    let serverRemovalFailure: string | null = null
+    const removal =
+      serverTarget === null
+        ? removeLocalTemplate(id)
+        : deleteTemplateOnServer(serverTarget.server, serverTarget.templateId).then(
+            async (result) => {
+              if (!result.ok) {
+                serverRemovalFailure = result.message
+                return false
+              }
+              // Remove the rendered copy immediately; the manifest read reconciles the tree and
+              // confirms the server no longer advertises it.
+              await forgetServerTemplate(id)
+              void listServerContents(serverTarget.server)
+              return true
+            },
+          )
+    void removal.then(
       (removed) => {
         deleting.delete(id)
         if (!removed) {
-          recordFailure(id, 'delete', (name) => `Could not delete “${name}”.`)
+          recordFailure(
+            id,
+            'delete',
+            serverRemovalFailure === null
+              ? (name) => `Could not delete “${name}”.`
+              : () => serverRemovalFailure ?? 'Could not delete this template.',
+          )
           rerender()
           return
         }
         // The panel's delete path drops the ordering key too; leaving it behind accumulates
         // entries for templates that no longer exist in persisted state.
-        removeTreeStateKeys(new Set([`local:${id}`]))
+        if (serverTarget === null) removeTreeStateKeys(new Set([`local:${id}`]))
         confirming.delete(id)
         // Only if this template's menu is still the one on screen. A delete that completes while
         // another template's menu is open must not close that one.
@@ -1017,10 +1184,17 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
   return box
 }
 
-const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement => {
+interface BuiltOverlayMenu {
+  readonly menu: HTMLElement
+  readonly actions: readonly HTMLElement[]
+}
+
+const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlayMenu => {
   const { id, name } = template
   const appearance = draftedAppearanceFor(id)
   const visible = visibleFor(id)
+  const serverTarget = serverActionTargetFor(template)
+  const serverProtected = serverTarget?.published === true
   const menu = document.createElement('div')
   menu.id = MENU_ID
   menu.dataset.caelestisTemplate = id
@@ -1032,7 +1206,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     zIndex: MENU_Z,
     // A fixed 15rem cannot be clamped into a viewport narrower than it is; on a phone, or at a
     // browser zoom that shrinks the viewport below it, the clamp would just push it off the edge.
-    width: 'min(19.5rem, calc(100vw - 1rem))',
+    width: NATURAL_WIDTH,
     borderRadius: '0.5rem',
     padding: '0.5rem 0.625rem 0.625rem',
     color: 'var(--color-base-content, inherit)',
@@ -1139,17 +1313,42 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   move.type = 'button'
   move.dataset[CONTROL] = 'move'
   move.className = 'btn btn-ghost btn-xs btn-circle'
-  move.title = 'Move this overlay'
-  move.setAttribute('aria-label', 'Move this overlay')
+  move.title = serverProtected ? 'Unpublish before moving this overlay' : 'Move this overlay'
+  move.setAttribute('aria-label', move.title)
   move.appendChild(icon('move', 'size-4'))
   // Placing a template that is being deleted leaves the placement bar bound to a record that is
   // about to stop existing.
-  move.setAttribute('aria-disabled', String(isDoomed(id)))
+  move.setAttribute('aria-disabled', String(isDoomed(id) || serverProtected))
   move.addEventListener('click', () => {
     // Re-checked, not trusted from build time: a menu can outlive the state it was built from —
     // the rebuild is skipped under a held slider, and a delete from another surface changes nothing
     // this render loop can see until a frame happens to arrive.
     if (isDoomed(id)) return
+    const current = templateFor(id)
+    const currentServerTarget = current === undefined ? null : serverActionTargetFor(current)
+    if (current !== undefined && isServerTemplate(current)) {
+      if (currentServerTarget === null) {
+        recordFailure(
+          id,
+          'server-move',
+          () => 'Admin access to this server is no longer available.',
+          () => serverDraftIsEditable(id),
+        )
+        rerender()
+        return
+      }
+      if (currentServerTarget.published) {
+        recordFailure(
+          id,
+          'server-move',
+          () => 'Unpublish this template before moving it.',
+          () => serverDraftIsEditable(id),
+        )
+        rerender()
+        return
+      }
+      clearFailure(id, 'server-move')
+    }
     // `beginMove` refuses while another placement is running. It is the only action here that can
     // refuse without saying anything, and closing first would throw away the one surface able to
     // report it.
@@ -1165,12 +1364,8 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     // Nothing else ever clears this one, and a stale "finish the placement first" outlives the
     // placement it was about.
     clearFailure(id, 'move', 'move-ready', 'move-stopped')
-    // Placing an overlay you cannot see is not placing it, and the menu stays open after Hide on
-    // purpose — so Hide → Move is one click, and a hidden template is not painted at all.
-    //
-    // Awaited, because visibility is published only after slicing and persistence succeed: starting
-    // the placement first means positioning nothing, and a refused show means positioning nothing
-    // for the whole session.
+    // Visibility can change after this menu was built. Never start a placement for an overlay the
+    // renderer is no longer drawing.
     // One request at a time, and every assumption re-checked when it lands: the user can press
     // Move again, press Hide, open another template's menu, or start a placement from the panel
     // while the bitmaps are being built.
@@ -1230,13 +1425,19 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
             return
           }
           closeOverlayMenu()
-          beginMove(id, () => {
-            abortAttempts.delete(id)
-          })
+          const moving = templateFor(id)
+          const started =
+            moving !== undefined && isServerTemplate(moving)
+              ? beginServerMove(
+                  id,
+                  () => abortAttempts.delete(id),
+                  (x, y) => moveServerDraft(id, x, y),
+                )
+              : beginMove(id, () => abortAttempts.delete(id))
           handBack(id)
           // A placement that started has already painted from `beginMove`; one that was refused has
           // not, and the refusal needs a frame of its own. One click, one paint, either way.
-          if (movingId() !== id) rerender()
+          if (!started || movingId() !== id) rerender()
         },
         () => {
           showingToMove.delete(id)
@@ -1249,13 +1450,19 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
     }
     closeOverlayMenu()
     // `finish()` repaints, so the completion callback does not need to.
-    beginMove(id, () => {
-      abortAttempts.delete(id)
-    })
+    const moving = templateFor(id)
+    const started =
+      moving !== undefined && isServerTemplate(moving)
+        ? beginServerMove(
+            id,
+            () => abortAttempts.delete(id),
+            (x, y) => moveServerDraft(id, x, y),
+          )
+        : beginMove(id, () => abortAttempts.delete(id))
     // The gear is held by reference, so focusing it needs no repaint of its own, and `beginMove`
     // paints when it starts. Only a refusal, which paints nothing, still needs a frame here.
     handBack(id)
-    if (movingId() !== id) rerender()
+    if (!started || movingId() !== id) rerender()
   })
 
   // Deleting from here rather than from a panel row, for the same reason Move is here: this menu is
@@ -1268,8 +1475,10 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   remove.type = 'button'
   remove.dataset[CONTROL] = 'delete'
   remove.className = 'btn btn-ghost btn-xs btn-circle text-error'
-  remove.title = 'Delete this template'
-  remove.setAttribute('aria-label', 'Delete this template')
+  remove.title = serverProtected
+    ? 'Unpublish before deleting this template'
+    : 'Delete this template'
+  remove.setAttribute('aria-label', remove.title)
   remove.appendChild(icon('trash', 'size-4'))
   // Disabling both the question's buttons is not enough while this one can raise a fresh question,
   // with a fresh enabled Cancel, over a delete that is already running.
@@ -1280,9 +1489,23 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   // it leaves the placement bar up naming a template that is gone, over a map with nothing left to
   // position — Move refuses a condemned template for the mirror of this reason.
   const placing = (): boolean => movingId() === id
-  remove.setAttribute('aria-disabled', String(isDoomed(id) || placing()))
+  remove.setAttribute('aria-disabled', String(isDoomed(id) || placing() || serverProtected))
   remove.addEventListener('click', () => {
     if (isDoomed(id)) return
+    const current = templateFor(id)
+    const currentServerTarget = current === undefined ? null : serverActionTargetFor(current)
+    if (current !== undefined && isServerTemplate(current)) {
+      if (currentServerTarget === null) {
+        recordFailure(id, 'delete', () => 'Admin access to this server is no longer available.')
+        rerender()
+        return
+      }
+      if (currentServerTarget.published) {
+        recordFailure(id, 'delete', () => 'Unpublish this template before deleting it here.')
+        rerender()
+        return
+      }
+    }
     if (placing()) {
       recordFailure(
         id,
@@ -1319,17 +1542,17 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   header.append(title, close)
   menu.appendChild(header)
 
-  const actions = document.createElement('div')
-  actions.className = 'grid gap-1'
-  const localActions = isServerTemplate(template) ? [hide] : [hide, move, remove]
-  actions.style.gridTemplateColumns = `repeat(${localActions.length}, 1fr)`
-  actions.style.padding = '0.5rem 0 0.25rem'
+  const localActions =
+    isServerTemplate(template) && serverTarget === null ? [hide] : [hide, move, remove]
   for (const action of localActions) {
-    action.classList.remove('btn-xs', 'btn-circle')
-    action.style.height = '2.75rem'
+    action.classList.remove('btn-ghost', 'btn-xs', 'btn-circle')
+    action.classList.add('btn-square', 'shadow-md', 'relative')
+    action.style.position = 'fixed'
+    action.style.width = `${MENU_BUTTON_SIZE}px`
+    action.style.height = `${MENU_BUTTON_SIZE}px`
+    action.style.zIndex = BUTTON_Z
+    action.setAttribute('data-caelestis-rail-action', '')
   }
-  actions.append(...localActions)
-  menu.appendChild(actions)
 
   // Directly under the header, next to the buttons that raised them. Appending to the end of a menu
   // that scrolls past 70vh can put the question off-screen from the answer.
@@ -1421,6 +1644,24 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   }
 
   const pixels = groupBox('pixels', 'Pixels')
+  const presetRow = document.createElement('div')
+  presetRow.className = 'flex items-center justify-between px-1 pb-1'
+  const presetLabel = document.createElement('span')
+  presetLabel.className = 'text-xs opacity-70'
+  presetLabel.textContent = 'Pixel style'
+  presetRow.append(
+    presetLabel,
+    pixelStylePresets(
+      appearance,
+      (values) => {
+        const box = defaultsBoxes.get('pixels')
+        if (box !== undefined) box.checked = false
+        edit(GROUP_FIELDS.pixels, 'pixel style', () => values)
+      },
+      locked,
+    ),
+  )
+  pixels.body.appendChild(presetRow)
   for (const control of APPEARANCE_CONTROLS) {
     pixels.body.appendChild(
       slider(
@@ -1530,7 +1771,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): HTMLElement 
   gridWrap.appendChild(grid)
   colours.body.appendChild(gridWrap)
   disableFollowing(colours)
-  return menu
+  return { menu, actions: localActions }
 }
 
 /**
@@ -1615,6 +1856,62 @@ const handBack = (id: string): void => {
   buttons.get(id)?.focus()
 }
 
+const removeRailActions = (): void => {
+  for (const action of railActions) action.remove()
+  railActions = []
+}
+
+const placementRailFor = (id: string): PlacementRail => {
+  const existing = placementRails.get(id)
+  if (existing !== undefined && onPage(existing.apply) && onPage(existing.cancel)) return existing
+  removePlacementRail(id)
+
+  const apply = document.createElement('button')
+  apply.type = 'button'
+  apply.dataset[CONTROL] = 'apply-move'
+  apply.setAttribute('data-caelestis-placement-action', '')
+  apply.className = 'btn btn-square shadow-md relative btn-primary'
+  apply.title = 'Apply template position'
+  apply.setAttribute('aria-label', apply.title)
+  apply.appendChild(icon('check'))
+  apply.addEventListener('click', () => {
+    if (movingId() !== id || isFinishing()) return
+    void commitMove()
+    lastRerender?.()
+  })
+
+  const cancel = document.createElement('button')
+  cancel.type = 'button'
+  cancel.dataset[CONTROL] = 'cancel-move'
+  cancel.setAttribute('data-caelestis-placement-action', '')
+  cancel.className = 'btn btn-square shadow-md relative'
+  cancel.title = 'Cancel template move'
+  cancel.setAttribute('aria-label', cancel.title)
+  cancel.appendChild(icon('close'))
+  cancel.addEventListener('click', () => {
+    if (movingId() !== id || isFinishing()) return
+    void abortMove()
+    lastRerender?.()
+  })
+
+  Object.assign(apply.style, {
+    position: 'fixed',
+    width: `${MENU_BUTTON_SIZE}px`,
+    height: `${MENU_BUTTON_SIZE}px`,
+    zIndex: BUTTON_Z,
+  })
+  Object.assign(cancel.style, {
+    position: 'fixed',
+    width: `${MENU_BUTTON_SIZE}px`,
+    height: `${MENU_BUTTON_SIZE}px`,
+    zIndex: BUTTON_Z,
+  })
+  const rail = { apply, cancel }
+  placementRails.set(id, rail)
+  document.body.append(apply, cancel)
+  return rail
+}
+
 const closeOverlayMenu = (): void => {
   if (escapeListener !== null) {
     window.removeEventListener('keydown', escapeListener)
@@ -1626,16 +1923,9 @@ const closeOverlayMenu = (): void => {
   // lose — built, then removed a moment later by the rest of this teardown.
   const closing = openFor
   openFor = null
-  closingFor = closing
   // A keyboard gesture can have a value pending and no release yet; removing the focused input
   // sends that release somewhere else.
-  try {
-    if (closing !== null) {
-      flushDrafts(closing)
-    }
-  } finally {
-    closingFor = null
-  }
+  if (closing !== null) flushDrafts(closing)
   // Backing out of the menu retracts the question with it. Leaving it armed means reopening the
   // gear puts a live Delete button back up that the user thought they had dismissed — but not once
   // the delete is actually running, where that box is the only progress the user has.
@@ -1647,6 +1937,7 @@ const closeOverlayMenu = (): void => {
   menuNode?.remove()
   menuNode = null
   menuOwner = null
+  removeRailActions()
 }
 
 /**
@@ -1669,9 +1960,11 @@ const detachControls = (): void => {
   endGestures()
   for (const [, button] of buttons) button.remove()
   buttons.clear()
+  removePlacementRails()
   menuNode?.remove()
   menuNode = null
   menuOwner = null
+  removeRailActions()
 }
 
 /**
@@ -1690,6 +1983,7 @@ const sweepControls = (live: ReadonlySet<string>): void => {
     if (live.has(id)) continue
     buttons.get(id)?.remove()
     buttons.delete(id)
+    removePlacementRail(id)
     forget(id)
   }
   if (openFor !== null && !live.has(openFor)) closeOverlayMenu()
@@ -1703,6 +1997,12 @@ const controlIn = (menu: HTMLElement, key: string): HTMLElement | null => {
   return null
 }
 
+const builtControl = (menu: HTMLElement, key: string): HTMLElement | null => {
+  const inMenu = controlIn(menu, key)
+  if (inMenu !== null) return inMenu
+  return railActions.find((action) => action.dataset[CONTROL] === key) ?? null
+}
+
 /** Retire a Move refusal once the placement it was about has finished. */
 const expireMoveFailure = (id: string): void => {
   if (!isMoving() && failures.get(id)?.has('move') === true) clearFailure(id, 'move')
@@ -1710,27 +2010,9 @@ const expireMoveFailure = (id: string): void => {
 
 /** Where the overlay's top-right corner sits on screen, or null when none of it is in view. */
 const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | null => {
-  // A hidden overlay draws nothing, so its gear is a 28px hole in the map with nothing visible to
-  // explain it — and hiding an overlay is usually how you clear a spot in order to paint there.
-  //
-  // Its own menu is the exception, and has to be: Hide lives in there, so culling the control the
-  // moment it is used would make hiding a one-way trip from the map. Open, it stays; closed, the
-  // panel is where a hidden overlay is found again.
-  // A focused gear is not taken away mid-keyboard-navigation; it goes when focus does.
-  if (
-    !visibleFor(template.id) &&
-    openFor !== template.id &&
-    // Mid-teardown its menu is already disowned, but the gear is where the keyboard is going.
-    closingFor !== template.id &&
-    buttons.get(template.id) !== document.activeElement &&
-    // A gear that does not exist yet, or is still properly mounted, is safe to cull; one the host
-    // has moved is not, because the repair that would replace it runs later in this same pass.
-    (buttons.get(template.id) === undefined || onPage(buttons.get(template.id))) &&
-    // A refusal with no control left to open it is a message nobody can ever read.
-    !failures.has(template.id)
-  ) {
-    return null
-  }
+  // Hidden templates are managed from the main menu. Keeping a local trigger for something that is
+  // no longer drawn leaves unexplained chrome over unrelated map pixels.
+  if (!template.visible) return null
   // Follow the placement preview while one is running: the overlay is painted at the preview
   // origin, and a button left at the durable origin points at nothing.
   const preview = previewOriginFor(template.id)
@@ -1766,14 +2048,9 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
  */
 export const renderOverlayControls = (rerender: () => void, mapCanvas: HTMLCanvasElement): void => {
   lastRerender = rerender
-  painting = true
-  try {
-    withFrameTemplates(localTemplates(), (templates) => {
-      renderControls(rerender, mapCanvas, templates)
-    })
-  } finally {
-    painting = false
-  }
+  withFrameTemplates(localTemplates(), (templates) => {
+    renderControls(rerender, mapCanvas, templates)
+  })
 }
 
 const renderControls = (
@@ -1792,6 +2069,7 @@ const renderControls = (
   // template's delete question and failures behind, ready to be handed to the next record that
   // takes its durable id.
   sweepControls(live)
+  if (openFor !== null && templateFor(openFor)?.visible === false) closeOverlayMenu()
   if (mapCanvas.parentElement === null) {
     // No map to anchor to right now. The templates that remain have not gone anywhere, and neither
     // has anything in flight for them.
@@ -1890,8 +2168,6 @@ const renderControls = (
       })
     }
   }
-  // Retired first, because `cornerOnScreen` keeps a hidden overlay's gear alive for an unresolved
-  // failure — deciding that before expiring them leaves a gear behind for a message that is gone.
   for (const template of templates) {
     expireMoveFailure(template.id)
     expireFailures(template.id)
@@ -1904,6 +2180,33 @@ const renderControls = (
 
   for (const { template, corner } of placements) {
     let button = buttons.get(template.id)
+    if (placing === template.id) {
+      button?.remove()
+      buttons.delete(template.id)
+      if (corner === null) {
+        removePlacementRail(template.id)
+        continue
+      }
+      const rail = placementRailFor(template.id)
+      const railHeight = MENU_BUTTON_SIZE * 2 + RAIL_GAP
+      const railTop = Math.min(
+        Math.max(corner.y, VIEWPORT_EDGE),
+        Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
+      )
+      const railLeft = Math.min(
+        Math.max(corner.x + 6, 4),
+        localControlsRightEdge() - MENU_BUTTON_SIZE,
+      )
+      const finishing = isFinishing()
+      for (const control of [rail.apply, rail.cancel]) {
+        control.style.left = `${railLeft}px`
+        control.setAttribute('aria-disabled', String(finishing))
+      }
+      rail.apply.style.top = `${railTop}px`
+      rail.cancel.style.top = `${railTop + MENU_BUTTON_SIZE + RAIL_GAP}px`
+      continue
+    }
+    removePlacementRail(template.id)
     if (button !== undefined && !onPage(button)) {
       // Removed, not merely forgotten. Left in place it is a second live control with our id and
       // our handlers, and it outlives the template it belongs to.
@@ -1922,6 +2225,7 @@ const renderControls = (
         menuNode.remove()
         menuNode = null
         menuOwner = null
+        removeRailActions()
       }
       button?.remove()
       buttons.delete(template.id)
@@ -1930,26 +2234,19 @@ const renderControls = (
     if (button === undefined) {
       button = document.createElement('button')
       button.id = `${BUTTON_PREFIX}${template.id}`
-      button.className = 'btn btn-xs btn-circle shadow-md'
+      button.className = 'btn btn-square shadow-md relative'
       button.style.position = 'fixed'
+      button.style.width = `${MENU_BUTTON_SIZE}px`
+      button.style.height = `${MENU_BUTTON_SIZE}px`
       button.style.zIndex = BUTTON_Z
       button.setAttribute('aria-haspopup', 'dialog')
-      button.appendChild(icon('settings', 'size-3'))
-      // A hidden overlay's gear is kept alive only while it holds focus. Nothing else would repaint
-      // when focus leaves, so with the panel shut and the map idle it would sit there indefinitely.
-      //
-      // Unless we are the ones taking focus away, which the placement rule does mid-pass: this same
-      // pass goes on to cull the gear, so asking for another frame buys a second full paint for
-      // work that is already happening.
+      button.appendChild(icon('kebab'))
       // The keyboard can arrive here without a frame — Tab produces none — and the rule that keeps
       // it off a gear during a placement runs in the render. Focus is the one event every arrival
       // has in common, so it is answered where it happens as well as where it is stated.
       const gear = button
       gear.addEventListener('focus', () => {
         if (isMoving()) gear.blur()
-      })
-      button.addEventListener('blur', () => {
-        if (!visibleFor(template.id) && !painting) rerender()
       })
       button.addEventListener('click', () => {
         if (openFor === template.id) {
@@ -1968,8 +2265,22 @@ const renderControls = (
     button.setAttribute('aria-expanded', String(openFor === template.id))
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
-    const buttonTop = Math.min(Math.max(corner.y, 4), window.innerHeight - 32)
-    button.style.left = `${Math.min(Math.max(corner.x + 6, 4), window.innerWidth - 32)}px`
+    const actionCount =
+      openFor === template.id
+        ? isServerTemplate(template) && serverActionTargetFor(template) === null
+          ? 1
+          : 3
+        : 0
+    const railHeight = MENU_BUTTON_SIZE + actionCount * (MENU_BUTTON_SIZE + RAIL_GAP)
+    const buttonTop = Math.min(
+      Math.max(corner.y, VIEWPORT_EDGE),
+      Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
+    )
+    const buttonLeft = Math.min(
+      Math.max(corner.x + 6, 4),
+      localControlsRightEdge() - MENU_BUTTON_SIZE,
+    )
+    button.style.left = `${buttonLeft}px`
     button.style.top = `${buttonTop}px`
 
     if (openFor !== template.id) continue
@@ -1981,7 +2292,8 @@ const renderControls = (
     // still on the page. Holding A's slider with one finger and tapping B's gear with another
     // otherwise keeps A's menu — and A's handlers — parked beside B; and a menu the page has
     // removed could never be rebuilt at all while its slider stayed held.
-    const stale = menuNode === null || !onPage(menuNode)
+    const stale =
+      menuNode === null || !onPage(menuNode) || railActions.some((action) => !onPage(action))
     // The value survives — it is in `drafts` — but the element that would have delivered the
     // gesture's release does not, so the gesture ends here. That covers the page tearing the menu
     // off, and a second touch opening another template's menu while the first is still being
@@ -2011,17 +2323,21 @@ const renderControls = (
       // Sampled before anything is discarded: removing the node takes the keyboard with it.
       const scrollTop = previous?.scrollTop ?? 0
       const focusedKey =
-        previous?.contains(document.activeElement) === true
+        previous?.contains(document.activeElement) === true ||
+        railActions.some((action) => action.contains(document.activeElement))
           ? ((document.activeElement as HTMLElement | null)?.dataset[CONTROL] ?? null)
           : null
       previous?.remove()
-      menuNode = buildMenu(template, rerender)
+      removeRailActions()
+      const built = buildMenu(template, rerender)
+      menuNode = built.menu
+      railActions = [...built.actions]
       // A new node has no measurement, whatever the viewport has been doing.
       measuredFor = { width: 0, height: 0 }
       // Stamped from what was just built, not from what was sampled.
       menuNode.dataset.caelestisSignature = menuSignature(template)
       menuOwner = template.id
-      document.body.appendChild(menuNode)
+      document.body.append(menuNode, ...railActions)
       menuNode.scrollTop = scrollTop
       // Focus this module *asks* for is dropped while something is being placed; focus it merely
       // finds is kept. An action that asks — opening the delete question — can be deferred by a
@@ -2034,11 +2350,15 @@ const renderControls = (
       // some appearances, a Hide disabled by a delete. The header close button is always there and
       // never disabled, so it is where the keyboard lands when what was asked for has gone.
       const restore =
-        wanted === null ? null : (controlIn(menuNode, wanted) ?? controlIn(menuNode, 'close'))
+        wanted === null ? null : (builtControl(menuNode, wanted) ?? controlIn(menuNode, 'close'))
       restore?.focus()
       focusRequest = null
     }
     if (menuNode === null) continue
+    for (const [index, action] of railActions.entries()) {
+      action.style.left = `${buttonLeft}px`
+      action.style.top = `${buttonTop + (index + 1) * (MENU_BUTTON_SIZE + RAIL_GAP)}px`
+    }
     // Measured when it is built and when the viewport changes under it, and at no other time.
     //
     // Both dimensions are viewport-relative — `min(15rem, 100vw - 1rem)` and `70vh` — so a size
@@ -2049,34 +2369,27 @@ const renderControls = (
     // What is measured is the height the menu wants. What it gets is that, capped to the room on
     // whichever side it goes — arithmetic, not another read.
     if (measuredFor.width !== window.innerWidth || measuredFor.height !== window.innerHeight) {
+      menuNode.style.width = NATURAL_WIDTH
       menuNode.style.maxHeight = NATURAL_MAX_HEIGHT
       const box = menuNode.getBoundingClientRect()
       menuBox = { width: box.width, height: box.height }
       measuredFor = { width: window.innerWidth, height: window.innerHeight }
     }
-    // Keep it on screen when the overlay is near an edge, on both sides: a template hanging off
-    // the left keeps a clamped, reachable button, and its menu has to be reachable too.
-    const rightmost = Math.max(8, window.innerWidth - menuBox.width - 8)
-    menuNode.style.left = `${Math.min(Math.max(8, corner.x + 6), rightmost)}px`
-    // Below its own gear, which has the lower z-index and would otherwise be buried by it — and
-    // above when there is more room there. Neither side is guaranteed to fit: a gear halfway down a
-    // short viewport has too little of both, and a menu that simply flips is then clamped back over
-    // the gear from the other direction. So the side that is chosen also caps the height, and the
-    // menu scrolls rather than covering the control that closes it.
-    const spaceBelow = window.innerHeight - (buttonTop + GEAR_SIZE) - 8
-    const spaceAbove = buttonTop - 8
-    // Below whenever it fits, because that is where the menu belongs; otherwise wherever there is
-    // more room. Decided by the space and the height it wants, neither of which the cap changes.
-    const goBelow = menuBox.height <= spaceBelow || spaceBelow >= spaceAbove
-    const room = Math.max(0, goBelow ? spaceBelow : spaceAbove)
-    // The height it will have: what it wants, or the room beside its gear, whichever is less. One
-    // value, used both to cap it and to place it — they were two, and a cap larger than the
-    // measurement let the menu render taller than the height it was positioned from, which put the
-    // difference straight back over the gear.
-    const applied = Math.min(menuBox.height, room)
-    menuNode.style.maxHeight = `${applied}px`
-    menuNode.style.top = goBelow
-      ? `${Math.max(buttonTop + GEAR_SIZE, corner.y + GEAR_SIZE)}px`
-      : `${Math.max(8, buttonTop - applied)}px`
+    const contentRight = localControlsRightEdge()
+    const rightSpace = contentRight - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
+    const leftSpace = buttonLeft - RAIL_GAP - VIEWPORT_EDGE
+    const openRight = menuBox.width <= rightSpace || rightSpace >= leftSpace
+    const sideRoom = Math.max(0, openRight ? rightSpace : leftSpace)
+    const appliedWidth = Math.min(menuBox.width, sideRoom)
+    menuNode.style.width = `${appliedWidth}px`
+    menuNode.style.left = openRight
+      ? `${buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP}px`
+      : `${buttonLeft - RAIL_GAP - appliedWidth}px`
+    const appliedHeight = Math.min(menuBox.height, window.innerHeight - VIEWPORT_EDGE * 2)
+    menuNode.style.maxHeight = `${appliedHeight}px`
+    menuNode.style.top = `${Math.min(
+      Math.max(buttonTop, VIEWPORT_EDGE),
+      window.innerHeight - appliedHeight - VIEWPORT_EDGE,
+    )}px`
   }
 }

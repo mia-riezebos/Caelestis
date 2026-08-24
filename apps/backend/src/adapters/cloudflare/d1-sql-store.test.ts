@@ -25,6 +25,7 @@ const templateVersion = (
   overrides: Partial<TemplateVersionRecord> = {},
 ): TemplateVersionRecord => ({
   templateId: 'template-1',
+  season: 1,
   nodeId: 'node-1',
   name: 'Template',
   versionId: 'version-1',
@@ -428,7 +429,7 @@ describe('D1SqlStore', () => {
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
+      INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
       INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(
@@ -466,6 +467,7 @@ describe('D1SqlStore', () => {
 
     await store.insertTemplateVersion({
       templateId: 'bulk-t',
+      season: 1,
       nodeId: 'bulk-node',
       name: 'Bulk',
       versionId: 'bulk-v',
@@ -586,7 +588,12 @@ describe('D1SqlStore', () => {
       templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
     )
     await store.insertTemplateVersion(
-      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+      templateVersion({
+        templateId: 'other',
+        versionId: 'version-other',
+        season: 2,
+        nodeId: 'node-2',
+      }),
     )
     await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
@@ -612,7 +619,12 @@ describe('D1SqlStore', () => {
       templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
     )
     await store.insertTemplateVersion(
-      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+      templateVersion({
+        templateId: 'other',
+        versionId: 'version-other',
+        season: 2,
+        nodeId: 'node-2',
+      }),
     )
     await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
     await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))

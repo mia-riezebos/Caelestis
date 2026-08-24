@@ -29,7 +29,7 @@ export interface ServerInfo {
 
 /**
  * Groups and subgroups form an arbitrary-depth tree addressed by materialized path, so a rollup at
- * any depth is one prefix query. A template has exactly one parent.
+ * any depth is one prefix query. Templates may also sit directly under the server root.
  */
 export interface Node {
   readonly id: string
@@ -43,7 +43,7 @@ export interface Node {
 
 export interface Template {
   readonly id: string
-  readonly nodeId: string
+  readonly nodeId: string | null
   readonly name: string
   readonly version: string
   readonly bbox: BoundingBox

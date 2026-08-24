@@ -58,7 +58,7 @@ export interface DestinationAdmission {
   readonly nodes: readonly TreeNode[]
   readonly templates: ReadonlyArray<{
     readonly id: string
-    readonly nodeId: string
+    readonly nodeId: string | null
     readonly name: string
     readonly version: string
     readonly published: boolean
@@ -106,7 +106,7 @@ interface PublishedTemplate {
 }
 
 interface LocatedPublishedTemplate extends PublishedTemplate {
-  readonly nodeId: string
+  readonly nodeId: string | null
   readonly published: boolean
   readonly updatedAt: number
 }
@@ -186,6 +186,7 @@ const serverBranch = async (
   if (templatesForServer !== undefined) {
     const grouped = new Map<string, PublishedTemplate[]>()
     for (const template of templatesForServer()) {
+      if (template.nodeId === null) continue
       const siblings = grouped.get(template.nodeId) ?? []
       siblings.push(template)
       grouped.set(template.nodeId, siblings)

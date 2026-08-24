@@ -83,6 +83,8 @@ import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
+import { pixelStylePresets } from './pixel-style-presets.js'
+import { serverDestinations } from './server-destinations.js'
 import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID, toast } from './toast.js'
@@ -96,7 +98,9 @@ import {
   findServerNode,
   findServerTemplate,
   forgetServerRows,
+  isTreeDragActive,
   nodeTreeKey,
+  optimisticallyPlaceServerRow,
   primeFromCache,
   refreshNodes,
   rememberServerContents,
@@ -108,6 +112,23 @@ import {
   templatesOfNode,
   treeContents,
 } from './tree.js'
+
+type RetriableMutationResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string; readonly retryable?: true }
+
+const retryOptimisticMutation = async (
+  mutate: () => Promise<RetriableMutationResult>,
+): Promise<RetriableMutationResult> => {
+  const delays = [120, 300] as const
+  let result = await mutate()
+  for (const delay of delays) {
+    if (result.ok || result.retryable !== true) return result
+    await new Promise((resolve) => setTimeout(resolve, delay))
+    result = await mutate()
+  }
+  return result
+}
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -451,6 +472,7 @@ const refreshView = (): void => {
   if (root === null) return
   const held =
     isColourPickerOpen() ||
+    isTreeDragActive() ||
     root.querySelector('.caelestis-dragging') !== null ||
     (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
   if (held) {
@@ -481,7 +503,12 @@ const queueManifestTreeRefresh = (): void => {
   manifestTreeRefreshQueued = true
   queueMicrotask(() => {
     manifestTreeRefreshQueued = false
-    if (open && currentView === 'tree') rerenderTree()
+    if (!open || currentView !== 'tree') return
+    if (isTreeDragActive()) {
+      owedRefresh = true
+      return
+    }
+    rerenderTree()
   })
 }
 
@@ -1017,6 +1044,17 @@ const appearanceView = (): HTMLElement => {
       ),
     ),
   )
+  view.appendChild(
+    settingRow(
+      'Pixel style',
+      null,
+      pixelStylePresets(state.appearance, (values) => {
+        setState({ appearance: { ...getState().appearance, ...values } })
+        redraw()
+        rerender()
+      }),
+    ),
+  )
 
   // Same sliders as the per-overlay menu, deliberately — one vocabulary, learned once.
   const sliders = document.createElement('div')
@@ -1498,9 +1536,8 @@ const applyDelete = async (
 /**
  * Move a published template into another folder on the same server.
  *
- * A picker rather than a drag, because the tree's drag path is Local-only and a server move is a
- * write someone else sees — worth one deliberate confirmation rather than a gesture that can happen
- * by accident during a scroll.
+ * The context-menu alternative to dragging: useful when the destination is off-screen or a precise
+ * pointer gesture is awkward.
  */
 const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
   const { server, templateId } = target
@@ -1510,10 +1547,11 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
     toast(serverNodesFailure(listed), 'error')
     return
   }
-  const { nodes } = listed
-  const destinations = nodes.filter((node) => node.id !== target.nodeId)
+  const destinations = serverDestinations(listed.nodes).filter(
+    (destination) => destination.nodeId !== target.nodeId,
+  )
   if (destinations.length === 0) {
-    toast('There is nowhere else to put it — this server has one folder.', 'warning')
+    toast('There is nowhere else to put it.', 'warning')
     return
   }
 
@@ -1529,10 +1567,10 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   label.textContent = `Move “${target.name}” to:`
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
-  for (const node of destinations.slice(0, MAX_DESTINATIONS)) {
+  for (const destination of destinations.slice(0, MAX_DESTINATIONS)) {
     const option = document.createElement('option')
-    option.value = node.id
-    option.textContent = node.path
+    option.value = destination.nodeId ?? ''
+    option.textContent = destination.label
     chooser.appendChild(option)
   }
   const truncated = document.createElement('span')
@@ -1556,7 +1594,9 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
     void whileBusy(
       go,
       async () => {
-        const result = await patchTemplate(server, templateId, { nodeId: chooser.value })
+        const result = await patchTemplate(server, templateId, {
+          nodeId: chooser.value === '' ? null : chooser.value,
+        })
         box.remove()
         if (!result.ok) toast(result.message, 'error')
         void refreshCurrentNodes(server, rerender, true)
@@ -1619,10 +1659,24 @@ const moveBranch = async (
     destination.server.url === sourceServer.url
   ) {
     if (found !== null && destination.nodeId === found.node.parentId) return draggedKey
-    const moved = await moveNodeOnServer(destination.server, sourceId, destination.nodeId)
-    if (!moved.ok) toast(moved.message, 'error')
-    await refreshCurrentNodes(destination.server, rerender, true)
-    return moved.ok ? draggedKey : null
+    const optimistic = optimisticallyPlaceServerRow(
+      destination.server,
+      draggedKey,
+      destination.nodeId,
+    )
+    const moved = await retryOptimisticMutation(() =>
+      moveNodeOnServer(destination.server, sourceId, destination.nodeId),
+    )
+    if (!moved.ok) {
+      optimistic?.rollback()
+      toast(moved.message, 'error')
+      rerender()
+      return null
+    }
+    optimistic?.commit()
+    rerender()
+    void refreshCurrentNodes(destination.server, rerender, true)
+    return draggedKey
   }
 
   const sourceName = sourceServer?.info?.name ?? sourceServer?.url ?? 'Local'
@@ -1784,13 +1838,10 @@ const dropOnServerNode = async (
   // decides which end is which.
   //
   // This is also the one destination that may be the server itself rather than a folder on it —
-  // dropping onto the server's own row means the top level. A template cannot go there, because a
-  // template has to live in a folder, which is why the null check below is after this.
+  // dropping onto the server's own row means the top level for folders and templates alike.
   if (draggedKey.startsWith('node:') || draggedKey.startsWith('lf:')) {
     return await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender)
   }
-  if (nodeId === null) return null
-
   if (draggedKey.startsWith('local:')) {
     const local = allLocal().find((candidate) => candidate.id === draggedKey.slice('local:'.length))
     if (local === undefined) return null
@@ -1835,10 +1886,20 @@ const dropOnServerNode = async (
 
   if (found.serverUrl === server.url) {
     if (found.template.nodeId === nodeId) return draggedKey
-    const result = await patchTemplate(server, templateId, { nodeId })
-    if (!result.ok) toast(result.message, 'error')
-    await refreshCurrentNodes(server, rerender, true)
-    return result.ok ? draggedKey : null
+    const optimistic = optimisticallyPlaceServerRow(server, draggedKey, nodeId)
+    const result = await retryOptimisticMutation(() =>
+      patchTemplate(server, templateId, { nodeId }),
+    )
+    if (!result.ok) {
+      optimistic?.rollback()
+      toast(result.message, 'error')
+      rerender()
+      return null
+    }
+    optimistic?.commit()
+    rerender()
+    void refreshCurrentNodes(server, rerender, true)
+    return draggedKey
   }
 
   const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
@@ -2357,20 +2418,25 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
 /**
  * Copy a local template onto a server.
  *
- * Only servers where the code is admin can receive one, and only a real node can hold it, so both
- * are chosen here rather than assumed. The placement travels with it — the whole point of getting
- * it right locally first is not having to do it again on the other side.
+ * Only servers where the code is admin can receive one. The placement travels with it — the whole
+ * point of getting it right locally first is not having to do it again on the other side.
  */
 let copySetupRunning = false
 let copySetupController: AbortController | null = null
 let copySetupTargets: ReadonlySet<string> | null = null
 const COPY_SETUP_TIMEOUT_MS = 120_000
 
-const copyToServer = async (templateId: string, rerender: () => void): Promise<void> => {
+const copyToServer = async (
+  templateId: string,
+  rerender: () => void,
+  onlyServerUrl?: string,
+): Promise<void> => {
   const template = allLocal().find((candidate) => candidate.id === templateId)
   if (template === undefined) return
   if (copySetupRunning) return
-  const targets = getState().servers.filter((server) => server.isAdmin)
+  const targets = getState().servers.filter(
+    (server) => server.isAdmin && (onlyServerUrl === undefined || server.url === onlyServerUrl),
+  )
   if (targets.length === 0) {
     toast('No server here accepts uploads — you need an admin code on one.', 'warning')
     return
@@ -2443,13 +2509,13 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   let available = 0
   for (const [server, result] of listed) {
     if (result.status !== 'ok') continue
-    const { nodes } = result
-    available += nodes.length
-    for (const node of nodes) {
+    const destinations = serverDestinations(result.nodes)
+    available += destinations.length
+    for (const destination of destinations) {
       if (offered >= MAX_DESTINATIONS) break
       const option = document.createElement('option')
-      option.value = `${server.url}|${node.id}`
-      option.textContent = `${server.info?.name ?? server.url} · ${node.path}`
+      option.value = `${server.url}|${destination.nodeId ?? ''}`
+      option.textContent = `${server.info?.name ?? server.url} · ${destination.label}`
       chooser.appendChild(option)
       offered++
     }
@@ -2461,7 +2527,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         ? 'Could not ask any of those servers where their folders are.'
         : notAdmitted > 0
           ? 'Cannot use those folders while connected server data exceeds the client safety limits.'
-          : 'Create a folder on the server first — a template has to live somewhere.',
+          : 'No upload destination is available.',
       unreachable > 0 || notAdmitted > 0 ? 'error' : 'warning',
     )
     return
@@ -2497,9 +2563,10 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     const chosen = chooser.value ?? ''
     const cut = chosen.lastIndexOf('|')
     const url = cut === -1 ? '' : chosen.slice(0, cut)
-    const nodeId = cut === -1 ? undefined : chosen.slice(cut + 1)
+    const encodedNodeId = cut === -1 ? undefined : chosen.slice(cut + 1)
     const server = targets.find((candidate) => candidate.url === url)
-    if (server === undefined || nodeId === undefined) return
+    if (server === undefined || encodedNodeId === undefined) return
+    const nodeId = encodedNodeId === '' ? null : encodedNodeId
     // The same refusal Delete makes, for the same reason: this dialog stays open while the map is
     // used, and a placement in progress means the stored origin is the one being dragged away
     // from. Copying it would put the template on the server at a position nobody chose.
@@ -2690,6 +2757,8 @@ const buildPanel = (): HTMLElement => {
     const next = panelWidthForViewport(panel.getBoundingClientRect().width + step)
     panel.style.width = `${next}px`
     noteWidth(next)
+    // The template-local controls use this moving left edge as their viewport boundary.
+    redraw()
   })
   const commitWidth = (): void => {
     if (!held) return
@@ -2721,6 +2790,7 @@ const buildPanel = (): HTMLElement => {
       const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
       panel.style.width = `${next}px`
       noteWidth(next)
+      redraw()
     }
     // The same three endings every other drag here listens for. Ending on `pointerup` alone left a
     // cancelled drag — the browser claiming the pointer for a system gesture — with `pointermove`
@@ -2929,11 +2999,15 @@ const setOpen = (next: boolean): void => {
   if (!open) {
     copySetupController?.abort(new Error('panel closed'))
     existing?.remove()
+    // Give map-anchored controls the reclaimed width immediately, even while the map is still.
+    redraw()
     return
   }
   if (existing !== null) return
   document.body.appendChild(buildPanel())
   showView(currentView)
+  // The panel's measured left edge is now the map controls' right edge.
+  redraw()
 }
 
 /** Open or close the main Caelestis panel through the same path as its rail button. */
@@ -3065,6 +3139,7 @@ export const installPanel = (): void => {
     panel.style.width = `${width}px`
     // The bounds are derived from the viewport, so they moved too.
     noteResizeRange(width)
+    redraw()
   })
   onStateChange(syncColourModeState)
   // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a

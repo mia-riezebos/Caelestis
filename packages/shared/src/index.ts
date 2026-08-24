@@ -8,7 +8,14 @@ export {
   TRANSPARENT_INDEX,
   WPLACE_PALETTE,
 } from './palette.js'
-export { decodePng, encodeIndexedPng, PngError, type RgbaImage } from './png.js'
+export {
+  decodePng,
+  decodeWplaceIndexedPng,
+  encodeIndexedPng,
+  type IndexedImage,
+  PngError,
+  type RgbaImage,
+} from './png.js'
 export {
   OPAQUE_ALPHA_THRESHOLD,
   type QuantiseReport,

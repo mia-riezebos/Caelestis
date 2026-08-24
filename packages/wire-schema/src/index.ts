@@ -243,7 +243,7 @@ export const Chunk = Schema.Struct({
 
 export const Template = Schema.Struct({
   id: Identifier,
-  nodeId: Identifier,
+  nodeId: Schema.NullOr(Identifier),
   name: Name,
   version: Identifier,
   bbox: BoundingBox,
@@ -345,12 +345,14 @@ export const Manifest = ManifestStruct.pipe(
       return (
         nodeIds.size === manifest.nodes.length &&
         templateIds.size === manifest.templates.length &&
-        manifest.templates.every((template) => nodeIds.has(template.nodeId))
+        manifest.templates.every(
+          (template) => template.nodeId === null || nodeIds.has(template.nodeId),
+        )
       )
       // Parent references are not checked here. The path rule below resolves each parent to look up
       // its path, so a dangling parentId already fails there — a conjunct here would be unreachable
       // and no test could pin it.
-    }, 'node and template ids must be unique and every template must name a node that exists'),
+    }, 'node and template ids must be unique and every non-root template must name a node that exists'),
     booleanFilter(
       (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
         manifest.templates.every(

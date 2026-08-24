@@ -61,6 +61,10 @@ export const sortControl = (
 ): HTMLElement => {
   const wrapper = document.createElement('div')
   wrapper.className = 'dropdown dropdown-end'
+  // Keep this independent of whichever Tailwind z-index utilities happen to exist in Wplace's
+  // generated stylesheet. The tree body follows the toolbar in paint order and otherwise covers an
+  // open menu even though its click state changed correctly.
+  Object.assign(wrapper.style, { position: 'relative', zIndex: '2' })
 
   const trigger = document.createElement('button')
   trigger.dataset.wtsSort = ''
@@ -87,7 +91,7 @@ export const sortControl = (
   const menu = document.createElement('ul')
   menu.id = 'wts-sort-menu'
   menu.className = 'dropdown-content menu bg-base-100 shadow-2xl z-50 p-1'
-  Object.assign(menu.style, { borderRadius: '0.5rem', width: '13rem' })
+  Object.assign(menu.style, { borderRadius: '0.5rem', width: '13rem', zIndex: '100' })
   menu.setAttribute('role', 'menu')
   menu.tabIndex = -1
   let open = false
@@ -146,7 +150,13 @@ export const sortControl = (
 
   const buttons = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
   const focusButton = (index: number): void => buttons.at(index)?.focus()
-  trigger.addEventListener('click', () => setOpen(!open))
+  // DaisyUI's dropdown wrapper owns the square hit area. In wplace's build the rounded button does
+  // not win hit testing across that whole square, so clicks near the icon landed on this wrapper and
+  // never reached a button-only listener.
+  wrapper.addEventListener('click', (event) => {
+    if (event.target instanceof Node && menu.contains(event.target)) return
+    setOpen(!open)
+  })
   trigger.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault()

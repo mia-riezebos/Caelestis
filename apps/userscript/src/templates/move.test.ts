@@ -114,6 +114,49 @@ describe('template placement controls', () => {
     expect(harness.previewLocalTemplate).not.toHaveBeenCalled()
   })
 
+  it('persists an accepted server placement remotely before accepting its local preview', async () => {
+    harness.localTemplates.mockReturnValue([
+      { ...harness.localTemplates()[0], serverUrl: 'https://example.test' },
+    ])
+    const persistRemote = vi.fn(async () => true)
+    const moves = await import('./move.js')
+
+    expect(moves.beginServerMove('test', vi.fn(), persistRemote)).toBe(true)
+    const keydown = listeners.get('keydown')
+    if (keydown === undefined) throw new Error('expected keydown listener')
+    keydown({
+      key: 'ArrowRight',
+      shiftKey: false,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+
+    await moves.commit()
+
+    expect(persistRemote).toHaveBeenCalledWith(11, 20)
+    expect(harness.placeLocalTemplate).toHaveBeenCalledWith('test', 11, 20)
+  })
+
+  it('keeps a refused server placement open and does not accept the local preview', async () => {
+    harness.localTemplates.mockReturnValue([
+      { ...harness.localTemplates()[0], serverUrl: 'https://example.test' },
+    ])
+    const moves = await import('./move.js')
+
+    expect(
+      moves.beginServerMove(
+        'test',
+        vi.fn(),
+        vi.fn(async () => false),
+      ),
+    ).toBe(true)
+    await moves.commit()
+
+    expect(moves.movingId()).toBe('test')
+    expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
+  })
+
   it('reserves the placement slot across asynchronous import preparation', async () => {
     const moves = await import('./move.js')
     const reservation = moves.reserveMove()

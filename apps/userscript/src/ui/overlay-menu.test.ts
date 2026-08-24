@@ -1,6 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
+import { icon } from './icons.js'
+import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
+import { PANEL_ID } from './toast.js'
 
 const harness = vi.hoisted(() => ({
   // Flips `isMoving`, as the real one does the instant it returns — without this every Move test
@@ -12,17 +15,38 @@ const harness = vi.hoisted(() => ({
     // Counted as production counts it: the same template placed twice is two placements.
     harness.placementSeq.mockReturnValue((harness.placementSeq() ?? 0) + 1)
   }),
+  beginServerMove: vi.fn((id: string, _finished: () => void, _persist: unknown) => {
+    harness.isMoving.mockReturnValue(true)
+    harness.movingId.mockReturnValue(id)
+    harness.placementSeq.mockReturnValue((harness.placementSeq() ?? 0) + 1)
+    return true
+  }),
   placementSeq: vi.fn(() => null as number | null),
   isMoving: vi.fn(() => false),
   isFinishing: vi.fn(() => false),
   alreadyAnswered: vi.fn((_event: KeyboardEvent) => false),
   movingId: vi.fn(() => null as string | null),
   abortMove: vi.fn(async () => {}),
+  commitMove: vi.fn(async () => {}),
   localTemplates: vi.fn(() => [] as unknown[]),
   previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
   removeTreeStateKeys: vi.fn(),
   isDeletingLocal: vi.fn((_id: string) => false),
   removeLocalTemplate: vi.fn(async (_id: string) => true),
+  forgetServerTemplate: vi.fn(async (_id: string) => {}),
+  deleteServerTemplate: vi.fn(async () => ({ ok: true as const })),
+  listServerContents: vi.fn(async () => null),
+  uploadTemplateVersion: vi.fn(async () => ({ ok: true as const, versionId: 'version-2' })),
+  templateAsPng: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
+  servers: [] as Array<{
+    url: string
+    isAdmin: boolean
+    token: string | null
+    status: 'connected'
+    season: number
+    info: { id: string; name: string; auth: 'access_token' }
+  }>,
+  serverTemplates: [] as Array<{ id: string; published: boolean }>,
   // A projection, not a constant: the module derives the overlay's on-screen box from one
   // projected corner plus the scale, and a constant would make every template a zero-size point.
   screenPointFor: vi.fn((x: number, y: number) => ({ x, y }) as { x: number; y: number } | null),
@@ -40,15 +64,21 @@ vi.mock('../main.js', () => ({
   screenPointFor: harness.screenPointFor,
 }))
 vi.mock('../state.js', () => ({
+  admittedServerContentsFor: () => ({ nodes: [], templates: harness.serverTemplates }),
+  deleteTemplate: harness.deleteServerTemplate,
   getState: () => ({
     hiddenColours: [],
     onlySelectedColour: false,
+    servers: harness.servers,
   }),
+  listServerContents: harness.listServerContents,
   removeTreeStateKeys: harness.removeTreeStateKeys,
   setState: vi.fn(),
+  uploadTemplateVersion: harness.uploadTemplateVersion,
 }))
 vi.mock('../templates/local-store.js', () => ({
   appearanceOf: harness.appearanceOf,
+  forgetServerTemplate: harness.forgetServerTemplate,
   isDeletingLocal: harness.isDeletingLocal,
   isServerTemplate: (template: { serverUrl?: string }) => template.serverUrl !== undefined,
   localTemplates: harness.localTemplates,
@@ -58,10 +88,13 @@ vi.mock('../templates/local-store.js', () => ({
   setAppearance: harness.setAppearance,
   setLocalVisible: harness.setLocalVisible,
   setOwnsGroup: harness.setOwnsGroup,
+  templateAsPng: harness.templateAsPng,
 }))
 vi.mock('../templates/move.js', () => ({
   abort: harness.abortMove,
   beginMove: harness.beginMove,
+  beginServerMove: harness.beginServerMove,
+  commit: harness.commitMove,
   isFinishing: harness.isFinishing,
   placementSeq: harness.placementSeq,
   alreadyAnswered: harness.alreadyAnswered,
@@ -85,6 +118,8 @@ type Overrides = {
   originY?: number
   width?: number
   serverUrl?: string
+  serverTemplateId?: string
+  serverVersion?: string
 }
 
 const template = (overrides: Overrides = {}) => ({
@@ -96,8 +131,26 @@ const template = (overrides: Overrides = {}) => ({
   originX: overrides.originX ?? 0,
   originY: overrides.originY ?? 0,
   appearance: { ...DEFAULT_APPEARANCE, ...overrides.appearance },
-  ...(overrides.serverUrl === undefined ? {} : { serverUrl: overrides.serverUrl }),
+  ...(overrides.serverUrl === undefined
+    ? {}
+    : {
+        serverUrl: overrides.serverUrl,
+        serverTemplateId: overrides.serverTemplateId ?? 'remote-a',
+        serverVersion: overrides.serverVersion ?? 'version-1',
+      }),
 })
+
+const connectServerTemplate = (published: boolean, isAdmin = true): void => {
+  harness.servers.push({
+    url: 'https://example.test',
+    isAdmin,
+    token: 'token',
+    status: 'connected',
+    season: 1,
+    info: { id: 'server-1', name: 'Example', auth: 'access_token' },
+  })
+  harness.serverTemplates.push({ id: 'remote-a', published })
+}
 
 /** Flush the microtask queue, however many turns the store's continuation chain actually takes. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
@@ -115,9 +168,15 @@ const menu = (): HTMLElement => {
 }
 
 const byKey = (key: string): HTMLElement => {
-  const el = menu().querySelector(`[data-caelestis-control="${key}"]`)
+  const el = document.querySelector(`[data-caelestis-control="${key}"]`)
   if (el === null) throw new Error(`no control keyed ${key}`)
   return el as HTMLElement
+}
+
+const pixelPreset = (id: 'small' | 'full' | 'corner'): HTMLButtonElement => {
+  const el = menu().querySelector(`[data-caelestis-pixel-preset="${id}"]`)
+  if (!(el instanceof HTMLButtonElement)) throw new Error(`no ${id} pixel preset`)
+  return el
 }
 
 const byText = (root: ParentNode, text: string): HTMLButtonElement => {
@@ -170,6 +229,8 @@ afterEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   harness.localTemplates.mockReturnValue([])
+  harness.servers.length = 0
+  harness.serverTemplates.length = 0
   harness.previewOriginFor.mockReturnValue(null)
   harness.screenPointFor.mockImplementation((x: number, y: number) => ({ x, y }))
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
@@ -266,7 +327,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     expect(appearanceWritten(1).hiddenColours).toEqual([1, 2])
   })
 
-  it('asks to show an overlay it has just hidden', async () => {
+  it('removes the local controls when hidden and restores only the kebab when shown elsewhere', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -276,12 +337,17 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     await settle()
     harness.localTemplates.mockReturnValue([template({ visible: false })])
     rerender()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
 
-    byKey('hide').click()
-    await settle()
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
 
-    expect(harness.setLocalVisible).toHaveBeenNthCalledWith(1, 'a', false)
-    expect(harness.setLocalVisible).toHaveBeenNthCalledWith(2, 'a', true)
+    expect(gear('a')).toBeInstanceOf(HTMLButtonElement)
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
+    expect(harness.setLocalVisible).toHaveBeenCalledOnce()
+    expect(harness.setLocalVisible).toHaveBeenCalledWith('a', false)
   })
 
   it('rebuilds for the template whose gear was clicked', () => {
@@ -493,19 +559,28 @@ describe('a rebuild does not take the interaction with it', () => {
 })
 
 describe('the menu controls announce their state', () => {
-  it('does not contradict its own label on the hide toggle', async () => {
+  it('uses the rail-sized kebab trigger', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+
+    const button = gear('a')
+    expect(button.classList.contains('btn-square')).toBe(true)
+    expect(button.classList.contains('btn-xs')).toBe(false)
+    expect(button.style.width).toBe(`${RAIL_BUTTON}px`)
+    expect(button.style.height).toBe(`${RAIL_BUTTON}px`)
+    expect(button.querySelector('path')?.getAttribute('d')).toBe(
+      icon('kebab').querySelector('path')?.getAttribute('d'),
+    )
+  })
+
+  it('labels the hide action without announcing a contradictory toggle state', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('hide').click()
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
 
     const hide = byKey('hide')
-    expect(hide.getAttribute('aria-label')).toBe('Show this overlay')
-    // "Show this overlay, pressed" reads as though showing were already on.
+    expect(hide.getAttribute('aria-label')).toBe('Hide this overlay')
     expect(hide.hasAttribute('aria-pressed')).toBe(false)
   })
 
@@ -520,6 +595,78 @@ describe('the menu controls announce their state', () => {
     expect(gear('a').getAttribute('aria-expanded')).toBe('true')
     expect(gear('a').getAttribute('aria-haspopup')).toBe('dialog')
     expect(menu().getAttribute('role')).toBe('dialog')
+  })
+
+  it('expands hide, move, and delete as rail-sized buttons outside the menu', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const actions = [...document.querySelectorAll('[data-caelestis-rail-action]')]
+    expect(actions).toHaveLength(3)
+    expect(menu().querySelector('[data-caelestis-rail-action]')).toBeNull()
+    for (const action of actions) {
+      expect(action).toBeInstanceOf(HTMLButtonElement)
+      expect((action as HTMLElement).classList.contains('btn-square')).toBe(true)
+      expect((action as HTMLElement).classList.contains('shadow-md')).toBe(true)
+      expect((action as HTMLElement).classList.contains('relative')).toBe(true)
+      expect((action as HTMLElement).classList.contains('btn-outline')).toBe(false)
+      expect((action as HTMLElement).style.width).toBe(`${RAIL_BUTTON}px`)
+      expect((action as HTMLElement).style.height).toBe(`${RAIL_BUTTON}px`)
+      expect((action as HTMLElement).style.left).toBe(gear('a').style.left)
+    }
+    expect(Number.parseFloat((actions[0] as HTMLElement).style.top)).toBe(
+      Number.parseFloat(gear('a').style.top) + RAIL_BUTTON + GAP,
+    )
+
+    gear('a').click()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
+  })
+
+  it('replaces the local menu rail with apply and cancel during its move', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    const left = gear('a').style.left
+    const top = gear('a').style.top
+    gear('a').click()
+    rerender()
+
+    byKey('move').click()
+    rerender()
+
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
+    const apply = byKey('apply-move')
+    const cancel = byKey('cancel-move')
+    expect(apply.style.left).toBe(left)
+    expect(apply.style.top).toBe(top)
+    expect(cancel.style.left).toBe(left)
+    expect(Number.parseFloat(cancel.style.top)).toBe(Number.parseFloat(top) + RAIL_BUTTON + GAP)
+
+    apply.click()
+    expect(harness.commitMove).toHaveBeenCalledOnce()
+    expect(harness.abortMove).not.toHaveBeenCalled()
+  })
+
+  it('cancels from the placement rail and restores the kebab after the move ends', () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    byKey('move').click()
+    rerender()
+
+    byKey('cancel-move').click()
+    expect(harness.abortMove).toHaveBeenCalledOnce()
+
+    harness.isMoving.mockReturnValue(false)
+    harness.movingId.mockReturnValue(null)
+    harness.placementSeq.mockReturnValue(null)
+    rerender()
+    expect(document.querySelector('[data-caelestis-placement-action]')).toBeNull()
+    expect(gear('a')).toBeInstanceOf(HTMLButtonElement)
   })
 })
 
@@ -563,7 +710,11 @@ describe('placement and geometry', () => {
         : cap.endsWith('px')
           ? Number.parseFloat(cap)
           : Number.POSITIVE_INFINITY
-      const box = isMenu ? { width, height: Math.min(content, ceiling) } : { width: 0, height: 0 }
+      const styledWidth =
+        isMenu && this.style.width.endsWith('px') ? Number.parseFloat(this.style.width) : width
+      const box = isMenu
+        ? { width: styledWidth, height: Math.min(content, ceiling) }
+        : { width: 0, height: 0 }
       return {
         ...box,
         top: 0,
@@ -576,6 +727,90 @@ describe('placement and geometry', () => {
     }
   }
 
+  it('keeps its trigger and menu clear of the right-hand button rail', () => {
+    const restore = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })
+    onTestFinished(() => {
+      Object.defineProperty(window, 'innerWidth', { value: restore, configurable: true })
+    })
+    menuMeasures(200, 240)
+    harness.localTemplates.mockReturnValue([template({ originX: 795 })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const railBoundary = window.innerWidth - CLEAR_OF_RAIL
+    expect(Number.parseFloat(gear('a').style.left) + RAIL_BUTTON).toBeLessThanOrEqual(railBoundary)
+    expect(Number.parseFloat(menu().style.left) + 240).toBeLessThanOrEqual(railBoundary)
+    expect(Number.parseFloat(menu().style.left) + 240).toBeLessThan(
+      Number.parseFloat(gear('a').style.left),
+    )
+  })
+
+  it('keeps the local menu and both action rails clear of an open main panel', () => {
+    const restore = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })
+    onTestFinished(() => {
+      Object.defineProperty(window, 'innerWidth', { value: restore, configurable: true })
+    })
+    menuMeasures(200, 240)
+    const panel = document.createElement('aside')
+    panel.id = PANEL_ID
+    panel.getBoundingClientRect = () =>
+      ({ left: 500, right: 800, top: 8, bottom: 760, width: 300, height: 752 }) as DOMRect
+    document.body.appendChild(panel)
+    harness.localTemplates.mockReturnValue([template({ originX: 795 })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const usableRight = 500 - GAP
+    expect(Number.parseFloat(gear('a').style.left) + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+    expect(Number.parseFloat(menu().style.left) + 240).toBeLessThanOrEqual(usableRight)
+    for (const action of document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')) {
+      expect(Number.parseFloat(action.style.left) + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+    }
+
+    byKey('move').click()
+    rerender()
+    for (const action of document.querySelectorAll<HTMLElement>(
+      '[data-caelestis-placement-action]',
+    )) {
+      expect(Number.parseFloat(action.style.left) + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+    }
+  })
+
+  it('opens the menu to the right when that side has space', () => {
+    menuMeasures(200, 240)
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(Number.parseFloat(menu().style.left)).toBeGreaterThan(
+      Number.parseFloat(gear('a').style.left) + RAIL_BUTTON,
+    )
+  })
+
+  it('keeps the expanded action rail inside the viewport', () => {
+    const restore = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: 300, configurable: true })
+    onTestFinished(() => {
+      Object.defineProperty(window, 'innerHeight', { value: restore, configurable: true })
+    })
+    harness.localTemplates.mockReturnValue([template({ originY: 290 })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const actions = [...document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')]
+    const last = actions.at(-1)
+    if (last === undefined) throw new Error('no rail action')
+    expect(Number.parseFloat(last.style.top) + RAIL_BUTTON).toBeLessThanOrEqual(
+      window.innerHeight - 8,
+    )
+  })
+
   it.each([
     ['no room below', 768, 668, 300],
     // Too little room on either side, which a menu that merely flips answers by covering the gear
@@ -584,7 +819,7 @@ describe('placement and geometry', () => {
     // Content taller than the `70vh` it is measured under, beside a gear with more room above it
     // than that — so the cap it is given and the height it was measured at disagree.
     ['content taller than the design cap', 320, 300, 320],
-  ])('never covers its own gear — %s', (_case, viewport, originY, content) => {
+  ])('never covers its own rail — %s', (_case, viewport, originY, content) => {
     const restore = window.innerHeight
     Object.defineProperty(window, 'innerHeight', { value: viewport, configurable: true })
     onTestFinished(() => {
@@ -596,14 +831,10 @@ describe('placement and geometry', () => {
     gear('a').click()
     rerender()
 
-    const gearTop = Number.parseFloat(gear('a').style.top)
-    const top = Number.parseFloat(menu().style.top)
-    // The height it renders at, which is what overlaps or does not — not the height the module
-    // measured, and not `maxHeight`, which is a cap.
-    const height = menu().getBoundingClientRect().height
-    // Clear of the gear on one side or the other, never over it: the menu has the higher z-index,
-    // so overlapping costs the overlay the control that opens and closes it.
-    expect(top + height <= gearTop || top >= gearTop + 28).toBe(true)
+    const gearLeft = Number.parseFloat(gear('a').style.left)
+    const left = Number.parseFloat(menu().style.left)
+    const width = menu().getBoundingClientRect().width
+    expect(left + width <= gearLeft || left >= gearLeft + RAIL_BUTTON).toBe(true)
   })
 
   it('sits below the panel rather than over it', () => {
@@ -932,6 +1163,29 @@ describe('a delete already under way cannot be re-asked', () => {
 })
 
 describe('the slider is only frozen while a gesture is actually in progress', () => {
+  it('applies a pixel preset as one editable six-slider change', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(pixelPreset('small').getAttribute('aria-pressed')).toBe('false')
+    pixelPreset('corner').click()
+    await settle()
+
+    expect(harness.setOwnsGroup).toHaveBeenCalledWith('a', 'pixels', true)
+    expect(appearanceWritten(0)).toMatchObject({
+      size: 1.5,
+      radius: 0,
+      translateX: -0.75,
+      translateY: 0,
+      rotation: 45,
+      opacity: 1,
+      markMismatch: false,
+      otherOpacity: 0.15,
+    })
+  })
+
   it('offers the whole 0..1 range the store accepts', () => {
     // `normaliseAppearance` runs on a conflict's remote winner, so another client's 0 arrives here.
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0 } })])
@@ -950,20 +1204,87 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     gear('a').click()
     rerender()
 
-    expect(Number((byKey('size') as HTMLInputElement).value)).toBe(1)
+    expect(Number((byKey('size') as HTMLInputElement).value)).toBe(DEFAULT_APPEARANCE.size)
   })
 })
 
 describe('the menu is ours and has a keyboard exit', () => {
-  it('keeps Local-only move and delete actions off server-owned overlays', () => {
+  it('offers move and delete for an unpublished server overlay an admin owns', () => {
+    connectServerTemplate(false)
     harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
     rerender()
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-caelestis-control="move"]')).toBeNull()
-    expect(menu().querySelector('[data-caelestis-control="delete"]')).toBeNull()
-    expect(menu().querySelector('[data-caelestis-control="hide"]')).not.toBeNull()
+    expect(byKey('move')).not.toBeNull()
+    expect(byKey('delete')).not.toBeNull()
+    expect(byKey('hide')).not.toBeNull()
+  })
+
+  it('keeps published server actions visible but requires unpublishing first', () => {
+    connectServerTemplate(true)
+    harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
+    expect(byKey('delete').getAttribute('aria-disabled')).toBe('true')
+    byKey('move').click()
+    rerender()
+
+    expect(errorText()).toContain('Unpublish this template before moving it')
+    expect(harness.beginServerMove).not.toHaveBeenCalled()
+  })
+
+  it('does not offer server mutations without admin access', () => {
+    connectServerTemplate(false, false)
+    harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(document.querySelector('[data-caelestis-control="move"]')).toBeNull()
+    expect(document.querySelector('[data-caelestis-control="delete"]')).toBeNull()
+  })
+
+  it('uploads a new version when an unpublished server move is applied', async () => {
+    connectServerTemplate(false)
+    const remote = template({ serverUrl: 'https://example.test' })
+    harness.localTemplates.mockReturnValue([remote])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('move').click()
+    const persist = harness.beginServerMove.mock.calls[0]?.[2]
+    if (typeof persist !== 'function') throw new Error('server move did not receive persistence')
+    await persist(12, 34)
+
+    expect(harness.uploadTemplateVersion).toHaveBeenCalledWith(
+      harness.servers[0],
+      'remote-a',
+      expect.objectContaining({ originX: 12, originY: 34, name: 'alpha.png' }),
+    )
+    expect(harness.listServerContents).toHaveBeenCalledWith(harness.servers[0])
+  })
+
+  it('deletes an unpublished server template through the server API', async () => {
+    connectServerTemplate(false)
+    harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    byKey('delete').click()
+    rerender()
+    byKey('confirm-delete').click()
+    await settle()
+
+    expect(harness.deleteServerTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a')
+    expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
+    expect(harness.forgetServerTemplate).toHaveBeenCalledWith('a')
+    expect(harness.listServerContents).toHaveBeenCalledWith(harness.servers[0])
   })
 
   it('closes on Escape and hands focus back to the gear', () => {
@@ -991,7 +1312,9 @@ describe('the menu is ours and has a keyboard exit', () => {
     expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
     // `move.ts` ignores keys aimed at a page control, so a focused gear would take Escape and Enter
     // away from the placement — and Enter would reopen this menu instead of applying it.
-    expect(document.activeElement).not.toBe(gear('a'))
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.activeElement).not.toBe(byKey('apply-move'))
+    expect(document.activeElement).not.toBe(byKey('cancel-move'))
   })
 })
 
@@ -1162,6 +1485,10 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     harness.isMoving.mockReturnValue(false)
     harness.isDeletingLocal.mockReturnValue(false)
     byKey('move').click()
+    rerender()
+    harness.isMoving.mockReturnValue(false)
+    harness.movingId.mockReturnValue(null)
+    harness.placementSeq.mockReturnValue(null)
     rerender()
     gear('a').click()
     rerender()
@@ -1835,7 +2162,7 @@ describe('a gesture is what the user did, not what the element held', () => {
 })
 
 describe('refusals track the world, not our own render schedule', () => {
-  it('drops a hidden overlay’s gear on the render that retires its last failure', async () => {
+  it('does not keep a hidden overlay’s gear alive for a refusal', async () => {
     harness.setAppearance.mockResolvedValue(false)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1844,14 +2171,10 @@ describe('refusals track the world, not our own render schedule', () => {
     setRadius()
     await settle()
     byKey('close').click()
-    // Closing puts focus on the gear, which keeps it alive on its own; this is about the refusal.
-    ;(document.activeElement as HTMLElement | null)?.blur()
-    // Hidden, and kept reachable only by the refusal.
     harness.localTemplates.mockReturnValue([template({ visible: false })])
     rerender()
-    expect(document.getElementById('caelestis-overlay-button-a')).not.toBeNull()
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
 
-    // Another surface sets the very shape that was refused, on this render.
     harness.localTemplates.mockReturnValue([
       template({ visible: false, appearance: { radius: 1 } }),
     ])
@@ -2093,58 +2416,6 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
 })
 
 describe('an action waits for the state it depends on', () => {
-  it('does not start placing until the overlay is actually shown', async () => {
-    let release = (): void => {}
-    const shown = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    harness.setLocalVisible.mockImplementation(async (_id, visible) => {
-      await shown
-      harness.localTemplates.mockReturnValue([template({ visible })])
-      return true
-    })
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-
-    byKey('move').click()
-    await settle()
-    // Painting still filters on the durable `visible`, so placing now is placing nothing.
-    expect(harness.beginMove).not.toHaveBeenCalled()
-
-    release()
-    await settle()
-
-    expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
-  })
-
-  it('says so and does not place when showing is refused', async () => {
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.setLocalVisible.mockResolvedValue(false)
-
-    byKey('move').click()
-    await settle()
-    rerender()
-
-    expect(harness.beginMove).not.toHaveBeenCalled()
-    expect(errorText()).toContain('Could not show')
-  })
-
   it('answers the delete question first on Escape from outside the menu', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -2173,187 +2444,6 @@ describe('an action waits for the state it depends on', () => {
     rerender()
 
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
-  })
-})
-
-describe('showing an overlay in order to move it', () => {
-  const hiddenWithMenu = async () => {
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    await settle()
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-  }
-
-  it('does not close another template’s menu when the show lands late', async () => {
-    let release = (): void => {}
-    harness.setLocalVisible.mockImplementation(
-      async () =>
-        await new Promise<boolean>((resolve) => {
-          release = () => resolve(true)
-        }),
-    )
-    await hiddenWithMenu()
-    byKey('move').click()
-
-    harness.localTemplates.mockReturnValue([
-      template({ visible: false }),
-      template({ id: 'b', name: 'beta.png' }),
-    ])
-    rerender()
-    gear('b').click()
-    rerender()
-    release()
-    await settle()
-
-    expect(menu().dataset.caelestisTemplate).toBe('b')
-  })
-
-  it('ignores a second Move while the first is still showing', async () => {
-    harness.setLocalVisible.mockImplementation(() => new Promise<boolean>(() => {}))
-    await hiddenWithMenu()
-
-    byKey('move').click()
-    rerender()
-    byKey('move').click()
-    await settle()
-
-    // The first click leaves an optimistic visible intent, which made the second take the normal
-    // branch and place a template the store still has hidden.
-    expect(harness.beginMove).not.toHaveBeenCalled()
-    expect(harness.setLocalVisible).toHaveBeenCalledTimes(2)
-  })
-
-  it('says so when the placement slot was taken while it was showing', async () => {
-    let release = (): void => {}
-    harness.setLocalVisible.mockImplementation(
-      async (_id, visible) =>
-        await new Promise<boolean>((resolve) => {
-          release = () => {
-            harness.localTemplates.mockReturnValue([template({ visible })])
-            resolve(true)
-          }
-        }),
-    )
-    await hiddenWithMenu()
-    byKey('move').click()
-
-    harness.isMoving.mockReturnValue(true)
-    release()
-    await settle()
-    rerender()
-
-    // Asserted while that placement is still running: the refusal is retired the moment it ends,
-    // which is the behaviour V5 established.
-    expect(harness.beginMove).not.toHaveBeenCalled()
-    expect(errorText()).toContain('placement already in progress')
-  })
-
-  it('abandons the move when the user hides it again first', async () => {
-    let release = (): void => {}
-    harness.setLocalVisible.mockImplementation(
-      async () =>
-        await new Promise<boolean>((resolve) => {
-          release = () => resolve(true)
-        }),
-    )
-    await hiddenWithMenu()
-    byKey('move').click()
-    rerender()
-
-    byKey('hide').click()
-    release()
-    await settle()
-
-    expect(harness.beginMove).not.toHaveBeenCalled()
-  })
-})
-
-describe('a Move that lands late does not barge in', () => {
-  it('does not start placing behind another template’s menu', async () => {
-    let release = (): void => {}
-    harness.setLocalVisible.mockImplementation(
-      async (_id, visible) =>
-        await new Promise<boolean>((resolve) => {
-          release = () => {
-            harness.localTemplates.mockReturnValue([
-              template({ visible }),
-              template({ id: 'b', name: 'beta.png' }),
-            ])
-            resolve(true)
-          }
-        }),
-    )
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    harness.localTemplates.mockReturnValue([
-      template({ visible: false }),
-      template({ id: 'b', name: 'beta.png' }),
-    ])
-    rerender()
-    byKey('move').click()
-
-    gear('b').click()
-    rerender()
-    release()
-    await settle()
-
-    // `move.ts` treats dialog controls as page controls, so a placement behind B's open menu would
-    // have its own Enter and Escape ignored.
-    expect(harness.beginMove).not.toHaveBeenCalled()
-    expect(menu().dataset.caelestisTemplate).toBe('b')
-  })
-})
-
-describe('a placement only survives while its overlay does', () => {
-  it('keeps the ready-to-move message on screen', async () => {
-    let release = (): void => {}
-    harness.setLocalVisible.mockImplementation(
-      async (_id, visible) =>
-        await new Promise<boolean>((resolve) => {
-          release = () => {
-            harness.localTemplates.mockReturnValue([
-              template({ visible }),
-              template({ id: 'b', name: 'beta.png' }),
-            ])
-            resolve(true)
-          }
-        }),
-    )
-    harness.localTemplates.mockReturnValue([template({ visible: false })])
-    rerender()
-    harness.localTemplates.mockReturnValue([template()])
-    rerender()
-    gear('a').click()
-    rerender()
-    byKey('hide').click()
-    harness.localTemplates.mockReturnValue([
-      template({ visible: false }),
-      template({ id: 'b', name: 'beta.png' }),
-    ])
-    rerender()
-    byKey('move').click()
-    gear('b').click()
-    rerender()
-    release()
-    await settle()
-    rerender()
-
-    gear('a').click()
-    rerender()
-    // `expireMoveFailure` clears a `move` refusal whenever no placement is running — which is
-    // exactly the state this message describes, so it needed a key of its own.
-    expect(errorText()).toContain('ready to move')
   })
 })
 

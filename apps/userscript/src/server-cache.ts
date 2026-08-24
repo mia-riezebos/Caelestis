@@ -39,7 +39,7 @@ export interface CachedServer {
 
 export interface ServerTemplate {
   readonly id: string
-  readonly nodeId: string
+  readonly nodeId: string | null
   readonly name: string
   readonly version: string
   readonly published: boolean
@@ -63,7 +63,7 @@ const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefi
     const bbox = candidate.bbox
     if (
       typeof candidate.id !== 'string' ||
-      typeof candidate.nodeId !== 'string' ||
+      (candidate.nodeId !== null && typeof candidate.nodeId !== 'string') ||
       typeof candidate.name !== 'string' ||
       typeof candidate.version !== 'string' ||
       typeof candidate.published !== 'boolean' ||

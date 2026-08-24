@@ -50,7 +50,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly nodes = new Map<string, NodeRecord>()
   private readonly templates = new Map<
     string,
-    Pick<TemplateVersionRecord, 'nodeId' | 'name' | 'createdAt'> & {
+    Pick<TemplateVersionRecord, 'season' | 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
       publishedAt: Millis | null
       updatedAt: Millis
@@ -270,8 +270,8 @@ export class MemorySqlStore implements SqlStore {
         )
         .map((candidate) => candidate.id),
     )
-    const templates = [...this.templates.values()].filter((template) =>
-      nodeIds.has(template.nodeId),
+    const templates = [...this.templates.values()].filter(
+      (template) => template.nodeId !== null && nodeIds.has(template.nodeId),
     ).length
     return { nodes: nodeIds.size, templates }
   }
@@ -291,7 +291,7 @@ export class MemorySqlStore implements SqlStore {
     )
     const templateIds = new Set(
       [...this.templates.entries()]
-        .filter(([, template]) => nodeIds.has(template.nodeId))
+        .filter(([, template]) => template.nodeId !== null && nodeIds.has(template.nodeId))
         .map(([templateId]) => templateId),
     )
     if (nodeIds.size !== expected.nodes || templateIds.size !== expected.templates) {
@@ -314,8 +314,20 @@ export class MemorySqlStore implements SqlStore {
     options: { readonly requireExisting?: boolean } = {},
   ): Promise<void> {
     assertValidTemplateVersion(version)
-    if (options.requireExisting !== true && !this.nodes.has(version.nodeId)) {
+    if (
+      options.requireExisting !== true &&
+      version.nodeId !== null &&
+      !this.nodes.has(version.nodeId)
+    ) {
       throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+    }
+    const destination = version.nodeId === null ? null : this.nodes.get(version.nodeId)
+    if (
+      options.requireExisting !== true &&
+      destination !== null &&
+      destination?.season !== version.season
+    ) {
+      throw new InvalidNodeParentError('destination node belongs to a different season')
     }
     if (this.templateVersions.has(version.versionId)) {
       throw new Error(`template version already exists: ${version.versionId}`)
@@ -347,6 +359,7 @@ export class MemorySqlStore implements SqlStore {
 
     const existingTemplate = previous
     const template = existingTemplate ?? {
+      season: version.season,
       nodeId: version.nodeId,
       name: version.name,
       createdAt: version.createdAt,
@@ -388,6 +401,7 @@ export class MemorySqlStore implements SqlStore {
     if (template === undefined) return null
     return {
       id: templateId,
+      season: template.season,
       nodeId: template.nodeId,
       name: template.name,
       currentVersionId: template.currentVersionId,
@@ -412,13 +426,19 @@ export class MemorySqlStore implements SqlStore {
   ): Promise<boolean> {
     const template = this.templates.get(templateId)
     if (template === undefined) return false
-    if (patch.nodeId !== undefined && !this.nodes.has(patch.nodeId)) {
+    if (patch.nodeId !== undefined && patch.nodeId !== null && !this.nodes.has(patch.nodeId)) {
       throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+    }
+    if (patch.nodeId !== undefined && patch.nodeId !== null) {
+      const destination = this.nodes.get(patch.nodeId)
+      if (destination?.season !== template.season) {
+        throw new InvalidNodeParentError('destination node belongs to a different season')
+      }
     }
     this.templates.set(templateId, {
       ...template,
       name: patch.name ?? template.name,
-      nodeId: patch.nodeId ?? template.nodeId,
+      nodeId: patch.nodeId === undefined ? template.nodeId : patch.nodeId,
       publishedAt: patch.publishedAt === undefined ? template.publishedAt : patch.publishedAt,
       updatedAt,
     })
@@ -440,11 +460,9 @@ export class MemorySqlStore implements SqlStore {
   ): Promise<readonly ManifestTemplateRecord[]> {
     const records: ManifestTemplateRecord[] = []
     for (const [id, template] of this.templates) {
-      const node = this.nodes.get(template.nodeId)
       const version = this.templateVersions.get(template.currentVersionId)
       if (
-        node === undefined ||
-        node.season !== season ||
+        template.season !== season ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       ) {
@@ -471,11 +489,9 @@ export class MemorySqlStore implements SqlStore {
   ): Promise<readonly ManifestTileRecord[]> {
     const records: ManifestTileRecord[] = []
     for (const [templateId, template] of this.templates) {
-      const node = this.nodes.get(template.nodeId)
       const version = this.templateVersions.get(template.currentVersionId)
       if (
-        node === undefined ||
-        node.season !== season ||
+        template.season !== season ||
         version === undefined ||
         (!includeUnpublished && template.publishedAt === null)
       ) {

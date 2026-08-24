@@ -121,6 +121,25 @@ const NO_SERVER_TEMPLATES: readonly ServerTemplate[] = []
 /** Verified identity belonging to the rows cached at each URL. */
 const rowIdentityByServer = new Map<string, string>()
 
+interface OptimisticParent {
+  readonly parentId: string | null
+  readonly token: symbol
+}
+
+/**
+ * Parent changes that the server has not answered yet.
+ *
+ * These are deliberately a render overlay rather than a rewrite of the manifest cache. A failed
+ * request can therefore reveal the latest authoritative row again, while an unrelated manifest
+ * refresh cannot make an in-flight drag visibly snap back.
+ */
+const optimisticParents = new Map<string, OptimisticParent>()
+
+const renderedParent = (key: string, serverParent: string | null): string | null => {
+  const optimistic = optimisticParents.get(key)
+  return optimistic === undefined ? serverParent : optimistic.parentId
+}
+
 const serverIdentity = (server: ConnectedServer): string | null => {
   if (server.info !== null && server.season !== null) return `${server.info.id}:${server.season}`
   return server.lastVerified == null
@@ -143,6 +162,67 @@ export const nodeTreeKey = (server: ConnectedServer, nodeId: string): string =>
 
 export const serverTemplateTreeKey = (server: ConnectedServer, templateId: string): string =>
   `st:${encodeURIComponent(server.url)}:${serverIdentity(server) ?? 'unknown:unknown'}:${templateId}`
+
+export interface OptimisticServerPlacement {
+  /** Keep the eager position after the server confirms it. */
+  readonly commit: () => void
+  /** Reveal the latest server position after the final request attempt fails. */
+  readonly rollback: () => void
+}
+
+/**
+ * Put an existing row at its requested server parent before the PATCH makes a round trip.
+ *
+ * A token makes overlapping moves safe: a late answer for an older drag cannot commit or roll back
+ * the newer one. Committing updates only the cached parent field; the normal manifest refresh then
+ * supplies canonical paths and any other server-derived fields.
+ */
+export const optimisticallyPlaceServerRow = (
+  server: ConnectedServer,
+  key: string,
+  parentId: string | null,
+): OptimisticServerPlacement | null => {
+  const rows = rowsFor(server)
+  if (rows === undefined) return null
+  const token = Symbol(key)
+  const node = rows.nodes.find((candidate) => nodeTreeKey(server, candidate.id) === key)
+  const template = rows.templates.find(
+    (candidate) => serverTemplateTreeKey(server, candidate.id) === key,
+  )
+  if (node === undefined && template === undefined) return null
+  optimisticParents.set(key, { parentId, token })
+
+  const current = (): boolean => optimisticParents.get(key)?.token === token
+  return {
+    commit: () => {
+      if (!current()) return
+      if (node !== undefined) {
+        const latest = nodesByServer.get(server.url)
+        if (latest !== undefined) {
+          const moved = latest.map((candidate) =>
+            candidate.id === node.id ? { ...candidate, parentId } : candidate,
+          )
+          nodesByServer.set(server.url, moved)
+          rememberNodes(server.url, moved)
+        }
+      } else if (template !== undefined) {
+        const latest = templatesByServer.get(server.url)
+        if (latest !== undefined) {
+          templatesByServer.set(
+            server.url,
+            latest.map((candidate) =>
+              candidate.id === template.id ? { ...candidate, nodeId: parentId } : candidate,
+            ),
+          )
+        }
+      }
+      optimisticParents.delete(key)
+    },
+    rollback: () => {
+      if (current()) optimisticParents.delete(key)
+    },
+  }
+}
 
 export const forgetServerTree = (url: string): void => {
   const prefix = `node:${encodeURIComponent(url)}:`
@@ -353,6 +433,21 @@ export const findServerNode = (key: string): { serverUrl: string; node: TreeNode
     if (node !== undefined) return { serverUrl: server.url, node }
   }
   return null
+}
+
+const serverUrlForTreeParent = (key: string | null): string | null => {
+  if (key === null) return null
+  if (key.startsWith('server:')) return key.slice('server:'.length)
+  return findServerNode(key)?.serverUrl ?? null
+}
+
+const isSameServerPlacement = (draggedKey: string, parentKey: string | null): boolean => {
+  const sourceUrl = draggedKey.startsWith('st:')
+    ? findServerTemplate(draggedKey)?.serverUrl
+    : draggedKey.startsWith('node:')
+      ? findServerNode(draggedKey)?.serverUrl
+      : undefined
+  return sourceUrl !== undefined && sourceUrl === serverUrlForTreeParent(parentKey)
 }
 
 /** What a server publishes directly inside one folder. */
@@ -602,6 +697,11 @@ export const forgetServerRows = (serverUrl: string): readonly string[] => {
   nodesByServer.delete(serverUrl)
   templatesByServer.delete(serverUrl)
   rowIdentityByServer.delete(serverUrl)
+  const nodePrefix = `node:${encodeURIComponent(serverUrl)}:`
+  const templatePrefix = `st:${encodeURIComponent(serverUrl)}:`
+  for (const key of optimisticParents.keys()) {
+    if (key.startsWith(nodePrefix) || key.startsWith(templatePrefix)) optimisticParents.delete(key)
+  }
   refreshControllers.get(serverUrl)?.abort(new Error('server disconnected'))
   refreshControllers.delete(serverUrl)
   refreshGeneration.delete(serverUrl)
@@ -677,12 +777,31 @@ const placeAmongVisibleSiblings = (
 /** The row being dragged, and the container it came from — needed to police reparenting. */
 let dragging: { key: string; parentKey: string | null; canReparent: boolean } | null = null
 
+/** Keep server or local refreshes from replacing a row while the browser is dragging it. */
+export const isTreeDragActive = (): boolean => dragging !== null
+
 let dropTarget: {
   readonly parentKey: string | null
   readonly beforeKey: string | null
   readonly apply: (draggedKey: string, parentKey: string | null, beforeKey: string | null) => void
   readonly rerender: () => void
 } | null = null
+
+/** Apply the placement represented by the visible portal, regardless of which pixel receives drop. */
+const applyArmedDrop = (event: DragEvent, root: ParentNode): boolean => {
+  const target = dropTarget
+  if (target === null) return false
+  event.preventDefault()
+  event.stopPropagation()
+  const from = event.dataTransfer?.getData('text/plain')
+  clearDropMarks(root)
+  dropTarget = null
+  dragging = null
+  if (from === undefined || from === '' || from === target.beforeKey) return true
+  target.apply(from, target.parentKey, target.beforeKey)
+  target.rerender()
+  return true
+}
 
 /** Held open where the dragged row would land — a hole says "here"; a line only says "near here". */
 /**
@@ -734,16 +853,7 @@ const placeholder = (depth: number): HTMLElement => {
     event.stopPropagation()
   })
   el.addEventListener('drop', (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const target = dropTarget
-    const from = event.dataTransfer?.getData('text/plain')
-    clearDropMarks(el.parentElement ?? document)
-    dropTarget = null
-    dragging = null
-    if (target === null || from === undefined || from === '' || from === target.beforeKey) return
-    target.apply(from, target.parentKey, target.beforeKey)
-    target.rerender()
+    applyArmedDrop(event, el.parentElement ?? document)
   })
   return el
 }
@@ -757,11 +867,10 @@ const _visibleRows = (root: ParentNode): HTMLElement[] =>
 /**
  * Resolve a pointer position over one row into a place in the tree.
  *
- * Above the midpoint means "before this row", at this row's own level. Below means "after", and
- * after is where the interesting case is: the row following an **expanded** container is its first
- * child, so landing after it means landing *inside* it, while after a **collapsed** container means
- * beside it. That is what the rows look like on screen, so it is what the drop does — no separate
- * "middle third means into" gesture to discover, and no way to aim at a gap and be refused.
+ * Above or below a row means "before" or "after" at its own level. The middle of a container means
+ * "inside" even when it is collapsed. Without that target, dropping a Local template on a server
+ * folder resolved beside the folder at the server root, where templates are invalid; it then
+ * snapped back without making a request.
  */
 const resolveDrop = (
   row: HTMLElement,
@@ -778,10 +887,25 @@ const resolveDrop = (
   const depth = Number(row.dataset.caelestisDepth ?? 0)
   const parentKey = row.dataset.caelestisParent ?? null
   const key = row.dataset.caelestisKey ?? null
+  const isContainer = row.dataset.caelestisContainer !== undefined
+  const offset = box.height <= 0 ? (clientY < box.top ? 0 : 1) : (clientY - box.top) / box.height
+
+  if (isContainer && key !== null && offset >= 0.3 && offset <= 0.7) {
+    const next = row.nextElementSibling
+    const firstChild =
+      next instanceof HTMLElement && Number(next.dataset.caelestisDepth ?? 0) > depth
+        ? (next.dataset.caelestisKey ?? null)
+        : null
+    return {
+      parentKey: key,
+      beforeKey: firstChild,
+      depth: depth + 1,
+      before: next,
+    }
+  }
 
   if (above) return { parentKey, beforeKey: key, depth, before: row }
 
-  const isContainer = row.dataset.caelestisContainer !== undefined
   const expanded = key !== null && isExpanded(key)
   const next = row.nextElementSibling
   if (isContainer && expanded) {
@@ -1193,9 +1317,41 @@ const treeRow = (options: RowOptions): HTMLElement => {
       beforeKey: resolved.beforeKey,
       apply: (draggedKey, parentKey, beforeKey) => {
         if (reparenting) {
+          const previousOrder = getState().customOrder
+          let optimisticOrder: readonly string[] | null = null
+          if (isSameServerPlacement(draggedKey, parentKey)) {
+            const result = placeAmongVisibleSiblings(
+              destination.visible,
+              destination.all(),
+              draggedKey,
+              beforeKey,
+              true,
+            )
+            if (result === 'too-many') {
+              options.onError(
+                'The row was moved, but this level has too many rows to save a custom order safely.',
+              )
+            } else {
+              optimisticOrder = getState().customOrder
+            }
+          }
+          const rollBackOrder = (): void => {
+            if (
+              optimisticOrder !== null &&
+              getState().customOrder.length === optimisticOrder.length &&
+              getState().customOrder.every((key, index) => key === optimisticOrder?.[index])
+            ) {
+              setState({ customOrder: previousOrder })
+            }
+          }
           void place(draggedKey, parentKey, beforeKey).then(
             (destinationKey) => {
-              if (destinationKey === null) return
+              if (destinationKey === null) {
+                rollBackOrder()
+                options.rerender()
+                return
+              }
+              if (optimisticOrder !== null && destinationKey === draggedKey) return
               const result = placeAmongVisibleSiblings(
                 destination.visible,
                 destination.all(),
@@ -1211,6 +1367,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
               options.rerender()
             },
             (error: unknown) => {
+              rollBackOrder()
               options.onError(`Could not move that row. ${String(error)}`)
               options.rerender()
             },
@@ -1235,20 +1392,13 @@ const treeRow = (options: RowOptions): HTMLElement => {
   })
   row.addEventListener('drop', (event) => {
     event.preventDefault()
+    event.stopPropagation()
     const parent = row.parentElement
+    if (applyArmedDrop(event, parent ?? document)) return
     const from = event.dataTransfer?.getData('text/plain')
-    const target = dropTarget
     if (parent !== null) clearDropMarks(parent)
     dropTarget = null
     if (from === undefined || from === '') return
-
-    if (target !== null) {
-      // Whatever the outline showed, including a drop that landed on the outline itself.
-      if (from === target.beforeKey) return
-      target.apply(from, target.parentKey, target.beforeKey)
-      target.rerender()
-      return
-    }
     if (from === options.key) return
     const box = row.getBoundingClientRect()
     const result = moveKey(
@@ -1468,7 +1618,18 @@ const renderLevel = (
       }),
     )
     budget.remaining--
-    if (item.childrenOf === null || (needle === '' && !isExpanded(key))) continue
+    if (item.childrenOf === null) continue
+    if (needle === '' && !isExpanded(key)) {
+      const childSiblings = source.children(item.childrenOf)
+      const visibleChildren = orderedItems(childSiblings.filter(matches), rank).map(
+        (child) => child.key,
+      )
+      siblingLevels.set(key, {
+        visible: visibleChildren,
+        all: () => orderedItems(childSiblings, rank).map((child) => child.key),
+      })
+      continue
+    }
     renderLevel(
       into,
       source,
@@ -1502,6 +1663,14 @@ export const treeContents = (
   wrap.style.gap = '0.125rem'
   wrap.style.paddingTop = '0.5rem'
   wrap.style.paddingBottom = '0.5rem'
+  // CSS `gap` paints real pixels between the row and the portal. The portal remains the visible
+  // promise across those pixels, so the tree owns the final drop whenever a placement is armed.
+  wrap.addEventListener('dragover', (event) => {
+    if (dropTarget !== null) event.preventDefault()
+  })
+  wrap.addEventListener('drop', (event) => {
+    applyArmedDrop(event, wrap)
+  })
 
   const servers = getState().servers
   const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
@@ -1654,16 +1823,17 @@ export const treeContents = (
          */
         const entries: Array<{ parentId: string | null; item: TreeItem }> = []
         for (const node of known) {
+          const nodeKey = nodeTreeKey(server, node.id)
           const nodeTarget: TreeTarget = {
             server,
             nodeId: node.id,
-            key: nodeTreeKey(server, node.id),
+            key: nodeKey,
             name: node.name,
           }
           entries.push({
-            parentId: node.parentId,
+            parentId: renderedParent(nodeKey, node.parentId),
             item: {
-              key: nodeTreeKey(server, node.id),
+              key: nodeKey,
               name: node.name,
               kind: 'folder',
               childrenOf: node.id,
@@ -1706,19 +1876,20 @@ export const treeContents = (
             .map((candidate) => [candidate.serverTemplateId, candidate]),
         )
         for (const template of published) {
+          const templateKey = serverTemplateTreeKey(server, template.id)
           const drawn = drawnById.get(template.id)
           const visibilityKey = serverTemplateKey(server.url, template.id)
           const templateTarget: TreeTarget = {
             server,
             nodeId: template.nodeId,
-            key: serverTemplateTreeKey(server, template.id),
+            key: templateKey,
             name: template.name,
             templateId: template.id,
           }
           entries.push({
-            parentId: template.nodeId,
+            parentId: renderedParent(templateKey, template.nodeId),
             item: {
-              key: serverTemplateTreeKey(server, template.id),
+              key: templateKey,
               name: template.name,
               kind: 'image',
               childrenOf: null,

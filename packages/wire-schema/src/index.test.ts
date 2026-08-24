@@ -521,6 +521,18 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('accepts a template directly under the server root', () => {
+    const rootTemplate = { ...validTemplate, nodeId: null }
+    expect(Schema.decodeUnknownSync(Template)(rootTemplate)).toEqual(rootTemplate)
+    expect(
+      Schema.decodeUnknownSync(Manifest)({
+        ...validManifest,
+        nodes: [],
+        templates: [rootTemplate],
+      }),
+    ).toMatchObject({ templates: [{ nodeId: null }] })
+  })
+
   it('rejects a dangling parent-node reference', () => {
     expectRejected(Manifest, {
       ...validManifest,

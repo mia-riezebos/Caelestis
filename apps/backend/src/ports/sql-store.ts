@@ -148,6 +148,9 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
     throw new Error(`insertTemplateVersion rejected ${version.versionId}: ${reason}`)
   }
   const isDigest = (value: string) => /^[0-9a-f]{64}$/.test(value)
+  if (!Number.isSafeInteger(version.season) || version.season < 0) {
+    fail(`season ${version.season} is not a non-negative integer`)
+  }
   if (!isDigest(version.createdWithToken))
     fail(`createdWithToken ${version.createdWithToken} is not a sha256 digest`)
   if (
@@ -227,7 +230,8 @@ export interface AccessTokenQuery {
 
 export interface TemplateVersionRecord {
   readonly templateId: string
-  readonly nodeId: string
+  readonly season: number
+  readonly nodeId: string | null
   readonly name: string
   readonly versionId: string
   /**
@@ -252,7 +256,8 @@ export interface TemplateVersionRecord {
 /** A template's own row: what it is called and where it sits, with no pixels attached. */
 export interface TemplateRecord {
   readonly id: string
-  readonly nodeId: string
+  readonly season: number
+  readonly nodeId: string | null
   readonly name: string
   readonly currentVersionId: string | null
   readonly published: boolean
@@ -278,7 +283,7 @@ export interface NodeDeletion {
 
 export interface ManifestTemplateRecord {
   readonly id: string
-  readonly nodeId: string
+  readonly nodeId: string | null
   readonly name: string
   readonly versionId: string
   readonly bbox: PixelBounds
@@ -364,12 +369,13 @@ export class NodeNotEmptyError extends Error {
  * are, which is the whole reason `updatedAt` exists alongside the version.
  *
  * An absent field is "leave it alone", which is why every one is optional rather than nullable —
- * neither a name nor a parent can be cleared, only replaced.
+ * neither a name nor a publication state uses null as "leave alone". A null parent explicitly
+ * places the template at the server root; absence leaves the parent alone.
  */
 export interface TemplatePatch {
   readonly name?: string
-  /** Moving a template to another node. Rejected with `NodeNotFoundError` if it does not exist. */
-  readonly nodeId?: string
+  /** Moving to another node, or to the server root with null. */
+  readonly nodeId?: string | null
   /** Null unpublishes; absent leaves publication alone. */
   readonly publishedAt?: Millis | null
 }

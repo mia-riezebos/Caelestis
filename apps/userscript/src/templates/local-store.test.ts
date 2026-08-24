@@ -690,6 +690,7 @@ describe('local template lifecycle', () => {
   it('does not report unsaved delete, visibility, or appearance mutations in memory', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())
+    const originalOpacity = store.appearanceOf(added).opacity
     const oldLevels = [...(added.tiles.values().next().value?.levels ?? [])] as TestBitmap[]
 
     persistence.saveTemplate.mockResolvedValueOnce({ status: 'unavailable' })
@@ -701,7 +702,9 @@ describe('local template lifecycle', () => {
       store.setAppearance(added.id, { ...added.appearance, opacity: 0.25 }),
     ).resolves.toBe(false)
     const unchanged = store.localTemplates()[0]
-    expect(unchanged === undefined ? undefined : store.appearanceOf(unchanged).opacity).toBe(1)
+    expect(unchanged === undefined ? undefined : store.appearanceOf(unchanged).opacity).toBe(
+      originalOpacity,
+    )
 
     persistence.deleteTemplate.mockResolvedValueOnce({ status: 'unavailable' })
     expect(store.previewLocalTemplate(added.id, 30, 40)).toBe(true)

@@ -22,6 +22,7 @@ const version = (
   hashes: readonly string[],
 ): TemplateVersionRecord => ({
   templateId,
+  season: 1,
   nodeId,
   name: templateId,
   versionId,

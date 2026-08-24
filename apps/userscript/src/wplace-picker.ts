@@ -2,7 +2,6 @@ import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { log } from './debug.js'
 import { canvasPixelAt } from './main.js'
 import { pickerIndex, pixelArtIndexAt } from './picker-source.js'
-import { stampContains } from './templates/appearance.js'
 import { claimedHiddenFor } from './templates/colour-filter.js'
 import { appearanceOf, displayTemplates, isTemplateVisible } from './templates/local-store.js'
 import { sourceXAt } from './templates/placement.js'
@@ -31,6 +30,10 @@ import { isPaintOpen } from './wplace-paint.js'
  * is a statement about what is shown, and picking should agree with it rather than with the file
  * behind it. Same for the wildcard index and anywhere outside a template.
  *
+ * Stamp geometry is different. Size, rounding, offset and rotation change how a source cell is
+ * drawn, but the transparent space they leave inside that cell still belongs to the same template
+ * pixel. The picker therefore resolves the whole logical cell and never tests the rendered stamp.
+ *
  * Follow-the-selection is the exception, and it has to be. Under that mode every colour but the one
  * in hand is out of sight, so answering only for what is drawn meant the picker could only ever hand
  * back the colour already selected — it could not be used to *change* colour, which is the whole of
@@ -47,7 +50,7 @@ import { isPaintOpen } from './wplace-paint.js'
  */
 const MAP_SURFACE = '.maplibregl-canvas-container, canvas.maplibregl-canvas'
 
-/** The palette index our overlay is drawing at a canvas pixel, or null if it is drawing nothing. */
+/** The palette index our overlay claims at a logical canvas pixel, or null if it claims none. */
 const overlayIndexAt = (x: number, y: number): number | null => {
   // Last match wins: the layer draws templates in this order, so the last one drawn is the one on
   // top, and the one on top is the one being pointed at.
@@ -62,7 +65,6 @@ const overlayIndexAt = (x: number, y: number): number | null => {
     const index = template.indices[cellY * template.width + cellX]
     if (index === undefined || index === TRANSPARENT_INDEX) continue
     if (claimedHiddenFor(appearanceOf(template)).includes(index)) continue
-    if (!stampContains(appearanceOf(template), localX - cellX, localY - cellY)) continue
     found = index
   }
   return found

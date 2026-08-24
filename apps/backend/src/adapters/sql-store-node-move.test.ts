@@ -18,6 +18,7 @@ const node = (id: string, path: string, parentId: string | null, season = 1): No
 
 const version = (nodeId: string): TemplateVersionRecord => ({
   templateId: 'template',
+  season: 1,
   nodeId,
   name: 'Template',
   versionId: 'version',

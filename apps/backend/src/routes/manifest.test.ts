@@ -22,6 +22,7 @@ const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}`
 
 const template = (templateId: string, versionId: string, tileX: number): TemplateVersionRecord => ({
   templateId,
+  season: 7,
   nodeId: '01890f3a-6b7c-7def-8123-456789abcde0',
   name: `Template ${tileX}`,
   versionId,

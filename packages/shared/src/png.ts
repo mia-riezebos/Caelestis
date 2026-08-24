@@ -23,16 +23,6 @@ import { PALETTE_RGB, PALETTE_SIZE, TRANSPARENT_INDEX } from './palette.js'
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
-/**
- * Pixels one upload may declare.
- *
- * Peak memory is roughly `pixels * (4 + channels)` — the RGBA buffer plus the unfiltered scanlines —
- * so four million keeps a worst-case RGBA decode near 32 MB inside a Worker's 128 MB. That is a
- * 2000x2000 template, far past anything an alliance places by hand. The bound is on the allocation,
- * not the request body: the point is that a small upload cannot ask for a large buffer.
- */
-const MAX_PIXELS = 4_000_000
-
 /** Bytes per pixel for each supported colour type, indexed by the type's own code. */
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }
 
@@ -98,6 +88,40 @@ const inflate = async (bytes: Uint8Array, limit: number): Promise<Uint8Array> =>
   return out
 }
 
+/** Inflate directly into its declared image buffer, avoiding a second full-image copy. */
+const inflateExact = async (bytes: Uint8Array, expected: number): Promise<Uint8Array> => {
+  let out: Uint8Array
+  try {
+    out = new Uint8Array(expected)
+  } catch {
+    throw new PngError('image dimensions cannot be allocated by this runtime')
+  }
+  const stream = new Blob([bytes as BlobPart])
+    .stream()
+    .pipeThrough(new DecompressionStream('deflate'))
+  const reader = stream.getReader()
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (total + value.length > expected) {
+        throw new PngError('IDAT inflates to more than its dimensions allow')
+      }
+      out.set(value, total)
+      total += value.length
+    }
+  } catch (cause) {
+    await reader.cancel().catch(() => {})
+    if (cause instanceof PngError) throw cause
+    throw new PngError('IDAT is not a valid zlib stream')
+  }
+  if (total !== expected) {
+    throw new PngError(`IDAT inflates to ${total} bytes, expected ${expected}`)
+  }
+  return out
+}
+
 const deflate = async (bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> => {
   signal?.throwIfAborted()
   const stream = new Blob([bytes as BlobPart])
@@ -139,11 +163,80 @@ export interface RgbaImage {
   readonly pixels: Uint8Array
 }
 
+/** A PNG already encoded in wplace's canonical palette-index representation. */
+export interface IndexedImage {
+  readonly width: number
+  readonly height: number
+  readonly indices: Uint8Array
+}
+
 export class PngError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'PngError'
   }
+}
+
+interface ParsedPng {
+  readonly width: number
+  readonly height: number
+  readonly colourType: number
+  readonly palette: Uint8Array | null
+  readonly alphas: Uint8Array | null
+  readonly idat: readonly Uint8Array[]
+}
+
+const parsePng = (bytes: Uint8Array): ParsedPng => {
+  for (const [index, expected] of SIGNATURE.entries()) {
+    if (bytes[index] !== expected) throw new PngError('not a PNG')
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  let offset = SIGNATURE.length
+  let header: { width: number; height: number; colourType: number } | null = null
+  let palette: Uint8Array | null = null
+  let alphas: Uint8Array | null = null
+  const idat: Uint8Array[] = []
+
+  while (offset + 8 <= bytes.length) {
+    const length = view.getUint32(offset)
+    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
+    const data = bytes.subarray(offset + 8, offset + 8 + length)
+    offset += 12 + length
+
+    if (type === 'IHDR') {
+      const depth = data[8] ?? 0
+      const colourType = data[9] ?? 0
+      if (depth !== 8) throw new PngError(`unsupported bit depth ${depth}; only 8 is accepted`)
+      if (CHANNELS[colourType] === undefined) {
+        throw new PngError(`unsupported colour type ${colourType}`)
+      }
+      if (data[12] !== 0) throw new PngError('interlaced PNGs are not accepted')
+      header = {
+        width: view.getUint32(offset - 12 - length + 8),
+        height: view.getUint32(offset - 12 - length + 12),
+        colourType,
+      }
+    } else if (type === 'PLTE') palette = data
+    else if (type === 'tRNS') alphas = data
+    else if (type === 'IDAT') idat.push(data)
+    else if (type === 'IEND') break
+  }
+
+  if (header === null) throw new PngError('missing IHDR')
+  if (idat.length === 0) throw new PngError('missing IDAT')
+  if (header.width === 0 || header.height === 0) throw new PngError('image has no pixels')
+  return { ...header, palette, alphas, idat }
+}
+
+const compressedImageData = (parts: readonly Uint8Array[]): Uint8Array => {
+  const compressed = new Uint8Array(parts.reduce((total, part) => total + part.length, 0))
+  let cursor = 0
+  for (const part of parts) {
+    compressed.set(part, cursor)
+    cursor += part.length
+  }
+  return compressed
 }
 
 /**
@@ -202,62 +295,66 @@ const unfilter = (raw: Uint8Array, width: number, height: number, bpp: number): 
   return out
 }
 
+/** Undo filters while compacting scanlines over their own filter bytes. */
+const unfilterInPlace = (
+  raw: Uint8Array,
+  width: number,
+  height: number,
+  bpp: number,
+): Uint8Array => {
+  const stride = width * bpp
+  let previous = new Uint8Array(stride)
+  let line = new Uint8Array(stride)
+  let source = 0
+  for (let row = 0; row < height; row += 1) {
+    const filter = raw[source]
+    source += 1
+    for (let index = 0; index < stride; index += 1) {
+      const value = raw[source + index] ?? 0
+      const left = index >= bpp ? (line[index - bpp] ?? 0) : 0
+      const up = previous[index] ?? 0
+      const upLeft = index >= bpp ? (previous[index - bpp] ?? 0) : 0
+      let reconstructed: number
+      switch (filter) {
+        case 0:
+          reconstructed = value
+          break
+        case 1:
+          reconstructed = value + left
+          break
+        case 2:
+          reconstructed = value + up
+          break
+        case 3:
+          reconstructed = value + ((left + up) >> 1)
+          break
+        case 4: {
+          const estimate = left + up - upLeft
+          const dLeft = Math.abs(estimate - left)
+          const dUp = Math.abs(estimate - up)
+          const dUpLeft = Math.abs(estimate - upLeft)
+          reconstructed =
+            value + (dLeft <= dUp && dLeft <= dUpLeft ? left : dUp <= dUpLeft ? up : upLeft)
+          break
+        }
+        default:
+          throw new PngError(`unsupported scanline filter ${filter}`)
+      }
+      line[index] = reconstructed & 0xff
+    }
+    raw.set(line, row * stride)
+    source += stride
+    const wasPrevious = previous
+    previous = line
+    line = wasPrevious
+  }
+  return raw.subarray(0, stride * height)
+}
+
 /** Decode a PNG to straight (non-premultiplied) RGBA. */
 export const decodePng = async (bytes: Uint8Array): Promise<RgbaImage> => {
-  for (const [index, expected] of SIGNATURE.entries()) {
-    if (bytes[index] !== expected) throw new PngError('not a PNG')
-  }
-
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  let offset = SIGNATURE.length
-  let header: { width: number; height: number; depth: number; colourType: number } | null = null
-  let palette: Uint8Array | null = null
-  let alphas: Uint8Array | null = null
-  const idat: Uint8Array[] = []
-
-  while (offset + 8 <= bytes.length) {
-    const length = view.getUint32(offset)
-    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
-    const data = bytes.subarray(offset + 8, offset + 8 + length)
-    offset += 12 + length
-
-    if (type === 'IHDR') {
-      const depth = data[8] ?? 0
-      const colourType = data[9] ?? 0
-      if (depth !== 8) throw new PngError(`unsupported bit depth ${depth}; only 8 is accepted`)
-      if (CHANNELS[colourType] === undefined) {
-        throw new PngError(`unsupported colour type ${colourType}`)
-      }
-      if (data[12] !== 0) throw new PngError('interlaced PNGs are not accepted')
-      header = {
-        width: view.getUint32(offset - 12 - length + 8),
-        height: view.getUint32(offset - 12 - length + 12),
-        depth,
-        colourType,
-      }
-    } else if (type === 'PLTE') palette = data
-    else if (type === 'tRNS') alphas = data
-    else if (type === 'IDAT') idat.push(data)
-    else if (type === 'IEND') break
-  }
-
-  if (header === null) throw new PngError('missing IHDR')
-  if (idat.length === 0) throw new PngError('missing IDAT')
-
-  const { width, height, colourType } = header
-  if (width === 0 || height === 0) throw new PngError('image has no pixels')
-  // Bounded before anything is allocated from these numbers: a declared 20000x20000 asks for over a
-  // gigabyte from a Worker that has 128 MB, out of an upload a few hundred bytes long.
-  if (width * height > MAX_PIXELS) {
-    throw new PngError(`image has more than ${MAX_PIXELS} pixels`)
-  }
-
-  const compressed = new Uint8Array(idat.reduce((total, part) => total + part.length, 0))
-  let cursor = 0
-  for (const part of idat) {
-    compressed.set(part, cursor)
-    cursor += part.length
-  }
+  const { width, height, colourType, palette, alphas, idat } = parsePng(bytes)
+  const compressed = compressedImageData(idat)
 
   // biome-ignore lint/style/noNonNullAssertion: colourType was checked against CHANNELS above
   const channels = CHANNELS[colourType]!
@@ -333,6 +430,43 @@ export const decodePng = async (bytes: Uint8Array): Promise<RgbaImage> => {
   }
 
   return { width, height, pixels }
+}
+
+/**
+ * Decode the indexed PNG emitted by {@link encodeIndexedPng} without expanding it to RGBA.
+ *
+ * Local templates already carry canonical wplace indices. Expanding those bytes to four-channel
+ * pixels and immediately quantising them back again multiplies peak memory by four and made an
+ * unrelated decoder allocation guard into a template-size policy. A non-canonical PNG returns null
+ * so callers can use the general RGBA decoder instead.
+ */
+export const decodeWplaceIndexedPng = async (bytes: Uint8Array): Promise<IndexedImage | null> => {
+  const parsed = parsePng(bytes)
+  if (parsed.colourType !== 3) return null
+  const { palette, alphas, width, height } = parsed
+  if (palette === null || palette.length !== PALETTE_SIZE * 3) return null
+  if (alphas === null || alphas.length !== PALETTE_SIZE) return null
+
+  for (let index = 0; index < PALETTE_SIZE; index += 1) {
+    const expected = PALETTE_RGB[index]
+    const offset = index * 3
+    if (
+      (palette[offset] ?? 0) !== (expected?.[0] ?? 0) ||
+      (palette[offset + 1] ?? 0) !== (expected?.[1] ?? 0) ||
+      (palette[offset + 2] ?? 0) !== (expected?.[2] ?? 0) ||
+      (alphas[index] ?? 255) !== (index === TRANSPARENT_INDEX ? 0 : 255)
+    ) {
+      return null
+    }
+  }
+
+  const expected = (width + 1) * height
+  const inflated = await inflateExact(compressedImageData(parsed.idat), expected)
+  const indices = unfilterInPlace(inflated, width, height, 1)
+  if (indices.some((index) => index >= PALETTE_SIZE)) {
+    throw new PngError('palette index out of range')
+  }
+  return { width, height, indices }
 }
 
 const chunk = (type: string, data: Uint8Array): Uint8Array => {

@@ -6,6 +6,7 @@ import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, displayTemplates, isTemplateVisible } from '../templates/local-store.js'
 import { horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles } from '../tile-transform.js'
+import { appearanceTransitions } from './appearance-transition.js'
 import { colourFades, templateFades } from './fade.js'
 import { markerLayer } from './markers.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
@@ -393,6 +394,7 @@ export const overlayLayer = {
     }
     const ids = new Set(all.map((template) => template.id))
     templateFades.prune(ids)
+    appearanceTransitions.prune(ids)
     /**
      * The colour ramps are keyed per template *per palette entry*, so their keep-set is sixty-four
      * strings per template — built only when the set of templates has actually changed, rather than
@@ -482,7 +484,10 @@ export const overlayLayer = {
           gpu.set(template.id, entry)
         }
 
-        const appearance = appearanceOf(template)
+        const targetAppearance = appearanceOf(template)
+        const transitioned = appearanceTransitions.advance(template.id, targetAppearance, now)
+        const appearance = transitioned.appearance
+        if (!transitioned.done) animating = true
         const hidden = hiddenColoursFor(appearance)
         const paletteKey = hidden.join(',')
         // Re-uploaded while anything in it is still moving, not only when the filter changes: the

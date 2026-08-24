@@ -36,10 +36,20 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     const body = await c.req.parseBody().catch(() => null)
     if (body === null) return c.json({ error: 'invalid multipart body' }, 400)
 
-    const { png, nodeId, name, originX, originY } = body
+    const { png, nodeId: rawNodeId, season: rawSeason, name, originX, originY } = body
     if (!(png instanceof File)) return c.json({ error: 'png must be a file part' }, 400)
-    if (typeof nodeId !== 'string' || !UUID_V7.test(nodeId)) {
-      return c.json({ error: 'nodeId must be a canonical lowercase UUIDv7' }, 400)
+    const nodeId = rawNodeId === undefined ? null : rawNodeId
+    if (nodeId !== null && (typeof nodeId !== 'string' || !UUID_V7.test(nodeId))) {
+      return c.json({ error: 'nodeId must be a canonical lowercase UUIDv7 or omitted' }, 400)
+    }
+    let season = parseWholeNumber(rawSeason)
+    if (season === null && rawSeason === undefined && typeof nodeId === 'string') {
+      const parent = await ports.sql.readNode(nodeId)
+      if (parent === null) return c.json({ error: `node does not exist: ${nodeId}` }, 400)
+      season = parent.season
+    }
+    if (season === null) {
+      return c.json({ error: 'season must be a non-negative integer for a root template' }, 400)
     }
     if (typeof name !== 'string' || !isValidName(name)) {
       return c.json({ error: 'name must be 1..256 characters' }, 400)
@@ -54,6 +64,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     try {
       const caller = c.get('caller')
       const result = await storeTemplate(ports, {
+        season,
         nodeId,
         name,
         // Always a digest, bootstrap included — `templates_created_with_token_check` requires 64 hex
@@ -118,6 +129,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       const caller = c.get('caller')
       const result = await storeTemplate(ports, {
         templateId,
+        season: existing.season,
         nodeId: existing.nodeId,
         name: existing.name,
         createdWithToken: caller.tokenHash,
@@ -169,8 +181,12 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (name !== undefined && (typeof name !== 'string' || !isValidName(name))) {
       return c.json({ error: 'name must be 1..256 characters' }, 400)
     }
-    if (nodeId !== undefined && (typeof nodeId !== 'string' || !UUID_V7.test(nodeId))) {
-      return c.json({ error: 'nodeId must be a canonical lowercase UUIDv7' }, 400)
+    if (
+      nodeId !== undefined &&
+      nodeId !== null &&
+      (typeof nodeId !== 'string' || !UUID_V7.test(nodeId))
+    ) {
+      return c.json({ error: 'nodeId must be a canonical lowercase UUIDv7 or null' }, 400)
     }
     if (published !== undefined && typeof published !== 'boolean') {
       return c.json({ error: 'published must be a boolean' }, 400)
@@ -182,7 +198,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     const now = millis(Date.now())
     const patch = {
       ...(name === undefined ? {} : { name: name as string }),
-      ...(nodeId === undefined ? {} : { nodeId: nodeId as string }),
+      ...(nodeId === undefined ? {} : { nodeId: nodeId as string | null }),
       ...(published === undefined ? {} : { publishedAt: published ? now : null }),
     }
     try {

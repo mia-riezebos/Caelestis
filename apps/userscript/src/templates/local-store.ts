@@ -117,8 +117,8 @@ export interface PlacedTemplate extends ImportedTemplate {
   readonly serverUrl?: string
   /** Its id on that server, which is what the admin routes address. */
   readonly serverTemplateId?: string
-  /** The folder it hangs off on that server — the top of the chain its visibility answers to. */
-  readonly serverNodeId?: string
+  /** The folder it hangs off on that server, or null when it sits at the server root. */
+  readonly serverNodeId?: string | null
   /** The version these pixels came from, so a sync knows whether to re-download them. */
   readonly serverVersion?: string
   /** The source continues at x=0 after reaching the world's east edge. Server templates only. */
@@ -1133,7 +1133,7 @@ export const putServerTemplate = async (
   template: ImportedTemplate & {
     serverUrl: string
     serverTemplateId: string
-    serverNodeId: string
+    serverNodeId: string | null
     serverVersion: string
     wrapX?: boolean
   },
@@ -1196,7 +1196,7 @@ export const putServerTemplate = async (
 export const updateServerTemplateMetadata = async (
   id: string,
   name: string,
-  serverNodeId: string,
+  serverNodeId: string | null,
 ): Promise<boolean> =>
   await writeInOrder(id, async () => {
     const existing = templates.get(id)

@@ -522,7 +522,9 @@ const manifestContentsValid = (
     if (!isRecord(raw)) return false
     if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id) || templateIds.has(raw.id)) return false
     templateIds.add(raw.id)
-    if (typeof raw.nodeId !== 'string' || !nodeIds.has(raw.nodeId)) return false
+    if (raw.nodeId !== null && (typeof raw.nodeId !== 'string' || !nodeIds.has(raw.nodeId))) {
+      return false
+    }
     if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return false
     if (typeof raw.version !== 'string' || !UUID_V7.test(raw.version)) return false
     if (!Number.isSafeInteger(raw.totalPixels) || Number(raw.totalPixels) <= 0) return false
@@ -1592,7 +1594,7 @@ export const listNodes = async (server: ConnectedServer): Promise<NodeListResult
 export const uploadTemplate = async (
   server: ConnectedServer,
   input: {
-    nodeId: string
+    nodeId: string | null
     name: string
     originX: number
     originY: number
@@ -1604,7 +1606,9 @@ export const uploadTemplate = async (
   try {
     const form = new FormData()
     form.set('png', input.png, `${input.name}.png`)
-    form.set('nodeId', input.nodeId)
+    if (input.nodeId !== null) form.set('nodeId', input.nodeId)
+    if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
+    form.set('season', String(server.season))
     form.set('name', input.name)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
@@ -1650,7 +1654,7 @@ export const moveNode = async (
   server: ConnectedServer,
   nodeId: string,
   parentId: string | null,
-): Promise<{ ok: true } | { ok: false; message: string }> => {
+): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
   try {
     const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
       method: 'PATCH',
@@ -1659,9 +1663,15 @@ export const moveNode = async (
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+      ...(response.status === 408 || response.status === 429 || response.status >= 500
+        ? { retryable: true as const }
+        : {}),
+    }
   } catch (error) {
-    return { ok: false, message: String(error) }
+    return { ok: false, message: String(error), retryable: true }
   }
 }
 
@@ -1795,7 +1805,7 @@ export const listServerContents = async (
     const templates = (body.templates as readonly Record<string, unknown>[]).map(
       (template): ServerTemplate => ({
         id: String(template.id),
-        nodeId: String(template.nodeId),
+        nodeId: template.nodeId === null ? null : String(template.nodeId),
         name: String(template.name),
         version: String(template.version),
         published: template.published === true,
@@ -1878,8 +1888,8 @@ export const listServerTemplates = async (
 export const patchTemplate = async (
   server: ConnectedServer,
   templateId: string,
-  patch: { name?: string; nodeId?: string; published?: boolean },
-): Promise<{ ok: true } | { ok: false; message: string }> => {
+  patch: { name?: string; nodeId?: string | null; published?: boolean },
+): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
   try {
     const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
       method: 'PATCH',
@@ -1888,9 +1898,15 @@ export const patchTemplate = async (
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+      ...(response.status === 408 || response.status === 429 || response.status >= 500
+        ? { retryable: true as const }
+        : {}),
+    }
   } catch (error) {
-    return { ok: false, message: String(error) }
+    return { ok: false, message: String(error), retryable: true }
   }
 }
 
