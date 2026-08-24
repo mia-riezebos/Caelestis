@@ -63,6 +63,7 @@ import {
   setTemplatesFolder,
   templateAsPng,
 } from '../templates/local-store.js'
+import { onMismatchesChanged } from '../templates/mismatch.js'
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
@@ -329,7 +330,12 @@ const _emptyState = (): HTMLElement => {
 
 const treeView = (): HTMLElement => {
   const view = document.createElement('div')
-  Object.assign(view.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
+  Object.assign(view.style, {
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: '0',
+    flex: '1',
+  })
 
   // Search and sort share a row: both are ways of finding one template among many, and giving sort
   // its own row would push the tree down for a control most people set once.
@@ -1033,7 +1039,7 @@ const appearanceView = (): HTMLElement => {
       select(
         [
           ['inline', 'Inline'],
-          ['expanded', 'When expanded'],
+          ['expanded', 'Expanded'],
           ['hidden', 'Never'],
         ],
         state.progress,
@@ -1090,13 +1096,18 @@ const appearanceView = (): HTMLElement => {
       const next = Number(input.value)
       // Read the live value rather than the one captured when this row was built, so dragging one
       // slider cannot revert another.
-      setState({ appearance: { ...getState().appearance, [control.key]: next } })
+      setState({
+        appearance: { ...getState().appearance, [control.key]: next },
+      })
     }
     input.addEventListener('input', () => {
       dirty = true
       const next = Number(input.value)
       readout.textContent = control.format(next)
-      previewGlobalAppearance({ ...getState().appearance, [control.key]: next })
+      previewGlobalAppearance({
+        ...getState().appearance,
+        [control.key]: next,
+      })
       redraw()
     })
     input.addEventListener('keydown', (event) => {
@@ -1334,7 +1345,9 @@ const applyRename = async (
   if (target.server !== null && target.templateId !== undefined) {
     // One column on the server, and deliberately not a new version: the pixels have not moved, so
     // nothing that caches chunks should be told to re-download them.
-    const result = await patchTemplate(target.server, target.templateId, { name })
+    const result = await patchTemplate(target.server, target.templateId, {
+      name,
+    })
     if (!result.ok) toast(result.message, 'error')
     await refreshCurrentNodes(target.server, rerender, true)
     return
@@ -1516,7 +1529,9 @@ const applyDelete = async (
         : `${target.name} and everything in it — ${contents} — will be permanently removed.`,
     ...(contents === null
       ? {}
-      : { note: 'Everyone connected to this server loses all of it, and it cannot be undone.' }),
+      : {
+          note: 'Everyone connected to this server loses all of it, and it cannot be undone.',
+        }),
     confirmLabel: 'Delete',
     restoreFocusTo,
   })
@@ -1561,7 +1576,10 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   const box = document.createElement('div')
   box.setAttribute('data-caelestis-move', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+  Object.assign(box.style, {
+    margin: '0 0.5rem 0.5rem',
+    padding: '0.625rem 0.75rem',
+  })
 
   const label = document.createElement('span')
   label.textContent = `Move “${target.name}” to:`
@@ -1985,7 +2003,9 @@ const dropOnServerNode = async (
     return serverTemplateTreeKey(server, uploaded.id)
   }
   if (sourceBeforePublish.published) {
-    const published = await patchTemplate(server, uploaded.id, { published: true })
+    const published = await patchTemplate(server, uploaded.id, {
+      published: true,
+    })
     if (!published.ok) {
       toast(
         `Copied to ${destinationName} as a draft, but could not publish it; the source was kept.`,
@@ -2104,7 +2124,10 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
   const box = document.createElement('div')
   box.setAttribute('data-caelestis-replace', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+  Object.assign(box.style, {
+    margin: '0 0.5rem 0.5rem',
+    padding: '0.625rem 0.75rem',
+  })
 
   const label = document.createElement('span')
   label.textContent = `Replace “${target.name}” with:`
@@ -2449,7 +2472,10 @@ const copyToServer = async (
   const box = document.createElement('div')
   box.setAttribute('data-caelestis-copy', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+  Object.assign(box.style, {
+    margin: '0 0.5rem 0.5rem',
+    padding: '0.625rem 0.75rem',
+  })
 
   const label = document.createElement('span')
   label.textContent = `Finding destinations for “${template.name}”…`
@@ -2858,7 +2884,12 @@ const buildPanel = (): HTMLElement => {
 
   const body = document.createElement('div')
   body.setAttribute('data-caelestis-body', '')
-  Object.assign(body.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
+  Object.assign(body.style, {
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: '0',
+    flex: '1',
+  })
   body.appendChild(treeView())
 
   panel.append(header, body)
@@ -3130,7 +3161,10 @@ export const installPanel = (): void => {
       sync()
     })
   }
-  new MutationObserver(queueSync).observe(document.body, { childList: true, subtree: true })
+  new MutationObserver(queueSync).observe(document.body, {
+    childList: true,
+    subtree: true,
+  })
   window.addEventListener('resize', () => {
     positionRail()
     const panel = document.getElementById(PANEL_ID)
@@ -3147,6 +3181,15 @@ export const installPanel = (): void => {
   // change.
   onStateChange(refreshView)
   onLocalChange(refreshView)
+  let progressRefreshQueued = false
+  onMismatchesChanged(() => {
+    if (progressRefreshQueued || getState().progress === 'hidden') return
+    progressRefreshQueued = true
+    requestAnimationFrame(() => {
+      progressRefreshQueued = false
+      if (currentView === 'tree') refreshView()
+    })
+  })
   for (const ending of ['dragend', 'focusout'])
     document.addEventListener(ending, repayRefresh, true)
   // Opening wplace's paint drawer changes what the appearance grid is showing without changing any

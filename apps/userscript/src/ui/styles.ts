@@ -297,6 +297,92 @@ const CSS = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.caelestis-progress {
+  display: flex;
+  min-width: 0;
+  color: var(--color-base-content, currentColor);
+}
+.caelestis-progress--inline {
+  flex: 0 0 clamp(3rem, 22%, 5.5rem);
+}
+.caelestis-progress--expanded {
+  order: 10;
+  flex: 1 0 100%;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-left: 2.25rem;
+  padding-right: 1.75rem;
+}
+.caelestis-progress-track {
+  display: flex;
+  width: 100%;
+  height: 0.375rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background-color: var(--color-base-300, rgba(0, 0, 0, 0.08));
+  /* Unknown coverage is track, not a fourth state. The faint hatch keeps it distinct from the
+     solid gray unpainted segment without competing with the three classified colours. */
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    color-mix(in srgb, var(--color-base-content, #64748b) 10%, transparent) 3px 4px
+  );
+}
+.caelestis-progress-segment {
+  flex: 0 0 auto;
+  height: 100%;
+}
+.caelestis-progress-completed {
+  background: var(--color-primary, #2563eb);
+}
+.caelestis-progress-mismatched {
+  background: var(--color-error, #dc2626);
+}
+.caelestis-progress-unpainted {
+  background: var(--color-base-content, #737373);
+  opacity: 0.38;
+}
+.caelestis-progress-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  font-size: 0.625rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.caelestis-progress-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: none;
+}
+.caelestis-progress-legend-item::before {
+  content: '';
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: currentColor;
+}
+.caelestis-progress-legend-item.caelestis-progress-completed {
+  color: var(--color-primary, #2563eb);
+}
+.caelestis-progress-legend-item.caelestis-progress-mismatched {
+  color: var(--color-error, #dc2626);
+}
+.caelestis-progress-legend-item.caelestis-progress-unpainted {
+  color: var(--color-base-content, #737373);
+  opacity: 0.62;
+}
+.caelestis-progress-coverage {
+  margin-left: auto;
+  overflow: hidden;
+  color: inherit;
+  opacity: 0.55;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 `
 
 /** Our stylesheet's identity is the node we created, not a page-owned id string. */

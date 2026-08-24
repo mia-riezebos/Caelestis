@@ -456,7 +456,10 @@ const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end:
 
 const tileCoordinates = (tile: string): { x: number; y: number } => {
   const separator = tile.indexOf('/')
-  return { x: Number(tile.slice(0, separator)), y: Number(tile.slice(separator + 1)) }
+  return {
+    x: Number(tile.slice(0, separator)),
+    y: Number(tile.slice(separator + 1)),
+  }
 }
 
 const chunkIntersectionArea = (tile: string, bbox: ManifestBbox): number => {
@@ -592,7 +595,11 @@ const manifestContentsValid = (
 const manifestProbeFrom = (
   value: unknown,
   expected: ServerInfo,
-): { season: number; server: ServerInfo; nodes: readonly TreeNode[] } | null => {
+): {
+  season: number
+  server: ServerInfo
+  nodes: readonly TreeNode[]
+} | null => {
   if (
     !isRecord(value) ||
     typeof value.version !== 'string' ||
@@ -611,7 +618,10 @@ const manifestProbeFrom = (
 // biome-ignore lint/suspicious/noExplicitAny: the GM_* API only exists under a userscript manager
 const gm = globalThis as any
 
-const readRaw = (): { readonly value: string; readonly legacyPalette: boolean } | null => {
+const readRaw = (): {
+  readonly value: string
+  readonly legacyPalette: boolean
+} | null => {
   try {
     const read = (key: string): string | null =>
       typeof gm.GM_getValue === 'function' ? gm.GM_getValue(key, null) : localStorage.getItem(key)
@@ -722,8 +732,11 @@ export const loadState = (): State => {
         ].slice(0, MAX_CUSTOM_ORDER)
       : []
     const sort: SortOrder =
-      stored.sort?.field === 'name'
-        ? { field: 'name', direction: stored.sort.direction === 'desc' ? 'desc' : 'asc' }
+      stored.sort?.field === 'name' || stored.sort?.field === 'progress'
+        ? {
+            field: stored.sort.field,
+            direction: stored.sort.direction === 'desc' ? 'desc' : 'asc',
+          }
         : DEFAULT_SORT
     const storedHiddenColours = Array.isArray(stored.hiddenColours)
       ? stored.hiddenColours.filter((index): index is number => Number.isSafeInteger(index))
@@ -907,7 +920,12 @@ const localFolderId = (): string =>
 
 export const createLocalFolder = (parentId: string | null, name: string): LocalFolder | null => {
   if (getState().localFolders.length >= MAX_LOCAL_FOLDERS) return null
-  const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
+  const folder: LocalFolder = {
+    id: localFolderId(),
+    parentId,
+    name,
+    visible: true,
+  }
   return setStateDurably({ localFolders: [...getState().localFolders, folder] }) ? folder : null
 }
 
@@ -1054,7 +1072,9 @@ export const removeLocalFolders = (ids: ReadonlySet<string>): boolean => {
     )
   )
     return false
-  return setStateDurably({ localFolders: folders.filter((folder) => !ids.has(folder.id)) })
+  return setStateDurably({
+    localFolders: folders.filter((folder) => !ids.has(folder.id)),
+  })
 }
 
 export const moveLocalFolder = (id: string, parentId: string | null): boolean => {
@@ -1153,7 +1173,11 @@ const fetchNodes = async (
       LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (!response.ok)
-      return { ok: false, status: response.status, message: `Server said ${response.status}.` }
+      return {
+        ok: false,
+        status: response.status,
+        message: `Server said ${response.status}.`,
+      }
     const nodes = nodeListFrom(body)
     return nodes === null
       ? { ok: false, message: 'Server returned an invalid folder list.' }
@@ -1380,7 +1404,9 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
       const server = snapshot[cursor++]
       if (server === undefined) return
       if (!isCurrentServerConnection(server)) continue
-      const refreshed = await probeServer(server.url, server.token, { supersedeActive: false })
+      const refreshed = await probeServer(server.url, server.token, {
+        supersedeActive: false,
+      })
       if (refreshed.superseded === true) continue
       const current = getState().servers.find((candidate) => candidate.url === server.url)
       if (current === undefined || !isCurrentServerConnection(server)) continue
@@ -1437,7 +1463,10 @@ export const createNode = async (
     }
     if (response.status === 401 || response.status === 403) {
       noteAuthFailure(server, response.status)
-      return { ok: false, message: 'That code cannot create folders — it needs admin access.' }
+      return {
+        ok: false,
+        message: 'That code cannot create folders — it needs admin access.',
+      }
     }
     return {
       ok: false,
@@ -1478,7 +1507,11 @@ const failure = (response: Response, body: Record<string, unknown> | null): stri
       ? body.error
       : `Server said ${response.status}.`
 
-type UploadFailure = { readonly ok: false; readonly message: string; readonly ambiguous?: true }
+type UploadFailure = {
+  readonly ok: false
+  readonly message: string
+  readonly ambiguous?: true
+}
 
 interface PendingUploadAmbiguity {
   readonly afterManifestRequest: number
@@ -1516,13 +1549,23 @@ const beginUpload = (
   server: ConnectedServer,
 ): { readonly token: object } | { readonly failure: UploadFailure } => {
   if (!isCurrentServerConnection(server)) {
-    return { failure: { ok: false, message: 'The server connection changed before upload.' } }
+    return {
+      failure: {
+        ok: false,
+        message: 'The server connection changed before upload.',
+      },
+    }
   }
   const pending = pendingUploadFailure(server)
   if (pending !== null) return { failure: pending }
   const active = activeUploads.get(server.url)
   if (active !== undefined) {
-    return { failure: { ok: false, message: 'Another upload to this server is still running.' } }
+    return {
+      failure: {
+        ok: false,
+        message: 'Another upload to this server is still running.',
+      },
+    }
   }
   const token = {}
   activeUploads.set(server.url, { token })
@@ -1546,7 +1589,10 @@ export const renameNode = async (
     })
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+    }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -1555,7 +1601,10 @@ export const renameNode = async (
 export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,
-  expected: { readonly nodes: number; readonly templates: number } | null = null,
+  expected: {
+    readonly nodes: number
+    readonly templates: number
+  } | null = null,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
     const cascade =
@@ -1568,7 +1617,10 @@ export const deleteNode = async (
     })
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+    }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -1634,7 +1686,10 @@ export const uploadTemplate = async (
     }
     if (response.status === 401 || response.status === 403) {
       noteAuthFailure(server, response.status)
-      return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
+      return {
+        ok: false,
+        message: 'That code cannot upload templates — it needs admin access.',
+      }
     }
     const rejected = {
       ok: false,
@@ -1693,7 +1748,10 @@ export const countNodeSubtree = async (
       (parsed.templates as number) < 0
     )
       return null
-    return { nodes: parsed.nodes as number, templates: parsed.templates as number }
+    return {
+      nodes: parsed.nodes as number,
+      templates: parsed.templates as number,
+    }
   } catch {
     return null
   }
@@ -1808,6 +1866,7 @@ export const listServerContents = async (
         nodeId: template.nodeId === null ? null : String(template.nodeId),
         name: String(template.name),
         version: String(template.version),
+        totalPixels: Number(template.totalPixels),
         published: template.published === true,
         updatedAt:
           typeof template.updatedAt === 'number'
@@ -1930,7 +1989,10 @@ export const renameServer = async (
   const trimmed = name.trim()
   if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
   if (activeServerRenames.has(server.url)) {
-    return { ok: false, message: 'A rename for this server is already in progress.' }
+    return {
+      ok: false,
+      message: 'A rename for this server is already in progress.',
+    }
   }
   activeServerRenames.add(server.url)
   try {
@@ -1941,7 +2003,10 @@ export const renameServer = async (
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) {
-      return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+      return {
+        ok: false,
+        message: failure(response, isRecord(body) ? body : null),
+      }
     }
     const current = getState().servers.find((candidate) => candidate.url === server.url)
     if (current !== undefined && current.info !== null && server.info !== null) {
@@ -1995,7 +2060,10 @@ export const deleteTemplate = async (
     })
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+    }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -2153,7 +2221,10 @@ export const createAccessToken = async (
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     const token = isRecord(body) ? body.token : undefined
     if (response.ok && typeof token === 'string') return { ok: true, token }
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+    }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -2176,7 +2247,10 @@ export const revokeAccessToken = async (
     )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+    }
   } catch (error) {
     return { ok: false, message: String(error) }
   }

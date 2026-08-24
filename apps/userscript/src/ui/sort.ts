@@ -13,7 +13,7 @@ import { icon } from './icons.js'
  * newest-first until the user's own durable order takes over.
  */
 
-export type SortField = 'custom' | 'name'
+export type SortField = 'custom' | 'name' | 'progress'
 export type SortDirection = 'asc' | 'desc'
 
 export interface SortOrder {
@@ -42,6 +42,12 @@ const FIELDS: ReadonlyArray<{
 }> = [
   { field: 'custom', label: 'Custom', asc: 'Your order', desc: 'Your order' },
   { field: 'name', label: 'Name', asc: 'A to Z', desc: 'Z to A' },
+  {
+    field: 'progress',
+    label: 'Progress',
+    asc: 'Least complete',
+    desc: 'Most complete',
+  },
 ]
 
 const labelFor = (order: SortOrder): string => {
@@ -91,7 +97,11 @@ export const sortControl = (
   const menu = document.createElement('ul')
   menu.id = 'wts-sort-menu'
   menu.className = 'dropdown-content menu bg-base-100 shadow-2xl z-50 p-1'
-  Object.assign(menu.style, { borderRadius: '0.5rem', width: '13rem', zIndex: '100' })
+  Object.assign(menu.style, {
+    borderRadius: '0.5rem',
+    width: '13rem',
+    zIndex: '100',
+  })
   menu.setAttribute('role', 'menu')
   menu.tabIndex = -1
   let open = false
@@ -136,9 +146,15 @@ export const sortControl = (
         entry.field === 'custom'
           ? { field: 'custom', direction: 'asc' }
           : active
-            ? { field: entry.field, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+            ? {
+                field: entry.field,
+                direction: current.direction === 'asc' ? 'desc' : 'asc',
+              }
             : // Most fields are most useful large-end-first on arrival; a name is not.
-              { field: entry.field, direction: entry.field === 'name' ? 'asc' : 'desc' }
+              {
+                field: entry.field,
+                direction: entry.field === 'name' ? 'asc' : 'desc',
+              }
       log('install', `sort: ${next.field} ${next.direction}`)
       setOpen(false)
       onChange(next)

@@ -215,7 +215,12 @@ export interface MarkerStyle {
  * backing buffer unchanged, so the DPR is the cheap witness that invalidates that otherwise-stale
  * entry without putting a layout read back on every tile.
  */
-let cachedScale: { canvas: unknown; buffer: number; dpr: number; scale: number } | null = null
+let cachedScale: {
+  canvas: unknown
+  buffer: number
+  dpr: number
+  scale: number
+} | null = null
 
 /** @internal Exported so the zoom-without-buffer-resize invariant can be exercised directly. */
 export const deviceScale = (gl: WebGL2RenderingContext): number => {
@@ -386,6 +391,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   const now = performance.now()
   let animating = false
   const wanted: { template: PlacedTemplate; fade: number }[] = []
+  const trackProgress = getState().progress !== 'hidden'
   for (const template of displayTemplates()) {
     const { value, done } = markerFades.advance(
       template.id,
@@ -404,7 +410,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     )
     if (!templateFade.done) animating = true
     const fade = value * templateFade.value
-    if (fade > 0) wanted.push({ template, fade })
+    if (fade > 0 || (trackProgress && isTemplateVisible(template))) wanted.push({ template, fade })
   }
   markerFades.prune(new Set(displayTemplates().map((template) => template.id)))
   if (animating) {
@@ -432,7 +438,12 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     return true
   }
 
-  const work: { tile: TileQuad; marks: Float32Array; style: MarkerStyle; fade: number }[] = []
+  const work: {
+    tile: TileQuad
+    marks: Float32Array
+    style: MarkerStyle
+    fade: number
+  }[] = []
   let deferred = false
   const selected = getState().onlySelectedColour && isPaintOpen() ? (selectedColour() ?? -1) : -1
   for (const { template, fade } of wanted) {
@@ -454,7 +465,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
       if (!covers(template, tile)) continue
       const marks = mismatchesIn(template, tile.tile)
       if (marks === null) deferred = true
-      else if (marks.length > 0) work.push({ tile, marks, style, fade })
+      else if (fade > 0 && marks.length > 0) work.push({ tile, marks, style, fade })
     }
   }
   count('marker:tiles with marks', work.length)

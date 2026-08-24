@@ -18,9 +18,11 @@ import {
   takeProbedNodes,
 } from '../state.js'
 import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
+import { progressFor, type TemplateProgress } from '../templates/mismatch.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
+import { completionRatio, emptyProgress, progressIndicator } from './progress.js'
 import { isReorderable } from './sort.js'
 
 /**
@@ -241,6 +243,8 @@ interface OrderedItem {
   readonly key: string
   readonly name: string
   readonly createdAt?: number
+  /** Absent for structural rows; progress sorting leaves those in their durable slots. */
+  readonly progress?: TemplateProgress | undefined
 }
 
 const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
@@ -334,7 +338,27 @@ export const orderedItems = <T extends OrderedItem>(
   unranked.sort(
     (a, b) => (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
   )
-  return [...ranked.map(({ item }) => item), ...unranked].slice(0, bounded)
+  const custom = [...ranked.map(({ item }) => item), ...unranked]
+  if (getState().sort.field !== 'progress') return custom.slice(0, bounded)
+
+  // A folder is a place, not a score. Preserve every structural slot from the user's own order and
+  // sort only template rows among the slots templates already occupy. That keeps the hierarchy
+  // legible while still bringing the least/most complete work together at every sibling level.
+  const direction = getState().sort.direction === 'desc' ? -1 : 1
+  const templates = custom
+    .filter(
+      (item): item is T & { readonly progress: TemplateProgress } => item.progress !== undefined,
+    )
+    .sort(
+      (a, b) =>
+        direction * (completionRatio(a.progress) - completionRatio(b.progress)) ||
+        NAME_COLLATOR.compare(a.name, b.name) ||
+        a.key.localeCompare(b.key),
+    )
+  let templateAt = 0
+  return custom
+    .map((item) => (item.progress === undefined ? item : (templates[templateAt++] ?? item)))
+    .slice(0, bounded)
 }
 
 export const reorderedSiblings = (
@@ -476,7 +500,11 @@ export const templatesOfNode = (
  */
 export type NodeRefreshResult =
   | { readonly ok: true; readonly changed?: boolean }
-  | { readonly ok: false; readonly message: string; readonly superseded?: true }
+  | {
+      readonly ok: false
+      readonly message: string
+      readonly superseded?: true
+    }
 const refreshing = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
 const refreshControllers = new Map<string, AbortController>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
@@ -489,7 +517,11 @@ export const refreshNodes = async (
   force = false,
 ): Promise<NodeRefreshResult> => {
   if (!isCurrentServerConnection(server)) {
-    return { ok: false, message: 'The server connection changed before refresh.', superseded: true }
+    return {
+      ok: false,
+      message: 'The server connection changed before refresh.',
+      superseded: true,
+    }
   }
   const pending = refreshing.get(server)
   if (!force && pending !== undefined) {
@@ -522,16 +554,28 @@ const refreshOnce = async (
   const contents = await listServerContents(server, signal)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(server)) {
-    return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
+    return {
+      ok: false,
+      message: 'The server connection changed during refresh.',
+      superseded: true,
+    }
   }
   if (refreshGeneration.get(server.url) !== generation) {
-    return { ok: false, message: 'A newer refresh replaced this one.', superseded: true }
+    return {
+      ok: false,
+      message: 'A newer refresh replaced this one.',
+      superseded: true,
+    }
   }
   // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
   // emptying itself — a server that blinks should not take its folders off your screen.
   if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
   if (!isLatestServerContents(server.url, contents)) {
-    return { ok: false, message: 'A newer manifest replaced this one.', superseded: true }
+    return {
+      ok: false,
+      message: 'A newer manifest replaced this one.',
+      superseded: true,
+    }
   }
   const remembered = rememberServerContents(server, contents)
   if (!remembered.ok) return remembered
@@ -550,6 +594,7 @@ const sameTemplate = (left: ServerTemplate, right: ServerTemplate): boolean =>
   left.nodeId === right.nodeId &&
   left.name === right.name &&
   left.version === right.version &&
+  left.totalPixels === right.totalPixels &&
   left.published === right.published &&
   left.updatedAt === right.updatedAt &&
   left.bbox.minX === right.bbox.minX &&
@@ -576,7 +621,11 @@ export const rememberServerContents = (
 ): NodeRefreshResult => {
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(server)) {
-    return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
+    return {
+      ok: false,
+      message: 'The server connection changed during refresh.',
+      superseded: true,
+    }
   }
   const { nodes, templates } = contents
   const identity = serverIdentity(server)
@@ -750,7 +799,9 @@ const moveKey = (
       : reorderedVisibleSiblings(allKeys, keys, from, to, after)
   if (next === null || (!inserting && next.every((key, index) => key === allKeys[index])))
     return 'unchanged'
-  setState({ customOrder: replaceSiblingOrder(getState().customOrder, affectedKeys, next) })
+  setState({
+    customOrder: replaceSiblingOrder(getState().customOrder, affectedKeys, next),
+  })
   return 'moved'
 }
 
@@ -775,7 +826,11 @@ const placeAmongVisibleSiblings = (
  * and the drop only has to read it.
  */
 /** The row being dragged, and the container it came from — needed to police reparenting. */
-let dragging: { key: string; parentKey: string | null; canReparent: boolean } | null = null
+let dragging: {
+  key: string
+  parentKey: string | null
+  canReparent: boolean
+} | null = null
 
 /** Keep server or local refreshes from replacing a row while the browser is dragging it. */
 export const isTreeDragActive = (): boolean => dragging !== null
@@ -937,6 +992,7 @@ interface RowOptions {
   readonly kind: IconName
   readonly depth: number
   readonly meta?: string
+  readonly progress?: TemplateProgress
   /** Containers accept a drop *into* them; leaves only reorder between siblings. */
   readonly container: boolean
   /** The row this one sits under, so a drop can resolve to a place in the tree rather than a row. */
@@ -1102,6 +1158,11 @@ const treeRow = (options: RowOptions): HTMLElement => {
     meta.style.flex = '0 0 auto'
     meta.textContent = options.meta
     row.appendChild(meta)
+  }
+
+  const progressPlacement = getState().progress
+  if (options.progress !== undefined && progressPlacement !== 'hidden') {
+    row.appendChild(progressIndicator(options.progress, progressPlacement))
   }
 
   if (editing) {
@@ -1432,6 +1493,7 @@ interface TreeItem {
   readonly childrenOf: string | null
   readonly createdAt?: number
   readonly meta?: string | undefined
+  readonly progress?: TemplateProgress
   readonly muted?: boolean | undefined
   readonly visible: boolean
   readonly setVisible: (on: boolean) => boolean | Promise<boolean>
@@ -1466,7 +1528,10 @@ interface TreeSource {
 }
 
 const groupedSource = (
-  entries: ReadonlyArray<{ readonly parentId: string | null; readonly item: TreeItem }>,
+  entries: ReadonlyArray<{
+    readonly parentId: string | null
+    readonly item: TreeItem
+  }>,
 ): TreeSource => {
   const byParent = new Map<string | null, TreeItem[]>()
   for (const { parentId, item } of entries) {
@@ -1610,6 +1675,7 @@ const renderLevel = (
           )
         },
         ...(item.meta === undefined ? {} : { meta: item.meta }),
+        ...(item.progress === undefined ? {} : { progress: item.progress }),
         ...(item.muted === undefined ? {} : { muted: item.muted }),
         ...(item.actions === undefined ? {} : { actions: item.actions }),
         ...(item.onRename === undefined ? {} : { onRename: item.onRename }),
@@ -1684,7 +1750,10 @@ export const treeContents = (
   const keys = categories.map((item) => item.key)
   const ordered = orderedItems(categories, rank).map((item) => item.key)
   const needle = query.trim().toLocaleLowerCase()
-  const budget: RenderBudget = { remaining: MAX_RENDERED_ROWS, truncated: false }
+  const budget: RenderBudget = {
+    remaining: MAX_RENDERED_ROWS,
+    truncated: false,
+  }
   const siblingLevels = new Map<string, SiblingLevel>()
 
   for (const key of ordered) {
@@ -1849,7 +1918,9 @@ export const treeContents = (
                   }
                 : {}),
               ...(canEdit
-                ? { onRename: (value: string) => callbacks.onRename(nodeTarget, value) }
+                ? {
+                    onRename: (value: string) => callbacks.onRename(nodeTarget, value),
+                  }
                 : {}),
               ...(canEdit
                 ? {
@@ -1896,6 +1967,8 @@ export const treeContents = (
               createdAt: template.updatedAt,
               muted: !template.published,
               ...(template.published ? {} : { meta: 'unpublished' }),
+              progress:
+                drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn),
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: async (on) => {
                 // A drawn server row owns the dual commit: live bitmaps and the durable scope either
@@ -1913,7 +1986,9 @@ export const treeContents = (
                   }
                 : {}),
               ...(canEdit
-                ? { onRename: (value: string) => callbacks.onRename(templateTarget, value) }
+                ? {
+                    onRename: (value: string) => callbacks.onRename(templateTarget, value),
+                  }
                 : {}),
             },
           })
@@ -2011,6 +2086,7 @@ export const treeContents = (
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
+            progress: progressFor(template),
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),
             canReparent: true,
@@ -2018,7 +2094,11 @@ export const treeContents = (
             onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
             onRename: (value) => callbacks.onRename(templateTarget, value),
             actions: [
-              { icon: 'search', label: 'Go to', run: () => callbacks.onGoTo(template.id) },
+              {
+                icon: 'search',
+                label: 'Go to',
+                run: () => callbacks.onGoTo(template.id),
+              },
               {
                 icon: 'uploadFile',
                 label: 'Copy to a server',
@@ -2058,7 +2138,12 @@ export const treeContents = (
       importButton.textContent = 'Import a template'
       importButton.title = 'A .wplace file, a Blue Marble export, or an image'
       importButton.addEventListener('click', () =>
-        callbacks.onImportTemplate({ server: null, nodeId: null, key: 'local', name: 'Local' }),
+        callbacks.onImportTemplate({
+          server: null,
+          nodeId: null,
+          key: 'local',
+          name: 'Local',
+        }),
       )
       actions.appendChild(importButton)
       wrap.appendChild(actions)

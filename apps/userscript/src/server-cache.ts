@@ -42,6 +42,8 @@ export interface ServerTemplate {
   readonly nodeId: string | null
   readonly name: string
   readonly version: string
+  /** Added to manifests with progress bars; absent only in an older persisted cache entry. */
+  readonly totalPixels?: number
   readonly published: boolean
   readonly updatedAt: number
   readonly bbox: {
@@ -66,6 +68,8 @@ const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefi
       (candidate.nodeId !== null && typeof candidate.nodeId !== 'string') ||
       typeof candidate.name !== 'string' ||
       typeof candidate.version !== 'string' ||
+      (candidate.totalPixels !== undefined &&
+        (!Number.isSafeInteger(candidate.totalPixels) || Number(candidate.totalPixels) <= 0)) ||
       typeof candidate.published !== 'boolean' ||
       !Number.isFinite(candidate.updatedAt) ||
       typeof bbox !== 'object' ||
