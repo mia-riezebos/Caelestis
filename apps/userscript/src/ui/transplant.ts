@@ -54,6 +54,17 @@ export type Source =
   | { readonly kind: 'server'; readonly server: ConnectedServer; readonly nodeId: string }
   | { readonly kind: 'local'; readonly folderId: string }
 
+export interface DestinationAdmission {
+  readonly nodes: readonly TreeNode[]
+  readonly templates: ReadonlyArray<{
+    readonly id: string
+    readonly nodeId: string
+    readonly name: string
+    readonly version: string
+    readonly published: boolean
+  }>
+}
+
 export interface TransplantResult {
   readonly ok: boolean
   readonly message: string
@@ -284,11 +295,7 @@ const transplantWhileDestinationHeld = async (
     | ((server: ConnectedServer) => readonly LocatedPublishedTemplate[])
     | undefined,
   destinationIsAdmitted:
-    | ((
-        server: ConnectedServer,
-        nodeIds: ReadonlySet<string>,
-        templateIds: ReadonlySet<string>,
-      ) => Promise<boolean>)
+    | ((server: ConnectedServer, expected: DestinationAdmission) => Promise<boolean>)
     | undefined,
   destinationLeases: Array<() => void>,
   destinationTemplateLeases: Array<() => void>,
@@ -330,7 +337,8 @@ const transplantWhileDestinationHeld = async (
   const mapped = new Map<string, string>()
   let nodes = 0
   let templates = 0
-  const uploadedTemplateIds = new Set<string>()
+  const createdNodes: TreeNode[] = []
+  const uploadedTemplates: DestinationAdmission['templates'][number][] = []
 
   const connectionsAreCurrent = (): boolean =>
     (source.kind === 'local' || isCurrentServerConnection(source.server)) &&
@@ -449,6 +457,7 @@ const transplantWhileDestinationHeld = async (
       if (!created.ok) return { ok: false, nodes, templates, message: created.message }
       if (!sourceBranchIsCurrent()) return sourceBranchChanged()
       mapped.set(folder.id, created.node.id)
+      createdNodes.push(created.node)
     } else {
       const id = nextLocalFolderId()
       madeLocally.push({ id, parentId: parent, name: folder.name, visible: true })
@@ -507,15 +516,15 @@ const transplantWhileDestinationHeld = async (
       }
       if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
       if (!connectionsAreCurrent()) return connectionChanged()
+      const uploadedName = carried.sourceRevision?.name ?? carried.template.name
       const uploaded = await uploadTemplate(destination.server, {
         nodeId: target,
-        name: carried.sourceRevision?.name ?? carried.template.name,
+        name: uploadedName,
         originX: carried.template.originX,
         originY: carried.template.originY,
         png,
       })
       if (!uploaded.ok) return { ok: false, nodes, templates, message: uploaded.message }
-      uploadedTemplateIds.add(uploaded.id)
       if (carried.sourceRevision?.published === true) {
         if (!sourceBranchIsCurrent()) return sourceBranchChanged()
         if (!connectionsAreCurrent()) return connectionChanged()
@@ -529,6 +538,13 @@ const transplantWhileDestinationHeld = async (
           }
         }
       }
+      uploadedTemplates.push({
+        id: uploaded.id,
+        nodeId: target,
+        name: uploadedName,
+        version: uploaded.version,
+        published: carried.sourceRevision?.published === true,
+      })
     } else {
       let copied: PlacedTemplate
       try {
@@ -568,11 +584,10 @@ const transplantWhileDestinationHeld = async (
 
   if (destination.kind === 'server' && destinationIsAdmitted !== undefined) {
     if (!connectionsAreCurrent()) return connectionChanged()
-    const admitted = await destinationIsAdmitted(
-      destination.server,
-      new Set(mapped.values()),
-      uploadedTemplateIds,
-    )
+    const admitted = await destinationIsAdmitted(destination.server, {
+      nodes: createdNodes,
+      templates: uploadedTemplates,
+    })
     if (!admitted) {
       return {
         ok: false,
@@ -693,8 +708,7 @@ export const transplant = async (
   templatesForServer?: (server: ConnectedServer) => readonly LocatedPublishedTemplate[],
   destinationIsAdmitted?: (
     server: ConnectedServer,
-    nodeIds: ReadonlySet<string>,
-    templateIds: ReadonlySet<string>,
+    expected: DestinationAdmission,
   ) => Promise<boolean>,
 ): Promise<TransplantResult> => {
   const activeSource = sourceKey(source)

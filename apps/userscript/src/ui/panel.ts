@@ -7,6 +7,7 @@ import {
   admittedServerContentsFor,
   type ConnectedServer,
   cancelServerProbe,
+  canonicalServerUrl,
   countNodeSubtree,
   createLocalFolder,
   createNode,
@@ -85,7 +86,12 @@ import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID, toast } from './toast.js'
-import { type Destination, type Source, transplant } from './transplant.js'
+import {
+  type Destination,
+  type DestinationAdmission,
+  type Source,
+  transplant,
+} from './transplant.js'
 import {
   findServerNode,
   findServerTemplate,
@@ -682,6 +688,60 @@ const expandedServers = new Set<string>()
  */
 const autoExpanded = new Set<string>()
 
+const destinationAdmissionControllers = new Map<string, Set<AbortController>>()
+
+const cancelDestinationAdmissions = (serverUrl: string): void => {
+  const controllers = destinationAdmissionControllers.get(serverUrl)
+  if (controllers === undefined) return
+  for (const controller of controllers) controller.abort(new Error('destination disconnected'))
+  destinationAdmissionControllers.delete(serverUrl)
+}
+
+const destinationIsAdmitted = async (
+  server: ConnectedServer,
+  expected: DestinationAdmission,
+): Promise<boolean> => {
+  const controller = new AbortController()
+  const controllers = destinationAdmissionControllers.get(server.url) ?? new Set<AbortController>()
+  controllers.add(controller)
+  destinationAdmissionControllers.set(server.url, controllers)
+  try {
+    if ((await listServerContents(server, controller.signal)) === null) return false
+    const admitted = admittedServerContentsFor(server)
+    if (admitted === null) return false
+    const nodes = new Map(admitted.nodes.map((node) => [node.id, node]))
+    for (const expectedNode of expected.nodes) {
+      const node = nodes.get(expectedNode.id)
+      if (
+        node === undefined ||
+        node.parentId !== expectedNode.parentId ||
+        node.path !== expectedNode.path ||
+        node.name !== expectedNode.name ||
+        node.createdAt !== expectedNode.createdAt
+      )
+        return false
+    }
+    const templates = new Map(admitted.templates.map((template) => [template.id, template]))
+    for (const expectedTemplate of expected.templates) {
+      const template = templates.get(expectedTemplate.id)
+      if (
+        template === undefined ||
+        template.nodeId !== expectedTemplate.nodeId ||
+        template.name !== expectedTemplate.name ||
+        template.version !== expectedTemplate.version ||
+        template.published !== expectedTemplate.published
+      )
+        return false
+    }
+    return true
+  } finally {
+    controllers.delete(controller)
+    if (controllers.size === 0 && destinationAdmissionControllers.get(server.url) === controllers) {
+      destinationAdmissionControllers.delete(server.url)
+    }
+  }
+}
+
 const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
   if (!key.startsWith(prefix)) return false
   const suffix = key.slice(prefix.length)
@@ -704,6 +764,7 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   if (copySetupTargets?.has(server.url)) {
     copySetupController?.abort(new Error('copy destination disconnected'))
   }
+  cancelDestinationAdmissions(server.url)
   cancelServerProbe(server.url)
   // Anything already downloading for this server lands stale rather than drawing an overlay with no
   // server row left to control it.
@@ -864,6 +925,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
       `server:probe:${server.url}`,
     )
     if (next === null) return
+    if (next.superseded === true) return
     if (!stillConnected(server)) return
     if (next.status === 'connected') {
       upsertServer(next)
@@ -1057,6 +1119,18 @@ const settingsView = (): HTMLElement => {
   const connect = async (): Promise<void> => {
     const value = url.value.trim()
     if (value === '') return
+    let canonical: string | null = null
+    try {
+      canonical = canonicalServerUrl(value)
+    } catch {
+      // Let probeServer render the existing invalid-address error below.
+    }
+    if (canonical !== null && getState().servers.some((server) => server.url === canonical)) {
+      status.style.display = ''
+      status.className = 'text-xs px-3 pb-2 text-error'
+      status.textContent = `${canonical} is already connected.`
+      return
+    }
     status.style.display = ''
     status.className = 'text-xs px-3 pb-2 opacity-60'
     status.textContent = 'Connecting…'
@@ -1065,6 +1139,7 @@ const settingsView = (): HTMLElement => {
     // names, and these two probes are the example in it.
     const server = await whileBusy(add, () => probeServer(value, null), `server:probe:${value}`)
     if (server === null) return
+    if (server.superseded === true) return
     if (server.status === 'unreachable') {
       status.className = 'text-xs px-3 pb-2 text-error'
       status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
@@ -1561,16 +1636,7 @@ const moveBranch = async (
     destination,
     (server, nodeId) => templatesOfNode(server.url, nodeId),
     (server) => templatesForServer(server.url),
-    async (server, nodeIds, templateIds) => {
-      if ((await listServerContents(server)) === null) return false
-      const admitted = admittedServerContentsFor(server)
-      if (admitted === null) return false
-      const admittedNodeIds = new Set(admitted.nodes.map((node) => node.id))
-      const admittedTemplateIds = new Set(admitted.templates.map((template) => template.id))
-      for (const id of nodeIds) if (!admittedNodeIds.has(id)) return false
-      for (const id of templateIds) if (!admittedTemplateIds.has(id)) return false
-      return true
-    },
+    destinationIsAdmitted,
   )
   if (result.ok) toast(result.message)
   else toast(result.message, 'error')
@@ -1859,6 +1925,34 @@ const dropOnServerNode = async (
       'warning',
     )
     await refreshCurrentNodes(server, rerender, true)
+    return serverTemplateTreeKey(server, uploaded.id)
+  }
+  if (
+    !(await destinationIsAdmitted(server, {
+      nodes: [],
+      templates: [
+        {
+          id: uploaded.id,
+          nodeId,
+          name: readySourceTemplate.name,
+          version: uploaded.version,
+          published: sourceBeforePublish.published,
+        },
+      ],
+    }))
+  ) {
+    toast(
+      `Copied to ${destinationName}, but its destination could not be admitted; the source was kept.`,
+      'warning',
+    )
+    await refreshCurrentNodes(server, rerender, true)
+    return serverTemplateTreeKey(server, uploaded.id)
+  }
+  if (!stillConnected(source) || !stillConnected(server)) {
+    toast(
+      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
+      'warning',
+    )
     return serverTemplateTreeKey(server, uploaded.id)
   }
   const latestSourceTemplate = serverTemplateAt(source.url, templateId)

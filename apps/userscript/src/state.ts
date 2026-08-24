@@ -58,6 +58,8 @@ export interface ConnectedServer {
     readonly serverId: string
     readonly season: number
   } | null
+  /** Runtime-only marker: this probe was deliberately replaced or cancelled, not unreachable. */
+  readonly superseded?: true
 }
 
 /** Whether two immutable state rows still describe the same remote connection lifetime. */
@@ -1334,6 +1336,7 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
       error: String(error),
       isAdmin: false,
       season: null,
+      ...(probeController.signal.aborted ? { superseded: true as const } : {}),
     }
   } finally {
     if (activeServerProbes.get(base) === probeController) activeServerProbes.delete(base)
@@ -1349,6 +1352,7 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
       const server = snapshot[cursor++]
       if (server === undefined) return
       const refreshed = await probeServer(server.url, server.token)
+      if (refreshed.superseded === true) continue
       const current = getState().servers.find((candidate) => candidate.url === server.url)
       if (current === undefined || !isCurrentServerConnection(server)) continue
       // A cosmetic replacement can land while the probe is in flight. Preserve that newer local
@@ -1561,7 +1565,7 @@ export const uploadTemplate = async (
     originY: number
     png: Blob
   },
-): Promise<{ ok: true; id: string } | UploadFailure> => {
+): Promise<{ ok: true; id: string; version: string } | UploadFailure> => {
   const begun = beginUpload(server)
   if ('failure' in begun) return begun.failure
   try {
@@ -1583,8 +1587,12 @@ export const uploadTemplate = async (
     )
     if (response.ok) {
       const id = isRecord(body) ? body.templateId : undefined
-      return typeof id === 'string' && UUID_V7.test(id)
-        ? { ok: true, id }
+      const version = isRecord(body) ? body.versionId : undefined
+      return typeof id === 'string' &&
+        UUID_V7.test(id) &&
+        typeof version === 'string' &&
+        UUID_V7.test(version)
+        ? { ok: true, id, version }
         : markUploadAmbiguous(server, 'Server returned an invalid uploaded template.')
     }
     if (response.status === 401 || response.status === 403) {
