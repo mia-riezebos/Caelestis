@@ -17,8 +17,8 @@ const migration = readdirSync(migrationsDir)
 /** `node:sqlite` declares this inside its module namespace without exporting it. */
 type SupportedValueType = null | number | bigint | string | NodeJS.ArrayBufferView
 
-const result = <T>(results: T[]): D1Result<T> =>
-  ({ success: true, results, meta: {} }) as D1Result<T>
+const result = <T>(results: T[], changes = 0): D1Result<T> =>
+  ({ success: true, results, meta: { changes } }) as D1Result<T>
 
 /**
  * D1 caps a LIKE or GLOB pattern at 50 bytes, and `node:sqlite` uses SQLite's own default of 50,000
@@ -80,8 +80,8 @@ class SqliteD1Statement {
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
     this.refusePatternsD1WouldRefuse()
-    this.statement.run(...this.bindings)
-    return result<T>([])
+    const changed = this.statement.run(...this.bindings)
+    return result<T>([], Number(changed.changes))
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
@@ -124,6 +124,11 @@ export class SqliteD1Database {
   failNextBatchAt(point: D1BatchFailurePoint, beforeBatch?: () => void): void {
     this.nextFailure = point
     this.beforeNextBatch = beforeBatch ?? null
+  }
+
+  /** Stage a concurrent write after an adapter's guard reads but before its next atomic batch. */
+  runBeforeNextBatch(callback: () => void): void {
+    this.beforeNextBatch = callback
   }
 
   async batch<T = unknown>(statements: readonly SqliteD1Statement[]): Promise<D1Result<T>[]> {

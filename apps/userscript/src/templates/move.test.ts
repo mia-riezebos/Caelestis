@@ -4,6 +4,7 @@ const harness = vi.hoisted(() => ({
   canvasPixelAt: vi.fn(() => ({ x: 2, y: 3 })),
   cssPixelsPerCanvasPixel: vi.fn(() => ({ x: 1, y: 1 })),
   isDeletingLocal: vi.fn((_id: string) => false),
+  isServerTemplate: vi.fn((template: { serverUrl?: string }) => template.serverUrl !== undefined),
   clearLocalPreview: vi.fn(() => true),
   repaint: vi.fn(),
   isMapInteractionTarget: vi.fn(() => true),
@@ -25,6 +26,7 @@ vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
 vi.mock('./local-store.js', () => ({
   clearLocalPreview: harness.clearLocalPreview,
   isDeletingLocal: harness.isDeletingLocal,
+  isServerTemplate: harness.isServerTemplate,
   localTemplates: harness.localTemplates,
   onLocalReconciliation: (id: string, observer: () => void) => {
     const observers = harness.reconciliationObservers.get(id) ?? new Set<() => void>()
@@ -38,14 +40,12 @@ vi.mock('./local-store.js', () => ({
 }))
 
 const listeners = new Map<string, EventListener>()
-let movebar: { remove: ReturnType<typeof vi.fn> } | null
 
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   listeners.clear()
   harness.reconciliationObservers.clear()
-  movebar = null
   harness.canvasPixelAt.mockReturnValue({ x: 2, y: 3 })
   harness.cssPixelsPerCanvasPixel.mockReturnValue({ x: 1, y: 1 })
   harness.isMapInteractionTarget.mockReturnValue(true)
@@ -71,7 +71,7 @@ beforeEach(() => {
   })
   vi.stubGlobal('document', {
     body: { appendChild: vi.fn() },
-    querySelector: vi.fn(() => movebar),
+    querySelector: vi.fn(() => null),
     createElement: vi.fn(() => ({
       style: {},
       setAttribute: vi.fn(),
@@ -88,11 +88,12 @@ afterEach(() => {
 })
 
 describe('template placement controls', () => {
-  it('tells keyboard users to return focus to the map before nudging', async () => {
+  it('leaves placement controls on the overlay instead of creating a move bar', async () => {
     const moves = await import('./move.js')
 
-    expect(moves.MOVE_HINT).toContain('Click the map')
-    expect(moves.MOVE_HINT).toContain('arrow keys')
+    expect(moves.beginMove('test', vi.fn())).toBe(true)
+    expect(document.createElement).not.toHaveBeenCalled()
+    await moves.commit()
   })
 
   it('reports when another placement prevents a new one from starting', async () => {
@@ -100,8 +101,60 @@ describe('template placement controls', () => {
 
     expect(moves.beginMove('test', vi.fn())).toBe(true)
     expect(moves.beginMove('test', vi.fn())).toBe(false)
-    movebar = { remove: vi.fn() }
     await moves.commit()
+  })
+
+  it('does not offer Local placement for a server-owned template', async () => {
+    harness.localTemplates.mockReturnValue([
+      { ...harness.localTemplates()[0], serverUrl: 'https://example.test' },
+    ])
+    const moves = await import('./move.js')
+
+    expect(moves.beginMove('test', vi.fn())).toBe(false)
+    expect(harness.previewLocalTemplate).not.toHaveBeenCalled()
+  })
+
+  it('persists an accepted server placement remotely before accepting its local preview', async () => {
+    harness.localTemplates.mockReturnValue([
+      { ...harness.localTemplates()[0], serverUrl: 'https://example.test' },
+    ])
+    const persistRemote = vi.fn(async () => true)
+    const moves = await import('./move.js')
+
+    expect(moves.beginServerMove('test', vi.fn(), persistRemote)).toBe(true)
+    const keydown = listeners.get('keydown')
+    if (keydown === undefined) throw new Error('expected keydown listener')
+    keydown({
+      key: 'ArrowRight',
+      shiftKey: false,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+
+    await moves.commit()
+
+    expect(persistRemote).toHaveBeenCalledWith(11, 20)
+    expect(harness.placeLocalTemplate).toHaveBeenCalledWith('test', 11, 20)
+  })
+
+  it('keeps a refused server placement open and does not accept the local preview', async () => {
+    harness.localTemplates.mockReturnValue([
+      { ...harness.localTemplates()[0], serverUrl: 'https://example.test' },
+    ])
+    const moves = await import('./move.js')
+
+    expect(
+      moves.beginServerMove(
+        'test',
+        vi.fn(),
+        vi.fn(async () => false),
+      ),
+    ).toBe(true)
+    await moves.commit()
+
+    expect(moves.movingId()).toBe('test')
+    expect(harness.placeLocalTemplate).not.toHaveBeenCalled()
   })
 
   it('reserves the placement slot across asynchronous import preparation', async () => {
@@ -115,7 +168,6 @@ describe('template placement controls', () => {
     expect(moves.movingId()).toBe('test')
 
     reservation.release()
-    movebar = { remove: vi.fn() }
     await moves.commit()
   })
 
@@ -128,7 +180,6 @@ describe('template placement controls', () => {
 
     expect(moves.isMoving()).toBe(false)
     expect(moves.beginMove('test', vi.fn())).toBe(true)
-    movebar = { remove: vi.fn() }
     await moves.commit()
   })
 
@@ -137,13 +188,10 @@ describe('template placement controls', () => {
     moves.beginMove('test', () => {
       throw new Error('observer failed')
     })
-    movebar = { remove: vi.fn() }
-
     await expect(moves.commit()).resolves.toBeUndefined()
     await expect(moves.commit()).resolves.toBeUndefined()
 
     expect(harness.placeLocalTemplate).toHaveBeenCalledOnce()
-    expect(movebar.remove).toHaveBeenCalledOnce()
     expect(window.removeEventListener).toHaveBeenCalled()
   })
 
@@ -158,7 +206,14 @@ describe('template placement controls', () => {
     auxclick(unrelated as unknown as Event)
     expect(unrelated.preventDefault).not.toHaveBeenCalled()
 
-    pointerdown({ button: 1, clientX: 2, clientY: 3, preventDefault: vi.fn() } as unknown as Event)
+    pointerdown({
+      button: 1,
+      pointerId: 1,
+      target: { tagName: 'CANVAS', closest: vi.fn(() => null) },
+      clientX: 2,
+      clientY: 3,
+      preventDefault: vi.fn(),
+    } as unknown as Event)
     auxclick(unrelated as unknown as Event)
     expect(unrelated.preventDefault).toHaveBeenCalledOnce()
   })
@@ -193,6 +248,35 @@ describe('template placement controls', () => {
     expect(controlEvent.preventDefault).not.toHaveBeenCalled()
     expect(outsideEvent.preventDefault).not.toHaveBeenCalled()
     expect(harness.canvasPixelAt).not.toHaveBeenCalled()
+  })
+
+  it('moves placement by keyboard with a larger Shift step', async () => {
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const keydown = listeners.get('keydown')
+    if (keydown === undefined) throw new Error('expected keyboard listener')
+    const preventDefault = vi.fn()
+    const stopPropagation = vi.fn()
+
+    keydown({
+      key: 'ArrowRight',
+      shiftKey: false,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault,
+      stopPropagation,
+    } as unknown as Event)
+    keydown({
+      key: 'ArrowUp',
+      shiftKey: true,
+      target: { tagName: 'DIV', closest: vi.fn(() => null) },
+      preventDefault,
+      stopPropagation,
+    } as unknown as Event)
+
+    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(1, 'test', 11, 20)
+    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(2, 'test', 11, 10)
+    expect(preventDefault).toHaveBeenCalledTimes(2)
+    expect(stopPropagation).toHaveBeenCalledTimes(2)
   })
 
   it('allows only one commit while an asynchronous placement is finishing', async () => {
@@ -355,7 +439,13 @@ describe('template placement controls', () => {
       stopPropagation: vi.fn(),
     } as unknown as Event)
     expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
-    pointercancel({ pointerId: 7 } as unknown as Event)
+    pointercancel({
+      pointerId: 7,
+      clientX: 110,
+      clientY: 110,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
     pointermove({
       pointerId: 7,
       clientX: 120,
@@ -437,7 +527,7 @@ describe('template placement controls', () => {
     } as unknown as Event)
     const panelTarget = {
       tagName: 'DIV',
-      closest: vi.fn((selector: string) => (selector.includes('#wts-panel') ? {} : null)),
+      closest: vi.fn((selector: string) => (selector.includes('#caelestis-panel') ? {} : null)),
     }
     const panelPreventDefault = vi.fn()
     keydown({
@@ -464,35 +554,6 @@ describe('template placement controls', () => {
     expect(panelPreventDefault).not.toHaveBeenCalled()
   })
 
-  it('moves placement by keyboard with a larger Shift step', async () => {
-    const moves = await import('./move.js')
-    moves.beginMove('test', vi.fn())
-    const keydown = listeners.get('keydown')
-    if (keydown === undefined) throw new Error('expected keyboard listener')
-    const preventDefault = vi.fn()
-    const stopPropagation = vi.fn()
-
-    keydown({
-      key: 'ArrowRight',
-      shiftKey: false,
-      target: { tagName: 'DIV', closest: vi.fn(() => null) },
-      preventDefault,
-      stopPropagation,
-    } as unknown as Event)
-    keydown({
-      key: 'ArrowUp',
-      shiftKey: true,
-      target: { tagName: 'DIV', closest: vi.fn(() => null) },
-      preventDefault,
-      stopPropagation,
-    } as unknown as Event)
-
-    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(1, 'test', 11, 20)
-    expect(harness.previewLocalTemplate).toHaveBeenNthCalledWith(2, 'test', 11, 10)
-    expect(preventDefault).toHaveBeenCalledTimes(2)
-    expect(stopPropagation).toHaveBeenCalledTimes(2)
-  })
-
   it('recovers placement controls after a final bitmap build rejects', async () => {
     harness.placeLocalTemplate.mockRejectedValueOnce(new Error('bitmap failed'))
     const moves = await import('./move.js')
@@ -512,12 +573,11 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
-    movebar = { remove: vi.fn() }
+    finished.mockClear()
 
     await moves.commit()
 
     expect(finished).toHaveBeenCalledOnce()
-    expect(movebar.remove).toHaveBeenCalledOnce()
   })
 
   it('finishes at a reconciled winner instead of retrying stale Apply coordinates', async () => {
@@ -533,6 +593,7 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
+    finished.mockClear()
 
     await moves.commit()
     await moves.commit()
@@ -557,6 +618,7 @@ describe('template placement controls', () => {
     const finished = vi.fn()
     const moves = await import('./move.js')
     moves.beginMove('test', finished)
+    finished.mockClear()
 
     await moves.abort()
     await moves.abort()

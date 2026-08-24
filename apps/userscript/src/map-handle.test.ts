@@ -6,8 +6,8 @@ import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
  * page inherits from.
  *
  * It had no tests: the guard that stops it deleting somebody else's setter, the restore of a
- * descriptor it replaced, the timer it cancels on capture and the check that decides what counts as
- * a map could each be removed with the whole workspace green. None of it needs a browser — the trap
+ * descriptor it replaced and the check that decides what counts as a map could each be removed with
+ * the whole workspace green. None of it needs a browser — the trap
  * is on `Object.prototype`, and a plain object assigned to is exactly the event it waits for.
  */
 const WITNESS = '_canvasContainer'
@@ -70,13 +70,21 @@ describe('installMapCapture', () => {
     })
   })
 
-  it('removes the trap as soon as it has what it came for', () => {
+  it('releases the global trap after capture and can be rearmed for a replacement', () => {
     installMapCapture()
     expect(witnessDescriptor()).toBeDefined()
 
-    ;(mapLike() as Record<string, unknown>)[WITNESS] = {}
+    const first = mapLike() as Record<string, unknown>
+    const second = mapLike() as Record<string, unknown>
+    first[WITNESS] = {}
+    expect(witnessDescriptor()).toBeUndefined()
+
+    releaseMapCapture()
+    installMapCapture()
+    second[WITNESS] = {}
 
     expect(witnessDescriptor()).toBeUndefined()
+    expect(getMap()).toBe(second)
   })
 
   it.each([
@@ -94,18 +102,7 @@ describe('installMapCapture', () => {
     expect(witnessDescriptor()).toBeDefined()
   })
 
-  it('gives up after the release window even if no map ever appears', () => {
-    installMapCapture()
-
-    vi.advanceTimersByTime(30_000)
-
-    expect(witnessDescriptor()).toBeUndefined()
-    expect(getMap()).toBeNull()
-  })
-
-  it('cancels the release timer once it has captured', () => {
-    // Otherwise the timer fires later and deletes whatever now sits under that name — which, after
-    // capture, is nothing of ours.
+  it('does not remove a setter that replaces ours after capture', () => {
     installMapCapture()
     ;(mapLike() as Record<string, unknown>)[WITNESS] = {}
     const theirs = () => undefined
@@ -145,7 +142,7 @@ describe('installMapCapture', () => {
     delete (Object.prototype as Record<string, unknown>)[WITNESS]
   })
 
-  it('preserves a failed assignment to a non-extensible receiver', () => {
+  it('does not throw from an intercepted assignment to a non-extensible receiver', () => {
     installMapCapture()
     const hostile = Object.preventExtensions({
       get flyTo(): never {
@@ -155,6 +152,7 @@ describe('installMapCapture', () => {
 
     expect(() => {
       ;(hostile as Record<string, unknown>)[WITNESS] = {}
-    }).toThrow(TypeError)
+    }).not.toThrow()
+    expect(Object.hasOwn(hostile, WITNESS)).toBe(false)
   })
 })

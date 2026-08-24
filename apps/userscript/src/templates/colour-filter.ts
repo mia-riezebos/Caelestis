@@ -1,0 +1,83 @@
+import { getState } from '../state.js'
+import { isPaintOpen, selectedColour } from '../wplace-paint.js'
+import { type Appearance, drawableIndices } from './appearance.js'
+
+/**
+ * What the colour switches actually come to, once the global set, the "only selected" mode and one
+ * overlay's own switches are all taken into account.
+ *
+ * There was a global colour grid in settings whose value **nothing read**. It wrote
+ * `state.hiddenColours` and rendering consulted only the per-overlay set, so every switch in it was
+ * decorative. This is the join that was missing.
+ *
+ * **An overlay's own set replaces the global one; it does not add to it.** The global grid is the
+ * default for overlays that have never been given an appearance of their own, and nothing more. So
+ * a global "free" preset beside an overlay set to "all" means that overlay draws all sixty-three
+ * colours — the override says what to show, not what to show *as well*.
+ *
+ * The union this replaces made the per-overlay grid one-directional: it could hide more but never
+ * show more, so switching a colour back on in an overlay that the global set had hidden did
+ * nothing, and the control lied about what it did.
+ */
+
+/** Everything except `keep`. */
+const allBut = (keep: number): readonly number[] =>
+  drawableIndices().filter((index) => index !== keep)
+
+/**
+ * The colour the mode is following, or null when it is not driving.
+ *
+ * Null covers an open paint drawer with nothing picked yet. The mode has nothing to follow there,
+ * so the hand-set switches stay in charge — hiding everything *except* a colour that does not exist
+ * came out as hiding nothing, which switched the user's own hidden colours back on.
+ */
+const followedColour = (): number | null => {
+  const state = getState()
+  if (!state.onlySelectedColour || !isPaintOpen()) return null
+  return selectedColour()
+}
+
+/**
+ * The globally hidden set, with the "only selected" mode applied.
+ *
+ * The mode is kept as a flag rather than written into `hiddenColours`, so turning it off restores
+ * whatever was switched off by hand instead of leaving the palette however the mode left it. It
+ * also does nothing until wplace's paint drawer is actually open, which is the point: it is for
+ * lining up the one colour you are placing, and there is no such colour before you start.
+ */
+export const globalHiddenColours = (): readonly number[] => {
+  const keep = followedColour()
+  return keep === null ? getState().hiddenColours : allBut(keep)
+}
+
+/**
+ * The set to draw one overlay with, given the appearance it owns — or null when it uses the defaults.
+ *
+ * **Follow-the-selection is one switch for the whole view**, and it beats every overlay's own
+ * filter while it runs. It used to exist per overlay as well, each scope's mode governing that
+ * scope, which was coherent and unusable: a keybind then had to answer "which overlay did you
+ * mean", and the only rules available — the one nearest the centre, unless it follows the defaults —
+ * are rules nobody can predict by looking at the screen. It is a way of looking at the canvas
+ * rather than a property of a template, so it belongs to the view.
+ */
+export const hiddenColoursFor = (own: Appearance | null): readonly number[] => {
+  const keep = followedColour()
+  if (keep !== null) return allBut(keep)
+  const state = getState()
+  return own === null ? state.hiddenColours : own.hiddenColours
+}
+
+/**
+ * The switches alone, with the mode left out — what an overlay is *claiming*, not what it is showing.
+ *
+ * The two differ only while follow-the-selection is driving, and everything that is not drawing
+ * pixels wants this one. A colour switched off by hand is a colour the user has said to stop caring
+ * about: it asserts nothing, so it cannot be wrong and nothing should offer it. A colour hidden
+ * because it is not the one being placed has said no such thing — it is out of sight for this
+ * minute, to see one colour at a time, and it still wants its mismatches marked and its colour
+ * offered to the picker. Reading the mode there made the feature fight the workflow it exists for:
+ * markers vanished exactly when you were working through them, and middle-clicking a pixel to switch
+ * to its colour only worked for the colour you already had.
+ */
+export const claimedHiddenFor = (own: Appearance | null): readonly number[] =>
+  own === null ? getState().hiddenColours : own.hiddenColours

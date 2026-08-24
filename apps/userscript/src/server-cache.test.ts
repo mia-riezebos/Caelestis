@@ -20,7 +20,7 @@ describe('server cache persistence', () => {
     const loading = loadServerCache(['https://example.com'])
     opening.onblocked?.(new Event('blocked') as IDBVersionChangeEvent)
     await expect(loading).resolves.toEqual([])
-    expect(open).toHaveBeenCalledWith('caelestis', 3)
+    expect(open).toHaveBeenCalledWith('caelestis', 4)
 
     opening.onsuccess?.(new Event('success'))
     expect(database.close).toHaveBeenCalledOnce()
@@ -119,6 +119,8 @@ describe('server cache persistence', () => {
 
   it('stops reading before later records can exceed the aggregate node budget', async () => {
     vi.doMock('./state.js', () => ({
+      MAX_MANIFEST_CHUNKS: 2,
+      MAX_MANIFEST_TEMPLATES: 2,
       MAX_TREE_NODES: 2,
       validateTreeNodes: vi.fn((value: unknown) => (Array.isArray(value) ? value : null)),
     }))
@@ -156,5 +158,61 @@ describe('server cache persistence', () => {
     transaction.oncomplete?.(new Event('complete'))
     await expect(loading).resolves.toEqual([first])
     expect(database.close).toHaveBeenCalledOnce()
+  })
+
+  it('stops before cached servers exceed aggregate template and chunk budgets', async () => {
+    vi.doMock('./state.js', () => ({
+      MAX_MANIFEST_CHUNKS: 1,
+      MAX_MANIFEST_TEMPLATES: 1,
+      MAX_TREE_NODES: 2,
+      validateTreeNodes: vi.fn((value: unknown) => (Array.isArray(value) ? value : null)),
+    }))
+    const first = {
+      url: 'https://first.example.com',
+      serverId: SERVER_ID,
+      season: 0,
+      fetchedAt: 10,
+      nodes: [{ id: 'one' }],
+      templates: [
+        {
+          id: 'template',
+          nodeId: 'one',
+          name: 'Template',
+          version: 'version',
+          published: true,
+          updatedAt: 10,
+          bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+          chunks: [{ tile: '0/0', hash: 'a'.repeat(64) }],
+        },
+      ],
+    }
+    const requests = new Map<string, IDBRequest<unknown>>()
+    const get = vi.fn((url: string) => {
+      const request = {
+        result: url === first.url ? first : { ...first, url },
+      } as unknown as IDBRequest<unknown>
+      requests.set(url, request)
+      return request
+    })
+    const transaction = {
+      objectStore: vi.fn(() => ({ get })),
+    } as unknown as IDBTransaction
+    const database = {
+      transaction: vi.fn(() => transaction),
+      close: vi.fn(),
+    } as unknown as IDBDatabase
+    const opening = { result: database } as IDBOpenDBRequest
+    vi.stubGlobal('indexedDB', { open: vi.fn(() => opening) })
+    const { loadServerCache } = await import('./server-cache.js')
+
+    const loading = loadServerCache([first.url, 'https://second.example.com'])
+    opening.onsuccess?.(new Event('success'))
+    await Promise.resolve()
+    requests.get(first.url)?.onsuccess?.(new Event('success'))
+
+    expect(get).toHaveBeenCalledTimes(2)
+    requests.get('https://second.example.com')?.onsuccess?.(new Event('success'))
+    transaction.oncomplete?.(new Event('complete'))
+    await expect(loading).resolves.toEqual([first])
   })
 })

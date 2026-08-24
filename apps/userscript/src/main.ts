@@ -1,97 +1,104 @@
-import { TILE_SIZE, tileKey } from '@wts/shared'
+import { TILE_SIZE } from '@caelestis/shared'
 import {
   canvasPixelAtIn,
   cssPixelsPerCanvasPixelIn,
   screenPointForIn,
   viewportCentreIn,
 } from './coordinates.js'
-import { installDebugApi, log, warn } from './debug.js'
-import { installMapCapture } from './map-handle.js'
-import { type FramePainter, paintFrame } from './paint.js'
-import { getState, onStateChange } from './state.js'
-import { DEFAULT_APPEARANCE } from './templates/appearance.js'
+import { installDebugApi, warn } from './debug.js'
+import { installOverlayLayer, setNudge } from './gl/layer.js'
+import { keepMarkersAboveDrafts } from './gl/markers.js'
+import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
+import { shortcutFor } from './shortcuts.js'
+import { getState, loadState, onStateChange, setState } from './state.js'
 import {
-  levelFor,
+  appearanceOf,
+  isTemplateVisible,
   localTemplates,
   onLocalChange,
-  type PlacedTemplate,
-  previewOriginFor,
+  onLocalPreviewChange,
+  ownsGroup,
   restoreLocalTemplates,
-  stampTile,
+  setAppearance,
 } from './templates/local-store.js'
-import { install, onTileFrame, type TileFrame } from './tile-transform.js'
-import { renderOverlayControls } from './ui/overlay-menu.js'
-import { installPanel } from './ui/panel.js'
+import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { templateAtCentre } from './templates/nearest.js'
+import { installServerSync } from './templates/server-sync.js'
+import {
+  captureTilePixels,
+  install,
+  onTileFrame,
+  reconcileDrafts,
+  type TileFrame,
+} from './tile-transform.js'
+import { refreshOverlayMenu, renderOverlayControls, toggleOverlayMenu } from './ui/overlay-menu.js'
+import { installPanel, togglePanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
+import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
+import { installColourPicker } from './wplace-picker.js'
 
 /**
  * Entry point.
  *
- * The overlay is our own canvas stacked over MapLibre's, aligned from MapLibre's own projection
- * matrix rather than a reimplementation of it. Each frame it draws over the tiles wplace is
- * showing — nothing is composited into wplace's own tiles, so per-colour filters and view modes
- * stay possible for whatever draws here later.
+ * Templates are drawn by the GL layer, inside wplace's own canvas. There is no canvas of ours any
+ * more: the 2D overlay this module used to own was the last remnant of rasterising into a surface
+ * stacked over theirs, which is what every alignment bug came out of.
  *
- * This module owns the canvas, painter registration, and the screen/canvas coordinate conversions.
+ * What is left is bookkeeping. Each frame carries the rects wplace drew its tiles at, and those are
+ * the only reference anything needs to turn a canvas pixel into a screen position or back — which is
+ * how the per-overlay buttons follow their template and how an imported image lands where the view
+ * is centred.
  */
-
-let retainedOverlayCanvas: HTMLCanvasElement | null = null
-
-const overlayCanvas = (): HTMLCanvasElement => {
-  if (retainedOverlayCanvas !== null) return retainedOverlayCanvas
-  const existing = document.querySelector<HTMLCanvasElement>('canvas[data-wts-overlay]')
-  if (existing !== null) {
-    retainedOverlayCanvas = existing
-    return existing
-  }
-  const canvas = document.createElement('canvas')
-  canvas.dataset.wtsOverlay = ''
-  canvas.style.position = 'absolute'
-  canvas.style.inset = '0'
-  canvas.style.width = '100%'
-  canvas.style.height = '100%'
-  // The map has to stay draggable through us.
-  canvas.style.pointerEvents = 'none'
-  retainedOverlayCanvas = canvas
-  return canvas
-}
 
 let lastFrame: TileFrame | null = null
 
-/** Painters registered by later layers. Each is handed the 2D context and the frame's quads. */
-export type Painter = FramePainter
+/** Run on every frame that carries tiles, after the frame has been recorded. */
+export type FrameHook = (frame: TileFrame) => void
 
-const painters: Painter[] = []
+const hooks: FrameHook[] = []
 
-const reportPainterError = (error: unknown): void => {
-  warn('frame', 'painter failed', String(error))
+/** Register something to run per frame, in registration order. */
+export const onFrame = (hook: FrameHook): void => {
+  hooks.push(hook)
 }
 
-/** Register something to draw on the overlay. Called on every frame, in registration order. */
-export const onPaint = (painter: Painter): void => {
-  painters.push(painter)
-}
-
-/** Repaint the last frame without waiting for MapLibre — for when our own state changed, not the map's. */
+/** Re-run the hooks against the last frame — for when our own state changed, not the map's. */
 export const repaint = (): void => {
   if (lastFrame !== null) draw(lastFrame)
 }
 
-/** A draw is on the stack; anything repainting from inside one asks for another pass instead. */
+/**
+ * Redraw everything after a change of ours: our coordinate-backed controls, and wplace's GL layer.
+ */
+export const redraw = (): void => {
+  repaint()
+  const map = getMap() as { triggerRepaint?: () => void } | null
+  map?.triggerRepaint?.()
+}
+
+/** Keep the GL layer attached across delayed map creation, style reloads, and SPA map replacement. */
+const attachOverlayLayer = (): void => {
+  const attach = (): void => {
+    const map = getMap()
+    if (map !== null) {
+      try {
+        if (!map.getCanvas().isConnected) releaseMapCapture()
+      } catch {
+        releaseMapCapture()
+      }
+    }
+    if (getMap() === null) installMapCapture()
+    installOverlayLayer()
+  }
+  attach()
+  setInterval(attach, 1_000)
+}
+
+/** A draw is on the stack; synchronous repaint requests become a later pass, never recursion. */
 let drawing = false
 let drawAgain = false
-// Two settled passes reach a fixed point. A third means something repaints itself, and a frame is
-// not the place to find that out.
 const MAX_DRAW_PASSES = 3
 
-/**
- * One frame, however many changes it takes to settle.
- *
- * Our own controls repaint synchronously when they settle an edit — a slider released, a selection
- * flushed by a teardown — and that repaint used to land in the middle of the pass that provoked it:
- * controls built by the inner pass removed by the outer one, and the canvas painted twice for a
- * single change. A nested request now waits for the pass it interrupted.
- */
 const draw = (frame: TileFrame): void => {
   if (drawing) {
     drawAgain = true
@@ -103,7 +110,7 @@ const draw = (frame: TileFrame): void => {
     do {
       drawAgain = false
       paintOnce(frame)
-      passes += 1
+      passes++
     } while (drawAgain && passes < MAX_DRAW_PASSES)
   } finally {
     drawing = false
@@ -113,35 +120,14 @@ const draw = (frame: TileFrame): void => {
 
 const paintOnce = (frame: TileFrame): void => {
   lastFrame = frame
-  const { canvas: mapCanvas, quads } = frame
-  // Before the canvas work, and deliberately not a painter: these are DOM controls, and registering
-  // them as one made them conditional on acquiring a 2D context. A context failure would otherwise
-  // strand every button and menu — never mounted, or never repositioned or swept again.
-  //
-  // Caught, because `paintFrame` used to do this for us: a throw here would otherwise take the whole
-  // frame with it — no canvas resize, no template pixels — and the page is not ours to trust.
-  try {
-    renderOverlayControls(repaint, mapCanvas)
-  } catch (error) {
-    // Not `String(error)`: this bundle runs in the page world, and a thrown value whose primitive
-    // conversion throws would escape the catch and take the rest of the frame with it.
-    warn('frame', 'overlay controls failed', error)
-  }
-  const canvas = overlayCanvas()
-  const mapParent = mapCanvas.parentElement
-  if (mapParent !== null && canvas.parentElement !== mapParent) mapParent.appendChild(canvas)
-  if (canvas.width !== mapCanvas.width || canvas.height !== mapCanvas.height) {
-    canvas.width = mapCanvas.width
-    canvas.height = mapCanvas.height
-  }
 
-  const context = canvas.getContext('2d')
-  if (context === null) return
-  // Cleared unconditionally, including on frames with no tiles, so zooming out past the point where
-  // wplace stops serving tiles does not strand the last frame on screen.
-  paintFrame(context, frame, painters, reportPainterError)
-
-  log('frame', 'painted', { quads: quads.length, painters: painters.length })
+  for (const hook of hooks) {
+    try {
+      hook(frame)
+    } catch (error) {
+      warn('install', 'frame hook failed', String(error))
+    }
+  }
 }
 
 /** Where the middle of the viewport is, in canvas pixels — used to place an image on import. */
@@ -171,12 +157,7 @@ export const isMapInteractionTarget = (target: EventTarget | null): boolean => {
   }
 }
 
-/**
- * Where a canvas pixel currently sits on screen, in client coordinates.
- *
- * The inverse of `canvasPixelAt`, and what lets us position DOM controls against a point on the
- * canvas: we can see where a target is without asking MapLibre anything.
- */
+/** Where a canvas pixel currently sits on screen, in client coordinates. */
 export const screenPointFor = (x: number, y: number): { x: number; y: number } | null => {
   return lastFrame === null ? null : screenPointForIn(lastFrame, x, y)
 }
@@ -186,182 +167,193 @@ export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
   return cssPixelsPerCanvasPixelIn(lastFrame)
 }
 
+/** Run one independent piece of start-up without letting its failure cancel the rest. */
+const step = (what: string, run: () => void): void => {
+  try {
+    run()
+  } catch (error) {
+    warn('install', `${what} failed to start`, String(error))
+  }
+}
+
 /**
- * Fill one tile, to check alignment by eye.
+ * The keyboard shortcuts, such as they are.
  *
- * `__wts.mark(1082, 1673)` paints that tile solid and it should sit exactly on the tile wplace
- * drew, through any pan or zoom. Every alignment bug so far has been visible in one glance at this
- * and invisible in the numbers, so it stays in the shipped bundle behind the debug API.
+ * Deliberately few and deliberately not on letters wplace already use. Scanned across all 150 of
+ * their bundles, the only keys they compare against are MapLibre's own — arrows, `+`, `-`, `=`, `_`,
+ * `0`, `r`/`R` — plus Escape, Enter and Space. `C`, `S`, `T`, and `W` are free, and stay free of a
+ * modifier so they cost nothing to reach mid-brushstroke. A bare letter is only ours when nobody is
+ * typing and no modifier is held: `⌘S` remains the browser's, and a chat box or template name never
+ * loses a character to a shortcut.
+ *
+ * Anything acting on one template asks `templateAtCentre` which one that is, rather than deciding
+ * for itself — see the module for why the answer has to be shared.
  */
-let cachedVisibleTemplates: readonly PlacedTemplate[] | null = null
-let cachedCustomOrder: readonly string[] | null = null
+const installKeys = (): void => {
+  window.addEventListener('keydown', (event) => {
+    const shortcut = shortcutFor(event)
+    if (shortcut === null) return
 
-const visibleTemplatesInPaintOrder = (): readonly PlacedTemplate[] => {
-  const customOrder = getState().customOrder
-  if (cachedVisibleTemplates !== null && cachedCustomOrder === customOrder) {
-    return cachedVisibleTemplates
-  }
-  const rank = new Map(customOrder.map((key, index) => [key, index]))
-  cachedVisibleTemplates = localTemplates()
-    .filter((template) => template.visible)
-    .sort(
-      (a, b) =>
-        (rank.get(`local:${a.id}`) ?? Number.MAX_SAFE_INTEGER) -
-        (rank.get(`local:${b.id}`) ?? Number.MAX_SAFE_INTEGER),
-    )
-  cachedCustomOrder = customOrder
-  return cachedVisibleTemplates
-}
-
-/** Draws every visible template over the tiles wplace is currently showing. */
-const paintTemplates = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
-  const visible = visibleTemplatesInPaintOrder()
-  if (visible.length === 0) return
-
-  let drawn = 0
-  let smoothing: boolean | null = null
-  for (const quad of frame.quads) {
-    const key = tileKey(quad.tile)
-    for (const template of visible) {
-      const appearance = template.appearance ?? DEFAULT_APPEARANCE
-      const preview = previewOriginFor(template.id)
-      if (preview !== null && (preview.x !== template.originX || preview.y !== template.originY)) {
-        const offsetX = preview.x - template.originX
-        const offsetY = preview.y - template.originY
-        const destinationLeft = quad.tile.x * TILE_SIZE
-        const destinationTop = quad.tile.y * TILE_SIZE
-        const sourceLeft = destinationLeft - offsetX
-        const sourceTop = destinationTop - offsetY
-        const firstSourceX = Math.floor(sourceLeft / TILE_SIZE)
-        const lastSourceX = Math.floor((sourceLeft + TILE_SIZE - 1) / TILE_SIZE)
-        const firstSourceY = Math.floor(sourceTop / TILE_SIZE)
-        const lastSourceY = Math.floor((sourceTop + TILE_SIZE - 1) / TILE_SIZE)
-        for (let sourceY = firstSourceY; sourceY <= lastSourceY; sourceY++) {
-          for (let sourceX = firstSourceX; sourceX <= lastSourceX; sourceX++) {
-            const sourceKey = `${sourceX}/${sourceY}`
-            const tile = stampTile(template, sourceKey, appearance, quad.width)
-            if (tile === undefined) continue
-            const bitmap = levelFor(tile, quad.width)
-            const targetLeft = sourceX * TILE_SIZE + offsetX
-            const targetTop = sourceY * TILE_SIZE + offsetY
-            const left = Math.max(destinationLeft, targetLeft)
-            const top = Math.max(destinationTop, targetTop)
-            const right = Math.min(destinationLeft + TILE_SIZE, targetLeft + TILE_SIZE)
-            const bottom = Math.min(destinationTop + TILE_SIZE, targetTop + TILE_SIZE)
-            if (right <= left || bottom <= top) continue
-            const bitmapScaleX = bitmap.width / TILE_SIZE
-            const bitmapScaleY = bitmap.height / TILE_SIZE
-            const minifying = bitmap.width > quad.width || bitmap.height > quad.height
-            if (smoothing !== minifying) {
-              smoothing = minifying
-              context.imageSmoothingEnabled = minifying
-              if (minifying) context.imageSmoothingQuality = 'high'
-            }
-            context.globalAlpha = appearance.opacity
-            context.drawImage(
-              bitmap,
-              (left - targetLeft) * bitmapScaleX,
-              (top - targetTop) * bitmapScaleY,
-              (right - left) * bitmapScaleX,
-              (bottom - top) * bitmapScaleY,
-              quad.x + ((left - destinationLeft) / TILE_SIZE) * quad.width,
-              quad.y + ((top - destinationTop) / TILE_SIZE) * quad.height,
-              ((right - left) / TILE_SIZE) * quad.width,
-              ((bottom - top) / TILE_SIZE) * quad.height,
-            )
-            context.globalAlpha = 1
-            drawn++
-          }
-        }
-        continue
-      }
-      // Shape and colour filtering are baked into a stamped bitmap rather than applied per pixel
-      // per frame; the stamp is rebuilt only when the appearance changes.
-      const tile = stampTile(template, key, appearance, quad.width)
-      if (tile === undefined) continue
-      context.globalAlpha = appearance.opacity
-      // Draw from the mip level nearest the on-screen size, so filtering never reduces by more
-      // than 2x. One drawImage per tile per template, whatever the template's size.
-      const bitmap = levelFor(tile, quad.width)
-      // Match wplace's texture filtering against the actual selected source level. Stamped tiles
-      // need not be TILE_SIZE wide, so comparing only the destination to TILE_SIZE can classify a
-      // real minification as magnification and drop source rows/columns.
-      const minifying = bitmap.width > quad.width || bitmap.height > quad.height
-      if (smoothing !== minifying) {
-        smoothing = minifying
-        context.imageSmoothingEnabled = minifying
-        if (minifying) context.imageSmoothingQuality = 'high'
-      }
-      // Use MapLibre's exact fractional quad. Snapping each quad independently changes both origin
-      // and scale relative to the underlying WebGL tile, visibly distorting the internal pixel grid.
-      context.drawImage(bitmap, quad.x, quad.y, quad.width, quad.height)
-      context.globalAlpha = 1
-      drawn++
+    if (shortcut === 'toggle-panel') {
+      event.preventDefault()
+      togglePanel()
+      return
     }
-  }
-  if (drawn > 0) log('draw', `painted ${drawn} template tiles`, { quads: frame.quads.length })
-}
 
-let marked: { x: number; y: number } | null = null
+    if (shortcut === 'toggle-template-menu') {
+      const nearest = templateAtCentre()
+      if (nearest === null) return
+      event.preventDefault()
+      toggleOverlayMenu(nearest.id, redraw)
+      return
+    }
 
-const paintMark = (context: CanvasRenderingContext2D, frame: TileFrame): void => {
-  if (marked === null) return
-  for (const quad of frame.quads) {
-    if (quad.tile.x !== marked.x || quad.tile.y !== marked.y) continue
-    context.fillStyle = 'rgba(0, 0, 0, 0.6)'
-    context.fillRect(quad.x, quad.y, quad.width, quad.height)
-  }
+    if (shortcut === 'toggle-colour') {
+      event.preventDefault()
+      setState({ onlySelectedColour: !getState().onlySelectedColour })
+      return
+    }
+
+    /**
+     * `W` for wrong: the markers on or off.
+     *
+     * Which switch it reaches depends on what the template nearest the centre has already said. One
+     * that answers for its own markers is toggled on its own; one following the defaults means the
+     * question was never about that template, so the global switch moves and every follower moves
+     * with it.
+     *
+     * The ambiguity is real and worth naming: with two templates on screen, which one is "nearest"
+     * is a judgement the interface makes and the keystroke does not show. It is tolerable here in a
+     * way it was not for the colour mode, because markers genuinely are per template — each asserts
+     * its own pixels — where the colour mode is a lens over the whole view.
+     */
+    if (shortcut === 'toggle-markers') {
+      event.preventDefault()
+      const nearest = templateAtCentre()
+      if (nearest !== null && ownsGroup(nearest, 'markers')) {
+        setAppearance(nearest.id, {
+          ...appearanceOf(nearest),
+          markMismatch: !appearanceOf(nearest).markMismatch,
+        })
+        // Its menu may be open on the switch this just moved, and it does not rebuild on a redraw.
+        refreshOverlayMenu()
+        return
+      }
+      setState({
+        appearance: { ...getState().appearance, markMismatch: !getState().appearance.markMismatch },
+      })
+    }
+  })
 }
 
 const main = (): void => {
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
-  try {
-    installMapCapture()
-  } catch {
-    // Map capture is optional; URL-based navigation remains available without it.
-  }
-  try {
+  step('map capture', installMapCapture)
+  step('debug API', () => {
     installDebugApi({
-      mark(x?: number, y?: number) {
-        marked = x === undefined || y === undefined ? null : { x, y }
-        repaint()
-        if (marked === null) return '[wts] mark cleared'
-        return `[wts] marking tile ${x},${y} — __wts.mark() with no arguments to clear`
+      /** The captured MapLibre Map, for poking at its style and layers from the console. */
+      map: () => getMap(),
+      /** Each template's own switch beside the renderer's effective visibility decision. */
+      templates: () =>
+        localTemplates().map((template) => ({
+          id: template.id,
+          name: template.name,
+          visible: template.visible,
+          drawing: isTemplateVisible(template),
+          folderId: template.folderId,
+          server: template.serverUrl ?? null,
+        })),
+      /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
+      quads: () =>
+        lastFrame === null
+          ? null
+          : {
+              count: lastFrame.quads.length,
+              canvas: `${lastFrame.canvas.width}x${lastFrame.canvas.height}`,
+              cellPixels: (lastFrame.quads[0]?.width ?? 0) / TILE_SIZE,
+              tiles: lastFrame.quads.map((quad) => `${quad.tile.x}/${quad.tile.y}`),
+            },
+      /** Shift every template by fractional canvas pixels for alignment diagnostics. */
+      nudge(x = 0, y = 0) {
+        const applied = setNudge(x, y)
+        redraw()
+        return `[caelestis] overlay nudged by ${applied.x}, ${applied.y} canvas px — __caelestis.nudge() to clear`
       },
     })
-  } catch {
-    // Diagnostics are optional and must not prevent the render hooks from installing.
-  }
-  try {
-    install()
-  } catch {
-    // Browser hooks are best-effort around page-owned surfaces.
-  }
+  })
+  step('tile capture', install)
+  /**
+   * Settings and connected servers, before anything reads either.
+   *
+   * This used to happen as a side effect of the panel installing, which is late and in the wrong
+   * place: everything before it — the appearance defaults, the colour filter, the list of servers to
+   * fetch from — was reading the defaults instead of what was stored. Loading it here makes the rest
+   * of this sequence mean what it says.
+   */
+  step('settings', () => void loadState())
   // Templates outlive a page load, which is what makes navigating to one survivable at all.
-  void restoreLocalTemplates()
-  void loadAccount()
-  onPaint(paintTemplates)
-  onPaint(paintMark)
+  step('local templates', () => void restoreLocalTemplates())
+  // Server templates do not: they are re-fetched, because the server is where they live and a copy
+  // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
+  step('server templates', installServerSync)
+  step('wplace account', () => void loadAccount())
+  step('paint watcher', () => {
+    watchPaintSelection()
+    onPaintSelectionChange(repaint)
+  })
+  // Middle-click picking, answered from the template when the template is what you can see.
+  step('colour picker', installColourPicker)
+  step('keyboard shortcuts', installKeys)
+  // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
+  // marker going away.
+  step('mismatch repaint', () => onMismatchesChanged(redraw))
+  // wplace add a layer per tile being painted, above anything of ours added earlier, so a placed
+  // pixel would otherwise cover the marker it just cleared.
+  step('marker order', () => onFrame(keepMarkersAboveDrafts))
+  // Drafting Transparent writes nothing a canvas hook can see, so the only place it shows up is
+  // wplace's crosshairs. Throttled inside; with nothing drafted there is nothing to read.
+  step('drafted pixels', () => onFrame(reconcileDrafts))
+  /**
+   * Start capturing before the first frame, not on it.
+   *
+   * A tile can only be caught as it is decoded, and the tiles filling the viewport on a page load
+   * are decoded during the load — before any layer of ours has drawn. Deciding whether to capture at
+   * draw time meant missing every one of them, and each then waited on wplace re-fetching it, which
+   * is why a tile panned to answered in under a second while the ones already on screen took ten.
+   */
+  step('tile pixel capture', () => {
+    // The pipette fallback reads the exact pixel-art tile, so Paint itself is a pixel consumer even
+    // when mismatch markers are off. Starting at drawer-open gives visible tiles time to populate
+    // before the one-shot picker click; a miss is also chased on demand by `placedIndexAt`.
+    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen())
+    sync()
+    onStateChange(sync)
+    onLocalChange(sync)
+    onPaintSelectionChange(sync)
+    // And on every frame that carries tiles. The four above are the events that *should* cover it,
+    // and between them they missed the only one that mattered: at start-up nothing is restored yet,
+    // so the first call answers "nothing wants this" and the restore that follows does not
+    // necessarily announce itself. Asking again per frame costs a comparison and cannot be wrong.
+    onFrame(sync)
+  })
+  // Templates are drawn by the GL layer inside wplace's own canvas. Nothing of ours rasterises to a
+  // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
+  // overlay controls and the import placement read.
+  step('overlay layer', attachOverlayLayer)
+  onFrame((frame) => renderOverlayControls(repaint, frame.canvas))
   onTileFrame(draw)
-  // A template appearing or moving has to repaint even if MapLibre is idle.
-  onLocalChange(() => {
-    cachedVisibleTemplates = null
-    repaint()
+  onLocalChange(redraw)
+  onLocalPreviewChange(redraw)
+  onStateChange(redraw)
+  step('panel', () => {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', installPanel, { once: true })
+    } else {
+      installPanel()
+    }
   })
-  let observedOrder = getState().customOrder
-  onStateChange((next) => {
-    if (next.customOrder === observedOrder) return
-    observedOrder = next.customOrder
-    cachedVisibleTemplates = null
-    repaint()
-  })
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', installPanel, { once: true })
-  } else {
-    installPanel()
-  }
   try {
-    console.info(`[wts] loaded — tile size ${TILE_SIZE}`)
+    console.info(`[caelestis] loaded — tile size ${TILE_SIZE}`)
   } catch {
     // A replaced console is not part of the render path.
   }

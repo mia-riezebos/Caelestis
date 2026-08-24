@@ -1,4 +1,4 @@
-import { type Millis, millis, type Seconds, seconds } from '@wts/shared'
+import { type Millis, millis, type Seconds, seconds } from '@caelestis/shared'
 import {
   type BucketStore,
   type CounterDelta,

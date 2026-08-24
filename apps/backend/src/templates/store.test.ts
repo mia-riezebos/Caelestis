@@ -1,4 +1,10 @@
-import { decodePng, encodeIndexedPng, millis, PALETTE_RGB, type PixelBounds } from '@wts/shared'
+import {
+  decodePng,
+  encodeIndexedPng,
+  millis,
+  PALETTE_RGB,
+  type PixelBounds,
+} from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -19,6 +25,10 @@ class CountingBlobStore implements BlobStore {
 
   async get(namespace: BlobNamespace, hash: string): Promise<Uint8Array | null> {
     return this.inner.get(namespace, hash)
+  }
+
+  async delete(namespace: BlobNamespace, hashes: readonly string[]): Promise<void> {
+    return this.inner.delete(namespace, hashes)
   }
 
   async hasAll(namespace: BlobNamespace, hashes: readonly string[]): Promise<ReadonlySet<string>> {
@@ -44,6 +54,7 @@ const harness = async () => {
 }
 
 const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
+  season: 1,
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
   name: 'Test template',
   createdWithToken: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -89,6 +100,18 @@ describe('storeTemplate', () => {
     })
   })
 
+  it('accepts a real indexed template larger than four million pixels', async () => {
+    const ports = await harness()
+    const width = 1_612
+    const height = 2_584
+    const png = await encodeIndexedPng(width, height, new Uint8Array(width * height))
+
+    const stored = await storeTemplate(ports, input(png))
+
+    expect(stored.totalPixels).toBe(width * height)
+    expect(stored.chunks).toHaveLength(6)
+  })
+
   it('stores separate hashes when painted pixels straddle a tile boundary', async () => {
     const ports = await harness()
     const png = await encodeIndexedPng(2, 1, new Uint8Array([0, 1]))
@@ -113,13 +136,53 @@ describe('storeTemplate', () => {
     expect(ports.blobs.hasAllCalls.every(({ hashes }) => hashes.length === 1)).toBe(true)
   })
 
-  it('refuses an upload spanning more than 512 tiles before encoding or storing chunks', async () => {
+  it('replaces pixels after the template moves away from its former folder', async () => {
     const ports = await harness()
-    const png = await encodeIndexedPng(513_000, 1, new Uint8Array(513_000))
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const first = await storeTemplate(ports, input(png))
+    const destination = '01890f3e-7b2c-7abc-8def-0123456789ac'
+    await ports.sql.insertNode({
+      id: destination,
+      season: 1,
+      parentId: null,
+      path: '/destination',
+      name: 'Destination',
+      description: null,
+      createdAt: millis(Date.now()),
+    })
+    await ports.sql.updateTemplate(first.templateId, { nodeId: destination }, millis(Date.now()))
+    await ports.sql.deleteNode(NODE_ID)
+
+    await expect(
+      storeTemplate(ports, { ...input(png), templateId: first.templateId }),
+    ).resolves.toMatchObject({ templateId: first.templateId })
+    await expect(ports.sql.readTemplate(first.templateId)).resolves.toMatchObject({
+      nodeId: destination,
+    })
+  })
+
+  it('reports the live publication state after a concurrent replacement', async () => {
+    const ports = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const first = await storeTemplate(ports, input(png))
+    const insert = ports.sql.insertTemplateVersion.bind(ports.sql)
+    ports.sql.insertTemplateVersion = async (...args) => {
+      await insert(...args)
+      await ports.sql.setTemplatePublishedAt(first.templateId, millis(2_000), millis(2_000))
+    }
+
+    await expect(
+      storeTemplate(ports, { ...input(png), templateId: first.templateId }),
+    ).resolves.toMatchObject({ published: true })
+  })
+
+  it('refuses an upload spanning more than 400 tiles before encoding or storing chunks', async () => {
+    const ports = await harness()
+    const png = await encodeIndexedPng(401_000, 1, new Uint8Array(401_000))
 
     const error = await storeTemplate(ports, input(png)).catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(StoreTemplateError)
-    expect(error).toHaveProperty('message', expect.stringMatching(/more than the 512/))
+    expect(error).toHaveProperty('message', expect.stringMatching(/more than the 400/))
     expect(ports.blobs.hasAllCalls).toHaveLength(0)
     expect(ports.blobs.puts).toHaveLength(0)
   })

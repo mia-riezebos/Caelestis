@@ -1,6 +1,7 @@
-import { canvasPixelToLatLng, TILE_SIZE } from '@wts/shared'
+import { canvasPixelToLatLng, TILE_SIZE } from '@caelestis/shared'
 import { log } from '../debug.js'
 import { getMap } from '../map-handle.js'
+import { horizontalCentre } from './placement.js'
 
 /**
  * Go to a place on the map, in-game.
@@ -78,8 +79,9 @@ export const centreOf = (t: {
   originY: number
   width: number
   height: number
+  wrapX?: boolean
 }): NavigateTarget => ({
-  x: t.originX + t.width / 2,
+  x: horizontalCentre(t),
   y: t.originY + t.height / 2,
   width: t.width,
   height: t.height,

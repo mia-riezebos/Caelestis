@@ -1,5 +1,5 @@
-import type * as Shared from '@wts/shared'
-import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import type * as Shared from '@caelestis/shared'
+import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { Schema } from 'effect'
 
 const MAX_IDENTIFIER_LENGTH = 64
@@ -243,7 +243,7 @@ export const Chunk = Schema.Struct({
 
 export const Template = Schema.Struct({
   id: Identifier,
-  nodeId: Identifier,
+  nodeId: Schema.NullOr(Identifier),
   name: Name,
   version: Identifier,
   bbox: BoundingBox,
@@ -251,6 +251,14 @@ export const Template = Schema.Struct({
   chunks: boundedArray(Chunk, MAX_TEMPLATE_CHUNKS),
   published: Schema.Boolean,
   createdAt: Millis,
+  /**
+   * When anything last changed, including things that leave the chunks alone.
+   *
+   * Not redundant with `version`: renaming a template or moving it to another node keeps every
+   * chunk exactly where it was, so the version is unchanged and a client watching only that would
+   * never re-read the name.
+   */
+  updatedAt: Millis,
 })
 
 const ManifestStruct = Schema.Struct({
@@ -337,12 +345,14 @@ export const Manifest = ManifestStruct.pipe(
       return (
         nodeIds.size === manifest.nodes.length &&
         templateIds.size === manifest.templates.length &&
-        manifest.templates.every((template) => nodeIds.has(template.nodeId))
+        manifest.templates.every(
+          (template) => template.nodeId === null || nodeIds.has(template.nodeId),
+        )
       )
       // Parent references are not checked here. The path rule below resolves each parent to look up
       // its path, so a dangling parentId already fails there — a conjunct here would be unreachable
       // and no test could pin it.
-    }, 'node and template ids must be unique and every template must name a node that exists'),
+    }, 'node and template ids must be unique and every non-root template must name a node that exists'),
     booleanFilter(
       (manifest: Schema.Schema.Type<typeof ManifestStruct>) =>
         manifest.templates.every(

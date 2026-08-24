@@ -1,7 +1,9 @@
+import { WORLD_PIXELS } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_A = '019fed50-87a1-7523-a88c-bdeafad49682'
+const TEMPLATE_A = '019fed50-87a1-7523-a88c-bdeafad49683'
 
 const serverInfo = { id: SERVER_ID, name: 'Caelestis', auth: 'none' as const }
 const manifest = {
@@ -32,6 +34,8 @@ describe('server state boundaries', () => {
   })
 
   it('does not trust persisted connectivity or scope but retains cache identity', async () => {
+    const persist = vi.fn()
+    vi.stubGlobal('GM_setValue', persist)
     vi.stubGlobal(
       'GM_getValue',
       vi.fn(() =>
@@ -48,6 +52,7 @@ describe('server state boundaries', () => {
           ],
           customOrder: [`node:${NODE_A}`, 'local:kept'],
           collapsed: ['local', 'server:https://example.com'],
+          hiddenScopes: [`srv:https://example.com:${TEMPLATE_A}`],
         }),
       ),
     )
@@ -64,6 +69,12 @@ describe('server state boundaries', () => {
     ])
     expect(loadState().customOrder).toEqual(['local:kept'])
     expect(loadState().collapsed).toEqual(['local', 'server:https://example.com'])
+    expect(loadState().hiddenScopes).toEqual([
+      `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`,
+    ])
+    expect(JSON.parse(String(persist.mock.calls[0]?.[1])).hiddenScopes).toEqual([
+      `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`,
+    ])
   })
 
   it('notifies paint subscribers after restoring persisted order', async () => {
@@ -81,6 +92,75 @@ describe('server state boundaries', () => {
     expect(changed).toHaveBeenCalledWith(
       expect.objectContaining({ customOrder: ['local:second', 'local:first'] }),
     )
+  })
+
+  it('restores bounded browser-owned preferences for server overlays', async () => {
+    const id = `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() =>
+        JSON.stringify({
+          serverTemplatePreferences: [
+            {
+              id,
+              appearance: {
+                size: 1,
+                radius: 0,
+                translateX: 0,
+                translateY: 0,
+                rotation: 0,
+                opacity: 0.25,
+                hiddenColours: [],
+                markMismatch: false,
+                markUnpainted: false,
+                unpaintedLimit: 0.05,
+                markerColour: '#ffffff',
+                markerSize: 6,
+                dimOthers: false,
+                otherOpacity: 0.25,
+                otherColour: null,
+              },
+              owns: ['pixels'],
+            },
+          ],
+        }),
+      ),
+    )
+    const { loadState, serverTemplatePreference } = await import('./state.js')
+
+    loadState()
+
+    expect(serverTemplatePreference(id)).toMatchObject({
+      appearance: { opacity: 0.25 },
+      owns: ['pixels'],
+    })
+  })
+
+  it('does not accept a server preference when durable storage refuses it', async () => {
+    vi.stubGlobal(
+      'GM_setValue',
+      vi.fn(() => {
+        throw new Error('quota exceeded')
+      }),
+    )
+    const { getState, setServerTemplatePreference } = await import('./state.js')
+    const id = `srv:${encodeURIComponent('https://example.com')}:${TEMPLATE_A}`
+
+    expect(setServerTemplatePreference(id, null, ['pixels'])).toBe(false)
+    expect(getState().serverTemplatePreferences).toEqual([])
+  })
+
+  it('does not accept a visibility scope when durable storage refuses it', async () => {
+    vi.stubGlobal(
+      'GM_setValue',
+      vi.fn(() => {
+        throw new Error('quota exceeded')
+      }),
+    )
+    const { getState, setScopeVisible } = await import('./state.js')
+
+    expect(setScopeVisible('server:https://example.com', false)).toBe(false)
+    expect(getState().hiddenScopes).toEqual([])
   })
 
   it('bounds persisted and newly connected servers', async () => {
@@ -137,6 +217,653 @@ describe('server state boundaries', () => {
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
     expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
+  })
+
+  it('accepts chunks on both runs of an antimeridian-wrapped template', async () => {
+    const node = {
+      id: NODE_A,
+      parentId: null,
+      path: '/root',
+      name: 'Root',
+      createdAt: 1_800_000_000_000,
+    }
+    const wrappedManifest = {
+      ...manifest,
+      nodes: [node],
+      templates: [
+        {
+          id: '019fed50-87a1-7523-a88c-bdeafad49683',
+          nodeId: NODE_A,
+          name: 'Across the seam',
+          version: '019fed50-87a1-7523-a88c-bdeafad49684',
+          bbox: { minX: WORLD_PIXELS - 1, minY: 0, maxX: 1, maxY: 1 },
+          totalPixels: 2,
+          chunks: [
+            { tile: '2047/0', hash: 'a'.repeat(64) },
+            { tile: '0/0', hash: 'b'.repeat(64) },
+          ],
+          published: true,
+          createdAt: 1_800_000_000_000,
+        },
+      ],
+      tiles: ['0/0', '2047/0'],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(wrappedManifest), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ nodes: [node] }), { status: 200 })),
+    )
+    const { probeServer } = await import('./state.js')
+
+    await expect(probeServer('https://example.com', null)).resolves.toEqual(
+      expect.objectContaining({ status: 'connected', season: 0 }),
+    )
+  })
+
+  it('rejects a present non-finite template update timestamp', async () => {
+    const node = {
+      id: NODE_A,
+      parentId: null,
+      path: '/root',
+      name: 'Root',
+      createdAt: 1_800_000_000_000,
+    }
+    const invalidManifest = {
+      ...manifest,
+      nodes: [node],
+      templates: [
+        {
+          id: TEMPLATE_A,
+          nodeId: NODE_A,
+          name: 'Invalid date',
+          version: '019fed50-87a1-7523-a88c-bdeafad49684',
+          bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+          totalPixels: 1,
+          chunks: [{ tile: '0/0', hash: 'a'.repeat(64) }],
+          published: true,
+          createdAt: 1_800_000_000_000,
+          updatedAt: 0,
+        },
+      ],
+      tiles: ['0/0'],
+    }
+    const body = JSON.stringify(invalidManifest).replace('"updatedAt":0', '"updatedAt":1e309')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { status: 200 })),
+    )
+    const { listServerContents } = await import('./state.js')
+
+    await expect(
+      listServerContents({
+        url: 'https://example.com',
+        info: serverInfo,
+        token: null,
+        status: 'connected',
+        isAdmin: false,
+        season: 0,
+        lastVerified: { serverId: SERVER_ID, season: 0 },
+      }),
+    ).resolves.toBeNull()
+  })
+
+  it('orders overlapping manifest responses across tree refreshes and polls', async () => {
+    let finishFirst = (_response: Response): void => undefined
+    let finishSecond = (_response: Response): void => undefined
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finishFirst = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finishSecond = resolve
+          }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const { isLatestServerContents, listServerContents, onServerContents, setState } = await import(
+      './state.js'
+    )
+    const observed = vi.fn()
+    onServerContents(observed)
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+
+    const first = listServerContents(server)
+    const second = listServerContents(server)
+    finishSecond(new Response(JSON.stringify(manifest), { status: 200 }))
+    const newer = await second
+    finishFirst(new Response(JSON.stringify(manifest), { status: 200 }))
+    const older = await first
+
+    expect(newer).not.toBeNull()
+    expect(older).not.toBeNull()
+    if (newer === null || older === null) throw new Error('expected valid manifests')
+    expect(isLatestServerContents(server.url, newer)).toBe(true)
+    expect(isLatestServerContents(server.url, older)).toBe(false)
+    expect(observed).toHaveBeenCalledOnce()
+    expect(observed).toHaveBeenCalledWith(server, newer)
+  })
+
+  it('gives a folder picker the admitted newer tree when its own response loses the race', async () => {
+    let finishPicker = (_response: Response): void => undefined
+    let finishPoll = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishPicker = resolve
+            }),
+        )
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishPoll = resolve
+            }),
+        ),
+    )
+    const { admitServerContents, listServerContents, listServerNodes, onServerContents, setState } =
+      await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+    const olderNode = {
+      id: NODE_A,
+      parentId: null,
+      path: '/old',
+      name: 'Old',
+      createdAt: 1_800_000_000_000,
+    }
+    const newerNode = {
+      ...olderNode,
+      id: '019fed50-87a1-7523-a88c-bdeafad49684',
+      path: '/new',
+      name: 'New',
+    }
+    onServerContents((connected, contents) => {
+      admitServerContents(connected, contents)
+    })
+
+    const picker = listServerNodes(server)
+    const poll = listServerContents(server)
+    finishPoll(new Response(JSON.stringify({ ...manifest, nodes: [newerNode] }), { status: 200 }))
+    await poll
+    finishPicker(new Response(JSON.stringify({ ...manifest, nodes: [olderNode] }), { status: 200 }))
+
+    await expect(picker).resolves.toEqual({ status: 'ok', nodes: [newerNode] })
+  })
+
+  it('keeps folder helpers on the retained tree when the newest manifest is rejected', async () => {
+    const acceptedNode = {
+      id: NODE_A,
+      parentId: null,
+      path: '/accepted',
+      name: 'Accepted',
+      createdAt: 1_800_000_000_000,
+    }
+    const rejectedNode = { ...acceptedNode, path: '/rejected', name: 'Rejected' }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...manifest, nodes: [acceptedNode] }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...manifest, nodes: [rejectedNode] }), { status: 200 }),
+        ),
+    )
+    const { admitServerContents, listServerNodes, onServerContents, setState } = await import(
+      './state.js'
+    )
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+    onServerContents((connected, contents) => {
+      if (contents.nodes[0]?.name !== 'Rejected') admitServerContents(connected, contents)
+    })
+
+    await expect(listServerNodes(server)).resolves.toEqual({ status: 'ok', nodes: [acceptedNode] })
+    await expect(listServerNodes(server)).resolves.toEqual({ status: 'ok', nodes: [acceptedNode] })
+  })
+
+  it('distinguishes a successful unadmitted manifest from an unreachable server', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async () => new Response(JSON.stringify(manifest), { status: 200 })),
+    )
+    const { listServerNodes, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+
+    await expect(listServerNodes(server)).resolves.toEqual({ status: 'not-admitted' })
+  })
+
+  it('does not carry admitted contents into a replacement connection at the same URL', async () => {
+    const { admitServerContents, admittedServerContentsFor, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    const contents = { nodes: [], templates: [] }
+    setState({ servers: [server] })
+    expect(admitServerContents(server, contents)).toBe(true)
+
+    const replacement = { ...server, token: 'new-token' }
+    setState({ servers: [replacement] })
+
+    expect(admittedServerContentsFor(replacement)).toBeNull()
+  })
+
+  it('reads bounded token pages through the server cursor contract', async () => {
+    const nextCursor = `1800000000000:${'a'.repeat(64)}`
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ tokens: [], nextCursor }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ tokens: [], nextCursor: null }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tokens: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { listAccessTokens } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+
+    await expect(listAccessTokens(server)).resolves.toEqual({ tokens: [], nextCursor })
+    await expect(listAccessTokens(server, nextCursor)).resolves.toEqual({
+      tokens: [],
+      nextCursor: null,
+    })
+    await expect(listAccessTokens(server)).resolves.toEqual({ tokens: [], nextCursor: null })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `https://example.com/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
+    )
+  })
+
+  it('rejects a token page containing a malformed row', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({
+              tokens: [
+                {
+                  tokenHash: 'a'.repeat(64),
+                  label: 'wrong timestamp shape',
+                  scope: 'read',
+                  createdWithToken: 'bootstrap',
+                  createdAt: '2026-08-23T00:00:00Z',
+                },
+              ],
+              nextCursor: `1:${'b'.repeat(64)}`,
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+    const { listAccessTokens } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+
+    await expect(listAccessTokens(server)).resolves.toBeNull()
+  })
+
+  it('does not resurrect a disconnected server when a rename finishes', async () => {
+    let finish = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finish = resolve
+          }),
+      ),
+    )
+    const { getState, removeServer, renameServer, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
+
+    const renaming = renameServer(server, 'Renamed')
+    removeServer(server.url)
+    finish(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    await expect(renaming).resolves.toEqual({ ok: true })
+    expect(getState().servers).toEqual([])
+  })
+
+  it('keeps newer server metadata learned while its post-rename read was delayed', async () => {
+    let finishRename = (_response: Response): void => undefined
+    let finishMetadata = (_response: Response): void => undefined
+    let metadataStarted = (): void => undefined
+    const readingMetadata = new Promise<void>((resolve) => {
+      metadataStarted = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishRename = resolve
+            }),
+        )
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishMetadata = resolve
+              metadataStarted()
+            }),
+        ),
+    )
+    const { getState, renameServer, upsertServer } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    upsertServer(server)
+
+    const renaming = renameServer(server, 'Delayed name')
+    finishRename(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    await readingMetadata
+    upsertServer({ ...server, info: { ...serverInfo, name: 'Newer external name' } })
+    finishMetadata(
+      new Response(JSON.stringify({ ...serverInfo, name: 'Delayed name' }), { status: 200 }),
+    )
+
+    await expect(renaming).resolves.toEqual({ ok: true })
+    expect(getState().servers[0]?.info?.name).toBe('Newer external name')
+  })
+
+  it('applies an auth failure from a request that predates a cosmetic server rename', async () => {
+    let finishList = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishList = resolve
+            }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+    )
+    const { getState, listAccessTokens, renameServer, setState } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    setState({ servers: [server] })
+
+    const listing = listAccessTokens(server)
+    await expect(renameServer(server, 'Renamed')).resolves.toEqual({ ok: true })
+    finishList(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }))
+    await expect(listing).resolves.toBeNull()
+
+    expect(getState().servers[0]).toMatchObject({
+      info: { name: 'Renamed' },
+      status: 'connected',
+      isAdmin: false,
+      error: 'admin access required',
+    })
+  })
+
+  it('publishes an in-flight manifest through a cosmetic server metadata replacement', async () => {
+    let finish = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          await new Promise<Response>((resolve) => {
+            finish = resolve
+          }),
+      ),
+    )
+    const { listServerContents, onServerContents, setState, upsertServer } = await import(
+      './state.js'
+    )
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'admin',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    const renamed = { ...server, info: { ...serverInfo, name: 'Renamed' } }
+    const observed = vi.fn()
+    onServerContents(observed)
+    setState({ servers: [server] })
+
+    const pending = listServerContents(server)
+    upsertServer(renamed)
+    finish(new Response(JSON.stringify(manifest), { status: 200 }))
+    const contents = await pending
+
+    expect(contents).not.toBeNull()
+    expect(observed).toHaveBeenCalledWith(renamed, contents)
+  })
+
+  it('does not let an old connection response suppress the first response after reconnect', async () => {
+    let finishOld = (_response: Response): void => undefined
+    let finishNew = (_response: Response): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishOld = resolve
+            }),
+        )
+        .mockImplementationOnce(
+          async () =>
+            await new Promise<Response>((resolve) => {
+              finishNew = resolve
+            }),
+        ),
+    )
+    const { listServerContents, onServerContents, removeServer, setState } = await import(
+      './state.js'
+    )
+    const oldConnection = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'old',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+    const newConnection = { ...oldConnection, token: 'new', isAdmin: false }
+    const observed = vi.fn()
+    onServerContents(observed)
+    setState({ servers: [oldConnection] })
+
+    const oldRequest = listServerContents(oldConnection)
+    removeServer(oldConnection.url)
+    setState({ servers: [newConnection] })
+    const newRequest = listServerContents(newConnection)
+    finishOld(new Response(JSON.stringify(manifest), { status: 200 }))
+    await oldRequest
+    finishNew(new Response(JSON.stringify(manifest), { status: 200 }))
+    const newest = await newRequest
+
+    expect(newest).not.toBeNull()
+    expect(observed).toHaveBeenCalledOnce()
+    expect(observed).toHaveBeenCalledWith(newConnection, newest)
+  })
+
+  it.each([
+    { nodes: 0, templates: 0 },
+    { nodes: 1.5, templates: 0 },
+    { nodes: 1, templates: -1 },
+    { nodes: 1, templates: 0.5 },
+  ])('rejects malformed subtree counts: $nodes nodes, $templates templates', async (body) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })),
+    )
+    const { countNodeSubtree } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+      lastVerified: { serverId: SERVER_ID, season: 0 },
+    }
+
+    await expect(countNodeSubtree(server, NODE_A)).resolves.toBeNull()
+  })
+
+  it('refuses local folder writes that the next load would discard', async () => {
+    vi.stubGlobal('GM_setValue', vi.fn())
+    const { createLocalFolder, MAX_LOCAL_FOLDERS, renameLocalFolder, setState } = await import(
+      './state.js'
+    )
+    setState({
+      localFolders: Array.from({ length: MAX_LOCAL_FOLDERS }, (_, index) => ({
+        id: `folder-${index}`,
+        parentId: null,
+        name: `Folder ${index}`,
+        visible: true,
+      })),
+    })
+
+    expect(createLocalFolder(null, 'Overflow')).toBeNull()
+    expect(renameLocalFolder('folder-0', 'x'.repeat(257))).toBe(false)
+  })
+
+  it('leaves every Local folder edit unchanged when persistence rejects it', async () => {
+    const persist = vi.fn()
+    vi.stubGlobal('GM_setValue', persist)
+    const {
+      addLocalFolders,
+      createLocalFolder,
+      getState,
+      moveLocalFolder,
+      removeLocalFolder,
+      renameLocalFolder,
+      setLocalFolderVisible,
+      setState,
+    } = await import('./state.js')
+    const folders = [
+      { id: 'root', parentId: null, name: 'Root', visible: true },
+      { id: 'child', parentId: 'root', name: 'Child', visible: true },
+    ]
+    setState({ localFolders: folders })
+    persist.mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+
+    expect(createLocalFolder(null, 'Created')).toBeNull()
+    expect(addLocalFolders([{ id: 'added', parentId: null, name: 'Added', visible: true }])).toBe(
+      false,
+    )
+    expect(setLocalFolderVisible('root', false)).toBe(false)
+    expect(renameLocalFolder('root', 'Renamed')).toBe(false)
+    expect(moveLocalFolder('child', null)).toBe(false)
+    expect(removeLocalFolder('root')).toBe(false)
+    expect(getState().localFolders).toEqual(folders)
+  })
+
+  it('keeps a Local folder alive while a template assignment holds a lease', async () => {
+    vi.stubGlobal('GM_setValue', vi.fn())
+    const { getState, leaseLocalFolder, removeLocalFolder, setState } = await import('./state.js')
+    setState({
+      localFolders: [{ id: 'target', parentId: null, name: 'Target', visible: true }],
+    })
+
+    const release = leaseLocalFolder('target')
+    expect(release).not.toBeNull()
+    expect(removeLocalFolder('target')).toBe(false)
+    expect(getState().localFolders).toHaveLength(1)
+
+    release?.()
+    expect(removeLocalFolder('target')).toBe(true)
+    expect(getState().localFolders).toEqual([])
   })
 
   it('does not retain cached identity after a different server answers at the same URL', async () => {
@@ -560,25 +1287,24 @@ describe('server state boundaries', () => {
           }),
       ),
     )
-    const { uploadTemplate } = await import('./state.js')
+    const { setState, uploadTemplate } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
     let settled = false
-    const uploading = uploadTemplate(
-      {
-        url: 'https://example.com',
-        info: serverInfo,
-        token: null,
-        status: 'connected',
-        isAdmin: true,
-        season: 0,
-      },
-      {
-        nodeId: NODE_A,
-        name: 'Large template',
-        originX: 0,
-        originY: 0,
-        png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
-      },
-    ).then((result) => {
+    const uploading = uploadTemplate(server, {
+      nodeId: NODE_A,
+      name: 'Large template',
+      originX: 0,
+      originY: 0,
+      png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+    }).then((result) => {
       settled = true
       return result
     })
@@ -587,6 +1313,10 @@ describe('server state boundaries', () => {
     expect(settled).toBe(false)
     await vi.advanceTimersByTimeAsync(110_000)
 
-    await expect(uploading).resolves.toEqual({ ok: false, message: 'Error: request timed out' })
+    await expect(uploading).resolves.toEqual({
+      ok: false,
+      message: 'Error: request timed out',
+      ambiguous: true,
+    })
   })
 })

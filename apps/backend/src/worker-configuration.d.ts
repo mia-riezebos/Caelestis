@@ -5,8 +5,8 @@ interface __BaseEnv_Env {
 	DB: D1Database;
 	SHARD_STRATEGY: "single";
 	SERVER_ID: "00000000-0000-7000-8000-000000000000";
-	SERVER_NAME: "Wplace Template Server";
-	SERVER_DESCRIPTION: "A self-hosted Wplace template server";
+	SERVER_NAME: "Template Server";
+	SERVER_DESCRIPTION: "A self-hosted wplace template server";
 	SEASON: "0";
 	OPEN_ACCESS: "false";
 	TELEMETRY: DurableObjectNamespace<import("./worker").TelemetryShard>;

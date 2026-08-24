@@ -1,4 +1,4 @@
-import { WORLD_PIXELS } from '@wts/shared'
+import { WORLD_PIXELS } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { centreOf, navigateTo } from './navigate.js'
 

@@ -1,5 +1,12 @@
 import { warn } from './debug.js'
-import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
+import {
+  MAX_MANIFEST_CHUNKS,
+  MAX_MANIFEST_TEMPLATES,
+  MAX_TREE_NODES,
+  type TreeNode,
+  validateTreeNodes,
+} from './state.js'
+import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 
 /**
  * What a server told us, kept between sessions.
@@ -15,7 +22,7 @@ import { MAX_TREE_NODES, type TreeNode, validateTreeNodes } from './state.js'
 const DB_NAME = 'caelestis'
 const STORE = 'server-cache'
 // Shared with local template persistence. Opening an older version after v3 exists is a VersionError.
-const VERSION = 3
+const VERSION = 4
 
 export interface CachedServer {
   /** Server URL, which is the identity of the connection. */
@@ -27,19 +34,73 @@ export interface CachedServer {
   readonly fetchedAt: number
   /** ETag from the manifest, so a refetch can be a 304. */
   readonly etag?: string
+  readonly templates?: readonly ServerTemplate[]
+}
+
+export interface ServerTemplate {
+  readonly id: string
+  readonly nodeId: string | null
+  readonly name: string
+  readonly version: string
+  readonly published: boolean
+  readonly updatedAt: number
+  readonly bbox: {
+    readonly minX: number
+    readonly minY: number
+    readonly maxX: number
+    readonly maxY: number
+  }
+  readonly chunks: readonly { readonly tile: string; readonly hash: string }[]
+}
+
+const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefined => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_MANIFEST_TEMPLATES) return undefined
+  const templates: ServerTemplate[] = []
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null) return undefined
+    const candidate = raw as Partial<ServerTemplate>
+    const bbox = candidate.bbox
+    if (
+      typeof candidate.id !== 'string' ||
+      (candidate.nodeId !== null && typeof candidate.nodeId !== 'string') ||
+      typeof candidate.name !== 'string' ||
+      typeof candidate.version !== 'string' ||
+      typeof candidate.published !== 'boolean' ||
+      !Number.isFinite(candidate.updatedAt) ||
+      typeof bbox !== 'object' ||
+      bbox === null ||
+      ![bbox.minX, bbox.minY, bbox.maxX, bbox.maxY].every(Number.isSafeInteger) ||
+      !Array.isArray(candidate.chunks) ||
+      candidate.chunks.some(
+        (chunk) =>
+          typeof chunk !== 'object' ||
+          chunk === null ||
+          typeof chunk.tile !== 'string' ||
+          typeof chunk.hash !== 'string',
+      )
+    )
+      return undefined
+    templates.push(candidate as ServerTemplate)
+  }
+  return templates
 }
 
 const open = (): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
     let abandoned = false
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result
       // The local-template store lives in the same database and must survive this upgrade.
       if (!db.objectStoreNames.contains('local-templates')) {
         db.createObjectStore('local-templates', { keyPath: 'id' })
       }
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'url' })
+      if (event.oldVersion < 4) {
+        const templates = request.transaction?.objectStore('local-templates')
+        if (templates !== undefined) migrateTemplateStorePalette(templates)
+      }
     }
     request.onblocked = () => {
       abandoned = true
@@ -98,20 +159,25 @@ export const forgetServer = async (url: string): Promise<void> => {
 const cachedServerFrom = (
   raw: unknown,
   expectedUrl: string,
-  remainingNodes: number,
+  remaining: { readonly nodes: number; readonly templates: number; readonly chunks: number },
 ): CachedServer | null => {
   if (typeof raw !== 'object' || raw === null) return null
   const candidate = raw as Partial<CachedServer>
   // Check the cheap aggregate boundary before walking and copying a large untrusted node array.
-  if (!Array.isArray(candidate.nodes) || candidate.nodes.length > remainingNodes) return null
+  if (!Array.isArray(candidate.nodes) || candidate.nodes.length > remaining.nodes) return null
   const nodes = validateTreeNodes(candidate.nodes)
+  const templates = cachedTemplatesFrom(candidate.templates)
+  const templateCount = templates?.length ?? 0
+  const chunkCount = templates?.reduce((total, template) => total + template.chunks.length, 0) ?? 0
   if (
     candidate.url !== expectedUrl ||
     typeof candidate.serverId !== 'string' ||
     !Number.isSafeInteger(candidate.season) ||
     Number(candidate.season) < 0 ||
     !Number.isFinite(candidate.fetchedAt) ||
-    nodes === null
+    nodes === null ||
+    templateCount > remaining.templates ||
+    chunkCount > remaining.chunks
   ) {
     return null
   }
@@ -121,6 +187,7 @@ const cachedServerFrom = (
     season: Number(candidate.season),
     nodes,
     fetchedAt: Number(candidate.fetchedAt),
+    ...(templates === undefined ? {} : { templates }),
     ...(typeof candidate.etag === 'string' ? { etag: candidate.etag } : {}),
   }
 }
@@ -137,18 +204,25 @@ export const loadServerCache = async (
         const transaction = db.transaction(STORE, 'readonly')
         const store = transaction.objectStore(STORE)
         const valid: CachedServer[] = []
-        let remainingNodes = MAX_TREE_NODES
+        const remaining = {
+          nodes: MAX_TREE_NODES,
+          templates: MAX_MANIFEST_TEMPLATES,
+          chunks: MAX_MANIFEST_CHUNKS,
+        }
         let index = 0
         const readNext = (): void => {
-          if (index >= unique.length || remainingNodes === 0) return
+          if (index >= unique.length || remaining.nodes === 0) return
           const expectedUrl = unique[index++]
           if (expectedUrl === undefined) return
           const request = store.get(expectedUrl)
           request.onsuccess = () => {
-            const entry = cachedServerFrom(request.result, expectedUrl, remainingNodes)
+            const entry = cachedServerFrom(request.result, expectedUrl, remaining)
             if (entry !== null) {
               valid.push(entry)
-              remainingNodes -= entry.nodes.length
+              remaining.nodes -= entry.nodes.length
+              remaining.templates -= entry.templates?.length ?? 0
+              remaining.chunks -=
+                entry.templates?.reduce((total, template) => total + template.chunks.length, 0) ?? 0
             }
             // Issue the next read from this success callback so IndexedDB keeps the transaction
             // active, while only one structured-cloned cache record is live at a time.

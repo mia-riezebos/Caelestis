@@ -1,472 +1,167 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+// @vitest-environment happy-dom
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
-  draw: null as ((frame: unknown) => void) | null,
-  debugApi: null as Record<string, unknown> | null,
-  levelFor: vi.fn(),
-  localChange: null as (() => void) | null,
-  localTemplates: vi.fn(() => [] as unknown[]),
-  paintFrame: vi.fn(),
-  previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
+  tileFrame: null as ((frame: unknown) => void) | null,
+  localListeners: [] as Array<() => void>,
+  previewListeners: [] as Array<() => void>,
+  stateListeners: [] as Array<() => void>,
+  paintListeners: [] as Array<() => void>,
+  mismatchListeners: [] as Array<() => void>,
+  triggerRepaint: vi.fn(),
   renderOverlayControls: vi.fn(),
-  restoreLocalTemplates: vi.fn(async () => {}),
-  stampTile: vi.fn(),
+  viewportCentreIn: vi.fn(() => ({ x: 12, y: 34 })),
+  screenPointForIn: vi.fn(() => ({ x: 56, y: 78 })),
+  cssPixelsPerCanvasPixelIn: vi.fn(() => ({ x: 2, y: 3 })),
+  canvasPixelAtIn: vi.fn(() => ({ x: 90, y: 12 })),
 }))
 
-vi.mock('./debug.js', () => ({
-  installDebugApi: vi.fn((extra: Record<string, unknown>) => {
-    harness.debugApi = extra
-  }),
-  log: vi.fn(),
-  warn: vi.fn(),
+vi.mock('./coordinates.js', () => ({
+  canvasPixelAtIn: harness.canvasPixelAtIn,
+  cssPixelsPerCanvasPixelIn: harness.cssPixelsPerCanvasPixelIn,
+  screenPointForIn: harness.screenPointForIn,
+  viewportCentreIn: harness.viewportCentreIn,
 }))
-vi.mock('./map-handle.js', () => ({ installMapCapture: vi.fn() }))
-vi.mock('./paint.js', () => ({ paintFrame: harness.paintFrame }))
+vi.mock('./debug.js', () => ({ installDebugApi: vi.fn(), warn: vi.fn() }))
+vi.mock('./gl/layer.js', () => ({ installOverlayLayer: vi.fn(() => true), setNudge: vi.fn() }))
+vi.mock('./gl/markers.js', () => ({ keepMarkersAboveDrafts: vi.fn() }))
+vi.mock('./map-handle.js', () => ({
+  getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
+  installMapCapture: vi.fn(),
+}))
+vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
+vi.mock('./state.js', () => ({
+  getState: () => ({ appearance: { markMismatch: false }, onlySelectedColour: false }),
+  loadState: vi.fn(),
+  onStateChange: (listener: () => void) => harness.stateListeners.push(listener),
+  setState: vi.fn(),
+}))
 vi.mock('./templates/local-store.js', () => ({
-  levelFor: harness.levelFor,
-  localTemplates: harness.localTemplates,
-  onLocalChange: vi.fn((listener: () => void) => {
-    harness.localChange = listener
-  }),
-  previewOriginFor: harness.previewOriginFor,
-  restoreLocalTemplates: harness.restoreLocalTemplates,
-  stampTile: harness.stampTile,
+  appearanceOf: vi.fn(),
+  isTemplateVisible: vi.fn(() => true),
+  localTemplates: vi.fn(() => []),
+  onLocalChange: (listener: () => void) => harness.localListeners.push(listener),
+  onLocalPreviewChange: (listener: () => void) => harness.previewListeners.push(listener),
+  ownsGroup: vi.fn(() => false),
+  restoreLocalTemplates: vi.fn(),
+  setAppearance: vi.fn(),
 }))
+vi.mock('./templates/mismatch.js', () => ({
+  onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
+  wantsTilePixels: vi.fn(() => false),
+}))
+vi.mock('./templates/nearest.js', () => ({ templateAtCentre: vi.fn(() => null) }))
+vi.mock('./templates/server-sync.js', () => ({ installServerSync: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
+  captureTilePixels: vi.fn(),
   install: vi.fn(),
-  onTileFrame: vi.fn((draw: (frame: unknown) => void) => {
-    harness.draw = draw
-  }),
+  onTileFrame: (listener: (frame: unknown) => void) => {
+    harness.tileFrame = listener
+  },
+  reconcileDrafts: vi.fn(),
 }))
-vi.mock('./ui/panel.js', () => ({ installPanel: vi.fn() }))
-// Mocked rather than imported: the real module pulls in `move.ts`, which reads `navigator.platform`
-// at module scope, so `main.test.ts` would fail for reasons that have nothing to do with `main.ts`.
-vi.mock('./ui/overlay-menu.js', () => ({ renderOverlayControls: harness.renderOverlayControls }))
+vi.mock('./ui/overlay-menu.js', () => ({
+  refreshOverlayMenu: vi.fn(),
+  renderOverlayControls: harness.renderOverlayControls,
+  toggleOverlayMenu: vi.fn(),
+}))
+vi.mock('./ui/panel.js', () => ({ installPanel: vi.fn(), togglePanel: vi.fn() }))
+vi.mock('./wplace-account.js', () => ({ loadAccount: vi.fn() }))
+vi.mock('./wplace-paint.js', () => ({
+  isPaintOpen: vi.fn(() => false),
+  onPaintSelectionChange: (listener: () => void) => harness.paintListeners.push(listener),
+  watchPaintSelection: vi.fn(),
+}))
+vi.mock('./wplace-picker.js', () => ({ installColourPicker: vi.fn() }))
 
-afterEach(() => {
+type MainModule = typeof import('./main.js')
+
+const load = async (): Promise<MainModule> => {
+  const module = await import('./main.js')
+  if (harness.tileFrame === null) throw new Error('tile frame listener was not installed')
+  return module
+}
+
+const frame = (canvas: HTMLCanvasElement, quads: readonly unknown[] = [{}]) => ({ canvas, quads })
+
+beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
-  vi.unstubAllGlobals()
-  harness.draw = null
-  harness.debugApi = null
-  harness.localChange = null
-  harness.localTemplates.mockReturnValue([])
-  harness.previewOriginFor.mockReturnValue(null)
+  harness.tileFrame = null
+  harness.localListeners = []
+  harness.previewListeners = []
+  harness.stateListeners = []
+  harness.paintListeners = []
+  harness.mismatchListeners = []
 })
 
-describe('overlay canvas lifecycle', () => {
-  it('reuses one overlay while the map canvas is temporarily detached', async () => {
-    const created: Array<Record<string, unknown>> = []
-    const createElement = vi.fn(() => {
-      const canvas = {
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => ({}),
-      }
-      created.push(canvas)
-      return canvas
-    })
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement,
-    })
+describe('GL frame lifecycle', () => {
+  it('drops a stale projection when the current frame has no tiles', async () => {
+    const main = await load()
+    const first = document.createElement('canvas')
+    const current = document.createElement('canvas')
+    harness.tileFrame?.(frame(first))
+    harness.tileFrame?.(frame(current, []))
 
-    await import('./main.js')
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    const frame = {
-      canvas: { width: 1_000, height: 1_000, parentElement: null },
-      quads: [],
-    }
-
-    draw(frame)
-    draw(frame)
-
-    expect(createElement).toHaveBeenCalledOnce()
-    expect(created).toHaveLength(1)
+    expect(main.viewportCentre()).toEqual({ x: 12, y: 34 })
+    expect(harness.viewportCentreIn).toHaveBeenCalledWith(
+      expect.objectContaining({ canvas: current, quads: [] }),
+    )
   })
 
-  it('attaches the overlay to the map container and follows a non-square backing size', async () => {
-    const overlay = {
-      dataset: {},
-      style: {},
-      width: 0,
-      height: 0,
-      parentElement: null as object | null,
-      getContext: vi.fn(() => ({})),
-    }
-    const mapParent = {
-      appendChild: vi.fn((child: typeof overlay) => {
-        child.parentElement = mapParent
-      }),
-    }
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => overlay),
-    })
+  it('hands overlay controls the canvas from the frame being processed', async () => {
+    await load()
+    const canvas = document.createElement('canvas')
+    harness.tileFrame?.(frame(canvas))
 
-    await import('./main.js')
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    const frame = {
-      canvas: { width: 1_200, height: 700, parentElement: mapParent },
-      quads: [],
-    }
-
-    draw(frame)
-
-    expect(mapParent.appendChild).toHaveBeenCalledWith(overlay)
-    expect(overlay).toMatchObject({ width: 1_200, height: 700, parentElement: mapParent })
-    expect(harness.paintFrame).toHaveBeenCalledOnce()
-  })
-
-  it('does not paint when the overlay cannot provide a 2D context', async () => {
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => null,
-      })),
-    })
-
-    await import('./main.js')
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    draw({ canvas: { width: 1_000, height: 500, parentElement: null }, quads: [] })
-
-    expect(harness.paintFrame).not.toHaveBeenCalled()
-  })
-
-  it('registers a mark painter that fills only the requested tile quad', async () => {
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => ({}),
-      })),
-    })
-
-    await import('./main.js')
-    const mark = harness.debugApi?.mark
-    if (typeof mark !== 'function') throw new Error('main must install its mark debug command')
-    Reflect.apply(mark, harness.debugApi, [8, 9])
-
-    const context = { fillStyle: '', fillRect: vi.fn() }
-    const frame = {
-      canvas: { width: 1_000, height: 500, parentElement: null },
-      quads: [
-        { tile: { x: 9, y: 8 }, x: 1, y: 2, width: 3, height: 4 },
-        { tile: { x: 8, y: 9 }, x: 10, y: 20, width: 30, height: 40 },
-      ],
-    }
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    draw(frame)
-    const painters = harness.paintFrame.mock.calls[0]?.[2] as
-      | Array<(context: unknown, frame: unknown) => void>
-      | undefined
-    // Pinned, because this test selects its painter by position: templates, then mark. Inserting a
-    // painter above the mark silently redirects every assertion below to the wrong function, which
-    // is exactly how it broke once already.
-    expect(painters).toHaveLength(2)
-    if (painters?.[1] === undefined) throw new Error('main must register its mark painter')
-
-    painters[1](context, frame)
-
-    expect(context.fillStyle).toBe('rgba(0, 0, 0, 0.6)')
-    expect(context.fillRect).toHaveBeenCalledOnce()
-    expect(context.fillRect).toHaveBeenCalledWith(10, 20, 30, 40)
-  })
-
-  it('hands the overlay controls the canvas of the frame being painted', async () => {
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({ dataset: {}, style: {}, getContext: () => ({}) })),
-      readyState: 'complete',
-      addEventListener: vi.fn(),
-    })
-    await import('./main.js')
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    const canvas = { width: 100, height: 50, parentElement: null }
-    draw({ canvas, quads: [] })
-
-    // Not a CSS-class lookup: the class is wplace's to rename, and guessing it wrong sweeps every
-    // control off a frame that painted the overlay perfectly well.
     expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
   })
 
-  it('still mounts the overlay controls when no 2D context can be had', async () => {
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({ dataset: {}, style: {}, getContext: () => null })),
-      readyState: 'complete',
-      addEventListener: vi.fn(),
+  it('defers a synchronous repaint until the current pass and bounds the feedback loop', async () => {
+    const main = await load()
+    let calls = 0
+    main.onFrame(() => {
+      calls++
+      main.repaint()
     })
-    await import('./main.js')
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    const canvas = { width: 100, height: 50, parentElement: null }
-    draw({ canvas, quads: [] })
+    harness.tileFrame?.(frame(document.createElement('canvas')))
 
-    // They are DOM, not canvas. Registering them as a painter made them conditional on a context
-    // this very suite has a test for failing to acquire — stranding every button and menu.
-    expect(harness.paintFrame).not.toHaveBeenCalled()
+    expect(calls).toBe(3)
+  })
+
+  it('repaints the GL map and coordinate controls after local state changes', async () => {
+    await load()
+    const canvas = document.createElement('canvas')
+    harness.tileFrame?.(frame(canvas))
+    harness.renderOverlayControls.mockClear()
+    harness.triggerRepaint.mockClear()
+
+    harness.localListeners.at(-1)?.()
+
     expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
   })
 
-  it('draws visible templates on MapLibre fractional quads without distorting their pixel grid', async () => {
-    const bitmap = { width: 1_000, height: 1_000 }
-    const levels = { levels: [bitmap] }
-    harness.localTemplates.mockReturnValue([
-      {
-        id: 'template',
-        visible: true,
-        appearance: { shape: 'full', size: 1 / 3, anchor: 'c', opacity: 0.8, hiddenColours: [] },
-      },
-    ])
-    harness.stampTile.mockReturnValue(levels)
-    harness.levelFor.mockReturnValue(bitmap)
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => ({}),
-      })),
-    })
-    await import('./main.js')
-    const frame = {
-      canvas: { width: 1_200, height: 700, parentElement: null },
-      quads: [{ tile: { x: 1, y: 2 }, x: 0.49, y: 0.25, width: 1_000.49, height: 999.6 }],
-    }
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    draw(frame)
-    const painters = harness.paintFrame.mock.calls[0]?.[2] as
-      | Array<(context: unknown, frame: unknown) => void>
-      | undefined
-    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
-    const context = {
-      drawImage: vi.fn(),
-      globalAlpha: 1,
-      imageSmoothingEnabled: false,
-      imageSmoothingQuality: 'low',
-    }
+  it('repaints without publishing a durable change for placement previews', async () => {
+    await load()
+    const canvas = document.createElement('canvas')
+    harness.tileFrame?.(frame(canvas))
+    harness.renderOverlayControls.mockClear()
+    harness.triggerRepaint.mockClear()
 
-    painters[0](context, frame)
+    harness.previewListeners.at(-1)?.()
 
-    expect(harness.stampTile).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'template' }),
-      '1/2',
-      expect.objectContaining({ opacity: 0.8 }),
-      1_000.49,
-    )
-    expect(harness.levelFor).toHaveBeenCalledWith(levels, 1_000.49)
-    expect(context.drawImage).toHaveBeenCalledWith(bitmap, 0.49, 0.25, 1_000.49, 999.6)
+    expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
   })
 
-  it('draws a transient move by translating existing source tiles', async () => {
-    const bitmap = { width: 1_000, height: 1_000 }
-    const levels = { levels: [bitmap] }
-    harness.localTemplates.mockReturnValue([
-      {
-        id: 'template',
-        originX: 1_000,
-        originY: 2_000,
-        visible: true,
-        appearance: { shape: 'full', size: 1, anchor: 'c', opacity: 1, hiddenColours: [] },
-      },
-    ])
-    harness.previewOriginFor.mockReturnValue({ x: 1_100, y: 2_000 })
-    harness.stampTile.mockImplementation((_template, key) => (key === '1/2' ? levels : undefined))
-    harness.levelFor.mockReturnValue(bitmap)
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => ({}),
-      })),
-    })
-    await import('./main.js')
-    const frame = {
-      canvas: { width: 1_000, height: 1_000, parentElement: null },
-      quads: [{ tile: { x: 1, y: 2 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
-    }
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    draw(frame)
-    const painters = harness.paintFrame.mock.calls[0]?.[2] as
-      | Array<(context: unknown, frame: unknown) => void>
-      | undefined
-    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
-    const context = {
-      drawImage: vi.fn(),
-      globalAlpha: 1,
-      imageSmoothingEnabled: false,
-      imageSmoothingQuality: 'low',
-    }
+  it('uses the retained frame for coordinate conversion helpers', async () => {
+    const main = await load()
+    const canvas = document.createElement('canvas')
+    harness.tileFrame?.(frame(canvas))
 
-    painters[0](context, frame)
-
-    expect(context.drawImage).toHaveBeenCalledWith(bitmap, 0, 0, 900, 1_000, 100, 0, 900, 1_000)
-  })
-
-  it('filters hidden templates and applies opacity and smoothing per visible quad', async () => {
-    const bitmap = { width: 1_000, height: 1_000 }
-    const levels = { levels: [bitmap] }
-    harness.localTemplates.mockReturnValue([
-      { id: 'hidden', visible: false },
-      {
-        id: 'visible',
-        visible: true,
-        appearance: { shape: 'full', size: 1, anchor: 'c', opacity: 0.4, hiddenColours: [] },
-      },
-    ])
-    harness.stampTile.mockReturnValue(levels)
-    harness.levelFor.mockReturnValue(bitmap)
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => ({}),
-      })),
-    })
-    await import('./main.js')
-    const frame = {
-      canvas: { width: 1_500, height: 1_000, parentElement: null },
-      quads: [
-        { tile: { x: 1, y: 2 }, x: 0, y: 0, width: 500, height: 500 },
-        { tile: { x: 2, y: 2 }, x: 500, y: 0, width: 1_000, height: 1_000 },
-      ],
-    }
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    draw(frame)
-    const painters = harness.paintFrame.mock.calls[0]?.[2] as
-      | Array<(context: unknown, frame: unknown) => void>
-      | undefined
-    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
-    const states: Array<{ alpha: number; smoothing: boolean }> = []
-    const context = {
-      globalAlpha: 1,
-      imageSmoothingEnabled: false,
-      imageSmoothingQuality: 'low',
-      drawImage: vi.fn(() =>
-        states.push({
-          alpha: context.globalAlpha,
-          smoothing: context.imageSmoothingEnabled,
-        }),
-      ),
-    }
-
-    painters[0](context, frame)
-
-    expect(harness.stampTile).toHaveBeenCalledTimes(2)
-    expect(harness.stampTile).not.toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'hidden' }),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-    )
-    expect(states).toEqual([
-      { alpha: 0.4, smoothing: true },
-      { alpha: 0.4, smoothing: false },
-    ])
-    expect(context.globalAlpha).toBe(1)
-  })
-
-  it('filters against the selected stamp bitmap rather than the native tile width', async () => {
-    const bitmap = { width: 1_182, height: 1_182 }
-    harness.localTemplates.mockReturnValue([
-      {
-        id: 'shaped',
-        visible: true,
-        appearance: { shape: 'circle', size: 1 / 3, anchor: 'c', opacity: 1, hiddenColours: [] },
-      },
-    ])
-    harness.stampTile.mockReturnValue({ levels: [bitmap] })
-    harness.levelFor.mockReturnValue(bitmap)
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => ({}),
-      })),
-    })
-    await import('./main.js')
-    const draw = harness.draw
-    if (draw === null) throw new Error('main must register its tile-frame listener')
-    draw({
-      canvas: { width: 1_000, height: 1_000, parentElement: null },
-      quads: [{ tile: { x: 0, y: 0 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
-    })
-    const painters = harness.paintFrame.mock.calls[0]?.[2] as
-      | Array<(context: unknown, frame: unknown) => void>
-      | undefined
-    if (painters?.[0] === undefined) throw new Error('main must register its template painter')
-    const context = {
-      drawImage: vi.fn(),
-      globalAlpha: 1,
-      imageSmoothingEnabled: false,
-      imageSmoothingQuality: 'low',
-    }
-
-    painters[0](context, {
-      canvas: { width: 1_000, height: 1_000, parentElement: null },
-      quads: [{ tile: { x: 0, y: 0 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
-    })
-
-    expect(context.imageSmoothingEnabled).toBe(true)
-    expect(context.imageSmoothingQuality).toBe('high')
-  })
-
-  it('repaints the idle map when local template state changes', async () => {
-    vi.stubGlobal('document', {
-      querySelector: vi.fn(() => null),
-      createElement: vi.fn(() => ({
-        dataset: {},
-        style: {},
-        width: 0,
-        height: 0,
-        parentElement: null,
-        getContext: () => ({}),
-      })),
-    })
-    await import('./main.js')
-    const draw = harness.draw
-    if (draw === null || harness.localChange === null) throw new Error('expected repaint wiring')
-    draw({ canvas: { width: 100, height: 100, parentElement: null }, quads: [] })
-    harness.paintFrame.mockClear()
-
-    harness.localChange()
-
-    expect(harness.paintFrame).toHaveBeenCalledOnce()
+    expect(main.screenPointFor(1, 2)).toEqual({ x: 56, y: 78 })
+    expect(main.canvasPixelAt(3, 4)).toEqual({ x: 90, y: 12 })
+    expect(main.cssPixelsPerCanvasPixel()).toEqual({ x: 2, y: 3 })
   })
 })

@@ -1,4 +1,4 @@
-import { encodeIndexedPng, millis } from '@wts/shared'
+import { encodeIndexedPng, millis } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
@@ -86,6 +86,27 @@ describe('template routes', () => {
     expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(stored)
   })
 
+  it('stores a template directly under the server root', async () => {
+    const { app } = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const form = templateForm(png)
+    form.delete('nodeId')
+    form.set('season', '1')
+
+    const created = await app.request('/admin/templates', {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(created.status).toBe(201)
+    const manifest = (await (
+      await app.request('/manifest?season=1', bearer(BOOTSTRAP))
+    ).json()) as { templates: Array<{ nodeId: string | null }> }
+    expect(manifest.templates).toHaveLength(1)
+    expect(manifest.templates[0]?.nodeId).toBeNull()
+  })
+
   it('404s an unknown chunk hash', async () => {
     const { app } = await harness()
     const response = await app.request(`/chunks/${'f'.repeat(64)}`, bearer(BOOTSTRAP))
@@ -161,7 +182,225 @@ describe('template routes', () => {
       body: JSON.stringify({ published: true }),
     })
     expect(published.status).toBe(200)
-    await expect(published.json()).resolves.toEqual({ id: template.templateId, published: true })
+    await expect(published.json()).resolves.toEqual({
+      id: template.templateId,
+      published: true,
+      updatedAt: expect.any(Number),
+    })
+  })
+})
+
+describe('editing a template', () => {
+  const create = async (app: Awaited<ReturnType<typeof harness>>['app']) => {
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const response = await app.request('/admin/templates', {
+      method: 'POST',
+      body: templateForm(png),
+      ...bearer(BOOTSTRAP),
+    })
+    return (await response.json()) as { templateId: string; versionId: string }
+  }
+
+  const patch = (
+    app: Awaited<ReturnType<typeof harness>>['app'],
+    id: string,
+    body: Record<string, unknown>,
+  ) =>
+    app.request(`/admin/templates/${id}`, {
+      method: 'PATCH',
+      headers: { ...bearer(BOOTSTRAP).headers, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+  const manifestFor = async (app: Awaited<ReturnType<typeof harness>>['app']) => {
+    const response = await app.request('/manifest?season=1', bearer(BOOTSTRAP))
+    return (await response.json()) as {
+      templates: Array<{
+        id: string
+        name: string
+        nodeId: string | null
+        version: string
+        updatedAt: number
+      }>
+    }
+  }
+
+  it('renames a template without touching its pixels', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+    const before = await manifestFor(app)
+
+    const response = await patch(app, template.templateId, { name: 'Renamed' })
+
+    expect(response.status).toBe(200)
+    const after = await manifestFor(app)
+    expect(after.templates[0]?.name).toBe('Renamed')
+    // The version is what says "re-download the chunks", and a rename must not say that — which is
+    // exactly why `updatedAt` has to exist alongside it.
+    expect(after.templates[0]?.version).toBe(before.templates[0]?.version)
+    expect(after.templates[0]?.updatedAt).toBeGreaterThanOrEqual(
+      before.templates[0]?.updatedAt ?? 0,
+    )
+  })
+
+  it('moves a template to another node', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+    const created = await app.request('/admin/nodes', {
+      method: 'POST',
+      headers: { ...bearer(BOOTSTRAP).headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ season: 1, parentId: null, name: 'Elsewhere' }),
+    })
+    expect(created.status).toBe(201)
+    const { id: destination } = (await created.json()) as { id: string }
+
+    const response = await patch(app, template.templateId, { nodeId: destination })
+
+    expect(response.status).toBe(200)
+    const after = await manifestFor(app)
+    expect(after.templates[0]?.nodeId).toBe(destination)
+  })
+
+  it('moves a template directly under the server root', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+
+    const response = await patch(app, template.templateId, { nodeId: null })
+
+    expect(response.status).toBe(200)
+    const after = await manifestFor(app)
+    expect(after.templates[0]?.nodeId).toBeNull()
+  })
+
+  it('refuses to move a template to a node that does not exist', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+
+    const response = await patch(app, template.templateId, {
+      nodeId: '01890f3e-7b2c-7abc-8def-0123456789ff',
+    })
+
+    expect(response.status).toBe(400)
+    // Orphaning a template into a node nobody can navigate to is worse than refusing the edit.
+    const after = await manifestFor(app)
+    expect(after.templates[0]?.nodeId).toBe(NODE_ID)
+  })
+
+  it('rejects a patch that sets nothing', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+
+    const response = await patch(app, template.templateId, {})
+
+    // Always a caller-side mistake — a typo'd field, or a body that failed to serialise. Answering
+    // 200 would report success for a request that changed nothing.
+    expect(response.status).toBe(400)
+  })
+
+  it('replaces the pixels with a new version, keeping the template', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+    const form = new FormData()
+    // A new version may change the pixels and origin, but not the template's dimensions: identity
+    // is also what lets contribution history stay meaningful across revisions.
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    form.set('png', new File([png.slice()], 'v2.png', { type: 'image/png' }))
+    form.set('originX', '0')
+    form.set('originY', '0')
+
+    const response = await app.request(`/admin/templates/${template.templateId}/versions`, {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(response.status).toBe(201)
+    const body = (await response.json()) as { templateId: string; versionId: string }
+    expect(body.templateId).toBe(template.templateId)
+    expect(body.versionId).not.toBe(template.versionId)
+
+    const after = await manifestFor(app)
+    // One template, not two — and it kept the name it was given at creation.
+    expect(after.templates).toHaveLength(1)
+    expect(after.templates[0]?.name).toBe('Route template')
+  })
+
+  it('404s a new version for a template that does not exist', async () => {
+    const { app } = await harness()
+    const form = new FormData()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    form.set('png', new File([png.slice()], 'v2.png', { type: 'image/png' }))
+    form.set('originX', '0')
+    form.set('originY', '0')
+
+    const response = await app.request(
+      '/admin/templates/01890f3e-7b2c-7abc-8def-0123456789fe/versions',
+      { method: 'POST', body: form, ...bearer(BOOTSTRAP) },
+    )
+
+    expect(response.status).toBe(404)
+  })
+
+  it('deletes a template, and says so only once', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+
+    const first = await app.request(`/admin/templates/${template.templateId}`, {
+      method: 'DELETE',
+      ...bearer(BOOTSTRAP),
+    })
+    const second = await app.request(`/admin/templates/${template.templateId}`, {
+      method: 'DELETE',
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(first.status).toBe(204)
+    expect(second.status).toBe(404)
+    const after = await manifestFor(app)
+    expect(after.templates).toHaveLength(0)
+  })
+
+  it('keeps chunks after a delete, because they are shared', async () => {
+    const { app, blobs } = await harness()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([0]))
+    const created = await app.request('/admin/templates', {
+      method: 'POST',
+      body: templateForm(png),
+      ...bearer(BOOTSTRAP),
+    })
+    const { templateId, chunks } = (await created.json()) as {
+      templateId: string
+      chunks: Array<{ hash: string }>
+    }
+    const hash = chunks[0]?.hash ?? ''
+
+    await app.request(`/admin/templates/${templateId}`, {
+      method: 'DELETE',
+      ...bearer(BOOTSTRAP),
+    })
+
+    // Content-addressed and shared: another template with the same region points at this exact
+    // blob, so deleting by hash here would corrupt it. Reclaiming is a sweep, not a cascade.
+    expect(await blobs.get('chunks', hash)).not.toBeNull()
+  })
+
+  it('refuses every edit to a caller without admin scope', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+    const readToken = await mintToken(app, 'read')
+
+    const renamed = await app.request(`/admin/templates/${template.templateId}`, {
+      method: 'PATCH',
+      headers: { authorization: `Bearer ${readToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Nope' }),
+    })
+    const deleted = await app.request(`/admin/templates/${template.templateId}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${readToken}` },
+    })
+
+    expect(renamed.status).toBe(403)
+    expect(deleted.status).toBe(403)
   })
 })
 

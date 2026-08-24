@@ -1,5 +1,5 @@
-import type { Millis, Seconds } from '@wts/shared'
-import { WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import type { Millis, Seconds } from '@caelestis/shared'
+import { WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { sql } from 'drizzle-orm'
 import {
   type AnySQLiteColumn,
@@ -15,6 +15,26 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core'
 
+/**
+ * Operator-set overrides for what this server calls itself.
+ *
+ * One row, pinned by a check constraint, because there is exactly one server per deployment and a
+ * table that permits two would eventually hold two with nothing to say which is current.
+ *
+ * Separate from `wrangler.toml`'s `[vars]` rather than replacing them: the vars stay the value a
+ * fresh deployment starts with, and this is what an admin has since decided. A null column means
+ * "not decided", which is different from an empty string and falls back to the var.
+ */
+export const serverSettings = sqliteTable(
+  'server_settings',
+  {
+    id: integer('id').primaryKey(),
+    name: text('name'),
+    description: text('description'),
+  },
+  (table) => [check('server_settings_single_row_check', sql`${table.id} = 1`)],
+)
+
 export const nodes = sqliteTable(
   'nodes',
   {
@@ -24,6 +44,8 @@ export const nodes = sqliteTable(
     path: text('path').notNull(),
     name: text('name').notNull(),
     description: text('description'),
+    /** Ephemeral claim tying a confirmed cascade snapshot to its atomic delete batch. */
+    deleteToken: text('delete_token'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
   },
   // Within a season, path is the prefix-rollup key and subtree-rewrite key. Two nodes sharing one
@@ -129,9 +151,8 @@ export const templates = sqliteTable(
   'templates',
   {
     id: text('id').primaryKey(),
-    nodeId: text('node_id')
-      .notNull()
-      .references(() => nodes.id),
+    season: integer('season').notNull(),
+    nodeId: text('node_id').references(() => nodes.id),
     name: text('name').notNull(),
     currentVersionId: text('current_version_id'),
     publishedAt: integer('published_at').$type<Millis>(),
@@ -158,6 +179,8 @@ export const templates = sqliteTable(
     createdWithToken: text('created_with_token').notNull(),
     createdByUserId: integer('created_by_user_id'),
     createdAtMs: integer('created_at_ms').$type<Millis>().notNull(),
+    /** Changes on every metadata or version mutation so manifest clients can invalidate caches. */
+    updatedAtMs: integer('updated_at_ms').$type<Millis>().notNull(),
   },
   // The version this template currently serves has to be one of *its own* versions. Referencing
   // template_versions(id) alone said only "some version exists": one template could point at

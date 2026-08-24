@@ -1,4 +1,4 @@
-import { millis } from '@wts/shared'
+import { millis } from '@caelestis/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
@@ -116,9 +116,46 @@ describe('the admin token surface', () => {
 
     const listed = await app.request('/admin/tokens', bearer(BOOTSTRAP))
     const { tokens } = (await listed.json()) as { tokens: AccessToken[] }
-    expect(tokens).toHaveLength(1)
+    // The stored one, alongside the environment's bootstrap row. Matched by label rather than
+    // counted, so adding a row that is not a stored token does not read as a leak.
+    expect(tokens.filter((one) => one.label === 'discord-regulars')).toHaveLength(1)
     // The plaintext is not stored, so it cannot leak from a later read.
     expect(JSON.stringify(tokens)).not.toContain(created.body.token)
+  })
+
+  it('paginates a token inventory whose complete JSON exceeds the client response cap', async () => {
+    const { app, sql } = harness()
+    for (let index = 0; index < 250; index++) {
+      await sql.insertAccessToken({
+        tokenHash: index.toString(16).padStart(64, '0'),
+        label: '\u0000'.repeat(128),
+        scope: 'read',
+        createdWithToken: 'bootstrap',
+        createdAt: millis(2_000_000 - index),
+      })
+    }
+
+    const seen = new Set<string>()
+    let cursor: string | null = null
+    const pageSizes: number[] = []
+    do {
+      const suffix = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+      const response = await app.request(`/admin/tokens${suffix}`, bearer(BOOTSTRAP))
+      const text = await response.text()
+      expect(response.status).toBe(200)
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThan(64 * 1024)
+      const page = JSON.parse(text) as {
+        tokens: Array<{ tokenHash?: string; bootstrap?: boolean }>
+        nextCursor: string | null
+      }
+      const stored = page.tokens.filter((token) => token.bootstrap !== true)
+      pageSizes.push(stored.length)
+      for (const token of stored) seen.add(token.tokenHash as string)
+      cursor = page.nextCursor
+    } while (cursor !== null)
+
+    expect(pageSizes).toEqual([50, 50, 50, 50, 50])
+    expect(seen.size).toBe(250)
   })
 
   it('lets a minted admin token mint further tokens', async () => {
@@ -511,5 +548,53 @@ describe('the store contract', () => {
       { label: '2000' },
       { label: '1000' },
     ])
+  })
+})
+
+describe('the bootstrap credential in the list', () => {
+  it('is listed, so the list is not missing the way in the operator is using', async () => {
+    // It has no row — it is an environment variable compared in constant time — so without this the
+    // one credential most operators actually hold is the one credential the list never mentions.
+    const { app } = harness()
+    const response = await app.request('/admin/tokens', bearer(BOOTSTRAP))
+    const body = (await response.json()) as { tokens: { label: string; bootstrap?: boolean }[] }
+    expect(body.tokens[0]).toMatchObject({ label: 'bootstrap', scope: 'admin', bootstrap: true })
+  })
+
+  it('carries no secret and no hash of one', async () => {
+    const { app } = harness()
+    const response = await app.request('/admin/tokens', bearer(BOOTSTRAP))
+    // The row stands in for a value this process holds in memory. Returning it, or anything derived
+    // from it, would turn a list of labels into a way to read the credential itself.
+    expect(JSON.stringify(await response.json())).not.toContain(BOOTSTRAP)
+  })
+
+  it('is absent when the server has no bootstrap path', async () => {
+    const sql = new MemorySqlStore()
+    const ports: Ports = {
+      blobs: new MemoryBlobStore(),
+      sql,
+      counters: new MemoryCounterStore(sql, () => millis(Date.now())),
+    }
+    const app = createApp(ports, { bootstrapAdminToken: BOOTSTRAP })
+    const minted = await mint(app, 'real', 'admin')
+    // A server whose only admin is a stored token must not claim an environment one it does not have.
+    const other = createApp(ports, {})
+    const response = await other.request('/admin/tokens', bearer(minted.body.token as string))
+    const body = (await response.json()) as { tokens: { label: string }[] }
+    expect(body.tokens.map((one) => one.label)).toEqual(['real'])
+  })
+
+  it('cannot be deleted, because there is nothing here to delete', async () => {
+    const { app } = harness()
+    const response = await app.request('/admin/tokens/bootstrap', {
+      method: 'DELETE',
+      ...bearer(BOOTSTRAP),
+    })
+    // 400 rather than 404: the row is real and the list is right, the operation is the wrong one.
+    expect(response.status).toBe(400)
+    const after = await app.request('/admin/tokens', bearer(BOOTSTRAP))
+    const body = (await after.json()) as { tokens: { label: string }[] }
+    expect(body.tokens.map((one) => one.label)).toContain('bootstrap')
   })
 })

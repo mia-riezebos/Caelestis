@@ -1,6 +1,15 @@
-import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@wts/shared'
+import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { discardResponseBody } from './response.js'
+import type { ServerTemplate } from './server-cache.js'
+import {
+  APPEARANCE_GROUPS,
+  type Appearance,
+  type AppearanceGroup,
+  DEFAULT_APPEARANCE,
+  normaliseAppearance,
+} from './templates/appearance.js'
+import { remapPaletteColours, remapStoredAppearance } from './templates/palette-migration.js'
 import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
 /**
@@ -15,7 +24,8 @@ import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
  * somewhere a real alliance token belongs — see the note in `handoff-userscript-browser.md`.
  */
 
-const STORAGE_KEY = 'caelestis.state.v1'
+const STORAGE_KEY = 'caelestis.state.v2'
+const LEGACY_STORAGE_KEY = 'caelestis.state.v1'
 
 export type ServerAuthMode = 'none' | 'access_token'
 
@@ -48,6 +58,53 @@ export interface ConnectedServer {
     readonly serverId: string
     readonly season: number
   } | null
+  /** Runtime-only marker: this probe was deliberately replaced or cancelled, not unreachable. */
+  readonly superseded?: true
+}
+
+/** Whether two immutable state rows still describe the same remote connection lifetime. */
+export const sameServerConnection = (left: ConnectedServer, right: ConnectedServer): boolean =>
+  left.url === right.url &&
+  left.token === right.token &&
+  left.status === right.status &&
+  left.isAdmin === right.isAdmin &&
+  left.season === right.season &&
+  (left.info === null
+    ? right.info === null
+    : right.info !== null && left.info.id === right.info.id && left.info.auth === right.info.auth)
+
+/**
+ * Runtime identity for one configured connection lifetime.
+ *
+ * It is deliberately not persisted: removing a server and later probing the same URL starts a new
+ * lifetime even when every wire value happens to be equal. Immutable replacements made while the
+ * row remains configured inherit the token in {@link upsertServer}.
+ */
+const serverConnectionLifetimes = new WeakMap<ConnectedServer, object>()
+
+const serverConnectionLifetime = (server: ConnectedServer): object => {
+  const existing = serverConnectionLifetimes.get(server)
+  if (existing !== undefined) return existing
+  const created = {}
+  serverConnectionLifetimes.set(server, created)
+  return created
+}
+
+/** Whether this immutable connection snapshot is still the configured lifetime for its URL. */
+export const isCurrentServerConnection = (server: ConnectedServer): boolean => {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined) return false
+  if (current === server) return true
+  const lifetime = serverConnectionLifetimes.get(server)
+  return lifetime !== undefined && serverConnectionLifetimes.get(current) === lifetime
+}
+
+/** A browser-local folder; its metadata is small enough to live in userscript state. */
+export interface LocalFolder {
+  readonly id: string
+  readonly parentId: string | null
+  readonly name: string
+  readonly visible: boolean
 }
 
 export interface TreeNode {
@@ -55,7 +112,15 @@ export interface TreeNode {
   readonly parentId: string | null
   readonly path: string
   readonly name: string
+  readonly description?: string
   readonly createdAt: number
+}
+
+/** Browser-owned drawing preferences for an overlay whose pixels remain server-owned. */
+export interface ServerTemplatePreference {
+  readonly id: string
+  readonly appearance: Appearance | null
+  readonly owns: readonly AppearanceGroup[]
 }
 
 export type ProgressPlacement = 'inline' | 'expanded' | 'hidden'
@@ -73,6 +138,11 @@ export interface State {
   readonly progress: ProgressPlacement
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
+  readonly onlySelectedColour: boolean
+  readonly localFolders: readonly LocalFolder[]
+  readonly hiddenScopes: readonly string[]
+  readonly serverTemplatePreferences: readonly ServerTemplatePreference[]
+  readonly appearance: Appearance
   readonly reportPaints: boolean
   readonly shareTiles: boolean
 }
@@ -85,6 +155,11 @@ const DEFAULT_STATE: State = {
   sort: DEFAULT_SORT,
   progress: 'inline',
   hiddenColours: [],
+  onlySelectedColour: false,
+  localFolders: [],
+  hiddenScopes: [],
+  serverTemplatePreferences: [],
+  appearance: DEFAULT_APPEARANCE,
   reportPaints: false,
   shareTiles: false,
 }
@@ -93,19 +168,75 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const NODE_PATH = /^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u
 export const MAX_TREE_NODES = 100_000
-const MAX_MANIFEST_TEMPLATES = 100_000
-const MAX_MANIFEST_CHUNKS = 200_000
+export const MAX_MANIFEST_TEMPLATES = 100_000
+export const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
 const MAX_CUSTOM_ORDER = 200_000
 const MIN_EPOCH_MILLISECONDS = 1_577_836_800_000 // 2020-01-01
 const MAX_EPOCH_MILLISECONDS = 4_102_444_800_000 // 2100-01-01
 export const MAX_CONNECTED_SERVERS = 32
+/** At most every admitted overlay for every configured server may retain a local preference. */
+export const MAX_SERVER_TEMPLATE_PREFERENCES = MAX_CONNECTED_SERVERS * 64
+/** As many browser-local folders as a reload will restore. Written past, the rest is dropped. */
+export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
 const REMOTE_TIMEOUT_MS = 10_000
 const LARGE_TRANSFER_TIMEOUT_MS = 120_000
 const SERVER_JSON_BYTES = 16 * 1024
 const TREE_JSON_BYTES = 64 * 1024 * 1024
 const MUTATION_JSON_BYTES = 64 * 1024
+const MANIFEST_READ_CONCURRENCY = 4
+
+interface ManifestReadWaiter {
+  readonly grant: () => void
+  readonly cancel: () => void
+}
+
+let activeManifestReads = 0
+const manifestReadWaiters: ManifestReadWaiter[] = []
+
+const acquireManifestRead = (signal?: AbortSignal): true | Promise<boolean> => {
+  if (signal?.aborted) return Promise.resolve(false)
+  if (activeManifestReads < MANIFEST_READ_CONCURRENCY) {
+    activeManifestReads++
+    return true
+  }
+  return new Promise<boolean>((resolve) => {
+    const waiter: ManifestReadWaiter = {
+      grant: () => {
+        signal?.removeEventListener('abort', waiter.cancel)
+        resolve(true)
+      },
+      cancel: () => {
+        const index = manifestReadWaiters.indexOf(waiter)
+        if (index !== -1) manifestReadWaiters.splice(index, 1)
+        resolve(false)
+      },
+    }
+    signal?.addEventListener('abort', waiter.cancel, { once: true })
+    manifestReadWaiters.push(waiter)
+  })
+}
+
+const releaseManifestRead = (): void => {
+  const next = manifestReadWaiters.shift()
+  if (next === undefined) activeManifestReads--
+  else next.grant()
+}
+
+const gatedManifestJson = async (
+  input: string,
+  init: RequestInit,
+): Promise<{ response: Response; body: unknown }> => {
+  const signal = init.signal ?? undefined
+  const admission = acquireManifestRead(signal)
+  if (admission !== true && !(await admission)) throw new Error('manifest read cancelled')
+  try {
+    return await remoteJson(input, init, TREE_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS)
+  } finally {
+    releaseManifestRead()
+  }
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -142,7 +273,40 @@ const readBoundedJson = async (response: Response, maxBytes: number): Promise<un
   } finally {
     reader.releaseLock()
   }
-  return text === '' ? null : JSON.parse(text)
+  // A body that is not JSON is a body we have nothing to read, not a failure of the call: an error
+  // page still carries its status, and that is what the caller reports. Only the cap throws.
+  try {
+    return text === '' ? null : JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Every call to a configured server, with the one timeout they all share.
+ *
+ * `read` runs inside the timeout on purpose. Headers arriving is not the exchange finishing, and a
+ * server that answers promptly and then dribbles its body forever is the shape this is here to
+ * bound; clearing the timer when `fetch` resolves would leave exactly that case unguarded.
+ */
+const remoteCall = async <T>(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+  read: (response: Response) => Promise<T>,
+): Promise<T> => {
+  const controller = new AbortController()
+  const upstream = init.signal
+  const abortFromUpstream = (): void => controller.abort(upstream?.reason)
+  if (upstream?.aborted) abortFromUpstream()
+  else upstream?.addEventListener('abort', abortFromUpstream, { once: true })
+  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
+  try {
+    return await read(await fetch(input, { ...init, signal: controller.signal }))
+  } finally {
+    clearTimeout(timeout)
+    upstream?.removeEventListener('abort', abortFromUpstream)
+  }
 }
 
 const remoteJson = async (
@@ -150,21 +314,11 @@ const remoteJson = async (
   init: RequestInit = {},
   maxBytes = MUTATION_JSON_BYTES,
   timeoutMs = REMOTE_TIMEOUT_MS,
-): Promise<{ response: Response; body: unknown }> => {
-  const controller = new AbortController()
-  const external = init.signal
-  const forwardAbort = (): void => controller.abort(external?.reason)
-  if (external?.aborted) forwardAbort()
-  else external?.addEventListener('abort', forwardAbort, { once: true })
-  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
-  try {
-    const response = await fetch(input, { ...init, signal: controller.signal })
-    return { response, body: await readBoundedJson(response, maxBytes) }
-  } finally {
-    clearTimeout(timeout)
-    external?.removeEventListener('abort', forwardAbort)
-  }
-}
+): Promise<{ response: Response; body: unknown }> =>
+  await remoteCall(input, init, timeoutMs, async (response) => ({
+    response,
+    body: await readBoundedJson(response, maxBytes),
+  }))
 
 const serverInfoFrom = (value: unknown): ServerInfo | null => {
   if (!isRecord(value)) return null
@@ -215,12 +369,20 @@ const treeNodeFrom = (raw: unknown): TreeNode | null => {
   )
     return null
   if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return null
+  if (
+    raw.description !== undefined &&
+    (typeof raw.description !== 'string' ||
+      raw.description.length < 1 ||
+      raw.description.length > 4_096)
+  )
+    return null
   if (!plausibleMillis(raw.createdAt)) return null
   return {
     id: raw.id,
     parentId: raw.parentId,
     path: raw.path,
     name: raw.name,
+    ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
     createdAt: raw.createdAt,
   }
 }
@@ -360,11 +522,18 @@ const manifestContentsValid = (
     if (!isRecord(raw)) return false
     if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id) || templateIds.has(raw.id)) return false
     templateIds.add(raw.id)
-    if (typeof raw.nodeId !== 'string' || !nodeIds.has(raw.nodeId)) return false
+    if (raw.nodeId !== null && (typeof raw.nodeId !== 'string' || !nodeIds.has(raw.nodeId))) {
+      return false
+    }
     if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return false
     if (typeof raw.version !== 'string' || !UUID_V7.test(raw.version)) return false
     if (!Number.isSafeInteger(raw.totalPixels) || Number(raw.totalPixels) <= 0) return false
-    if (typeof raw.published !== 'boolean' || !plausibleMillis(raw.createdAt)) return false
+    if (
+      typeof raw.published !== 'boolean' ||
+      !plausibleMillis(raw.createdAt) ||
+      (raw.updatedAt !== undefined && !plausibleMillis(raw.updatedAt))
+    )
+      return false
     if (!isRecord(raw.bbox)) return false
     const { minX, minY, maxX, maxY } = raw.bbox
     if (
@@ -373,6 +542,9 @@ const manifestContentsValid = (
       Number(minX) >= WORLD_PIXELS ||
       Number(maxX) < 1 ||
       Number(maxX) > WORLD_PIXELS ||
+      // `minX > maxX` is the wire's way of saying the box wraps through zero, and the assembler
+      // already reads it as two spans. Requiring low-to-high in x rejected every conforming server
+      // that publishes a template across the antimeridian, and took the whole manifest with it.
       Number(minX) === Number(maxX) ||
       Number(minY) < 0 ||
       Number(minY) >= WORLD_PIXELS ||
@@ -439,22 +611,28 @@ const manifestProbeFrom = (
 // biome-ignore lint/suspicious/noExplicitAny: the GM_* API only exists under a userscript manager
 const gm = globalThis as any
 
-const readRaw = (): string | null => {
+const readRaw = (): { readonly value: string; readonly legacyPalette: boolean } | null => {
   try {
-    if (typeof gm.GM_getValue === 'function') return gm.GM_getValue(STORAGE_KEY, null)
-    return localStorage.getItem(STORAGE_KEY)
+    const read = (key: string): string | null =>
+      typeof gm.GM_getValue === 'function' ? gm.GM_getValue(key, null) : localStorage.getItem(key)
+    const current = read(STORAGE_KEY)
+    if (current !== null) return { value: current, legacyPalette: false }
+    const legacy = read(LEGACY_STORAGE_KEY)
+    return legacy === null ? null : { value: legacy, legacyPalette: true }
   } catch (error) {
     warn('install', 'could not read stored state', String(error))
     return null
   }
 }
 
-const writeRaw = (value: string): void => {
+const writeRaw = (value: string): boolean => {
   try {
     if (typeof gm.GM_setValue === 'function') gm.GM_setValue(STORAGE_KEY, value)
     else localStorage.setItem(STORAGE_KEY, value)
+    return true
   } catch (error) {
     warn('install', 'could not persist state', String(error))
+    return false
   }
 }
 
@@ -476,12 +654,12 @@ const notifyStateListeners = (): void => {
 }
 
 export const loadState = (): State => {
-  const raw = readRaw()
-  if (raw === null) return state
+  const storedRaw = readRaw()
+  if (storedRaw === null) return state
   try {
     // Spread over the defaults rather than trusting the stored shape: a build that adds a field
     // must not be broken by state written before it existed.
-    const parsed: unknown = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(storedRaw.value)
     if (!isRecord(parsed)) throw new TypeError('stored state is not an object')
     const stored = parsed as Partial<State>
     const servers: ConnectedServer[] = []
@@ -547,22 +725,119 @@ export const loadState = (): State => {
       stored.sort?.field === 'name'
         ? { field: 'name', direction: stored.sort.direction === 'desc' ? 'desc' : 'asc' }
         : DEFAULT_SORT
-    const hiddenColours = Array.isArray(stored.hiddenColours)
-      ? [
-          ...new Set(
-            stored.hiddenColours.filter(
-              (index): index is number =>
-                Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
-            ),
-          ),
-        ]
+    const storedHiddenColours = Array.isArray(stored.hiddenColours)
+      ? stored.hiddenColours.filter((index): index is number => Number.isSafeInteger(index))
       : []
+    const hiddenColours =
+      storedHiddenColours.length > 0
+        ? [
+            ...new Set(
+              (storedRaw.legacyPalette
+                ? remapPaletteColours(storedHiddenColours)
+                : storedHiddenColours
+              ).filter(
+                (index): index is number =>
+                  Number.isSafeInteger(index) && index >= 0 && index < PALETTE_SIZE,
+              ),
+            ),
+          ]
+        : []
     const panelWidth =
       typeof stored.panelWidth === 'number' && Number.isFinite(stored.panelWidth)
         ? Math.min(720, Math.max(260, stored.panelWidth))
         : DEFAULT_STATE.panelWidth
     const progress: ProgressPlacement =
       stored.progress === 'expanded' || stored.progress === 'hidden' ? stored.progress : 'inline'
+    const localFolders: LocalFolder[] = []
+    const folderIds = new Set<string>()
+    if (Array.isArray(stored.localFolders)) {
+      for (const candidate of stored.localFolders) {
+        if (
+          !isRecord(candidate) ||
+          typeof candidate.id !== 'string' ||
+          candidate.id.length > 128 ||
+          folderIds.has(candidate.id) ||
+          typeof candidate.name !== 'string' ||
+          candidate.name.length < 1 ||
+          candidate.name.length > 256 ||
+          (candidate.parentId !== null && typeof candidate.parentId !== 'string')
+        )
+          continue
+        folderIds.add(candidate.id)
+        localFolders.push({
+          id: candidate.id,
+          parentId: candidate.parentId,
+          name: candidate.name,
+          // Records written before folder visibility existed were visible.
+          visible: candidate.visible !== false,
+        })
+        if (localFolders.length >= MAX_LOCAL_FOLDERS) break
+      }
+    }
+    const storedHiddenScopes = Array.isArray(stored.hiddenScopes)
+      ? stored.hiddenScopes.filter(
+          (key): key is string => typeof key === 'string' && key.length <= 2_048,
+        )
+      : []
+    const migrateServerTemplateScope = (key: string): string => {
+      for (const server of servers) {
+        const prefix = `srv:${server.url}:`
+        if (!key.startsWith(prefix)) continue
+        const templateId = key.slice(prefix.length)
+        if (UUID_V7.test(templateId)) {
+          return `srv:${encodeURIComponent(server.url)}:${templateId}`
+        }
+      }
+      return key
+    }
+    const hiddenScopes = [
+      ...new Set(
+        storedHiddenScopes.flatMap((key) => {
+          const legacyNodeId = key.startsWith('node:') ? key.slice('node:'.length) : ''
+          if (!UUID_V7.test(legacyNodeId)) return [migrateServerTemplateScope(key)]
+          // The old key hid this node id without naming a server. Preserve that meaning for every
+          // connection that existed with the setting, then store only the collision-safe form.
+          return servers.map((server) => `node:${encodeURIComponent(server.url)}:${legacyNodeId}`)
+        }),
+      ),
+    ].slice(0, MAX_CUSTOM_ORDER)
+    const scopesMigrated =
+      hiddenScopes.length !== storedHiddenScopes.length ||
+      hiddenScopes.some((key, index) => key !== storedHiddenScopes[index])
+    const serverTemplatePreferences: ServerTemplatePreference[] = []
+    const preferenceIds = new Set<string>()
+    if (Array.isArray(stored.serverTemplatePreferences)) {
+      for (const candidate of stored.serverTemplatePreferences) {
+        if (
+          !isRecord(candidate) ||
+          typeof candidate.id !== 'string' ||
+          !candidate.id.startsWith('srv:') ||
+          candidate.id.length > 2_048 ||
+          preferenceIds.has(candidate.id) ||
+          !Array.isArray(candidate.owns)
+        )
+          continue
+        const appearance =
+          candidate.appearance === null
+            ? null
+            : normaliseAppearance(
+                storedRaw.legacyPalette
+                  ? remapStoredAppearance(candidate.appearance)
+                  : candidate.appearance,
+              )
+        if (candidate.appearance !== null && appearance === null) continue
+        const owns = [
+          ...new Set(
+            candidate.owns.filter((group): group is AppearanceGroup =>
+              APPEARANCE_GROUPS.includes(group as AppearanceGroup),
+            ),
+          ),
+        ]
+        preferenceIds.add(candidate.id)
+        serverTemplatePreferences.push({ id: candidate.id, appearance, owns })
+        if (serverTemplatePreferences.length >= MAX_SERVER_TEMPLATE_PREFERENCES) break
+      }
+    }
     state = {
       ...DEFAULT_STATE,
       servers,
@@ -572,10 +847,21 @@ export const loadState = (): State => {
       sort,
       progress,
       hiddenColours,
+      onlySelectedColour: stored.onlySelectedColour === true,
+      localFolders,
+      hiddenScopes,
+      serverTemplatePreferences,
+      appearance:
+        normaliseAppearance(
+          storedRaw.legacyPalette
+            ? remapStoredAppearance(stored.appearance ?? null)
+            : (stored.appearance ?? null),
+        ) ?? DEFAULT_APPEARANCE,
       reportPaints: stored.reportPaints === true,
       shareTiles: stored.shareTiles === true,
     }
     log('install', 'state loaded', { servers: state.servers.length })
+    if (storedRaw.legacyPalette || scopesMigrated) writeRaw(JSON.stringify(state))
     notifyStateListeners()
   } catch (error) {
     warn('install', 'stored state was unreadable; starting fresh', String(error))
@@ -585,15 +871,207 @@ export const loadState = (): State => {
 
 export const getState = (): State => state
 
+/** The global appearance currently shown on the map, including an uncommitted slider gesture. */
+let globalAppearancePreview: Appearance | null = null
+
+export const getGlobalAppearance = (): Appearance => globalAppearancePreview ?? state.appearance
+
+/** Preview a global appearance without serialising or notifying state subscribers. */
+export const previewGlobalAppearance = (appearance: Appearance | null): void => {
+  globalAppearancePreview = appearance
+}
+
 export const setState = (patch: Partial<State>): State => {
+  if (patch.appearance !== undefined) globalAppearancePreview = null
   state = { ...state, ...patch }
   writeRaw(JSON.stringify(state))
   notifyStateListeners()
   return state
 }
 
+/** Commit only if the browser accepts the durable copy; used where the caller reports save status. */
+const setStateDurably = (patch: Partial<State>): boolean => {
+  const next = { ...state, ...patch }
+  if (!writeRaw(JSON.stringify(next))) return false
+  state = next
+  notifyStateListeners()
+  return true
+}
+
 export const onStateChange = (listener: (next: State) => void): void => {
   listeners.push(listener)
+}
+
+const localFolderId = (): string =>
+  `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
+
+export const createLocalFolder = (parentId: string | null, name: string): LocalFolder | null => {
+  if (getState().localFolders.length >= MAX_LOCAL_FOLDERS) return null
+  const folder: LocalFolder = { id: localFolderId(), parentId, name, visible: true }
+  return setStateDurably({ localFolders: [...getState().localFolders, folder] }) ? folder : null
+}
+
+/** An id for a folder that has not been added yet, so a batch can wire up its own parents. */
+export const nextLocalFolderId = (): string => localFolderId()
+
+const localFolderLeases = new Map<string, number>()
+
+/** Keep a folder alive while an asynchronous template assignment commits to it. */
+export const leaseLocalFolder = (id: string): (() => void) | null => {
+  if (!getState().localFolders.some((folder) => folder.id === id)) return null
+  localFolderLeases.set(id, (localFolderLeases.get(id) ?? 0) + 1)
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    const remaining = (localFolderLeases.get(id) ?? 1) - 1
+    if (remaining === 0) localFolderLeases.delete(id)
+    else localFolderLeases.set(id, remaining)
+  }
+}
+
+/**
+ * Add many folders in one write.
+ *
+ * `setState` serialises the whole state, so adding a folder at a time costs the square of the
+ * number of folders. Moving a server branch of any real size into Local did exactly that and locked
+ * the tab up for the duration.
+ *
+ * Refused rather than truncated past the limit, because the limit is what a reload will restore: a
+ * write that goes over it looks like it worked until the next session, which quietly loses the rest.
+ */
+export const addLocalFolders = (folders: readonly LocalFolder[]): boolean => {
+  if (folders.length === 0) return true
+  const existing = getState().localFolders
+  if (existing.length + folders.length > MAX_LOCAL_FOLDERS) return false
+  return setStateDurably({ localFolders: [...existing, ...folders] })
+}
+
+export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)
+
+export const setScopeVisible = (key: string, visible: boolean): boolean => {
+  const hidden = getState().hiddenScopes
+  if (visible === !hidden.includes(key)) return true
+  return setStateDurably({
+    hiddenScopes: visible ? hidden.filter((candidate) => candidate !== key) : [...hidden, key],
+  })
+}
+
+export const serverTemplatePreference = (id: string): ServerTemplatePreference | undefined =>
+  getState().serverTemplatePreferences.find((preference) => preference.id === id)
+
+/** Save browser-owned appearance independently of the server-owned pixels and metadata. */
+export const setServerTemplatePreference = (
+  id: string,
+  appearance: Appearance | null,
+  owns: readonly AppearanceGroup[],
+): boolean => {
+  if (!id.startsWith('srv:') || id.length > 2_048) return false
+  const preferences = getState().serverTemplatePreferences
+  const index = preferences.findIndex((preference) => preference.id === id)
+  if (appearance === null && owns.length === 0) {
+    if (index !== -1) {
+      return setStateDurably({
+        serverTemplatePreferences: preferences.filter((_, at) => at !== index),
+      })
+    }
+    return true
+  }
+  if (index === -1 && preferences.length >= MAX_SERVER_TEMPLATE_PREFERENCES) return false
+  const preference: ServerTemplatePreference = {
+    id,
+    appearance,
+    owns: [...new Set(owns)].filter((group) => APPEARANCE_GROUPS.includes(group)),
+  }
+  return setStateDurably({
+    serverTemplatePreferences:
+      index === -1
+        ? [...preferences, preference]
+        : preferences.map((current, at) => (at === index ? preference : current)),
+  })
+}
+
+export const setLocalFolderVisible = (id: string, visible: boolean): boolean =>
+  setStateDurably({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, visible } : folder,
+    ),
+  })
+
+export const localFolderChainVisible = (folderId: string | null): boolean => {
+  if (!isScopeVisible('local')) return false
+  const folders = getState().localFolders
+  let walk = folderId
+  const seen = new Set<string>()
+  while (walk !== null) {
+    if (seen.has(walk)) return true
+    seen.add(walk)
+    const folder = folders.find((candidate) => candidate.id === walk)
+    if (folder === undefined) return true
+    if (folder.visible === false) return false
+    walk = folder.parentId
+  }
+  return true
+}
+
+export const renameLocalFolder = (id: string, name: string): boolean => {
+  const trimmed = name.trim()
+  if (trimmed === '' || trimmed.length > 256) return false
+  return setStateDurably({
+    localFolders: getState().localFolders.map((folder) =>
+      folder.id === id ? { ...folder, name: trimmed } : folder,
+    ),
+  })
+}
+
+export const removeLocalFolder = (id: string): boolean => {
+  const folders = getState().localFolders
+  const folder = folders.find((candidate) => candidate.id === id)
+  if (folder === undefined) return true
+  if ((localFolderLeases.get(id) ?? 0) > 0) return false
+  return setStateDurably({
+    localFolders: folders
+      .filter((candidate) => candidate.id !== id)
+      .map((candidate) =>
+        candidate.parentId === id ? { ...candidate, parentId: folder.parentId } : candidate,
+      ),
+  })
+}
+
+/** Remove a fully validated folder set in one durable write. */
+export const removeLocalFolders = (ids: ReadonlySet<string>): boolean => {
+  if (ids.size === 0) return true
+  const folders = getState().localFolders
+  const existing = new Set(folders.map((folder) => folder.id))
+  for (const id of ids) {
+    if (!existing.has(id) || (localFolderLeases.get(id) ?? 0) > 0) return false
+  }
+  // A child outside the set would be silently detached by a bulk delete. The transplant caller
+  // checks this just before the call, and this refusal keeps the helper safe at the commit boundary.
+  if (
+    folders.some(
+      (folder) => !ids.has(folder.id) && folder.parentId !== null && ids.has(folder.parentId),
+    )
+  )
+    return false
+  return setStateDurably({ localFolders: folders.filter((folder) => !ids.has(folder.id)) })
+}
+
+export const moveLocalFolder = (id: string, parentId: string | null): boolean => {
+  if (id === parentId) return false
+  const folders = getState().localFolders
+  if (!folders.some((folder) => folder.id === id)) return false
+  let walk = parentId
+  // Bounded by the number of folders, because the list comes back from storage and every other
+  // reader in this file treats that as something to check rather than trust. A chain longer than
+  // the list is a cycle, and an unbounded walk up one hangs the tab instead of refusing the move.
+  for (let step = 0; walk !== null; step++) {
+    if (walk === id || step > folders.length) return false
+    walk = folders.find((candidate) => candidate.id === walk)?.parentId ?? null
+  }
+  return setStateDurably({
+    localFolders: folders.map((folder) => (folder.id === id ? { ...folder, parentId } : folder)),
+  })
 }
 
 /** Replace one server in place, keyed by url, preserving the order of the rest. */
@@ -607,6 +1085,12 @@ export const upsertServer = (server: ConnectedServer): boolean => {
     current?.lastVerified != null &&
     (server.info === null || server.info.id === current.lastVerified.serverId)
   const next = canRetainIdentity ? { ...server, lastVerified: current.lastVerified } : server
+  const lifetime =
+    current !== undefined && sameServerConnection(current, server)
+      ? serverConnectionLifetime(current)
+      : {}
+  serverConnectionLifetimes.set(server, lifetime)
+  serverConnectionLifetimes.set(next, lifetime)
   setState({
     servers: index === -1 ? [...servers, next] : servers.map((s, i) => (i === index ? next : s)),
   })
@@ -615,9 +1099,16 @@ export const upsertServer = (server: ConnectedServer): boolean => {
 
 export const removeServer = (url: string): void => {
   const key = `server:${url}`
+  const templatePrefix = `srv:${encodeURIComponent(url)}:`
+  // Request ids are process-wide and monotonic, so an old response can never tie a request made
+  // after this URL reconnects. Only the answer belonging to the ended connection is forgotten.
+  latestManifestResponse.delete(url)
   setState({
     servers: getState().servers.filter((s) => s.url !== url),
     customOrder: getState().customOrder.filter((candidate) => candidate !== key),
+    serverTemplatePreferences: getState().serverTemplatePreferences.filter(
+      (preference) => !preference.id.startsWith(templatePrefix),
+    ),
   })
 }
 
@@ -629,6 +1120,13 @@ export const removeTreeStateKeys = (keys: ReadonlySet<string>): void => {
   if (customOrder.length !== currentOrder.length || collapsed.length !== currentCollapsed.length) {
     setState({ customOrder, collapsed })
   }
+}
+
+/** Drop visibility state that belongs to a disconnected source. */
+export const forgetScopes = (keys: Iterable<string>): void => {
+  const drop = new Set(keys)
+  const hiddenScopes = getState().hiddenScopes.filter((key) => !drop.has(key))
+  if (hiddenScopes.length !== getState().hiddenScopes.length) setState({ hiddenScopes })
 }
 
 export type NodeListResult =
@@ -644,14 +1142,12 @@ const fetchNodes = async (
   base: string,
   token: string | null,
   season: number,
-  signal?: AbortSignal,
 ): Promise<NodeListResult> => {
   try {
     const { response, body } = await remoteJson(
       `${base}/admin/nodes?season=${season}`,
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        ...(signal === undefined ? {} : { signal }),
       },
       TREE_JSON_BYTES,
       LARGE_TRANSFER_TIMEOUT_MS,
@@ -674,30 +1170,34 @@ const probeAdminScope = async (
   season: number,
   signal?: AbortSignal,
 ): Promise<boolean> => {
-  const controller = new AbortController()
-  const forwardAbort = (): void => controller.abort(signal?.reason)
-  if (signal?.aborted) forwardAbort()
-  else signal?.addEventListener('abort', forwardAbort, { once: true })
-  const timeout = setTimeout(
-    () => controller.abort(new Error('request timed out')),
-    LARGE_TRANSFER_TIMEOUT_MS,
-  )
   try {
-    const response = await fetch(`${base}/admin/nodes?season=${season}`, {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-    await discardResponseBody(response)
-    return response.ok
+    // The status is the whole answer, so the body is thrown away unread. Parsing it measured the
+    // full folder tree against the 64 KB cap meant for a one-line mutation reply, and any server
+    // with a real tree therefore reported that our token could only read it.
+    return await remoteCall(
+      `${base}/admin/nodes?season=${season}`,
+      {
+        headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        ...(signal === undefined ? {} : { signal }),
+      },
+      LARGE_TRANSFER_TIMEOUT_MS,
+      async (response) => {
+        await discardResponseBody(response)
+        return response.ok
+      },
+    )
   } catch {
     return false
-  } finally {
-    clearTimeout(timeout)
-    signal?.removeEventListener('abort', forwardAbort)
   }
 }
 
 const probedNodes = new WeakMap<ConnectedServer, readonly TreeNode[]>()
+const activeServerProbes = new Map<string, AbortController>()
+
+export const cancelServerProbe = (serverUrl: string): void => {
+  activeServerProbes.get(serverUrl)?.abort(new Error('server probe cancelled'))
+  activeServerProbes.delete(serverUrl)
+}
 
 /** Consume the node collection already downloaded while verifying admin scope. */
 export const takeProbedNodes = (server: ConnectedServer): readonly TreeNode[] | undefined => {
@@ -720,7 +1220,7 @@ export const peekProbedNodes = (server: ConnectedServer): readonly TreeNode[] | 
 export const probeServer = async (
   url: string,
   token: string | null,
-  signal?: AbortSignal,
+  options: { readonly supersedeActive?: boolean } = {},
 ): Promise<ConnectedServer> => {
   let base: string
   try {
@@ -736,13 +1236,29 @@ export const probeServer = async (
       season: null,
     }
   }
+  const activeProbe = activeServerProbes.get(base)
+  if (activeProbe !== undefined && options.supersedeActive === false) {
+    return {
+      url: base,
+      info: null,
+      token,
+      status: 'unreachable',
+      error: 'superseded by an active foreground server probe',
+      isAdmin: false,
+      season: null,
+      superseded: true,
+    }
+  }
+  activeProbe?.abort(new Error('superseded by a newer server probe'))
+  const probeController = new AbortController()
+  activeServerProbes.set(base, probeController)
   let observedInfo: ServerInfo | null = null
   try {
     const { response, body } = await remoteJson(
       `${base}/server`,
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        ...(signal === undefined ? {} : { signal }),
+        signal: probeController.signal,
       },
       SERVER_JSON_BYTES,
     )
@@ -777,15 +1293,10 @@ export const probeServer = async (
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
     const fetchManifest = (credential: string | null) =>
-      remoteJson(
-        `${base}/manifest`,
-        {
-          headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
-          ...(signal === undefined ? {} : { signal }),
-        },
-        TREE_JSON_BYTES,
-        LARGE_TRANSFER_TIMEOUT_MS,
-      )
+      gatedManifestJson(`${base}/manifest`, {
+        headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
+        signal: probeController.signal,
+      })
     let effectiveToken = token
     let { response: authed, body: manifestBody } = await fetchManifest(effectiveToken)
     if (
@@ -824,7 +1335,13 @@ export const probeServer = async (
     }
     const manifest = manifestProbeFrom(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
-    const isAdmin = await probeAdminScope(base, effectiveToken, manifest.season, signal)
+    const isAdmin = await probeAdminScope(
+      base,
+      effectiveToken,
+      manifest.season,
+      probeController.signal,
+    )
+    if (probeController.signal.aborted) throw probeController.signal.reason
     const connected: ConnectedServer = {
       url: base,
       info,
@@ -847,7 +1364,10 @@ export const probeServer = async (
       error: String(error),
       isAdmin: false,
       season: null,
+      ...(probeController.signal.aborted ? { superseded: true as const } : {}),
     }
+  } finally {
+    if (activeServerProbes.get(base) === probeController) activeServerProbes.delete(base)
   }
 }
 
@@ -859,9 +1379,14 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
     while (cursor < snapshot.length) {
       const server = snapshot[cursor++]
       if (server === undefined) return
-      const refreshed = await probeServer(server.url, server.token)
-      if (getState().servers.find((candidate) => candidate.url === server.url) !== server) continue
-      upsertServer(refreshed)
+      if (!isCurrentServerConnection(server)) continue
+      const refreshed = await probeServer(server.url, server.token, { supersedeActive: false })
+      if (refreshed.superseded === true) continue
+      const current = getState().servers.find((candidate) => candidate.url === server.url)
+      if (current === undefined || !isCurrentServerConnection(server)) continue
+      // A cosmetic replacement can land while the probe is in flight. Preserve that newer local
+      // metadata while still applying the probe's current connectivity, season, and scope result.
+      upsertServer(current === server ? refreshed : { ...refreshed, info: current.info })
       try {
         onRefreshed?.()
       } catch (error) {
@@ -885,7 +1410,7 @@ export const createNode = async (
   server: ConnectedServer,
   name: string,
   parentId: string | null,
-  signal?: AbortSignal,
+  description?: string,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
@@ -896,8 +1421,12 @@ export const createNode = async (
         'content-type': 'application/json',
         ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
       },
-      body: JSON.stringify({ season: server.season, parentId, name }),
-      ...(signal === undefined ? {} : { signal }),
+      body: JSON.stringify({
+        season: server.season,
+        parentId,
+        name,
+        ...(description === undefined ? {} : { description }),
+      }),
     })
     if (response.ok) {
       const node = treeNodeFrom(body)
@@ -928,11 +1457,11 @@ const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
 })
 
 const noteAuthFailure = (server: ConnectedServer, status: number): void => {
-  if (getState().servers.find((candidate) => candidate.url === server.url) !== server) return
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined || !isCurrentServerConnection(server)) return
   const needsToken = status === 401
   const replacement: ConnectedServer = {
-    ...server,
-    token: server.token,
+    ...current,
     status: needsToken ? 'needs-token' : 'connected',
     error: needsToken ? 'authorization expired' : 'admin access required',
     isAdmin: false,
@@ -949,18 +1478,71 @@ const failure = (response: Response, body: Record<string, unknown> | null): stri
       ? body.error
       : `Server said ${response.status}.`
 
+type UploadFailure = { readonly ok: false; readonly message: string; readonly ambiguous?: true }
+
+interface PendingUploadAmbiguity {
+  readonly afterManifestRequest: number
+}
+
+const pendingUploadAmbiguities = new Map<string, PendingUploadAmbiguity>()
+const activeUploads = new Map<string, { readonly token: object }>()
+
+const pendingUploadFailure = (server: ConnectedServer): UploadFailure | null => {
+  const pending = pendingUploadAmbiguities.get(server.url)
+  if (pending === undefined) return null
+  return {
+    ok: false,
+    message: 'A previous upload may have completed. Refresh this server before uploading again.',
+    ambiguous: true,
+  }
+}
+
+const markUploadAmbiguous = (server: ConnectedServer, message: string): UploadFailure => {
+  const existing = pendingUploadAmbiguities.get(server.url)
+  pendingUploadAmbiguities.set(server.url, {
+    afterManifestRequest: Math.max(existing?.afterManifestRequest ?? 0, manifestRequestSequence),
+  })
+  return { ok: false, message, ambiguous: true }
+}
+
+const clearUploadAmbiguity = (server: ConnectedServer, manifestRequest: number): void => {
+  const pending = pendingUploadAmbiguities.get(server.url)
+  if (pending !== undefined && manifestRequest > pending.afterManifestRequest) {
+    pendingUploadAmbiguities.delete(server.url)
+  }
+}
+
+const beginUpload = (
+  server: ConnectedServer,
+): { readonly token: object } | { readonly failure: UploadFailure } => {
+  if (!isCurrentServerConnection(server)) {
+    return { failure: { ok: false, message: 'The server connection changed before upload.' } }
+  }
+  const pending = pendingUploadFailure(server)
+  if (pending !== null) return { failure: pending }
+  const active = activeUploads.get(server.url)
+  if (active !== undefined) {
+    return { failure: { ok: false, message: 'Another upload to this server is still running.' } }
+  }
+  const token = {}
+  activeUploads.set(server.url, { token })
+  return { token }
+}
+
+const endUpload = (serverUrl: string, token: object): void => {
+  if (activeUploads.get(serverUrl)?.token === token) activeUploads.delete(serverUrl)
+}
+
 export const renameNode = async (
   server: ConnectedServer,
   nodeId: string,
   name: string,
-  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
     const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify({ name }),
-      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
@@ -973,13 +1555,16 @@ export const renameNode = async (
 export const deleteNode = async (
   server: ConnectedServer,
   nodeId: string,
-  signal?: AbortSignal,
+  expected: { readonly nodes: number; readonly templates: number } | null = null,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
+    const cascade =
+      expected === null
+        ? ''
+        : `?cascade=true&expectedNodes=${expected.nodes}&expectedTemplates=${expected.templates}`
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}${cascade}`, {
       method: 'DELETE',
       headers: adminHeaders(server),
-      ...(signal === undefined ? {} : { signal }),
     })
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
@@ -990,12 +1575,9 @@ export const deleteNode = async (
 }
 
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
-export const listNodes = async (
-  server: ConnectedServer,
-  signal?: AbortSignal,
-): Promise<NodeListResult> => {
+export const listNodes = async (server: ConnectedServer): Promise<NodeListResult> => {
   if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
-  const result = await fetchNodes(server.url, server.token, server.season, signal)
+  const result = await fetchNodes(server.url, server.token, server.season)
   if (!result.ok && (result.status === 401 || result.status === 403)) {
     noteAuthFailure(server, result.status)
   }
@@ -1012,18 +1594,21 @@ export const listNodes = async (
 export const uploadTemplate = async (
   server: ConnectedServer,
   input: {
-    nodeId: string
+    nodeId: string | null
     name: string
     originX: number
     originY: number
     png: Blob
   },
-  signal?: AbortSignal,
-): Promise<{ ok: true; id: string } | { ok: false; message: string }> => {
+): Promise<{ ok: true; id: string; version: string } | UploadFailure> => {
+  const begun = beginUpload(server)
+  if ('failure' in begun) return begun.failure
   try {
     const form = new FormData()
     form.set('png', input.png, `${input.name}.png`)
-    form.set('nodeId', input.nodeId)
+    if (input.nodeId !== null) form.set('nodeId', input.nodeId)
+    if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
+    form.set('season', String(server.season))
     form.set('name', input.name)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
@@ -1033,28 +1618,565 @@ export const uploadTemplate = async (
         method: 'POST',
         headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
         body: form,
-        ...(signal === undefined ? {} : { signal }),
       },
       MUTATION_JSON_BYTES,
       LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (response.ok) {
       const id = isRecord(body) ? body.templateId : undefined
-      return typeof id === 'string' && UUID_V7.test(id)
-        ? { ok: true, id }
-        : { ok: false, message: 'Server returned an invalid uploaded template.' }
+      const version = isRecord(body) ? body.versionId : undefined
+      return typeof id === 'string' &&
+        UUID_V7.test(id) &&
+        typeof version === 'string' &&
+        UUID_V7.test(version)
+        ? { ok: true, id, version }
+        : markUploadAmbiguous(server, 'Server returned an invalid uploaded template.')
     }
     if (response.status === 401 || response.status === 403) {
       noteAuthFailure(server, response.status)
       return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
     }
-    return {
+    const rejected = {
       ok: false,
       message:
         isRecord(body) && typeof body.error === 'string'
           ? body.error
           : `Server said ${response.status}.`,
+    } as const
+    return response.status >= 500 ? markUploadAmbiguous(server, rejected.message) : rejected
+  } catch (error) {
+    return markUploadAmbiguous(server, String(error))
+  } finally {
+    endUpload(server.url, begun.token)
+  }
+}
+export const moveNode = async (
+  server: ConnectedServer,
+  nodeId: string,
+  parentId: string | null,
+): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ parentId }),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+      ...(response.status === 408 || response.status === 429 || response.status >= 500
+        ? { retryable: true as const }
+        : {}),
     }
+  } catch (error) {
+    return { ok: false, message: String(error), retryable: true }
+  }
+}
+
+export const countNodeSubtree = async (
+  server: ConnectedServer,
+  nodeId: string,
+): Promise<{ nodes: number; templates: number } | null> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}/subtree`, {
+      headers: adminHeaders(server),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) return null
+    const parsed = body as { nodes?: unknown; templates?: unknown }
+    if (
+      !Number.isSafeInteger(parsed.nodes) ||
+      (parsed.nodes as number) < 1 ||
+      !Number.isSafeInteger(parsed.templates) ||
+      (parsed.templates as number) < 0
+    )
+      return null
+    return { nodes: parsed.nodes as number, templates: parsed.templates as number }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Everything a server is publishing: the folder tree and the templates hanging off it.
+ *
+ * One fetch, from `/manifest`, and that endpoint is the right one for **both** — the structure is
+ * not privileged information. Anyone with a read code is meant to see the tree; the admin boundary
+ * is *changing* it, which lives on the `/admin` routes. Reading the tree from `GET /admin/nodes`
+ * put the boundary in the wrong place and left every read-scope member staring at a server with no
+ * folders, and therefore no templates, since a template row is drawn under its folder.
+ *
+ * Answers empty on any failure rather than throwing. A tree that has drawn a stale row is better
+ * than a tree that has thrown, and the cached copy is what it falls back to.
+ */
+export interface ServerContents {
+  readonly nodes: readonly TreeNode[]
+  readonly templates: readonly ServerTemplate[]
+}
+
+let manifestRequestSequence = 0
+const latestManifestResponse = new Map<string, number>()
+const manifestResponseOf = new WeakMap<ServerContents, number>()
+const admittedServerContents = new Map<
+  string,
+  { readonly server: ConnectedServer; readonly contents: ServerContents }
+>()
+const serverContentsListeners = new Set<
+  (server: ConnectedServer, contents: ServerContents) => void
+>()
+
+/** Observe each newest successful manifest, no matter which UI or poll requested it. */
+export const onServerContents = (
+  listener: (server: ConnectedServer, contents: ServerContents) => void,
+): (() => void) => {
+  serverContentsListeners.add(listener)
+  return () => serverContentsListeners.delete(listener)
+}
+
+/** Whether this snapshot is still the newest successful manifest response for its server. */
+export const isLatestServerContents = (serverUrl: string, contents: ServerContents): boolean => {
+  const response = manifestResponseOf.get(contents)
+  return response === undefined || response === latestManifestResponse.get(serverUrl)
+}
+
+/**
+ * Mark the newest manifest as safe for every consumer to use.
+ *
+ * Aggregate admission belongs to the panel coordinator because it spans all configured servers.
+ * Keeping the winning snapshot here gives admin helpers and the canvas repair path the same answer,
+ * while retaining the connection that earned it prevents a same-URL reconnect from inheriting it.
+ */
+export const admitServerContents = (server: ConnectedServer, contents: ServerContents): boolean => {
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (
+    current === undefined ||
+    !isCurrentServerConnection(server) ||
+    !isLatestServerContents(server.url, contents)
+  )
+    return false
+  admittedServerContents.set(server.url, { server: current, contents })
+  const request = manifestResponseOf.get(contents)
+  if (request !== undefined) clearUploadAmbiguity(server, request)
+  return true
+}
+
+/** The admitted snapshot belonging to this exact connection lifetime, if one exists. */
+export const admittedServerContentsFor = (server: ConnectedServer): ServerContents | null => {
+  const admitted = admittedServerContents.get(server.url)
+  return admitted !== undefined &&
+    isCurrentServerConnection(server) &&
+    isCurrentServerConnection(admitted.server)
+    ? admitted.contents
+    : null
+}
+
+export const forgetAdmittedServerContents = (serverUrl: string): void => {
+  admittedServerContents.delete(serverUrl)
+}
+
+export const listServerContents = async (
+  server: ConnectedServer,
+  signal?: AbortSignal,
+): Promise<ServerContents | null> => {
+  if (server.info === null || server.season === null) return null
+  const admission = acquireManifestRead(signal)
+  if (admission !== true && !(await admission)) return null
+  if (!isCurrentServerConnection(server)) {
+    releaseManifestRead()
+    return null
+  }
+  const request = ++manifestRequestSequence
+  try {
+    const { response, body } = await remoteJson(
+      `${server.url}/manifest?season=${server.season}`,
+      {
+        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        ...(signal === undefined ? {} : { signal }),
+      },
+      TREE_JSON_BYTES,
+      LARGE_TRANSFER_TIMEOUT_MS,
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) return null
+    const manifest = manifestProbeFrom(body, server.info)
+    if (manifest === null || manifest.season !== server.season || !isRecord(body)) return null
+    const templates = (body.templates as readonly Record<string, unknown>[]).map(
+      (template): ServerTemplate => ({
+        id: String(template.id),
+        nodeId: template.nodeId === null ? null : String(template.nodeId),
+        name: String(template.name),
+        version: String(template.version),
+        published: template.published === true,
+        updatedAt:
+          typeof template.updatedAt === 'number'
+            ? template.updatedAt
+            : typeof template.createdAt === 'number'
+              ? template.createdAt
+              : 0,
+        bbox: template.bbox as ServerTemplate['bbox'],
+        chunks: template.chunks as ServerTemplate['chunks'],
+      }),
+    )
+    const contents: ServerContents = { nodes: manifest.nodes, templates }
+    manifestResponseOf.set(contents, request)
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (
+      current !== undefined &&
+      isCurrentServerConnection(server) &&
+      request > (latestManifestResponse.get(server.url) ?? 0)
+    ) {
+      latestManifestResponse.set(server.url, request)
+      for (const listener of serverContentsListeners) {
+        try {
+          listener(current, contents)
+        } catch (error) {
+          warn('install', 'could not publish fresh manifest contents', String(error))
+        }
+      }
+    }
+    return contents
+  } catch {
+    return null
+  } finally {
+    releaseManifestRead()
+  }
+}
+
+export type ServerNodesResult =
+  | { readonly status: 'ok'; readonly nodes: readonly TreeNode[] }
+  | { readonly status: 'unreachable' | 'not-admitted' }
+
+/** The folder tree alone, for the admin flows that need somewhere to put something. */
+/**
+ * The admitted folders, with network failure kept distinct from a successful unsafe snapshot.
+ *
+ * Empty is a real server answer. A failed fetch used to answer with an empty list, so Move claimed
+ * the server had one folder, Copy said to create one first, and folder naming picked a name as
+ * though nothing was there. Aggregate refusal is different again: the server answered, but using
+ * rows the tree and canvas refused would let admin actions commit against state the UI cannot show.
+ */
+export const listServerNodes = async (
+  server: ConnectedServer,
+  signal?: AbortSignal,
+): Promise<ServerNodesResult> => {
+  const contents = await listServerContents(server, signal)
+  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (contents === null || current === undefined || !isCurrentServerConnection(server))
+    return { status: 'unreachable' }
+  const admitted = admittedServerContentsFor(current)
+  return admitted === null ? { status: 'not-admitted' } : { status: 'ok', nodes: admitted.nodes }
+}
+
+/**
+ * The templates alone, or null when the server could not be asked.
+ *
+ * Null and empty are kept apart on purpose. A failed fetch used to answer with an empty list, and
+ * the sync read that as "this server publishes nothing" — so one blip, or a server restarting, took
+ * every template off the canvas and the next success put them back as if they were new.
+ */
+export const listServerTemplates = async (
+  server: ConnectedServer,
+): Promise<readonly ServerTemplate[] | null> => {
+  const contents = await listServerContents(server)
+  return contents === null || !isLatestServerContents(server.url, contents)
+    ? null
+    : contents.templates
+}
+
+export const patchTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+  patch: { name?: string; nodeId?: string | null; published?: boolean },
+): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify(patch),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return {
+      ok: false,
+      message: failure(response, isRecord(body) ? body : null),
+      ...(response.status === 408 || response.status === 429 || response.status >= 500
+        ? { retryable: true as const }
+        : {}),
+    }
+  } catch (error) {
+    return { ok: false, message: String(error), retryable: true }
+  }
+}
+
+/**
+ * Rename a server — the name every member sees, not a label local to this browser.
+ *
+ * Worth being explicit about, because the row it is edited from looks exactly like the Local one
+ * above it, and that one *is* local. This writes to the server, and the next member to open their
+ * panel sees the new name.
+ *
+ * The local copy is refreshed from public server metadata after the write. The mutation response
+ * has no revision, so applying the submitted name directly could overwrite a newer rename learned
+ * by a connection that replaced this one while the response was delayed.
+ */
+const activeServerRenames = new Set<string>()
+
+export const renameServer = async (
+  server: ConnectedServer,
+  name: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  const trimmed = name.trim()
+  if (trimmed === '') return { ok: false, message: 'A server needs a name.' }
+  if (activeServerRenames.has(server.url)) {
+    return { ok: false, message: 'A rename for this server is already in progress.' }
+  }
+  activeServerRenames.add(server.url)
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/server`, {
+      method: 'PATCH',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ name: trimmed }),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) {
+      return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    }
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current !== undefined && current.info !== null && server.info !== null) {
+      let refreshed: ServerInfo | null = null
+      try {
+        const metadata = await remoteJson(`${current.url}/server`, {}, SERVER_JSON_BYTES)
+        if (metadata.response.ok) refreshed = serverInfoFrom(metadata.body)
+      } catch {
+        // The PATCH already committed. A failed cosmetic refresh must not turn success into failure.
+      }
+      const latest = getState().servers.find((candidate) => candidate.url === server.url)
+      if (
+        latest !== undefined &&
+        latest.info !== null &&
+        isCurrentServerConnection(current) &&
+        latest.info === current.info &&
+        refreshed !== null &&
+        refreshed.id === server.info.id &&
+        latest.info.id === refreshed.id
+      ) {
+        upsertServer({ ...latest, info: refreshed })
+      } else if (
+        latest !== undefined &&
+        latest.info !== null &&
+        isCurrentServerConnection(server) &&
+        latest.info === current.info &&
+        refreshed === null &&
+        latest.info.id === server.info.id
+      ) {
+        // Preserve the immediate feedback when the metadata read alone failed. This fallback is
+        // safe only in the connection lifetime that submitted the write.
+        upsertServer({ ...latest, info: { ...latest.info, name: trimmed } })
+      }
+    }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  } finally {
+    activeServerRenames.delete(server.url)
+  }
+}
+
+export const deleteTemplate = async (
+  server: ConnectedServer,
+  templateId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
+      method: 'DELETE',
+      headers: adminHeaders(server),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Replace a published template's pixels, keeping everything else about it.
+ *
+ * The origin travels with the image because a new version is a new slicing — moving artwork on the
+ * canvas is a different picture as far as the chunk index is concerned, not an edit to the old one.
+ */
+export const uploadTemplateVersion = async (
+  server: ConnectedServer,
+  templateId: string,
+  input: { originX: number; originY: number; png: Blob; name: string },
+): Promise<{ ok: true; versionId: string } | UploadFailure> => {
+  const begun = beginUpload(server)
+  if ('failure' in begun) return begun.failure
+  try {
+    const form = new FormData()
+    form.set('png', input.png, `${input.name}.png`)
+    form.set('originX', String(input.originX))
+    form.set('originY', String(input.originY))
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/templates/${templateId}/versions`,
+      {
+        method: 'POST',
+        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        body: form,
+      },
+      MUTATION_JSON_BYTES,
+      // A PNG upload, like the one that creates a template: the ten-second budget is for a request
+      // that carries a sentence, not a megabyte.
+      LARGE_TRANSFER_TIMEOUT_MS,
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) {
+      const versionId = isRecord(body) ? body.versionId : undefined
+      // A 2xx with no usable id is not a success we can report: the server never confirmed what it
+      // stored. `uploadTemplate` rejects the same shape, and Replace announcing "done" on it told
+      // the user their artwork had been replaced on no evidence at all.
+      return typeof versionId === 'string' && UUID_V7.test(versionId)
+        ? { ok: true, versionId }
+        : markUploadAmbiguous(
+            server,
+            'The server accepted the upload but did not say what it stored.',
+          )
+    }
+    const message = failure(response, isRecord(body) ? body : null)
+    return response.status >= 500 ? markUploadAmbiguous(server, message) : { ok: false, message }
+  } catch (error) {
+    return markUploadAmbiguous(server, String(error))
+  } finally {
+    endUpload(server.url, begun.token)
+  }
+}
+
+/**
+ * An access token as the server will ever describe it back to us.
+ *
+ * No secret. The plaintext exists once, in the response to the call that mints it, and is never
+ * stored anywhere — the server keeps a hash, so there is nothing to reveal later even if a route
+ * wanted to. Which is the point: a list that could show them would turn one leaked admin session
+ * into every token the server has.
+ */
+interface StoredAccessToken {
+  readonly tokenHash: string
+  readonly label: string
+  readonly scope: 'read' | 'report' | 'admin'
+  readonly createdWithToken: string
+  readonly createdAt: number
+  readonly bootstrap?: false
+}
+
+/** The operator credential is environment-owned and therefore has no revocable token hash. */
+interface BootstrapAccessToken {
+  readonly label: string
+  readonly scope: 'admin'
+  readonly createdAt: number
+  readonly bootstrap: true
+}
+
+export type AccessToken = StoredAccessToken | BootstrapAccessToken
+
+export interface AccessTokenPage {
+  readonly tokens: readonly AccessToken[]
+  readonly nextCursor: string | null
+}
+
+const SCOPES: readonly string[] = ['read', 'report', 'admin']
+const TOKEN_CURSOR = /^(0|[1-9]\d*):[0-9a-f]{64}$/
+
+/**
+ * A configured server is someone else's machine, so its token list is checked rather than trusted:
+ * the panel renders these rows and hands `tokenHash` straight back as a URL path segment.
+ */
+const asAccessToken = (value: unknown): AccessToken | null => {
+  if (!isRecord(value)) return null
+  const { label, scope, createdAt, bootstrap, tokenHash, createdWithToken } = value
+  if (typeof label !== 'string' || typeof createdAt !== 'number') return null
+  if (typeof scope !== 'string' || !SCOPES.includes(scope)) return null
+  if (bootstrap === true) return { label, scope: 'admin', createdAt, bootstrap: true }
+  if (typeof tokenHash !== 'string' || !/^[0-9a-f]{1,128}$/.test(tokenHash)) return null
+  return {
+    tokenHash,
+    label,
+    scope: scope as StoredAccessToken['scope'],
+    createdWithToken: typeof createdWithToken === 'string' ? createdWithToken : '',
+    createdAt,
+  }
+}
+
+export const listAccessTokens = async (
+  server: ConnectedServer,
+  cursor: string | null = null,
+): Promise<AccessTokenPage | null> => {
+  try {
+    const suffix = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+    const { response, body } = await remoteJson(`${server.url}/admin/tokens${suffix}`, {
+      headers: adminHeaders(server),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (!response.ok) return null
+    const tokens = isRecord(body) ? body.tokens : undefined
+    // Pagination was added after the token-list route. Older and third-party servers legitimately
+    // omit the field, which means the one page they returned is the last one.
+    const nextCursor = isRecord(body) ? (body.nextCursor ?? null) : null
+    if (
+      !Array.isArray(tokens) ||
+      (nextCursor !== null && (typeof nextCursor !== 'string' || !TOKEN_CURSOR.test(nextCursor)))
+    )
+      return null
+    const parsed = tokens.map(asAccessToken)
+    if (parsed.some((token) => token === null)) return null
+    return { tokens: parsed as AccessToken[], nextCursor }
+  } catch {
+    // Null rather than empty, so the panel can say "could not ask" instead of "there are none" —
+    // the difference between those two is the difference between a blip and a server with no way in.
+    return null
+  }
+}
+
+/** Mint one. The `token` in the result is the only time the plaintext will ever exist here. */
+export const createAccessToken = async (
+  server: ConnectedServer,
+  label: string,
+  scope: AccessToken['scope'],
+): Promise<{ ok: true; token: string } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(`${server.url}/admin/tokens`, {
+      method: 'POST',
+      headers: adminHeaders(server),
+      body: JSON.stringify({ label, scope }),
+    })
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    const token = isRecord(body) ? body.token : undefined
+    if (response.ok && typeof token === 'string') return { ok: true, token }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+/**
+ * Revoke one, by the hash the list gave us. Revocation deletes the stored token row.
+ */
+export const revokeAccessToken = async (
+  server: ConnectedServer,
+  tokenHash: string,
+): Promise<{ ok: true } | { ok: false; message: string }> => {
+  try {
+    const { response, body } = await remoteJson(
+      `${server.url}/admin/tokens/${encodeURIComponent(tokenHash)}`,
+      {
+        method: 'DELETE',
+        headers: adminHeaders(server),
+      },
+    )
+    if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
+    if (response.ok) return { ok: true }
+    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }

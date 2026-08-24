@@ -45,6 +45,7 @@ CREATE TABLE `nodes` (
 	`path` text NOT NULL,
 	`name` text NOT NULL,
 	`description` text,
+	`delete_token` text,
 	`created_at_ms` integer NOT NULL,
 	FOREIGN KEY (`parent_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "nodes_path_check" CHECK("nodes"."path" GLOB '/*' AND "nodes"."path" NOT GLOB '*[%_]*'
@@ -58,6 +59,13 @@ CREATE TABLE `painters` (
 	`wplace_user_id` integer PRIMARY KEY NOT NULL,
 	`display_name` text NOT NULL,
 	`seen_at_ms` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `server_settings` (
+	`id` integer PRIMARY KEY NOT NULL,
+	`name` text,
+	`description` text,
+	CONSTRAINT "server_settings_single_row_check" CHECK("server_settings"."id" = 1)
 );
 --> statement-breakpoint
 CREATE TABLE `telemetry_buckets` (
@@ -114,13 +122,15 @@ CREATE TABLE `template_versions` (
 CREATE UNIQUE INDEX `template_versions_id_template_idx` ON `template_versions` (`id`,`template_id`);--> statement-breakpoint
 CREATE TABLE `templates` (
 	`id` text PRIMARY KEY NOT NULL,
-	`node_id` text NOT NULL,
+	`season` integer NOT NULL,
+	`node_id` text,
 	`name` text NOT NULL,
 	`current_version_id` text,
 	`published_at` integer,
 	`created_with_token` text NOT NULL,
 	`created_by_user_id` integer,
 	`created_at_ms` integer NOT NULL,
+	`updated_at_ms` integer NOT NULL,
 	FOREIGN KEY (`node_id`) REFERENCES `nodes`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`current_version_id`,`id`) REFERENCES `template_versions`(`id`,`template_id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "templates_created_with_token_check" CHECK(typeof("templates"."created_with_token") = 'text' AND length("templates"."created_with_token") = 64

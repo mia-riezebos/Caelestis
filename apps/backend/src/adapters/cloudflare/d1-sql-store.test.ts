@@ -1,4 +1,4 @@
-import { millis, seconds } from '@wts/shared'
+import { millis, seconds } from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TelemetryBucket, TemplateVersionRecord } from '../../ports/index.js'
 import {
@@ -25,6 +25,7 @@ const templateVersion = (
   overrides: Partial<TemplateVersionRecord> = {},
 ): TemplateVersionRecord => ({
   templateId: 'template-1',
+  season: 1,
   nodeId: 'node-1',
   name: 'Template',
   versionId: 'version-1',
@@ -62,6 +63,98 @@ describe('D1SqlStore', () => {
     await store.renameNode('r', 'Plain', 'plain')
 
     expect((await store.readNode('k'))?.path).toBe('/plain/x')
+  })
+
+  it('retries a parent-only move from a rename that lands before its batch', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    await store.insertNode({
+      ...base,
+      id: 'destination',
+      parentId: null,
+      path: '/destination',
+      name: 'Destination',
+    })
+    await store.insertNode({
+      ...base,
+      id: 'source',
+      parentId: null,
+      path: '/alpha',
+      name: 'Alpha',
+    })
+    d1.runBeforeNextBatch(() => {
+      d1.sqlite.prepare("UPDATE nodes SET name = 'Beta', path = '/beta' WHERE id = 'source'").run()
+    })
+
+    await expect(store.moveNode('source', 'destination', '/destination/alpha')).resolves.toBe(true)
+
+    await expect(store.readNode('source')).resolves.toMatchObject({
+      name: 'Beta',
+      parentId: 'destination',
+      path: '/destination/beta',
+    })
+  })
+
+  it('renames under the live parent when a move lands before its batch', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    await store.insertNode({
+      ...base,
+      id: 'old-parent',
+      parentId: null,
+      path: '/old',
+      name: 'Old',
+    })
+    await store.insertNode({
+      ...base,
+      id: 'new-parent',
+      parentId: null,
+      path: '/new',
+      name: 'New',
+    })
+    await store.insertNode({
+      ...base,
+      id: 'source',
+      parentId: 'old-parent',
+      path: '/old/source',
+      name: 'Source',
+    })
+    d1.runBeforeNextBatch(() => {
+      d1.sqlite
+        .prepare(
+          "UPDATE nodes SET parent_id = 'new-parent', path = '/new/source' WHERE id = 'source'",
+        )
+        .run()
+    })
+
+    await store.renameNode('source', 'Renamed', 'renamed')
+
+    await expect(store.readNode('source')).resolves.toMatchObject({
+      parentId: 'new-parent',
+      path: '/new/renamed',
+      name: 'Renamed',
+    })
+  })
+
+  it('uses the live subtree path when a rename lands before cascade deletion', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    await store.insertNode({ ...base, id: 'root', parentId: null, path: '/root', name: 'Root' })
+    await store.insertNode({
+      ...base,
+      id: 'child',
+      parentId: 'root',
+      path: '/root/child',
+      name: 'Child',
+    })
+    d1.runBeforeNextBatch(() => {
+      d1.sqlite.prepare("UPDATE nodes SET path = '/renamed' WHERE id = 'root'").run()
+      d1.sqlite.prepare("UPDATE nodes SET path = '/renamed/child' WHERE id = 'child'").run()
+    })
+
+    await expect(store.deleteNodeCascade('root', { nodes: 2, templates: 0 })).resolves.toEqual({
+      nodes: 2,
+      templates: 0,
+    })
+    await expect(store.readNode('root')).resolves.toBeNull()
+    await expect(store.readNode('child')).resolves.toBeNull()
   })
 
   it('maps an oversized composed path to the port error', async () => {
@@ -166,7 +259,7 @@ describe('D1SqlStore', () => {
 
   it('writes a template, version, tile index and current pointer in one batch', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     const version = templateVersion()
 
@@ -188,7 +281,7 @@ describe('D1SqlStore', () => {
 
   it('rolls the whole template write back when one tile row fails', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     const firstTile = { tileX: 0, tileY: 0, hash: 'a'.repeat(64) }
     const duplicateTile = { tileX: 0, tileY: 0, hash: 'b'.repeat(64) }
@@ -335,8 +428,8 @@ describe('D1SqlStore', () => {
     // and no author — only its versions recorded one. Attribution is the same pair a report is
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
-      INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700);
+      INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
+      INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
       INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
     `)
     expect(
@@ -367,11 +460,14 @@ describe('D1SqlStore', () => {
       tileY: 0,
       hash: index.toString(16).padStart(64, '0'),
     }))
-    d1.sqlite.exec("INSERT INTO nodes VALUES ('bulk-node', 1, NULL, '/bulk', 'Bulk', NULL, 1)")
+    d1.sqlite.exec(
+      "INSERT INTO nodes VALUES ('bulk-node', 1, NULL, '/bulk', 'Bulk', NULL, NULL, 1)",
+    )
     const before = d1.batchStatements
 
     await store.insertTemplateVersion({
       templateId: 'bulk-t',
+      season: 1,
       nodeId: 'bulk-node',
       name: 'Bulk',
       versionId: 'bulk-v',
@@ -387,6 +483,58 @@ describe('D1SqlStore', () => {
       { tiles: 48 },
     ])
     expect(d1.batchStatements - before).toBeLessThanOrEqual(50)
+  })
+
+  it('replaces an existing template without validating its stale submitted folder or name', async () => {
+    const base = { season: 1, parentId: null, description: null, createdAt: millis(1_000) }
+    await store.insertNode({ ...base, id: 'node-1', path: '/old', name: 'Old' })
+    await store.insertNode({ ...base, id: 'node-2', path: '/new', name: 'New' })
+    await store.insertTemplateVersion(templateVersion())
+    await store.updateTemplate('template-1', { nodeId: 'node-2', name: 'Renamed' }, millis(2_000))
+    await store.deleteNode('node-1')
+
+    await expect(
+      store.insertTemplateVersion(
+        templateVersion({ versionId: 'version-2', createdAt: millis(3_000) }),
+        { requireExisting: true },
+      ),
+    ).resolves.toBeUndefined()
+    await expect(store.readTemplate('template-1')).resolves.toMatchObject({
+      nodeId: 'node-2',
+      name: 'Renamed',
+      currentVersionId: 'version-2',
+    })
+  })
+
+  it('deletes contribution rows before their template', async () => {
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+    await store.insertTemplateVersion(templateVersion())
+    d1.sqlite
+      .prepare('INSERT INTO contributions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(1, 'template-1', 0, 'c'.repeat(64), 1, 1, 1, 0)
+
+    await expect(store.deleteTemplate('template-1')).resolves.toBe(true)
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM contributions').get()).toEqual({
+      count: 0,
+    })
+  })
+
+  it('deletes a subtree whose root path exceeds D1s LIKE pattern limit', async () => {
+    const base = { season: 1, description: null, createdAt: millis(1_000) }
+    const path = `/${'deep'.repeat(15)}`
+    await store.insertNode({ ...base, id: 'deep-root', parentId: null, path, name: 'Deep root' })
+    await store.insertNode({
+      ...base,
+      id: 'deep-child',
+      parentId: 'deep-root',
+      path: `${path}/child`,
+      name: 'Child',
+    })
+
+    await expect(store.deleteNodeCascade('deep-root', { nodes: 2, templates: 0 })).resolves.toEqual(
+      { nodes: 2, templates: 0 },
+    )
+    await expect(store.listNodes(1)).resolves.toEqual([])
   })
 
   it('orders tokens minted in the same millisecond by hash, as the port promises', async () => {
@@ -408,6 +556,12 @@ describe('D1SqlStore', () => {
       { label: 'b' },
       { label: 'c' },
     ])
+    await expect(
+      store.listAccessTokens({
+        after: { createdAt: millis(1_000), tokenHash: 'b'.repeat(64) },
+        limit: 1,
+      }),
+    ).resolves.toMatchObject([{ label: 'c' }])
   })
 
   it('rejects a replayed event id regardless of the claimed user', () => {
@@ -424,20 +578,25 @@ describe('D1SqlStore', () => {
   // whole suite green. A client asking for a manifest is the actor.
   it('lists only published templates of the asked-for season', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, NULL, 1)")
       .run()
     await store.insertTemplateVersion(templateVersion())
     await store.insertTemplateVersion(
       templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
     )
     await store.insertTemplateVersion(
-      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+      templateVersion({
+        templateId: 'other',
+        versionId: 'version-other',
+        season: 2,
+        nodeId: 'node-2',
+      }),
     )
-    await store.setTemplatePublishedAt('template-1', millis(5_000))
-    await store.setTemplatePublishedAt('other', millis(5_000))
+    await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const ids = async (includeUnpublished: boolean): Promise<string[]> =>
       (await store.listManifestTemplates(1, includeUnpublished)).map((row) => row.id).sort()
@@ -450,20 +609,25 @@ describe('D1SqlStore', () => {
 
   it('lists only tiles of published templates of the asked-for season', async () => {
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
       .run()
     d1.sqlite
-      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, 1)")
+      .prepare("INSERT INTO nodes VALUES ('node-2', 2, NULL, '/node-2', 'Other', NULL, NULL, 1)")
       .run()
     await store.insertTemplateVersion(templateVersion())
     await store.insertTemplateVersion(
       templateVersion({ templateId: 'draft', versionId: 'version-draft' }),
     )
     await store.insertTemplateVersion(
-      templateVersion({ templateId: 'other', versionId: 'version-other', nodeId: 'node-2' }),
+      templateVersion({
+        templateId: 'other',
+        versionId: 'version-other',
+        season: 2,
+        nodeId: 'node-2',
+      }),
     )
-    await store.setTemplatePublishedAt('template-1', millis(5_000))
-    await store.setTemplatePublishedAt('other', millis(5_000))
+    await store.setTemplatePublishedAt('template-1', millis(5_000), millis(5_000))
+    await store.setTemplatePublishedAt('other', millis(5_000), millis(5_000))
 
     const owners = async (includeUnpublished: boolean): Promise<string[]> =>
       [

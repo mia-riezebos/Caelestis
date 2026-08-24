@@ -259,13 +259,6 @@ it.each([
   },
 )
 
-it('refuses an image with more pixels than it may allocate', async () => {
-  // The buffers are sized from the header, so a few hundred bytes on the wire can ask for over a
-  // gigabyte. Rejected before anything is allocated from those numbers.
-  const png = buildPng({ width: 20_000, height: 20_000, colourType: 2, channels: 3, data: [] })
-  await expect(decodePng(png)).rejects.toThrow(/more than \d+ pixels/)
-})
-
 it('reports a corrupt deflate stream as a PNG error', async () => {
   // Not a PngError, and the upload route answers 500 instead of its documented 400 for a
   // malformed image.

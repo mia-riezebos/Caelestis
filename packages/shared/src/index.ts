@@ -8,7 +8,14 @@ export {
   TRANSPARENT_INDEX,
   WPLACE_PALETTE,
 } from './palette.js'
-export { decodePng, encodeIndexedPng, PngError, type RgbaImage } from './png.js'
+export {
+  decodePng,
+  decodeWplaceIndexedPng,
+  encodeIndexedPng,
+  type IndexedImage,
+  PngError,
+  type RgbaImage,
+} from './png.js'
 export {
   OPAQUE_ALPHA_THRESHOLD,
   type QuantiseReport,
@@ -22,6 +29,7 @@ export {
   sliceTemplate,
   type TemplateChunk,
 } from './slice.js'
+export * from './slug.js'
 export * from './telemetry.js'
 export * from './tiles.js'
 export * from './time.js'

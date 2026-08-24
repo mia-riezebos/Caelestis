@@ -1,7 +1,24 @@
-import { parseTileKey, TILE_SIZE, type TileCoord } from '@wts/shared'
+import {
+  parseTileKey,
+  TILE_SIZE,
+  type TileCoord,
+  TRANSPARENT_INDEX,
+  tileKey,
+  WPLACE_PALETTE,
+} from '@caelestis/shared'
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
+import { draftedPixelsIn } from './templates/drafted.js'
+
+export type WplaceRasterRole = 'tile' | 'draft' | 'other'
+
+/** Wplace names the raster layers; use that identity instead of reverse-engineering their quads. */
+export const wplaceRasterRole = (layerId: string | null): WplaceRasterRole => {
+  if (layerId === 'pixel-art-layer') return 'tile'
+  if (layerId?.startsWith('paint-preview-')) return 'draft'
+  return 'other'
+}
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -519,6 +536,16 @@ let frameTileDraws = 0
 /** Whether the overlay currently has anything painted on it, so a clear is worth doing once. */
 let overlayHasContent = false
 
+let drawingTiles = false
+
+/**
+ * Whether wplace drew any canvas tiles on the last frame.
+ *
+ * Zoom out far enough and they stop serving them entirely. Anything drawing over their canvas has to
+ * stop at the same point, or it floats above a map that is no longer showing the thing it annotates.
+ */
+export const isDrawingTiles = (): boolean => drawingTiles
+
 const emit = (quads: readonly TileQuad[]): void => {
   if (mapCanvas === null) return
   const frame: TileFrame = { canvas: mapCanvas, quads }
@@ -531,11 +558,29 @@ const emit = (quads: readonly TileQuad[]): void => {
   }
 }
 
+let lastQuads: readonly TileQuad[] = []
+
+/**
+ * Where wplace is drawing each tile *right now*, in canvas device pixels.
+ *
+ * This is the frame currently being built, not the last one that finished. Their raster layer draws
+ * before ours in the same frame, so by the time anything in the layer stack below `pixel-hover`
+ * renders, every tile quad for this frame has already been recorded.
+ *
+ * Anything drawing over their tiles wants these rather than a projection of its own. MapLibre snaps
+ * raster tiles to whole device pixels when the map is still — `align = !painter.options.moving` —
+ * and does not snap while it moves, so a separately projected overlay agrees during a pan and drifts
+ * a fraction of a pixel the instant it settles. Taking the placement from their own draw calls makes
+ * that unknowable and irrelevant: we land where they landed, aligned or not.
+ */
+export const currentQuads = (): readonly TileQuad[] => (scheduled ? pending : lastQuads)
+
 const flush = (): void => {
   scheduled = false
   if (mapCanvas === null) return
   const quads = pending
   pending = []
+  if (quads.length > 0) lastQuads = quads
 
   log(
     'frame',
@@ -549,8 +594,15 @@ const flush = (): void => {
         }
       : undefined,
   )
+  const drewAnything = frameDraws > 0
   frameDraws = 0
   frameTileDraws = 0
+
+  // "No tiles" only means wplace has stopped serving them when they actually rendered a frame and
+  // no tile was in it. A frame that drew nothing at all says nothing either way — MapLibre skips
+  // work constantly — and treating that as the cutoff switched the overlay off while sitting still.
+  if (quads.length > 0) drawingTiles = true
+  else if (drewAnything) drawingTiles = false
 
   if (quads.length > 0) {
     if (!overlayHasContent) log('clear', 'overlay has content again')
@@ -601,7 +653,10 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
         const url = urlForFetchInput(input, realm, urlGetters)
         if (url !== null) {
           tile = tileFromUrl(url)
-          if (tile !== null) shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
+          if (tile !== null) {
+            tileUrlShape = url.replace(`/${tile.x}/${tile.y}.png`, '/{x}/{y}.png')
+            shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
+          }
         }
       } catch {
         // An unusual input that cannot be observed safely is simply untapped.
@@ -754,6 +809,534 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
   return installValueHook(realm, 'Blob', Wrapped)
 }
 
+/**
+ * Placed pixels per tile, as palette indices, for the tiles we have been asked to keep.
+ *
+ * Off unless something wants it. Converting a tile is a 1000x1000 `getImageData` and a million-entry
+ * walk, which is cheap enough once per tile and absurd if nothing reads the result — so the capture
+ * is switched on only while a feature needs exact base pixels: mismatch markers or the paint
+ * drawer's source-only colour picker.
+ */
+const pixelsOfTile = new Map<string, Uint8Array>()
+const KEEP_TILE_PIXELS = 64
+let capturePixels = false
+
+/** Index meaning "nobody has painted here". Distinct from every palette entry. */
+export const UNPAINTED = 255
+
+/**
+ * Bumped every time capture is switched on, so everything already on screen is read again.
+ *
+ * Without this, turning the feature on only caught tiles wplace happened to decode *afterwards* —
+ * so a screenful that had finished loading stayed unanswered until something made it re-fetch, which
+ * is most of the wait anyone would notice. The preview canvases are already on screen and already
+ * hold the answer; this is what makes us go and read them.
+ */
+let captureGeneration = 0
+
+/**
+ * Turn tile pixel capture on or off.
+ *
+ * Switching off keeps what was captured. Throwing it away made toggling the setting cost a full
+ * re-read every time, which is the one thing anyone does repeatedly while deciding whether they want
+ * the markers on — and the data is not wasted by being briefly unwatched, because switching back on
+ * re-reads everything visible anyway. The kept copy is what shows instantly while that happens.
+ */
+export const captureTilePixels = (on: boolean): void => {
+  if (capturePixels === on) return
+  capturePixels = on
+  if (on) captureGeneration++
+  log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
+}
+
+const rememberTilePixels = (key: string, pixels: Uint8Array): void => {
+  pixelsOfTile.delete(key)
+  pixelsOfTile.set(key, pixels)
+  while (pixelsOfTile.size > KEEP_TILE_PIXELS) {
+    const oldest = pixelsOfTile.keys().next()
+    if (oldest.done) break
+    pixelsOfTile.delete(oldest.value)
+    // An evicted tile is fetchable again when it next enters the viewport.
+    chased.delete(oldest.value)
+  }
+}
+
+export const tilePixels = (tile: TileCoord): Uint8Array | null => {
+  const key = tileKey(tile)
+  const pixels = pixelsOfTile.get(key)
+  if (pixels === undefined) return null
+  rememberTilePixels(key, pixels)
+  return pixels
+}
+
+/** Whatever tile URL wplace last used, with the coordinates blanked out. */
+let tileUrlShape: string | null = null
+let captureRealm: (Window & typeof globalThis) | null = null
+
+/** Tiles we have already gone and asked for, so a miss is chased once and not every frame. */
+const chased = new Set<string>()
+let chasing = 0
+
+/**
+ * Fetch a tile we never saw decoded, rather than waiting for wplace to fetch it again.
+ *
+ * Capture can only catch a tile at the moment it is decoded, so anything already on screen when the
+ * feature switches on — the entire viewport, on a page load — was missed. Those tiles then sat
+ * unanswered until wplace happened to re-fetch them, which is on their schedule and about ten
+ * seconds: markers appeared almost at once for a tile panned to, and took ten seconds for the ones
+ * that had been there all along.
+ *
+ * One request per tile, at most a few at a time, and only for tiles something is actually asking
+ * about. That is the same request their own client makes, at a fraction of the rate.
+ *
+ * One attempt, whether or not it works. A tile that answers 404 or 429 answers that way to the next
+ * request too, and re-chasing on failure meant a frame-rate retry loop against wplace with four
+ * requests permanently in flight. Nothing is lost by giving up: this only front-runs wplace's own
+ * refetch, which lands about ten seconds later and captures the tile anyway.
+ */
+const CHASE_LIMIT = 4
+
+export const ensureTilePixels = (tile: TileCoord): void => {
+  if (!capturePixels || tileUrlShape === null) return
+  const key = tileKey(tile)
+  if (pixelsOfTile.has(key) || chased.has(key) || chasing >= CHASE_LIMIT) return
+  chased.add(key)
+  chasing++
+  const url = tileUrlShape.replace('{x}', String(tile.x)).replace('{y}', String(tile.y))
+  void (async () => {
+    try {
+      const realm = captureRealm
+      if (realm === null) return
+      const response = await realm.fetch.call(realm, url, { signal: AbortSignal.timeout(15_000) })
+      if (!response.ok) return
+      // Decoded through our own tap, which recognises the blob our fetch tap just tagged and
+      // captures the tile itself. Calling `capture` again here converted every chased tile twice: a
+      // second million-pixel canvas read, per tile, on the one path that runs at page load while
+      // the whole viewport is being backfilled. The bitmap is closed because nothing else will.
+      const bitmap = (await Reflect.apply(realm.createImageBitmap, realm, [
+        await response.blob(),
+      ])) as ImageBitmap
+      // Our own tap decoded that, recognised the blob our fetch tap tagged, and captured the tile
+      // before this resolved. Converting again unconditionally read a second million-pixel canvas
+      // per chased tile, on the one path that runs at page load while the whole viewport is being
+      // backfilled. Only do it if the tap did not — it will not have if it failed to install.
+      if (!pixelsOfTile.has(key)) capture(tile, bitmap)
+      bitmap.close()
+      count('pixels:chased a tile we missed')
+    } catch (error) {
+      warn('fetch', `could not chase tile ${tile.x}/${tile.y}`, String(error))
+    } finally {
+      chasing--
+    }
+  })()
+}
+
+/**
+ * RGB to palette index, as a flat table.
+ *
+ * Sixteen megabytes to avoid a hash lookup a million times per tile, allocated the first time a tile
+ * is converted and never again. A `Map` measured slower by enough to matter on a conversion that
+ * blocks the main thread.
+ */
+let rgbToIndex: Uint8Array | null = null
+
+const indexTable = (): Uint8Array => {
+  if (rgbToIndex !== null) return rgbToIndex
+  const table = new Uint8Array(1 << 24).fill(UNPAINTED)
+  for (const colour of WPLACE_PALETTE) {
+    const [r, g, b] = colour.rgb
+    table[(r << 16) | (g << 8) | b] = colour.index
+  }
+  rgbToIndex = table
+  return table
+}
+
+/**
+ * Canvases whose pixels have changed since they were last read.
+ *
+ * wplace redraws a paint-preview tile only when a pixel changes, but MapLibre *draws* it every
+ * frame. Without this the capture below would run on every frame of every tile on screen.
+ */
+const dirtyCanvases = new WeakSet<object>()
+
+/** Note that a tile-sized canvas has been written to, so the next draw re-reads it. */
+export const markCanvasDirty = (canvas: object): void => {
+  dirtyCanvases.add(canvas)
+}
+
+/** Which tile a paint-preview canvas belongs to, once a draw has told us. */
+const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
+
+/**
+ * The draft layer, per tile: what has been placed but not submitted.
+ *
+ * Kept *beside* the server's pixels rather than merged into them, and that separation is the whole
+ * design. There are three states for any pixel and a comparison needs all three:
+ *
+ *     server  — what wplace will serve; the tile PNG
+ *     draft   — what has been placed locally, or `UNPAINTED` where nothing has
+ *     wanted  — what the template asks for
+ *
+ * and the question is `(draft is a colour ? draft : server) === wanted`.
+ *
+ * Merging draft into server instead needed an override map to survive the next fetch, made a blank
+ * draft canvas look like a wiped tile, and put the bookkeeping for all of that on the path that runs
+ * when someone paints. Two arrays and a fallback need none of it: a re-fetch replaces the server
+ * copy and cannot touch the draft, and a draft canvas that is empty is simply a tile with nothing
+ * drafted on it.
+ */
+const draftOfTile = new Map<string, Uint8Array>()
+const KEEP_DRAFT_TILES = 64
+
+const rememberDraft = (key: string, draft: Uint8Array): void => {
+  draftOfTile.delete(key)
+  draftOfTile.set(key, draft)
+  while (draftOfTile.size > KEEP_DRAFT_TILES) {
+    const oldest = draftOfTile.keys().next()
+    if (oldest.done) break
+    draftOfTile.delete(oldest.value)
+    transparentOfTile.delete(oldest.value)
+  }
+}
+
+/** The draft layer for a tile, or null if nothing has been drafted on it. */
+export const draftPixels = (tile: TileCoord): Uint8Array | null => {
+  const key = tileKey(tile)
+  const draft = draftOfTile.get(key)
+  if (draft === undefined) return null
+  rememberDraft(key, draft)
+  return draft
+}
+
+/**
+ * Pixels drafted as Transparent, per tile, as tile-local offsets.
+ *
+ * These are the ones the canvas cannot report. Alpha zero is what a drafted-transparent pixel and an
+ * undrafted one both look like, so the draft array holds `UNPAINTED` for the pair of them until this
+ * says otherwise — and holds `TRANSPARENT_INDEX` for the ones it does, which is a value the canvas
+ * can never produce (their palette stops at 62, and alpha zero short-circuits before the table).
+ *
+ * Kept so the reverse is cheap too. Undrafting one is only visible as a crosshair that has gone, and
+ * checking what we last set beats scanning a million pixels for the ones that used to be set.
+ */
+const transparentOfTile = new Map<string, Set<number>>()
+
+const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
+  const x = p % TILE_SIZE
+  const y = (p - x) / TILE_SIZE
+  for (const listener of pixelListeners) {
+    try {
+      listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+    } catch {
+      count('pixels:listener-failed')
+    }
+  }
+}
+
+/**
+ * Bring a tile's drafted-transparent pixels in line with wplace's crosshairs.
+ *
+ * Drafting Transparent changes nothing we can see: the canvas write lands alpha zero on a pixel our
+ * draft already holds as `UNPAINTED`, so the write is a no-op, nothing is announced, and no marker
+ * moves. The crosshair is the only evidence it happened. Reconciling in both directions here is what
+ * turns it into a change like any other, announced through the same listener as a placed pixel.
+ */
+const reconcileDraftedTile = (tile: TileCoord): void => {
+  const key = tileKey(tile)
+  const draft = draftOfTile.get(key)
+  if (draft === undefined) return
+
+  const held = transparentOfTile.get(key)
+  const now = new Set<number>()
+  for (const p of draftedPixelsIn(tile, TILE_SIZE)) {
+    // A drafted pixel the canvas gave us no colour for was drafted transparent.
+    if (draft[p] === UNPAINTED) {
+      draft[p] = TRANSPARENT_INDEX
+      notifyPixel(tile, p, TRANSPARENT_INDEX)
+      count('pixels:drafted transparent')
+    }
+    if (draft[p] === TRANSPARENT_INDEX) now.add(p)
+  }
+  if (held !== undefined) {
+    for (const p of held) {
+      if (now.has(p) || draft[p] !== TRANSPARENT_INDEX) continue
+      // The crosshair is gone, so the pixel is undrafted — back to whatever the server has.
+      draft[p] = UNPAINTED
+      notifyPixel(tile, p, UNPAINTED)
+      count('pixels:undrafted a transparent pixel')
+    }
+  }
+  if (now.size > 0) transparentOfTile.set(key, now)
+  else transparentOfTile.delete(key)
+}
+
+/**
+ * Re-check every tile with a draft on it.
+ *
+ * Called per frame and throttled, because the write that would otherwise prompt it is exactly the
+ * write that does not happen. Cheap in the case that runs constantly: with nothing drafted there are
+ * no crosshair patches to read and no draft arrays to walk.
+ */
+const RECONCILE_INTERVAL_MS = 150
+let lastReconcile = 0
+
+export const reconcileDrafts = (): void => {
+  const now = performance.now()
+  if (now - lastReconcile < RECONCILE_INTERVAL_MS) return
+  lastReconcile = now
+  for (const key of draftOfTile.keys()) {
+    const [x, y] = key.split('/').map(Number)
+    if (x === undefined || y === undefined) continue
+    reconcileDraftedTile({ x, y })
+  }
+}
+
+/**
+ * Writes that arrived before we knew which tile the canvas was, as flat `x, y, index` in tile-local
+ * coordinates.
+ *
+ * A canvas is named the first time a draw places it, which is normally well before anyone paints
+ * into it — but not always, and a write is cheap to hold and impossible to reconstruct. The pixels
+ * are in the argument, so they are kept rather than recovered later by reading the tile back.
+ */
+const queuedWrites = new WeakMap<object, number[]>()
+
+/** Register the tile identity that wplace exposes in a draft layer's style id. */
+export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
+  const known = tileOfPaintCanvas.get(canvas)
+  if (known !== undefined && known.x === tile.x && known.y === tile.y) return
+  tileOfPaintCanvas.set(canvas, tile)
+  count('paint:named a draft canvas')
+  const held = queuedWrites.get(canvas)
+  if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
+}
+
+type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
+const pixelListeners: PixelListener[] = []
+
+/** Notified when a single placed pixel changes, in canvas coordinates. */
+export const onTilePixel = (listener: PixelListener): void => {
+  pixelListeners.push(listener)
+}
+
+/**
+ * The largest write that is worth patching a pixel at a time.
+ *
+ * A pending paint is a 1x1, so this is really "is this a pixel or a repaint". Anything bigger falls
+ * back to re-reading the tile, which is the right trade at that size and the wrong one at this.
+ */
+const PATCH_LIMIT = 32
+
+/**
+ * Apply a small canvas write straight into the captured indices.
+ *
+ * The write says exactly which pixels moved and to what. Re-reading the whole tile to discover that
+ * is a million `getImageData` bytes and a million table lookups to learn something the argument
+ * already contained — and it happens on every pixel placed, which is the one moment the map has to
+ * stay responsive.
+ */
+/**
+ * The draft canvas is stored upside down relative to its tile.
+ *
+ * wplace place it as an image source whose `coordinates` run the other way round — the corner
+ * MapLibre treats as top-left is the tile's *bottom* edge, which is what the source's
+ * `flippedWindingOrder` is about. Measured on the live style: the layer named for tile 325,1781 has
+ * `coordinates[0]` at tile y 1782 and `coordinates[3]` at 1781.
+ *
+ * So a pixel at canvas row 245 is tile row 754, and reading it as 245 puts a placed pixel 500-odd
+ * rows from where it belongs. Horizontally nothing is reversed, which is why only the vertical was
+ * ever wrong — and why a painted pixel kept coming out "outside the template" while its x sat
+ * comfortably inside.
+ */
+const flipRow = (y: number): number => TILE_SIZE - 1 - y
+
+const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
+  const table = indexTable()
+  const { data, width, height } = image
+  const triples: number[] = []
+  for (let j = 0; j < height; j++) {
+    const y = flipRow(dy + j)
+    if (y < 0 || y >= TILE_SIZE) continue
+    for (let i = 0; i < width; i++) {
+      const x = dx + i
+      if (x < 0 || x >= TILE_SIZE) continue
+      const at = (j * width + i) * 4
+      triples.push(
+        x,
+        y,
+        data[at + 3] === 0
+          ? UNPAINTED
+          : (table[((data[at] ?? 0) << 16) | ((data[at + 1] ?? 0) << 8) | (data[at + 2] ?? 0)] ??
+              UNPAINTED),
+      )
+    }
+  }
+  return triples
+}
+
+/**
+ * A write into the draft layer. Never touches the server copy.
+ *
+ * Unlike the tile itself, a draft array can be made on demand: an empty one means nothing has been
+ * drafted here, which is exactly what a tile with no draft layer means. So this cannot fail for want
+ * of having read the tile first, which is what used to make the first pixel painted into a tile take
+ * a different and much worse path than the second.
+ */
+const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
+  const key = tileKey(tile)
+  let draft = draftOfTile.get(key)
+  if (draft === undefined) {
+    draft = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(UNPAINTED)
+  }
+  rememberDraft(key, draft)
+  let changed = 0
+  for (let i = 0; i < triples.length; i += 3) {
+    const x = triples[i] as number
+    const y = triples[i + 1] as number
+    const index = triples[i + 2] as number
+    const p = y * TILE_SIZE + x
+    if (draft[p] === index) continue
+    draft[p] = index
+    changed++
+    for (const listener of pixelListeners) {
+      try {
+        listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+      } catch {
+        count('pixels:listener-failed')
+      }
+    }
+  }
+  if (changed > 0) count('pixels:patched a draft write')
+  // The write that lands on a pixel drafted Transparent is a no-op — see `reconcileDraftedTile`.
+  // Asking now rather than waiting for the throttled pass is what makes that marker appear at once.
+  reconcileDraftedTile(tile)
+  return true
+}
+
+/**
+ * Move `into` to match `from`, announcing each pixel that moves.
+ *
+ * The array itself is kept. Anything holding an answer derived from this tile keys it on the array's
+ * identity, so replacing it says "all of this is stale" — and recomputing a tile because one pixel
+ * moved is what made every marker in it disappear and come back.
+ */
+const apply = (
+  tile: TileCoord,
+  into: Uint8Array,
+  from: Uint8Array | Map<number, number>,
+): number => {
+  let moved = 0
+  const at = (p: number, index: number): void => {
+    if (into[p] === index) return
+    into[p] = index
+    moved++
+    const x = p % TILE_SIZE
+    const y = (p - x) / TILE_SIZE
+    for (const listener of pixelListeners) {
+      try {
+        listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+      } catch {
+        count('pixels:listener-failed')
+      }
+    }
+  }
+  if (from instanceof Map) for (const [p, index] of from) at(p, index)
+  else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
+  if (moved > 0) count('pixels:changed', moved)
+  return moved
+}
+
+/** Read a tile into palette indices, from whatever wplace last drew it from. */
+const capture = (
+  tile: TileCoord,
+  bitmap: CanvasImageSource & { width: number; height: number },
+  from: 'tile' | 'preview' = 'tile',
+): void => {
+  if (!capturePixels) return
+  /**
+   * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
+   *
+   * Their service worker substitutes a 1x1 transparent PNG for an absent tile, and
+   * `normalizeMissingTileResponse` above makes us produce the same thing for a 404. Declining it
+   * left the tile with no entry at all, which is not the same answer: markers over it never
+   * appeared, `markUnpainted` could never mark a fully unpainted tile — the one case it exists for
+   * — and the renderer went on asking for a repaint four times a second forever, waiting for pixels
+   * that were never coming. An empty tile is a real answer and gets recorded as one.
+   */
+  const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
+  if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return
+  try {
+    const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
+    if (empty) {
+      indices.fill(UNPAINTED)
+    } else {
+      const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (context === null) return
+      context.drawImage(bitmap, 0, 0)
+      const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
+      const table = indexTable()
+      for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
+        // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
+        // that is not in the table can only be something we do not model — treated as unpainted rather
+        // than guessed at.
+        const index =
+          data[i + 3] === 0
+            ? UNPAINTED
+            : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
+              UNPAINTED)
+        // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
+        if (from === 'preview') {
+          const x = p % TILE_SIZE
+          indices[flipRow((p - x) / TILE_SIZE) * TILE_SIZE + x] = index
+        } else {
+          indices[p] = index
+        }
+      }
+    }
+
+    const key = tileKey(tile)
+
+    if (from === 'preview') {
+      // The draft layer, kept whole and kept apart. It is read as it is — an empty one means nothing
+      // is drafted here, which is true and needs no special case.
+      const existingDraft = draftOfTile.get(key)
+      if (existingDraft === undefined || existingDraft.length !== indices.length) {
+        rememberDraft(key, indices)
+        count('pixels:draft captured')
+      } else {
+        rememberDraft(key, existingDraft)
+        apply(tile, existingDraft, indices)
+        count('pixels:draft re-read')
+      }
+      // A re-read comes from the canvas, which cannot see a transparent draft, so it has just undone
+      // every one of them. Restoring them in the same tick keeps that invisible rather than a blink.
+      reconcileDraftedTile(tile)
+      return
+    }
+
+    /**
+     * A re-read of a tile we already hold becomes a diff, not a replacement.
+     *
+     * Replacing the array is what made a whole tile's answers evaporate. Anything holding a result
+     * for this tile keys it on the array's identity — that is how a re-read is meant to invalidate
+     * a stale answer — so handing over a *new* array said "everything about this tile has changed"
+     * when what had actually changed was one pixel someone painted.
+     */
+    const existing = pixelsOfTile.get(key)
+    if (existing === undefined || existing.length !== indices.length) {
+      rememberTilePixels(key, indices)
+      count('pixels:captured')
+      return
+    }
+    rememberTilePixels(key, existing)
+    apply(tile, existing, indices)
+    count('pixels:re-read as a diff')
+  } catch (error) {
+    warn('bitmap', 'could not read tile pixels', String(error))
+  }
+}
+
 const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const nativeCreateImageBitmap = realm.createImageBitmap
   const wrappedCreateImageBitmap = {
@@ -790,6 +1373,7 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
           if (sourceBlob !== undefined && sourceBytes !== undefined) {
             if (exact !== undefined) {
               tileOfBitmap.set(bitmap, exact)
+              capture(exact, bitmap)
               log('bitmap', `matched ${exact.x}/${exact.y} by identity`, { bytes: sourceBytes })
               return bitmap
             }
@@ -797,6 +1381,7 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
             const tile = takeBySizeForBitmap(sourceBytes, bitmap.width, bitmap.height)
             if (tile !== undefined) {
               tileOfBitmap.set(bitmap, tile)
+              capture(tile, bitmap)
               log('bitmap', `matched ${tile.x}/${tile.y}`, { bytes: sourceBytes })
             } else if (bitmap.width === 1000 && bitmap.height === 1000) {
               // A tile-shaped image we cannot name. This is the shape of the bug where the overlay
@@ -817,10 +1402,109 @@ const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook
   return installValueHook(realm, 'createImageBitmap', wrappedCreateImageBitmap)
 }
 
+const installPutImageDataTaps = (
+  realm: Window & typeof globalThis,
+): InstalledValueHook[] | null => {
+  const offscreenPrototype = (
+    realm as typeof realm & {
+      OffscreenCanvasRenderingContext2D?: { prototype: CanvasRenderingContext2D }
+    }
+  ).OffscreenCanvasRenderingContext2D?.prototype
+  const prototypes = [realm.CanvasRenderingContext2D?.prototype, offscreenPrototype].filter(
+    (prototype): prototype is CanvasRenderingContext2D => prototype !== undefined,
+  )
+  const hooks: InstalledValueHook[] = []
+  try {
+    for (const prototype of prototypes) {
+      const nativePutImageData = prototype.putImageData
+      const wrappedPutImageData = function (
+        this: CanvasRenderingContext2D,
+        ...args: Parameters<CanvasRenderingContext2D['putImageData']>
+      ): void {
+        runObservedCall(
+          () => Reflect.apply(nativePutImageData, this, args),
+          () => {
+            const canvas = this.canvas as { width?: number; height?: number }
+            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
+            const [image, dx, dy] = args
+            if (image.width > PATCH_LIMIT || image.height > PATCH_LIMIT) {
+              markCanvasDirty(this.canvas)
+              return
+            }
+            const triples = readWrite(image, dx, dy)
+            const tile = tileOfPaintCanvas.get(this.canvas)
+            if (tile === undefined || !applyWrite(tile, triples)) {
+              const queue = queuedWrites.get(this.canvas)
+              if (queue === undefined) queuedWrites.set(this.canvas, triples)
+              else queue.push(...triples)
+            }
+          },
+        )
+      }
+      const hook = installValueHook(prototype, 'putImageData', wrappedPutImageData)
+      if (hook === null) throw new Error('putImageData is not hookable')
+      hooks.push(hook)
+
+      const nativeClearRect = prototype.clearRect
+      const wrappedClearRect = function (
+        this: CanvasRenderingContext2D,
+        ...args: Parameters<CanvasRenderingContext2D['clearRect']>
+      ): void {
+        runObservedCall(
+          () => Reflect.apply(nativeClearRect, this, args),
+          () => {
+            const canvas = this.canvas as { width?: number; height?: number }
+            if (!capturePixels || canvas.width !== TILE_SIZE || canvas.height !== TILE_SIZE) return
+            const [x, y, width, height] = args
+            if (
+              !Number.isInteger(x) ||
+              !Number.isInteger(y) ||
+              !Number.isInteger(width) ||
+              !Number.isInteger(height) ||
+              width <= 0 ||
+              height <= 0 ||
+              width > PATCH_LIMIT ||
+              height > PATCH_LIMIT
+            ) {
+              markCanvasDirty(this.canvas)
+              return
+            }
+            const triples: number[] = []
+            for (let rowOffset = 0; rowOffset < height; rowOffset++) {
+              const row = flipRow(y + rowOffset)
+              if (row < 0 || row >= TILE_SIZE) continue
+              for (let columnOffset = 0; columnOffset < width; columnOffset++) {
+                const column = x + columnOffset
+                if (column < 0 || column >= TILE_SIZE) continue
+                triples.push(column, row, UNPAINTED)
+              }
+            }
+            const tile = tileOfPaintCanvas.get(this.canvas)
+            if (triples.length > 0 && (tile === undefined || !applyWrite(tile, triples))) {
+              const queue = queuedWrites.get(this.canvas)
+              if (queue === undefined) queuedWrites.set(this.canvas, triples)
+              else queue.push(...triples)
+            }
+            if (triples.length > 0) count('pixels:draft erased')
+          },
+        )
+      }
+      const clearHook = installValueHook(prototype, 'clearRect', wrappedClearRect)
+      if (clearHook === null) throw new Error('clearRect is not hookable')
+      hooks.push(clearHook)
+    }
+    return hooks
+  } catch {
+    for (const hook of hooks.reverse()) hook.restore()
+    return null
+  }
+}
+
 export const install = (
   realm: Window & typeof globalThis = pageWindow(),
   mapHandle: () => ReturnType<typeof getMap> = getMap,
 ): void => {
+  captureRealm = realm
   const browserHooks: InstalledValueHook[] = []
   const addBrowserHook = (installer: () => InstalledValueHook | null): boolean => {
     try {
@@ -844,6 +1528,12 @@ export const install = (
     abandonBrowserHooks()
     return
   }
+  const putImageDataHooks = installPutImageDataTaps(realm)
+  if (putImageDataHooks === null) {
+    abandonBrowserHooks()
+    return
+  }
+  browserHooks.push(...putImageDataHooks)
 
   let nativeGetContext: typeof realm.HTMLCanvasElement.prototype.getContext
   try {
@@ -958,6 +1648,11 @@ export const install = (
       const projectionByProgram = new WeakMap<WebGLProgram, ArrayLike<number>>()
       let programs = new WeakSet<WebGLProgram>()
       const tileOfTexture = new WeakMap<WebGLTexture, TileCoord>()
+      const canvasOfTexture = new WeakMap<
+        WebGLTexture,
+        CanvasImageSource & { width: number; height: number }
+      >()
+      const capturedAt = new WeakMap<WebGLTexture, number>()
       let textures = new WeakSet<WebGLTexture>()
       const texture2DByUnit = new Map<number, WebGLTexture | null>()
       let activeProgram: WebGLProgram | null = null
@@ -973,7 +1668,6 @@ export const install = (
         // The real context answers this. A partial test double or hostile shim leaves validation at
         // the enum's non-negative/integer baseline instead of breaking installation.
       }
-
       const nativeGetUniformLocation = gl.getUniformLocation
       hookedGl.getUniformLocation = {
         getUniformLocation(this: WebGL2RenderingContext, program: WebGLProgram, name: string) {
@@ -1191,6 +1885,7 @@ export const install = (
             () => {
               if (this !== gl || texture === null || !textures.delete(texture)) return
               tileOfTexture.delete(texture)
+              canvasOfTexture.delete(texture)
               for (const [unit, bound] of texture2DByUnit) {
                 if (bound === texture) texture2DByUnit.set(unit, null)
               }
@@ -1210,9 +1905,30 @@ export const install = (
        * so a quad would be labelled `1051/672` while showing `1052/672`, and the tile we were asked
        * to draw on vanished from the list entirely.
        */
+      const isPageCanvasSource = (
+        source: unknown,
+      ): source is CanvasImageSource & { width: number; height: number } => {
+        if (typeof source !== 'object' || source === null) return false
+        const constructors = realm as unknown as Record<string, unknown>
+        return (
+          isPageInstance(source, 'HTMLCanvasElement', constructors) ||
+          isPageInstance(source, 'OffscreenCanvas', constructors)
+        )
+      }
+
       const attributeUpload = (target: number, source: unknown): void => {
         if (target !== gl.TEXTURE_2D) return
         const texture = texture2DByUnit.get(activeTextureUnit) ?? null
+        if (
+          texture !== null &&
+          isPageCanvasSource(source) &&
+          source.width === TILE_SIZE &&
+          source.height === TILE_SIZE
+        ) {
+          canvasOfTexture.set(texture, source)
+          tileOfTexture.delete(texture)
+          return
+        }
         if (
           texture === null ||
           !isPageInstance(source, 'ImageBitmap', realm as unknown as Record<string, unknown>)
@@ -1465,6 +2181,26 @@ export const install = (
         },
       }.clear
 
+      const refreshDraft = (texture: WebGLTexture): void => {
+        if (!capturePixels) return
+        const source = canvasOfTexture.get(texture)
+        if (source === undefined) {
+          count('paint:draw of a texture with no canvas')
+          return
+        }
+        const tile = tileOfPaintCanvas.get(source)
+        if (tile === undefined) {
+          count('paint:draw of an unnamed draft canvas')
+          return
+        }
+        const stale = capturedAt.get(texture) !== captureGeneration
+        if (!stale && !dirtyCanvases.has(source)) return
+        dirtyCanvases.delete(source)
+        capturedAt.set(texture, captureGeneration)
+        capture(tile, source, 'preview')
+        queuedWrites.delete(source)
+      }
+
       const recordDraw = (drawCount: number): void => {
         // Scheduled on every draw, not only tile draws, so a frame that renders the map with no
         // wplace tiles in it still reaches the listener. A default-framebuffer colour clear above
@@ -1492,8 +2228,25 @@ export const install = (
           count('draw:no-texture-or-matrix')
           return
         }
+        const map = getMap() as {
+          painter?: { currentLayer?: number }
+          style?: { _order?: readonly string[] }
+        } | null
+        const layerIndex = map?.painter?.currentLayer
+        const layerId = layerIndex === undefined ? null : (map?.style?._order?.[layerIndex] ?? null)
+        const role = wplaceRasterRole(layerId)
+        if (role === 'draft') {
+          refreshDraft(drawnTexture)
+          count('draw:draft-layer')
+          return
+        }
+        if (layerId !== null && role !== 'tile') {
+          count('draw:not-pixel-art-layer')
+          return
+        }
         const tile = tileOfTexture.get(drawnTexture)
         if (tile === undefined) {
+          refreshDraft(drawnTexture)
           count('draw:texture-not-a-known-tile')
           return
         }

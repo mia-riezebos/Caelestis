@@ -1,12 +1,19 @@
-import { WORLD_PIXELS } from '@wts/shared'
+import { WORLD_PIXELS } from '@caelestis/shared'
 import { warn } from '../debug.js'
-import { isUint8Array } from '../page-world.js'
-import type { Appearance } from './appearance.js'
+import { isStoredBlob, isUint8Array, type StoredBlob } from '../page-world.js'
+import type { Appearance, AppearanceGroup } from './appearance.js'
 import {
   type ImportedTemplate,
   MAX_TEMPLATE_ID_LENGTH,
   MAX_TEMPLATE_NAME_LENGTH,
 } from './import.js'
+import {
+  hasCurrentPalette,
+  markCurrentPalette,
+  migrateTemplateStorePalette,
+  remapPaletteIndices,
+  remapStoredAppearance,
+} from './palette-migration.js'
 
 /**
  * Local templates on disk.
@@ -24,7 +31,7 @@ import {
 const DB_NAME = 'caelestis'
 const STORE = 'local-templates'
 // Shared with server-cache.ts: one database, one version, both stores created in either upgrade.
-const VERSION = 3
+const VERSION = 4
 const MAX_PERSISTED_TEMPLATES = 64
 const MAX_PERSISTED_INDEX_PIXELS = 64 * 1024 * 1024
 let blockedOpenRequest: IDBOpenDBRequest | null = null
@@ -51,9 +58,19 @@ const finishBlockedOpen = (request: IDBOpenDBRequest): void => {
 export interface StoredTemplate extends ImportedTemplate {
   readonly visible: boolean
   readonly everPlaced: boolean
-  readonly appearance?: Appearance
+  /** Null means "follow the global appearance"; absent means the same, from before this was stored. */
+  readonly appearance?: Appearance | null
   /** Monotonic compare-and-swap token. Records written before v3 restore as revision zero. */
   readonly revision: number
+  /**
+   * Which appearance groups this template answers for itself.
+   *
+   * Absent on anything stored before ownership was per group, where holding an appearance at all
+   * meant owning everything — which is how it is read back.
+   */
+  readonly owns?: readonly AppearanceGroup[]
+  /** Which Local folder this is in. Absent means the top level, as it did before folders existed. */
+  readonly folderId?: string | null
 }
 
 const open = (): Promise<IDBDatabase> => {
@@ -63,11 +80,15 @@ const open = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, VERSION)
     let abandoned = false
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
       if (!db.objectStoreNames.contains('server-cache')) {
         db.createObjectStore('server-cache', { keyPath: 'url' })
+      }
+      if (event.oldVersion < 4) {
+        const templates = request.transaction?.objectStore(STORE)
+        if (templates !== undefined) migrateTemplateStorePalette(templates)
       }
     }
     request.onblocked = () => {
@@ -205,24 +226,107 @@ export const saveTemplate = async (
           ? current.indices
           : undefined
       const reusable =
+        hasCurrentPalette(current) &&
         (isUint8Array(currentIndices) || isStoredBlob(currentIndices)) &&
         candidateIndexPixels(current) === indices.length
       if (reusable) {
         // Metadata-only mutations keep the already-cloned durable value. Re-wrapping a multi-MB
         // ArrayBuffer in a Blob copies it and makes every move/toggle/appearance change rewrite all
         // pixels even though this PR has no pixel-editing mutation.
-        templates.put({ ...metadata, revision, indices: currentIndices })
+        const record: Record<string, unknown> = { ...metadata, revision, indices: currentIndices }
+        delete record.paletteMigration
+        if (typeof current === 'object' && current !== null && 'paletteMigration' in current) {
+          record.paletteMigration = current.paletteMigration
+        }
+        templates.put(record)
       } else {
         const bytes =
           indices.byteOffset === 0 && indices.byteLength === indices.buffer.byteLength
             ? (indices.buffer as ArrayBuffer)
             : indices.slice().buffer
-        templates.put({ ...metadata, revision, indices: new Blob([bytes]) })
+        templates.put(markCurrentPalette({ ...metadata, revision, indices: new Blob([bytes]) }))
       }
     },
     true,
     expectedRevision === null ? indices.length : null,
   )
+}
+
+export interface TemplateFolderUpdate {
+  readonly id: string
+  readonly expectedRevision: number
+  readonly folderId: string | null
+}
+
+export type SaveTemplateFoldersResult =
+  | { readonly status: 'saved'; readonly revisions: ReadonlyMap<string, number> }
+  | { readonly status: 'conflict' }
+  | { readonly status: 'unavailable' }
+
+/** Save several folder assignments in one IndexedDB transaction, or none of them. */
+export const saveTemplateFolders = async (
+  updates: readonly TemplateFolderUpdate[],
+): Promise<SaveTemplateFoldersResult> => {
+  if (updates.length === 0) return { status: 'saved', revisions: new Map() }
+  if (new Set(updates.map(({ id }) => id)).size !== updates.length) return { status: 'conflict' }
+  try {
+    const db = await open()
+    try {
+      return await new Promise<SaveTemplateFoldersResult>((resolve, reject) => {
+        const transaction = db.transaction(STORE, 'readwrite')
+        const templates = transaction.objectStore(STORE)
+        const current = new Map<string, Record<string, unknown>>()
+        let remaining = updates.length
+        let conflict = false
+        let result: SaveTemplateFoldersResult = { status: 'conflict' }
+
+        const finishReads = (): void => {
+          if (remaining !== 0) return
+          if (conflict) return
+          const revisions = new Map<string, number>()
+          for (const update of updates) {
+            const record = current.get(update.id)
+            if (record === undefined) return
+            const revision = update.expectedRevision + 1
+            templates.put({ ...record, folderId: update.folderId, revision })
+            revisions.set(update.id, revision)
+          }
+          result = { status: 'saved', revisions }
+        }
+
+        for (const update of updates) {
+          const request = templates.get(update.id)
+          request.onsuccess = () => {
+            const record = request.result
+            if (
+              typeof record !== 'object' ||
+              record === null ||
+              normaliseRevision((record as { revision?: unknown }).revision) !==
+                update.expectedRevision ||
+              update.expectedRevision >= Number.MAX_SAFE_INTEGER - 1
+            ) {
+              conflict = true
+            } else {
+              current.set(update.id, record as Record<string, unknown>)
+            }
+            remaining--
+            finishReads()
+          }
+          request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
+        }
+        transaction.oncomplete = () => resolve(result)
+        transaction.onerror = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction failed'))
+        transaction.onabort = () =>
+          reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+      })
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    warn('install', 'local template storage unavailable', String(error))
+    return { status: 'unavailable' }
+  }
 }
 
 export const deleteTemplate = async (
@@ -239,18 +343,6 @@ export const deleteTemplate = async (
     },
     false,
   )
-
-interface StoredBlob {
-  readonly size: number
-  arrayBuffer(): Promise<ArrayBuffer>
-}
-
-const isStoredBlob = (value: unknown): value is StoredBlob =>
-  typeof value === 'object' &&
-  value !== null &&
-  Number.isSafeInteger((value as StoredBlob).size) &&
-  (value as StoredBlob).size >= 0 &&
-  typeof (value as StoredBlob).arrayBuffer === 'function'
 
 const boundedStoredCandidate = (
   value: unknown,
@@ -330,7 +422,11 @@ const boundedStoredCandidate = (
 }
 
 type HydrationResult =
-  | { readonly status: 'loaded'; readonly template: unknown }
+  | {
+      readonly status: 'loaded'
+      readonly template: unknown
+      readonly migrated?: Record<string, unknown>
+    }
   | { readonly status: 'invalid' }
   | { readonly status: 'unavailable' }
 
@@ -385,27 +481,53 @@ const loadBatch = (
 const hydrateCandidate = async (
   candidate: Record<string, unknown> & { indices: Uint8Array | StoredBlob },
 ): Promise<HydrationResult> => {
-  if (isUint8Array(candidate.indices)) {
+  const finish = (indices: Uint8Array): HydrationResult => {
+    if (hasCurrentPalette(candidate)) {
+      return {
+        status: 'loaded',
+        template: { ...candidate, revision: candidate.revision ?? 0, indices },
+      }
+    }
+    const remapped = remapPaletteIndices(indices)
+    const migrated = markCurrentPalette({
+      ...candidate,
+      indices: new Blob([remapped.buffer as ArrayBuffer]),
+      appearance: remapStoredAppearance(candidate.appearance),
+    })
     return {
       status: 'loaded',
-      template: { ...candidate, revision: candidate.revision ?? 0 },
+      template: { ...migrated, revision: candidate.revision ?? 0, indices: remapped },
+      migrated,
     }
+  }
+  if (isUint8Array(candidate.indices)) {
+    return finish(candidate.indices)
   }
   try {
     const buffer = await candidate.indices.arrayBuffer()
     if (buffer.byteLength !== candidate.indices.size) return { status: 'invalid' }
-    return {
-      status: 'loaded',
-      template: {
-        ...candidate,
-        revision: candidate.revision ?? 0,
-        indices: new Uint8Array(buffer),
-      },
-    }
+    return finish(new Uint8Array(buffer))
   } catch (error) {
     warn('install', `could not read local template ${String(candidate.id)}`, String(error))
     return { status: 'unavailable' }
   }
+}
+
+const persistLoadedPaletteMigration = async (
+  candidate: Record<string, unknown>,
+  migrated: Record<string, unknown>,
+): Promise<void> => {
+  const id = candidate.id
+  if (typeof id !== 'string') return
+  await writeVersioned(
+    id,
+    storedRevision(candidate),
+    (templates, _revision, current) => {
+      if (typeof current !== 'object' || current === null || hasCurrentPalette(current)) return
+      templates.put(migrated)
+    },
+    false,
+  )
 }
 
 export type LoadTemplateResult =
@@ -469,6 +591,9 @@ export const loadTemplate = async (
       const hydrated = await hydrateCandidate(value)
       if (hydrated.status === 'invalid') {
         return { status: 'invalid', revision: storedRevision(value) }
+      }
+      if (hydrated.status === 'loaded' && hydrated.migrated !== undefined) {
+        void persistLoadedPaletteMigration(value, hydrated.migrated)
       }
       return hydrated
     } finally {
@@ -593,6 +718,9 @@ export const loadTemplates = async (
         }
         const hydrated = await hydrateCandidate(candidate)
         if (hydrated.status === 'loaded') {
+          if (hydrated.migrated !== undefined) {
+            void persistLoadedPaletteMigration(candidate, hydrated.migrated)
+          }
           templates.push(hydrated.template)
         } else {
           templates.push({

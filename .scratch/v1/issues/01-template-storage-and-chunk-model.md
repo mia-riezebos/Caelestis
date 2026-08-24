@@ -102,3 +102,21 @@ the work at (distinct colours × palette size).
 
 A fixed 5-bit-per-channel lookup table was the obvious alternative and is worse here: it introduces up
 to ±4 of its own error before matching, which the palette's minimum separation of 8 cannot absorb.
+
+## Amendment — 2026-08-08: the local store is a cache, and locally-imported templates are separate
+
+The userscript now persists templates in IndexedDB and can import an image directly, which makes it
+useful with no server at all. Neither of those changes where a *shared* template lives.
+
+- **The server remains the source of truth for anything shared.** Local storage is a cache. A
+  template can be updated, swapped or removed server-side, and the userscript is expected to notice:
+  the ETag-polled manifest is what says something changed, and a changed template is re-fetched
+  rather than assumed still current. Cached chunks are content-addressed, so "has this changed" is
+  answerable without downloading anything.
+- **A locally-imported template is a different kind of object.** It never had a server, so nothing
+  can update it and nothing should try. It is the standalone path and the on-ramp — place an image,
+  see it, then push it to a server — rather than an offline copy of a shared one.
+
+Not yet settled, and now fog on the map: what the userscript does when a cached template's server
+says it is gone, and whether a locally-imported template can be promoted to a shared one in place or
+must be re-uploaded.

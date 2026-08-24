@@ -1,7 +1,7 @@
 # Recon: wplace colour palette
 
 Type: research
-Status: open
+Status: resolved
 Blocked by: —
 GitHub: https://github.com/mia-riezebos/wplace-template-server/issues/10
 
@@ -70,3 +70,28 @@ been rejected and one non-colour accepted.
 
 The free/premium split also arrives with this, which `14-v1-viewing-modes` needs for "hide colours I
 cannot place".
+
+## Resolution — 2026-08-08: settled, with two sentinels the palette itself does not carry
+
+`WPLACE_PALETTE` is the source of truth and has been in use across the renderer, the comparison and
+the picker since. Two conventions built on top of it are worth recording here, because both are ours
+rather than wplace's and both are easy to misread as palette facts:
+
+- **Index 63 is a wildcard in a template, not a colour.** wplace *do* let you paint their transparent
+  slot, so 63 is a real thing to place — but a template storing it would be demanding the canvas be
+  *erased* there, which is a far stronger claim than templates make. So the overlay draws nothing
+  over a 63, the comparison asserts nothing about it, and it is excluded from every colour list,
+  filter and count. `drawableIndices()` exists to say "everything a template can require", which is
+  the palette minus this one.
+- **`UNPAINTED = 255` is a sentinel of ours, outside the palette.** wplace store colour and absence
+  as the same value — their index 0 is Transparent *and* what an unpainted pixel holds — and their
+  canvas renders both at alpha zero. Keeping absence at 255 means "nothing here" is never confusable
+  with a colour, and leaves 0..62 meaning exactly what they mean.
+
+The RGB→index conversion is a flat `Uint8Array(1 << 24)` indexed by `(r << 16) | (g << 8) | b`:
+16MB once, no hashing, and alpha short-circuits to the sentinel before the table is consulted. Every
+comparison downstream is therefore one byte against one byte.
+
+The "is the palette stable, or does it grow?" question is unanswered and now belongs to the fog: a
+palette that grows would not break stored templates, but it would silently change what `Owned` and
+`Free` mean.

@@ -1,9 +1,25 @@
-import { type Millis, seconds, WORLD_PIXELS } from '@wts/shared'
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, type SQL, sql } from 'drizzle-orm'
+import { type Millis, seconds, WORLD_PIXELS } from '@caelestis/shared'
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm'
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
+  contributions,
   nodes,
+  serverSettings,
   telemetryBuckets,
   templates,
   templateVersions,
@@ -11,25 +27,31 @@ import {
 } from '../../db/schema.js'
 import {
   type AccessToken,
+  type AccessTokenQuery,
   assertValidBuckets,
   assertValidTemplateVersion,
   type BucketQuery,
-  compareAccessTokens,
   compareBuckets,
   InvalidNodeParentError,
   MAX_NODE_PATH_LENGTH,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
   type ManifestTileRecord,
+  type NodeDeletion,
   NodeNotEmptyError,
   NodeNotFoundError,
   NodePathConflictError,
   NodePathTooLongError,
   type NodeRecord,
+  NodeSubtreeChangedError,
   READ_BUCKETS_CHUNK_SIZE,
+  type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
   TemplateIdentityError,
+  TemplateNotFoundError,
+  type TemplatePatch,
+  type TemplateRecord,
   type TemplateVersionRecord,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -47,6 +69,16 @@ const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
  * 100-parameter ceiling, and it turns the per-tile statement count into a per-24-tile one.
  */
 const VERSION_TILE_ROWS_PER_INSERT = 24
+
+/**
+ * Case-insensitive path-prefix matching without a LIKE pattern.
+ *
+ * D1 caps a LIKE or GLOB pattern at 50 bytes, while a node path may be 256 characters. `substr`
+ * compares the same prefix without constructing a pattern, and `lower` folds ASCII exactly as
+ * SQLite LIKE did. SQLite supplies both lengths so the comparison stays in characters throughout.
+ */
+const pathStartsWith = (prefix: SQL | string): SQL =>
+  sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
 
 const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
   const out: T[][] = []
@@ -194,15 +226,8 @@ export class D1SqlStore implements SqlStore {
     const node = await this.readNode(nodeId)
     if (node === null) return null
 
-    // Not LIKE: D1 caps a LIKE or GLOB pattern at 50 bytes, and a node path may be 256 characters,
-    // so renaming anything but a shallow node answered "LIKE or GLOB pattern too complex" — every
-    // ordinary rename of a nested group, in production only. `substr` compares the same prefix with
-    // no pattern at all, and `lower` folds ASCII exactly as LIKE did. Lengths come from SQLite's own
-    // `length()` so the comparison stays in characters throughout.
     const oldPrefix = `${node.path}/`
-    const startsWithOldPrefix = (prefix: SQL | string): SQL =>
-      sql`lower(substr(${nodes.path}, 1, length(${prefix}))) = lower(${prefix})`
-    const descendants = and(eq(nodes.season, node.season), startsWithOldPrefix(oldPrefix))
+    const descendants = and(eq(nodes.season, node.season), pathStartsWith(oldPrefix))
 
     // Every descendant keeps its suffix, so its new length is its old one shifted by the change in
     // the prefix — one aggregate, no rows. `slug` keeps paths inside the BMP, so SQLite's character
@@ -235,17 +260,14 @@ export class D1SqlStore implements SqlStore {
     // `/b` and its children at `/a/c`. The batch was atomic the whole time; the value it was built
     // from was not.
     //
-    // The destination is composed from the parent's path for the same reason. `parentId` cannot
-    // change here, so the parent row is a stable place to ask.
+    // The destination is composed from the node's live parent for the same reason. A concurrent move
+    // can change `parentId` after the guard read; carrying the old id into this batch leaves the new
+    // parent pointer paired with a path under the old parent.
     //
-    // Untested on purpose: `insertNode` composes the same way, so no tree holds a child whose prefix
-    // differs from its parent's, and the only thing this guards is a concurrent ancestor rename —
-    // which a single-threaded suite cannot stage. A test that seeded the mismatch through the store
-    // would be testing a state the stores no longer allow.
-    const parentPath =
-      node.parentId === null
-        ? sql`''`
-        : sql`coalesce((select path from nodes where id = ${node.parentId}), '')`
+    // The D1 test seam stages a move immediately before this batch, which pins the live-parent rule
+    // without seeding a hierarchy the store itself would otherwise refuse to create.
+    const liveParentId = sql`(select parent_id from nodes where id = ${nodeId})`
+    const parentPath = sql`coalesce((select path from nodes where id = ${liveParentId}), '')`
     const destination = sql`${parentPath} || '/' || ${segment}`
     const oldPath = sql`(select path from nodes where id = ${nodeId})`
 
@@ -262,7 +284,7 @@ export class D1SqlStore implements SqlStore {
       this.database
         .update(nodes)
         .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
-        .where(and(eq(nodes.season, node.season), startsWithOldPrefix(sql`${oldPath} || '/'`))),
+        .where(and(eq(nodes.season, node.season), pathStartsWith(sql`${oldPath} || '/'`))),
       this.database.update(nodes).set({ name, path: destination }).where(eq(nodes.id, nodeId)),
     ] as const
     try {
@@ -283,6 +305,126 @@ export class D1SqlStore implements SqlStore {
     }
     // Re-read rather than assemble: the path the database composed is the one that is true.
     return this.readNode(nodeId)
+  }
+
+  async moveNode(
+    nodeId: string,
+    parentId: string | null,
+    proposedPath: string,
+    patch: { readonly name?: string } = {},
+  ): Promise<boolean> {
+    return await this.moveNodeAttempt(nodeId, parentId, proposedPath, patch, 0)
+  }
+
+  private async moveNodeAttempt(
+    nodeId: string,
+    parentId: string | null,
+    proposedPath: string,
+    patch: { readonly name?: string },
+    attempt: number,
+  ): Promise<boolean> {
+    const node = await this.readNode(nodeId)
+    if (node === null) return false
+
+    let parent: NodeRecord | null = null
+    if (parentId !== null) {
+      parent = await this.readNode(parentId)
+      if (parent === null) throw new InvalidNodeParentError('parent node does not exist')
+      if (parent.season !== node.season) {
+        throw new InvalidNodeParentError('parent node belongs to a different season')
+      }
+      if (parent.id === node.id || parent.path.startsWith(`${node.path}/`)) {
+        throw new InvalidNodeParentError(
+          'parent node cannot be the node itself or one of its descendants',
+        )
+      }
+    }
+
+    // For a parent-only move, the path segment belongs to the live row rather than to the route's
+    // earlier read. An explicit simultaneous rename still supplies its own requested segment.
+    const segment =
+      patch.name === undefined
+        ? node.path.slice(node.path.lastIndexOf('/') + 1)
+        : proposedPath.slice(proposedPath.lastIndexOf('/') + 1)
+    const path = `${parent?.path ?? ''}/${segment}`
+    const oldPrefix = `${node.path}/`
+    const descendants = and(eq(nodes.season, node.season), pathStartsWith(oldPrefix))
+    const shift = path.length - node.path.length
+    const [deepest] = await this.database
+      .select({ length: sql<number>`coalesce(max(length(${nodes.path})), 0)` })
+      .from(nodes)
+      .where(descendants)
+    if (Math.max(path.length, (deepest?.length ?? 0) + shift) > MAX_NODE_PATH_LENGTH) {
+      throw new NodePathTooLongError(`move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`)
+    }
+
+    const destination =
+      parentId === null
+        ? sql`'/' || ${segment}`
+        : sql`(select path from nodes where id = ${parentId}) || '/' || ${segment}`
+    const oldPath = sql`(select path from nodes where id = ${nodeId})`
+    // A rename between the guard read and this batch changes both name and path. Do not combine its
+    // live name with our stale segment: let the batch make no change and retry from the new row.
+    const nodeIsStillCurrent =
+      patch.name === undefined ? sql`${oldPath} = ${node.path}` : sql`1 = 1`
+    // Re-evaluate the parent against the node's live path inside each batch statement. Two opposite
+    // moves may both pass the reads above, but only the first can still satisfy this predicate once
+    // its write makes the other destination a descendant.
+    const parentIsStillValid =
+      parentId === null
+        ? sql`1 = 1`
+        : sql`(
+            select path from nodes where id = ${parentId} and season = ${node.season}
+          ) is not null and lower(substr(
+            (select path from nodes where id = ${parentId} and season = ${node.season}),
+            1,
+            length(${oldPath}) + 1
+          )) <> lower(${oldPath} || '/') and lower(
+            (select path from nodes where id = ${parentId} and season = ${node.season})
+          ) <> lower(${oldPath})`
+    const statements = [
+      this.database
+        .update(nodes)
+        .set({ path: sql`${destination} || substr(${nodes.path}, length(${oldPath}) + 1)` })
+        .where(
+          and(
+            eq(nodes.season, node.season),
+            pathStartsWith(sql`${oldPath} || '/'`),
+            parentIsStillValid,
+            nodeIsStillCurrent,
+          ),
+        ),
+      this.database
+        .update(nodes)
+        .set({
+          parentId,
+          path: destination,
+          ...(patch.name === undefined ? {} : { name: patch.name }),
+        })
+        .where(and(eq(nodes.id, nodeId), parentIsStillValid, nodeIsStillCurrent)),
+    ] as const
+    try {
+      await this.database.batch([statements[0], statements[1]])
+    } catch (error) {
+      if (mentions(error, "UNIQUE constraint failed: index 'nodes_season_path_idx'")) {
+        throw new NodePathConflictError(`node path is already taken in season ${node.season}`)
+      }
+      if (mentions(error, 'CHECK constraint failed: nodes_path_check')) {
+        throw new NodePathTooLongError(
+          `move would derive a path longer than ${MAX_NODE_PATH_LENGTH}`,
+        )
+      }
+      throw error
+    }
+    const moved = await this.readNode(nodeId)
+    if (moved === null) return false
+    if (moved.parentId !== parentId) {
+      if (patch.name === undefined && attempt < 3) {
+        return await this.moveNodeAttempt(nodeId, parentId, proposedPath, patch, attempt + 1)
+      }
+      throw new InvalidNodeParentError('parent node became invalid during the move')
+    }
+    return true
   }
 
   async deleteNode(nodeId: string): Promise<void> {
@@ -310,13 +452,111 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
-  async insertTemplateVersion(version: TemplateVersionRecord): Promise<void> {
-    assertValidTemplateVersion(version)
-    if ((await this.readNode(version.nodeId)) === null) {
-      throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+  async countNodeSubtree(nodeId: string): Promise<{ nodes: number; templates: number }> {
+    const node = await this.readNode(nodeId)
+    if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    const subtree = or(
+      eq(nodes.id, nodeId),
+      and(eq(nodes.season, node.season), pathStartsWith(`${node.path}/`)),
+    )
+    const [nodeRows, templateRows] = await Promise.all([
+      this.database.select({ count: sql<number>`count(*)` }).from(nodes).where(subtree),
+      this.database
+        .select({ count: sql<number>`count(*)` })
+        .from(templates)
+        .innerJoin(nodes, eq(nodes.id, templates.nodeId))
+        .where(subtree),
+    ])
+    return { nodes: nodeRows[0]?.count ?? 0, templates: templateRows[0]?.count ?? 0 }
+  }
+
+  async deleteNodeCascade(nodeId: string, expected: NodeDeletion): Promise<NodeDeletion> {
+    const node = await this.readNode(nodeId)
+    if (node === null) throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+    // Every statement reads the root path inside the same transaction. Carrying `node.path` from the
+    // read above lets a concurrent rename/move make the batch select the root by id but miss its
+    // descendants, and the final delete then loses to their foreign keys.
+    const rootPath = sql`(select path from nodes where id = ${nodeId})`
+    const liveSubtree = or(
+      eq(nodes.id, nodeId),
+      and(eq(nodes.season, node.season), pathStartsWith(sql`${rootPath} || '/'`)),
+    )
+    const liveNodeCount = sql`(select count(*) from ${nodes} where ${liveSubtree})`
+    const liveTemplateCount = sql`(
+      select count(*) from ${templates}
+      inner join ${nodes} on ${nodes.id} = ${templates.nodeId}
+      where ${liveSubtree}
+    )`
+    const token = crypto.randomUUID()
+    const claimed = this.database
+      .update(nodes)
+      .set({ deleteToken: token })
+      .where(
+        and(
+          eq(nodes.id, nodeId),
+          sql`${liveNodeCount} = ${expected.nodes}`,
+          sql`${liveTemplateCount} = ${expected.templates}`,
+        ),
+      )
+    const hasClaim = sql`(select delete_token from nodes where id = ${nodeId}) = ${token}`
+    const subtree = and(liveSubtree, hasClaim)
+
+    const subtreeNodeIds = this.database.select({ id: nodes.id }).from(nodes).where(subtree)
+    const subtreeTemplateIds = this.database
+      .select({ id: templates.id })
+      .from(templates)
+      .where(inArray(templates.nodeId, subtreeNodeIds))
+    const subtreeVersionIds = this.database
+      .select({ id: templateVersions.id })
+      .from(templateVersions)
+      .where(inArray(templateVersions.templateId, subtreeTemplateIds))
+
+    // Order matters and the batch is what makes it safe. `templates.current_version_id` points at a
+    // version and every version points back at the template, so the pointer has to be dropped before
+    // the rows it refers to. Tiles go before the versions they belong to, and nodes remain until the
+    // templates no longer refer to them. One batch means no caller can observe a half-deleted tree.
+    const statements = [
+      claimed,
+      this.database
+        .update(templates)
+        .set({ currentVersionId: null })
+        .where(inArray(templates.id, subtreeTemplateIds)),
+      this.database.delete(versionTiles).where(inArray(versionTiles.versionId, subtreeVersionIds)),
+      this.database.delete(templateVersions).where(inArray(templateVersions.id, subtreeVersionIds)),
+      // Contributions enforce their template reference too, so they must leave before templates.
+      this.database
+        .delete(contributions)
+        .where(inArray(contributions.templateId, subtreeTemplateIds)),
+      this.database.delete(templates).where(inArray(templates.id, subtreeTemplateIds)),
+      this.database.delete(nodes).where(subtree),
+    ] as const
+    const results = await this.database.batch(statements)
+    if (Number(results[0]?.meta.changes) === 0) {
+      if ((await this.readNode(nodeId)) === null) {
+        throw new NodeNotFoundError(`node does not exist: ${nodeId}`)
+      }
+      throw new NodeSubtreeChangedError('node subtree changed after it was counted')
     }
-    // A version replaces content in place, so it has to be a version of the same thing: same name,
-    // same dimensions. Position may move and the hash obviously differs. See TemplateIdentityError.
+
+    return expected
+  }
+
+  async insertTemplateVersion(
+    version: TemplateVersionRecord,
+    options: { readonly requireExisting?: boolean } = {},
+  ): Promise<void> {
+    assertValidTemplateVersion(version)
+    if (options.requireExisting !== true && version.nodeId !== null) {
+      const destination = await this.readNode(version.nodeId)
+      if (destination === null) {
+        throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
+      }
+      if (destination.season !== version.season) {
+        throw new InvalidNodeParentError('destination node belongs to a different season')
+      }
+    }
+    // A version replaces content in place, so it has to keep the same dimensions. Name and parent
+    // are live template metadata and may legitimately change while the pixels are being encoded.
     const previous = await this.database
       .select({
         name: templates.name,
@@ -331,11 +571,6 @@ export class D1SqlStore implements SqlStore {
       .limit(1)
     const existing = previous[0]
     if (existing !== undefined) {
-      if (existing.name !== version.name) {
-        throw new TemplateIdentityError(
-          `template ${version.templateId} is named ${existing.name}, not ${version.name}`,
-        )
-      }
       if (existing.minX !== null && existing.maxX !== null) {
         const span = (min: number, max: number) =>
           max >= min ? max - min : WORLD_PIXELS - min + max
@@ -351,20 +586,23 @@ export class D1SqlStore implements SqlStore {
       }
     }
 
+    const createTemplate = this.database
+      .insert(templates)
+      .values({
+        id: version.templateId,
+        season: version.season,
+        nodeId: version.nodeId,
+        name: version.name,
+        currentVersionId: null,
+        publishedAt: null,
+        createdWithToken: version.createdWithToken,
+        createdByUserId: version.createdByUserId,
+        createdAtMs: version.createdAt,
+        updatedAtMs: version.createdAt,
+      })
+      .onConflictDoNothing({ target: templates.id })
     const statements = [
-      this.database
-        .insert(templates)
-        .values({
-          id: version.templateId,
-          nodeId: version.nodeId,
-          name: version.name,
-          currentVersionId: null,
-          publishedAt: null,
-          createdWithToken: version.createdWithToken,
-          createdByUserId: version.createdByUserId,
-          createdAtMs: version.createdAt,
-        })
-        .onConflictDoNothing({ target: templates.id }),
+      ...(options.requireExisting === true ? [] : [createTemplate]),
       this.database.insert(templateVersions).values({
         id: version.versionId,
         templateId: version.templateId,
@@ -392,9 +630,11 @@ export class D1SqlStore implements SqlStore {
       ).map((rows) => this.database.insert(versionTiles).values(rows)),
       // The referenced version exists before this statement runs. D1 executes batch statements in
       // order, so the circular template/version relationship never needs deferred foreign keys.
+      // New pixels are a change like any other, so the template's own timestamp moves with them —
+      // for a template that already existed, this is the only column besides the version that does.
       this.database
         .update(templates)
-        .set({ currentVersionId: version.versionId })
+        .set({ currentVersionId: version.versionId, updatedAtMs: version.createdAt })
         .where(eq(templates.id, version.templateId)),
     ]
 
@@ -408,6 +648,9 @@ export class D1SqlStore implements SqlStore {
       // this insert. Same outcome as the check finding it missing, so it gets the same error rather
       // than escaping as a 500. Same rule as `insertNode` and `deleteNode`.
       if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        if (options.requireExisting === true) {
+          throw new TemplateNotFoundError(`template does not exist: ${version.templateId}`)
+        }
         throw new NodeNotFoundError(`node does not exist: ${version.nodeId}`)
       }
       throw error
@@ -418,6 +661,7 @@ export class D1SqlStore implements SqlStore {
     const rows = await this.database
       .select({
         templateId: templates.id,
+        season: templates.season,
         nodeId: templates.nodeId,
         name: templates.name,
         versionId: templateVersions.id,
@@ -445,6 +689,7 @@ export class D1SqlStore implements SqlStore {
 
     return {
       templateId: row.templateId,
+      season: row.season,
       nodeId: row.nodeId,
       name: row.name,
       versionId: row.versionId,
@@ -457,15 +702,147 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
-  async setTemplatePublishedAt(templateId: string, publishedAt: Millis | null): Promise<boolean> {
-    const existing = await this.database
-      .select({ id: templates.id })
+  async readServerSettings(): Promise<ServerSettings> {
+    const rows = await this.database
+      .select({ name: serverSettings.name, description: serverSettings.description })
+      .from(serverSettings)
+      .where(eq(serverSettings.id, 1))
+      .limit(1)
+    const row = rows[0]
+    return { name: row?.name ?? null, description: row?.description ?? null }
+  }
+
+  async writeServerSettings(patch: { name?: string; description?: string | null }): Promise<void> {
+    if (patch.name === undefined && patch.description === undefined) return
+    const next = {
+      ...(patch.name === undefined ? {} : { name: patch.name }),
+      ...(patch.description === undefined ? {} : { description: patch.description }),
+    }
+    await this.database
+      .insert(serverSettings)
+      .values({
+        id: 1,
+        name: patch.name ?? null,
+        description: patch.description ?? null,
+      })
+      .onConflictDoUpdate({ target: serverSettings.id, set: next })
+  }
+
+  async readTemplate(templateId: string): Promise<TemplateRecord | null> {
+    const rows = await this.database
+      .select({
+        id: templates.id,
+        season: templates.season,
+        nodeId: templates.nodeId,
+        name: templates.name,
+        currentVersionId: templates.currentVersionId,
+        publishedAt: templates.publishedAt,
+        createdAt: templates.createdAtMs,
+        updatedAt: templates.updatedAtMs,
+      })
       .from(templates)
       .where(eq(templates.id, templateId))
       .limit(1)
-    if (existing.length === 0) return false
-    await this.database.update(templates).set({ publishedAt }).where(eq(templates.id, templateId))
-    return true
+    const row = rows[0]
+    if (row === undefined) return null
+    return {
+      id: row.id,
+      season: row.season,
+      nodeId: row.nodeId,
+      name: row.name,
+      currentVersionId: row.currentVersionId,
+      published: row.publishedAt !== null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }
+  }
+
+  async setTemplatePublishedAt(
+    templateId: string,
+    publishedAt: Millis | null,
+    updatedAt: Millis,
+  ): Promise<boolean> {
+    return await this.updateTemplate(templateId, { publishedAt }, updatedAt)
+  }
+
+  async updateTemplate(
+    templateId: string,
+    patch: TemplatePatch,
+    updatedAt: Millis,
+  ): Promise<boolean> {
+    let predicate = eq(templates.id, templateId)
+    if (patch.nodeId !== undefined) {
+      const [existing] = await this.database
+        .select({ nodeId: templates.nodeId, season: templates.season })
+        .from(templates)
+        .where(eq(templates.id, templateId))
+        .limit(1)
+      if (existing === undefined) return false
+      if (patch.nodeId !== null) {
+        const target = await this.readNode(patch.nodeId)
+        if (target === null) throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
+        if (target.season !== existing.season) {
+          throw new InvalidNodeParentError('destination node belongs to a different season')
+        }
+      }
+      // If another administrator moves or deletes the template after the season check, this write
+      // loses instead of applying a stale decision and reporting success.
+      const parentUnchanged =
+        existing.nodeId === null ? isNull(templates.nodeId) : eq(templates.nodeId, existing.nodeId)
+      predicate = and(eq(templates.id, templateId), parentUnchanged) ?? predicate
+    }
+
+    try {
+      const result = await this.database
+        .update(templates)
+        .set({
+          ...(patch.name === undefined ? {} : { name: patch.name }),
+          ...(patch.nodeId === undefined ? {} : { nodeId: patch.nodeId }),
+          ...(patch.publishedAt === undefined ? {} : { publishedAt: patch.publishedAt }),
+          updatedAtMs: updatedAt,
+        })
+        .where(predicate)
+      return Number(result.meta.changes) > 0
+    } catch (error) {
+      // The destination was read above, and another administrator can delete it between that read
+      // and this write. Translated like the other two races in this file, so the one path that
+      // could still answer 500 instead of a typed error no longer can.
+      if (mentions(error, 'FOREIGN KEY constraint failed')) {
+        throw new NodeNotFoundError(`node does not exist: ${patch.nodeId ?? ''}`)
+      }
+      throw error
+    }
+  }
+
+  async deleteTemplate(templateId: string): Promise<boolean> {
+    // Order matters and the batch is what makes it safe. `templates.current_version_id` points at a
+    // version and every version points back at the template, so the pointer has to be dropped before
+    // the rows it refers to. Tiles go first because they reference a version.
+    const statements = [
+      this.database
+        .update(templates)
+        .set({ currentVersionId: null })
+        .where(eq(templates.id, templateId)),
+      this.database
+        .delete(versionTiles)
+        .where(
+          inArray(
+            versionTiles.versionId,
+            this.database
+              .select({ id: templateVersions.id })
+              .from(templateVersions)
+              .where(eq(templateVersions.templateId, templateId)),
+          ),
+        ),
+      this.database.delete(templateVersions).where(eq(templateVersions.templateId, templateId)),
+      this.database.delete(contributions).where(eq(contributions.templateId, templateId)),
+      this.database.delete(templates).where(eq(templates.id, templateId)),
+    ]
+    const results = await this.database.batch(
+      statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+    )
+    // Chunk blobs stay: they are content-addressed and shared. See `deleteTemplate` on the port.
+    return Number(results.at(-1)?.meta.changes) > 0
   }
 
   async listManifestTemplates(
@@ -485,14 +862,14 @@ export class D1SqlStore implements SqlStore {
         totalPixels: templateVersions.totalPixels,
         publishedAt: templates.publishedAt,
         createdAt: templates.createdAtMs,
+        updatedAt: templates.updatedAtMs,
       })
       .from(templates)
-      .innerJoin(nodes, eq(nodes.id, templates.nodeId))
       .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
       .where(
         includeUnpublished
-          ? eq(nodes.season, season)
-          : and(eq(nodes.season, season), isNotNull(templates.publishedAt)),
+          ? eq(templates.season, season)
+          : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
       )
 
     return rows.map((row) => ({
@@ -504,6 +881,7 @@ export class D1SqlStore implements SqlStore {
       totalPixels: row.totalPixels,
       published: row.publishedAt !== null,
       createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     }))
   }
 
@@ -514,6 +892,7 @@ export class D1SqlStore implements SqlStore {
     return this.database
       .select({
         templateId: templates.id,
+        versionId: templateVersions.id,
         tileX: versionTiles.tileX,
         tileY: versionTiles.tileY,
         hash: versionTiles.hash,
@@ -527,11 +906,10 @@ export class D1SqlStore implements SqlStore {
           eq(templates.currentVersionId, templateVersions.id),
         ),
       )
-      .innerJoin(nodes, eq(nodes.id, templates.nodeId))
       .where(
         includeUnpublished
-          ? eq(nodes.season, season)
-          : and(eq(nodes.season, season), isNotNull(templates.publishedAt)),
+          ? eq(templates.season, season)
+          : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
       )
   }
 
@@ -593,16 +971,26 @@ export class D1SqlStore implements SqlStore {
     return row === undefined ? null : toAccessToken(row)
   }
 
-  async listAccessTokens(): Promise<readonly AccessToken[]> {
-    const rows = await this.database
+  async listAccessTokens(query: AccessTokenQuery = {}): Promise<readonly AccessToken[]> {
+    const after = query.after
+    const ordered = this.database
       .select()
       .from(accessTokens)
-      .orderBy(desc(accessTokens.createdAtMs))
-    // Re-sorted rather than trusted: SQL leaves equal created_at_ms unspecified, and the port
-    // promises one order both adapters return. The JS sort is a total order, so it does all of the
-    // work — reversing the ORDER BY above changes nothing observable. The clause stays because
-    // asking SQLite for the order we want is cheaper than making it sort a shuffled result.
-    return rows.map(toAccessToken).sort(compareAccessTokens)
+      .where(
+        after === undefined
+          ? undefined
+          : or(
+              lt(accessTokens.createdAtMs, after.createdAt),
+              and(
+                eq(accessTokens.createdAtMs, after.createdAt),
+                gt(accessTokens.tokenHash, after.tokenHash),
+              ),
+            ),
+      )
+      .orderBy(desc(accessTokens.createdAtMs), asc(accessTokens.tokenHash))
+      .$dynamic()
+    const rows = await (query.limit === undefined ? ordered : ordered.limit(query.limit))
+    return rows.map(toAccessToken)
   }
 
   async revokeAccessToken(tokenHash: string): Promise<void> {

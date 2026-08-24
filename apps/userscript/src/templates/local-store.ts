@@ -4,10 +4,29 @@ import {
   TRANSPARENT_INDEX,
   WORLD_PIXELS,
   WPLACE_PALETTE,
-} from '@wts/shared'
+} from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
-import { type Appearance, anchorOffset, DEFAULT_APPEARANCE, scaleFor } from './appearance.js'
+import {
+  type ConnectedServer,
+  getGlobalAppearance,
+  getState,
+  isScopeVisible,
+  type LocalFolder,
+  leaseLocalFolder,
+  localFolderChainVisible,
+  serverTemplatePreference,
+  setScopeVisible,
+  setServerTemplatePreference,
+} from '../state.js'
+import {
+  APPEARANCE_GROUPS,
+  type Appearance,
+  type AppearanceGroup,
+  GROUP_FIELDS,
+  legacyAppearanceGroups,
+  normaliseAppearance,
+} from './appearance.js'
 import {
   type ImportedTemplate,
   MAX_SOURCE_TILES_PER_TEMPLATE,
@@ -21,9 +40,12 @@ import {
   type SaveResult,
   type StoredTemplate,
   saveTemplate,
+  saveTemplateFolders,
   type TemplateLoadBatch,
   type TemplateLoadFailure,
 } from './persist.js'
+import { horizontalSpans } from './placement.js'
+import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './server-nodes.js'
 
 /**
  * Local templates, and the per-tile bitmaps the overlay actually draws.
@@ -62,12 +84,50 @@ export interface PlacedTemplate extends ImportedTemplate {
    * remove it rather than leave it stranded at a position nobody chose.
    */
   readonly everPlaced: boolean
-  /** How this one is drawn. Per-overlay, because the right opacity for a dense mural and a thin
-   *  outline are not the same number. */
-  readonly appearance: Appearance
+  /**
+   * Values this template has set for itself, for whichever groups it owns.
+   *
+   * Null is not the same as a copy of the default. A template that has never been adjusted should
+   * track the global sliders as they move; one that has been adjusted must keep what was set on it.
+   * Storing a copy at creation would freeze every new template at whatever the global happened to be
+   * that day and quietly stop it following anything.
+   */
+  readonly appearance: Appearance | null
   /** IndexedDB compare-and-swap token; not part of template identity or rendering. */
   readonly revision: number
+  /**
+   * Which groups the values above actually govern.
+   *
+   * Ownership is per group rather than all-or-nothing, so a template can carry its own marker
+   * colour while still following the global shape and colour filter. Empty means it follows the
+   * defaults in every respect, which is where every template starts.
+   */
+  readonly owns: readonly AppearanceGroup[]
+  /** Which Local folder this sits in, or null for the top level of Local. */
+  readonly folderId: string | null
+  /**
+   * The server publishing this template, or absent for one that only exists in this browser.
+   *
+   * Server templates live in this same store deliberately. Everything downstream — the renderer, the
+   * mismatch scan, the colour picker, the per-overlay menu — takes a `PlacedTemplate` and does not
+   * care where it came from, and keeping a second parallel store would have meant teaching all of
+   * them the difference for no gain. What *is* different is ownership: these are not persisted here,
+   * because the server is where they live and a stale copy in IndexedDB would outlive a delete.
+   */
+  readonly serverUrl?: string
+  /** Its id on that server, which is what the admin routes address. */
+  readonly serverTemplateId?: string
+  /** The folder it hangs off on that server, or null when it sits at the server root. */
+  readonly serverNodeId?: string | null
+  /** The version these pixels came from, so a sync knows whether to re-download them. */
+  readonly serverVersion?: string
+  /** The source continues at x=0 after reaching the world's east edge. Server templates only. */
+  readonly wrapX?: boolean
 }
+
+/** Whether this template is a copy of something a server publishes. */
+export const isServerTemplate = (template: PlacedTemplate): boolean =>
+  template.serverUrl !== undefined
 
 const templates = new Map<string, PlacedTemplate>()
 // Effective visibility can temporarily differ from durable user intent when source bitmap
@@ -77,9 +137,12 @@ const desiredVisibility = new Map<string, boolean>()
 const reconciliationObservers = new Map<string, Set<() => void>>()
 const previewOrigins = new Map<string, { x: number; y: number }>()
 const deleting = new Set<string>()
+const deletionLeases = new Map<string, number>()
 const pendingAdds = new Set<string>()
 const listeners: Array<() => void> = []
+const previewListeners: Array<() => void> = []
 const MAX_LOCAL_TEMPLATES = 64
+const MAX_SERVER_TEMPLATES = 64
 const MAX_LOCAL_INDEX_PIXELS = 64 * 1024 * 1024
 const MAX_RESTORE_CANDIDATES = MAX_LOCAL_TEMPLATES * 4
 const MAX_RESTORE_HYDRATED_PIXELS = MAX_LOCAL_INDEX_PIXELS * 2
@@ -139,14 +202,149 @@ const noteReconciliation = (id: string): void => {
 const orderedTemplates = (): PlacedTemplate[] =>
   [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
 
+const customOrdered = <T extends { readonly key: string }>(
+  items: readonly T[],
+  rank: ReadonlyMap<string, number>,
+): readonly T[] => {
+  const ranked: Array<T & { readonly rank: number }> = []
+  const unranked: T[] = []
+  for (const item of items) {
+    const itemRank = rank.get(item.key)
+    if (itemRank === undefined) unranked.push(item)
+    else ranked.push({ ...item, rank: itemRank })
+  }
+  ranked.sort((a, b) => a.rank - b.rank)
+  return [...ranked, ...unranked]
+}
+
+const serverTreeIdentity = (serverUrl: string): string => {
+  const verified = getState().servers.find((server) => server.url === serverUrl)?.lastVerified
+  return verified == null ? 'unknown:unknown' : `${verified.serverId}:${verified.season}`
+}
+
+/** Flatten one tree in the same custom sibling order the panel shows. */
+const flattenTree = (
+  rows: readonly PlacedTemplate[],
+  folders: readonly (readonly [id: string, parentId: string | null])[],
+  folderKey: (id: string) => string,
+  templateKey: (template: PlacedTemplate) => string,
+  templateParent: (template: PlacedTemplate) => string | null,
+  rank: ReadonlyMap<string, number>,
+): readonly PlacedTemplate[] => {
+  const result: PlacedTemplate[] = []
+  const seenFolders = new Set<string>()
+  const seenTemplates = new Set<string>()
+  const foldersByParent = new Map<string | null, string[]>()
+  const templatesByParent = new Map<string | null, PlacedTemplate[]>()
+  for (const [id, parentId] of folders) {
+    const siblings = foldersByParent.get(parentId) ?? []
+    siblings.push(id)
+    foldersByParent.set(parentId, siblings)
+  }
+  for (const template of rows) {
+    const parentId = templateParent(template)
+    const siblings = templatesByParent.get(parentId) ?? []
+    siblings.push(template)
+    templatesByParent.set(parentId, siblings)
+  }
+  const childrenOf = (parentId: string | null) =>
+    customOrdered(
+      [
+        ...(foldersByParent.get(parentId) ?? []).map((id) => ({
+          key: folderKey(id),
+          kind: 'folder' as const,
+          id,
+        })),
+        ...(templatesByParent.get(parentId) ?? []).map((template) => ({
+          key: templateKey(template),
+          kind: 'template' as const,
+          template,
+        })),
+      ],
+      rank,
+    )
+  const stack = [...childrenOf(null)].reverse()
+  while (stack.length > 0) {
+    const child = stack.pop()
+    if (child === undefined) break
+    if (child.kind === 'template') {
+      if (seenTemplates.has(child.template.id)) continue
+      seenTemplates.add(child.template.id)
+      result.push(child.template)
+    } else if (!seenFolders.has(child.id)) {
+      seenFolders.add(child.id)
+      stack.push(...[...childrenOf(child.id)].reverse())
+    }
+  }
+  // Invalid or temporarily incomplete parent data must not make an otherwise valid overlay vanish.
+  for (const template of rows) {
+    if (!seenTemplates.has(template.id)) result.push(template)
+  }
+  return result
+}
+
+const displayOrder = (): readonly PlacedTemplate[] => {
+  const ordered = orderedTemplates()
+  const state = getState()
+  const rank = new Map(state.customOrder.map((key, index) => [key, index]))
+  const categories = [
+    {
+      key: 'local',
+      rows: flattenTree(
+        ordered.filter((template) => !isServerTemplate(template)),
+        state.localFolders.map((folder) => [folder.id, folder.parentId] as const),
+        (id) => `lf:${id}`,
+        (template) => `local:${template.id}`,
+        (template) => template.folderId,
+        rank,
+      ),
+    },
+    ...state.servers.map((server) => {
+      const identity = serverTreeIdentity(server.url)
+      return {
+        key: `server:${server.url}`,
+        rows: flattenTree(
+          ordered.filter((template) => template.serverUrl === server.url),
+          serverNodeParents(server.url),
+          (id) => `node:${encodeURIComponent(server.url)}:${identity}:${id}`,
+          (template) =>
+            `st:${encodeURIComponent(server.url)}:${identity}:${template.serverTemplateId ?? ''}`,
+          (template) => template.serverNodeId ?? null,
+          rank,
+        ),
+      }
+    }),
+  ]
+  const result = customOrdered(categories, rank).flatMap(({ rows }) => rows)
+  const included = new Set(result.map((template) => template.id))
+  return [...result, ...ordered.filter((template) => !included.has(template.id))]
+}
+
 export const onLocalChange = (listener: () => void): void => {
   listeners.push(listener)
 }
+export const onLocalPreviewChange = (listener: () => void): void => {
+  previewListeners.push(listener)
+}
+
+const notifyListeners = (subscribers: readonly (() => void)[], what: string): void => {
+  for (const listener of subscribers) {
+    try {
+      listener()
+    } catch (error) {
+      try {
+        warn('install', `${what} listener failed`, String(error))
+      } catch {}
+    }
+  }
+}
+
 const notify = (): void => {
+  templateRevision++
   // Mirror a summary onto the window so the dev harness can assert on placement without reaching
   // into module state. Metadata only — never the pixels.
   try {
-    ;(pageWindow() as unknown as Record<string, unknown>).__wtsLocal = orderedTemplates().map(
+    ;(pageWindow() as unknown as Record<string, unknown>).__caelestisLocal = orderedTemplates().map(
       (t) => ({
         id: t.id,
         name: t.name,
@@ -156,6 +354,7 @@ const notify = (): void => {
         width: t.width,
         height: t.height,
         tiles: t.tiles.size,
+        folderId: t.folderId,
       }),
     )
   } catch (error) {
@@ -163,18 +362,73 @@ const notify = (): void => {
       warn('install', 'could not update local template diagnostics', String(error))
     } catch {}
   }
-  for (const listener of listeners) {
-    try {
-      listener()
-    } catch (error) {
-      try {
-        warn('install', 'local template listener failed', String(error))
-      } catch {}
-    }
+  notifyListeners(listeners, 'local template')
+}
+
+const notifyPreview = (): void => notifyListeners(previewListeners, 'local preview')
+
+export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
+
+/** Whether this exact snapshot is still the installed version of its template. */
+export const isCurrentTemplate = (template: PlacedTemplate): boolean =>
+  templates.get(template.id) === template
+
+/** Keep a browser-owned template from being deleted while another copy is still being committed. */
+export const leaseLocalTemplate = (id: string): (() => void) | null => {
+  const template = templates.get(id)
+  if (template === undefined || isServerTemplate(template) || deleting.has(id)) return null
+  deletionLeases.set(id, (deletionLeases.get(id) ?? 0) + 1)
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    const remaining = (deletionLeases.get(id) ?? 1) - 1
+    if (remaining === 0) deletionLeases.delete(id)
+    else deletionLeases.set(id, remaining)
   }
 }
 
-export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
+let displayOrderCache:
+  | {
+      readonly customOrder: readonly string[]
+      readonly localFolders: readonly LocalFolder[]
+      readonly servers: readonly ConnectedServer[]
+      readonly nodeRevision: number
+      readonly templateRevision: number
+      readonly templates: readonly PlacedTemplate[]
+    }
+  | undefined
+let templateRevision = 0
+
+/** Templates as the canvas and its interactions currently present them: custom order plus previews. */
+export const displayTemplates = (): readonly PlacedTemplate[] => {
+  const state = getState()
+  const nodeRevision = serverNodesRevision()
+  if (
+    displayOrderCache === undefined ||
+    displayOrderCache.customOrder !== state.customOrder ||
+    displayOrderCache.localFolders !== state.localFolders ||
+    displayOrderCache.servers !== state.servers ||
+    displayOrderCache.nodeRevision !== nodeRevision ||
+    displayOrderCache.templateRevision !== templateRevision
+  ) {
+    displayOrderCache = {
+      customOrder: state.customOrder,
+      localFolders: state.localFolders,
+      servers: state.servers,
+      nodeRevision,
+      templateRevision,
+      templates: displayOrder(),
+    }
+  }
+  if (previewOrigins.size === 0) return displayOrderCache.templates
+  return displayOrderCache.templates.map((template) => {
+    const preview = previewOrigins.get(template.id)
+    return preview === undefined
+      ? template
+      : { ...template, originX: preview.x, originY: preview.y }
+  })
+}
 
 /** Transient placement never touches IndexedDB or rebuilds tiles; the renderer translates them. */
 export const previewLocalTemplate = (id: string, originX: number, originY: number): boolean => {
@@ -184,7 +438,7 @@ export const previewLocalTemplate = (id: string, originX: number, originY: numbe
   const y = Math.round(originY)
   validatePlacement(existing, x, y)
   previewOrigins.set(id, { x, y })
-  notify()
+  notifyPreview()
   return true
 }
 
@@ -193,9 +447,61 @@ export const previewOriginFor = (id: string): { x: number; y: number } | null =>
 
 export const clearLocalPreview = (id: string): boolean => {
   if (!previewOrigins.delete(id)) return templates.has(id)
-  notify()
+  notifyPreview()
   return true
 }
+
+/**
+ * Whether this template actually draws.
+ *
+ * Its own switch *and* every folder above it. A template inside a hidden folder keeps saying it is
+ * visible, because it is — within a group that is not — and that is what makes turning the group
+ * back on restore the arrangement instead of flattening it.
+ */
+export const isTemplateVisible = (template: PlacedTemplate): boolean => {
+  if (!template.visible) return false
+  // A server's template answers to that server's switch, not to Local's. Sharing this store meant
+  // it inherited the local chain by default, so switching Local off hid every server's templates
+  // too, and a server's own switch did nothing to them.
+  //
+  // And to the folders it sits in, the same way a Local template answers to its own. A server's
+  // folders had no chain here at all, so their switches fell through to a set the renderer never
+  // read: the box moved, and nothing else did.
+  if (template.serverUrl !== undefined) {
+    if (!isScopeVisible(`server:${template.serverUrl}`)) return false
+    return nodeChainVisible(template.serverUrl, template.serverNodeId ?? null)
+  }
+  return localFolderChainVisible(template.folderId)
+}
+
+/**
+ * How this template is actually drawn: its own appearance, or the global default it inherits.
+ *
+ * The global colour filter lives beside the global appearance rather than inside it — the colour
+ * grid writes `hiddenColours` on the state directly — so the inherited object has to be completed
+ * from both. Without this an overlay showed an empty filter while following defaults that hid half
+ * the palette, and switching "use defaults" off copied that empty filter over the top, quietly
+ * turning every hidden colour back on at the moment of detaching.
+ */
+export const appearanceOf = (template: PlacedTemplate): Appearance => {
+  const state = getState()
+  const global: Appearance = { ...getGlobalAppearance(), hiddenColours: state.hiddenColours }
+  const own = template.appearance
+  if (own === null || template.owns.length === 0) return global
+
+  // Field by field, from whichever side owns that field's group. A template that has taken over its
+  // markers still follows the global sliders for its shape, which is the whole point of splitting
+  // the switch: wanting one's own marker colour used to mean freezing everything else as well.
+  const composed: Record<string, unknown> = { ...global }
+  for (const group of template.owns) {
+    for (const field of GROUP_FIELDS[group]) composed[field] = own[field]
+  }
+  return composed as unknown as Appearance
+}
+
+/** Whether this template answers for itself on one group, or follows the defaults. */
+export const ownsGroup = (template: PlacedTemplate, group: AppearanceGroup): boolean =>
+  template.owns.includes(group)
 
 /**
  * Slice a template into tile-sized bitmaps.
@@ -317,8 +623,18 @@ const validatePlacement = (
     throw new RangeError('template dimensions do not match its pixels')
   }
   if (originX < 0 || originY < 0) throw new RangeError('template origin is outside the canvas')
-  if (originX + template.width > WORLD_PIXELS)
-    throw new RangeError('template runs past the east edge')
+  if (originX + template.width > WORLD_PIXELS) {
+    if (
+      !('wrapX' in template) ||
+      template.wrapX !== true ||
+      !('serverUrl' in template) ||
+      typeof template.serverUrl !== 'string' ||
+      template.width >= WORLD_PIXELS ||
+      originX + template.width > WORLD_PIXELS * 2
+    ) {
+      throw new RangeError('template runs past the east edge')
+    }
+  }
   if (originY + template.height > WORLD_PIXELS)
     throw new RangeError('template runs past the south edge')
 }
@@ -338,19 +654,31 @@ const isTemplateLoadFailure = (value: unknown): value is TemplateLoadFailure =>
 
 const isAppearance = (value: unknown): value is Appearance => {
   if (!isRecord(value)) return false
-  const { shape, size, anchor, opacity, hiddenColours } = value
+  const { size, radius, translateX, translateY, rotation, opacity, hiddenColours } = value
   return (
-    typeof shape === 'string' &&
-    ['full', 'square', 'circle', 'triangle'].includes(shape) &&
     typeof size === 'number' &&
     Number.isFinite(size) &&
-    size >= 0 &&
-    size <= 1 &&
-    typeof anchor === 'string' &&
-    ['tl', 't', 'tr', 'l', 'c', 'r', 'bl', 'b', 'br'].includes(anchor) &&
+    size >= 0.05 &&
+    size <= 2 &&
+    typeof radius === 'number' &&
+    Number.isFinite(radius) &&
+    radius >= 0 &&
+    radius <= 1 &&
+    typeof translateX === 'number' &&
+    Number.isFinite(translateX) &&
+    translateX >= -1 &&
+    translateX <= 1 &&
+    typeof translateY === 'number' &&
+    Number.isFinite(translateY) &&
+    translateY >= -1 &&
+    translateY <= 1 &&
+    typeof rotation === 'number' &&
+    Number.isFinite(rotation) &&
+    rotation >= 0 &&
+    rotation <= 360 &&
     typeof opacity === 'number' &&
     Number.isFinite(opacity) &&
-    opacity >= 0 &&
+    opacity >= 0.05 &&
     opacity <= 1 &&
     Array.isArray(hiddenColours) &&
     hiddenColours.length <= WPLACE_PALETTE.length &&
@@ -359,11 +687,6 @@ const isAppearance = (value: unknown): value is Appearance => {
     ) &&
     new Set(hiddenColours).size === hiddenColours.length
   )
-}
-
-const normaliseAppearance = (value: unknown): Appearance => {
-  if (!isAppearance(value)) return DEFAULT_APPEARANCE
-  return { ...value, hiddenColours: [...value.hiddenColours] }
 }
 
 const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
@@ -383,7 +706,9 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     visible,
     everPlaced,
     appearance,
+    owns,
     revision,
+    folderId,
   } = value
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_TEMPLATE_ID_LENGTH) {
     throw new RangeError('template id is invalid')
@@ -419,6 +744,17 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
   ) {
     throw new RangeError('template revision is invalid')
   }
+  if (folderId !== undefined && folderId !== null && typeof folderId !== 'string') {
+    throw new RangeError('template folder is invalid')
+  }
+  if (
+    owns !== undefined &&
+    (!Array.isArray(owns) ||
+      owns.some((group) => !APPEARANCE_GROUPS.includes(group as AppearanceGroup)) ||
+      new Set(owns).size !== owns.length)
+  ) {
+    throw new RangeError('template appearance ownership is invalid')
+  }
   const normalised: StoredTemplate = {
     id,
     name,
@@ -433,7 +769,17 @@ const normaliseStoredTemplate = (value: unknown): StoredTemplate => {
     visible,
     everPlaced,
     revision: revision === undefined ? 0 : (revision as number),
+    folderId: typeof folderId === 'string' ? folderId : null,
     appearance: normaliseAppearance(appearance),
+    // "It has an appearance, so it chose one" holds for a record written by this model. A record
+    // from before it carries `shape`, and every template got one whether or not anyone touched it,
+    // so reading that as a deliberate choice would detach it from the global sliders for good.
+    owns:
+      owns === undefined
+        ? appearance == null
+          ? []
+          : legacyAppearanceGroups(appearance)
+        : (owns as AppearanceGroup[]),
     ...(sortOrder === undefined ? {} : { sortOrder: sortOrder as number }),
   }
   validatePlacement(normalised)
@@ -473,67 +819,74 @@ const validateStoredPixels = async (template: StoredTemplate): Promise<void> => 
   if (opaque !== template.opaque) throw new RangeError('template opaque count is invalid')
 }
 
-const slice = async (template: ImportedTemplate): Promise<Map<string, TileLevels>> => {
+const slice = async (
+  template: ImportedTemplate & { readonly serverUrl?: string; readonly wrapX?: boolean },
+): Promise<Map<string, TileLevels>> => {
   validatePlacement(template)
   await yieldToBrowser()
-  const firstTileX = Math.floor(template.originX / TILE_SIZE)
   const firstTileY = Math.floor(template.originY / TILE_SIZE)
-  const lastTileX = Math.floor((template.originX + template.width - 1) / TILE_SIZE)
   const lastTileY = Math.floor((template.originY + template.height - 1) / TILE_SIZE)
 
   const out = new Map<string, TileLevels>()
   let scanWork = 0
   try {
     for (let tileY = firstTileY; tileY <= lastTileY; tileY++) {
-      for (let tileX = firstTileX; tileX <= lastTileX; tileX++) {
-        // Allocate a full tile only once a painted source pixel is found. Sparse Marble extents can
-        // cross thousands of empty tile rows; eagerly allocating 4 MB for every empty tile turns a
-        // small valid import into gigabytes of allocation churn.
-        let rgba: Uint8ClampedArray<ArrayBuffer> | null = null
-        const tileLeft = tileX * TILE_SIZE
-        const tileTop = tileY * TILE_SIZE
-        const startX = Math.max(0, tileLeft - template.originX)
-        const startY = Math.max(0, tileTop - template.originY)
-        const endX = Math.min(template.width, tileLeft + TILE_SIZE - template.originX)
-        const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
+      for (const span of horizontalSpans(template)) {
+        const firstTileX = Math.floor(span.worldStart / TILE_SIZE)
+        const lastTileX = Math.floor((span.worldEnd - 1) / TILE_SIZE)
+        for (let tileX = firstTileX; tileX <= lastTileX; tileX++) {
+          // Allocate a full tile only once a painted source pixel is found. Sparse Marble extents can
+          // cross thousands of empty tile rows; eagerly allocating 4 MB for every empty tile turns a
+          // small valid import into gigabytes of allocation churn.
+          let rgba: Uint8ClampedArray<ArrayBuffer> | null = null
+          const tileLeft = tileX * TILE_SIZE
+          const tileTop = tileY * TILE_SIZE
+          const startX = span.sourceStart + Math.max(0, tileLeft - span.worldStart)
+          const startY = Math.max(0, tileTop - template.originY)
+          const endX =
+            span.sourceStart +
+            Math.min(span.sourceEnd - span.sourceStart, tileLeft + TILE_SIZE - span.worldStart)
+          const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
 
-        for (let y = startY; y < endY; y++) {
-          const rowOffset = y * template.width
-          const targetRow = (template.originY + y - tileTop) * TILE_SIZE
-          for (let x = startX; x < endX; x++) {
-            const index = template.indices[rowOffset + x] ?? TRANSPARENT_INDEX
-            if (index === TRANSPARENT_INDEX) continue
-            const colour = WPLACE_PALETTE[index]
-            if (colour === undefined) continue
-            rgba ??= new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
-            const target = (targetRow + (template.originX + x - tileLeft)) * 4
-            rgba[target] = colour.rgb[0]
-            rgba[target + 1] = colour.rgb[1]
-            rgba[target + 2] = colour.rgb[2]
-            rgba[target + 3] = 255
+          for (let y = startY; y < endY; y++) {
+            const rowOffset = y * template.width
+            const targetRow = (template.originY + y - tileTop) * TILE_SIZE
+            for (let x = startX; x < endX; x++) {
+              const index = template.indices[rowOffset + x] ?? TRANSPARENT_INDEX
+              if (index === TRANSPARENT_INDEX) continue
+              const colour = WPLACE_PALETTE[index]
+              if (colour === undefined) continue
+              rgba ??= new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
+              const worldX = span.worldStart + x - span.sourceStart
+              const target = (targetRow + (worldX - tileLeft)) * 4
+              rgba[target] = colour.rgb[0]
+              rgba[target + 1] = colour.rgb[1]
+              rgba[target + 2] = colour.rgb[2]
+              rgba[target + 3] = 255
+            }
+            scanWork += endX - startX
+            if (scanWork >= 250_000) {
+              scanWork = 0
+              await yieldToBrowser()
+            }
           }
-          scanWork += endX - startX
-          if (scanWork >= 250_000) {
-            scanWork = 0
-            await yieldToBrowser()
+          if (rgba === null) continue
+          if (out.size >= MAX_SOURCE_TILES_PER_TEMPLATE) {
+            throw new RangeError('template covers too many painted tiles to render safely')
           }
-        }
-        if (rgba === null) continue
-        if (out.size >= MAX_SOURCE_TILES_PER_TEMPLATE) {
-          throw new RangeError('template covers too many painted tiles to render safely')
-        }
-        // Reserve before allocating the chain. Existing replacement tiles remain counted until
-        // the atomic swap closes them, so the cap covers the actual old-plus-new peak.
-        if (!reserveSourceTile()) {
-          throw new RangeError('local templates exceed the source bitmap memory budget')
-        }
-        try {
-          out.set(`${tileX}/${tileY}`, {
-            levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
-          })
-        } catch (error) {
-          candidateSourceTiles--
-          throw error
+          // Reserve before allocating the chain. Existing replacement tiles remain counted until
+          // the atomic swap closes them, so the cap covers the actual old-plus-new peak.
+          if (!reserveSourceTile()) {
+            throw new RangeError('local templates exceed the source bitmap memory budget')
+          }
+          try {
+            out.set(`${tileX}/${tileY}`, {
+              levels: await buildLevels(new ImageData(rgba, TILE_SIZE, TILE_SIZE)),
+            })
+          } catch (error) {
+            candidateSourceTiles--
+            throw error
+          }
         }
       }
     }
@@ -559,7 +912,32 @@ const writeInOrder = <T>(id: string, write: () => Promise<T>): Promise<T> => {
   return next
 }
 
+const writeManyInOrder = <T>(ids: readonly string[], write: () => Promise<T>): Promise<T> => {
+  const unique = [...new Set(ids)].sort()
+  const previous = Promise.all(
+    unique.map(async (id) => {
+      try {
+        await (writeTails.get(id) ?? Promise.resolve())
+      } catch {}
+    }),
+  )
+  const next = previous.then(write)
+  for (const id of unique) writeTails.set(id, next)
+  const release = (): void => {
+    for (const id of unique) {
+      if (writeTails.get(id) === next) writeTails.delete(id)
+    }
+  }
+  void next.then(release, release)
+  return next
+}
+
 const persist = async (placed: PlacedTemplate): Promise<SaveResult> => {
+  if (isServerTemplate(placed)) {
+    return setServerTemplatePreference(placed.id, placed.appearance, placed.owns)
+      ? { status: 'saved', revision: placed.revision }
+      : { status: 'limit' }
+  }
   const { tiles: _tiles, ...rest } = placed
   return await writeInOrder(placed.id, async () => await saveTemplate(rest, null))
 }
@@ -569,6 +947,11 @@ const savePlaced = async (
   expectedRevision: number | null = placed.revision,
   visible: boolean = desiredVisibility.get(placed.id) ?? placed.visible,
 ): Promise<SaveResult> => {
+  if (isServerTemplate(placed)) {
+    return setServerTemplatePreference(placed.id, placed.appearance, placed.owns)
+      ? { status: 'saved', revision: placed.revision }
+      : { status: 'limit' }
+  }
   const { tiles: _tiles, ...rest } = placed
   return await saveTemplate({ ...rest, visible }, expectedRevision)
 }
@@ -690,8 +1073,10 @@ const reconcileConflictExclusive = async (id: string): Promise<void> => {
       clearStamped(id)
       previewOrigins.delete(id)
       templates.set(id, {
-        appearance: DEFAULT_APPEARANCE,
         ...winner,
+        appearance: winner.appearance ?? null,
+        owns: winner.owns ?? (winner.appearance != null ? APPEARANCE_GROUPS : []),
+        folderId: winner.folderId ?? null,
         visible,
         tiles,
       })
@@ -725,6 +1110,148 @@ const reconcileConflict = async (id: string): Promise<void> => {
 const committedRevision = (result: SaveResult): number | null =>
   result.status === 'saved' ? result.revision : null
 
+/**
+ * Is there room for this server template, before anything is downloaded for it?
+ *
+ * `putServerTemplate` refuses past the budget, but only after its caller has fetched and decoded the
+ * pixels. A server is free to advertise a manifest far larger than the budget, so the caller needs to
+ * know before it spends the work — replacing one already held always has room, since it takes the
+ * slot it is already in.
+ */
+export const hasRoomForServerTemplate = (id: string): boolean =>
+  templates.has(id) ||
+  [...templates.values()].filter(isServerTemplate).length < MAX_SERVER_TEMPLATES
+
+/**
+ * Put a template published by a server into the store, replacing any earlier copy of it.
+ *
+ * Its local switches survive the replacement: whether it is showing and how it is drawn are this
+ * browser's opinions about someone else's template, and re-syncing pixels is no reason to discard
+ * them. Everything else — the name, where it sits, the pixels — comes from the server.
+ */
+export const putServerTemplate = async (
+  template: ImportedTemplate & {
+    serverUrl: string
+    serverTemplateId: string
+    serverNodeId: string | null
+    serverVersion: string
+    wrapX?: boolean
+  },
+  /** Checked after every awaited step, immediately before the live row may change. */
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> => {
+  const restoring = restoreInFlight
+  if (restoring !== null) await restoring
+  return await writeInOrder(template.id, async () => {
+    if (!isCurrent()) return false
+    const existing = templates.get(template.id)
+    if (existing !== undefined && !isServerTemplate(existing)) {
+      throw new RangeError('server template id collides with a local template')
+    }
+    if (
+      existing === undefined &&
+      [...templates.values()].filter(isServerTemplate).length >= MAX_SERVER_TEMPLATES
+    ) {
+      throw new RangeError('server template count exceeds the local rendering budget')
+    }
+    const visible = existing?.visible ?? isScopeVisible(template.id)
+    const preference = existing === undefined ? serverTemplatePreference(template.id) : undefined
+    const tiles = visible ? await slice(template) : new Map<string, TileLevels>()
+    if (!isCurrent()) {
+      if (visible) releaseCandidateTiles(tiles)
+      return false
+    }
+    const priorTileCount = existing?.tiles.size ?? 0
+    const priorPixels = existing?.indices.length ?? 0
+    const pixelIncrease = template.indices.length - priorPixels
+    if (
+      retainedIndexPixels + pendingIndexPixels + pixelIncrease > MAX_LOCAL_INDEX_PIXELS ||
+      !claimSourceReplacement(priorTileCount, tiles.size)
+    ) {
+      releaseCandidateTiles(tiles)
+      throw new RangeError('server templates exceed the local rendering budget')
+    }
+    templates.set(template.id, {
+      ...template,
+      tiles,
+      // Whether someone else's template is on *your* canvas is your decision and nobody else's, so
+      // it is read back from this browser's own record rather than defaulted.
+      visible,
+      everPlaced: true,
+      appearance: existing !== undefined ? existing.appearance : (preference?.appearance ?? null),
+      revision: existing?.revision ?? 0,
+      owns: existing !== undefined ? existing.owns : (preference?.owns ?? []),
+      folderId: null,
+    })
+    retainedIndexPixels += pixelIncrease
+    installSourceReplacement(priorTileCount, tiles.size)
+    if (existing !== undefined) closeTiles(existing.tiles)
+    clearStamped(template.id)
+    notify()
+    return true
+  })
+}
+
+/** Refresh server-owned metadata without rebuilding unchanged pixels. */
+export const updateServerTemplateMetadata = async (
+  id: string,
+  name: string,
+  serverNodeId: string | null,
+): Promise<boolean> =>
+  await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || !isServerTemplate(existing)) return false
+    if (name.length === 0 || name.length > MAX_TEMPLATE_NAME_LENGTH) return false
+    if (existing.name === name && existing.serverNodeId === serverNodeId) return true
+    templates.set(id, { ...existing, name, serverNodeId })
+    notify()
+    return true
+  })
+
+/** Drop a server template we hold, because the server has stopped publishing it. */
+export const forgetServerTemplate = async (id: string): Promise<void> =>
+  await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || !isServerTemplate(existing)) return
+    releaseRetainedTiles(existing.tiles)
+    retainedIndexPixels -= existing.indices.length
+    desiredVisibility.delete(id)
+    clearStamped(id)
+    previewOrigins.delete(id)
+    templates.delete(id)
+    notify()
+  })
+
+/**
+ * Forget everything one server published, and free the bitmaps with it.
+ *
+ * For disconnecting. The ordinary sync removes templates a server has stopped publishing, but a
+ * disconnected server is never synced again — so its templates stayed in this store forever, drawn
+ * on the canvas, belonging to a server that is no longer in the list and with no row anywhere to
+ * switch them off from.
+ */
+export const forgetServerTemplates = async (serverUrl: string): Promise<void> => {
+  const ids = [...templates.values()]
+    .filter((template) => template.serverUrl === serverUrl)
+    .map(({ id }) => id)
+  if (ids.length === 0) return
+  await writeManyInOrder(ids, async () => {
+    let removed = false
+    for (const id of ids) {
+      const template = templates.get(id)
+      if (template === undefined || template.serverUrl !== serverUrl) continue
+      releaseRetainedTiles(template.tiles)
+      retainedIndexPixels -= template.indices.length
+      desiredVisibility.delete(template.id)
+      clearStamped(template.id)
+      previewOrigins.delete(template.id)
+      templates.delete(template.id)
+      removed = true
+    }
+    if (removed) notify()
+  })
+}
+
 export const addLocalTemplate = async (template: ImportedTemplate): Promise<PlacedTemplate> => {
   const restoring = restoreInFlight
   if (restoring !== null) await restoring
@@ -741,7 +1268,11 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
   if (templates.has(template.id) || pendingAdds.has(template.id)) {
     throw new RangeError('local template id already exists')
   }
-  if (templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES) {
+  if (
+    [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length +
+      pendingAdds.size >=
+    MAX_LOCAL_TEMPLATES
+  ) {
     throw new RangeError('too many local templates')
   }
   if (retainedIndexPixels + pendingIndexPixels + template.indices.length > MAX_LOCAL_INDEX_PIXELS) {
@@ -757,8 +1288,11 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
       tiles,
       visible: true,
       everPlaced: false,
-      appearance: DEFAULT_APPEARANCE,
+      // Follows the global appearance until someone touches this one's own controls.
+      appearance: null,
+      owns: [],
       revision: 0,
+      folderId: null,
     }
     if (!claimSourceReplacement(0, tiles.size)) {
       releaseCandidateTiles(tiles)
@@ -789,6 +1323,129 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
   }
 }
 
+/**
+ * Make a durable local copy without carrying any server-owned identity fields across the boundary.
+ *
+ * Picking the imported fields explicitly makes a server identity unrepresentable in the copy. An
+ * image import is normally pending until its first placement; this copy already has a position, so
+ * marking that placement immediately is also what commits it to IndexedDB before its source can be
+ * removed. A server source transfers its immutable indices and tiles to the Local identity after
+ * that commit, so a move at the aggregate budget does not need to retain the same artwork twice.
+ */
+/** Durable Local placement does not carry the server-only antimeridian representation. */
+export const canCopyAsLocalTemplate = (template: PlacedTemplate): boolean =>
+  template.wrapX !== true || template.originX + template.width <= WORLD_PIXELS
+
+export const copyAsLocalTemplate = async (
+  template: PlacedTemplate,
+  id: string,
+): Promise<PlacedTemplate> => {
+  if (!canCopyAsLocalTemplate(template)) {
+    throw new RangeError('wrapped server templates cannot be copied into Local')
+  }
+  const restoring = restoreInFlight
+  if (restoring !== null) await restoring
+  const imported: ImportedTemplate = {
+    id,
+    name: template.name,
+    source: 'image',
+    ...(template.sortOrder === undefined ? {} : { sortOrder: template.sortOrder }),
+    originX: template.originX,
+    originY: template.originY,
+    width: template.width,
+    height: template.height,
+    indices: template.indices,
+    moved: template.moved,
+    opaque: template.opaque,
+  }
+  if (isServerTemplate(template)) {
+    validatePlacement(imported)
+    if (
+      id.length === 0 ||
+      id.length > MAX_TEMPLATE_ID_LENGTH ||
+      imported.name.length > MAX_TEMPLATE_NAME_LENGTH ||
+      templates.has(id) ||
+      pendingAdds.has(id)
+    ) {
+      throw new RangeError('local template metadata or id is unavailable')
+    }
+    if (
+      [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length +
+        pendingAdds.size >=
+      MAX_LOCAL_TEMPLATES
+    ) {
+      throw new RangeError('too many local templates')
+    }
+    const source = templates.get(template.id)
+    if (source !== template) throw new Error('server template changed while it was being copied')
+    if (
+      retainedIndexPixels - source.indices.length + pendingIndexPixels + imported.indices.length >
+      MAX_LOCAL_INDEX_PIXELS
+    ) {
+      throw new RangeError('local templates exceed the persisted pixel budget')
+    }
+
+    pendingAdds.add(id)
+    let builtTiles: Map<string, TileLevels> | null = null
+    try {
+      if (!template.visible) builtTiles = await slice(imported)
+      const tiles = builtTiles ?? template.tiles
+      if (builtTiles !== null && !claimSourceReplacement(template.tiles.size, builtTiles.size)) {
+        releaseCandidateTiles(builtTiles)
+        builtTiles = null
+        throw new RangeError('local templates exceed the retained source bitmap budget')
+      }
+      const placed: PlacedTemplate = {
+        ...imported,
+        tiles,
+        visible: true,
+        everPlaced: true,
+        appearance: null,
+        owns: [],
+        revision: 0,
+        folderId: null,
+      }
+      const saved = await persist(placed)
+      if (saved.status !== 'saved') {
+        if (builtTiles !== null) {
+          cancelSourceClaim(template.tiles.size, builtTiles.size)
+          releaseCandidateTiles(builtTiles)
+          builtTiles = null
+        }
+        throw new Error('local template copy could not be saved')
+      }
+      if (templates.get(template.id) !== source) {
+        if (builtTiles !== null) {
+          cancelSourceClaim(template.tiles.size, builtTiles.size)
+          releaseCandidateTiles(builtTiles)
+          builtTiles = null
+        }
+        await deleteTemplate(id, saved.revision)
+        throw new Error('server template changed while it was being copied')
+      }
+
+      const copied = { ...placed, revision: saved.revision }
+      desiredVisibility.delete(template.id)
+      clearStamped(template.id)
+      previewOrigins.delete(template.id)
+      templates.delete(template.id)
+      templates.set(id, copied)
+      if (builtTiles !== null) installSourceReplacement(template.tiles.size, builtTiles.size)
+      notify()
+      return copied
+    } finally {
+      pendingAdds.delete(id)
+    }
+  }
+
+  const copied = await addLocalTemplate(imported)
+  if (await markPlaced(copied.id)) {
+    return templates.get(copied.id) ?? copied
+  }
+  await removeLocalTemplate(copied.id)
+  throw new Error('local template copy could not be saved')
+}
+
 /** Rehydrate on startup, before the first frame if possible. */
 const restoreStoredTemplates = async (): Promise<void> => {
   let restored = 0
@@ -800,7 +1457,10 @@ const restoreStoredTemplates = async (): Promise<void> => {
   do {
     restorePasses++
     retryAfterGap = false
-    const remainingTemplates = MAX_LOCAL_TEMPLATES - templates.size - pendingAdds.size
+    const remainingTemplates =
+      MAX_LOCAL_TEMPLATES -
+      [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length -
+      pendingAdds.size
     const remainingPixels = MAX_LOCAL_INDEX_PIXELS - retainedIndexPixels - pendingIndexPixels
     if (
       remainingTemplates <= 0 ||
@@ -880,13 +1540,41 @@ const restoreStoredTemplates = async (): Promise<void> => {
       try {
         // Earlier builds could persist 0x0, non-finite, out-of-world, or fully transparent records.
         // Validate each independently so one bad legacy entry cannot prevent every good restore.
-        const template = normaliseStoredTemplate(rawTemplate)
+        let template = normaliseStoredTemplate(rawTemplate)
+        if (
+          template.folderId !== null &&
+          !getState().localFolders.some((folder) => folder.id === template.folderId)
+        ) {
+          // Folder state and template records live in different stores. Another tab can delete the
+          // folder while this record's assignment commits, so no process-local lease can make the two
+          // writes atomic. A missing parent has one deterministic recovery: top-level Local, which is
+          // also where deleting a folder promises to move its contents.
+          const repaired = await saveTemplateFolders([
+            { id: template.id, expectedRevision: template.revision, folderId: null },
+          ])
+          if (repaired.status === 'conflict') {
+            seenRevisions.delete(template.id)
+            retryAfterGap = true
+            continue
+          }
+          const revision =
+            repaired.status === 'saved'
+              ? (repaired.revisions.get(template.id) ?? template.revision)
+              : template.revision
+          if (repaired.status === 'unavailable') {
+            warn('install', `could not durably repair missing folder for ${template.name}`)
+          }
+          template = { ...template, folderId: null, revision }
+          seenRevisions.set(template.id, revision)
+        }
         if (templates.has(template.id) || pendingAdds.has(template.id)) {
           warn('install', `could not restore ${template.name}: local template id already exists`)
           continue
         }
         if (
-          templates.size + pendingAdds.size >= MAX_LOCAL_TEMPLATES ||
+          [...templates.values()].filter((candidate) => !isServerTemplate(candidate)).length +
+            pendingAdds.size >=
+            MAX_LOCAL_TEMPLATES ||
           retainedIndexPixels + pendingIndexPixels + template.indices.length >
             MAX_LOCAL_INDEX_PIXELS
         ) {
@@ -931,8 +1619,10 @@ const restoreStoredTemplates = async (): Promise<void> => {
           }
         }
         templates.set(template.id, {
-          appearance: DEFAULT_APPEARANCE,
           ...template,
+          appearance: template.appearance ?? null,
+          owns: template.owns ?? (template.appearance != null ? APPEARANCE_GROUPS : []),
+          folderId: template.folderId ?? null,
           // Keep valid durable records manageable even when this session cannot afford/render their
           // source bitmaps. The durable visibility value remains untouched; an explicit toggle will
           // retry construction and reconcile it.
@@ -1201,6 +1891,84 @@ export const placeLocalTemplate = async (
   return await enqueueMove(id, roundedX, roundedY, true)
 }
 
+/** Move a template into a Local folder, or to the top level with null. */
+export const setTemplateFolder = async (id: string, folderId: string | null): Promise<boolean> => {
+  const releaseFolder = folderId === null ? null : leaseLocalFolder(folderId)
+  if (folderId !== null && releaseFolder === null) return false
+  try {
+    return await writeInOrder(id, async () => {
+      const existing = templates.get(id)
+      if (existing === undefined || deleting.has(id)) return false
+      if (existing.folderId === folderId) return true
+      const next = { ...existing, folderId }
+      let revision = existing.revision
+      if (!isPendingImage(existing)) {
+        const result = await savePlaced(next)
+        const committed = committedRevision(result)
+        if (committed === null) {
+          if (result.status === 'conflict') await reconcileConflict(id)
+          warn('install', `folder change for ${next.name} was not saved`)
+          return false
+        }
+        revision = committed
+      }
+      templates.set(id, { ...next, revision })
+      notify()
+      return true
+    })
+  } finally {
+    releaseFolder?.()
+  }
+}
+
+/** Move several local templates together. A failed CAS or IndexedDB write moves none of them. */
+export const setTemplatesFolder = async (
+  ids: readonly string[],
+  folderId: string | null,
+): Promise<boolean> => {
+  const unique = [...new Set(ids)]
+  if (unique.length === 0) return true
+  const releaseFolder = folderId === null ? null : leaseLocalFolder(folderId)
+  if (folderId !== null && releaseFolder === null) return false
+  try {
+    return await writeManyInOrder(unique, async () => {
+      const existing = unique.map((id) => templates.get(id))
+      if (existing.some((template) => template === undefined || deleting.has(template.id))) {
+        return false
+      }
+      const present = existing as PlacedTemplate[]
+      const changed = present.filter((template) => template.folderId !== folderId)
+      if (changed.length === 0) return true
+      const durable = changed.filter((template) => !isPendingImage(template))
+      const result = await saveTemplateFolders(
+        durable.map((template) => ({
+          id: template.id,
+          expectedRevision: template.revision,
+          folderId,
+        })),
+      )
+      if (result.status !== 'saved') {
+        if (result.status === 'conflict') {
+          for (const template of durable) await reconcileConflict(template.id)
+        }
+        warn('install', 'folder changes were not saved as one transaction')
+        return false
+      }
+      for (const template of changed) {
+        templates.set(template.id, {
+          ...template,
+          folderId,
+          revision: result.revisions.get(template.id) ?? template.revision,
+        })
+      }
+      notify()
+      return true
+    })
+  } finally {
+    releaseFolder?.()
+  }
+}
+
 export const renameLocalTemplate = async (id: string, name: string): Promise<boolean> => {
   const trimmed = name.trim()
   if (trimmed === '' || trimmed.length > MAX_TEMPLATE_NAME_LENGTH) return false
@@ -1247,7 +2015,11 @@ export const removeLocalTemplate = async (id: string): Promise<boolean> => {
   const existing = templates.get(id)
   // Already gone — by this id's own earlier deletion, most likely — which is the outcome asked for.
   if (existing === undefined) return !templates.has(id)
+  // Server rows are owned by their remote source. `forgetServerTemplate` is the sync lifecycle;
+  // Local deletion must never make one disappear temporarily and then reappear on the next poll.
+  if (isServerTemplate(existing)) return false
   if (deleting.has(id)) return false
+  if ((deletionLeases.get(id) ?? 0) > 0) return false
   // Terminal immediately: in-flight slices and newly requested mutations must not queue a save
   // behind this delete and resurrect the record.
   deleting.add(id)
@@ -1336,6 +2108,12 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
       }
       revision = committed
     }
+    if (isServerTemplate(existing) && !setScopeVisible(id, visible)) {
+      cancelSourceClaim(existing.tiles.size, tiles.size)
+      if (visible) releaseCandidateTiles(tiles)
+      warn('install', `visibility for ${next.name} was not saved`)
+      return false
+    }
     templates.set(id, { ...next, revision })
     desiredVisibility.delete(id)
     installSourceReplacement(existing.tiles.size, tiles.size)
@@ -1362,17 +2140,29 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
 }
 
 /** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
-export const setAppearance = async (id: string, appearance: Appearance): Promise<boolean> => {
-  if (!isAppearance(appearance)) return false
-  // The write starts in a later microtask. Own the validated data now so the caller cannot mutate
-  // its array after validation and smuggle invalid or unbounded state into IndexedDB.
-  const ownedAppearance: Appearance = {
-    ...appearance,
-    hiddenColours: [...appearance.hiddenColours],
-  }
+/** Pass null to put the overlay back on the global defaults. */
+export const setAppearance = async (
+  id: string,
+  appearance: Readonly<Partial<Appearance>> | null,
+): Promise<boolean> => {
+  // Own the request before the ordered write yields, then complete legacy/partial callers from the
+  // appearance the template is currently showing. The completed value still goes through the full
+  // validator before it can reach IndexedDB.
+  const requested: Readonly<Partial<Appearance>> | null =
+    appearance === null
+      ? null
+      : {
+          ...appearance,
+          ...(appearance.hiddenColours === undefined
+            ? {}
+            : { hiddenColours: [...appearance.hiddenColours] }),
+        }
   return await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
+    const ownedAppearance: Appearance | null =
+      requested === null ? null : { ...appearanceOf(existing), ...requested }
+    if (ownedAppearance !== null && !isAppearance(ownedAppearance)) return false
     const next = { ...existing, appearance: ownedAppearance }
     let revision = existing.revision
     if (!isPendingImage(existing)) {
@@ -1385,7 +2175,9 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
       }
       revision = committed
     }
-    if (appearanceKey(existing.appearance) !== appearanceKey(ownedAppearance)) clearStamped(id)
+    const oldFilterKey = appearanceKey(appearanceOf(existing))
+    const newFilterKey = appearanceKey(ownedAppearance ?? getState().appearance)
+    if (oldFilterKey !== newFilterKey) clearStamped(id)
     templates.set(id, { ...next, revision })
     notify()
     return true
@@ -1393,9 +2185,48 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
 }
 
 /**
+ * Take one group over, or hand it back to the defaults.
+ *
+ * Taking a group over copies the values it is *currently showing* into this template, so nothing
+ * moves at the moment of the switch — the overlay looks identical and only stops following. Anything
+ * else makes the switch itself an edit, which is a surprise nobody asked for.
+ */
+export const setOwnsGroup = async (
+  id: string,
+  group: AppearanceGroup,
+  owns: boolean,
+): Promise<boolean> =>
+  await writeInOrder(id, async () => {
+    const existing = templates.get(id)
+    if (existing === undefined || deleting.has(id)) return false
+    if (existing.owns.includes(group) === owns) return true
+    const next: PlacedTemplate = {
+      ...existing,
+      appearance: owns ? appearanceOf(existing) : existing.appearance,
+      owns: owns ? [...existing.owns, group] : existing.owns.filter((one) => one !== group),
+    }
+    let revision = existing.revision
+    if (!isPendingImage(existing)) {
+      const result = await savePlaced(next)
+      const committed = committedRevision(result)
+      if (committed === null) {
+        if (result.status === 'conflict') await reconcileConflict(id)
+        warn('install', `appearance ownership for ${next.name} was not saved`)
+        return false
+      }
+      revision = committed
+    }
+    if (appearanceKey(appearanceOf(existing)) !== appearanceKey(appearanceOf(next)))
+      clearStamped(id)
+    templates.set(id, { ...next, revision })
+    notify()
+    return true
+  })
+
+/**
  * A tile stamped for one appearance, cached until that appearance changes.
  *
- * Shape, size, anchor and per-overlay colour filtering all decide *what each pixel looks like*, so
+ * Geometry and per-overlay colour filtering decide *what each pixel looks like*, so
  * they belong in the bitmap rather than in a per-frame loop — a 1000x1000 tile is a million pixels
  * and the frame budget is 16ms. `full` needs no stamping at all and returns the mip chain
  * untouched, which is why it costs nothing.
@@ -1403,12 +2234,6 @@ export const setAppearance = async (id: string, appearance: Appearance): Promise
 const stamped = new Map<string, { key: string; tile: TileLevels; bytes: number }>()
 const pendingStamps = new Map<string, string>()
 const MAX_STAMPED_BYTES = 128 * 1024 * 1024
-// Every retained source tile can need a shaped stamp in the same viewport. Size a stamp so the
-// complete legitimate working set fits: otherwise the last build evicts the first, its repaint
-// immediately rebuilds it, and a static view never quiesces.
-const MAX_RETAINED_STAMP_WIDTH = Math.floor(
-  Math.sqrt(MAX_STAMPED_BYTES / (4 * MAX_RETAINED_SOURCE_TILES)),
-)
 const MAX_CONCURRENT_STAMP_BUILDS = 1
 let stampedBytes = 0
 
@@ -1537,46 +2362,35 @@ const clearStamped = (id: string): void => {
   }
 }
 
-const appearanceKey = (a: Appearance): string =>
-  `${a.shape}|${a.size}|${a.anchor}|${a.hiddenColours.join(',')}`
-
-const desiredLevelWidth = (fullWidth: number, targetWidth: number): number => {
-  let width = fullWidth
-  while (width > MIN_MIP_SIZE) {
-    const next = Math.max(1, Math.floor(width / 2))
-    if (next < targetWidth) break
-    width = next
-  }
-  // Magnifying a bounded level with nearest-neighbour preserves crisp shapes while guaranteeing
-  // that the complete retained source-tile working set cannot enter an eviction/rebuild loop.
-  return Math.min(width, MAX_RETAINED_STAMP_WIDTH)
-}
+/**
+ * Only the colour filter. Shape is a mask applied at draw time and never re-bakes a tile.
+ *
+ * This used to include size, rounding, offset and rotation, which meant every drag of every slider
+ * rebuilt a million-pixel bitmap per visible tile — with a canvas path per pixel. That is why moving
+ * a slider crawled. Colour filtering genuinely does have to be baked, because it changes *which*
+ * pixels exist rather than what shape they are, but it changes when someone clicks a swatch and not
+ * while they drag.
+ */
+const appearanceKey = (a: Appearance): string => a.hiddenColours.join(',')
 
 export const stampTile = (
   template: PlacedTemplate,
   tileKey: string,
-  appearance: Appearance,
-  targetWidth = TILE_SIZE,
+  requestedAppearance: Readonly<Partial<Appearance>> | null,
+  _targetWidth = TILE_SIZE,
 ): TileLevels | undefined => {
   const source = template.tiles.get(tileKey)
   if (source === undefined) return undefined
-  // Sub-pixel geometry conveys nothing below one screen pixel per source pixel. At that scale use a
-  // native-size filtered raster: colour toggles still apply, without paying 36 MB for a 3x tile.
-  const renderedAppearance =
-    targetWidth < TILE_SIZE && appearance.shape !== 'full'
-      ? { ...appearance, shape: 'full' as const }
-      : appearance
-  // Opacity is applied at draw time, so it is deliberately not part of the cache key — dragging
-  // that slider must not rebuild a million pixels per frame.
-  const wantedWidth = desiredLevelWidth(TILE_SIZE * scaleFor(renderedAppearance), targetWidth)
-  const identity = `${template.originX},${template.originY}|${appearanceKey(renderedAppearance)}`
-  const wanted = `${identity}|${wantedWidth}`
+  const appearance = { ...appearanceOf(template), ...(requestedAppearance ?? {}) }
+  if (!isAppearance(appearance)) return source
   const cacheKey = `${template.id}|${tileKey}`
-  if (renderedAppearance.shape === 'full' && renderedAppearance.hiddenColours.length === 0) {
+  if (appearance.hiddenColours.length === 0) {
     cancelPendingStamp(cacheKey)
     clearStampFailure(cacheKey)
     return source
   }
+  // Geometry is a draw-time mask. Only the colour filter is baked into this native-size bitmap.
+  const wanted = `${template.originX},${template.originY}|${appearanceKey(appearance)}`
 
   const hit = stamped.get(cacheKey)
   if (hit !== undefined && hit.key === wanted) {
@@ -1601,8 +2415,7 @@ export const stampTile = (
         ? await buildStamp(
             template,
             tileKey,
-            renderedAppearance,
-            wantedWidth,
+            appearance,
             () => pendingStamps.get(cacheKey) === wanted,
           )
         : null,
@@ -1630,50 +2443,20 @@ export const stampTile = (
         warn('draw', `could not build appearance for ${template.name}`, String(error))
       })
   }
-  // A stamp with the same identity has the right geometry and colour filtering at another mip.
-  // Keep it visible while the requested zoom bucket is built instead of blinking the tile out.
-  if (hit?.key.startsWith(`${identity}|`)) {
-    stamped.delete(cacheKey)
-    stamped.set(cacheKey, hit)
-    return hit.tile
-  }
-  // Keep the source visible while shape-only work is prepared. When colours are hidden, showing
-  // the unfiltered source would be incorrect, so the first filtered build has no safe fallback.
-  return renderedAppearance.hiddenColours.length === 0 ? source : undefined
+  // Showing the unfiltered source while colours are hidden would be incorrect.
+  return undefined
 }
 
-const stampMask = (appearance: Appearance, scale: number): Uint8ClampedArray | null => {
-  if (appearance.shape === 'full') return new Uint8ClampedArray([0, 0, 0, 255])
-  const canvas = new OffscreenCanvas(scale, scale)
-  const context = canvas.getContext('2d', { willReadFrequently: true })
-  if (context === null) return null
-  const side = appearance.size * scale
-  const offset = anchorOffset(appearance.anchor, appearance.size)
-  const px = offset.x * scale
-  const py = offset.y * scale
-  context.fillStyle = '#ffffff'
-  if (appearance.shape === 'circle') {
-    context.beginPath()
-    context.arc(px + side / 2, py + side / 2, side / 2, 0, Math.PI * 2)
-    context.fill()
-  } else if (appearance.shape === 'triangle') {
-    context.beginPath()
-    context.moveTo(px, py)
-    context.lineTo(px + side, py)
-    context.lineTo(px, py + side)
-    context.closePath()
-    context.fill()
-  } else {
-    context.fillRect(px, py, side, side)
-  }
-  return context.getImageData(0, 0, scale, scale).data
-}
-
+/**
+ * The tile again with hidden colours dropped, written straight into an ImageData.
+ *
+ * No canvas paths and no upscaling — one pass over the pixels that are actually in this tile. The
+ * shape is not this function's business any more.
+ */
 const buildStamp = async (
   template: PlacedTemplate,
   tileKey: string,
   appearance: Appearance,
-  wantedWidth: number,
   isCurrent: () => boolean,
 ): Promise<TileLevels | null> => {
   // `async` alone does not defer work before its first await. Yield before allocation and then in
@@ -1683,39 +2466,34 @@ const buildStamp = async (
   if (!isCurrent()) return null
   const [tx, ty] = tileKey.split('/').map(Number)
   if (tx === undefined || ty === undefined) return null
-  const scale = scaleFor(appearance)
-  const size = TILE_SIZE * scale
-  const mask = stampMask(appearance, scale)
-  if (mask === null) return null
-  const rgba = new Uint8ClampedArray(size * size * 4)
-
   const hidden = new Set(appearance.hiddenColours)
+  const rgba = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
   const tileLeft = tx * TILE_SIZE
   const tileTop = ty * TILE_SIZE
-  const startX = Math.max(0, tileLeft - template.originX)
+  const span = horizontalSpans(template).find(
+    (candidate) => candidate.worldStart < tileLeft + TILE_SIZE && candidate.worldEnd > tileLeft,
+  )
+  if (span === undefined) return null
+  const startX = span.sourceStart + Math.max(0, tileLeft - span.worldStart)
   const startY = Math.max(0, tileTop - template.originY)
-  const endX = Math.min(template.width, tileLeft + TILE_SIZE - template.originX)
+  const endX =
+    span.sourceStart +
+    Math.min(span.sourceEnd - span.sourceStart, tileLeft + TILE_SIZE - span.worldStart)
   const endY = Math.min(template.height, tileTop + TILE_SIZE - template.originY)
-
   for (let y = startY; y < endY; y++) {
+    const rowOffset = y * template.width
+    const targetRow = (template.originY + y - tileTop) * TILE_SIZE
     for (let x = startX; x < endX; x++) {
-      const index = template.indices[y * template.width + x] ?? TRANSPARENT_INDEX
+      const index = template.indices[rowOffset + x] ?? TRANSPARENT_INDEX
       if (index === TRANSPARENT_INDEX || hidden.has(index)) continue
       const colour = WPLACE_PALETTE[index]
       if (colour === undefined) continue
-      const cellX = (template.originX + x - tileLeft) * scale
-      const cellY = (template.originY + y - tileTop) * scale
-      for (let maskY = 0; maskY < scale; maskY++) {
-        for (let maskX = 0; maskX < scale; maskX++) {
-          const alpha = mask[(maskY * scale + maskX) * 4 + 3] ?? 0
-          if (alpha === 0) continue
-          const target = ((cellY + maskY) * size + cellX + maskX) * 4
-          rgba[target] = colour.rgb[0]
-          rgba[target + 1] = colour.rgb[1]
-          rgba[target + 2] = colour.rgb[2]
-          rgba[target + 3] = alpha
-        }
-      }
+      const worldX = span.worldStart + x - span.sourceStart
+      const target = (targetRow + (worldX - tileLeft)) * 4
+      rgba[target] = colour.rgb[0]
+      rgba[target + 1] = colour.rgb[1]
+      rgba[target + 2] = colour.rgb[2]
+      rgba[target + 3] = 255
     }
     if ((y - startY + 1) % 64 === 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -1723,39 +2501,12 @@ const buildStamp = async (
     }
   }
   if (!isCurrent()) return null
-  let current: ImageBitmap | null = null
-  try {
-    current = await createImageBitmap(new ImageData(rgba, size, size))
-    if (!isCurrent()) {
-      current.close()
-      return null
-    }
-    let width = size
-    while (width > wantedWidth) {
-      const nextWidth = Math.max(wantedWidth, Math.floor(width / 2))
-      const canvas = new OffscreenCanvas(nextWidth, nextWidth)
-      const context = canvas.getContext('2d')
-      if (context === null) {
-        current.close()
-        return null
-      }
-      context.imageSmoothingEnabled = true
-      context.imageSmoothingQuality = 'high'
-      context.drawImage(current, 0, 0, nextWidth, nextWidth)
-      const next = await createImageBitmap(canvas)
-      current.close()
-      current = next
-      if (!isCurrent()) {
-        current.close()
-        return null
-      }
-      width = nextWidth
-    }
-    return { levels: [current] }
-  } catch (error) {
-    current?.close()
-    throw error
+  const bitmap = await createImageBitmap(new ImageData(rgba, TILE_SIZE, TILE_SIZE))
+  if (!isCurrent()) {
+    bitmap.close()
+    return null
   }
+  return { levels: [bitmap] }
 }
 
 /**
@@ -1765,11 +2516,9 @@ const buildStamp = async (
  * previewed locally is byte-identical to what is stored — no second opinion from a second
  * quantiser on the way through.
  */
-export const templateAsPng = async (
-  template: PlacedTemplate,
-  signal?: AbortSignal,
-): Promise<Blob | null> => {
-  const encoded = await encodeIndexedPng(template.width, template.height, template.indices, signal)
-  signal?.throwIfAborted()
+export const templateAsPng = async (template: PlacedTemplate): Promise<Blob | null> => {
+  if (!isCurrentTemplate(template)) return null
+  const encoded = await encodeIndexedPng(template.width, template.height, template.indices)
+  if (!isCurrentTemplate(template)) return null
   return new Blob([Uint8Array.from(encoded)], { type: 'image/png' })
 }

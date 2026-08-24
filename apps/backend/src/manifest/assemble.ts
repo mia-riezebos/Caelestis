@@ -1,4 +1,4 @@
-import { type Manifest, type ServerInfo, sha256Hex, tileKey } from '@wts/shared'
+import { type Manifest, type ServerInfo, sha256Hex, tileKey } from '@caelestis/shared'
 import type { Ports } from '../ports/index.js'
 
 export interface AssembleManifestOptions {
@@ -9,7 +9,7 @@ export interface AssembleManifestOptions {
 
 const VERSION_PLACEHOLDER = '0'.repeat(64)
 
-/** Mirror the bounds in `@wts/wire-schema`, which is what refuses the assembled result. */
+/** Mirror the bounds in `@caelestis/wire-schema`, which is what refuses the assembled result. */
 const MAX_MANIFEST_CHUNKS = 200_000
 const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000
@@ -32,14 +32,15 @@ export const assembleManifest = async (
     )
     .sort((left, right) => left.id.localeCompare(right.id))
 
-  const chunksByTemplate = new Map<
+  const chunksByVersion = new Map<
     string,
     Array<{ tile: ReturnType<typeof tileKey>; hash: string }>
   >()
   for (const record of tileRecords) {
     const chunk = { tile: tileKey({ x: record.tileX, y: record.tileY }), hash: record.hash }
-    const chunks = chunksByTemplate.get(record.templateId)
-    if (chunks === undefined) chunksByTemplate.set(record.templateId, [chunk])
+    const key = `${record.templateId}:${record.versionId}`
+    const chunks = chunksByVersion.get(key)
+    if (chunks === undefined) chunksByVersion.set(key, [chunk])
     else chunks.push(chunk)
   }
 
@@ -57,7 +58,8 @@ export const assembleManifest = async (
     // recoverable; the next poll has both.
     .filter(
       (template) =>
-        nodeIds.has(template.nodeId) && (chunksByTemplate.get(template.id)?.length ?? 0) > 0,
+        (template.nodeId === null || nodeIds.has(template.nodeId)) &&
+        (chunksByVersion.get(`${template.id}:${template.versionId}`)?.length ?? 0) > 0,
     )
     .map((template) => ({
       id: template.id,
@@ -66,17 +68,18 @@ export const assembleManifest = async (
       version: template.versionId,
       bbox: { ...template.bbox },
       totalPixels: template.totalPixels,
-      chunks: (chunksByTemplate.get(template.id) ?? []).sort((left, right) =>
-        left.tile.localeCompare(right.tile),
+      chunks: (chunksByVersion.get(`${template.id}:${template.versionId}`) ?? []).sort(
+        (left, right) => left.tile.localeCompare(right.tile),
       ),
       published: template.published,
       createdAt: template.createdAt,
+      updatedAt: template.updatedAt,
     }))
     .sort((left, right) => left.id.localeCompare(right.id))
 
   // The wire caps a manifest at 200,000 chunks in total, and nothing on the write path enforces an
-  // aggregate: 512 chunks per template is bounded, the number of published templates in a season is
-  // not, so ~391 of them cross the line. Past it, every client rejects the 200 this would return.
+  // aggregate: 400 chunks per template is bounded, the number of published templates in a season is
+  // not, so ~500 of them cross the line. Past it, every client rejects the 200 this would return.
   //
   // INTERIM. Failing here turns a silent client-side break into a server-side error naming the
   // cause, which is strictly better but still an outage for that season's manifest. The real fix is
