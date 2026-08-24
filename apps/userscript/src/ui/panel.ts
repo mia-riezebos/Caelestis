@@ -699,6 +699,7 @@ const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
  * longer refer to anything.
  */
 const disconnectServer = async (server: ConnectedServer): Promise<void> => {
+  copySetupController?.abort(new Error('copy destination disconnected'))
   // Anything already downloading for this server lands stale rather than drawing an overlay with no
   // server row left to control it.
   endServerGeneration(server.url)
@@ -2237,21 +2238,8 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
  * it right locally first is not having to do it again on the other side.
  */
 let copySetupRunning = false
-const COPY_DISCOVERY_CONCURRENCY = 4
-let activeCopyDiscoveries = 0
-const copyDiscoveryWaiters: Array<() => void> = []
-
-const withCopyDiscoverySlot = async <T>(read: () => Promise<T>): Promise<T> => {
-  if (activeCopyDiscoveries < COPY_DISCOVERY_CONCURRENCY) activeCopyDiscoveries++
-  else await new Promise<void>((resolve) => copyDiscoveryWaiters.push(resolve))
-  try {
-    return await read()
-  } finally {
-    const next = copyDiscoveryWaiters.shift()
-    if (next === undefined) activeCopyDiscoveries--
-    else next()
-  }
-}
+let copySetupController: AbortController | null = null
+const COPY_SETUP_TIMEOUT_MS = 120_000
 
 const copyToServer = async (templateId: string, rerender: () => void): Promise<void> => {
   const template = allLocal().find((candidate) => candidate.id === templateId)
@@ -2273,20 +2261,55 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
 
   const label = document.createElement('span')
-  label.textContent = `Copy “${template.name}” to:`
+  label.textContent = `Finding destinations for “${template.name}”…`
+  const setupCancel = document.createElement('button')
+  setupCancel.className = 'btn btn-xs btn-ghost'
+  setupCancel.style.alignSelf = 'flex-end'
+  setupCancel.textContent = 'Cancel'
+  const setupController = new AbortController()
+  copySetupController = setupController
+  let setupCancelled = false
+  let setupTimedOut = false
+  setupCancel.addEventListener('click', () => {
+    setupCancelled = true
+    setupController.abort(new Error('copy setup cancelled'))
+    box.remove()
+  })
+  const setupTimeout = setTimeout(() => {
+    setupTimedOut = true
+    setupController.abort(new Error('copy setup timed out'))
+  }, COPY_SETUP_TIMEOUT_MS)
+  box.append(label, setupCancel)
+  panel.appendChild(box)
+
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
   let listed: Array<readonly [ConnectedServer, ServerNodesResult]>
   try {
     listed = await Promise.all(
       targets.map(
-        async (server) =>
-          [server, await withCopyDiscoverySlot(() => listServerNodes(server))] as const,
+        async (server) => [server, await listServerNodes(server, setupController.signal)] as const,
       ),
     )
   } finally {
+    clearTimeout(setupTimeout)
+    if (copySetupController === setupController) copySetupController = null
     copySetupRunning = false
   }
+  if (setupController.signal.aborted) {
+    if (!setupCancelled && box.isConnected) {
+      toast(
+        setupTimedOut
+          ? 'Finding server folders took too long. Try Copy again.'
+          : 'Copy setup stopped because a server connection changed.',
+        'warning',
+      )
+    }
+    box.remove()
+    return
+  }
+  setupCancel.remove()
+  label.textContent = `Copy “${template.name}” to:`
   const unreachable = listed.filter(([, result]) => result.status === 'unreachable').length
   const notAdmitted = listed.filter(([, result]) => result.status === 'not-admitted').length
   let offered = 0
@@ -2305,6 +2328,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
     }
   }
   if (chooser.options.length === 0) {
+    box.remove()
     toast(
       unreachable > 0
         ? 'Could not ask any of those servers where their folders are.'
@@ -2776,6 +2800,7 @@ const setOpen = (next: boolean): void => {
   syncRailButtonState()
   const existing = document.getElementById(PANEL_ID)
   if (!open) {
+    copySetupController?.abort(new Error('panel closed'))
     existing?.remove()
     return
   }

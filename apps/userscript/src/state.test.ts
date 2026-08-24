@@ -1287,25 +1287,24 @@ describe('server state boundaries', () => {
           }),
       ),
     )
-    const { uploadTemplate } = await import('./state.js')
+    const { setState, uploadTemplate } = await import('./state.js')
+    const server = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: null,
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [server] })
     let settled = false
-    const uploading = uploadTemplate(
-      {
-        url: 'https://example.com',
-        info: serverInfo,
-        token: null,
-        status: 'connected',
-        isAdmin: true,
-        season: 0,
-      },
-      {
-        nodeId: NODE_A,
-        name: 'Large template',
-        originX: 0,
-        originY: 0,
-        png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
-      },
-    ).then((result) => {
+    const uploading = uploadTemplate(server, {
+      nodeId: NODE_A,
+      name: 'Large template',
+      originX: 0,
+      originY: 0,
+      png: new Blob([new Uint8Array([1])], { type: 'image/png' }),
+    }).then((result) => {
       settled = true
       return result
     })

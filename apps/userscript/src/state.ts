@@ -182,6 +182,44 @@ const LARGE_TRANSFER_TIMEOUT_MS = 120_000
 const SERVER_JSON_BYTES = 16 * 1024
 const TREE_JSON_BYTES = 64 * 1024 * 1024
 const MUTATION_JSON_BYTES = 64 * 1024
+const MANIFEST_READ_CONCURRENCY = 4
+
+interface ManifestReadWaiter {
+  readonly grant: () => void
+  readonly cancel: () => void
+}
+
+let activeManifestReads = 0
+const manifestReadWaiters: ManifestReadWaiter[] = []
+
+const acquireManifestRead = (signal?: AbortSignal): true | Promise<boolean> => {
+  if (signal?.aborted) return Promise.resolve(false)
+  if (activeManifestReads < MANIFEST_READ_CONCURRENCY) {
+    activeManifestReads++
+    return true
+  }
+  return new Promise<boolean>((resolve) => {
+    const waiter: ManifestReadWaiter = {
+      grant: () => {
+        signal?.removeEventListener('abort', waiter.cancel)
+        resolve(true)
+      },
+      cancel: () => {
+        const index = manifestReadWaiters.indexOf(waiter)
+        if (index !== -1) manifestReadWaiters.splice(index, 1)
+        resolve(false)
+      },
+    }
+    signal?.addEventListener('abort', waiter.cancel, { once: true })
+    manifestReadWaiters.push(waiter)
+  })
+}
+
+const releaseManifestRead = (): void => {
+  const next = manifestReadWaiters.shift()
+  if (next === undefined) activeManifestReads--
+  else next.grant()
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -1371,6 +1409,71 @@ const failure = (response: Response, body: Record<string, unknown> | null): stri
 
 type UploadFailure = { readonly ok: false; readonly message: string; readonly ambiguous?: true }
 
+interface PendingUploadAmbiguity {
+  readonly server: ConnectedServer
+  readonly afterManifestRequest: number
+}
+
+const pendingUploadAmbiguities = new Map<string, PendingUploadAmbiguity>()
+const activeUploads = new Map<
+  string,
+  { readonly server: ConnectedServer; readonly token: object }
+>()
+
+const pendingUploadFailure = (server: ConnectedServer): UploadFailure | null => {
+  const pending = pendingUploadAmbiguities.get(server.url)
+  if (pending === undefined) return null
+  if (!isCurrentServerConnection(pending.server) || !isCurrentServerConnection(server)) {
+    pendingUploadAmbiguities.delete(server.url)
+    return null
+  }
+  return {
+    ok: false,
+    message: 'A previous upload may have completed. Refresh this server before uploading again.',
+    ambiguous: true,
+  }
+}
+
+const markUploadAmbiguous = (server: ConnectedServer, message: string): UploadFailure => {
+  pendingUploadAmbiguities.set(server.url, {
+    server,
+    afterManifestRequest: manifestRequestSequence,
+  })
+  return { ok: false, message, ambiguous: true }
+}
+
+const clearUploadAmbiguity = (server: ConnectedServer, manifestRequest: number): void => {
+  const pending = pendingUploadAmbiguities.get(server.url)
+  if (
+    pending !== undefined &&
+    isCurrentServerConnection(pending.server) &&
+    manifestRequest > pending.afterManifestRequest
+  ) {
+    pendingUploadAmbiguities.delete(server.url)
+  }
+}
+
+const beginUpload = (
+  server: ConnectedServer,
+): { readonly token: object } | { readonly failure: UploadFailure } => {
+  if (!isCurrentServerConnection(server)) {
+    return { failure: { ok: false, message: 'The server connection changed before upload.' } }
+  }
+  const pending = pendingUploadFailure(server)
+  if (pending !== null) return { failure: pending }
+  const active = activeUploads.get(server.url)
+  if (active !== undefined && isCurrentServerConnection(active.server)) {
+    return { failure: { ok: false, message: 'Another upload to this server is still running.' } }
+  }
+  const token = {}
+  activeUploads.set(server.url, { server, token })
+  return { token }
+}
+
+const endUpload = (serverUrl: string, token: object): void => {
+  if (activeUploads.get(serverUrl)?.token === token) activeUploads.delete(serverUrl)
+}
+
 export const renameNode = async (
   server: ConnectedServer,
   nodeId: string,
@@ -1439,6 +1542,8 @@ export const uploadTemplate = async (
     png: Blob
   },
 ): Promise<{ ok: true; id: string } | UploadFailure> => {
+  const begun = beginUpload(server)
+  if ('failure' in begun) return begun.failure
   try {
     const form = new FormData()
     form.set('png', input.png, `${input.name}.png`)
@@ -1460,25 +1565,24 @@ export const uploadTemplate = async (
       const id = isRecord(body) ? body.templateId : undefined
       return typeof id === 'string' && UUID_V7.test(id)
         ? { ok: true, id }
-        : {
-            ok: false,
-            message: 'Server returned an invalid uploaded template.',
-            ambiguous: true,
-          }
+        : markUploadAmbiguous(server, 'Server returned an invalid uploaded template.')
     }
     if (response.status === 401 || response.status === 403) {
       noteAuthFailure(server, response.status)
       return { ok: false, message: 'That code cannot upload templates — it needs admin access.' }
     }
-    return {
+    const rejected = {
       ok: false,
       message:
         isRecord(body) && typeof body.error === 'string'
           ? body.error
           : `Server said ${response.status}.`,
-    }
+    } as const
+    return response.status >= 500 ? markUploadAmbiguous(server, rejected.message) : rejected
   } catch (error) {
-    return { ok: false, message: String(error), ambiguous: true }
+    return markUploadAmbiguous(server, String(error))
+  } finally {
+    endUpload(server.url, begun.token)
   }
 }
 export const moveNode = async (
@@ -1604,6 +1708,12 @@ export const listServerContents = async (
   signal?: AbortSignal,
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
+  const admission = acquireManifestRead(signal)
+  if (admission !== true && !(await admission)) return null
+  if (!isCurrentServerConnection(server)) {
+    releaseManifestRead()
+    return null
+  }
   const request = ++manifestRequestSequence
   try {
     const { response, body } = await remoteJson(
@@ -1639,6 +1749,9 @@ export const listServerContents = async (
     const contents: ServerContents = { nodes: manifest.nodes, templates }
     manifestResponseOf.set(contents, request)
     const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current !== undefined && isCurrentServerConnection(server)) {
+      clearUploadAmbiguity(server, request)
+    }
     if (
       current !== undefined &&
       isCurrentServerConnection(server) &&
@@ -1656,6 +1769,8 @@ export const listServerContents = async (
     return contents
   } catch {
     return null
+  } finally {
+    releaseManifestRead()
   }
 }
 
@@ -1672,8 +1787,11 @@ export type ServerNodesResult =
  * though nothing was there. Aggregate refusal is different again: the server answered, but using
  * rows the tree and canvas refused would let admin actions commit against state the UI cannot show.
  */
-export const listServerNodes = async (server: ConnectedServer): Promise<ServerNodesResult> => {
-  const contents = await listServerContents(server)
+export const listServerNodes = async (
+  server: ConnectedServer,
+  signal?: AbortSignal,
+): Promise<ServerNodesResult> => {
+  const contents = await listServerContents(server, signal)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (contents === null || current === undefined || !isCurrentServerConnection(server))
     return { status: 'unreachable' }
@@ -1818,6 +1936,8 @@ export const uploadTemplateVersion = async (
   templateId: string,
   input: { originX: number; originY: number; png: Blob; name: string },
 ): Promise<{ ok: true; versionId: string } | UploadFailure> => {
+  const begun = beginUpload(server)
+  if ('failure' in begun) return begun.failure
   try {
     const form = new FormData()
     form.set('png', input.png, `${input.name}.png`)
@@ -1843,15 +1963,17 @@ export const uploadTemplateVersion = async (
       // the user their artwork had been replaced on no evidence at all.
       return typeof versionId === 'string' && UUID_V7.test(versionId)
         ? { ok: true, versionId }
-        : {
-            ok: false,
-            message: 'The server accepted the upload but did not say what it stored.',
-            ambiguous: true,
-          }
+        : markUploadAmbiguous(
+            server,
+            'The server accepted the upload but did not say what it stored.',
+          )
     }
-    return { ok: false, message: failure(response, isRecord(body) ? body : null) }
+    const message = failure(response, isRecord(body) ? body : null)
+    return response.status >= 500 ? markUploadAmbiguous(server, message) : { ok: false, message }
   } catch (error) {
-    return { ok: false, message: String(error), ambiguous: true }
+    return markUploadAmbiguous(server, String(error))
+  } finally {
+    endUpload(server.url, begun.token)
   }
 }
 

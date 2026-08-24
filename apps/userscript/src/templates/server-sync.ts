@@ -50,6 +50,22 @@ const MAX_CHUNK_BYTES = 8 * 1024 * 1024
 const MAX_TEMPLATE_CHUNKS = 400
 /** Encoded work per template. Decoded pixels have their own 64M-pixel bound below. */
 const MAX_TEMPLATE_TRANSFER_BYTES = 64 * 1024 * 1024
+const MAX_TEMPLATE_ATTEMPTS_PER_SYNC = 64
+const ASSEMBLY_CONCURRENCY = 4
+let activeAssemblies = 0
+const assemblyWaiters: Array<() => void> = []
+
+const withAssemblySlot = async <T>(work: () => Promise<T>): Promise<T> => {
+  if (activeAssemblies < ASSEMBLY_CONCURRENCY) activeAssemblies++
+  else await new Promise<void>((resolve) => assemblyWaiters.push(resolve))
+  try {
+    return await work()
+  } finally {
+    const next = assemblyWaiters.shift()
+    if (next === undefined) activeAssemblies--
+    else next()
+  }
+}
 
 /** @internal Arithmetic seam for proving that cached and downloaded chunks share one work budget. */
 export const templateTransferWithinBudget = (used: number, next: number): boolean =>
@@ -371,6 +387,7 @@ const syncServerTemplatesOnce = async (
   }
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
+  let attemptedTemplates = 0
   for (const [key, template] of wanted) {
     if (!current()) return
     const held = localTemplates().find((candidate) => candidate.id === key)
@@ -387,48 +404,53 @@ const syncServerTemplatesOnce = async (
     // rendering budget, and decoding a template only to have the store refuse it means an
     // `ImageBitmap` built for every one of them on every poll.
     if (!hasRoomForServerTemplate(key)) continue
+    if (attemptedTemplates >= MAX_TEMPLATE_ATTEMPTS_PER_SYNC) break
+    attemptedTemplates++
     inFlight.set(key, generation)
     try {
-      const built = await assemble(server, template, signal)
-      if (built === null) continue
-      // The connection this download belongs to may have ended, or a later poll may have taken over
-      // this template, while the chunks were in the air.
-      if (!current()) return
-      // A newer manifest landed while the chunks were in the air, and it no longer asks for this
-      // version — or no longer asks for this template at all. Installing now would draw artwork
-      // that has already been replaced, or bring a deleted overlay back.
-      if (latestVersion.get(key) !== template.version) continue
-      if (!hasRoomForServerTemplate(key)) continue
-      // `putServerTemplate` awaits the restore and then slices every tile, which is the expensive
-      // part and therefore the widest window for a disconnect to land in. Asked again on the far
-      // side, and the template is taken straight back out if the answer changed while it ran.
-      const installed = await putServerTemplate(
-        {
-          id: key,
-          name: template.name,
-          source: 'image',
-          originX: template.bbox.minX,
-          originY: template.bbox.minY,
-          width: built.width,
-          height: built.height,
-          indices: built.indices,
-          // The server quantised on ingest, so nothing moved on the way here and every pixel it
-          // carries is one it asserts.
-          moved: 0,
-          opaque: built.indices.reduce(
-            (total, index) => (index === TRANSPARENT_INDEX ? total : total + 1),
-            0,
-          ),
-          serverUrl: server.url,
-          serverTemplateId: template.id,
-          serverNodeId: template.nodeId,
-          serverVersion: template.version,
-          wrapX: template.bbox.minX > template.bbox.maxX,
-        },
-        () => current() && latestVersion.get(key) === template.version,
-      )
-      if (!installed) return
-      count('server:template drawn from chunks')
+      const outcome = await withAssemblySlot(async (): Promise<'continue' | 'stop'> => {
+        const built = await assemble(server, template, signal)
+        if (built === null) return 'continue'
+        // The connection this download belongs to may have ended, or a later poll may have taken
+        // over this template, while the chunks were in the air.
+        if (!current()) return 'stop'
+        // A newer manifest landed while the chunks were in the air, and it no longer asks for this
+        // version — or no longer asks for this template at all. Installing now would draw artwork
+        // that has already been replaced, or bring a deleted overlay back.
+        if (latestVersion.get(key) !== template.version) return 'continue'
+        if (!hasRoomForServerTemplate(key)) return 'continue'
+        // Hold the shared assembly slot through persistence so its decoded buffer cannot pile up
+        // behind other completed assemblies while the store is busy.
+        const installed = await putServerTemplate(
+          {
+            id: key,
+            name: template.name,
+            source: 'image',
+            originX: template.bbox.minX,
+            originY: template.bbox.minY,
+            width: built.width,
+            height: built.height,
+            indices: built.indices,
+            // The server quantised on ingest, so nothing moved on the way here and every pixel it
+            // carries is one it asserts.
+            moved: 0,
+            opaque: built.indices.reduce(
+              (total, index) => (index === TRANSPARENT_INDEX ? total : total + 1),
+              0,
+            ),
+            serverUrl: server.url,
+            serverTemplateId: template.id,
+            serverNodeId: template.nodeId,
+            serverVersion: template.version,
+            wrapX: template.bbox.minX > template.bbox.maxX,
+          },
+          () => current() && latestVersion.get(key) === template.version,
+        )
+        if (!installed) return 'stop'
+        count('server:template drawn from chunks')
+        return 'continue'
+      })
+      if (outcome === 'stop') return
     } catch (error) {
       warn('install', `could not sync server template ${template.name}`, String(error))
     } finally {
@@ -509,37 +531,10 @@ export const syncServerTemplates = async (
 
 /** How often to ask a server whether anything changed. */
 const POLL_MS = 60_000
-const SERVER_SYNC_CONCURRENCY = 4
 let timer: ReturnType<typeof setInterval> | null = null
-let syncAllRequested = false
-let syncAllRun: Promise<void> | null = null
 
 const syncAll = (): void => {
-  syncAllRequested = true
-  if (syncAllRun !== null) return
-  const run = (async () => {
-    while (syncAllRequested) {
-      syncAllRequested = false
-      const servers = [...getState().servers]
-      let cursor = 0
-      const worker = async (): Promise<void> => {
-        while (cursor < servers.length) {
-          const server = servers[cursor++]
-          if (server === undefined) return
-          await syncServerTemplates(server)
-        }
-      }
-      await Promise.all(
-        Array.from({ length: Math.min(SERVER_SYNC_CONCURRENCY, servers.length) }, worker),
-      )
-    }
-  })()
-  syncAllRun = run
-  const release = (): void => {
-    if (syncAllRun === run) syncAllRun = null
-    if (syncAllRequested) syncAll()
-  }
-  void run.then(release, release)
+  for (const server of getState().servers) void syncServerTemplates(server)
 }
 
 /**
