@@ -83,6 +83,7 @@ interface Branch {
     parentId: string | null
     sourceParentId: string | null
     name: string
+    description?: string
   }>
   readonly templates: ReadonlyArray<{
     folderId: string
@@ -178,6 +179,7 @@ const serverBranch = async (
     parentId: node.id === rootId ? null : node.parentId,
     sourceParentId: node.parentId,
     name: node.name,
+    ...(node.description === undefined ? {} : { description: node.description }),
   }))
 
   let templatesByNode: ReadonlyMap<string, readonly PublishedTemplate[]> | null = null
@@ -322,6 +324,15 @@ const transplantWhileDestinationHeld = async (
     }
   }
   if (destination.kind === 'local') {
+    const described = branch.folders.find((folder) => folder.description !== undefined)
+    if (described !== undefined) {
+      return {
+        ok: false,
+        nodes: 0,
+        templates: 0,
+        message: `“${described.name}” has a server description that Local folders cannot preserve.`,
+      }
+    }
     const wrapped = branch.templates.find(({ template }) => !canCopyAsLocalTemplate(template))
     if (wrapped !== undefined) {
       return {
@@ -453,7 +464,7 @@ const transplantWhileDestinationHeld = async (
 
     if (destination.kind === 'server') {
       if (!connectionsAreCurrent()) return connectionChanged()
-      const created = await createNode(destination.server, folder.name, parent)
+      const created = await createNode(destination.server, folder.name, parent, folder.description)
       if (!created.ok) return { ok: false, nodes, templates, message: created.message }
       if (!sourceBranchIsCurrent()) return sourceBranchChanged()
       mapped.set(folder.id, created.node.id)

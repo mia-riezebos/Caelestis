@@ -54,17 +54,51 @@ const MAX_TEMPLATE_ATTEMPTS_PER_SYNC = 64
 const MAX_TEMPLATE_ASSEMBLY_MS = 120_000
 const ASSEMBLY_CONCURRENCY = 4
 let activeAssemblies = 0
-const assemblyWaiters: Array<() => void> = []
+interface AssemblyWaiter {
+  readonly grant: () => void
+  readonly cancel: () => void
+}
+const assemblyWaiters: AssemblyWaiter[] = []
 
-const withAssemblySlot = async <T>(work: () => Promise<T>): Promise<T> => {
-  if (activeAssemblies < ASSEMBLY_CONCURRENCY) activeAssemblies++
-  else await new Promise<void>((resolve) => assemblyWaiters.push(resolve))
+const acquireAssemblySlot = (signal: AbortSignal): true | Promise<boolean> => {
+  if (signal.aborted) return Promise.resolve(false)
+  if (activeAssemblies < ASSEMBLY_CONCURRENCY) {
+    activeAssemblies++
+    return true
+  }
+  return new Promise<boolean>((resolve) => {
+    const waiter: AssemblyWaiter = {
+      grant: () => {
+        signal.removeEventListener('abort', waiter.cancel)
+        resolve(true)
+      },
+      cancel: () => {
+        const index = assemblyWaiters.indexOf(waiter)
+        if (index !== -1) assemblyWaiters.splice(index, 1)
+        resolve(false)
+      },
+    }
+    signal.addEventListener('abort', waiter.cancel, { once: true })
+    assemblyWaiters.push(waiter)
+  })
+}
+
+const releaseAssemblySlot = (): void => {
+  const next = assemblyWaiters.shift()
+  if (next === undefined) activeAssemblies--
+  else next.grant()
+}
+
+const withAssemblySlot = async <T>(
+  signal: AbortSignal,
+  work: () => Promise<T>,
+): Promise<T | undefined> => {
+  const admission = acquireAssemblySlot(signal)
+  if (admission !== true && !(await admission)) return undefined
   try {
     return await work()
   } finally {
-    const next = assemblyWaiters.shift()
-    if (next === undefined) activeAssemblies--
-    else next()
+    releaseAssemblySlot()
   }
 }
 
@@ -187,6 +221,7 @@ const assemble = async (
   template: ServerTemplate,
   generationSignal: AbortSignal,
 ): Promise<{ width: number; height: number; indices: Uint8Array } | null> => {
+  if (generationSignal.aborted) return null
   const wrapsX = template.bbox.minX > template.bbox.maxX
   const width = wrapsX
     ? WORLD_PIXELS - template.bbox.minX + template.bbox.maxX
@@ -422,53 +457,54 @@ const syncServerTemplatesOnce = async (
     templateAttemptCursors.set(server.url, key)
     inFlight.set(key, generation)
     try {
-      const outcome = await withAssemblySlot(async (): Promise<'continue' | 'stop'> => {
-        const attemptSignal = AbortSignal.any([
-          signal,
-          AbortSignal.timeout(MAX_TEMPLATE_ASSEMBLY_MS),
-        ])
-        const built = await assemble(server, template, attemptSignal)
-        if (built === null) return 'continue'
-        if (attemptSignal.aborted) return 'continue'
-        // The connection this download belongs to may have ended, or a later poll may have taken
-        // over this template, while the chunks were in the air.
-        if (!current()) return 'stop'
-        // A newer manifest landed while the chunks were in the air, and it no longer asks for this
-        // version — or no longer asks for this template at all. Installing now would draw artwork
-        // that has already been replaced, or bring a deleted overlay back.
-        if (latestVersion.get(key) !== template.version) return 'continue'
-        if (!hasRoomForServerTemplate(key)) return 'continue'
-        // Hold the shared assembly slot through persistence so its decoded buffer cannot pile up
-        // behind other completed assemblies while the store is busy.
-        const installed = await putServerTemplate(
-          {
-            id: key,
-            name: template.name,
-            source: 'image',
-            originX: template.bbox.minX,
-            originY: template.bbox.minY,
-            width: built.width,
-            height: built.height,
-            indices: built.indices,
-            // The server quantised on ingest, so nothing moved on the way here and every pixel it
-            // carries is one it asserts.
-            moved: 0,
-            opaque: built.indices.reduce(
-              (total, index) => (index === TRANSPARENT_INDEX ? total : total + 1),
-              0,
-            ),
-            serverUrl: server.url,
-            serverTemplateId: template.id,
-            serverNodeId: template.nodeId,
-            serverVersion: template.version,
-            wrapX: template.bbox.minX > template.bbox.maxX,
-          },
-          () => current() && latestVersion.get(key) === template.version,
-        )
-        if (!installed) return 'stop'
-        count('server:template drawn from chunks')
-        return 'continue'
-      })
+      const attemptSignal = AbortSignal.any([signal, AbortSignal.timeout(MAX_TEMPLATE_ASSEMBLY_MS)])
+      const outcome = await withAssemblySlot(
+        attemptSignal,
+        async (): Promise<'continue' | 'stop'> => {
+          const built = await assemble(server, template, attemptSignal)
+          if (built === null) return 'continue'
+          if (attemptSignal.aborted) return 'continue'
+          // The connection this download belongs to may have ended, or a later poll may have taken
+          // over this template, while the chunks were in the air.
+          if (!current()) return 'stop'
+          // A newer manifest landed while the chunks were in the air, and it no longer asks for this
+          // version — or no longer asks for this template at all. Installing now would draw artwork
+          // that has already been replaced, or bring a deleted overlay back.
+          if (latestVersion.get(key) !== template.version) return 'continue'
+          if (!hasRoomForServerTemplate(key)) return 'continue'
+          // Hold the shared assembly slot through persistence so its decoded buffer cannot pile up
+          // behind other completed assemblies while the store is busy.
+          const installed = await putServerTemplate(
+            {
+              id: key,
+              name: template.name,
+              source: 'image',
+              originX: template.bbox.minX,
+              originY: template.bbox.minY,
+              width: built.width,
+              height: built.height,
+              indices: built.indices,
+              // The server quantised on ingest, so nothing moved on the way here and every pixel it
+              // carries is one it asserts.
+              moved: 0,
+              opaque: built.indices.reduce(
+                (total, index) => (index === TRANSPARENT_INDEX ? total : total + 1),
+                0,
+              ),
+              serverUrl: server.url,
+              serverTemplateId: template.id,
+              serverNodeId: template.nodeId,
+              serverVersion: template.version,
+              wrapX: template.bbox.minX > template.bbox.maxX,
+            },
+            () => current() && latestVersion.get(key) === template.version,
+          )
+          if (!installed) return 'stop'
+          count('server:template drawn from chunks')
+          return 'continue'
+        },
+      )
+      if (outcome === undefined) continue
       if (outcome === 'stop') return
     } catch (error) {
       warn('install', `could not sync server template ${template.name}`, String(error))

@@ -112,6 +112,7 @@ export interface TreeNode {
   readonly parentId: string | null
   readonly path: string
   readonly name: string
+  readonly description?: string
   readonly createdAt: number
 }
 
@@ -368,12 +369,20 @@ const treeNodeFrom = (raw: unknown): TreeNode | null => {
   )
     return null
   if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return null
+  if (
+    raw.description !== undefined &&
+    (typeof raw.description !== 'string' ||
+      raw.description.length < 1 ||
+      raw.description.length > 4_096)
+  )
+    return null
   if (!plausibleMillis(raw.createdAt)) return null
   return {
     id: raw.id,
     parentId: raw.parentId,
     path: raw.path,
     name: raw.name,
+    ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
     createdAt: raw.createdAt,
   }
 }
@@ -1381,6 +1390,7 @@ export const createNode = async (
   server: ConnectedServer,
   name: string,
   parentId: string | null,
+  description?: string,
 ): Promise<{ ok: true; node: TreeNode } | { ok: false; message: string }> => {
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
@@ -1391,7 +1401,12 @@ export const createNode = async (
         'content-type': 'application/json',
         ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
       },
-      body: JSON.stringify({ season: server.season, parentId, name }),
+      body: JSON.stringify({
+        season: server.season,
+        parentId,
+        name,
+        ...(description === undefined ? {} : { description }),
+      }),
     })
     if (response.ok) {
       const node = treeNodeFrom(body)

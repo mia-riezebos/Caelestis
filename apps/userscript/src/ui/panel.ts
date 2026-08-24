@@ -687,6 +687,7 @@ const expandedServers = new Set<string>()
  * inside. Doing that on every render would mean it could never be closed again.
  */
 const autoExpanded = new Set<string>()
+const disconnectingServerUrls = new Set<string>()
 
 const destinationAdmissionControllers = new Map<string, Set<AbortController>>()
 
@@ -717,6 +718,7 @@ const destinationIsAdmitted = async (
         node.parentId !== expectedNode.parentId ||
         node.path !== expectedNode.path ||
         node.name !== expectedNode.name ||
+        node.description !== expectedNode.description ||
         node.createdAt !== expectedNode.createdAt
       )
         return false
@@ -761,39 +763,45 @@ const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
  * longer refer to anything.
  */
 const disconnectServer = async (server: ConnectedServer): Promise<void> => {
-  if (copySetupTargets?.has(server.url)) {
-    copySetupController?.abort(new Error('copy destination disconnected'))
+  if (disconnectingServerUrls.has(server.url)) return
+  disconnectingServerUrls.add(server.url)
+  try {
+    if (copySetupTargets?.has(server.url)) {
+      copySetupController?.abort(new Error('copy destination disconnected'))
+    }
+    cancelDestinationAdmissions(server.url)
+    cancelServerProbe(server.url)
+    // Anything already downloading for this server lands stale rather than drawing an overlay with no
+    // server row left to control it.
+    endServerGeneration(server.url)
+    forgetAdmittedServerContents(server.url)
+    // Stop polls and stale refresh callbacks from beginning a replacement generation while cleanup
+    // waits for per-template writes.
+    removeServer(server.url)
+    await forgetServerTemplates(server.url)
+    const hashes = forgetServerRows(server.url)
+    const nodes = forgetNodes(server.url)
+    forgetChunks(hashes)
+    forgetCachedTokens(server.url)
+    const serverTemplatePrefix = serverTemplateKey(server.url, '')
+    const legacyTreeTemplatePrefix = `st:${encodeURIComponent(server.url)}:`
+    forgetScopes([
+      `server:${server.url}`,
+      ...nodes.map((id) => nodeScopeKey(server.url, id)),
+      ...getState().hiddenScopes.filter(
+        (key) =>
+          hasSingleKeySegmentAfter(key, serverTemplatePrefix) ||
+          hasSingleKeySegmentAfter(key, legacyTreeTemplatePrefix),
+      ),
+    ])
+    expandedServers.delete(server.url)
+    autoExpanded.delete(server.url)
+    await forgetServer(server.url)
+    redraw()
+    showView('settings')
+  } finally {
+    disconnectingServerUrls.delete(server.url)
   }
-  cancelDestinationAdmissions(server.url)
-  cancelServerProbe(server.url)
-  // Anything already downloading for this server lands stale rather than drawing an overlay with no
-  // server row left to control it.
-  endServerGeneration(server.url)
-  forgetAdmittedServerContents(server.url)
-  // Stop polls and stale refresh callbacks from beginning a replacement generation while cleanup
-  // waits for per-template writes.
-  removeServer(server.url)
-  await forgetServerTemplates(server.url)
-  const hashes = forgetServerRows(server.url)
-  const nodes = forgetNodes(server.url)
-  forgetChunks(hashes)
-  forgetCachedTokens(server.url)
-  const serverTemplatePrefix = serverTemplateKey(server.url, '')
-  const legacyTreeTemplatePrefix = `st:${encodeURIComponent(server.url)}:`
-  forgetScopes([
-    `server:${server.url}`,
-    ...nodes.map((id) => nodeScopeKey(server.url, id)),
-    ...getState().hiddenScopes.filter(
-      (key) =>
-        hasSingleKeySegmentAfter(key, serverTemplatePrefix) ||
-        hasSingleKeySegmentAfter(key, legacyTreeTemplatePrefix),
-    ),
-  ])
-  expandedServers.delete(server.url)
-  autoExpanded.delete(server.url)
-  void forgetServer(server.url)
-  redraw()
-  showView('settings')
 }
 
 /**
@@ -928,6 +936,7 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
     if (next.superseded === true) return
     if (!stillConnected(server)) return
     if (next.status === 'connected') {
+      cancelDestinationAdmissions(server.url)
       upsertServer(next)
       // Closed again, because what was open for is done. Left open, a row that opened itself would
       // stay open on a pane that is otherwise a short list of servers.
@@ -1129,6 +1138,12 @@ const settingsView = (): HTMLElement => {
       status.style.display = ''
       status.className = 'text-xs px-3 pb-2 text-error'
       status.textContent = `${canonical} is already connected.`
+      return
+    }
+    if (canonical !== null && disconnectingServerUrls.has(canonical)) {
+      status.style.display = ''
+      status.className = 'text-xs px-3 pb-2 opacity-60'
+      status.textContent = `Still disconnecting ${canonical}. Try again in a moment.`
       return
     }
     status.style.display = ''
