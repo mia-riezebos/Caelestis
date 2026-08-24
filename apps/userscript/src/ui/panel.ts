@@ -6,6 +6,7 @@ import {
   admitServerContents,
   admittedServerContentsFor,
   type ConnectedServer,
+  cancelServerProbe,
   countNodeSubtree,
   createLocalFolder,
   createNode,
@@ -15,6 +16,7 @@ import {
   forgetScopes,
   getState,
   isCurrentServerConnection,
+  listServerContents,
   listServerNodes,
   loadState,
   MAX_CONNECTED_SERVERS,
@@ -702,6 +704,7 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   if (copySetupTargets?.has(server.url)) {
     copySetupController?.abort(new Error('copy destination disconnected'))
   }
+  cancelServerProbe(server.url)
   // Anything already downloading for this server lands stale rather than drawing an overlay with no
   // server row left to control it.
   endServerGeneration(server.url)
@@ -1558,6 +1561,16 @@ const moveBranch = async (
     destination,
     (server, nodeId) => templatesOfNode(server.url, nodeId),
     (server) => templatesForServer(server.url),
+    async (server, nodeIds, templateIds) => {
+      if ((await listServerContents(server)) === null) return false
+      const admitted = admittedServerContentsFor(server)
+      if (admitted === null) return false
+      const admittedNodeIds = new Set(admitted.nodes.map((node) => node.id))
+      const admittedTemplateIds = new Set(admitted.templates.map((template) => template.id))
+      for (const id of nodeIds) if (!admittedNodeIds.has(id)) return false
+      for (const id of templateIds) if (!admittedTemplateIds.has(id)) return false
+      return true
+    },
   )
   if (result.ok) toast(result.message)
   else toast(result.message, 'error')

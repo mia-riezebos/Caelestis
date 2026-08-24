@@ -225,7 +225,8 @@ const gatedManifestJson = async (
   input: string,
   init: RequestInit,
 ): Promise<{ response: Response; body: unknown }> => {
-  const admission = acquireManifestRead()
+  const signal = init.signal ?? undefined
+  const admission = acquireManifestRead(signal)
   if (admission !== true && !(await admission)) throw new Error('manifest read cancelled')
   try {
     return await remoteJson(input, init, TREE_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS)
@@ -1154,6 +1155,7 @@ const probeAdminScope = async (
   base: string,
   token: string | null,
   season: number,
+  signal?: AbortSignal,
 ): Promise<boolean> => {
   try {
     // The status is the whole answer, so the body is thrown away unread. Parsing it measured the
@@ -1161,7 +1163,10 @@ const probeAdminScope = async (
     // with a real tree therefore reported that our token could only read it.
     return await remoteCall(
       `${base}/admin/nodes?season=${season}`,
-      { headers: token === null ? {} : { authorization: `Bearer ${token}` } },
+      {
+        headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        ...(signal === undefined ? {} : { signal }),
+      },
       LARGE_TRANSFER_TIMEOUT_MS,
       async (response) => {
         await discardResponseBody(response)
@@ -1174,6 +1179,12 @@ const probeAdminScope = async (
 }
 
 const probedNodes = new WeakMap<ConnectedServer, readonly TreeNode[]>()
+const activeServerProbes = new Map<string, AbortController>()
+
+export const cancelServerProbe = (serverUrl: string): void => {
+  activeServerProbes.get(serverUrl)?.abort(new Error('server probe cancelled'))
+  activeServerProbes.delete(serverUrl)
+}
 
 /** Consume the node collection already downloaded while verifying admin scope. */
 export const takeProbedNodes = (server: ConnectedServer): readonly TreeNode[] | undefined => {
@@ -1208,12 +1219,16 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
       season: null,
     }
   }
+  activeServerProbes.get(base)?.abort(new Error('superseded by a newer server probe'))
+  const probeController = new AbortController()
+  activeServerProbes.set(base, probeController)
   let observedInfo: ServerInfo | null = null
   try {
     const { response, body } = await remoteJson(
       `${base}/server`,
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        signal: probeController.signal,
       },
       SERVER_JSON_BYTES,
     )
@@ -1250,6 +1265,7 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     const fetchManifest = (credential: string | null) =>
       gatedManifestJson(`${base}/manifest`, {
         headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
+        signal: probeController.signal,
       })
     let effectiveToken = token
     let { response: authed, body: manifestBody } = await fetchManifest(effectiveToken)
@@ -1289,7 +1305,13 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
     }
     const manifest = manifestProbeFrom(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
-    const isAdmin = await probeAdminScope(base, effectiveToken, manifest.season)
+    const isAdmin = await probeAdminScope(
+      base,
+      effectiveToken,
+      manifest.season,
+      probeController.signal,
+    )
+    if (probeController.signal.aborted) throw probeController.signal.reason
     const connected: ConnectedServer = {
       url: base,
       info,
@@ -1313,6 +1335,8 @@ export const probeServer = async (url: string, token: string | null): Promise<Co
       isAdmin: false,
       season: null,
     }
+  } finally {
+    if (activeServerProbes.get(base) === probeController) activeServerProbes.delete(base)
   }
 }
 

@@ -283,6 +283,13 @@ const transplantWhileDestinationHeld = async (
   templatesForServer:
     | ((server: ConnectedServer) => readonly LocatedPublishedTemplate[])
     | undefined,
+  destinationIsAdmitted:
+    | ((
+        server: ConnectedServer,
+        nodeIds: ReadonlySet<string>,
+        templateIds: ReadonlySet<string>,
+      ) => Promise<boolean>)
+    | undefined,
   destinationLeases: Array<() => void>,
   destinationTemplateLeases: Array<() => void>,
 ): Promise<TransplantResult> => {
@@ -323,6 +330,7 @@ const transplantWhileDestinationHeld = async (
   const mapped = new Map<string, string>()
   let nodes = 0
   let templates = 0
+  const uploadedTemplateIds = new Set<string>()
 
   const connectionsAreCurrent = (): boolean =>
     (source.kind === 'local' || isCurrentServerConnection(source.server)) &&
@@ -507,6 +515,7 @@ const transplantWhileDestinationHeld = async (
         png,
       })
       if (!uploaded.ok) return { ok: false, nodes, templates, message: uploaded.message }
+      uploadedTemplateIds.add(uploaded.id)
       if (carried.sourceRevision?.published === true) {
         if (!sourceBranchIsCurrent()) return sourceBranchChanged()
         if (!connectionsAreCurrent()) return connectionChanged()
@@ -555,6 +564,26 @@ const transplantWhileDestinationHeld = async (
     // next template rather than discovering the changed earlier row only during final cleanup.
     if (!sourceBranchIsCurrent()) return sourceBranchChanged()
     templates++
+  }
+
+  if (destination.kind === 'server' && destinationIsAdmitted !== undefined) {
+    if (!connectionsAreCurrent()) return connectionChanged()
+    const admitted = await destinationIsAdmitted(
+      destination.server,
+      new Set(mapped.values()),
+      uploadedTemplateIds,
+    )
+    if (!admitted) {
+      return {
+        ok: false,
+        nodes,
+        templates,
+        message:
+          'Copied the branch, but its destination could not be admitted, so the source was kept.',
+      }
+    }
+    if (!sourceBranchIsCurrent()) return sourceBranchChanged()
+    if (!connectionsAreCurrent()) return connectionChanged()
   }
 
   // Everything arrived. Only now is the source touched.
@@ -662,6 +691,11 @@ export const transplant = async (
   destination: Destination,
   templatesOf: (server: ConnectedServer, nodeId: string) => readonly PublishedTemplate[],
   templatesForServer?: (server: ConnectedServer) => readonly LocatedPublishedTemplate[],
+  destinationIsAdmitted?: (
+    server: ConnectedServer,
+    nodeIds: ReadonlySet<string>,
+    templateIds: ReadonlySet<string>,
+  ) => Promise<boolean>,
 ): Promise<TransplantResult> => {
   const activeSource = sourceKey(source)
   if (activeSources.has(activeSource)) {
@@ -698,6 +732,7 @@ export const transplant = async (
       destination,
       templatesOf,
       templatesForServer,
+      destinationIsAdmitted,
       destinationLeases,
       destinationTemplateLeases,
     )

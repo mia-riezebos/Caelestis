@@ -51,6 +51,7 @@ const MAX_TEMPLATE_CHUNKS = 400
 /** Encoded work per template. Decoded pixels have their own 64M-pixel bound below. */
 const MAX_TEMPLATE_TRANSFER_BYTES = 64 * 1024 * 1024
 const MAX_TEMPLATE_ATTEMPTS_PER_SYNC = 64
+const MAX_TEMPLATE_ASSEMBLY_MS = 120_000
 const ASSEMBLY_CONCURRENCY = 4
 let activeAssemblies = 0
 const assemblyWaiters: Array<() => void> = []
@@ -298,6 +299,7 @@ export const rejectServerContentsForSync = (contents: ServerContents): void => {
  */
 const generations = new Map<string, number>()
 const generationControllers = new Map<string, { generation: number; controller: AbortController }>()
+const templateAttemptCursors = new Map<string, string>()
 
 const generationOf = (serverUrl: string): number => generations.get(serverUrl) ?? 0
 
@@ -316,6 +318,7 @@ export const endServerGeneration = (serverUrl: string): void => {
   generationControllers.delete(serverUrl)
   generations.set(serverUrl, generationOf(serverUrl) + 1)
   pendingServerSyncs.delete(serverUrl)
+  templateAttemptCursors.delete(serverUrl)
   // A new connection must not queue behind the obsolete drain. The old run's release callback is
   // identity guarded, so it cannot delete the replacement when it eventually settles.
   serverSyncRuns.delete(serverUrl)
@@ -387,8 +390,18 @@ const syncServerTemplatesOnce = async (
   }
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
+  const orderedTemplates = [...wanted]
+  const previousAttempt = templateAttemptCursors.get(server.url)
+  const previousIndex = orderedTemplates.findIndex(([key]) => key === previousAttempt)
+  const rotatedTemplates =
+    previousIndex === -1
+      ? orderedTemplates
+      : [
+          ...orderedTemplates.slice(previousIndex + 1),
+          ...orderedTemplates.slice(0, previousIndex + 1),
+        ]
   let attemptedTemplates = 0
-  for (const [key, template] of wanted) {
+  for (const [key, template] of rotatedTemplates) {
     if (!current()) return
     const held = localTemplates().find((candidate) => candidate.id === key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
@@ -406,11 +419,17 @@ const syncServerTemplatesOnce = async (
     if (!hasRoomForServerTemplate(key)) continue
     if (attemptedTemplates >= MAX_TEMPLATE_ATTEMPTS_PER_SYNC) break
     attemptedTemplates++
+    templateAttemptCursors.set(server.url, key)
     inFlight.set(key, generation)
     try {
       const outcome = await withAssemblySlot(async (): Promise<'continue' | 'stop'> => {
-        const built = await assemble(server, template, signal)
+        const attemptSignal = AbortSignal.any([
+          signal,
+          AbortSignal.timeout(MAX_TEMPLATE_ASSEMBLY_MS),
+        ])
+        const built = await assemble(server, template, attemptSignal)
         if (built === null) return 'continue'
+        if (attemptSignal.aborted) return 'continue'
         // The connection this download belongs to may have ended, or a later poll may have taken
         // over this template, while the chunks were in the air.
         if (!current()) return 'stop'
