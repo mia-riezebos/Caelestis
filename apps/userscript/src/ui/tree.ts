@@ -602,6 +602,8 @@ export const forgetServerRows = (serverUrl: string): readonly string[] => {
   nodesByServer.delete(serverUrl)
   templatesByServer.delete(serverUrl)
   rowIdentityByServer.delete(serverUrl)
+  refreshControllers.get(serverUrl)?.abort(new Error('server disconnected'))
+  refreshControllers.delete(serverUrl)
   refreshGeneration.delete(serverUrl)
   return hashes
 }

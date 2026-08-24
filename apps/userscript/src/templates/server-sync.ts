@@ -335,7 +335,7 @@ const syncServerTemplatesOnce = async (
     snapshotCurrent()
   let available = known ?? null
   if (known === undefined) {
-    const contents = await listServerContents(server)
+    const contents = await listServerContents(server, signal)
     if (!current()) return
     if (contents !== null) {
       snapshotCurrent = () => isLatestServerContents(server.url, contents)
@@ -509,10 +509,37 @@ export const syncServerTemplates = async (
 
 /** How often to ask a server whether anything changed. */
 const POLL_MS = 60_000
+const SERVER_SYNC_CONCURRENCY = 4
 let timer: ReturnType<typeof setInterval> | null = null
+let syncAllRequested = false
+let syncAllRun: Promise<void> | null = null
 
 const syncAll = (): void => {
-  for (const server of getState().servers) void syncServerTemplates(server)
+  syncAllRequested = true
+  if (syncAllRun !== null) return
+  const run = (async () => {
+    while (syncAllRequested) {
+      syncAllRequested = false
+      const servers = [...getState().servers]
+      let cursor = 0
+      const worker = async (): Promise<void> => {
+        while (cursor < servers.length) {
+          const server = servers[cursor++]
+          if (server === undefined) return
+          await syncServerTemplates(server)
+        }
+      }
+      await Promise.all(
+        Array.from({ length: Math.min(SERVER_SYNC_CONCURRENCY, servers.length) }, worker),
+      )
+    }
+  })()
+  syncAllRun = run
+  const release = (): void => {
+    if (syncAllRun === run) syncAllRun = null
+    if (syncAllRequested) syncAll()
+  }
+  void run.then(release, release)
 }
 
 /**

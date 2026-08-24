@@ -1369,6 +1369,8 @@ const failure = (response: Response, body: Record<string, unknown> | null): stri
       ? body.error
       : `Server said ${response.status}.`
 
+type UploadFailure = { readonly ok: false; readonly message: string; readonly ambiguous?: true }
+
 export const renameNode = async (
   server: ConnectedServer,
   nodeId: string,
@@ -1436,7 +1438,7 @@ export const uploadTemplate = async (
     originY: number
     png: Blob
   },
-): Promise<{ ok: true; id: string } | { ok: false; message: string }> => {
+): Promise<{ ok: true; id: string } | UploadFailure> => {
   try {
     const form = new FormData()
     form.set('png', input.png, `${input.name}.png`)
@@ -1458,7 +1460,11 @@ export const uploadTemplate = async (
       const id = isRecord(body) ? body.templateId : undefined
       return typeof id === 'string' && UUID_V7.test(id)
         ? { ok: true, id }
-        : { ok: false, message: 'Server returned an invalid uploaded template.' }
+        : {
+            ok: false,
+            message: 'Server returned an invalid uploaded template.',
+            ambiguous: true,
+          }
     }
     if (response.status === 401 || response.status === 403) {
       noteAuthFailure(server, response.status)
@@ -1472,7 +1478,7 @@ export const uploadTemplate = async (
           : `Server said ${response.status}.`,
     }
   } catch (error) {
-    return { ok: false, message: String(error) }
+    return { ok: false, message: String(error), ambiguous: true }
   }
 }
 export const moveNode = async (
@@ -1811,7 +1817,7 @@ export const uploadTemplateVersion = async (
   server: ConnectedServer,
   templateId: string,
   input: { originX: number; originY: number; png: Blob; name: string },
-): Promise<{ ok: true; versionId: string } | { ok: false; message: string }> => {
+): Promise<{ ok: true; versionId: string } | UploadFailure> => {
   try {
     const form = new FormData()
     form.set('png', input.png, `${input.name}.png`)
@@ -1837,11 +1843,15 @@ export const uploadTemplateVersion = async (
       // the user their artwork had been replaced on no evidence at all.
       return typeof versionId === 'string' && UUID_V7.test(versionId)
         ? { ok: true, versionId }
-        : { ok: false, message: 'The server accepted the upload but did not say what it stored.' }
+        : {
+            ok: false,
+            message: 'The server accepted the upload but did not say what it stored.',
+            ambiguous: true,
+          }
     }
     return { ok: false, message: failure(response, isRecord(body) ? body : null) }
   } catch (error) {
-    return { ok: false, message: String(error) }
+    return { ok: false, message: String(error), ambiguous: true }
   }
 }
 

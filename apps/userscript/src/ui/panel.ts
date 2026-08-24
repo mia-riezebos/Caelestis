@@ -1995,7 +1995,9 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
         box.remove()
         if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
         else toast(result.message, 'error')
-        void refreshCurrentNodes(server, rerender, true)
+        const reconciliation = refreshCurrentNodes(server, rerender, true)
+        if (!result.ok && result.ambiguous === true) await reconciliation
+        else void reconciliation
       },
       `template:replace:${templateId}`,
     )
@@ -2234,9 +2236,27 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
  * are chosen here rather than assumed. The placement travels with it — the whole point of getting
  * it right locally first is not having to do it again on the other side.
  */
+let copySetupRunning = false
+const COPY_DISCOVERY_CONCURRENCY = 4
+let activeCopyDiscoveries = 0
+const copyDiscoveryWaiters: Array<() => void> = []
+
+const withCopyDiscoverySlot = async <T>(read: () => Promise<T>): Promise<T> => {
+  if (activeCopyDiscoveries < COPY_DISCOVERY_CONCURRENCY) activeCopyDiscoveries++
+  else await new Promise<void>((resolve) => copyDiscoveryWaiters.push(resolve))
+  try {
+    return await read()
+  } finally {
+    const next = copyDiscoveryWaiters.shift()
+    if (next === undefined) activeCopyDiscoveries--
+    else next()
+  }
+}
+
 const copyToServer = async (templateId: string, rerender: () => void): Promise<void> => {
   const template = allLocal().find((candidate) => candidate.id === templateId)
   if (template === undefined) return
+  if (copySetupRunning) return
   const targets = getState().servers.filter((server) => server.isAdmin)
   if (targets.length === 0) {
     toast('No server here accepts uploads — you need an admin code on one.', 'warning')
@@ -2245,6 +2265,7 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
 
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return
+  copySetupRunning = true
   panel.querySelector('[data-caelestis-copy]')?.remove()
   const box = document.createElement('div')
   box.setAttribute('data-caelestis-copy', '')
@@ -2255,11 +2276,17 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
   label.textContent = `Copy “${template.name}” to:`
   const chooser = document.createElement('select')
   chooser.className = 'select select-xs select-bordered'
-  // All of them at once. Asked one after another, a single server sitting on its 120-second
-  // transfer timeout made Copy look inert for two minutes, and thirty-two of them serialised.
-  const listed = await Promise.all(
-    targets.map(async (server) => [server, await listServerNodes(server)] as const),
-  )
+  let listed: Array<readonly [ConnectedServer, ServerNodesResult]>
+  try {
+    listed = await Promise.all(
+      targets.map(
+        async (server) =>
+          [server, await withCopyDiscoverySlot(() => listServerNodes(server))] as const,
+      ),
+    )
+  } finally {
+    copySetupRunning = false
+  }
   const unreachable = listed.filter(([, result]) => result.status === 'unreachable').length
   const notAdmitted = listed.filter(([, result]) => result.status === 'not-admitted').length
   let offered = 0
@@ -2370,7 +2397,9 @@ const copyToServer = async (templateId: string, rerender: () => void): Promise<v
         box.remove()
         if (result.ok) toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
         else toast(result.message, 'error')
-        void refreshCurrentNodes(server, rerender, true)
+        const reconciliation = refreshCurrentNodes(server, rerender, true)
+        if (!result.ok && result.ambiguous === true) await reconciliation
+        else void reconciliation
       },
       `template:copy:${templateId}`,
     )
@@ -2652,9 +2681,14 @@ const refreshCurrentNodes = async (
   rerender: () => void,
   force = false,
 ): Promise<void> => {
-  const current = getState().servers.find((candidate) => candidate.url === server.url)
+  let current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined) return
-  await refreshNodes(current, rerender, force)
+  let result = await refreshNodes(current, rerender, force)
+  while (!result.ok && result.superseded === true) {
+    current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current === undefined) return
+    result = await refreshNodes(current, rerender)
+  }
 }
 
 /**

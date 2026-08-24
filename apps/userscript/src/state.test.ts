@@ -1314,6 +1314,10 @@ describe('server state boundaries', () => {
     expect(settled).toBe(false)
     await vi.advanceTimersByTimeAsync(110_000)
 
-    await expect(uploading).resolves.toEqual({ ok: false, message: 'Error: request timed out' })
+    await expect(uploading).resolves.toEqual({
+      ok: false,
+      message: 'Error: request timed out',
+      ambiguous: true,
+    })
   })
 })
