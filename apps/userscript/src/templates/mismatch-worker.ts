@@ -56,6 +56,10 @@ interface Reply {
   readonly wrong?: Float32Array
   readonly unpainted?: Float32Array
   readonly asserted?: number
+  readonly completed?: number
+  readonly mismatched?: number
+  readonly progressUnpainted?: number
+  readonly progressAsserted?: number
 }
 
 /**
@@ -180,6 +184,10 @@ export const scanInWorker = async (
     wrong: reply.wrong ?? new Float32Array(0),
     unpainted: reply.unpainted ?? new Float32Array(0),
     asserted: reply.asserted ?? 0,
+    completed: reply.completed ?? 0,
+    mismatched: reply.mismatched ?? 0,
+    progressUnpainted: reply.progressUnpainted ?? 0,
+    progressAsserted: reply.progressAsserted ?? 0,
   }
 }
 

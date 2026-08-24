@@ -32,6 +32,8 @@ export interface ScanJob {
   readonly draft: Uint8Array | null
   /** Palette indices that assert nothing: the wildcard, the unpainted sentinel, anything filtered. */
   readonly ignored: readonly number[]
+  /** The palette index that means the template makes no assertion at this pixel. */
+  readonly transparent: number
   /** The value meaning "nothing placed here", which is a state rather than a colour. */
   readonly unpainted: number
 }
@@ -43,6 +45,11 @@ export interface ScanOutcome {
   readonly unpainted: Float32Array
   /** Pixels this tile asserts a colour for, so a caller can say how much is left. */
   readonly asserted: number
+  /** Progress counts ignore display-only colour filters, unlike the marker lists above. */
+  readonly completed: number
+  readonly mismatched: number
+  readonly progressUnpainted: number
+  readonly progressAsserted: number
 }
 
 export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome => {
@@ -54,7 +61,15 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   const right = Math.min(job.originX + job.width, tileLeft + tileSize)
   const bottom = Math.min(job.originY + job.height, tileTop + tileSize)
   if (right <= left || bottom <= top) {
-    return { wrong: new Float32Array(0), unpainted: new Float32Array(0), asserted: 0 }
+    return {
+      wrong: new Float32Array(0),
+      unpainted: new Float32Array(0),
+      asserted: 0,
+      completed: 0,
+      mismatched: 0,
+      progressUnpainted: 0,
+      progressAsserted: 0,
+    }
   }
 
   // "Is this colour one we are asserting", as a lookup rather than a question. A `Set.has` per pixel
@@ -70,13 +85,15 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   const wrong: number[] = []
   const unpainted: number[] = []
   let assertedHere = 0
+  let completed = 0
+  let mismatched = 0
+  let progressUnpainted = 0
+  let progressAsserted = 0
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - job.originY) * job.width + (left - job.originX)
     let tileAt = (y - tileTop) * tileSize + (left - tileLeft) - bandOffset
     for (let x = left; x < right; x++, templateAt++, tileAt++) {
       const wanted = wantedPixels[templateAt] as number
-      if (asserted[wanted] === 0) continue
-      assertedHere++
       const drafted = draft === null ? unpaintedIndex : (draft[tileAt] as number)
       const placed =
         drafted !== unpaintedIndex
@@ -84,6 +101,18 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
           : server === null
             ? unpaintedIndex
             : (server[tileAt] as number)
+
+      // Progress describes the template, not the current display filter. A colour hidden from the
+      // overlay still needs painting and therefore still belongs in these counts.
+      if (wanted !== job.transparent && wanted !== unpaintedIndex) {
+        progressAsserted++
+        if (placed === wanted) completed++
+        else if (placed === unpaintedIndex) progressUnpainted++
+        else mismatched++
+      }
+
+      if (asserted[wanted] === 0) continue
+      assertedHere++
       if (placed === wanted) continue
       // An empty pixel is only "not done yet" when nobody chose it. One drafted Transparent arrives
       // as a real palette index rather than the sentinel, so it lands with the mistakes.
@@ -96,5 +125,9 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     wrong: new Float32Array(wrong),
     unpainted: new Float32Array(unpainted),
     asserted: assertedHere,
+    completed,
+    mismatched,
+    progressUnpainted,
+    progressAsserted,
   }
 }
