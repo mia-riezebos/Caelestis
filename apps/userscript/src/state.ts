@@ -1360,6 +1360,7 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
     while (cursor < snapshot.length) {
       const server = snapshot[cursor++]
       if (server === undefined) return
+      if (!isCurrentServerConnection(server)) continue
       const refreshed = await probeServer(server.url, server.token)
       if (refreshed.superseded === true) continue
       const current = getState().servers.find((candidate) => candidate.url === server.url)
