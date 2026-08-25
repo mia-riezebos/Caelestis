@@ -1019,6 +1019,8 @@ interface RowOptions {
   readonly name: string
   readonly kind: IconName
   readonly depth: number
+  /** One continuation flag per visible tree column, ending with this row's sibling branch. */
+  readonly branches?: readonly boolean[] | undefined
   readonly meta?: string
   readonly progress?: TemplateProgress
   readonly colourProgress?: (() => readonly TemplateColourProgress[] | undefined) | undefined
@@ -1092,6 +1094,46 @@ const destinationLevel = (
       }
     : options.destinationSiblings?.(parentKey)
 
+const TREE_COLUMN = 18
+const LEAF_DISCLOSURE_WIDTH = 20
+const CONNECTOR_MIDPOINT = 18
+
+/** TUI-style tree pipes, drawn as vectors so an absent disclosure control reads as hierarchy. */
+const treeConnector = (
+  branches: readonly boolean[],
+  leaf: boolean,
+): { element: SVGSVGElement; width: number } | null => {
+  if (branches.length === 0) return null
+  const width = branches.length * TREE_COLUMN + (leaf ? LEAF_DISCLOSURE_WIDTH : 0)
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.classList.add('caelestis-tree-connector')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('width', String(width))
+  svg.style.width = `${width}px`
+
+  const line = (x1: number, y1: string, x2: number, y2: string): void => {
+    const segment = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+    segment.setAttribute('x1', String(x1))
+    segment.setAttribute('y1', y1)
+    segment.setAttribute('x2', String(x2))
+    segment.setAttribute('y2', y2)
+    segment.setAttribute('vector-effect', 'non-scaling-stroke')
+    svg.appendChild(segment)
+  }
+
+  for (let index = 0; index < branches.length - 1; index++) {
+    if (branches[index] === true) {
+      const x = index * TREE_COLUMN + TREE_COLUMN / 2
+      line(x, '0', x, '100%')
+    }
+  }
+  const current = branches.length - 1
+  const x = current * TREE_COLUMN + TREE_COLUMN / 2
+  line(x, '0', x, branches[current] === true ? '100%' : String(CONNECTOR_MIDPOINT))
+  line(x, String(CONNECTOR_MIDPOINT), width - 4, String(CONNECTOR_MIDPOINT))
+  return { element: svg, width }
+}
+
 const treeRow = (options: RowOptions): HTMLElement => {
   const draggable = isReorderable(getState().sort)
   const row = document.createElement('div')
@@ -1103,9 +1145,12 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.dataset.caelestisDepth = String(options.depth)
   if (options.container) row.dataset.caelestisContainer = ''
   row.style.padding = '0.25rem 0.5rem'
-  // One indent step per level, on top of the fixed gutter.
-  row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
-  row.style.marginRight = '0.5rem'
+  row.style.marginInline = '0.25rem 0.5rem'
+  const connector = treeConnector(options.branches ?? [], !options.container)
+  if (connector !== null) {
+    row.style.paddingInlineStart = `calc(0.5rem + ${connector.width}px)`
+    row.appendChild(connector.element)
+  }
   row.style.minHeight = '2rem'
   if (options.muted === true) row.style.opacity = '0.55'
   row.draggable = draggable
@@ -1834,6 +1879,7 @@ const renderLevel = (
   parentId: string | null,
   depth: number,
   parentKey: string,
+  ancestorBranches: readonly boolean[],
   rerender: () => void,
   needle: string,
   rank: ReadonlyMap<string, number>,
@@ -1852,18 +1898,20 @@ const renderLevel = (
     all: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
   })
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     if (budget.remaining <= 0) {
       budget.truncated = true
       break
     }
     const key = item.key
+    const branches = [...ancestorBranches, index < items.length - 1]
     into.appendChild(
       treeRow({
         key,
         name: item.name,
         kind: item.kind,
         depth,
+        branches,
         container: item.childrenOf !== null,
         siblings: keys,
         orderingSiblings: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
@@ -1917,6 +1965,7 @@ const renderLevel = (
       item.childrenOf,
       depth + 1,
       key,
+      branches,
       rerender,
       needle,
       rank,
@@ -2285,6 +2334,7 @@ export const treeContents = (
           null,
           1,
           key,
+          [],
           rerender,
           needle,
           rank,
@@ -2404,6 +2454,7 @@ export const treeContents = (
         null,
         1,
         'local',
+        [],
         rerender,
         needle,
         rank,

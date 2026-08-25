@@ -14,8 +14,24 @@ const STYLE_ID = 'caelestis-styles'
 
 const CSS = `
 .caelestis-row {
+  position: relative;
   border-radius: 0.375rem;
   transition: background-color 100ms ease-out;
+}
+.caelestis-tree-connector {
+  position: absolute;
+  inset-block-start: -0.125rem;
+  inset-inline-start: 0.5rem;
+  height: calc(100% + 0.25rem);
+  overflow: visible;
+  color: var(--color-base-content, currentColor);
+  opacity: 0.22;
+  pointer-events: none;
+}
+.caelestis-tree-connector line {
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
 }
 /* A card only while pointed at: the tree is a list to scan, and a permanent card per row turns
    scanning into reading. */

@@ -106,6 +106,10 @@ describe('tree drag and drop', () => {
         (child) => child instanceof HTMLElement && child.style.width === '1rem',
       ),
     ).toBe(false)
+    const connector = row?.querySelector<SVGSVGElement>(':scope > .caelestis-tree-connector')
+    expect(connector).not.toBeNull()
+    expect(connector?.querySelectorAll('line')).toHaveLength(2)
+    expect(row?.style.marginInline).toBe('0.25rem 0.5rem')
     expect(flyTo?.parentElement?.classList.contains('caelestis-leading-actions')).toBe(true)
     expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
     expect(row?.querySelector('[aria-label="Expand progress"]')).not.toBeNull()
@@ -156,6 +160,9 @@ describe('tree drag and drop', () => {
     const folderRow = tree.querySelector<HTMLElement>(
       `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
     )
+    const templateRow = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+    )
 
     expect(serverRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
       '0 of 150 pixels scanned',
@@ -163,6 +170,12 @@ describe('tree drag and drop', () => {
     expect(folderRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
       '0 of 150 pixels scanned',
     )
+    expect(serverRow?.querySelector(':scope > .caelestis-tree-connector')).toBeNull()
+    expect(folderRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
+    expect(templateRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
+    expect(serverRow?.style.marginInline).toBe('0.25rem 0.5rem')
+    expect(folderRow?.style.marginInline).toBe(serverRow?.style.marginInline)
+    expect(templateRow?.style.marginInline).toBe(serverRow?.style.marginInline)
     for (const row of [serverRow, folderRow]) {
       const tail = row?.querySelector('.caelestis-row-tail')
       expect(tail?.querySelector(':scope > .caelestis-progress--inline')).not.toBeNull()
