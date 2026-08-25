@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   canvasPixelAtIn,
   cssPixelsPerCanvasPixelIn,
   screenPointForIn,
+  screenProjectionIn,
   viewportCentreIn,
 } from './coordinates.js'
 import type { TileFrame } from './tile-transform.js'
@@ -86,5 +87,18 @@ describe('overlay coordinates', () => {
   it('reports CSS pixels per canvas pixel without double-counting device pixel ratio', () => {
     expect(cssPixelsPerCanvasPixelIn(frame())).toEqual({ x: 0.1, y: 0.0505 })
     expect(cssPixelsPerCanvasPixelIn(null)).toEqual({ x: 1, y: 1 })
+  })
+
+  it('shares one layout read across a batch of projected points and its scale', () => {
+    const current = frame()
+    const readRect = current.canvas.getBoundingClientRect
+    current.canvas.getBoundingClientRect = vi.fn(readRect)
+
+    const projection = screenProjectionIn(current)
+    projection?.pointFor(2_250, 3_250)
+    projection?.pointFor(2_500, 3_500)
+    void projection?.pixelsPerCanvasPixel
+
+    expect(current.canvas.getBoundingClientRect).toHaveBeenCalledTimes(1)
   })
 })

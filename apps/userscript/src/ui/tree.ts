@@ -26,6 +26,7 @@ import {
 } from '../templates/local-store.js'
 import {
   colourProgressFor,
+  mismatchRevision,
   progressFor,
   type TemplateColourProgress,
   type TemplateProgress,
@@ -1032,6 +1033,7 @@ interface RowOptions {
   readonly branches?: readonly boolean[] | undefined
   readonly meta?: string
   readonly progress?: TemplateProgress
+  readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[] | undefined) | undefined
   readonly leadingActions?:
     | ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
@@ -1288,7 +1290,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
     if (progressPlacement === 'expanded') {
       row.classList.add('caelestis-row--expanded-progress')
     }
-    progressElement = progressIndicator(options.progress, progressPlacement)
+    progressElement = progressIndicator(options.progress, progressPlacement, options.progressReader)
   }
 
   const progressActions: RowAction[] = []
@@ -1423,7 +1425,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
     if (actionElement !== null) row.appendChild(actionElement)
   }
   if (disclosure === 'colours' && resolvedColourProgress !== undefined) {
-    row.appendChild(alignExpandedDetail(colourProgressDetails(resolvedColourProgress)))
+    row.appendChild(
+      alignExpandedDetail(colourProgressDetails(resolvedColourProgress, options.colourProgress)),
+    )
   }
 
   /**
@@ -1697,6 +1701,7 @@ interface TreeItem {
   readonly createdAt?: number
   readonly meta?: string | undefined
   readonly progress?: TemplateProgress
+  readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined
   /**
    * Kept out of every ancestor rollup while still showing its own meter — an unpublished template
@@ -1762,14 +1767,26 @@ const groupedSource = (
   const colourAvailability = new Map<string | null, boolean>()
   const visiting = new Set<string | null>()
   const colourVisiting = new Set<string | null>()
+  let revision = mismatchRevision()
+  const ensureCurrentRevision = (): void => {
+    const current = mismatchRevision()
+    if (current === revision) return
+    revision = current
+    totals.clear()
+    colourTotals.clear()
+  }
   const progress = (parentId: string | null): TemplateProgress | undefined => {
+    ensureCurrentRevision()
     if (totals.has(parentId)) return totals.get(parentId)
     if (visiting.has(parentId)) return undefined
     visiting.add(parentId)
     const descendants: TemplateProgress[] = []
     for (const item of byParent.get(parentId) ?? []) {
       if (item.excludeFromRollup === true) continue
-      const itemProgress = item.childrenOf === null ? item.progress : progress(item.childrenOf)
+      const itemProgress =
+        item.childrenOf === null
+          ? (item.progressReader?.() ?? item.progress)
+          : progress(item.childrenOf)
       if (itemProgress !== undefined) descendants.push(itemProgress)
     }
     visiting.delete(parentId)
@@ -1806,6 +1823,7 @@ const groupedSource = (
   const colourProgress = (
     parentId: string | null,
   ): readonly TemplateColourProgress[] | undefined => {
+    ensureCurrentRevision()
     if (colourTotals.has(parentId)) return colourTotals.get(parentId)
     if (!hasColourProgress(parentId)) return undefined
     if (colourVisiting.has(parentId)) return undefined
@@ -1837,7 +1855,9 @@ const groupedSource = (
         const hasColours = hasColourProgress(item.childrenOf)
         return {
           ...item,
-          ...(total === undefined ? {} : { progress: total }),
+          ...(total === undefined
+            ? {}
+            : { progress: total, progressReader: () => progress(item.childrenOf) ?? total }),
           ...(hasColours ? { colourProgress: () => colourProgress(item.childrenOf) ?? [] } : {}),
         }
       }),
@@ -1993,6 +2013,7 @@ const renderLevel = (
         },
         ...(item.meta === undefined ? {} : { meta: item.meta }),
         ...(item.progress === undefined ? {} : { progress: item.progress }),
+        ...(item.progressReader === undefined ? {} : { progressReader: item.progressReader }),
         ...(item.colourProgress === undefined ? {} : { colourProgress: item.colourProgress }),
         ...(item.leadingActions === undefined ? {} : { leadingActions: item.leadingActions }),
         ...(item.muted === undefined ? {} : { muted: item.muted }),
@@ -2145,16 +2166,18 @@ export const treeContents = (
       server === undefined
         ? []
         : (rowsFor(server)?.templates ?? []).filter((template) => template.published)
-    const parentProgress = isLocal
-      ? sumProgress(localOnly.map(progressFor))
-      : server === undefined
-        ? undefined
-        : sumProgress(serverTemplates.map((template) => serverTemplateProgress(server, template)))
+    const readParentProgress = (): TemplateProgress | undefined =>
+      isLocal
+        ? sumProgress(localOnly.map(progressFor))
+        : server === undefined
+          ? undefined
+          : sumProgress(serverTemplates.map((template) => serverTemplateProgress(server, template)))
+    const parentProgress = readParentProgress()
     const parentColourProgress: (() => readonly TemplateColourProgress[] | undefined) | undefined =
       isLocal
         ? localOnly.length === 0
           ? undefined
-          : () => completeColourProgress(parentProgress, localOnly.map(colourProgressFor))
+          : () => completeColourProgress(readParentProgress(), localOnly.map(colourProgressFor))
         : server === undefined ||
             serverTemplates.length === 0 ||
             !serverTemplates.every(
@@ -2163,7 +2186,7 @@ export const treeContents = (
           ? undefined
           : () =>
               completeColourProgress(
-                parentProgress,
+                readParentProgress(),
                 serverTemplates.flatMap((template) => {
                   const colours = serverTemplateColourProgress(server, template)
                   return colours === undefined ? [] : [colours]
@@ -2185,6 +2208,9 @@ export const treeContents = (
           destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
         parentKey: null,
         ...(parentProgress === undefined ? {} : { progress: parentProgress }),
+        ...(parentProgress === undefined
+          ? {}
+          : { progressReader: () => readParentProgress() ?? parentProgress }),
         ...(parentColourProgress === undefined ? {} : { colourProgress: parentColourProgress }),
         rerender,
         onError: callbacks.onError,
@@ -2366,7 +2392,13 @@ export const treeContents = (
               muted: !template.published,
               ...(template.published ? {} : { excludeFromRollup: true as const }),
               progress: serverTemplateProgress(server, template),
-              ...(colourProgress === undefined ? {} : { colourProgress: () => colourProgress }),
+              progressReader: () => serverTemplateProgress(server, template),
+              ...(colourProgress === undefined
+                ? {}
+                : {
+                    colourProgress: () =>
+                      serverTemplateColourProgress(server, template) ?? colourProgress,
+                  }),
               progressSortable: true,
               leadingActions: [
                 {
@@ -2494,6 +2526,7 @@ export const treeContents = (
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
             progress: progressFor(template),
+            progressReader: () => progressFor(template),
             colourProgress: () => colourProgressFor(template),
             progressSortable: true,
             visible: template.visible,

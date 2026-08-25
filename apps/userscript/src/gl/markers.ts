@@ -17,6 +17,7 @@ import {
   endMismatchFrame,
   mismatchesIn,
 } from '../templates/mismatch.js'
+import type { MismatchMarks } from '../templates/mismatch-marks.js'
 import { horizontalSpans } from '../templates/placement.js'
 import {
   currentQuads,
@@ -26,6 +27,7 @@ import {
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { markerFades, templateFades } from './fade.js'
+import { markerSampleLimit, sampleMarkers } from './marker-sample.js'
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -45,13 +47,10 @@ import { markerFades, templateFades } from './fade.js'
  */
 
 const VERTEX = `#version 300 es
-/** A marked pixel, in wplace canvas pixels. */
-in vec2 a_pixel;
-/** The palette index the template wants at that pixel. */
-in float a_wanted;
+/** Tile-local x, y and wanted palette index packed into one uint. */
+in uint a_mark;
 
-/** The tile's top-left in canvas pixels, and where it landed on screen this frame. */
-uniform vec2 u_tileOrigin;
+/** Where this tile landed on screen this frame. */
 uniform vec2 u_tileScreen;
 /** Device pixels per canvas pixel, from the tile's own on-screen size. */
 uniform vec2 u_tileScale;
@@ -61,11 +60,12 @@ uniform float u_size;
 flat out float v_wanted;
 
 void main() {
+  vec2 pixel = vec2(float(a_mark & 1023u), float((a_mark >> 10u) & 1023u));
   // The centre of the pixel, not its corner, so the crosshair sits on the thing it marks.
-  vec2 device = u_tileScreen + (a_pixel - u_tileOrigin + 0.5) * u_tileScale;
+  vec2 device = u_tileScreen + (pixel + 0.5) * u_tileScale;
   gl_Position = vec4((2.0 * device.x) / u_buffer.x - 1.0, 1.0 - (2.0 * device.y) / u_buffer.y, 0.0, 1.0);
   gl_PointSize = u_size;
-  v_wanted = a_wanted;
+  v_wanted = float(a_mark >> 20u);
 }
 `
 
@@ -100,9 +100,11 @@ void main() {
 /** The context these handles belong to; see the same guard in `layer.ts`. */
 let owner: WebGL2RenderingContext | null = null
 let program: WebGLProgram | null = null
-let buffer: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
+let markAttribute = -1
 let markerBufferBytes = 0
+const markerBuffers = new Map<MismatchMarks, WebGLBuffer>()
+const usedMarkerBuffers = new Set<MismatchMarks>()
 
 export const markerGpuMemoryBytes = (): number => markerBufferBytes
 const uniforms = new Map<string, WebGLUniformLocation | null>()
@@ -135,8 +137,10 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
   // belonged to the old one. Every frame then bound foreign objects, and the old context's objects
   // could never be freed because the guard in `releaseMarkers` no longer recognised them.
   program = null
-  buffer = null
+  markerBuffers.clear()
+  usedMarkerBuffers.clear()
   markerBufferBytes = 0
+  markAttribute = -1
   vao = null
   uniforms.clear()
   owner = gl
@@ -156,23 +160,10 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
   }
   program = created
   uniforms.clear()
-  buffer = gl.createBuffer()
   vao = gl.createVertexArray()
   gl.bindVertexArray(vao)
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  const pixel = gl.getAttribLocation(program, 'a_pixel')
-  gl.enableVertexAttribArray(pixel)
-  gl.vertexAttribPointer(pixel, 2, gl.FLOAT, false, 3 * Float32Array.BYTES_PER_ELEMENT, 0)
-  const wanted = gl.getAttribLocation(program, 'a_wanted')
-  gl.enableVertexAttribArray(wanted)
-  gl.vertexAttribPointer(
-    wanted,
-    1,
-    gl.FLOAT,
-    false,
-    3 * Float32Array.BYTES_PER_ELEMENT,
-    2 * Float32Array.BYTES_PER_ELEMENT,
-  )
+  markAttribute = gl.getAttribLocation(program, 'a_mark')
+  gl.enableVertexAttribArray(markAttribute)
   gl.bindVertexArray(null)
 }
 
@@ -180,11 +171,13 @@ export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
   // A replacement map's `initMarkers` may already have claimed this state; see `layer.ts`.
   if (owner !== gl) return
   owner = null
-  if (buffer !== null) gl.deleteBuffer(buffer)
+  for (const held of markerBuffers.values()) gl.deleteBuffer(held)
+  markerBuffers.clear()
+  usedMarkerBuffers.clear()
   if (vao !== null) gl.deleteVertexArray(vao)
   if (program !== null) gl.deleteProgram(program)
-  buffer = null
   markerBufferBytes = 0
+  markAttribute = -1
   vao = null
   program = null
   uniforms.clear()
@@ -255,14 +248,14 @@ export const deviceScale = (gl: WebGL2RenderingContext): number => {
 /**
  * Draw one crosshair per marked pixel of one tile.
  *
- * `pixels` is x,y,wanted-index triples in canvas coordinates. Placement comes from the tile's own
+ * `pixels` packs tile-local x/y/wanted-index into one uint. Placement comes from the tile's own
  * on-screen rect, the same rect the overlay itself is drawn on, so markers inherit whatever
  * MapLibre did to place that tile rather than being projected separately.
  */
 export const drawMarkers = (
   gl: WebGL2RenderingContext,
   tile: TileQuad,
-  pixels: Float32Array,
+  pixels: MismatchMarks,
   style: MarkerStyle,
   fade: number,
 ): void => {
@@ -270,11 +263,18 @@ export const drawMarkers = (
 
   gl.useProgram(program)
   gl.bindVertexArray(vao)
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  gl.bufferData(gl.ARRAY_BUFFER, pixels, gl.DYNAMIC_DRAW)
-  markerBufferBytes = pixels.byteLength
+  let held = markerBuffers.get(pixels)
+  if (held === undefined) {
+    held = gl.createBuffer()
+    if (held === null) return
+    markerBuffers.set(pixels, held)
+    markerBufferBytes += pixels.byteLength
+    gl.bindBuffer(gl.ARRAY_BUFFER, held)
+    gl.bufferData(gl.ARRAY_BUFFER, pixels, gl.STATIC_DRAW)
+  } else gl.bindBuffer(gl.ARRAY_BUFFER, held)
+  usedMarkerBuffers.add(pixels)
+  gl.vertexAttribIPointer(markAttribute, 1, gl.UNSIGNED_INT, Uint32Array.BYTES_PER_ELEMENT, 0)
 
-  gl.uniform2f(uniform(gl, 'u_tileOrigin'), tile.tile.x * TILE_SIZE, tile.tile.y * TILE_SIZE)
   gl.uniform2f(uniform(gl, 'u_tileScreen'), tile.x, tile.y)
   gl.uniform2f(uniform(gl, 'u_tileScale'), tile.width / TILE_SIZE, tile.height / TILE_SIZE)
   gl.uniform2f(uniform(gl, 'u_buffer'), gl.drawingBufferWidth, gl.drawingBufferHeight)
@@ -289,7 +289,7 @@ export const drawMarkers = (
   gl.uniform1f(uniform(gl, 'u_selected'), style.selected)
   gl.uniform1f(uniform(gl, 'u_fade'), fade)
 
-  gl.drawArrays(gl.POINTS, 0, pixels.length / 3)
+  gl.drawArrays(gl.POINTS, 0, pixels.length)
   gl.bindVertexArray(null)
 }
 
@@ -468,13 +468,14 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 
   type Work = {
     tile: TileQuad
-    marks: Float32Array
+    marks: MismatchMarks
     style: MarkerStyle
     fade: number
   }
   const selectedWork: Work[] = []
   const mismatchWork: Work[] = []
   let deferred = false
+  const scale = deviceScale(gl)
   const mismatchSelection = getState().onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
@@ -505,7 +506,10 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
         const disagreements = disagreementsIn(template, tile.tile)
         if (disagreements === null) deferred = true
         else {
-          const marks = colourMarksIn(disagreements, selected)
+          const marks = sampleMarkers(
+            colourMarksIn(disagreements, selected),
+            markerSampleLimit(tile.width, tile.height, appearance.selectedMarkerSize * scale),
+          )
           if (marks.length > 0) {
             selectedWork.push({ tile, marks, style: selectedStyle, fade: selectedFade })
           }
@@ -514,7 +518,15 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
       const mismatches = mismatchesIn(template, tile.tile)
       if (mismatches === null) deferred = true
       else if (mismatchFade > 0 && mismatches.length > 0) {
-        mismatchWork.push({ tile, marks: mismatches, style: mismatchStyle, fade: mismatchFade })
+        mismatchWork.push({
+          tile,
+          marks: sampleMarkers(
+            mismatches,
+            markerSampleLimit(tile.width, tile.height, appearance.markerSize * scale),
+          ),
+          style: mismatchStyle,
+          fade: mismatchFade,
+        })
       }
     }
   }
@@ -560,11 +572,18 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 }
 
 const drawAll = (gl: WebGL2RenderingContext): void => {
+  usedMarkerBuffers.clear()
   beginMismatchFrame()
   try {
     drawVisible(gl)
   } finally {
     endMismatchFrame()
+    for (const [pixels, held] of markerBuffers) {
+      if (usedMarkerBuffers.has(pixels)) continue
+      gl.deleteBuffer(held)
+      markerBuffers.delete(pixels)
+      markerBufferBytes -= pixels.byteLength
+    }
   }
 }
 

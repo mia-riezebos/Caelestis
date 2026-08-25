@@ -11,6 +11,42 @@ const wrappedXDelta = (x: number, reference: number): number => {
   )
 }
 
+export interface ScreenProjection {
+  pointFor(x: number, y: number): { x: number; y: number }
+  readonly pixelsPerCanvasPixel: { x: number; y: number }
+}
+
+/**
+ * Snapshot the frame-to-screen transform once for callers that project many points.
+ *
+ * Reading the canvas rectangle can force layout. Keeping it behind this small value object lets a
+ * whole overlay-control frame share one read instead of repeating it for every visible template.
+ */
+export const screenProjectionIn = (frame: TileFrame | null): ScreenProjection | null => {
+  const reference = frame?.quads[0]
+  if (reference === undefined || frame === null) return null
+  const box = frame.canvas.getBoundingClientRect()
+  if (box.width <= 0 || box.height <= 0 || frame.canvas.width <= 0 || frame.canvas.height <= 0) {
+    return null
+  }
+  const ratioX = frame.canvas.width / box.width
+  const ratioY = frame.canvas.height / box.height
+  const scaleX = reference.width / TILE_SIZE
+  const scaleY = reference.height / TILE_SIZE
+  const originX = reference.tile.x * TILE_SIZE
+  const originY = reference.tile.y * TILE_SIZE
+  return {
+    pointFor: (x, y) => ({
+      x: box.left + (reference.x + wrappedXDelta(x, originX) * scaleX) / ratioX,
+      y: box.top + (reference.y + (y - originY) * scaleY) / ratioY,
+    }),
+    pixelsPerCanvasPixel: {
+      x: scaleX / ratioX,
+      y: scaleY / ratioY,
+    },
+  }
+}
+
 /** Where the middle of the viewport falls in wplace's global pixel coordinates. */
 export const viewportCentreIn = (frame: TileFrame): { x: number; y: number } | null => {
   if (frame.quads.length === 0) return null
@@ -63,33 +99,11 @@ export const screenPointForIn = (
   x: number,
   y: number,
 ): { x: number; y: number } | null => {
-  const reference = frame.quads[0]
-  if (reference === undefined) return null
-  const box = frame.canvas.getBoundingClientRect()
-  if (box.width <= 0 || box.height <= 0) return null
-  const ratioX = frame.canvas.width / box.width
-  const ratioY = frame.canvas.height / box.height
-  const scaleX = reference.width / TILE_SIZE
-  const scaleY = reference.height / TILE_SIZE
-  const originX = reference.tile.x * TILE_SIZE
-  const originY = reference.tile.y * TILE_SIZE
-  return {
-    x: box.left + (reference.x + wrappedXDelta(x, originX) * scaleX) / ratioX,
-    y: box.top + (reference.y + (y - originY) * scaleY) / ratioY,
-  }
+  return screenProjectionIn(frame)?.pointFor(x, y) ?? null
 }
 
 /** CSS pixels occupied by one wplace pixel in this frame. Pointer events use this coordinate
  * space, so the canvas backing-store/device-pixel ratio must be removed. */
 export const cssPixelsPerCanvasPixelIn = (frame: TileFrame | null): { x: number; y: number } => {
-  const quad = frame?.quads[0]
-  if (quad === undefined || frame === null) return { x: 1, y: 1 }
-  const box = frame.canvas.getBoundingClientRect()
-  if (box.width <= 0 || box.height <= 0 || frame.canvas.width <= 0 || frame.canvas.height <= 0) {
-    return { x: 1, y: 1 }
-  }
-  return {
-    x: quad.width / TILE_SIZE / (frame.canvas.width / box.width),
-    y: quad.height / TILE_SIZE / (frame.canvas.height / box.height),
-  }
+  return screenProjectionIn(frame)?.pixelsPerCanvasPixel ?? { x: 1, y: 1 }
 }

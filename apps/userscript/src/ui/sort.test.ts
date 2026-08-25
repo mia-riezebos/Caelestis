@@ -1,8 +1,13 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest'
-import { sortControl } from './sort.js'
+import { progressChangesCanReorder, sortControl } from './sort.js'
 
 describe('sort control', () => {
+  it('marks progress sorting as structurally sensitive to progress changes', () => {
+    expect(progressChangesCanReorder({ field: 'progress', direction: 'asc' })).toBe(true)
+    expect(progressChangesCanReorder({ field: 'custom', direction: 'asc' })).toBe(false)
+  })
+
   it('opens above the panel body when its button is clicked', () => {
     const control = sortControl({ field: 'custom', direction: 'asc' }, vi.fn())
     document.body.appendChild(control)

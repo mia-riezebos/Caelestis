@@ -2,7 +2,9 @@ import { TILE_SIZE } from '@caelestis/shared'
 import {
   canvasPixelAtIn,
   cssPixelsPerCanvasPixelIn,
+  type ScreenProjection,
   screenPointForIn,
+  screenProjectionIn,
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
@@ -84,13 +86,18 @@ export const repaint = (): void => {
   if (lastFrame !== null) draw(lastFrame)
 }
 
+/** Ask MapLibre to repaint custom GL layers without rerunning screen-space controls immediately. */
+const repaintMap = (): void => {
+  const map = getMap() as { triggerRepaint?: () => void } | null
+  map?.triggerRepaint?.()
+}
+
 /**
  * Redraw everything after a change of ours: our coordinate-backed controls, and wplace's GL layer.
  */
 export const redraw = (): void => {
   repaint()
-  const map = getMap() as { triggerRepaint?: () => void } | null
-  map?.triggerRepaint?.()
+  repaintMap()
 }
 
 /** Keep the GL layer attached across delayed map creation, style reloads, and SPA map replacement. */
@@ -183,6 +190,9 @@ export const screenPointFor = (x: number, y: number): { x: number; y: number } |
 export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
   return cssPixelsPerCanvasPixelIn(lastFrame)
 }
+
+/** One canvas-layout read shared by callers that project many points in the current frame. */
+export const screenProjection = (): ScreenProjection | null => screenProjectionIn(lastFrame)
 
 /** Run one independent piece of start-up without letting its failure cancel the rest. */
 const step = (what: string, run: () => void): void => {
@@ -347,7 +357,9 @@ const main = (): void => {
   step('keyboard shortcuts', installKeys)
   // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
   // marker going away.
-  step('mismatch repaint', () => onMismatchesChanged(redraw))
+  // A completed scan changes marker buffers and progress only. Progress has its own DOM listeners;
+  // rerunning every screen-space overlay control here duplicates the MapLibre frame requested next.
+  step('mismatch repaint', () => onMismatchesChanged(repaintMap))
   // wplace add a layer per tile being painted, above anything of ours added earlier, so a placed
   // pixel would otherwise cover the marker it just cleared.
   step('marker order', () => onFrame(keepMarkersAboveDrafts, 'Keep marker layer above drafts'))
@@ -366,7 +378,9 @@ const main = (): void => {
     // The pipette fallback reads the exact pixel-art tile, so Paint itself is a pixel consumer even
     // when mismatch markers are off. Starting at drawer-open gives visible tiles time to populate
     // before the one-shot picker click; a miss is also chased on demand by `placedIndexAt`.
-    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen())
+    const interest = (tile: { readonly x: number; readonly y: number }): boolean =>
+      isPaintOpen() || wantsTilePixels(tile)
+    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen(), interest)
     sync()
     onStateChange(sync)
     onLocalChange(sync)

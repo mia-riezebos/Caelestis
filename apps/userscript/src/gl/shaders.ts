@@ -1,3 +1,5 @@
+import { FULL_MINIFY_FOOTPRINT, MEDIUM_MINIFY_FOOTPRINT } from './minify-quality.js'
+
 /**
  * The overlay's shaders.
  *
@@ -63,8 +65,8 @@ uniform float u_fade;
 
 out vec4 fragColor;
 
-/** How many samples a side to take across a fragment when the template is minified. */
-const int MINIFY_TAPS = 4;
+/** Maximum samples per side; modest minification uses a smaller grid below. */
+const int MAX_MINIFY_TAPS = 4;
 
 /** Signed distance to a rounded box centred on the origin. Negative inside. */
 float roundedBox(vec2 point, vec2 half_, float radius) {
@@ -104,18 +106,24 @@ void main() {
   // The stamp is deliberately skipped here. Below 1:1 it is smaller than a pixel, so it has nothing
   // to say about what the fragment should look like.
   if (max(footprint.x, footprint.y) > 1.0) {
+    float maximumFootprint = max(footprint.x, footprint.y);
+    int tapsPerAxis = maximumFootprint <= ${MEDIUM_MINIFY_FOOTPRINT.toFixed(1)}
+      ? 2
+      : (maximumFootprint <= ${FULL_MINIFY_FOOTPRINT.toFixed(1)} ? 3 : MAX_MINIFY_TAPS);
     vec3 sum = vec3(0.0);
     float drawn = 0.0;
-    for (int j = 0; j < MINIFY_TAPS; j++) {
-      for (int i = 0; i < MINIFY_TAPS; i++) {
-        vec2 at = (vec2(float(i), float(j)) + 0.5) / float(MINIFY_TAPS) - 0.5;
+    for (int j = 0; j < MAX_MINIFY_TAPS; j++) {
+      if (j >= tapsPerAxis) continue;
+      for (int i = 0; i < MAX_MINIFY_TAPS; i++) {
+        if (i >= tapsPerAxis) continue;
+        vec2 at = (vec2(float(i), float(j)) + 0.5) / float(tapsPerAxis) - 0.5;
         vec4 sampled = cellColour(texel + at * footprint);
         sum += sampled.rgb * sampled.w;
         drawn += sampled.w;
       }
     }
     if (drawn <= 0.0) discard;
-    float taps = float(MINIFY_TAPS * MINIFY_TAPS);
+    float taps = float(tapsPerAxis * tapsPerAxis);
     // Coverage is the share of the footprint that draws at all, so a template's edge and its holes
     // fade out across the boundary instead of stepping.
     float minifiedAlpha = (drawn / taps) * u_opacity * u_fade;

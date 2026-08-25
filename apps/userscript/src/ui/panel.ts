@@ -82,6 +82,7 @@ import { whileBusy } from './button.js'
 import { isColourPickerOpen } from './colour-picker.js'
 import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
+import { frameQueue } from './frame-queue.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
 import { importTemplatesToServer } from './import-to-server.js'
@@ -89,8 +90,9 @@ import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
+import { refreshProgressIndicators } from './progress.js'
 import { serverDestinations } from './server-destinations.js'
-import { sortControl } from './sort.js'
+import { progressChangesCanReorder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID, toast } from './toast.js'
 import {
@@ -476,6 +478,7 @@ const treeView = (): HTMLElement => {
  * rebuilding would detach it from its own anchor. Its close callback requests the deferred redraw.
  */
 let owedRefresh = false
+const heldPanelPointers = new Set<number>()
 
 const refreshView = (): void => {
   if (!open) return
@@ -484,6 +487,7 @@ const refreshView = (): void => {
   const held =
     isColourPickerOpen() ||
     isTreeDragActive() ||
+    heldPanelPointers.size > 0 ||
     root.querySelector('.caelestis-dragging') !== null ||
     (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
   if (held) {
@@ -3099,21 +3103,51 @@ export const installPanel = (): void => {
   // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per
   // change.
   onStateChange(refreshView)
-  onLocalChange(refreshView)
-  let progressRefreshQueued = false
-  onMismatchesChanged(() => {
-    if (progressRefreshQueued) return
-    progressRefreshQueued = true
-    requestAnimationFrame(() => {
-      progressRefreshQueued = false
+  onLocalChange(
+    frameQueue(() => {
       if (currentView === 'tree') refreshView()
-    })
-  })
+    }),
+  )
+  onMismatchesChanged(
+    frameQueue(() => {
+      if (currentView !== 'tree') return
+      if (progressChangesCanReorder(getState().sort)) {
+        refreshView()
+        return
+      }
+      const panel = document.getElementById(PANEL_ID)
+      if (panel !== null) refreshProgressIndicators(panel)
+    }),
+  )
   onServerStatusChange(() => {
     if (currentView === 'tree') refreshView()
   })
   for (const ending of ['dragend', 'focusout'])
     document.addEventListener(ending, repayRefresh, true)
+  document.addEventListener(
+    'pointerdown',
+    (event) => {
+      const panel = document.getElementById(PANEL_ID)
+      if (panel !== null && event.composedPath().includes(panel)) {
+        heldPanelPointers.add(event.pointerId)
+      }
+    },
+    true,
+  )
+  for (const ending of ['pointerup', 'pointercancel'] as const) {
+    document.addEventListener(
+      ending,
+      (event) => {
+        heldPanelPointers.delete(event.pointerId)
+        repayRefresh()
+      },
+      true,
+    )
+  }
+  window.addEventListener('blur', () => {
+    heldPanelPointers.clear()
+    repayRefresh()
+  })
   // Opening wplace's paint drawer changes what the appearance grid is showing without changing any
   // state of ours, so neither listener above hears it and the grid sat showing the switches the
   // mode had already overridden. Only that view: the tree is expensive to rebuild and a colour

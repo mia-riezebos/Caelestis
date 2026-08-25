@@ -64,6 +64,10 @@ const harness = vi.hoisted(() => ({
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../main.js', () => ({
   cssPixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel,
+  screenProjection: () => ({
+    pointFor: (x: number, y: number) => harness.screenPointFor(x, y),
+    pixelsPerCanvasPixel: harness.cssPixelsPerCanvasPixel(),
+  }),
   screenPointFor: harness.screenPointFor,
 }))
 vi.mock('../state.js', () => ({

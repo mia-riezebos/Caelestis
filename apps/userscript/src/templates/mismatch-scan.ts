@@ -9,7 +9,7 @@
  * drift: there is only one comparison.
  */
 
-export interface ScanJob {
+interface CommonScanJob {
   /** Which template, so the worker can find the pixels it was given earlier. */
   readonly templateKey: string
   /** Those pixels, when the worker has not been given them yet. */
@@ -28,7 +28,6 @@ export interface ScanJob {
    * mostly zeroes. `bandTop` is the first tile row present, and the arrays are indexed from there.
    */
   readonly bandTop: number
-  readonly server: Uint8Array | null
   readonly draft: Uint8Array | null
   /** Palette indices that assert nothing: the wildcard, the unpainted sentinel, anything filtered. */
   readonly ignored: readonly number[]
@@ -38,11 +37,28 @@ export interface ScanJob {
   readonly unpainted: number
 }
 
+export interface PixelScanJob extends CommonScanJob {
+  readonly kind: 'pixels'
+  readonly server: Uint8Array | null
+}
+
+export interface MaskScanJob extends CommonScanJob {
+  readonly kind: 'mask'
+  /** Tile-local rectangle described by the packed two-bit classifications. */
+  readonly maskLeft: number
+  readonly maskTop: number
+  readonly maskWidth: number
+  readonly maskHeight: number
+  readonly maskPacked: Uint8Array
+}
+
+export type ScanJob = PixelScanJob | MaskScanJob
+
 export interface ScanOutcome {
   /** Pixels with the wrong colour on them, including a pixel drafted Transparent. */
-  readonly wrong: Float32Array
+  readonly wrong: Uint32Array
   /** Pixels with nothing on them at all. */
-  readonly unpainted: Float32Array
+  readonly unpainted: Uint32Array
   /** Pixels this tile asserts a colour for, so a caller can say how much is left. */
   readonly asserted: number
   /** Progress counts ignore display-only colour filters, unlike the marker lists above. */
@@ -58,14 +74,18 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   const tileSize = job.tileSize
   const tileLeft = job.tileX * tileSize
   const tileTop = job.tileY * tileSize
-  const left = Math.max(job.originX, tileLeft)
-  const top = Math.max(job.originY, tileTop)
-  const right = Math.min(job.originX + job.width, tileLeft + tileSize)
-  const bottom = Math.min(job.originY + job.height, tileTop + tileSize)
+  const maskLeft = job.kind === 'mask' ? tileLeft + job.maskLeft : tileLeft
+  const maskTop = job.kind === 'mask' ? tileTop + job.maskTop : tileTop
+  const maskRight = job.kind === 'mask' ? maskLeft + job.maskWidth : tileLeft + tileSize
+  const maskBottom = job.kind === 'mask' ? maskTop + job.maskHeight : tileTop + tileSize
+  const left = Math.max(job.originX, tileLeft, maskLeft)
+  const top = Math.max(job.originY, tileTop, maskTop)
+  const right = Math.min(job.originX + job.width, tileLeft + tileSize, maskRight)
+  const bottom = Math.min(job.originY + job.height, tileTop + tileSize, maskBottom)
   if (right <= left || bottom <= top) {
     return {
-      wrong: new Float32Array(0),
-      unpainted: new Float32Array(0),
+      wrong: new Uint32Array(0),
+      unpainted: new Uint32Array(0),
       asserted: 0,
       completed: 0,
       mismatched: 0,
@@ -81,9 +101,12 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   for (const index of job.ignored) asserted[index] = 0
 
   const unpaintedIndex = job.unpainted
-  const server = job.server
   const draft = job.draft
   const bandOffset = job.bandTop * tileSize
+  // Kept local because this function is stringified into the worker.
+  const match = 0
+  const wrongClass = 1
+  const blank = 2
 
   const wrong: number[] = []
   const unpainted: number[] = []
@@ -101,22 +124,26 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     for (let x = left; x < right; x++, templateAt++, tileAt++) {
       const wanted = wantedPixels[templateAt] as number
       const drafted = draft === null ? unpaintedIndex : (draft[tileAt] as number)
-      const placed =
-        drafted !== unpaintedIndex
-          ? drafted
-          : server === null
-            ? unpaintedIndex
-            : (server[tileAt] as number)
+      let classification: number
+      if (drafted !== unpaintedIndex) classification = drafted === wanted ? match : wrongClass
+      else if (job.kind === 'mask') {
+        const maskAt = (y - tileTop - job.maskTop) * job.maskWidth + (x - tileLeft - job.maskLeft)
+        classification =
+          ((job.maskPacked[Math.floor(maskAt / 4)] ?? 0) >> ((maskAt % 4) * 2)) & 0b11
+      } else {
+        const placed = job.server === null ? unpaintedIndex : (job.server[tileAt] as number)
+        classification = placed === wanted ? match : placed === unpaintedIndex ? blank : wrongClass
+      }
 
       // Progress describes the template, not the current display filter. A colour hidden from the
       // overlay still needs painting and therefore still belongs in these counts.
       if (wanted !== job.transparent && wanted !== unpaintedIndex) {
         progressAsserted++
         const colourAt = wanted * 3
-        if (placed === wanted) {
+        if (classification === match) {
           completed++
           progressByColour[colourAt] = (progressByColour[colourAt] ?? 0) + 1
-        } else if (placed === unpaintedIndex) {
+        } else if (classification === blank) {
           progressUnpainted++
           progressByColour[colourAt + 2] = (progressByColour[colourAt + 2] ?? 0) + 1
         } else {
@@ -127,11 +154,12 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
 
       if (asserted[wanted] === 0) continue
       assertedHere++
-      if (placed === wanted) continue
+      if (classification === match) continue
       // An empty pixel is only "not done yet" when nobody chose it. One drafted Transparent arrives
       // as a real palette index rather than the sentinel, so it lands with the mistakes.
-      if (placed === unpaintedIndex) unpainted.push(x, y, wanted)
-      else wrong.push(x, y, wanted)
+      const mark = (x - tileLeft) | ((y - tileTop) << 10) | (wanted << 20)
+      if (classification === blank) unpainted.push(mark)
+      else wrong.push(mark)
     }
   }
 
@@ -159,9 +187,12 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     packedProgress[packedAt++] = colourUnpainted
   }
 
+  const marks = new Uint32Array(wrong.length + unpainted.length)
+  marks.set(wrong)
+  marks.set(unpainted, wrong.length)
   return {
-    wrong: new Float32Array(wrong),
-    unpainted: new Float32Array(unpainted),
+    wrong: marks.subarray(0, wrong.length),
+    unpainted: marks.subarray(wrong.length),
     asserted: assertedHere,
     completed,
     mismatched,

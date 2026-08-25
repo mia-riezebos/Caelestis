@@ -414,8 +414,11 @@ const syncServerTemplatesOnce = async (
   const wanted = new Map(
     available.map((template) => [serverTemplateKey(server.url, template.id), template]),
   )
+  // Snapshot once. Re-reading and linearly searching the store for every manifest entry made a
+  // large server sync quadratic in the number of templates.
+  const heldById = new Map(localTemplates().map((template) => [template.id, template]))
 
-  for (const held of localTemplates()) {
+  for (const held of heldById.values()) {
     if (!current()) return
     if (held.serverUrl !== server.url) continue
     if (!wanted.has(held.id)) await forgetServerTemplate(held.id)
@@ -429,7 +432,7 @@ const syncServerTemplatesOnce = async (
 
   for (const [key, template] of wanted) {
     if (!current()) return
-    const held = localTemplates().find((candidate) => candidate.id === key)
+    const held = heldById.get(key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
     // rebuild. Names and folder membership still arrive through the manifest because neither
     // changes the pixel version.

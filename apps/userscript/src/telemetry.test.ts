@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   fetchedTile: null as
     | ((tile: { x: number; y: number }, bytes: Uint8Array, observedAt: number) => void)
     | null,
+  tileInterest: null as ((tile: { x: number; y: number }) => boolean) | null,
   acceptedPaint: null as ((paint: unknown) => void) | null,
   stateListeners: [] as Array<() => void>,
   state: {
@@ -38,8 +39,10 @@ vi.mock('./tile-transform.js', () => ({
   },
   onFetchedTile: (
     listener: (tile: { x: number; y: number }, bytes: Uint8Array, observedAt: number) => void,
+    interest: (tile: { x: number; y: number }) => boolean,
   ) => {
     harness.fetchedTile = listener
+    harness.tileInterest = interest
     return vi.fn()
   },
 }))
@@ -74,6 +77,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   harness.serverContents = null
   harness.fetchedTile = null
+  harness.tileInterest = null
   harness.acceptedPaint = null
   harness.stateListeners = []
   harness.state = { shareTiles: true, reportPaints: true, servers: [server] }
@@ -84,6 +88,23 @@ afterEach(() => {
 })
 
 describe('server telemetry client', () => {
+  it('reads tile bodies only while a connected server may want them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    expect(harness.tileInterest?.({ x: 1, y: 2 })).toBe(true)
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+    expect(harness.tileInterest?.({ x: 1, y: 2 })).toBe(true)
+    expect(harness.tileInterest?.({ x: 9, y: 9 })).toBe(false)
+
+    harness.state = { ...harness.state, shareTiles: false }
+    expect(harness.tileInterest?.({ x: 1, y: 2 })).toBe(false)
+  })
+
   it('replays tiles and accepted paints observed before manifest coverage arrives', async () => {
     const requests: string[] = []
     vi.stubGlobal(

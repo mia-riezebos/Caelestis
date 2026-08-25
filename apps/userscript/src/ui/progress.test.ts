@@ -8,6 +8,7 @@ import {
   freshestProgress,
   progressIndicator,
   progressLabel,
+  refreshProgressIndicators,
   sumProgress,
 } from './progress.js'
 
@@ -31,6 +32,23 @@ describe('template progress', () => {
     expect([...segments].map((segment) => segment.style.width)).toEqual(['40%', '10%', '30%'])
     expect(meter.querySelector('.caelestis-progress-percent')?.textContent).toBe('40%')
     expect(meter.textContent).toContain('80% scanned')
+  })
+
+  it('refreshes a live meter without replacing surrounding controls', () => {
+    let current = progress
+    const root = document.createElement('div')
+    const control = document.createElement('button')
+    const meter = progressIndicator(current, 'expanded', () => current)
+    root.append(control, meter)
+
+    current = { completed: 75, mismatched: 5, unpainted: 20, known: 100, total: 100 }
+    refreshProgressIndicators(root)
+
+    expect(root.querySelector('button')).toBe(control)
+    expect(root.querySelector('.caelestis-progress')).toBe(meter)
+    expect(meter.querySelector('.caelestis-progress-percent')?.textContent).toBe('75%')
+    expect(meter.getAttribute('aria-label')).toBe(progressLabel(current))
+    expect(meter.textContent).not.toContain('scanned')
   })
 
   it('accumulates descendants while keeping unknown pixels separate', () => {
