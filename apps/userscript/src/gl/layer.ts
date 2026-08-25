@@ -2,6 +2,7 @@ import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@cae
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { isPlain } from '../templates/appearance.js'
+import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import { appearanceOf, displayTemplates, isTemplateVisible } from '../templates/local-store.js'
 import { horizontalSpans } from '../templates/placement.js'
@@ -484,8 +485,14 @@ export const overlayLayer = {
           gpu.set(template.id, entry)
         }
 
-        const targetAppearance = appearanceOf(template)
-        const transitioned = appearanceTransitions.advance(template.id, targetAppearance, now)
+        const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
+        const transitioned = appearanceTransitions.advance(
+          template.id,
+          targetAppearance,
+          now,
+          undefined,
+          hasAppearancePreview(template.id),
+        )
         const appearance = transitioned.appearance
         if (!transitioned.done) animating = true
         const hidden = hiddenColoursFor(appearance)

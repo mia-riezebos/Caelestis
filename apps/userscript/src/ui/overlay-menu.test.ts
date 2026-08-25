@@ -56,6 +56,8 @@ const harness = vi.hoisted(() => ({
   setOwnsGroup: vi.fn(async () => true),
   ownsGroup: vi.fn(() => true),
   appearanceOf: vi.fn((template: { appearance: Appearance }) => template.appearance),
+  setAppearancePreview: vi.fn(),
+  clearAppearancePreview: vi.fn(),
 }))
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
@@ -89,6 +91,10 @@ vi.mock('../templates/local-store.js', () => ({
   setLocalVisible: harness.setLocalVisible,
   setOwnsGroup: harness.setOwnsGroup,
   templateAsPng: harness.templateAsPng,
+}))
+vi.mock('../templates/appearance-preview.js', () => ({
+  clearAppearancePreview: harness.clearAppearancePreview,
+  setAppearancePreview: harness.setAppearancePreview,
 }))
 vi.mock('../templates/move.js', () => ({
   abort: harness.abortMove,
@@ -429,6 +435,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
     const opacity = byKey('opacity') as HTMLInputElement
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
 
     for (const value of ['0.5', '0.55', '0.6']) {
       opacity.value = value
@@ -438,7 +445,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     // Each of those used to be a durable write that also cleared the stamped-tile cache.
     expect(harness.setAppearance).not.toHaveBeenCalled()
 
-    opacity.dispatchEvent(new Event('change'))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
     await settle()
 
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
@@ -698,7 +705,7 @@ describe('placement and geometry', () => {
    * this branch with a three-thousand-line suite over them. Patched on the prototype rather than on
    * the node, because the module measures during the build, before any test can reach the element.
    */
-  const menuMeasures = (content: number, width = 240): void => {
+  const menuMeasures = (content: number | (() => number), width = 240): void => {
     Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
       const isMenu = this instanceof HTMLElement && this.dataset.caelestisSignature !== undefined
       // Honours whatever cap the module has just written, as a browser does. A stub returning a
@@ -712,8 +719,9 @@ describe('placement and geometry', () => {
           : Number.POSITIVE_INFINITY
       const styledWidth =
         isMenu && this.style.width.endsWith('px') ? Number.parseFloat(this.style.width) : width
+      const naturalHeight = typeof content === 'function' ? content() : content
       const box = isMenu
-        ? { width: styledWidth, height: Math.min(content, ceiling) }
+        ? { width: styledWidth, height: Math.min(naturalHeight, ceiling) }
         : { width: 0, height: 0 }
       return {
         ...box,
@@ -745,6 +753,26 @@ describe('placement and geometry', () => {
     expect(Number.parseFloat(menu().style.left) + 240).toBeLessThan(
       Number.parseFloat(gear('a').style.left),
     )
+  })
+
+  it('remeasures the menu when an appearance group expands', () => {
+    harness.ownsGroup.mockReturnValue(false)
+    onTestFinished(() => {
+      harness.ownsGroup.mockReturnValue(true)
+    })
+    menuMeasures(() =>
+      byText(menu(), 'Pixels').getAttribute('aria-expanded') === 'true' ? 300 : 100,
+    )
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect(menu().style.maxHeight).toBe('100px')
+
+    byText(menu(), 'Pixels').click()
+
+    expect(menu().style.maxHeight).toBe('300px')
   })
 
   it('keeps the local menu and both action rails clear of an open main panel', () => {
@@ -2120,6 +2148,26 @@ describe('focus saved across a teardown is not focus demanded', () => {
 })
 
 describe('a gesture is what the user did, not what the element held', () => {
+  it('previews every pixel slider input before the gesture ends', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+    const size = byKey('size') as HTMLInputElement
+
+    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    size.value = '0.7'
+    size.dispatchEvent(new Event('input'))
+
+    expect(harness.setAppearancePreview).toHaveBeenCalledWith('a', 'size', 0.7)
+    expect(harness.setAppearance).not.toHaveBeenCalled()
+
+    size.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    await settle()
+
+    expect(harness.clearAppearancePreview).toHaveBeenCalledWith('a', 'size', 0.7)
+  })
+
   it('does not write a stale value for a press that moved nothing', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()

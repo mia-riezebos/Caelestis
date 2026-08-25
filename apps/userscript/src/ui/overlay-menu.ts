@@ -18,6 +18,7 @@ import {
   DEFAULT_APPEARANCE,
   GROUP_FIELDS,
 } from '../templates/appearance.js'
+import { clearAppearancePreview, setAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
 import {
   appearanceOf,
@@ -161,10 +162,14 @@ let menuNode: HTMLElement | null = null
  * rebuilt away instead of flushed.
  */
 let menuOwner: string | null = null
-/** Measured once per rebuild — the contents only change when the menu is rebuilt. */
+/** The menu's last natural size. */
 let menuBox: { width: number; height: number } = { width: 0, height: 0 }
 /** The viewport `menuBox` was measured in, so a rotation or a resize is the thing that re-measures. */
 let measuredFor: { width: number; height: number } = { width: 0, height: 0 }
+
+const invalidateMenuMeasurement = (): void => {
+  measuredFor = { width: 0, height: 0 }
+}
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
 let railActions: HTMLElement[] = []
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
@@ -459,6 +464,8 @@ const flushDrafts = (id: string): void => {
       () => releaseAppearance(id, [property], seq),
       rerender,
       () => storedAppearance(id)[property] === value,
+      true,
+      () => clearAppearancePreview(id, property, value),
     )
   }
 }
@@ -685,6 +692,7 @@ const forget = (id: string): void => {
   aborting.delete(id)
   abortAttempts.delete(id)
   drafts.delete(id)
+  clearAppearancePreview(id)
   refusals.delete(id)
   appearanceIntents.delete(id)
   visibleIntents.delete(id)
@@ -742,6 +750,7 @@ const settle = (
   /** Has the thing this write asked for become true, by any route? */
   satisfied: () => boolean,
   serialise = true,
+  finished: () => void = () => {},
 ): void => {
   // Not cleared up front: a retry that stalls would take the banner away and show optimistic state
   // indefinitely, when what the user knows so far is still that the last attempt was refused.
@@ -764,6 +773,7 @@ const settle = (
     )
     .finally(() => {
       release()
+      finished()
       rerender()
     })
 }
@@ -890,9 +900,8 @@ const moveServerDraft = async (id: string, originX: number, originY: number): Pr
 /**
  * A range whose in-progress value lives in module state rather than in the element.
  *
- * Every `input` writes the draft, so a rebuild renders from it and every teardown gets it for free.
- * The commit still waits for the gesture to end, because `size` is part of the stamped-tile cache
- * key and one write per `input` re-stamps the viewport at scale 3.
+ * Every `input` writes the draft and a render-only preview. The durable commit waits for the
+ * gesture to end, so dragging does not create dozens of IndexedDB writes.
  */
 const slider = (
   id: string,
@@ -904,7 +913,7 @@ const slider = (
   step: number,
   format: (value: number) => string,
   locked: boolean,
-  onCommit: (next: number) => void,
+  onCommit: (next: number, finished: () => void) => void,
   rerender: () => void,
 ): HTMLElement => {
   const value = draftFor(id, property) ?? stored
@@ -962,7 +971,7 @@ const slider = (
       return
     }
     clearDraft(id, property)
-    onCommit(draft)
+    onCommit(draft, () => clearAppearancePreview(id, property, draft))
   }
 
   input.addEventListener('pointerdown', (event) => beginPointerHold(input, event, settleGesture))
@@ -973,11 +982,14 @@ const slider = (
     keyHeld = true
     heldByKey = input
   })
-  // Every `input` is a draft, never a write: a one-second drag would otherwise be dozens of
-  // serialised IndexedDB transactions, each clearing the stamped-tile cache and re-stamping.
+  // Every `input` is a live render preview, never a durable write. Persistence still happens once
+  // when the gesture ends.
   input.addEventListener('input', () => {
-    setDraft(id, property, Number(input.value))
-    readout.textContent = format(Number(input.value))
+    const next = Number(input.value)
+    setDraft(id, property, next)
+    setAppearancePreview(id, property, next)
+    readout.textContent = format(next)
+    rerender()
   })
   // The pointer release always ends the gesture, and a `change` after it finds no draft left and
   // just repaints. Waiting for `change` instead loses a drag that returns to its starting value,
@@ -1243,11 +1255,13 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
     label: string,
     patch: Updater,
     satisfied?: () => boolean,
+    finished?: () => void,
   ): void => {
     if (isDoomed(id)) {
       // The drag guard has been suppressing rebuilds for the whole gesture, so this is the first
       // chance the menu has had to show that the template is being deleted.
       rerender()
+      finished?.()
       return
     }
     const seq = intendAppearance(id, properties, patch)
@@ -1279,6 +1293,8 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
             return JSON.stringify(stored[field]) === JSON.stringify(asked[field])
           })
         }),
+      true,
+      finished,
     )
   }
 
@@ -1618,6 +1634,8 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
     reveal.addEventListener('click', () => {
       open = !open
       show()
+      invalidateMenuMeasurement()
+      rerender()
     })
     show()
     if (!owned) {
@@ -1674,10 +1692,16 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
         control.step,
         control.format,
         locked,
-        (value) => {
+        (value, finished) => {
           const box = defaultsBoxes.get('pixels')
           if (box !== undefined) box.checked = false
-          edit([control.key], control.label.toLowerCase(), () => ({ [control.key]: value }))
+          edit(
+            [control.key],
+            control.label.toLowerCase(),
+            () => ({ [control.key]: value }),
+            undefined,
+            finished,
+          )
         },
         rerender,
       ),
@@ -2333,7 +2357,7 @@ const renderControls = (
       menuNode = built.menu
       railActions = [...built.actions]
       // A new node has no measurement, whatever the viewport has been doing.
-      measuredFor = { width: 0, height: 0 }
+      invalidateMenuMeasurement()
       // Stamped from what was just built, not from what was sampled.
       menuNode.dataset.caelestisSignature = menuSignature(template)
       menuOwner = template.id
@@ -2359,7 +2383,7 @@ const renderControls = (
       action.style.left = `${buttonLeft}px`
       action.style.top = `${buttonTop + (index + 1) * (MENU_BUTTON_SIZE + RAIL_GAP)}px`
     }
-    // Measured when it is built and when the viewport changes under it, and at no other time.
+    // Measured when it is built, when its content expands, and when the viewport changes under it.
     //
     // Both dimensions are viewport-relative — `min(15rem, 100vw - 1rem)` and `70vh` — so a size
     // cached at build time alone would be clamped against a viewport it no longer belongs to. But

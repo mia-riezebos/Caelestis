@@ -60,4 +60,18 @@ describe('appearance preset transitions', () => {
       done: true,
     })
   })
+
+  it('retargets an active slider through the same tween', () => {
+    const transitions = appearanceTransitionSet()
+    transitions.advance('a', DEFAULT_APPEARANCE, 0, false)
+    const dragged = { ...DEFAULT_APPEARANCE, size: 0.7 }
+
+    expect(transitions.advance('a', dragged, 0, false, true)).toEqual({
+      appearance: DEFAULT_APPEARANCE,
+      done: false,
+    })
+    expect(transitions.advance('a', dragged, FADE_MS / 2, false, true).appearance.size).toBeCloseTo(
+      (DEFAULT_APPEARANCE.size + dragged.size) / 2,
+    )
+  })
 })
