@@ -7,6 +7,7 @@
     chunkPlacements,
     osmImage,
     osmSpan,
+    osmTileDrawRect,
     osmZoomFor,
     templateRect,
     tileImage,
@@ -141,7 +142,16 @@
       for (let tx = firstOsmX; tx <= lastOsmX; tx++) {
         const wrappedX = ((tx % 2 ** z) + 2 ** z) % 2 ** z
         const image = ensure(`osm:${z}/${wrappedX}/${ty}`, () => osmImage(z, wrappedX, ty))
-        if (image !== null) ctx.drawImage(image, tx * span, ty * span, span, span)
+        if (image !== null) {
+          const destination = osmTileDrawRect(tx, ty, span, scale)
+          ctx.drawImage(
+            image,
+            destination.x,
+            destination.y,
+            destination.width,
+            destination.height,
+          )
+        }
       }
     }
 

@@ -155,6 +155,22 @@ export const osmZoomFor = (screenPxPerCanvasPx: number): number =>
 /** Canvas pixels one OSM tile covers at zoom `z`. */
 export const osmSpan = (z: number): number => WORLD_PIXELS / 2 ** z
 
+/** Destination rectangle for one slippy-map tile in canvas-pixel coordinates. */
+export const osmTileDrawRect = (
+  tileX: number,
+  tileY: number,
+  span: number,
+  deviceScale: number,
+): CanvasRect => ({
+  x: tileX * span,
+  y: tileY * span,
+  // Canvas filtering samples just outside each independently drawn image. Extend toward the next
+  // tile by one physical pixel so that sample comes from an opaque neighbour instead of the cleared
+  // canvas. Later tiles paint over the overlap, so map detail is neither shifted nor duplicated.
+  width: span + 1 / Math.max(Number.EPSILON, deviceScale),
+  height: span + 1 / Math.max(Number.EPSILON, deviceScale),
+})
+
 export const osmImage = (z: number, x: number, y: number): Promise<HTMLImageElement> =>
   cachedImage(
     `osm:${z}/${x}/${y}`,
