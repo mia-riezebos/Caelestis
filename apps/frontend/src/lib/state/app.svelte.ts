@@ -27,26 +27,38 @@ class AppState {
     this.manifest === null ? null : buildTree(this.manifest, this.statuses),
   )
 
+  /** Bumped per load, so a slow older load can never overwrite a newer one's answers. */
+  private generation = 0
+
   async load(): Promise<void> {
+    const generation = ++this.generation
     this.loading = true
     this.error = null
     this.authRequired = false
+    // Reset rather than serve stale: a reconnect must never show the previous connection's
+    // manifest as if it were this server's — that reads as "my template is missing".
+    this.manifest = null
+    this.statuses = new Map()
+    this.canvas = new Map()
     try {
       // `/server` is public and reports whether reads need a token. An open server must not show
       // the connect dialog.
       const server = await getServer()
+      if (generation !== this.generation) return
       this.server = server
       if (server.auth === 'access_token' && readToken() === null) {
         this.authRequired = true
         return
       }
       const manifest = await getManifest()
+      if (generation !== this.generation) return
       this.manifest = manifest
       // Status and canvas refine the picture; the tree already renders without them.
       const [status, canvas] = await Promise.allSettled([
         getStatus(manifest.season),
         getCanvas(manifest.season),
       ])
+      if (generation !== this.generation) return
       if (status.status === 'fulfilled') {
         this.statuses = new Map(status.value.templates.map((t) => [t.templateId, t]))
       }
@@ -54,13 +66,14 @@ class AppState {
         this.canvas = new Map(canvas.value.tiles.map((t) => [t.tile, t]))
       }
     } catch (error) {
+      if (generation !== this.generation) return
       if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
         this.authRequired = true
       } else {
         this.error = error instanceof Error ? error.message : String(error)
       }
     } finally {
-      this.loading = false
+      if (generation === this.generation) this.loading = false
     }
   }
 }
