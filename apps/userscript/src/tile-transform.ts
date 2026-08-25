@@ -1508,6 +1508,10 @@ const capture = (
       } else {
         const context = reusableCaptureContext()
         if (context === null) return
+        // The context is reused, and source-over leaves old RGB behind wherever the new bitmap is
+        // transparent. Clear first so transparent pixels stay unpainted instead of inheriting the
+        // previous tile or draft.
+        context.clearRect(0, 0, TILE_SIZE, TILE_SIZE)
         context.drawImage(bitmap, 0, 0)
         const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
         const table = indexTable()

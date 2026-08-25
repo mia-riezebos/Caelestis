@@ -5,7 +5,12 @@
  * sorting or randomness. Results are retained by source identity and limit, which also gives the GPU
  * layer a stable identity to upload once.
  */
-const samples = new WeakMap<Float32Array, Map<number, Float32Array>>()
+interface MarkerSample {
+  readonly limit: number
+  readonly marks: Float32Array
+}
+
+const samples = new WeakMap<Float32Array, MarkerSample>()
 
 export const sampleMarkers = (marks: Float32Array, maxPoints: number): Float32Array => {
   const points = Math.floor(marks.length / 3)
@@ -13,8 +18,7 @@ export const sampleMarkers = (marks: Float32Array, maxPoints: number): Float32Ar
   if (points <= limit) return marks
   if (limit === 0) return new Float32Array(0)
   const held = samples.get(marks)
-  const cached = held?.get(limit)
-  if (cached !== undefined) return cached
+  if (held?.limit === limit) return held.marks
 
   const sampled = new Float32Array(limit * 3)
   for (let point = 0; point < limit; point++) {
@@ -24,8 +28,8 @@ export const sampleMarkers = (marks: Float32Array, maxPoints: number): Float32Ar
     sampled[target + 1] = marks[source + 1] as number
     sampled[target + 2] = marks[source + 2] as number
   }
-  const entries = held ?? new Map<number, Float32Array>()
-  entries.set(limit, sampled)
-  if (held === undefined) samples.set(marks, entries)
+  // Zoom can produce a different limit on every frame. The previous sample is no longer useful,
+  // and retaining every historical limit makes one dense mismatch list grow without bound.
+  samples.set(marks, { limit, marks: sampled })
   return sampled
 }

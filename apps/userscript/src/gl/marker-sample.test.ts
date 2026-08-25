@@ -14,4 +14,13 @@ describe('marker density sampling', () => {
     expect([...sampled]).toEqual([0, 0, 1, 2, 0, 1, 4, 0, 1])
     expect(sampleMarkers(marks, 3)).toBe(sampled)
   })
+
+  it('retains only the latest zoom-level sample', () => {
+    const marks = new Float32Array([0, 0, 1, 1, 0, 1, 2, 0, 1, 3, 0, 1])
+    const first = sampleMarkers(marks, 2)
+
+    sampleMarkers(marks, 3)
+
+    expect(sampleMarkers(marks, 2)).not.toBe(first)
+  })
 })
