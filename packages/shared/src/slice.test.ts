@@ -154,40 +154,33 @@ describe('slicing', () => {
 
   it('reassembles to the original painted pixels', () => {
     // The property that matters: slicing loses nothing and moves nothing.
-    const size = TILE_SIZE + 37
-    const indices = new Uint8Array(size * size).fill(T)
-    for (let index = 0; index < size * size; index += 7) indices[index] = index % 63
+    const width = TILE_SIZE + 37
+    const height = 61
+    const indices = new Uint8Array(width * height).fill(T)
+    for (let index = 0; index < width * height; index += 7) indices[index] = index % 63
     const originX = TILE_SIZE - 11
     const originY = TILE_SIZE - 23
 
-    const { bbox, chunks } = sliceTemplate(indices, size, size, originX, originY)
+    const { bbox, chunks } = sliceTemplate(indices, width, height, originX, originY)
 
     // Reassemble the way a client has to: a chunk's top-left is not its tile's origin, it is
     // max(bbox.min, tile origin). That derivation is exactly why the wire can carry {tile, hash}
     // and nothing more, so reproducing it here is testing the contract rather than the code.
-    const canvas = new Map<string, number>()
+    const canvas = new Uint8Array(width * height).fill(T)
     for (const chunk of chunks) {
       const startX = Math.max(bbox.minX, chunk.tileX * TILE_SIZE)
       const startY = Math.max(bbox.minY, chunk.tileY * TILE_SIZE)
       for (let y = 0; y < chunk.height; y += 1) {
         for (let x = 0; x < chunk.width; x += 1) {
           const value = chunk.indices[y * chunk.width + x] ?? T
-          if (value === T) continue
-          canvas.set(`${startX + x}/${startY + y}`, value)
+          const templateX = startX + x - originX
+          const templateY = startY + y - originY
+          canvas[templateY * width + templateX] = value
         }
       }
     }
 
-    let expected = 0
-    for (let y = 0; y < size; y += 1) {
-      for (let x = 0; x < size; x += 1) {
-        const value = indices[y * size + x] ?? T
-        if (value === T) continue
-        expected += 1
-        expect(canvas.get(`${originX + x}/${originY + y}`)).toBe(value)
-      }
-    }
-    expect(canvas.size).toBe(expected)
+    expect(canvas).toEqual(indices)
   })
 })
 
