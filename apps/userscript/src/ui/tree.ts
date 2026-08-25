@@ -1195,13 +1195,15 @@ const treeRow = (options: RowOptions): HTMLElement => {
   }
 
   const progressPlacement = getState().progress
+  let progressElement: HTMLElement | null = null
   if (options.progress !== undefined && progressPlacement !== 'hidden') {
     if (progressPlacement === 'expanded') {
       row.classList.add('caelestis-row--expanded-progress')
     }
-    row.appendChild(progressIndicator(options.progress, progressPlacement))
+    progressElement = progressIndicator(options.progress, progressPlacement)
   }
 
+  let actionElement: HTMLElement | null = null
   if (editing) {
     // Confirm and cancel take the place of the row's own actions while renaming, so the row never
     // offers two different things to do with the same click.
@@ -1240,7 +1242,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
       if (event.key === 'Enter') commit()
       if (event.key === 'Escape') cancel()
     })
-    row.appendChild(group)
+    actionElement = group
   } else if (options.actions !== undefined && options.actions.length > 0) {
     const group = document.createElement('span')
     group.className = 'caelestis-actions flex items-center gap-0.5'
@@ -1257,7 +1259,21 @@ const treeRow = (options: RowOptions): HTMLElement => {
       })
       group.appendChild(button)
     }
-    row.appendChild(group)
+    actionElement = group
+  }
+
+  if (
+    progressPlacement === 'inline' &&
+    progressElement !== null &&
+    actionElement?.classList.contains('caelestis-actions') === true
+  ) {
+    const tail = document.createElement('span')
+    tail.className = 'caelestis-row-tail'
+    tail.append(progressElement, actionElement)
+    row.appendChild(tail)
+  } else {
+    if (progressElement !== null) row.appendChild(progressElement)
+    if (actionElement !== null) row.appendChild(actionElement)
   }
 
   /**

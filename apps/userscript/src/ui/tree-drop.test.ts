@@ -161,6 +161,11 @@ describe('tree drag and drop', () => {
     expect(folderRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
       '0 of 150 pixels scanned',
     )
+    for (const row of [serverRow, folderRow]) {
+      const tail = row?.querySelector('.caelestis-row-tail')
+      expect(tail?.querySelector(':scope > .caelestis-progress--inline')).not.toBeNull()
+      expect(tail?.querySelector(':scope > .caelestis-actions')).not.toBeNull()
+    }
   })
 
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {

@@ -80,13 +80,47 @@ const CSS = `
 .caelestis-actions {
   transition: opacity 100ms ease-out;
 }
+.caelestis-row-tail {
+  display: grid;
+  align-items: center;
+  flex: 0 0 6.5rem;
+  width: 6.5rem;
+  min-width: 0;
+}
+.caelestis-row-tail > * {
+  grid-area: 1 / 1;
+}
+.caelestis-row-tail > .caelestis-actions {
+  justify-self: end;
+}
+.caelestis-row-tail > .caelestis-progress--inline {
+  width: 100%;
+  transition: opacity 100ms ease-out;
+}
 @media (hover: hover) {
   .caelestis-actions {
     opacity: 0;
   }
+  .caelestis-row-tail > .caelestis-actions {
+    pointer-events: none;
+  }
   .caelestis-row:hover .caelestis-actions,
   .caelestis-row:focus-within .caelestis-actions {
     opacity: 1;
+  }
+  .caelestis-row:hover .caelestis-row-tail > .caelestis-actions,
+  .caelestis-row:focus-within .caelestis-row-tail > .caelestis-actions {
+    pointer-events: auto;
+  }
+  .caelestis-row:hover .caelestis-row-tail > .caelestis-progress--inline,
+  .caelestis-row:focus-within .caelestis-row-tail > .caelestis-progress--inline {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+@media (hover: none) {
+  .caelestis-row-tail > .caelestis-progress--inline {
+    visibility: hidden;
   }
 }
 /* The swatch grid steps between powers of two rather than flowing with auto-fill.
