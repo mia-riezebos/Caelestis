@@ -1014,6 +1014,12 @@ const clearDropMarks = (root: ParentNode): void => {
   for (const el of root.querySelectorAll('[data-caelestis-placeholder]')) el.remove()
 }
 
+interface RowAction {
+  readonly icon: IconName
+  readonly label: string
+  readonly run: () => void
+}
+
 interface RowOptions {
   readonly key: string
   readonly name: string
@@ -1043,7 +1049,7 @@ interface RowOptions {
   readonly forceExpanded?: boolean | undefined
   /** Dimmed, for a row that exists but is not doing anything yet — an unpublished template. */
   readonly muted?: boolean | undefined
-  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  readonly actions?: readonly RowAction[] | undefined
   /** Present only where the user can actually change things; absent means no rename affordance. */
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
@@ -1280,10 +1286,10 @@ const treeRow = (options: RowOptions): HTMLElement => {
       row.classList.add('caelestis-row--expanded-progress')
     }
     progressElement = progressIndicator(options.progress, progressPlacement)
-    if (progressPlacement === 'expanded') alignExpandedDetail(progressElement)
   }
 
-  const progressActions: Array<{ icon: IconName; label: string; run: () => void }> = []
+  const progressActions: RowAction[] = []
+  let colourProgressAction: RowAction | null = null
   if (hasProgress) {
     if (disclosure === 'inline') {
       progressActions.push({
@@ -1307,16 +1313,29 @@ const treeRow = (options: RowOptions): HTMLElement => {
         },
       })
       if (options.colourProgress !== undefined) {
-        progressActions.push({
+        colourProgressAction = {
           icon: 'palette',
           label: disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress',
           run: () => {
             progressDisclosure.set(options.key, disclosure === 'colours' ? 'expanded' : 'colours')
             options.rerender()
           },
-        })
+        }
       }
     }
+  }
+
+  const actionButton = (action: RowAction): HTMLButtonElement => {
+    const button = document.createElement('button')
+    button.className = 'btn btn-ghost btn-xs btn-circle'
+    button.title = action.label
+    button.setAttribute('aria-label', action.label)
+    button.appendChild(icon(action.icon, 'size-4'))
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      action.run()
+    })
+    return button
   }
 
   let actionElement: HTMLElement | null = null
@@ -1367,33 +1386,37 @@ const treeRow = (options: RowOptions): HTMLElement => {
       const group = document.createElement('span')
       group.className = 'caelestis-actions flex items-center gap-0.5'
       group.style.flex = '0 0 auto'
-      for (const action of actions) {
-        const button = document.createElement('button')
-        button.className = 'btn btn-ghost btn-xs btn-circle'
-        button.title = action.label
-        button.setAttribute('aria-label', action.label)
-        button.appendChild(icon(action.icon, 'size-4'))
-        button.addEventListener('click', (event) => {
-          event.stopPropagation()
-          action.run()
-        })
-        group.appendChild(button)
-      }
+      for (const action of actions) group.appendChild(actionButton(action))
       actionElement = group
     }
   }
 
+  let renderedProgressElement = progressElement
+  if (progressPlacement === 'expanded' && progressElement !== null) {
+    let expandedDetail: HTMLElement = progressElement
+    if (!editing && colourProgressAction !== null) {
+      const line = document.createElement('span')
+      line.className = 'caelestis-progress-disclosure'
+      const detailActions = document.createElement('span')
+      detailActions.className = 'caelestis-actions caelestis-progress-detail-actions'
+      detailActions.appendChild(actionButton(colourProgressAction))
+      line.append(progressElement, detailActions)
+      expandedDetail = line
+    }
+    renderedProgressElement = alignExpandedDetail(expandedDetail)
+  }
+
   if (
     progressPlacement === 'inline' &&
-    progressElement !== null &&
+    renderedProgressElement !== null &&
     actionElement?.classList.contains('caelestis-actions') === true
   ) {
     const tail = document.createElement('span')
     tail.className = 'caelestis-row-tail'
-    tail.append(progressElement, actionElement)
+    tail.append(renderedProgressElement, actionElement)
     row.appendChild(tail)
   } else {
-    if (progressElement !== null) row.appendChild(progressElement)
+    if (renderedProgressElement !== null) row.appendChild(renderedProgressElement)
     if (actionElement !== null) row.appendChild(actionElement)
   }
   if (disclosure === 'colours' && resolvedColourProgress !== undefined) {

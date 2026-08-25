@@ -369,6 +369,23 @@ const CSS = `
   gap: 0.2rem;
   padding-inline: 0;
 }
+.caelestis-progress-disclosure {
+  order: 10;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.125rem;
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 0;
+}
+.caelestis-progress-disclosure > .caelestis-progress--expanded {
+  order: initial;
+  flex: 1 1 auto;
+  width: auto;
+}
+.caelestis-progress-detail-actions {
+  flex: 0 0 auto;
+}
 .caelestis-progress-track {
   display: flex;
   width: 100%;

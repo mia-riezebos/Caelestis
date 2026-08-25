@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getState, moveLocalFolder, setState } from '../state.js'
+import type { PlacedTemplate } from '../templates/local-store.js'
 import {
   forgetServerTree,
   nodeTreeKey,
@@ -10,6 +11,15 @@ import {
   type TreeCallbacks,
   treeContents,
 } from './tree.js'
+
+const localTemplateHarness = vi.hoisted(() => ({
+  templates: vi.fn(() => [] as PlacedTemplate[]),
+}))
+
+vi.mock('../templates/local-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../templates/local-store.js')>()),
+  localTemplates: localTemplateHarness.templates,
+}))
 
 const SERVER_URL = 'https://server.example.com'
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
@@ -25,6 +35,7 @@ const eventWithTransfer = (type: string, dataTransfer: DataTransfer, clientY = 0
 }
 
 afterEach(() => {
+  localTemplateHarness.templates.mockReturnValue([])
   forgetServerTree(SERVER_URL)
   setState({
     servers: [],
@@ -62,6 +73,26 @@ const serverTemplate = (id: string, nodeId: string | null, name: string, updated
   updatedAt,
   bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
   chunks: [],
+})
+
+const placedTemplate = (): PlacedTemplate => ({
+  id: 'progress-template',
+  name: 'Progress template',
+  source: 'image',
+  originX: 0,
+  originY: 0,
+  width: 2,
+  height: 1,
+  indices: new Uint8Array([0, 4]),
+  moved: 0,
+  opaque: 2,
+  tiles: new Map(),
+  visible: true,
+  everPlaced: true,
+  appearance: null,
+  revision: 1,
+  owns: [],
+  folderId: null,
 })
 
 describe('tree drag and drop', () => {
@@ -279,6 +310,63 @@ describe('tree drag and drop', () => {
     expect(connector).not.toBeNull()
     expect(connector?.querySelectorAll('line')).toHaveLength(3)
     expect(connector?.querySelector('line')?.getAttribute('y2')).toBe('100%')
+  })
+
+  it('keeps colour disclosure beside the expanded meter instead of the row actions', () => {
+    localTemplateHarness.templates.mockReturnValue([placedTemplate()])
+    setState({
+      servers: [],
+      localFolders: [],
+      customOrder: [],
+      collapsed: [],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo: vi.fn(),
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+    const render = () => treeContents(callbacks, vi.fn())
+    let tree = render()
+    tree
+      .querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
+      ?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')
+      ?.click()
+
+    tree = render()
+    let row = tree.querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
+    const collapse = row?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
+    const showColours = row?.querySelector<HTMLButtonElement>('[aria-label="Show colour progress"]')
+
+    expect(collapse?.parentElement?.classList.contains('caelestis-actions')).toBe(true)
+    expect(
+      showColours?.parentElement?.classList.contains('caelestis-progress-detail-actions'),
+    ).toBe(true)
+    expect(collapse?.parentElement).not.toBe(showColours?.parentElement)
+    expect(showColours?.closest('.caelestis-progress-disclosure')).not.toBeNull()
+    expect(
+      row?.querySelector('.caelestis-progress-disclosure > .caelestis-progress--expanded'),
+    ).not.toBeNull()
+
+    showColours?.click()
+    tree = render()
+    row = tree.querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
+    expect(
+      row
+        ?.querySelector('[aria-label="Hide colour progress"]')
+        ?.closest('.caelestis-progress-disclosure'),
+    ).not.toBeNull()
+    expect(row?.querySelector('.caelestis-progress-colours')).not.toBeNull()
+    row?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')?.click()
   })
 
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {
