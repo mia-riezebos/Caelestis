@@ -16,6 +16,21 @@ export const completionRatio = (progress: TemplateProgress): number =>
 export const completionPercent = (progress: TemplateProgress): number =>
   Math.round(completionRatio(progress) * 100)
 
+/** Add descendant progress without turning unknown pixels into unpainted pixels. */
+export const sumProgress = (entries: readonly TemplateProgress[]): TemplateProgress | undefined => {
+  if (entries.length === 0) return undefined
+  return entries.reduce<TemplateProgress>(
+    (total, entry) => ({
+      completed: total.completed + entry.completed,
+      mismatched: total.mismatched + entry.mismatched,
+      unpainted: total.unpainted + entry.unpainted,
+      known: total.known + entry.known,
+      total: total.total + entry.total,
+    }),
+    { completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 0 },
+  )
+}
+
 const number = (value: number): string => Math.max(0, value).toLocaleString()
 
 export const progressLabel = (progress: TemplateProgress): string => {

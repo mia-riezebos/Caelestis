@@ -221,9 +221,21 @@ describe('tree identity and ordering', () => {
     expect(
       orderedItems(
         [
-          { key: 'done', name: 'Done', progress: progress(90), createdAt: 4 },
-          { key: 'folder', name: 'Folder', createdAt: 3 },
-          { key: 'todo', name: 'Todo', progress: progress(10), createdAt: 2 },
+          {
+            key: 'done',
+            name: 'Done',
+            progress: progress(90),
+            progressSortable: true as const,
+            createdAt: 4,
+          },
+          { key: 'folder', name: 'Folder', progress: progress(50), createdAt: 3 },
+          {
+            key: 'todo',
+            name: 'Todo',
+            progress: progress(10),
+            progressSortable: true as const,
+            createdAt: 2,
+          },
         ],
         new Map(),
       ).map((item) => item.key),

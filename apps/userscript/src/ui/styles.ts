@@ -32,6 +32,9 @@ const CSS = `
 .caelestis-row.caelestis-dragging {
   display: none;
 }
+.caelestis-row--expanded-progress {
+  flex-wrap: wrap;
+}
 /* The gap the row would occupy, held open while dragging, rather than a line drawn on a
    neighbour. A line says "near here"; a hole says "here", and the list stops shifting under the
    cursor as the target changes.
@@ -303,13 +306,12 @@ const CSS = `
   color: var(--color-base-content, currentColor);
 }
 .caelestis-progress--inline {
-  flex: 1 1 5.75rem;
-  min-width: 4.5rem;
-  max-width: 6.5rem;
+  flex: 0 0 6.5rem;
+  width: 6.5rem;
 }
 .caelestis-progress--expanded {
   order: 10;
-  flex: 1 0 100%;
+  flex: 0 0 100%;
   box-sizing: border-box;
   flex-direction: column;
   gap: 0.2rem;

@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest'
-import { completionPercent, completionRatio, progressIndicator, progressLabel } from './progress.js'
+import {
+  completionPercent,
+  completionRatio,
+  progressIndicator,
+  progressLabel,
+  sumProgress,
+} from './progress.js'
 
 const progress = { completed: 40, mismatched: 10, unpainted: 30, known: 80, total: 100 }
 
@@ -22,5 +28,11 @@ describe('template progress', () => {
     expect([...segments].map((segment) => segment.style.width)).toEqual(['40%', '10%', '30%'])
     expect(meter.querySelector('.caelestis-progress-percent')?.textContent).toBe('40%')
     expect(meter.textContent).toContain('80% scanned')
+  })
+
+  it('accumulates descendants while keeping unknown pixels separate', () => {
+    expect(
+      sumProgress([progress, { completed: 10, mismatched: 5, unpainted: 5, known: 20, total: 50 }]),
+    ).toEqual({ completed: 50, mismatched: 15, unpainted: 35, known: 100, total: 150 })
   })
 })

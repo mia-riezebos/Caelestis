@@ -17,21 +17,26 @@ import {
   type TreeNode,
   takeProbedNodes,
 } from '../state.js'
-import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
+import {
+  isServerTemplate,
+  localTemplates,
+  type PlacedTemplate,
+  setLocalVisible,
+} from '../templates/local-store.js'
 import { progressFor, type TemplateProgress } from '../templates/mismatch.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
-import { completionRatio, emptyProgress, progressIndicator } from './progress.js'
+import { completionRatio, emptyProgress, progressIndicator, sumProgress } from './progress.js'
 import { isReorderable } from './sort.js'
 
 /**
  * The tree: one root per source, plus `Local`.
  *
- * Row anatomy, left to right: **caret, kind icon, name, meta, row actions, checkbox**. The caret
- * leads because it is what makes a list read as a tree; the checkbox trails because it is what you
- * act on once you have found the row. Row actions sit just inside it and appear on hover, so a
- * quiet list stays quiet.
+ * Row anatomy, left to right: **caret, kind icon, persistent navigation, name, meta, row actions,
+ * checkbox**. The caret leads because it is what makes a list read as a tree; the checkbox trails
+ * because it is what you act on once you have found the row. Secondary actions sit just inside it
+ * and appear on hover, while navigation stays visible at the row's leading edge.
  *
  * The whole row is the expand target — a caret is a 24px hit area on a 300px row, and everything
  * between them is dead space otherwise.
@@ -249,6 +254,8 @@ interface OrderedItem {
   readonly createdAt?: number
   /** Absent for structural rows; progress sorting leaves those in their durable slots. */
   readonly progress?: TemplateProgress | undefined
+  /** Aggregated folder progress is display-only; only leaves move under progress sorting. */
+  readonly progressSortable?: true | undefined
 }
 
 const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
@@ -351,7 +358,8 @@ export const orderedItems = <T extends OrderedItem>(
   const direction = getState().sort.direction === 'desc' ? -1 : 1
   const templates = custom
     .filter(
-      (item): item is T & { readonly progress: TemplateProgress } => item.progress !== undefined,
+      (item): item is T & { readonly progress: TemplateProgress } =>
+        item.progressSortable === true && item.progress !== undefined,
     )
     .sort(
       (a, b) =>
@@ -361,7 +369,7 @@ export const orderedItems = <T extends OrderedItem>(
     )
   let templateAt = 0
   return custom
-    .map((item) => (item.progress === undefined ? item : (templates[templateAt++] ?? item)))
+    .map((item) => (item.progressSortable !== true ? item : (templates[templateAt++] ?? item)))
     .slice(0, bounded)
 }
 
@@ -997,6 +1005,9 @@ interface RowOptions {
   readonly depth: number
   readonly meta?: string
   readonly progress?: TemplateProgress
+  readonly leadingActions?:
+    | ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
+    | undefined
   /** Containers accept a drop *into* them; leaves only reorder between siblings. */
   readonly container: boolean
   /** The row this one sits under, so a drop can resolve to a place in the tree rather than a row. */
@@ -1106,6 +1117,25 @@ const treeRow = (options: RowOptions): HTMLElement => {
   kind.style.flex = '0 0 auto'
   row.appendChild(kind)
 
+  if (options.leadingActions !== undefined) {
+    const group = document.createElement('span')
+    group.className = 'caelestis-leading-actions flex items-center'
+    group.style.flex = '0 0 auto'
+    for (const action of options.leadingActions) {
+      const button = document.createElement('button')
+      button.className = 'btn btn-ghost btn-xs btn-circle'
+      button.title = action.label
+      button.setAttribute('aria-label', action.label)
+      button.appendChild(icon(action.icon, 'size-4'))
+      button.addEventListener('click', (event) => {
+        event.stopPropagation()
+        action.run()
+      })
+      group.appendChild(button)
+    }
+    row.appendChild(group)
+  }
+
   const editing = renaming === options.key && options.onRename !== undefined
   const input = document.createElement('input')
   const name = document.createElement('span')
@@ -1166,6 +1196,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
 
   const progressPlacement = getState().progress
   if (options.progress !== undefined && progressPlacement !== 'hidden') {
+    if (progressPlacement === 'expanded') {
+      row.classList.add('caelestis-row--expanded-progress')
+    }
     row.appendChild(progressIndicator(options.progress, progressPlacement))
   }
 
@@ -1498,11 +1531,15 @@ interface TreeItem {
   readonly createdAt?: number
   readonly meta?: string | undefined
   readonly progress?: TemplateProgress
+  readonly progressSortable?: true
   readonly muted?: boolean | undefined
   readonly visible: boolean
   readonly setVisible: (on: boolean) => boolean | Promise<boolean>
   readonly canReparent: boolean
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  readonly leadingActions?:
+    | ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
+    | undefined
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly onDropAt?:
@@ -1529,6 +1566,7 @@ interface TreeItem {
  */
 interface TreeSource {
   readonly children: (parentId: string | null) => readonly TreeItem[]
+  readonly progress: (parentId: string | null) => TemplateProgress | undefined
 }
 
 const groupedSource = (
@@ -1543,7 +1581,31 @@ const groupedSource = (
     siblings.push(item)
     byParent.set(parentId, siblings)
   }
-  return { children: (parentId) => byParent.get(parentId) ?? [] }
+  const totals = new Map<string | null, TemplateProgress | undefined>()
+  const visiting = new Set<string | null>()
+  const progress = (parentId: string | null): TemplateProgress | undefined => {
+    if (totals.has(parentId)) return totals.get(parentId)
+    if (visiting.has(parentId)) return undefined
+    visiting.add(parentId)
+    const descendants: TemplateProgress[] = []
+    for (const item of byParent.get(parentId) ?? []) {
+      const itemProgress = item.childrenOf === null ? item.progress : progress(item.childrenOf)
+      if (itemProgress !== undefined) descendants.push(itemProgress)
+    }
+    visiting.delete(parentId)
+    const total = sumProgress(descendants)
+    totals.set(parentId, total)
+    return total
+  }
+  return {
+    children: (parentId) =>
+      (byParent.get(parentId) ?? []).map((item) => {
+        if (item.childrenOf === null) return item
+        const total = progress(item.childrenOf)
+        return total === undefined ? item : { ...item, progress: total }
+      }),
+    progress,
+  }
 }
 
 const matcherFor = (source: TreeSource, needle: string): ((item: TreeItem) => boolean) => {
@@ -1680,6 +1742,7 @@ const renderLevel = (
         },
         ...(item.meta === undefined ? {} : { meta: item.meta }),
         ...(item.progress === undefined ? {} : { progress: item.progress }),
+        ...(item.leadingActions === undefined ? {} : { leadingActions: item.leadingActions }),
         ...(item.muted === undefined ? {} : { muted: item.muted }),
         ...(item.actions === undefined ? {} : { actions: item.actions }),
         ...(item.onRename === undefined ? {} : { onRename: item.onRename }),
@@ -1743,6 +1806,22 @@ export const treeContents = (
   })
 
   const servers = getState().servers
+  const drawnTemplates = localTemplates()
+  const localOnly = drawnTemplates.filter((template) => !isServerTemplate(template))
+  const drawnByServer = new Map<string, Map<string, PlacedTemplate>>()
+  for (const template of drawnTemplates) {
+    if (template.serverUrl === undefined || template.serverTemplateId === undefined) continue
+    const templates = drawnByServer.get(template.serverUrl) ?? new Map<string, PlacedTemplate>()
+    templates.set(template.serverTemplateId, template)
+    drawnByServer.set(template.serverUrl, templates)
+  }
+  const serverTemplateProgress = (
+    server: ConnectedServer,
+    template: ServerTemplate,
+  ): TemplateProgress => {
+    const drawn = drawnByServer.get(server.url)?.get(template.id)
+    return drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn)
+  }
   const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
   const categories = [
     { key: 'local', name: 'Local' },
@@ -1774,6 +1853,15 @@ export const treeContents = (
     // Only where the code can actually act. Offering create to someone who will only ever get a
     // 403 is worse than not offering it — Local always can, since nothing gates it.
     const canEdit = isLocal || (server?.isAdmin ?? false)
+    const parentProgress = isLocal
+      ? sumProgress(localOnly.map(progressFor))
+      : server === undefined
+        ? undefined
+        : sumProgress(
+            (rowsFor(server)?.templates ?? []).map((template) =>
+              serverTemplateProgress(server, template),
+            ),
+          )
 
     wrap.appendChild(
       treeRow({
@@ -1789,6 +1877,7 @@ export const treeContents = (
         destinationSiblings: (destinationParentKey) =>
           destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
         parentKey: null,
+        ...(parentProgress === undefined ? {} : { progress: parentProgress }),
         rerender,
         onError: callbacks.onError,
         /**
@@ -1945,11 +2034,7 @@ export const treeContents = (
             },
           })
         }
-        const drawnById = new Map(
-          localTemplates()
-            .filter((candidate) => candidate.serverUrl === server.url)
-            .map((candidate) => [candidate.serverTemplateId, candidate]),
-        )
+        const drawnById = drawnByServer.get(server.url) ?? new Map<string, PlacedTemplate>()
         for (const template of published) {
           const templateKey = serverTemplateTreeKey(server, template.id)
           const drawn = drawnById.get(template.id)
@@ -1970,10 +2055,9 @@ export const treeContents = (
               childrenOf: null,
               createdAt: template.updatedAt,
               muted: !template.published,
-              ...(template.published ? {} : { meta: 'unpublished' }),
-              progress:
-                drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn),
-              actions: [
+              progress: serverTemplateProgress(server, template),
+              progressSortable: true,
+              leadingActions: [
                 {
                   icon: 'search',
                   label: 'Go to',
@@ -2045,7 +2129,7 @@ export const treeContents = (
       // Local means "only in this browser". Server templates share the store — everything that
       // draws them takes a `PlacedTemplate` and does not care where it came from — but they are
       // listed under the server publishing them, not here.
-      const mine = localTemplates().filter((template) => !isServerTemplate(template))
+      const mine = localOnly
       const entries: Array<{ parentId: string | null; item: TreeItem }> = []
       for (const folder of getState().localFolders) {
         const folderTarget: TreeTarget = {
@@ -2098,18 +2182,21 @@ export const treeContents = (
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
             progress: progressFor(template),
+            progressSortable: true,
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),
             canReparent: true,
             onDropAt: callbacks.onMoveLocal,
             onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
             onRename: (value) => callbacks.onRename(templateTarget, value),
-            actions: [
+            leadingActions: [
               {
                 icon: 'search',
                 label: 'Go to',
                 run: () => callbacks.onGoTo({ kind: 'local', templateId: template.id }),
               },
+            ],
+            actions: [
               {
                 icon: 'uploadFile',
                 label: 'Copy to a server',

@@ -32,6 +32,7 @@ afterEach(() => {
     customOrder: [],
     collapsed: [],
     sort: { field: 'custom', direction: 'asc' },
+    progress: 'inline',
   })
 })
 
@@ -57,6 +58,7 @@ const serverTemplate = (id: string, nodeId: string | null, name: string, updated
   nodeId,
   name,
   version: 'v1',
+  totalPixels: 100,
   published: true,
   updatedAt,
   bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
@@ -72,10 +74,11 @@ describe('tree drag and drop', () => {
       customOrder: [],
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
+      progress: 'expanded',
     })
     rememberServerContents(server, {
       nodes: [],
-      templates: [serverTemplate(TEMPLATE_A_ID, null, 'Template', 1)],
+      templates: [{ ...serverTemplate(TEMPLATE_A_ID, null, 'Template', 1), published: false }],
     })
     const onGoTo = vi.fn()
     const callbacks: TreeCallbacks = {
@@ -100,11 +103,64 @@ describe('tree drag and drop', () => {
     const flyTo = row?.querySelector<HTMLButtonElement>('[aria-label="Go to"]')
 
     expect(flyTo).not.toBeNull()
+    expect(flyTo?.parentElement?.classList.contains('caelestis-leading-actions')).toBe(true)
+    expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(true)
+    expect(row?.textContent).not.toContain('unpublished')
+    expect(row?.style.opacity).toBe('0.55')
     flyTo?.click()
     expect(onGoTo).toHaveBeenCalledWith({
       kind: 'server',
       bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
     })
+  })
+
+  it('shows descendant progress on folder and server parent rows', () => {
+    const server = connectedServer()
+    const folder = serverNode(SOURCE_NODE_ID, 'Folder')
+    setState({
+      servers: [server],
+      localFolders: [],
+      customOrder: [],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+      progress: 'inline',
+    })
+    rememberServerContents(server, {
+      nodes: [folder],
+      templates: [
+        serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'A', 1),
+        { ...serverTemplate(TEMPLATE_B_ID, SOURCE_NODE_ID, 'B', 2), totalPixels: 50 },
+      ],
+    })
+
+    const tree = treeContents(
+      {
+        onAddServer: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onImportTemplate: vi.fn(),
+        onRename: vi.fn(),
+        onDelete: vi.fn(),
+        onContextMenu: vi.fn(),
+        onGoTo: vi.fn(),
+        onPlace: vi.fn(),
+        onCopyToServer: vi.fn(),
+        onError: vi.fn(),
+        onMoveLocal: vi.fn(),
+        onDropInServer: vi.fn(),
+      },
+      vi.fn(),
+    )
+    const serverRow = tree.querySelector<HTMLElement>(`[data-caelestis-key="server:${SERVER_URL}"]`)
+    const folderRow = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
+    )
+
+    expect(serverRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
+      '0 of 150 pixels scanned',
+    )
+    expect(folderRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
+      '0 of 150 pixels scanned',
+    )
   })
 
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {
