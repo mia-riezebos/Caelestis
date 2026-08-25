@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.5
+
+### Patch Changes
+
+- 2c63f93: Keep every visible mismatch and selected-colour marker while culling cached marker data outside the viewport.
+
 ## 0.2.4
 
 ### Patch Changes
