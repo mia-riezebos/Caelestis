@@ -9,6 +9,7 @@ import {
 import { count, warn } from '../debug.js'
 import type { ServerTemplate } from '../server-cache.js'
 import {
+  activeServerToken,
   type ConnectedServer,
   getState,
   isCurrentServerConnection,
@@ -122,7 +123,10 @@ export const fetchChunkWithinBudget = async (
   const readLimit = Math.min(MAX_CHUNK_BYTES, remainingBytes)
   try {
     const response = await fetch(`${server.url}/chunks/${hash}`, {
-      headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+      headers:
+        activeServerToken(server) === null
+          ? {}
+          : { authorization: `Bearer ${activeServerToken(server)}` },
       signal: AbortSignal.any([generationSignal, AbortSignal.timeout(CHUNK_FETCH_TIMEOUT_MS)]),
     })
     if (!response.ok) return null

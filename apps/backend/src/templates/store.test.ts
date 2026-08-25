@@ -96,6 +96,12 @@ describe('storeTemplate', () => {
       templateId: stored.templateId,
       bbox: stored.bbox,
       totalPixels: 4,
+      colourTotals: [
+        { index: 0, total: 1 },
+        { index: 1, total: 1 },
+        { index: 2, total: 1 },
+        { index: 3, total: 1 },
+      ],
       chunks: [{ tileX: 0, tileY: 0, hash: chunk.hash }],
     })
   })

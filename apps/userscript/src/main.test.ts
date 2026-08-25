@@ -29,6 +29,10 @@ vi.mock('./map-handle.js', () => ({
   getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
   installMapCapture: vi.fn(),
 }))
+vi.mock('./paint-palette.js', () => ({
+  installPaintPaletteProgress: vi.fn(),
+  paintPaletteProgress: vi.fn(() => []),
+}))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: { markMismatch: false }, onlySelectedColour: false }),
@@ -52,6 +56,7 @@ vi.mock('./templates/mismatch.js', () => ({
 }))
 vi.mock('./templates/nearest.js', () => ({ templateAtCentre: vi.fn(() => null) }))
 vi.mock('./templates/server-sync.js', () => ({ installServerSync: vi.fn() }))
+vi.mock('./telemetry.js', () => ({ installTelemetry: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
   captureTilePixels: vi.fn(),
   install: vi.fn(),

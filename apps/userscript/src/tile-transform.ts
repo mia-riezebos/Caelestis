@@ -636,6 +636,103 @@ export const onTileFrame = (listener: FrameListener): void => {
 /** Clear module-owned listeners between isolated installs. Exported for tests. */
 export const resetTileFrameListeners = (): void => {
   listeners.length = 0
+  fetchedTileListeners.clear()
+  acceptedPaintListeners.clear()
+}
+
+export interface AcceptedPaint {
+  readonly season: number
+  readonly tiles: readonly {
+    readonly x: number
+    readonly y: number
+    readonly pixels: {
+      readonly x: readonly number[]
+      readonly y: readonly number[]
+      readonly colors: readonly number[]
+    }
+  }[]
+  readonly painted: number
+  readonly observedAt: number
+}
+
+type FetchedTileListener = (tile: TileCoord, bytes: Uint8Array, observedAt: number) => void
+type AcceptedPaintListener = (paint: AcceptedPaint) => void
+const fetchedTileListeners = new Set<FetchedTileListener>()
+const acceptedPaintListeners = new Set<AcceptedPaintListener>()
+
+/** Observe exact PNG bytes only after wplace itself consumes a canvas tile response. */
+export const onFetchedTile = (listener: FetchedTileListener): (() => void) => {
+  fetchedTileListeners.add(listener)
+  return () => fetchedTileListeners.delete(listener)
+}
+
+/** Observe the public paint payload only after wplace reports how many pixels it accepted. */
+export const onAcceptedPaint = (listener: AcceptedPaintListener): (() => void) => {
+  acceptedPaintListeners.add(listener)
+  return () => acceptedPaintListeners.delete(listener)
+}
+
+const notifyFetchedTile = (tile: TileCoord, bytes: Uint8Array): void => {
+  if (fetchedTileListeners.size === 0) return
+  const held = bytes.slice()
+  const observedAt = Math.floor(Date.now() / 1_000)
+  for (const listener of fetchedTileListeners) {
+    try {
+      listener(tile, held, observedAt)
+    } catch {
+      count('telemetry:tile-listener-failed')
+    }
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const observedPaintFrom = (body: unknown, response: unknown): AcceptedPaint | null => {
+  if (!isRecord(body) || !isRecord(response)) return null
+  if (!Number.isSafeInteger(body.season) || !Array.isArray(body.tiles)) return null
+  if (!Number.isSafeInteger(response.painted) || Number(response.painted) < 0) return null
+  const tiles: AcceptedPaint['tiles'][number][] = []
+  for (const raw of body.tiles) {
+    if (!isRecord(raw) || !isRecord(raw.pixels)) return null
+    const pixels = raw.pixels
+    if (
+      !Number.isSafeInteger(raw.x) ||
+      !Number.isSafeInteger(raw.y) ||
+      !Array.isArray(pixels.x) ||
+      !Array.isArray(pixels.y) ||
+      !Array.isArray(pixels.colors) ||
+      !pixels.x.every(Number.isSafeInteger) ||
+      !pixels.y.every(Number.isSafeInteger) ||
+      !pixels.colors.every(Number.isSafeInteger)
+    )
+      return null
+    tiles.push({
+      x: Number(raw.x),
+      y: Number(raw.y),
+      pixels: {
+        x: pixels.x as number[],
+        y: pixels.y as number[],
+        colors: pixels.colors as number[],
+      },
+    })
+  }
+  return {
+    season: Number(body.season),
+    tiles,
+    painted: Number(response.painted),
+    observedAt: Math.floor(Date.now() / 1_000),
+  }
+}
+
+const notifyAcceptedPaint = (paint: AcceptedPaint): void => {
+  for (const listener of acceptedPaintListeners) {
+    try {
+      listener(paint)
+    } catch {
+      count('telemetry:paint-listener-failed')
+    }
+  }
 }
 
 const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
@@ -649,6 +746,7 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
       // then mistake a HEAD request for the default GET.
       let tile: TileCoord | null = null
       let shouldNormalizeMissing = false
+      let paintBody: Promise<unknown> | null = null
       try {
         const url = urlForFetchInput(input, realm, urlGetters)
         if (url !== null) {
@@ -657,14 +755,42 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
             tileUrlShape = url.replace(`/${tile.x}/${tile.y}.png`, '/{x}/{y}.png')
             shouldNormalizeMissing = isGetFetch(input, args[1], realm, urlGetters)
           }
+          const parsed = new URL(url, realm.location?.href)
+          if (parsed.origin === 'https://backend.wplace.live' && parsed.pathname === '/paint') {
+            const request = isPageInstance(
+              input,
+              'Request',
+              realm as unknown as Record<string, unknown>,
+            )
+              ? (input as Request).clone()
+              : new realm.Request(input, args[1])
+            if (request.method.toUpperCase() === 'POST') {
+              paintBody = request.json().catch(() => null)
+            }
+          }
         }
       } catch {
         // An unusual input that cannot be observed safely is simply untapped.
       }
       const pendingResponse = nativeFetch.apply(this as never, args)
-      if (tile === null) return pendingResponse
-      const observedTile = tile
+      if (tile === null && paintBody === null) return pendingResponse
       return pendingResponse.then((response) => {
+        if (paintBody !== null && response.ok) {
+          try {
+            const responseBody = response
+              .clone()
+              .json()
+              .catch(() => null)
+            void Promise.all([paintBody, responseBody]).then(([body, answer]) => {
+              const paint = observedPaintFrom(body, answer)
+              if (paint !== null) notifyAcceptedPaint(paint)
+            })
+          } catch {
+            count('telemetry:paint-response-unreadable')
+          }
+        }
+        if (tile === null) return response
+        const observedTile = tile
         // Real tile pixels are only tapped, never composited with ours: that would make the two layers
         // indistinguishable to per-colour toggles and view modes. The sole rewrite below is an absent
         // origin tile, normalized to the transparent response wplace's service worker ordinarily gives.
@@ -707,6 +833,7 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
                   if (this === tappedResponse) {
                     tileOfBuffer.set(own, observedTile)
                     recordRead(own.byteLength)
+                    notifyFetchedTile(observedTile, new Uint8Array(own))
                   }
                 } catch {
                   // The native read already consumed the body successfully; observation cannot reject it.
@@ -722,6 +849,10 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
                   if (this === tappedResponse) {
                     tileOfBlob.set(blob, observedTile)
                     recordRead(blob.size)
+                    void blob
+                      .arrayBuffer()
+                      .then((bytes) => notifyFetchedTile(observedTile, new Uint8Array(bytes)))
+                      .catch(() => {})
                   }
                 } catch {
                   // The native read already consumed the body successfully; observation cannot reject it.
@@ -875,6 +1006,8 @@ let captureRealm: (Window & typeof globalThis) | null = null
 
 /** Tiles we have already gone and asked for, so a miss is chased once and not every frame. */
 const chased = new Set<string>()
+/** Active chase per tile, separate from the one-shot history so another reader can join it. */
+const activeChases = new Map<string, Promise<void>>()
 let chasing = 0
 
 /**
@@ -896,14 +1029,17 @@ let chasing = 0
  */
 const CHASE_LIMIT = 4
 
-export const ensureTilePixels = (tile: TileCoord): void => {
-  if (!capturePixels || tileUrlShape === null) return
+export const ensureTilePixels = (tile: TileCoord): boolean => {
+  if (!capturePixels || tileUrlShape === null) return false
   const key = tileKey(tile)
-  if (pixelsOfTile.has(key) || chased.has(key) || chasing >= CHASE_LIMIT) return
+  if (pixelsOfTile.has(key)) return true
+  if (chased.has(key) || chasing >= CHASE_LIMIT) return false
   chased.add(key)
   chasing++
   const url = tileUrlShape.replace('{x}', String(tile.x)).replace('{y}', String(tile.y))
-  void (async () => {
+  const chase = (async () => {
+    // Publish the promise before a page-provided fetch implementation gets a chance to throw.
+    await Promise.resolve()
     try {
       const realm = captureRealm
       if (realm === null) return
@@ -927,8 +1063,41 @@ export const ensureTilePixels = (tile: TileCoord): void => {
       warn('fetch', `could not chase tile ${tile.x}/${tile.y}`, String(error))
     } finally {
       chasing--
+      activeChases.delete(key)
     }
   })()
+  activeChases.set(key, chase)
+  void chase
+  return true
+}
+
+/** Resolve once an on-demand tile chase has produced exact palette indices. */
+export const loadTilePixels = async (
+  tile: TileCoord,
+  timeoutMs = 15_000,
+): Promise<Uint8Array | null> => {
+  const existing = tilePixels(tile)
+  if (existing !== null) return existing
+  const key = tileKey(tile)
+  let chase = activeChases.get(key)
+  if (chase === undefined) {
+    if (!ensureTilePixels(tile)) return null
+    chase = activeChases.get(key)
+  }
+  if (chase === undefined) return tilePixels(tile)
+
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      chase,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, Math.max(0, timeoutMs))
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
+  return tilePixels(tile)
 }
 
 /**

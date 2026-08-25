@@ -10,6 +10,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   or,
   type SQL,
   sql,
@@ -17,12 +18,17 @@ import {
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
+  appliedEvents,
+  canvasTiles,
   contributions,
   nodes,
+  painters,
   serverSettings,
   telemetryBuckets,
   templates,
+  templateTileStatuses,
   templateVersions,
+  tileHistory,
   versionTiles,
 } from '../../db/schema.js'
 import {
@@ -31,6 +37,7 @@ import {
   assertValidBuckets,
   assertValidTemplateVersion,
   type BucketQuery,
+  type ContributionDelta,
   compareBuckets,
   InvalidNodeParentError,
   MAX_NODE_PATH_LENGTH,
@@ -48,11 +55,14 @@ import {
   type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
+  type TelemetryTarget,
   TemplateIdentityError,
   TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
+  type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
 
@@ -69,6 +79,29 @@ const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
  * 100-parameter ceiling, and it turns the per-tile statement count into a per-24-tile one.
  */
 const VERSION_TILE_ROWS_PER_INSERT = 24
+
+interface ColourStatus {
+  readonly index: number
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+  readonly total: number
+}
+
+const parseColourTotals = (
+  value: string | null,
+): readonly { readonly index: number; readonly total: number }[] | undefined => {
+  if (value === null) return undefined
+  const parsed: unknown = JSON.parse(value)
+  return Array.isArray(parsed)
+    ? (parsed as readonly { readonly index: number; readonly total: number }[])
+    : undefined
+}
+
+const parseColourStatuses = (value: string): readonly ColourStatus[] => {
+  const parsed: unknown = JSON.parse(value)
+  return Array.isArray(parsed) ? (parsed as readonly ColourStatus[]) : []
+}
 
 /**
  * Case-insensitive path-prefix matching without a LIKE pattern.
@@ -614,6 +647,8 @@ export class D1SqlStore implements SqlStore {
         maxX: version.bbox.maxX,
         maxY: version.bbox.maxY,
         totalPixels: version.totalPixels,
+        colourTotalsJson:
+          version.colourTotals === undefined ? null : JSON.stringify(version.colourTotals),
       }),
       // Tiles go in as multi-row inserts, not one statement each. D1 allows 50 queries per Worker
       // invocation on the free plan, so a 48-chunk template — a 48,000x1 upload reaches that without
@@ -673,6 +708,7 @@ export class D1SqlStore implements SqlStore {
         maxX: templateVersions.maxX,
         maxY: templateVersions.maxY,
         totalPixels: templateVersions.totalPixels,
+        colourTotalsJson: templateVersions.colourTotalsJson,
       })
       .from(templateVersions)
       .innerJoin(templates, eq(templates.id, templateVersions.templateId))
@@ -680,6 +716,7 @@ export class D1SqlStore implements SqlStore {
       .limit(1)
     const row = rows[0]
     if (row === undefined) return null
+    const colourTotals = parseColourTotals(row.colourTotalsJson)
 
     const chunks = await this.database
       .select({ tileX: versionTiles.tileX, tileY: versionTiles.tileY, hash: versionTiles.hash })
@@ -698,6 +735,7 @@ export class D1SqlStore implements SqlStore {
       createdAt: row.createdAt,
       bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
       totalPixels: row.totalPixels,
+      ...(colourTotals === undefined ? {} : { colourTotals }),
       chunks,
     }
   }
@@ -911,6 +949,290 @@ export class D1SqlStore implements SqlStore {
           ? eq(templates.season, season)
           : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
       )
+  }
+
+  async listTelemetryTargets(
+    season: number,
+    tile: { readonly x: number; readonly y: number },
+    includeUnpublished: boolean,
+  ): Promise<readonly TelemetryTarget[]> {
+    return this.database
+      .select({
+        templateId: templates.id,
+        versionId: templateVersions.id,
+        tileX: versionTiles.tileX,
+        tileY: versionTiles.tileY,
+        hash: versionTiles.hash,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+      })
+      .from(versionTiles)
+      .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
+      .innerJoin(
+        templates,
+        and(
+          eq(templates.id, templateVersions.templateId),
+          eq(templates.currentVersionId, templateVersions.id),
+        ),
+      )
+      .where(
+        and(
+          eq(templates.season, season),
+          eq(versionTiles.tileX, tile.x),
+          eq(versionTiles.tileY, tile.y),
+          includeUnpublished ? undefined : isNotNull(templates.publishedAt),
+        ),
+      )
+      .then((rows) =>
+        rows.map((row) => ({
+          templateId: row.templateId,
+          versionId: row.versionId,
+          tileX: row.tileX,
+          tileY: row.tileY,
+          hash: row.hash,
+          bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
+        })),
+      )
+  }
+
+  async readLatestTile(season: number, tile: { readonly x: number; readonly y: number }) {
+    const rows = await this.database
+      .select()
+      .from(canvasTiles)
+      .where(
+        and(
+          eq(canvasTiles.season, season),
+          eq(canvasTiles.tileX, tile.x),
+          eq(canvasTiles.tileY, tile.y),
+        ),
+      )
+      .limit(1)
+    const row = rows[0]
+    return row === undefined
+      ? null
+      : {
+          season: row.season,
+          tile: { x: row.tileX, y: row.tileY },
+          hash: row.sha256,
+          observedAt: row.observedAtMs,
+        }
+  }
+
+  async recordTileObservation(
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+  ): Promise<void> {
+    const history = this.database
+      .insert(tileHistory)
+      .values({
+        season: observation.season,
+        tileX: observation.tile.x,
+        tileY: observation.tile.y,
+        resolutionS: seconds(0),
+        bucketStartS: observation.reportedAt,
+        sha256: observation.hash,
+        reportedWithToken: observation.reportedWithToken,
+        reportedByUserId: observation.reportedByUserId,
+      })
+      .onConflictDoNothing()
+    const current = this.database
+      .insert(canvasTiles)
+      .values({
+        season: observation.season,
+        tileX: observation.tile.x,
+        tileY: observation.tile.y,
+        sha256: observation.hash,
+        observedAtMs: observation.observedAt,
+      })
+      .onConflictDoUpdate({
+        target: [canvasTiles.season, canvasTiles.tileX, canvasTiles.tileY],
+        set: { sha256: observation.hash, observedAtMs: observation.observedAt },
+        setWhere: lte(canvasTiles.observedAtMs, observation.observedAt),
+      })
+    await this.database.batch([history, current])
+
+    for (const group of chunkRows(statuses, 50)) {
+      const statements = group.map((status) =>
+        this.database
+          .insert(templateTileStatuses)
+          .values({
+            templateId: status.templateId,
+            versionId: status.versionId,
+            tileX: status.tile.x,
+            tileY: status.tile.y,
+            correct: status.correct,
+            wrong: status.wrong,
+            blank: status.blank,
+            coloursJson: JSON.stringify(status.colours ?? []),
+            observedAtMs: status.observedAt,
+          })
+          .onConflictDoUpdate({
+            target: [
+              templateTileStatuses.templateId,
+              templateTileStatuses.versionId,
+              templateTileStatuses.tileX,
+              templateTileStatuses.tileY,
+            ],
+            set: {
+              correct: status.correct,
+              wrong: status.wrong,
+              blank: status.blank,
+              coloursJson: JSON.stringify(status.colours ?? []),
+              observedAtMs: status.observedAt,
+            },
+            setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt),
+          }),
+      )
+      if (statements.length > 0) {
+        await this.database.batch(
+          statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+        )
+      }
+    }
+  }
+
+  async readTemplateStatuses(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly import('@caelestis/shared').TemplateStatus[]> {
+    const rows = await this.database
+      .select({
+        templateId: templates.id,
+        correct: sql<number>`sum(${templateTileStatuses.correct})`,
+        wrong: sql<number>`sum(${templateTileStatuses.wrong})`,
+        blank: sql<number>`sum(${templateTileStatuses.blank})`,
+        total: templateVersions.totalPixels,
+        colourTotalsJson: templateVersions.colourTotalsJson,
+        colourRowsJson: sql<string>`json_group_array(${templateTileStatuses.coloursJson})`,
+        observedAt: sql<number>`max(${templateTileStatuses.observedAtMs})`,
+      })
+      .from(templates)
+      .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
+      .innerJoin(
+        templateTileStatuses,
+        and(
+          eq(templateTileStatuses.templateId, templates.id),
+          eq(templateTileStatuses.versionId, templateVersions.id),
+        ),
+      )
+      .where(
+        and(
+          eq(templates.season, season),
+          includeUnpublished ? undefined : isNotNull(templates.publishedAt),
+        ),
+      )
+      .groupBy(templates.id, templateVersions.totalPixels, templateVersions.colourTotalsJson)
+      .orderBy(asc(templates.id))
+    return rows.map((row) => {
+      const storedTotals = parseColourTotals(row.colourTotalsJson)
+      const classified = new Map<number, Omit<ColourStatus, 'index'>>()
+      const colourRows: unknown = JSON.parse(row.colourRowsJson)
+      if (Array.isArray(colourRows)) {
+        for (const encoded of colourRows) {
+          if (typeof encoded !== 'string') continue
+          for (const colour of parseColourStatuses(encoded)) {
+            const held = classified.get(colour.index)
+            classified.set(colour.index, {
+              correct: (held?.correct ?? 0) + colour.correct,
+              wrong: (held?.wrong ?? 0) + colour.wrong,
+              blank: (held?.blank ?? 0) + colour.blank,
+              total: (held?.total ?? 0) + colour.total,
+            })
+          }
+        }
+      }
+      // Versions created before colour histograms were stored still have exact per-colour totals in
+      // every classified tile row. Once those rows cover the whole template, their totals are the
+      // missing histogram. Do not expose a partial partition: the wire schema deliberately requires
+      // colour rows to add up to the template total.
+      const classifiedTotals = [...classified].map(([index, colour]) => ({
+        index,
+        total: colour.total,
+      }))
+      const totals =
+        storedTotals ??
+        (classifiedTotals.reduce((sum, colour) => sum + colour.total, 0) === row.total
+          ? classifiedTotals.sort((left, right) => left.index - right.index)
+          : undefined)
+      return {
+        templateId: row.templateId,
+        correct: Number(row.correct),
+        wrong: Number(row.wrong),
+        blank: Number(row.blank),
+        total: row.total,
+        ...(totals === undefined
+          ? {}
+          : {
+              colours: totals.map(({ index, total }) => ({
+                index,
+                total,
+                correct: classified.get(index)?.correct ?? 0,
+                wrong: classified.get(index)?.wrong ?? 0,
+                blank: classified.get(index)?.blank ?? 0,
+              })),
+            }),
+        observedAt: Number(row.observedAt) as Millis,
+      }
+    })
+  }
+
+  async claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean> {
+    const result = await this.database
+      .insert(appliedEvents)
+      .values({ eventId, wplaceUserId, seenAtMs: seenAt })
+      .onConflictDoNothing()
+    return Number(result.meta.changes) > 0
+  }
+
+  async rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void> {
+    await this.database
+      .insert(painters)
+      .values({ wplaceUserId, displayName, seenAtMs: seenAt })
+      .onConflictDoUpdate({
+        target: painters.wplaceUserId,
+        set: { displayName, seenAtMs: seenAt },
+        setWhere: lte(painters.seenAtMs, seenAt),
+      })
+  }
+
+  async addContributions(deltas: readonly ContributionDelta[]): Promise<void> {
+    for (const group of chunkRows(deltas, 40)) {
+      const statements = group.map((delta) =>
+        this.database
+          .insert(contributions)
+          .values({
+            wplaceUserId: delta.wplaceUserId,
+            templateId: delta.templateId,
+            dayS: delta.day,
+            reportedWithToken: delta.reportedWithToken,
+            reportedByUserId: delta.reportedByUserId,
+            placed: delta.placed,
+            correct: delta.correct,
+            repairs: delta.repairs,
+          })
+          .onConflictDoUpdate({
+            target: [
+              contributions.wplaceUserId,
+              contributions.templateId,
+              contributions.dayS,
+              contributions.reportedByUserId,
+            ],
+            set: {
+              reportedWithToken: delta.reportedWithToken,
+              placed: sql`${contributions.placed} + excluded.placed`,
+              correct: sql`${contributions.correct} + excluded.correct`,
+              repairs: sql`${contributions.repairs} + excluded.repairs`,
+            },
+          }),
+      )
+      if (statements.length > 0) {
+        await this.database.batch(
+          statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+        )
+      }
+    }
   }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {

@@ -332,6 +332,176 @@ describe('D1SqlStore', () => {
     })
   })
 
+  it('stores current tile anchors and aggregates only the current template version', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(
+      templateVersion({
+        colourTotals: [
+          { index: 0, total: 1 },
+          { index: 1, total: 1 },
+        ],
+      }),
+    )
+    const tokenHash = 'c'.repeat(64)
+    await store.recordTileObservation(
+      {
+        season: 1,
+        tile: { x: 0, y: 0 },
+        hash: 'd'.repeat(64),
+        observedAt: millis(2_000),
+        reportedAt: seconds(2),
+        reportedWithToken: tokenHash,
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'version-1',
+          tile: { x: 0, y: 0 },
+          correct: 1,
+          wrong: 1,
+          blank: 0,
+          colours: [
+            { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+            { index: 1, correct: 0, wrong: 1, blank: 0, total: 1 },
+          ],
+          observedAt: millis(2_000),
+        },
+      ],
+    )
+    // An older upload may finish later. It belongs in history but cannot replace current truth.
+    await store.recordTileObservation(
+      {
+        season: 1,
+        tile: { x: 0, y: 0 },
+        hash: 'e'.repeat(64),
+        observedAt: millis(1_000),
+        reportedAt: seconds(1),
+        reportedWithToken: tokenHash,
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'version-1',
+          tile: { x: 0, y: 0 },
+          correct: 0,
+          wrong: 0,
+          blank: 2,
+          colours: [
+            { index: 0, correct: 0, wrong: 0, blank: 1, total: 1 },
+            { index: 1, correct: 0, wrong: 0, blank: 1, total: 1 },
+          ],
+          observedAt: millis(1_000),
+        },
+      ],
+    )
+    await store.recordTileObservation(
+      {
+        season: 2,
+        tile: { x: 0, y: 0 },
+        hash: 'f'.repeat(64),
+        observedAt: millis(3_000),
+        reportedAt: seconds(3),
+        reportedWithToken: tokenHash,
+        reportedByUserId: 42,
+      },
+      [],
+    )
+
+    await expect(store.readLatestTile(1, { x: 0, y: 0 })).resolves.toMatchObject({
+      season: 1,
+      hash: 'd'.repeat(64),
+      observedAt: 2_000,
+    })
+    await expect(store.readLatestTile(2, { x: 0, y: 0 })).resolves.toMatchObject({
+      season: 2,
+      hash: 'f'.repeat(64),
+      observedAt: 3_000,
+    })
+    await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
+      {
+        templateId: 'template-1',
+        correct: 1,
+        wrong: 1,
+        blank: 0,
+        total: 2,
+        colours: [
+          { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+          { index: 1, correct: 0, wrong: 1, blank: 0, total: 1 },
+        ],
+        observedAt: 2_000,
+      },
+    ])
+  })
+
+  it('recovers a legacy version colour histogram from complete classified tile rows', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    await store.recordTileObservation(
+      {
+        season: 1,
+        tile: { x: 0, y: 0 },
+        hash: 'd'.repeat(64),
+        observedAt: millis(2_000),
+        reportedAt: seconds(2),
+        reportedWithToken: 'c'.repeat(64),
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'version-1',
+          tile: { x: 0, y: 0 },
+          correct: 1,
+          wrong: 0,
+          blank: 1,
+          colours: [
+            { index: 4, correct: 1, wrong: 0, blank: 0, total: 1 },
+            { index: 9, correct: 0, wrong: 0, blank: 1, total: 1 },
+          ],
+          observedAt: millis(2_000),
+        },
+      ],
+    )
+
+    await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
+      {
+        templateId: 'template-1',
+        correct: 1,
+        wrong: 0,
+        blank: 1,
+        total: 2,
+        colours: [
+          { index: 4, correct: 1, wrong: 0, blank: 0, total: 1 },
+          { index: 9, correct: 0, wrong: 0, blank: 1, total: 1 },
+        ],
+        observedAt: 2_000,
+      },
+    ])
+  })
+
+  it('claims paint event ids once', async () => {
+    await expect(store.claimPaintEvent('event-1', 42, millis(1_000))).resolves.toBe(true)
+    await expect(store.claimPaintEvent('event-1', 42, millis(2_000))).resolves.toBe(false)
+  })
+
   it('issues one statement per parameter chunk when reading a large template set', async () => {
     // D1 allows 100 bound parameters per query. The fake is node:sqlite, whose limit is 32_766, so
     // an unchunked read passes here and fails only in production — the statement count is the one
@@ -430,7 +600,14 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
       INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
-      INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
+      INSERT INTO template_versions (
+        id, template_id, created_at_ms, created_with_token, created_by_user_id,
+        min_x, min_y, max_x, max_y, total_pixels
+      ) VALUES (
+        'attr-v', 'attr-t', 1800,
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        99, 0, 0, 1, 1, 1
+      );
     `)
     expect(
       d1.sqlite

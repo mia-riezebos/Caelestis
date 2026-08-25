@@ -1,7 +1,11 @@
 import {
   type Millis,
+  PALETTE_SIZE,
   type PixelBounds,
   type Seconds,
+  type TemplateStatus,
+  type TileCoord,
+  TRANSPARENT_INDEX,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -173,6 +177,26 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
   }
   if (minX === maxX || minY >= maxY) fail('bounding box covers no pixels')
   if (version.totalPixels < 0) fail('total pixels is negative')
+  if (version.colourTotals !== undefined) {
+    const indices = new Set<number>()
+    let total = 0
+    for (const colour of version.colourTotals) {
+      if (
+        !Number.isSafeInteger(colour.index) ||
+        colour.index < 0 ||
+        colour.index >= PALETTE_SIZE ||
+        colour.index === TRANSPARENT_INDEX ||
+        indices.has(colour.index) ||
+        !Number.isSafeInteger(colour.total) ||
+        colour.total <= 0
+      ) {
+        fail('colour totals contain an invalid or duplicate palette entry')
+      }
+      indices.add(colour.index)
+      total += colour.total
+    }
+    if (total !== version.totalPixels) fail('colour totals do not sum to total pixels')
+  }
   for (const chunk of version.chunks) {
     if (
       !Number.isSafeInteger(chunk.tileX) ||
@@ -246,6 +270,8 @@ export interface TemplateVersionRecord {
   readonly createdAt: Millis
   readonly bbox: PixelBounds
   readonly totalPixels: number
+  /** Histogram persisted for server-backed per-colour progress; absent on legacy fixtures/rows. */
+  readonly colourTotals?: readonly { readonly index: number; readonly total: number }[]
   readonly chunks: readonly {
     readonly tileX: number
     readonly tileY: number
@@ -299,6 +325,51 @@ export interface ManifestTileRecord {
   readonly tileX: number
   readonly tileY: number
   readonly hash: string
+}
+
+/** One current template chunk affected by a canvas tile observation or paint event. */
+export interface TelemetryTarget extends ManifestTileRecord {
+  readonly bbox: PixelBounds
+}
+
+export interface TileObservation {
+  readonly season: number
+  readonly tile: TileCoord
+  readonly hash: string
+  readonly observedAt: Millis
+  readonly reportedAt: Seconds
+  readonly reportedWithToken: string
+  readonly reportedByUserId: number
+}
+
+export type LatestTileObservation = Pick<TileObservation, 'season' | 'tile' | 'hash' | 'observedAt'>
+
+export interface TemplateTileStatusRecord {
+  readonly templateId: string
+  readonly versionId: string
+  readonly tile: TileCoord
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+  readonly colours?: readonly {
+    readonly index: number
+    readonly correct: number
+    readonly wrong: number
+    readonly blank: number
+    readonly total: number
+  }[]
+  readonly observedAt: Millis
+}
+
+export interface ContributionDelta {
+  readonly templateId: string
+  readonly wplaceUserId: number
+  readonly day: Seconds
+  readonly reportedWithToken: string
+  readonly reportedByUserId: number
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
 }
 
 export class NodePathConflictError extends Error {
@@ -515,6 +586,31 @@ export interface SqlStore {
     season: number,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]>
+
+  listTelemetryTargets(
+    season: number,
+    tile: TileCoord,
+    includeUnpublished: boolean,
+  ): Promise<readonly TelemetryTarget[]>
+
+  readLatestTile(season: number, tile: TileCoord): Promise<LatestTileObservation | null>
+
+  recordTileObservation(
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+  ): Promise<void>
+
+  readTemplateStatuses(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly TemplateStatus[]>
+
+  /** Claims an idempotency key. False means this paint event was already accepted. */
+  claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>
+
+  rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void>
+
+  addContributions(deltas: readonly ContributionDelta[]): Promise<void>
 
   /**
    * Store a freshly minted token.

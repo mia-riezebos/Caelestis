@@ -104,6 +104,7 @@ export const templateVersions = sqliteTable(
     maxX: integer('max_x').notNull(),
     maxY: integer('max_y').notNull(),
     totalPixels: integer('total_pixels').notNull(),
+    colourTotalsJson: text('colour_totals_json'),
     boundsNorth: real('bounds_north'),
     boundsSouth: real('bounds_south'),
     boundsWest: real('bounds_west'),
@@ -417,6 +418,7 @@ export const painters = sqliteTable('painters', {
 export const tileHistory = sqliteTable(
   'tile_history',
   {
+    season: integer('season').notNull(),
     tileX: integer('tile_x').notNull(),
     tileY: integer('tile_y').notNull(),
     resolutionS: integer('resolution_s').$type<Seconds>().notNull(),
@@ -486,6 +488,7 @@ export const tileHistory = sqliteTable(
   (table) => [
     primaryKey({
       columns: [
+        table.season,
         table.tileX,
         table.tileY,
         table.resolutionS,
@@ -495,6 +498,10 @@ export const tileHistory = sqliteTable(
       ],
     }),
     check('tile_history_resolution_s_check', sql`${table.resolutionS} IN (0, 3600, 21600, 86400)`),
+    check(
+      'tile_history_season_check',
+      sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0`,
+    ),
     // The same rule `telemetry_buckets` states, on the ladder this table folds. A folded bucket
     // start is the floor of an observation to its tier, so {resolution: 3600, bucketStart: 3601}
     // keys a bucket overlapping the real 3600 one and the fold counts one hour as two.
@@ -530,6 +537,72 @@ export const tileHistory = sqliteTable(
       sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
         AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
         AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+  ],
+)
+
+/** Latest accepted canvas observation per tile, used to classify later paint repairs. */
+export const canvasTiles = sqliteTable(
+  'canvas_tiles',
+  {
+    season: integer('season').notNull(),
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    sha256: text('sha256').notNull(),
+    observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.season, table.tileX, table.tileY] }),
+    check(
+      'canvas_tiles_season_check',
+      sql`typeof(${table.season}) = 'integer' AND ${table.season} >= 0`,
+    ),
+    check(
+      'canvas_tiles_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+    check(
+      'canvas_tiles_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
+/** Latest classified progress for one current template chunk. */
+export const templateTileStatuses = sqliteTable(
+  'template_tile_statuses',
+  {
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id')
+      .notNull()
+      .references(() => templateVersions.id, { onDelete: 'cascade' }),
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    correct: integer('correct').notNull(),
+    wrong: integer('wrong').notNull(),
+    blank: integer('blank').notNull(),
+    coloursJson: text('colours_json').notNull(),
+    observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
+    index('template_tile_statuses_version_idx').on(table.versionId),
+    check(
+      'template_tile_statuses_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+    check(
+      'template_tile_statuses_counter_check',
+      sql`typeof(${table.correct}) = 'integer' AND typeof(${table.wrong}) = 'integer'
+        AND typeof(${table.blank}) = 'integer'
+        AND ${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
     ),
   ],
 )

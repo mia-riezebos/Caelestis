@@ -23,6 +23,26 @@ afterEach(() => {
 })
 
 describe('server state boundaries', () => {
+  it('enables contribution sharing for fresh and legacy state', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({})),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState()).toMatchObject({ reportPaints: true, shareTiles: true })
+  })
+
+  it('preserves explicit contribution-sharing opt-outs', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({ reportPaints: false, shareTiles: false })),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState()).toMatchObject({ reportPaints: false, shareTiles: false })
+  })
+
   it('canonicalises equivalent URLs to one stable connection identity', async () => {
     const { canonicalServerUrl } = await import('./state.js')
 
@@ -194,6 +214,34 @@ describe('server state boundaries', () => {
     if (first === undefined) throw new Error('expected a stored server')
     expect(upsertServer({ ...first, error: 'updated' })).toBe(true)
     expect(getState().servers[0]?.error).toBe('updated')
+  })
+
+  it('keeps a saved token until its server is explicitly removed', async () => {
+    const persist = vi.fn()
+    vi.stubGlobal('GM_setValue', persist)
+    const { getState, setState, upsertServer } = await import('./state.js')
+    const saved = {
+      url: 'https://example.com',
+      info: serverInfo,
+      token: 'sealed-admin-token',
+      status: 'connected' as const,
+      isAdmin: true,
+      season: 0,
+    }
+    setState({ servers: [saved] })
+    persist.mockClear()
+
+    upsertServer({ ...saved, token: null, status: 'unreachable', isAdmin: false, season: null })
+
+    expect(getState().servers[0]).toEqual(
+      expect.objectContaining({
+        token: 'sealed-admin-token',
+        tokenUsable: false,
+        status: 'unreachable',
+      }),
+    )
+    const persisted = JSON.parse(String(persist.mock.lastCall?.[1]))
+    expect(persisted.servers[0].token).toBe('sealed-admin-token')
   })
 
   it('accepts season zero and uses the validated manifest season for admin probes', async () => {
@@ -915,9 +963,9 @@ describe('server state boundaries', () => {
     })
     onStateChange(reached)
 
-    expect(() => setState({ shareTiles: true })).not.toThrow()
+    expect(() => setState({ shareTiles: false })).not.toThrow()
 
-    expect(getState().shareTiles).toBe(true)
+    expect(getState().shareTiles).toBe(false)
     expect(reached).toHaveBeenCalledOnce()
   })
 
@@ -987,7 +1035,55 @@ describe('server state boundaries', () => {
     )
   })
 
-  it('retries an open server anonymously when its persisted token is stale', async () => {
+  it('periodically reconnects an unreachable server with its stored access token', async () => {
+    vi.useFakeTimers()
+    const protectedInfo = { ...serverInfo, auth: 'access_token' as const }
+    const protectedManifest = { ...manifest, server: protectedInfo }
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify(protectedInfo), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(protectedManifest), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ nodes: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { getState, installServerConnectionRetry, refreshStoredServers, setState } = await import(
+      './state.js'
+    )
+    setState({
+      servers: [
+        {
+          url: 'https://example.com',
+          info: protectedInfo,
+          token: 'keep-me',
+          status: 'unreachable',
+          error: 'TypeError: Failed to fetch',
+          isAdmin: false,
+          season: null,
+          lastVerified: { serverId: SERVER_ID, season: 0 },
+        },
+      ],
+    })
+    const refreshed = vi.fn()
+
+    await refreshStoredServers()
+    installServerConnectionRetry(refreshed)
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(getState().servers[0]).toEqual(
+      expect.objectContaining({
+        token: 'keep-me',
+        status: 'connected',
+        isAdmin: true,
+        season: 0,
+      }),
+    )
+    expect(refreshed).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
+      authorization: 'Bearer keep-me',
+    })
+  })
+
+  it('uses open access without deleting a rejected persisted token', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(serverInfo), { status: 200 }))
@@ -995,16 +1091,19 @@ describe('server state boundaries', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(manifest), { status: 200 }))
       .mockResolvedValueOnce(new Response(null, { status: 403 }))
     vi.stubGlobal('fetch', fetchMock)
-    const { probeServer } = await import('./state.js')
+    const { activeServerToken, probeServer } = await import('./state.js')
 
-    await expect(probeServer('https://example.com', 'stale-code')).resolves.toEqual(
+    const connected = await probeServer('https://example.com', 'stale-code')
+    expect(connected).toEqual(
       expect.objectContaining({
         status: 'connected',
-        token: null,
+        token: 'stale-code',
+        tokenUsable: false,
         isAdmin: false,
         season: 0,
       }),
     )
+    expect(activeServerToken(connected)).toBeNull()
     expect(fetchMock.mock.calls[1]?.[1]?.headers).toEqual({
       authorization: 'Bearer stale-code',
     })

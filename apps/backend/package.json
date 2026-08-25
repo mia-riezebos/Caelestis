@@ -7,21 +7,22 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.check.json",
     "db:generate": "drizzle-kit generate",
-    "dev": "node dev.mjs",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "dev": "pnpm db:migrate:local && node dev.mjs",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
     "@caelestis/shared": "workspace:*",
+    "@caelestis/wire-schema": "workspace:*",
     "drizzle-orm": "0.45.2",
+    "effect": "4.0.0-beta.102",
     "hono": "^4.6.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
     "@types/node": "^26.1.2",
-    "@caelestis/wire-schema": "workspace:*",
     "drizzle-kit": "0.31.10",
-    "effect": "4.0.0-beta.102",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.114.0"

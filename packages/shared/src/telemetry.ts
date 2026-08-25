@@ -15,6 +15,8 @@ import type { Millis, Seconds } from './time.js'
  * pixels, so this is an order of magnitude of headroom.
  */
 export const MAX_PAINT_COUNT = 100_000
+/** Bound one hash-first offer request without turning ordinary panning into one request per tile. */
+export const MAX_TILE_OFFERS = 64
 
 export type WplaceUserId = number
 
@@ -41,8 +43,10 @@ export interface PainterIdentity {
  * - When `painted` equals that server-derived total, classify and credit the accepted pixels
  *   normally.
  * - When `painted` is lower, it is still an exact placed total, but do not credit template-level
- *   `correct` or `repairs`: the response does not reveal which submitted pixels landed. The next
- *   tile-diff anchor re-establishes template correctness from ground truth.
+ *   `correct` or `repairs`: the response does not reveal which submitted pixels landed.
+ * - `painted` is null when one Wplace request crossed server coverage boundaries and was only
+ *   partially accepted. The client cannot derive a scoped accepted count without disclosing the
+ *   out-of-scope pixels. The next tile-diff anchor re-establishes truth instead.
  */
 export interface PaintEvent extends PainterIdentity {
   /** Client-generated, so a retry can never double-count. */
@@ -50,8 +54,8 @@ export interface PaintEvent extends PainterIdentity {
   readonly season: number
   readonly ts: Seconds
   readonly tiles: readonly PaintTile[]
-  /** Number wplace reported accepting. */
-  readonly painted: number
+  /** Number wplace reported accepting in this scope, or null when that count is unknowable. */
+  readonly painted: number | null
 }
 
 export interface PaintTile {
@@ -90,6 +94,17 @@ export interface TileOfferResponse {
   readonly wanted: readonly TileKey[]
 }
 
+/** One reporter offering the template-covered tiles it has just fetched from wplace. */
+export interface TileOfferBatch extends PainterIdentity {
+  readonly season: number
+  readonly offers: readonly TileOffer[]
+}
+
+/** Current server-derived progress for every template the caller may read. */
+export interface StatusResponse {
+  readonly templates: readonly TemplateStatus[]
+}
+
 /**
  * The userscript's read surface is current state and alarms only — no charts, no history, no pace.
  * Everything time-series is frontend-only for now.
@@ -100,8 +115,18 @@ export interface TemplateStatus {
   readonly wrong: number
   readonly blank: number
   readonly total: number
+  /** Per-template-colour progress, omitted by older servers without a stored colour histogram. */
+  readonly colours?: readonly TemplateColourStatus[]
   /** Newest tile observation feeding this figure. Stale coverage must be visible, not implied. */
   readonly observedAt: Millis
+}
+
+export interface TemplateColourStatus {
+  readonly index: number
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+  readonly total: number
 }
 
 export interface NodeStatus {

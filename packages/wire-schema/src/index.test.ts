@@ -339,6 +339,11 @@ describe('PaintEvent', () => {
     expectRejected(PaintEvent, { ...validEvent, painted: 2 })
   })
 
+  it('accepts an unknowable server-scoped accepted count', () => {
+    const event = { ...validEvent, painted: null }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
   it('caps the pixels submitted across the whole event, not merely per tile', () => {
     // The per-tile cap bounds nothing on its own: MAX_PAINT_TILES tiles at the per-tile cap is a
     // ten-billion-pixel payload. `painted` is well within its own bound here, so only the total
@@ -1307,6 +1312,49 @@ describe('cross-field and time-unit schemas', () => {
       wrong: 0,
       blank: 5,
       total: 1,
+      observedAt: MILLIS,
+    })
+  })
+
+  it('accepts per-colour status rows that exactly partition the template status', () => {
+    const status = {
+      templateId: TEMPLATE_ID,
+      correct: 1,
+      wrong: 1,
+      blank: 1,
+      total: 4,
+      colours: [
+        { index: 0, correct: 1, wrong: 0, blank: 1, total: 2 },
+        { index: 1, correct: 0, wrong: 1, blank: 0, total: 2 },
+      ],
+      observedAt: MILLIS,
+    }
+    expect(Schema.decodeUnknownSync(TemplateStatus)(status)).toEqual(status)
+  })
+
+  it('rejects per-colour status rows that do not partition the template total', () => {
+    expectRejected(TemplateStatus, {
+      templateId: TEMPLATE_ID,
+      correct: 1,
+      wrong: 0,
+      blank: 0,
+      total: 2,
+      colours: [{ index: 0, correct: 1, wrong: 0, blank: 0, total: 1 }],
+      observedAt: MILLIS,
+    })
+  })
+
+  it('rejects duplicate per-colour status rows', () => {
+    expectRejected(TemplateStatus, {
+      templateId: TEMPLATE_ID,
+      correct: 0,
+      wrong: 0,
+      blank: 2,
+      total: 2,
+      colours: [
+        { index: 0, correct: 0, wrong: 0, blank: 1, total: 1 },
+        { index: 0, correct: 0, wrong: 0, blank: 1, total: 1 },
+      ],
       observedAt: MILLIS,
     })
   })

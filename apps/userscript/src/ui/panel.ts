@@ -16,6 +16,7 @@ import {
   forgetAdmittedServerContents,
   forgetScopes,
   getState,
+  installServerConnectionRetry,
   isCurrentServerConnection,
   listServerContents,
   listServerNodes,
@@ -42,6 +43,7 @@ import {
   uploadTemplateVersion,
   upsertServer,
 } from '../state.js'
+import { onServerStatusChange } from '../telemetry.js'
 import { APPEARANCE_CONTROLS, UNPAINTED_LIMIT_CONTROL } from '../templates/appearance.js'
 import { importFile } from '../templates/import.js'
 import {
@@ -859,9 +861,11 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
       ? 'This server needs an access token from whoever runs it.'
       : server.status === 'unreachable'
         ? (server.error ?? 'Could not be reached.')
-        : server.isAdmin
-          ? 'Your token can change this server.'
-          : 'Your token can read this server.'
+        : server.tokenUsable === false
+          ? 'Your saved token was not accepted. Connected without it.'
+          : server.isAdmin
+            ? 'Your token can change this server.'
+            : 'Your token can read this server.'
 
   const attempt = async (): Promise<void> => {
     const value = code.value.trim()
@@ -1139,14 +1143,14 @@ const settingsView = (): HTMLElement => {
   view.appendChild(
     settingRow(
       'Report my activity',
-      'Sends your paint activity on templates to the respective servers.',
+      'Shares paint activity only in areas covered by server templates, and only with the servers providing those templates. Together with shared tiles, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
       checkbox(state.reportPaints, (next) => setState({ reportPaints: next })),
     ),
   )
   view.appendChild(
     settingRow(
       'Share tiles',
-      'Forwards tiles with templates to respective servers.',
+      'Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates. Together with reported activity, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
       checkbox(state.shareTiles, (next) => setState({ shareTiles: next })),
     ),
   )
@@ -3031,6 +3035,7 @@ export const syncColourModeState = (): void => {
 export const installPanel = (): void => {
   loadState()
   void refreshStoredServers(refreshView)
+  installServerConnectionRetry(refreshView)
   installStyles()
   const rail = railContainer()
   rail.append(railButton(), colourModeButton())
@@ -3084,6 +3089,9 @@ export const installPanel = (): void => {
       progressRefreshQueued = false
       if (currentView === 'tree') refreshView()
     })
+  })
+  onServerStatusChange(() => {
+    if (currentView === 'tree') refreshView()
   })
   for (const ending of ['dragend', 'focusout'])
     document.addEventListener(ending, repayRefresh, true)

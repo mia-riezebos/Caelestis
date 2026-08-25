@@ -509,6 +509,26 @@ const CSS = `
   flex: 1 1 auto;
   width: auto;
 }
+/* Wplace owns the paint swatch and its layout. The badge is an overlay inside the existing relative
+   button, so adding progress never changes the palette grid's measurements. */
+.caelestis-palette-progress {
+  position: absolute;
+  z-index: 1;
+  inset-block-end: 0.125rem;
+  inset-inline-end: 0.125rem;
+  min-width: 1.25rem;
+  padding-inline: 0.1875rem;
+  border-radius: 999px;
+  background: rgba(15, 18, 24, 0.82);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
+  color: #fff;
+  font-size: 0.5625rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 0.875rem;
+  pointer-events: none;
+  text-align: center;
+}
 `
 
 /** Our stylesheet's identity is the node we created, not a page-owned id string. */

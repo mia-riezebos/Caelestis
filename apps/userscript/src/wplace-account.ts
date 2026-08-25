@@ -1,4 +1,4 @@
-import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import { type PainterIdentity, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { discardResponseBody } from './response.js'
 
@@ -14,6 +14,7 @@ import { discardResponseBody } from './response.js'
  */
 
 let owned: ReadonlySet<number> | null = null
+let identity: PainterIdentity | null = null
 let lastAttemptAt: number | null = null
 let loading: Promise<void> | null = null
 const ACCOUNT_TIMEOUT_MS = 10_000
@@ -72,9 +73,16 @@ export const refreshAccount = (rerender?: () => void): void => {
 /** Palette indices this account can place, or null when we have not been able to ask. */
 export const ownedColours = (): ReadonlySet<number> | null => owned
 
+/** Public wplace identity used only for opted-in template-area telemetry. */
+export const accountIdentity = (): PainterIdentity | null => identity
+
 const replaceOwned = (next: ReadonlySet<number> | null): void => {
   if (owned === next || (owned === null && next === null)) return
   owned = next
+}
+
+const replaceIdentity = (next: PainterIdentity | null): void => {
+  identity = next
 }
 
 const fetchAccount = async (): Promise<void> => {
@@ -89,15 +97,30 @@ const fetchAccount = async (): Promise<void> => {
       signal: controller.signal,
     })
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) replaceOwned(null)
+      if (response.status === 401 || response.status === 403) {
+        replaceOwned(null)
+        replaceIdentity(null)
+      }
       log('install', `/me said ${response.status}; owned colours unavailable`)
       return
     }
     const body = await readBoundedJson(response)
     if (!isRecord(body)) {
       replaceOwned(null)
+      replaceIdentity(null)
       return
     }
+    const id = body.id
+    const name = body.name
+    replaceIdentity(
+      Number.isSafeInteger(id) &&
+        Number(id) >= 0 &&
+        typeof name === 'string' &&
+        name.length > 0 &&
+        name.length <= 256
+        ? { wplaceUserId: Number(id), displayName: name }
+        : null,
+    )
     const mask = body.extraColorsBitmap
     if (
       typeof mask !== 'number' ||

@@ -3,6 +3,7 @@ import {
   decodeWplaceIndexedPng,
   encodeIndexedPng,
   millis,
+  PALETTE_SIZE,
   type PixelBounds,
   type QuantiseReport,
   quantiseToPalette,
@@ -83,6 +84,18 @@ const exactPaletteReport = (indices: Uint8Array): QuantiseReport => {
     meanDistance: 0,
     maxDistance: 0,
   }
+}
+
+const colourTotals = (
+  indices: Uint8Array,
+): readonly { readonly index: number; readonly total: number }[] => {
+  const totals = new Array<number>(PALETTE_SIZE).fill(0)
+  for (const index of indices) {
+    if (index !== TRANSPARENT_INDEX) totals[index] = (totals[index] ?? 0) + 1
+  }
+  return [...totals.entries()]
+    .filter(([, total]) => total > 0)
+    .map(([index, total]) => ({ index, total }))
 }
 
 export const storeTemplate = async (
@@ -176,6 +189,7 @@ export const storeTemplate = async (
     createdAt,
     bbox: sliced.bbox,
     totalPixels: sliced.totalPixels,
+    colourTotals: colourTotals(indices),
     chunks: versionChunks,
   }
   await ports.sql.insertTemplateVersion(version, {

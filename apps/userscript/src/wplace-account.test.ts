@@ -6,6 +6,24 @@ afterEach(() => {
 })
 
 describe('wplace account state', () => {
+  it('reads the public identity used for telemetry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ id: 42, name: 'Mia', extraColorsBitmap: 1 }), {
+            status: 200,
+          }),
+        ),
+      ),
+    )
+    const { accountIdentity, loadAccount } = await import('./wplace-account.js')
+
+    await loadAccount(0)
+
+    expect(accountIdentity()).toEqual({ wplaceUserId: 42, displayName: 'Mia' })
+  })
+
   it('notifies an already-rendered consumer when owned colours arrive', async () => {
     vi.stubGlobal(
       'fetch',

@@ -1,5 +1,13 @@
 import type * as Shared from '@caelestis/shared'
-import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
+import {
+  MAX_PAINT_COUNT,
+  MAX_TILE_OFFERS,
+  PALETTE_SIZE,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+  WORLD_PIXELS,
+  WORLD_TILES,
+} from '@caelestis/shared'
 import { Schema } from 'effect'
 
 const MAX_IDENTIFIER_LENGTH = 64
@@ -510,7 +518,7 @@ const PaintEventStruct = Schema.Struct({
   season: Season,
   ts: Seconds,
   tiles: boundedArray(PaintTile, MAX_PAINT_TILES),
-  painted: integerBetween(0, MAX_PAINTED_PIXELS),
+  painted: Schema.NullOr(integerBetween(0, MAX_PAINTED_PIXELS)),
 })
 
 export const PaintEvent = PaintEventStruct.pipe(
@@ -532,7 +540,9 @@ export const PaintEvent = PaintEventStruct.pipe(
     // MAX_PAINT_PIXELS_PER_TILE pixels is a ten-billion-pixel payload the schema would accept.
     booleanFilter((event: Schema.Schema.Type<typeof PaintEventStruct>) => {
       const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
-      return submitted <= MAX_PAINTED_PIXELS && event.painted <= submitted
+      return (
+        submitted <= MAX_PAINTED_PIXELS && (event.painted === null || event.painted <= submitted)
+      )
     }, `painted must not exceed the submitted pixels, of which there may be at most ${MAX_PAINTED_PIXELS}`),
   ),
 )
@@ -547,22 +557,52 @@ export const TileOfferResponse = Schema.Struct({
   wanted: boundedArray(TileKey, MAX_MANIFEST_TILES),
 })
 
+export const TileOfferBatch = Schema.Struct({
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+  season: Season,
+  offers: boundedArray(TileOffer, MAX_TILE_OFFERS),
+})
+
 const TemplateStatusStruct = Schema.Struct({
   templateId: Identifier,
   correct: NonNegativeInteger,
   wrong: NonNegativeInteger,
   blank: NonNegativeInteger,
   total: NonNegativeInteger,
+  colours: Schema.optionalKey(
+    boundedArray(
+      Schema.Struct({
+        index: integerBetween(0, TRANSPARENT_INDEX - 1),
+        correct: NonNegativeInteger,
+        wrong: NonNegativeInteger,
+        blank: NonNegativeInteger,
+        total: NonNegativeInteger,
+      }),
+      PALETTE_SIZE,
+    ),
+  ),
   observedAt: Millis,
 })
 
-export const TemplateStatus = TemplateStatusStruct.pipe(
+export const TemplateStatus: Schema.Codec<Shared.TemplateStatus> = TemplateStatusStruct.pipe(
   Schema.check(
-    booleanFilter(
-      (status: Schema.Schema.Type<typeof TemplateStatusStruct>) =>
-        status.correct + status.wrong + status.blank <= status.total,
-      'correct, wrong and blank must not sum above total',
-    ),
+    booleanFilter((status: Schema.Schema.Type<typeof TemplateStatusStruct>) => {
+      if (status.correct + status.wrong + status.blank > status.total) return false
+      if (status.colours === undefined) return true
+      const unique = new Set(status.colours.map((colour) => colour.index))
+      return (
+        unique.size === status.colours.length &&
+        status.colours.every(
+          (colour) =>
+            colour.total > 0 && colour.correct + colour.wrong + colour.blank <= colour.total,
+        ) &&
+        status.colours.reduce((sum, colour) => sum + colour.correct, 0) === status.correct &&
+        status.colours.reduce((sum, colour) => sum + colour.wrong, 0) === status.wrong &&
+        status.colours.reduce((sum, colour) => sum + colour.blank, 0) === status.blank &&
+        status.colours.reduce((sum, colour) => sum + colour.total, 0) === status.total
+      )
+    }, 'classification counts must fit the total; colour rows must be unique and partition it'),
   ),
 )
 
@@ -584,6 +624,10 @@ export const NodeStatus = NodeStatusStruct.pipe(
     ),
   ),
 )
+
+export const StatusResponse = Schema.Struct({
+  templates: boundedArray(TemplateStatus, MAX_MANIFEST_TEMPLATES),
+})
 
 const AlarmStruct = Schema.Struct({
   id: Identifier,
@@ -623,8 +667,10 @@ assertExact<Exact<Schema.Schema.Type<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof TileOfferBatch>, Shared.TileOfferBatch>>()
 assertExact<Exact<Schema.Schema.Type<typeof TemplateStatus>, Shared.TemplateStatus>>()
 assertExact<Exact<Schema.Schema.Type<typeof NodeStatus>, Shared.NodeStatus>>()
+assertExact<Exact<Schema.Schema.Type<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof Alarm>, Shared.Alarm>>()
 
 assertExact<Exact<Schema.Codec.Encoded<typeof ServerInfo>, Shared.ServerInfo>>()
@@ -638,6 +684,8 @@ assertExact<Exact<Schema.Codec.Encoded<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferBatch>, Shared.TileOfferBatch>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TemplateStatus>, Shared.TemplateStatus>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof NodeStatus>, Shared.NodeStatus>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof Alarm>, Shared.Alarm>>()

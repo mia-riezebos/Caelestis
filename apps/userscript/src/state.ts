@@ -41,6 +41,8 @@ export interface ConnectedServer {
   readonly url: string
   readonly info: ServerInfo | null
   readonly token: string | null
+  /** False when the saved token was rejected but an open server remains usable anonymously. */
+  readonly tokenUsable?: boolean
   readonly status: 'connected' | 'needs-token' | 'unreachable'
   readonly error?: string
   /**
@@ -66,6 +68,7 @@ export interface ConnectedServer {
 export const sameServerConnection = (left: ConnectedServer, right: ConnectedServer): boolean =>
   left.url === right.url &&
   left.token === right.token &&
+  (left.tokenUsable !== false) === (right.tokenUsable !== false) &&
   left.status === right.status &&
   left.isAdmin === right.isAdmin &&
   left.season === right.season &&
@@ -89,6 +92,10 @@ const serverConnectionLifetime = (server: ConnectedServer): object => {
   serverConnectionLifetimes.set(server, created)
   return created
 }
+
+/** The saved token remains sealed in state; only a currently accepted token leaves in a request. */
+export const activeServerToken = (server: ConnectedServer): string | null =>
+  server.tokenUsable === false ? null : server.token
 
 /** Whether this immutable connection snapshot is still the configured lifetime for its URL. */
 export const isCurrentServerConnection = (server: ConnectedServer): boolean => {
@@ -157,8 +164,8 @@ const DEFAULT_STATE: State = {
   hiddenScopes: [],
   serverTemplatePreferences: [],
   appearance: DEFAULT_APPEARANCE,
-  reportPaints: false,
-  shareTiles: false,
+  reportPaints: true,
+  shareTiles: true,
 }
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -177,6 +184,7 @@ export const MAX_SERVER_TEMPLATE_PREFERENCES = MAX_CONNECTED_SERVERS * 64
 /** As many browser-local folders as a reload will restore. Written past, the rest is dropped. */
 export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
+const SERVER_RETRY_MS = 5_000
 const REMOTE_TIMEOUT_MS = 10_000
 const LARGE_TRANSFER_TIMEOUT_MS = 120_000
 const SERVER_JSON_BYTES = 16 * 1024
@@ -864,8 +872,10 @@ export const loadState = (): State => {
             ? remapStoredAppearance(stored.appearance ?? null)
             : (stored.appearance ?? null),
         ) ?? DEFAULT_APPEARANCE,
-      reportPaints: stored.reportPaints === true,
-      shareTiles: stored.shareTiles === true,
+      // Contribution sharing is opt-out. Missing fields are older saved state, not a decision to
+      // disable either feed; an explicit false remains durable across reloads.
+      reportPaints: stored.reportPaints !== false,
+      shareTiles: stored.shareTiles !== false,
     }
     log('install', 'state loaded', { servers: state.servers.length })
     if (storedRaw.legacyPalette || scopesMigrated) writeRaw(JSON.stringify(state))
@@ -1088,22 +1098,29 @@ export const moveLocalFolder = (id: string, parentId: string | null): boolean =>
   })
 }
 
-/** Replace one server in place, keyed by url, preserving the order of the rest. */
+/** Replace one server in place, keyed by url, preserving its saved token and the order of the rest. */
 export const upsertServer = (server: ConnectedServer): boolean => {
   const servers = getState().servers
   const index = servers.findIndex((s) => s.url === server.url)
   if (index === -1 && servers.length >= MAX_CONNECTED_SERVERS) return false
   const current = index === -1 ? undefined : servers[index]
+  // A probe may decide to continue anonymously, but only an explicit disconnect may erase the
+  // credential stored for this URL. A non-empty replacement still lets the user rotate the token.
+  const candidate =
+    current !== undefined && current.token !== null && server.token === null
+      ? { ...server, token: current.token, tokenUsable: false }
+      : server
   const canRetainIdentity =
-    server.lastVerified == null &&
+    candidate.lastVerified == null &&
     current?.lastVerified != null &&
-    (server.info === null || server.info.id === current.lastVerified.serverId)
-  const next = canRetainIdentity ? { ...server, lastVerified: current.lastVerified } : server
+    (candidate.info === null || candidate.info.id === current.lastVerified.serverId)
+  const next = canRetainIdentity ? { ...candidate, lastVerified: current.lastVerified } : candidate
   const lifetime =
-    current !== undefined && sameServerConnection(current, server)
+    current !== undefined && sameServerConnection(current, candidate)
       ? serverConnectionLifetime(current)
       : {}
   serverConnectionLifetimes.set(server, lifetime)
+  serverConnectionLifetimes.set(candidate, lifetime)
   serverConnectionLifetimes.set(next, lifetime)
   setState({
     servers: index === -1 ? [...servers, next] : servers.map((s, i) => (i === index ? next : s)),
@@ -1363,7 +1380,8 @@ export const probeServer = async (
     const connected: ConnectedServer = {
       url: base,
       info,
-      token: effectiveToken,
+      token,
+      ...(effectiveToken === null && token !== null ? { tokenUsable: false as const } : {}),
       status: 'connected',
       isAdmin,
       season: manifest.season,
@@ -1389,9 +1407,10 @@ export const probeServer = async (
   }
 }
 
-/** Revalidate persisted identity, auth and scope without allowing stale requests to resurrect rows. */
-export const refreshStoredServers = async (onRefreshed?: () => void): Promise<void> => {
-  const snapshot = [...getState().servers]
+const refreshServers = async (
+  snapshot: readonly ConnectedServer[],
+  onRefreshed?: () => void,
+): Promise<void> => {
   let cursor = 0
   const worker = async (): Promise<void> => {
     while (cursor < snapshot.length) {
@@ -1419,6 +1438,21 @@ export const refreshStoredServers = async (onRefreshed?: () => void): Promise<vo
   )
 }
 
+/** Revalidate persisted identity, auth and scope without allowing stale requests to resurrect rows. */
+export const refreshStoredServers = async (onRefreshed?: () => void): Promise<void> =>
+  refreshServers([...getState().servers], onRefreshed)
+
+let serverRetryTimer: ReturnType<typeof setInterval> | null = null
+
+/** Keep offline rows alive through short server restarts, reusing their persisted credentials. */
+export const installServerConnectionRetry = (onRefreshed?: () => void): void => {
+  if (serverRetryTimer !== null) clearInterval(serverRetryTimer)
+  serverRetryTimer = setInterval(() => {
+    const unreachable = getState().servers.filter((server) => server.status === 'unreachable')
+    if (unreachable.length > 0) void refreshServers(unreachable, onRefreshed)
+  }, SERVER_RETRY_MS)
+}
+
 /**
  * Create a folder on a server.
  *
@@ -1439,7 +1473,9 @@ export const createNode = async (
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
+        ...(activeServerToken(server) === null
+          ? {}
+          : { authorization: `Bearer ${activeServerToken(server)}` }),
       },
       body: JSON.stringify({
         season: server.season,
@@ -1476,7 +1512,9 @@ export const createNode = async (
 
 const adminHeaders = (server: ConnectedServer): Record<string, string> => ({
   'content-type': 'application/json',
-  ...(server.token === null ? {} : { authorization: `Bearer ${server.token}` }),
+  ...(activeServerToken(server) === null
+    ? {}
+    : { authorization: `Bearer ${activeServerToken(server)}` }),
 })
 
 const noteAuthFailure = (server: ConnectedServer, status: number): void => {
@@ -1623,7 +1661,7 @@ export const deleteNode = async (
 /** Existing sibling names, so a new folder can pick one that is free without asking. */
 export const listNodes = async (server: ConnectedServer): Promise<NodeListResult> => {
   if (server.season === null) return { ok: false, message: 'Refresh this server first.' }
-  const result = await fetchNodes(server.url, server.token, server.season)
+  const result = await fetchNodes(server.url, activeServerToken(server), server.season)
   if (!result.ok && (result.status === 401 || result.status === 403)) {
     noteAuthFailure(server, result.status)
   }
@@ -1662,7 +1700,10 @@ export const uploadTemplate = async (
       `${server.url}/admin/templates`,
       {
         method: 'POST',
-        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        headers:
+          activeServerToken(server) === null
+            ? {}
+            : { authorization: `Bearer ${activeServerToken(server)}` },
         body: form,
       },
       MUTATION_JSON_BYTES,
@@ -1844,7 +1885,10 @@ export const listServerContents = async (
     const { response, body } = await remoteJson(
       `${server.url}/manifest?season=${server.season}`,
       {
-        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        headers:
+          activeServerToken(server) === null
+            ? {}
+            : { authorization: `Bearer ${activeServerToken(server)}` },
         ...(signal === undefined ? {} : { signal }),
       },
       TREE_JSON_BYTES,
@@ -2085,7 +2129,10 @@ export const uploadTemplateVersion = async (
       `${server.url}/admin/templates/${templateId}/versions`,
       {
         method: 'POST',
-        headers: server.token === null ? {} : { authorization: `Bearer ${server.token}` },
+        headers:
+          activeServerToken(server) === null
+            ? {}
+            : { authorization: `Bearer ${activeServerToken(server)}` },
         body: form,
       },
       MUTATION_JSON_BYTES,

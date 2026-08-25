@@ -3,12 +3,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { counters } from './debug.js'
 import {
   captureFetchUrlGetters,
+  captureTilePixels,
   consumeBySize,
   currentQuads,
   enqueueBySize,
+  ensureTilePixels,
   install,
   isGetFetch,
+  loadTilePixels,
   normalizeMissingTileResponse,
+  onAcceptedPaint,
+  onFetchedTile,
   onTileFrame,
   project,
   quadFromMatrix,
@@ -18,6 +23,7 @@ import {
   takeBySize,
   takeBySizeForBitmap,
   tileFromUrl,
+  UNPAINTED,
   urlForFetchInput,
 } from './tile-transform.js'
 
@@ -261,6 +267,57 @@ describe('transparent browser hooks', () => {
     const failed = new Response('unavailable', { status: 503 })
 
     expect(normalizeMissingTileResponse(failed, realm)).toBe(failed)
+  })
+
+  it('waits for an in-flight tile chase instead of treating it as unavailable', async () => {
+    let fetchCount = 0
+    let resolveChase: ((response: Response) => void) | undefined
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    class FakeImageBitmap {
+      width = 1
+      height = 1
+      close = vi.fn()
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(() => {
+        fetchCount++
+        if (fetchCount === 1) return Promise.resolve(new Response(new Uint8Array([1])))
+        return new Promise<Response>((resolve) => {
+          resolveChase = resolve
+        })
+      }),
+      Blob,
+      createImageBitmap: vi.fn(async () => new FakeImageBitmap()),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    const wanted = { x: 817, y: 613 }
+
+    install(realm, () => null)
+    await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    captureTilePixels(true)
+    try {
+      expect(ensureTilePixels(wanted)).toBe(true)
+      const joined = loadTilePixels(wanted, 500)
+
+      await Promise.resolve()
+      if (resolveChase === undefined) throw new Error('the chase did not reach fetch')
+      resolveChase(new Response(new Uint8Array([1])))
+
+      const pixels = await joined
+      expect(pixels?.[0]).toBe(UNPAINTED)
+    } finally {
+      captureTilePixels(false)
+    }
   })
 
   it('deactivates a provisional WebGL context after retargeting to the map', async () => {
@@ -1171,6 +1228,118 @@ describe('transparent browser hooks', () => {
 
     await response.arrayBuffer()
     expect(takeBySize(3)).toEqual({ x: 1, y: 2 })
+  })
+
+  it('reports exact tile bytes only after the page reads the response body', async () => {
+    const observed = vi.fn()
+    onFetchedTile(observed)
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    const response = await realm.fetch('https://backend.wplace.live/files/s0/tiles/1/2.png')
+    expect(observed).not.toHaveBeenCalled()
+
+    await response.arrayBuffer()
+
+    expect(observed).toHaveBeenCalledOnce()
+    const [coord, bytes, observedAt] = observed.mock.calls[0] ?? []
+    expect(coord).toEqual({ x: 1, y: 2 })
+    expect(bytes).toEqual(new Uint8Array([1, 2, 3]))
+    expect(observedAt).toEqual(expect.any(Number))
+  })
+
+  it('reports a paint only after wplace accepts it', async () => {
+    const observed = vi.fn()
+    onAcceptedPaint(observed)
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(
+        async () =>
+          new Response(JSON.stringify({ painted: 1 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+    const body = {
+      season: 0,
+      tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+    }
+
+    install(realm, () => null)
+    await realm.fetch('https://backend.wplace.live/paint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce())
+
+    expect(observed.mock.calls[0]?.[0]).toMatchObject({ ...body, painted: 1 })
+    expect(observed.mock.calls[0]?.[0].observedAt).toEqual(expect.any(Number))
+  })
+
+  it('does not report a rejected paint', async () => {
+    const observed = vi.fn()
+    onAcceptedPaint(observed)
+    class FakeCanvas {
+      getContext(): null {
+        return null
+      }
+    }
+    const realm = {
+      ...globalThis,
+      Object,
+      Request,
+      URL,
+      Response,
+      fetch: vi.fn(async () => new Response(null, { status: 429 })),
+      Blob,
+      createImageBitmap: vi.fn(),
+      HTMLCanvasElement: FakeCanvas,
+      ArrayBuffer,
+    } as unknown as Window & typeof globalThis
+
+    install(realm, () => null)
+    await realm.fetch('https://backend.wplace.live/paint', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        season: 0,
+        tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+      }),
+    })
+    await Promise.resolve()
+
+    expect(observed).not.toHaveBeenCalled()
   })
 
   it('preserves the receiver semantics of tapped response body methods', async () => {
