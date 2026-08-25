@@ -18,6 +18,8 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('./debug.js', () => ({ warn: vi.fn() }))
 vi.mock('./state.js', () => ({
+  activeServerToken: (server: ConnectedServer) =>
+    server.tokenUsable === false ? null : server.token,
   getState: () => harness.state,
   isCurrentServerConnection: () => true,
   onServerContents: (listener: (server: unknown, contents: unknown) => void) => {

@@ -11,6 +11,8 @@ interface MockServer {
 }
 
 const state = vi.hoisted(() => ({
+  activeServerToken: (server: { token: string | null; tokenUsable?: boolean }) =>
+    server.tokenUsable === false ? null : server.token,
   getState: vi.fn((): { servers: readonly MockServer[] } => ({ servers: [] })),
   isCurrentServerConnection: vi.fn((server: MockServer) =>
     state.getState().servers.some((candidate) => state.sameServerConnection(candidate, server)),

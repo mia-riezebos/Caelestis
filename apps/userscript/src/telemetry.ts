@@ -14,6 +14,7 @@ import {
 import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
 import {
+  activeServerToken,
   type ConnectedServer,
   getState,
   isCurrentServerConnection,
@@ -78,7 +79,7 @@ const statusKey = (serverUrl: string, templateId: string): string =>
   `${serverUrl}\u0000${templateId}`
 
 const authHeaders = (server: ConnectedServer): Record<string, string> =>
-  server.token === null ? {} : { authorization: `Bearer ${server.token}` }
+  activeServerToken(server) === null ? {} : { authorization: `Bearer ${activeServerToken(server)}` }
 
 const coverageFor = (server: ConnectedServer): ReadonlySet<string> | null => {
   const known = coverage.get(server.url)
