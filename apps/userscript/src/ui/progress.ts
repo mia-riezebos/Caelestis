@@ -53,26 +53,17 @@ export const sumColourProgress = (
   return [...totals.values()].sort((a, b) => a.index - b.index)
 }
 
-/** Prefer a complete local classification; otherwise retain the server's whole-template baseline. */
+/** A server template keeps the server's whole-template baseline while browser tiles load. */
 export const freshestProgress = (
   server: TemplateProgress,
-  local: TemplateProgress,
-): TemplateProgress =>
-  local.total === server.total && local.known === local.total ? local : server
+  _local: TemplateProgress,
+): TemplateProgress => server
 
-/** Replace a server colour as soon as this browser has classified every pixel of that colour. */
+/** Server per-colour counts stay authoritative for the same reason as aggregate progress. */
 export const freshestColourProgress = (
   server: readonly TemplateColourProgress[],
-  local: readonly TemplateColourProgress[],
-): readonly TemplateColourProgress[] => {
-  const localByIndex = new Map(local.map((entry) => [entry.index, entry]))
-  return server.map((entry) => {
-    const current = localByIndex.get(entry.index)
-    return current !== undefined && current.total === entry.total && current.known === current.total
-      ? current
-      : entry
-  })
-}
+  _local: readonly TemplateColourProgress[],
+): readonly TemplateColourProgress[] => server
 
 const number = (value: number): string => Math.max(0, value).toLocaleString()
 

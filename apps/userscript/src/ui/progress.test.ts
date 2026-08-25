@@ -39,7 +39,7 @@ describe('template progress', () => {
     ).toEqual({ completed: 50, mismatched: 15, unpainted: 35, known: 100, total: 150 })
   })
 
-  it('uses complete local truth without replacing unknown server coverage', () => {
+  it('keeps the server baseline authoritative while local scans load', () => {
     const server = { completed: 40, mismatched: 10, unpainted: 30, known: 80, total: 100 }
     expect(
       freshestProgress(server, {
@@ -52,31 +52,26 @@ describe('template progress', () => {
     ).toBe(server)
     expect(
       freshestProgress(server, {
-        completed: 90,
-        mismatched: 5,
-        unpainted: 5,
+        completed: 8,
+        mismatched: 2,
+        unpainted: 90,
         known: 100,
         total: 100,
       }),
-    ).toEqual({ completed: 90, mismatched: 5, unpainted: 5, known: 100, total: 100 })
+    ).toBe(server)
   })
 
-  it('replaces each fully known local colour independently', () => {
-    expect(
-      freshestColourProgress(
-        [
-          { index: 0, completed: 2, mismatched: 1, unpainted: 1, known: 4, total: 4 },
-          { index: 1, completed: 1, mismatched: 1, unpainted: 0, known: 2, total: 4 },
-        ],
-        [
-          { index: 0, completed: 4, mismatched: 0, unpainted: 0, known: 4, total: 4 },
-          { index: 1, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 4 },
-        ],
-      ),
-    ).toEqual([
-      { index: 0, completed: 4, mismatched: 0, unpainted: 0, known: 4, total: 4 },
+  it('keeps server colour counts authoritative while local colours load', () => {
+    const server = [
+      { index: 0, completed: 2, mismatched: 1, unpainted: 1, known: 4, total: 4 },
       { index: 1, completed: 1, mismatched: 1, unpainted: 0, known: 2, total: 4 },
-    ])
+    ]
+    expect(
+      freshestColourProgress(server, [
+        { index: 0, completed: 4, mismatched: 0, unpainted: 0, known: 4, total: 4 },
+        { index: 1, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 4 },
+      ]),
+    ).toBe(server)
   })
 
   it('renders one identified meter row for every template colour', () => {
