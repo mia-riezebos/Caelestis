@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.7
+
+### Patch Changes
+
+- c5756b2: Mark only unpainted or mismatched pixels for the selected colour.
+
 ## 0.2.6
 
 ### Patch Changes
