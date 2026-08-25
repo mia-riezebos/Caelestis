@@ -86,13 +86,18 @@ export const repaint = (): void => {
   if (lastFrame !== null) draw(lastFrame)
 }
 
+/** Ask MapLibre to repaint custom GL layers without rerunning screen-space controls immediately. */
+const repaintMap = (): void => {
+  const map = getMap() as { triggerRepaint?: () => void } | null
+  map?.triggerRepaint?.()
+}
+
 /**
  * Redraw everything after a change of ours: our coordinate-backed controls, and wplace's GL layer.
  */
 export const redraw = (): void => {
   repaint()
-  const map = getMap() as { triggerRepaint?: () => void } | null
-  map?.triggerRepaint?.()
+  repaintMap()
 }
 
 /** Keep the GL layer attached across delayed map creation, style reloads, and SPA map replacement. */
@@ -352,7 +357,9 @@ const main = (): void => {
   step('keyboard shortcuts', installKeys)
   // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
   // marker going away.
-  step('mismatch repaint', () => onMismatchesChanged(redraw))
+  // A completed scan changes marker buffers and progress only. Progress has its own DOM listeners;
+  // rerunning every screen-space overlay control here duplicates the MapLibre frame requested next.
+  step('mismatch repaint', () => onMismatchesChanged(repaintMap))
   // wplace add a layer per tile being painted, above anything of ours added earlier, so a placed
   // pixel would otherwise cover the marker it just cleared.
   step('marker order', () => onFrame(keepMarkersAboveDrafts, 'Keep marker layer above drafts'))
