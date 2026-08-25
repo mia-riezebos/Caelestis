@@ -1,9 +1,11 @@
+import { decodeMismatchMask, encodeMismatchMask, type MismatchMask, WRONG } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './local-store.js'
 
 const harness = vi.hoisted(() => ({
   pixels: new Uint8Array(1_000 * 1_000).fill(1),
   templates: [] as PlacedTemplate[],
+  serverMask: null as MismatchMask | null,
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
@@ -14,6 +16,12 @@ vi.mock('../tile-transform.js', () => ({
   onTilePixel: vi.fn(),
   tilePixels: () => harness.pixels,
   UNPAINTED: 255,
+}))
+vi.mock('../server-mismatch.js', () => ({
+  beginServerMismatchFrame: vi.fn(),
+  endServerMismatchFrame: vi.fn(),
+  onServerMismatchesChanged: vi.fn(),
+  serverMismatchMaskFor: () => harness.serverMask,
 }))
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
 vi.mock('./local-store.js', () => ({
@@ -53,6 +61,8 @@ beforeEach(() => {
   vi.resetModules()
   vi.spyOn(performance, 'now').mockReturnValue(0)
   harness.templates = Array.from({ length: 129 }, (_, index) => template(index))
+  harness.pixels.fill(1)
+  harness.serverMask = null
 })
 
 describe('visible mismatch answer retention', () => {
@@ -83,6 +93,29 @@ describe('visible mismatch answer retention', () => {
 
     beginMismatchFrame()
     expect(mismatchesIn(offscreenTemplate, { x: 0, y: 0 })).not.toBe(offscreen)
+    endMismatchFrame()
+  })
+
+  it('draws every server-classified mismatch beyond the old 128-answer cap', async () => {
+    const serverTemplate = {
+      ...template(200),
+      width: 129,
+      indices: new Uint8Array(129),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.pixels.fill(0)
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask(
+        { left: 0, top: 0, width: 129, height: 1 },
+        new Uint8Array(129).fill(WRONG),
+      ),
+    )
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
+
+    beginMismatchFrame()
+    expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toHaveLength(129 * 3)
     endMismatchFrame()
   })
 })

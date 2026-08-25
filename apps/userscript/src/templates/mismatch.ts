@@ -1,11 +1,21 @@
 import {
+  BLANK,
+  type MismatchMask,
+  mismatchClassAt,
   PALETTE_SIZE,
   parseTileKey,
   TILE_SIZE,
   type TileCoord,
   TRANSPARENT_INDEX,
+  WRONG,
 } from '@caelestis/shared'
 import { count } from '../debug.js'
+import {
+  beginServerMismatchFrame,
+  endServerMismatchFrame,
+  onServerMismatchesChanged,
+  serverMismatchMaskFor,
+} from '../server-mismatch.js'
 import {
   draftPixels,
   ensureTilePixels,
@@ -44,7 +54,7 @@ import { horizontalSpans, sourceXAt, wrappedDeltaX } from './placement.js'
 export type Mismatches = Float32Array
 
 interface Cached extends ScanOutcome {
-  /** Identity, not contents: a re-captured tile is a new array, and that is the signal to redo it. */
+  /** Identity, not contents: a new local tile or server mask is the signal to redo the answer. */
   readonly source: Uint8Array
   /** Identity of the template pixels this answer was computed against. */
   readonly templateSource: Uint8Array
@@ -356,6 +366,7 @@ let requestedThisFrame: Set<string> | null = null
 export const beginMismatchFrame = (): void => {
   scanDeadline = performance.now() + SCAN_BUDGET_MS
   requestedThisFrame = new Set()
+  beginServerMismatchFrame()
 }
 
 /**
@@ -369,7 +380,10 @@ export const endMismatchFrame = (): void => {
   const requested = requestedThisFrame
   requestedThisFrame = null
   scanDeadline = 0
-  if (requested === null) return
+  if (requested === null) {
+    endServerMismatchFrame()
+    return
+  }
   for (const cacheKey of [...cache.keys()]) {
     if (requested.has(cacheKey)) continue
     cache.delete(cacheKey)
@@ -384,6 +398,7 @@ export const endMismatchFrame = (): void => {
   for (const cacheKey of [...patchCount.keys()]) {
     if (!cache.has(cacheKey) && !inFlight.has(cacheKey)) patchCount.delete(cacheKey)
   }
+  endServerMismatchFrame()
 }
 
 /**
@@ -800,6 +815,85 @@ const store = (
   return entry
 }
 
+/** Turn the server's compact classification mask into the renderer's exact point lists. */
+const scanServerMask = (
+  template: PlacedTemplate,
+  tile: TileCoord,
+  mask: MismatchMask,
+): ScanOutcome => {
+  const tileLeft = tile.x * TILE_SIZE
+  const tileTop = tile.y * TILE_SIZE
+  const hidden = new Set(assertedHidden(template))
+  const wrong: number[] = []
+  const unpainted: number[] = []
+  let asserted = 0
+  let completed = 0
+  let mismatched = 0
+  let progressUnpainted = 0
+  let progressAsserted = 0
+  const byColour = new Uint32Array(256 * 3)
+  for (let localY = mask.top; localY < mask.top + mask.height; localY += 1) {
+    const y = tileTop + localY
+    const sourceY = y - template.originY
+    if (sourceY < 0 || sourceY >= template.height) continue
+    for (let localX = mask.left; localX < mask.left + mask.width; localX += 1) {
+      const x = tileLeft + localX
+      const sourceX = sourceXAt(template, x)
+      if (sourceX === null) continue
+      const wanted = template.indices[sourceY * template.width + sourceX]
+      if (wanted === undefined || wanted === TRANSPARENT_INDEX || wanted === UNPAINTED) continue
+      const classification = mismatchClassAt(mask, localX, localY)
+      if (classification === null) continue
+      progressAsserted++
+      const colourAt = wanted * 3
+      if (classification === WRONG) {
+        mismatched++
+        byColour[colourAt + 1] = (byColour[colourAt + 1] ?? 0) + 1
+      } else if (classification === BLANK) {
+        progressUnpainted++
+        byColour[colourAt + 2] = (byColour[colourAt + 2] ?? 0) + 1
+      } else {
+        completed++
+        byColour[colourAt] = (byColour[colourAt] ?? 0) + 1
+      }
+      if (hidden.has(wanted)) continue
+      asserted++
+      if (classification === WRONG) wrong.push(x, y, wanted)
+      else if (classification === BLANK) unpainted.push(x, y, wanted)
+    }
+  }
+  let usedColours = 0
+  for (let index = 0; index < 256; index += 1) {
+    const at = index * 3
+    if ((byColour[at] ?? 0) + (byColour[at + 1] ?? 0) + (byColour[at + 2] ?? 0) > 0) {
+      usedColours++
+    }
+  }
+  const progressByColour = new Uint32Array(usedColours * 4)
+  let at = 0
+  for (let index = 0; index < 256; index += 1) {
+    const colourAt = index * 3
+    const one = byColour[colourAt] ?? 0
+    const two = byColour[colourAt + 1] ?? 0
+    const three = byColour[colourAt + 2] ?? 0
+    if (one + two + three === 0) continue
+    progressByColour[at++] = index
+    progressByColour[at++] = one
+    progressByColour[at++] = two
+    progressByColour[at++] = three
+  }
+  return {
+    wrong: new Float32Array(wrong),
+    unpainted: new Float32Array(unpainted),
+    asserted,
+    completed,
+    mismatched,
+    progressUnpainted,
+    progressAsserted,
+    progressByColour,
+  }
+}
+
 /**
  * Tiles a worker is already looking at, against the tile array they were asked about.
  *
@@ -895,6 +989,33 @@ const requestScan = (
  * tile out for as long as the rescan took.
  */
 export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null => {
+  const cacheKey = `${template.id}|${tile.x}/${tile.y}`
+  requestedThisFrame?.add(cacheKey)
+  const key = signature(template)
+  const serverMask = serverMismatchMaskFor(template, tile)
+  if (serverMask !== null) {
+    const existing = cache.get(cacheKey)
+    if (
+      existing !== undefined &&
+      existing.source === serverMask.packed &&
+      existing.templateSource === template.indices &&
+      existing.key === key &&
+      !stale.has(cacheKey)
+    ) {
+      remember(cacheKey, existing)
+      return answerFrom(existing, countsUnpainted(template))
+    }
+    stale.delete(cacheKey)
+    const entry = store(
+      cacheKey,
+      serverMask.packed,
+      template.indices,
+      key,
+      progressSignature(template),
+      scanServerMask(template, tile, serverMask),
+    )
+    return answerFrom(entry, countsUnpainted(template))
+  }
   const pixels = tilePixels(tile)
   if (pixels === null) {
     // Never decoded while we were watching. Go and get it rather than wait for wplace to.
@@ -902,9 +1023,6 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     return null
   }
 
-  const cacheKey = `${template.id}|${tile.x}/${tile.y}`
-  requestedThisFrame?.add(cacheKey)
-  const key = signature(template)
   const existing = cache.get(cacheKey)
   if (
     existing !== undefined &&
@@ -1145,6 +1263,11 @@ onTilePixel((tile, x, y, placed) => {
   const before = changed
   patchTile(tile, x, y, placed)
   if (changed === before) return
+  notifyChanged()
+})
+
+onServerMismatchesChanged(() => {
+  changed++
   notifyChanged()
 })
 

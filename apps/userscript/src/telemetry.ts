@@ -13,6 +13,7 @@ import {
 } from '@caelestis/shared'
 import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
+import { invalidateServerMismatchTile } from './server-mismatch.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -134,8 +135,10 @@ const uploadWanted = async (
             body: entry.bytes.slice().buffer,
           },
         )
-        if (response?.ok) uploaded.add(`${entry.tile}\u0000${entry.sha256}`)
-        else if (response !== null)
+        if (response?.ok) {
+          uploaded.add(`${entry.tile}\u0000${entry.sha256}`)
+          invalidateServerMismatchTile(server.url, entry.coord)
+        } else if (response !== null)
           warn('install', 'telemetry tile upload was rejected', {
             server: server.url,
             tile: entry.tile,
