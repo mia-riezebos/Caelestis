@@ -1,7 +1,14 @@
-name = "wplace-template-server"
+name = "caelestis-backend"
 main = "src/worker.ts"
+account_id = "492214885e7a580ccc1d141dfdb4dc5f"
 compatibility_date = "2026-08-03"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
+
+[[routes]]
+pattern = "backend.caelestis.mia.cx"
+custom_domain = true
 
 [[r2_buckets]]
 binding = "BLOBS"
@@ -10,7 +17,7 @@ bucket_name = "caelestis-blobs"
 [[d1_databases]]
 binding = "DB"
 database_name = "caelestis"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "53a57050-6d18-4466-980d-f5e51e416c04"
 migrations_dir = "./migrations"
 
 [[durable_objects.bindings]]
@@ -23,9 +30,9 @@ new_sqlite_classes = ["TelemetryShard"]
 
 [vars]
 SHARD_STRATEGY = "single"
-SERVER_ID = "00000000-0000-7000-8000-000000000000"
-SERVER_NAME = "Template Server"
-SERVER_DESCRIPTION = "A self-hosted wplace template server"
+SERVER_ID = "01a03930-4f7d-7e72-aa07-666380bf60f7"
+SERVER_NAME = "Caelestis"
+SERVER_DESCRIPTION = "The official Caelestis template server"
 # The canvas season this deployment serves. /manifest is season-scoped and ServerInfo carries no
 # season, so a later-season server has to say so here or it answers with season 0's.
 SEASON = "0"
