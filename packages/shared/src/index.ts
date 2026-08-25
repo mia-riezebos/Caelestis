@@ -1,5 +1,6 @@
 export { sha256Hex } from './hash.js'
 export * from './manifest.js'
+export * from './mismatch-mask.js'
 export {
   PALETTE_RGB,
   PALETTE_SIZE,

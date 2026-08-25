@@ -1,6 +1,9 @@
 import {
+  BLANK,
   decodePng,
   decodeWplaceIndexedPng,
+  encodeMismatchMask,
+  MATCH,
   millis,
   PALETTE_RGB,
   type PaintEvent,
@@ -12,6 +15,7 @@ import {
   type TileCoord,
   TRANSPARENT_INDEX,
   WORLD_PIXELS,
+  WRONG,
 } from '@caelestis/shared'
 import type {
   ContributionDelta,
@@ -82,12 +86,18 @@ const decodeCanvas = async (bytes: Uint8Array): Promise<Uint8Array> => {
   return quantiseToPalette(image.pixels, PALETTE_RGB).indices
 }
 
+interface ClassifiedTarget {
+  readonly status: TemplateTileStatusRecord
+  readonly mask?: Uint8Array
+}
+
 const classifyTarget = async (
   ports: Pick<Ports, 'blobs'>,
   target: TelemetryTarget,
   canvas: Uint8Array,
   observedAt: number,
-): Promise<TemplateTileStatusRecord | null> => {
+  includeMask = false,
+): Promise<ClassifiedTarget | null> => {
   const rect = chunkRect(target)
   if (rect === null) return null
   const bytes = await ports.blobs.get('chunks', target.hash)
@@ -98,6 +108,7 @@ const classifyTarget = async (
   let correct = 0
   let wrong = 0
   let blank = 0
+  const classifications = includeMask ? new Uint8Array(rect.width * rect.height) : null
   const colours = new Map<
     number,
     { index: number; correct: number; wrong: number; blank: number; total: number }
@@ -120,26 +131,73 @@ const classifyTarget = async (
       if (actual === TRANSPARENT_INDEX) {
         blank++
         colour.blank++
+        if (classifications !== null) classifications[chunkRow + x] = BLANK
       } else if (actual === wanted) {
         correct++
         colour.correct++
+        if (classifications !== null) classifications[chunkRow + x] = MATCH
       } else {
         wrong++
         colour.wrong++
+        if (classifications !== null) classifications[chunkRow + x] = WRONG
       }
       colours.set(wanted, colour)
     }
   }
   return {
-    templateId: target.templateId,
-    versionId: target.versionId,
-    tile: { x: target.tileX, y: target.tileY },
-    correct,
-    wrong,
-    blank,
-    colours: [...colours.values()].sort((left, right) => left.index - right.index),
-    observedAt: millis(observedAt),
+    status: {
+      templateId: target.templateId,
+      versionId: target.versionId,
+      tile: { x: target.tileX, y: target.tileY },
+      correct,
+      wrong,
+      blank,
+      colours: [...colours.values()].sort((left, right) => left.index - right.index),
+      observedAt: millis(observedAt),
+    },
+    ...(classifications === null
+      ? {}
+      : {
+          mask: encodeMismatchMask(rect, classifications),
+        }),
   }
+}
+
+export type MismatchMaskRead =
+  | { readonly kind: 'found'; readonly bytes: Uint8Array }
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'unobserved' }
+
+/** Read one server-owned classification mask from the latest accepted canvas observation. */
+export const readMismatchMask = async (
+  ports: Ports,
+  query: {
+    readonly season: number
+    readonly templateId: string
+    readonly versionId: string
+    readonly tile: TileCoord
+    readonly includeUnpublished: boolean
+  },
+): Promise<MismatchMaskRead> => {
+  const targets = await ports.sql.listTelemetryTargets(
+    query.season,
+    query.tile,
+    query.includeUnpublished,
+  )
+  const target = targets.find(
+    (candidate) =>
+      candidate.templateId === query.templateId && candidate.versionId === query.versionId,
+  )
+  if (target === undefined) return { kind: 'not-found' }
+  const latest = await ports.sql.readLatestTile(query.season, query.tile)
+  if (latest === null) return { kind: 'unobserved' }
+  const canvasBytes = await ports.blobs.get('tiles', latest.hash)
+  if (canvasBytes === null) return { kind: 'unobserved' }
+  const canvas = await decodeCanvas(canvasBytes).catch(() => null)
+  if (canvas === null) return { kind: 'unobserved' }
+  const classified = await classifyTarget(ports, target, canvas, latest.observedAt, true)
+  if (classified?.mask === undefined) return { kind: 'unobserved' }
+  return { kind: 'found', bytes: classified.mask }
 }
 
 /**
@@ -163,9 +221,10 @@ export const recordObservation = async (
     metadata.includeUnpublished,
   )
   const observedAtMs = metadata.observedAt * 1_000
-  const statuses = (
+  const classified = (
     await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)))
-  ).filter((status): status is TemplateTileStatusRecord => status !== null)
+  ).filter((result): result is ClassifiedTarget => result !== null)
+  const statuses = classified.map((result) => result.status)
   const observation: TileObservation = {
     season: metadata.season,
     tile: metadata.tile,

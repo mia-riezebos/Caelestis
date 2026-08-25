@@ -1,10 +1,15 @@
 import {
+  BLANK,
+  decodeMismatchMask,
   encodeIndexedPng,
+  MATCH,
   millis,
+  mismatchClassAt,
   seconds,
   sha256Hex,
   TILE_SIZE,
   TRANSPARENT_INDEX,
+  WRONG,
 } from '@caelestis/shared'
 import { describe, expect, it } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
@@ -129,6 +134,37 @@ const contribution = (overrides: Partial<ContributionDelta>): ContributionDelta 
 })
 
 describe('telemetry read routes', () => {
+  it('serves the server-classified mismatch mask for one visible template tile', async () => {
+    const { app } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const readToken = await mintToken(app, 'read')
+    await uploadCanvasTile(app, reportToken, 1_750_032_000)
+    const manifestResponse = await app.request('/manifest?season=0', {
+      headers: bearer(readToken),
+    })
+    const manifest = (await manifestResponse.json()) as {
+      templates: readonly { id: string; version: string }[]
+    }
+    const version = manifest.templates.find((template) => template.id === templateId)?.version
+    expect(version).toBeDefined()
+
+    const response = await app.request(
+      `/telemetry/templates/${templateId}/versions/${version}/tiles/0/0/mismatches?season=0`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain(
+      'application/vnd.caelestis.mismatch-mask',
+    )
+    const mask = decodeMismatchMask(new Uint8Array(await response.arrayBuffer()))
+    expect(mask).not.toBeNull()
+    expect(mask && mismatchClassAt(mask, 0, 0)).toBe(MATCH)
+    expect(mask && mismatchClassAt(mask, 1, 0)).toBe(BLANK)
+    expect(mask && mismatchClassAt(mask, 2, 0)).toBe(WRONG)
+  })
+
   it('serves folded pace history over a half-open range', async () => {
     const { app, sql } = await harness()
     const templateId = await createPublishedTemplate(app)

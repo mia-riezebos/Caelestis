@@ -26,7 +26,13 @@ import {
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   TILE_HISTORY_RESOLUTIONS,
 } from '../ports/index.js'
-import { MAX_CANVAS_TILE_BYTES, offerTile, recordPaint, uploadTile } from '../telemetry/ingest.js'
+import {
+  MAX_CANVAS_TILE_BYTES,
+  offerTile,
+  readMismatchMask,
+  recordPaint,
+  uploadTile,
+} from '../telemetry/ingest.js'
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const WHOLE_NUMBER = /^(?:0|[1-9]\d*)$/
@@ -133,6 +139,45 @@ export const createTelemetryRoutes = (
     }
     return c.json(response)
   })
+
+  routes.get(
+    '/templates/:templateId/versions/:versionId/tiles/:x/:y/mismatches',
+    requireScope(auth, 'read'),
+    async (c) => {
+      const templateId = c.req.param('templateId')
+      const versionId = c.req.param('versionId')
+      const x = wholeNumber(c.req.param('x'))
+      const y = wholeNumber(c.req.param('y'))
+      const season =
+        c.req.query('season') === undefined
+          ? options.currentSeason
+          : wholeNumber(c.req.query('season'))
+      if (
+        !UUID_V7.test(templateId) ||
+        !UUID_V7.test(versionId) ||
+        x === null ||
+        y === null ||
+        x >= WORLD_TILES ||
+        y >= WORLD_TILES ||
+        season === null
+      ) {
+        return c.json({ error: 'template, version, tile and season must be valid' }, 400)
+      }
+      const result = await readMismatchMask(ports, {
+        season,
+        templateId,
+        versionId,
+        tile: { x, y },
+        includeUnpublished: c.get('caller').scope === 'admin',
+      })
+      if (result.kind === 'not-found') return c.json({ error: 'template tile not found' }, 404)
+      if (result.kind === 'unobserved') return c.body(null, 204)
+      return c.body(result.bytes.slice().buffer as ArrayBuffer, 200, {
+        'content-type': 'application/vnd.caelestis.mismatch-mask',
+        'cache-control': 'no-store',
+      })
+    },
+  )
 
   routes.get('/history', requireScope(auth, 'read'), async (c) => {
     const templateIds = parseTemplateIds(c.req.query('templateIds'))
