@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.3
+
+### Patch Changes
+
+- ea5bbc3: Import templates directly into servers, add configurable selected-colour markers, keep server progress stable while tiles load, and hide local controls with their parent folders.
+
 ## 0.2.2
 
 ### Patch Changes
