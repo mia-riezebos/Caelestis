@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.4
+
+### Patch Changes
+
+- f9f1b9e: Render all server templates that fit the aggregate pixel budget instead of dropping overlays after legacy template and bitmap caps.
+
 ## 0.2.3
 
 ### Patch Changes
