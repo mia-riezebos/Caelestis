@@ -10,6 +10,7 @@ import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
 import { measureProfile } from './profile.js'
+import { buildExactRgbIndex, exactRgbIndex } from './rgb-index.js'
 import { draftedPixelsIn } from './templates/drafted.js'
 
 export type WplaceRasterRole = 'tile' | 'draft' | 'other'
@@ -1126,21 +1127,16 @@ export const loadTilePixels = async (
 }
 
 /**
- * RGB to palette index, as a flat table.
+ * Exact RGB to palette index, keyed by red and blue with green held in the entry.
  *
- * Sixteen megabytes to avoid a hash lookup a million times per tile, allocated the first time a tile
- * is converted and never again. A `Map` measured slower by enough to matter on a conversion that
- * blocks the main thread.
+ * The palette has no red-blue collisions. That gives the hot conversion loop one small typed-array
+ * lookup and one green comparison without retaining a sparse 16 MiB table or hashing boxed numbers.
  */
-let rgbToIndex: Uint8Array | null = null
+let rgbToIndex: Uint32Array | null = null
 
-const indexTable = (): Uint8Array => {
+const indexTable = (): Uint32Array => {
   if (rgbToIndex !== null) return rgbToIndex
-  const table = new Uint8Array(1 << 24).fill(UNPAINTED)
-  for (const colour of WPLACE_PALETTE) {
-    const [r, g, b] = colour.rgb
-    table[(r << 16) | (g << 8) | b] = colour.index
-  }
+  const table = buildExactRgbIndex(WPLACE_PALETTE)
   rgbToIndex = table
   return table
 }
@@ -1386,8 +1382,13 @@ const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
         y,
         data[at + 3] === 0
           ? UNPAINTED
-          : (table[((data[at] ?? 0) << 16) | ((data[at + 1] ?? 0) << 8) | (data[at + 2] ?? 0)] ??
-              UNPAINTED),
+          : exactRgbIndex(
+              table,
+              data[at] ?? 0,
+              data[at + 1] ?? 0,
+              data[at + 2] ?? 0,
+              UNPAINTED,
+            ),
       )
     }
   }
@@ -1522,8 +1523,13 @@ const capture = (
           const index =
             data[i + 3] === 0
               ? UNPAINTED
-              : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
-                UNPAINTED)
+              : exactRgbIndex(
+                  table,
+                  data[i] ?? 0,
+                  data[i + 1] ?? 0,
+                  data[i + 2] ?? 0,
+                  UNPAINTED,
+                )
           // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
           if (from === 'preview') {
             const x = p % TILE_SIZE
