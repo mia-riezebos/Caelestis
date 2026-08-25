@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.0
+
+### Minor Changes
+
+- 9a74581: Release the current Caelestis userscript as version 0.2.0.
+
 ## 0.1.1
 
 ### Patch Changes
