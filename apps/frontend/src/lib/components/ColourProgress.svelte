@@ -1,5 +1,6 @@
 <script lang="ts">
 import { type TemplateColourStatus, WPLACE_PALETTE } from '@caelestis/shared'
+import { persisted } from '$lib/persisted.svelte'
 
 let { colours }: { colours: readonly TemplateColourStatus[] } = $props()
 
@@ -19,7 +20,11 @@ const SORTS = [
 ] as const
 type SortKey = (typeof SORTS)[number]['key']
 
-let sortBy = $state<SortKey>('index')
+const storedSort = persisted<SortKey>('caelestis:colour-sort', 'index')
+// Guard the stored value: a key from an older build must not break the switch below.
+const sortBy = $derived(
+  SORTS.some((sort) => sort.key === storedSort.value) ? storedSort.value : 'index',
+)
 
 const rows = $derived.by(() => {
   const resolved = colours
@@ -66,7 +71,8 @@ const rows = $derived.by(() => {
   <select
     id="colour-sort"
     class="select select-bordered select-xs w-36"
-    bind:value={sortBy}
+    value={sortBy}
+    onchange={(event) => (storedSort.value = event.currentTarget.value as SortKey)}
   >
     {#each SORTS as sort (sort.key)}
       <option value={sort.key}>{sort.label}</option>
