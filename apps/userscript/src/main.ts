@@ -2,7 +2,9 @@ import { TILE_SIZE } from '@caelestis/shared'
 import {
   canvasPixelAtIn,
   cssPixelsPerCanvasPixelIn,
+  type ScreenProjection,
   screenPointForIn,
+  screenProjectionIn,
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
@@ -183,6 +185,9 @@ export const screenPointFor = (x: number, y: number): { x: number; y: number } |
 export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
   return cssPixelsPerCanvasPixelIn(lastFrame)
 }
+
+/** One canvas-layout read shared by callers that project many points in the current frame. */
+export const screenProjection = (): ScreenProjection | null => screenProjectionIn(lastFrame)
 
 /** Run one independent piece of start-up without letting its failure cancel the rest. */
 const step = (what: string, run: () => void): void => {
@@ -366,7 +371,9 @@ const main = (): void => {
     // The pipette fallback reads the exact pixel-art tile, so Paint itself is a pixel consumer even
     // when mismatch markers are off. Starting at drawer-open gives visible tiles time to populate
     // before the one-shot picker click; a miss is also chased on demand by `placedIndexAt`.
-    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen())
+    const interest = (tile: { readonly x: number; readonly y: number }): boolean =>
+      isPaintOpen() || wantsTilePixels(tile)
+    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen(), interest)
     sync()
     onStateChange(sync)
     onLocalChange(sync)

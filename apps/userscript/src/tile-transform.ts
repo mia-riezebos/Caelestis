@@ -657,13 +657,17 @@ export interface AcceptedPaint {
 }
 
 type FetchedTileListener = (tile: TileCoord, bytes: Uint8Array, observedAt: number) => void
+type FetchedTileInterest = (tile: TileCoord) => boolean
 type AcceptedPaintListener = (paint: AcceptedPaint) => void
-const fetchedTileListeners = new Set<FetchedTileListener>()
+const fetchedTileListeners = new Map<FetchedTileListener, FetchedTileInterest | null>()
 const acceptedPaintListeners = new Set<AcceptedPaintListener>()
 
 /** Observe exact PNG bytes only after wplace itself consumes a canvas tile response. */
-export const onFetchedTile = (listener: FetchedTileListener): (() => void) => {
-  fetchedTileListeners.add(listener)
+export const onFetchedTile = (
+  listener: FetchedTileListener,
+  interest: FetchedTileInterest | null = null,
+): (() => void) => {
+  fetchedTileListeners.set(listener, interest)
   return () => fetchedTileListeners.delete(listener)
 }
 
@@ -673,11 +677,24 @@ export const onAcceptedPaint = (listener: AcceptedPaintListener): (() => void) =
   return () => acceptedPaintListeners.delete(listener)
 }
 
+const interestedTileListeners = (tile: TileCoord): readonly FetchedTileListener[] => {
+  const interested: FetchedTileListener[] = []
+  for (const [listener, wants] of fetchedTileListeners) {
+    try {
+      if (wants === null || wants(tile)) interested.push(listener)
+    } catch {
+      count('telemetry:tile-interest-failed')
+    }
+  }
+  return interested
+}
+
 const notifyFetchedTile = (tile: TileCoord, bytes: Uint8Array): void => {
-  if (fetchedTileListeners.size === 0) return
+  const listeners = interestedTileListeners(tile)
+  if (listeners.length === 0) return
   const held = bytes.slice()
   const observedAt = Math.floor(Date.now() / 1_000)
-  for (const listener of fetchedTileListeners) {
+  for (const listener of listeners) {
     try {
       listener(tile, held, observedAt)
     } catch {
@@ -850,10 +867,12 @@ const installFetchTap = (realm: Window & typeof globalThis): InstalledValueHook 
                   if (this === tappedResponse) {
                     tileOfBlob.set(blob, observedTile)
                     recordRead(blob.size)
-                    void blob
-                      .arrayBuffer()
-                      .then((bytes) => notifyFetchedTile(observedTile, new Uint8Array(bytes)))
-                      .catch(() => {})
+                    if (interestedTileListeners(observedTile).length > 0) {
+                      void blob
+                        .arrayBuffer()
+                        .then((bytes) => notifyFetchedTile(observedTile, new Uint8Array(bytes)))
+                        .catch(() => {})
+                    }
                   }
                 } catch {
                   // The native read already consumed the body successfully; observation cannot reject it.
@@ -952,6 +971,7 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
 const pixelsOfTile = new Map<string, Uint8Array>()
 const KEEP_TILE_PIXELS = 64
 let capturePixels = false
+let captureInterest: ((tile: TileCoord) => boolean) | null = null
 
 /** Index meaning "nobody has painted here". Distinct from every palette entry. */
 export const UNPAINTED = 255
@@ -974,7 +994,11 @@ let captureGeneration = 0
  * the markers on — and the data is not wasted by being briefly unwatched, because switching back on
  * re-reads everything visible anyway. The kept copy is what shows instantly while that happens.
  */
-export const captureTilePixels = (on: boolean): void => {
+export const captureTilePixels = (
+  on: boolean,
+  interest: ((tile: TileCoord) => boolean) | null = null,
+): void => {
+  captureInterest = interest
   if (capturePixels === on) return
   capturePixels = on
   if (on) captureGeneration++
@@ -1198,6 +1222,22 @@ export const draftPixels = (tile: TileCoord): Uint8Array | null => {
  */
 const transparentOfTile = new Map<string, Set<number>>()
 
+type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
+type PixelBatchListener = (tile: TileCoord, triples: readonly number[]) => void
+const pixelListeners: PixelListener[] = []
+const pixelBatchListeners: PixelBatchListener[] = []
+
+const notifyPixelBatch = (tile: TileCoord, triples: readonly number[]): void => {
+  if (triples.length === 0) return
+  for (const listener of pixelBatchListeners) {
+    try {
+      listener(tile, triples)
+    } catch {
+      count('pixels:listener-failed')
+    }
+  }
+}
+
 const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
   const x = p % TILE_SIZE
   const y = (p - x) / TILE_SIZE
@@ -1208,6 +1248,7 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
       count('pixels:listener-failed')
     }
   }
+  notifyPixelBatch(tile, [x, y, index])
 }
 
 /**
@@ -1288,12 +1329,14 @@ export const registerDraftCanvas = (canvas: object, tile: TileCoord): void => {
   if (held !== undefined && applyWrite(tile, held)) queuedWrites.delete(canvas)
 }
 
-type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
-const pixelListeners: PixelListener[] = []
-
 /** Notified when a single placed pixel changes, in canvas coordinates. */
 export const onTilePixel = (listener: PixelListener): void => {
   pixelListeners.push(listener)
+}
+
+/** Notified once for a group of tile-local x/y/index triples changed by the same operation. */
+export const onTilePixels = (listener: PixelBatchListener): void => {
+  pixelBatchListeners.push(listener)
 }
 
 /**
@@ -1367,6 +1410,7 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
   }
   rememberDraft(key, draft)
   let changed = 0
+  const changedTriples: number[] = []
   for (let i = 0; i < triples.length; i += 3) {
     const x = triples[i] as number
     const y = triples[i + 1] as number
@@ -1375,6 +1419,7 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
     if (draft[p] === index) continue
     draft[p] = index
     changed++
+    changedTriples.push(x, y, index)
     for (const listener of pixelListeners) {
       try {
         listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
@@ -1383,6 +1428,7 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
       }
     }
   }
+  notifyPixelBatch(tile, changedTriples)
   if (changed > 0) count('pixels:patched a draft write')
   // The write that lands on a pixel drafted Transparent is a no-op — see `reconcileDraftedTile`.
   // Asking now rather than waiting for the throttled pass is what makes that marker appear at once.
@@ -1403,12 +1449,14 @@ const apply = (
   from: Uint8Array | Map<number, number>,
 ): number => {
   let moved = 0
+  const changedTriples: number[] = []
   const at = (p: number, index: number): void => {
     if (into[p] === index) return
     into[p] = index
     moved++
     const x = p % TILE_SIZE
     const y = (p - x) / TILE_SIZE
+    changedTriples.push(x, y, index)
     for (const listener of pixelListeners) {
       try {
         listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
@@ -1419,8 +1467,18 @@ const apply = (
   }
   if (from instanceof Map) for (const [p, index] of from) at(p, index)
   else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
+  notifyPixelBatch(tile, changedTriples)
   if (moved > 0) count('pixels:changed', moved)
   return moved
+}
+
+let captureContext: OffscreenCanvasRenderingContext2D | null = null
+
+const reusableCaptureContext = (): OffscreenCanvasRenderingContext2D | null => {
+  if (captureContext !== null) return captureContext
+  const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
+  captureContext = canvas.getContext('2d', { willReadFrequently: true })
+  return captureContext
 }
 
 /** Read a tile into palette indices, from whatever wplace last drew it from. */
@@ -1430,7 +1488,7 @@ const capture = (
   from: 'tile' | 'preview' = 'tile',
 ): void =>
   measureProfile('Tile pixel capture', () => {
-    if (!capturePixels) return
+    if (!capturePixels || (captureInterest !== null && !captureInterest(tile))) return
     /**
      * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
      *
@@ -1448,8 +1506,7 @@ const capture = (
       if (empty) {
         indices.fill(UNPAINTED)
       } else {
-        const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
-        const context = canvas.getContext('2d', { willReadFrequently: true })
+        const context = reusableCaptureContext()
         if (context === null) return
         context.drawImage(bitmap, 0, 0)
         const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)

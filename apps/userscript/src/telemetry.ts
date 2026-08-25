@@ -35,6 +35,7 @@ const RETRIES = 3
 const MAX_RECENT_TILES = 32
 const MAX_RECENT_TILE_BYTES = 32 * 1_024 * 1_024
 const MAX_RECENT_PAINTS = 64
+const MAX_DEDUPE_VALUES = 4_096
 
 interface OfferedTile extends TileOffer {
   readonly coord: TileCoord
@@ -77,6 +78,17 @@ const recentTiles = new Map<string, OfferedTile>()
 const recentPaints: ObservedPaint[] = []
 let recentTileBytes = 0
 
+/** Remember bounded recent delivery IDs; old values may safely be offered again after eviction. */
+const rememberDedupe = (values: Set<string>, value: string): void => {
+  if (values.has(value)) return
+  while (values.size >= MAX_DEDUPE_VALUES) {
+    const oldest = values.values().next()
+    if (oldest.done) break
+    values.delete(oldest.value)
+  }
+  values.add(value)
+}
+
 const statusKey = (serverUrl: string, templateId: string): string =>
   `${serverUrl}\u0000${templateId}`
 
@@ -86,6 +98,22 @@ const authHeaders = (server: ConnectedServer): Record<string, string> =>
 const coverageFor = (server: ConnectedServer): ReadonlySet<string> | null => {
   const known = coverage.get(server.url)
   return known !== undefined && isCurrentServerConnection(known.server) ? known.tiles : null
+}
+
+const wantsObservedTile = (tile: TileCoord): boolean => {
+  if (!getState().shareTiles) return false
+  const connected = getState().servers.filter(
+    (server) => server.status === 'connected' && server.season !== null,
+  )
+  if (connected.length === 0) return false
+  const key = tileKey(tile)
+  let awaitingCoverage = false
+  for (const server of connected) {
+    const known = coverageFor(server)
+    if (known === null) awaitingCoverage = true
+    else if (known.has(key)) return true
+  }
+  return awaitingCoverage
 }
 
 const fetchWithRetry = async (url: string, init: RequestInit): Promise<Response | null> => {
@@ -203,7 +231,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       : { server, values: new Set<string>() }
   for (const entry of entries) {
     const offerKey = `${entry.tile}\u0000${entry.sha256}`
-    if (!wanted.has(entry.tile) || uploaded.has(offerKey)) dedupe.values.add(offerKey)
+    if (!wanted.has(entry.tile) || uploaded.has(offerKey)) rememberDedupe(dedupe.values, offerKey)
   }
   offered.set(server.url, dedupe)
   if (pending.entries.size > entries.length) {
@@ -303,7 +331,7 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
           ? previousDedupe
           : { server, values: new Set<string>() }
       if (dedupe.values.has(eventId)) return
-      dedupe.values.add(eventId)
+      rememberDedupe(dedupe.values, eventId)
       reportedPaints.set(server.url, dedupe)
       const scopedSubmitted = tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
       const event: PaintEvent = {
@@ -494,7 +522,7 @@ export const installTelemetry = (): void => {
   onServerContents(rememberContents)
   onFetchedTile((tile, bytes, observedAt) => {
     void observeTile(tile, bytes, observedAt).catch(reportTelemetryError)
-  })
+  }, wantsObservedTile)
   onAcceptedPaint((paint) => {
     observePaint(paint)
   })

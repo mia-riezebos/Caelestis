@@ -45,9 +45,13 @@ self.onmessage = (event) => {
   }
   const startedAt = performance.now()
   const outcome = scanTile(job, wanted)
+  const markerBuffers =
+    outcome.wrong.buffer === outcome.unpainted.buffer
+      ? [outcome.wrong.buffer]
+      : [outcome.wrong.buffer, outcome.unpainted.buffer]
   self.postMessage(
     { id: job.id, durationMs: performance.now() - startedAt, ...outcome },
-    [outcome.wrong.buffer, outcome.unpainted.buffer, outcome.progressByColour.buffer],
+    [...markerBuffers, outcome.progressByColour.buffer],
   )
 }
 `
@@ -147,10 +151,7 @@ export const hasWorker = (): boolean => ensureWorker() !== null
  * that forbids workers and a worker that has died, and it is why the pure function this is built
  * from is exported rather than hidden in here.
  */
-const runScan = async (
-  job: ScanJob,
-  indices: Uint8Array,
-): Promise<ScanOutcome | null> => {
+const runScan = async (job: ScanJob, indices: Uint8Array): Promise<ScanOutcome | null> => {
   const active = ensureWorker()
   if (active === null) return null
 
@@ -230,10 +231,7 @@ const drainScans = (): void => {
  * A worker has one execution lane. Keep the browser-side queue bounded instead of transferring an
  * entire viewport's megabyte bands into an unobservable worker backlog.
  */
-export const scanInWorker = (
-  job: ScanJob,
-  indices: Uint8Array,
-): Promise<ScanOutcome | null> => {
+export const scanInWorker = (job: ScanJob, indices: Uint8Array): Promise<ScanOutcome | null> => {
   if (ensureWorker() === null) return Promise.resolve(null)
   if (queuedScans.length >= MAX_QUEUED_SCANS) {
     count('mismatch:worker queue full')

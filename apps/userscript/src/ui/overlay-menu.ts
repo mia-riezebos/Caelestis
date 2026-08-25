@@ -1,6 +1,7 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
-import { cssPixelsPerCanvasPixel, screenPointFor } from '../main.js'
+import { screenProjection } from '../main.js'
 import {
   admittedServerContentsFor,
   type ConnectedServer,
@@ -2034,7 +2035,10 @@ const expireMoveFailure = (id: string): void => {
 }
 
 /** Where the overlay's top-right corner sits on screen, or null when none of it is in view. */
-const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | null => {
+const cornerOnScreen = (
+  template: PlacedTemplate,
+  projection: ScreenProjection | null,
+): { x: number; y: number } | null => {
   // Hidden templates are managed from the main menu. This must use effective visibility because a
   // template can keep its own switch on while a server or folder above it hides the whole branch.
   // Keeping a local trigger for something no longer drawn leaves chrome over unrelated map pixels.
@@ -2044,12 +2048,12 @@ const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | nu
   const preview = previewOriginFor(template.id)
   const originX = preview?.x ?? template.originX
   const originY = preview?.y ?? template.originY
-  const topLeft = screenPointFor(originX, originY)
-  if (topLeft === null) return null
+  if (projection === null) return null
+  const topLeft = projection.pointFor(originX, originY)
   // One projection, then the size in CSS pixels. Projecting the far corner separately lets the two
   // calls resolve to different wrapped copies of the world for a template near the seam, which
   // produces a box spanning the screen and defeats the check below.
-  const scale = cssPixelsPerCanvasPixel()
+  const scale = projection.pixelsPerCanvasPixel
   const right = topLeft.x + template.width * scale.x
   const bottom = topLeft.y + template.height * scale.y
   // Projection never fails for a coordinate that is merely off-screen, so without this every
@@ -2203,7 +2207,11 @@ const renderControls = (
   // and `style.top`. Interleaving them makes each template's reads force a layout recalc that the
   // previous template's writes invalidated — two synchronous reflows per template per frame, inside
   // a painter. Read everything first, then write.
-  const placements = templates.map((template) => ({ template, corner: cornerOnScreen(template) }))
+  const projection = screenProjection()
+  const placements = templates.map((template) => ({
+    template,
+    corner: cornerOnScreen(template, projection),
+  }))
 
   for (const { template, corner } of placements) {
     let button = buttons.get(template.id)

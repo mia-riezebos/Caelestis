@@ -31,6 +31,7 @@ vi.mock('../tile-transform.js', () => ({
   ensureTilePixels: vi.fn(),
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
+  onTilePixels: vi.fn(),
   tilePixels: () => (harness.cached ? harness.pixels : null),
   UNPAINTED: 255,
 }))

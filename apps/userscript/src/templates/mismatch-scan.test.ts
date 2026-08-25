@@ -62,10 +62,7 @@ describe('mismatch scan progress', () => {
       maskPacked: new Uint8Array([0 | (1 << 2) | (2 << 4)]),
       ignored: [254, 255],
     }
-    const outcome = scanTile(
-      maskJob,
-      new Uint8Array([1, 2, 3]),
-    )
+    const outcome = scanTile(maskJob, new Uint8Array([1, 2, 3]))
 
     expect(outcome).toMatchObject({
       completed: 1,
@@ -75,5 +72,6 @@ describe('mismatch scan progress', () => {
     })
     expect([...outcome.wrong]).toEqual([1, 0, 2])
     expect([...outcome.unpainted]).toEqual([2, 0, 3])
+    expect(outcome.wrong.buffer).toBe(outcome.unpainted.buffer)
   })
 })

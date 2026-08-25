@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
   serverMask: null as MismatchMask | null,
   workerAvailable: false,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
+  onTilePixels: vi.fn(),
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
@@ -17,6 +18,7 @@ vi.mock('../tile-transform.js', () => ({
   ensureTilePixels: vi.fn(),
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
+  onTilePixels: harness.onTilePixels,
   tilePixels: () => harness.pixels,
   UNPAINTED: 255,
 }))
@@ -68,9 +70,18 @@ beforeEach(() => {
   harness.serverMask = null
   harness.workerAvailable = false
   harness.workerScan.mockReset()
+  harness.onTilePixels.mockReset()
 })
 
 describe('visible mismatch answer retention', () => {
+  it('requests pixel capture only for intersecting visible template tiles', async () => {
+    const { wantsTilePixels } = await import('./mismatch.js')
+
+    expect(wantsTilePixels()).toBe(true)
+    expect(wantsTilePixels({ x: 0, y: 0 })).toBe(true)
+    expect(wantsTilePixels({ x: 1, y: 0 })).toBe(false)
+  })
+
   it('keeps every answer requested by one visible frame', async () => {
     const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
     beginMismatchFrame()
@@ -161,9 +172,7 @@ describe('visible mismatch answer retention', () => {
     })
     await vi.waitFor(() => {
       beginMismatchFrame()
-      expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toEqual(
-        new Float32Array([0, 0, 0]),
-      )
+      expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toEqual(new Float32Array([0, 0, 0]))
       endMismatchFrame()
     })
   })
@@ -179,5 +188,26 @@ describe('visible mismatch answer retention', () => {
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(0)
     expect(disagreementsIn(selected, { x: 0, y: 0 })).toEqual(new Float32Array([0, 0, 0]))
     endMismatchFrame()
+  })
+
+  it('invalidates a busy tile once instead of patching every announced pixel', async () => {
+    const selected = template(203)
+    harness.templates = [selected]
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(3)
+    endMismatchFrame()
+
+    harness.workerAvailable = true
+    harness.workerScan.mockReturnValueOnce(new Promise(() => undefined))
+    const listener = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+    listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 1]).flat())
+
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(3)
+    endMismatchFrame()
+    expect(harness.workerScan).toHaveBeenCalledOnce()
   })
 })

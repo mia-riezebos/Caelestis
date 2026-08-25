@@ -127,8 +127,7 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
       let classification: number
       if (drafted !== unpaintedIndex) classification = drafted === wanted ? match : wrongClass
       else if (job.kind === 'mask') {
-        const maskAt =
-          (y - tileTop - job.maskTop) * job.maskWidth + (x - tileLeft - job.maskLeft)
+        const maskAt = (y - tileTop - job.maskTop) * job.maskWidth + (x - tileLeft - job.maskLeft)
         classification =
           ((job.maskPacked[Math.floor(maskAt / 4)] ?? 0) >> ((maskAt % 4) * 2)) & 0b11
       } else {
@@ -187,9 +186,12 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     packedProgress[packedAt++] = colourUnpainted
   }
 
+  const marks = new Float32Array(wrong.length + unpainted.length)
+  marks.set(wrong)
+  marks.set(unpainted, wrong.length)
   return {
-    wrong: new Float32Array(wrong),
-    unpainted: new Float32Array(unpainted),
+    wrong: marks.subarray(0, wrong.length),
+    unpainted: marks.subarray(wrong.length),
     asserted: assertedHere,
     completed,
     mismatched,

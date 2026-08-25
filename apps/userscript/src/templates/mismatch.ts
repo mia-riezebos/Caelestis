@@ -18,7 +18,7 @@ import {
   draftPixels,
   ensureTilePixels,
   loadTilePixels,
-  onTilePixel,
+  onTilePixels,
   tilePixels,
   UNPAINTED,
 } from '../tile-transform.js'
@@ -96,10 +96,21 @@ const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
   if (!includeUnpainted || entry.unpainted.length === 0) return entry.wrong
   if (entry.wrong.length === 0) return entry.unpainted
   if (entry.both === null) {
-    const both = new Float32Array(entry.wrong.length + entry.unpainted.length)
-    both.set(entry.wrong)
-    both.set(entry.unpainted, entry.wrong.length)
-    entry.both = both
+    const contiguous =
+      entry.wrong.buffer === entry.unpainted.buffer &&
+      entry.wrong.byteOffset + entry.wrong.byteLength === entry.unpainted.byteOffset
+    if (contiguous) {
+      entry.both = new Float32Array(
+        entry.wrong.buffer,
+        entry.wrong.byteOffset,
+        entry.wrong.length + entry.unpainted.length,
+      )
+    } else {
+      const both = new Float32Array(entry.wrong.length + entry.unpainted.length)
+      both.set(entry.wrong)
+      both.set(entry.unpainted, entry.wrong.length)
+      entry.both = both
+    }
   }
   return entry.both
 }
@@ -436,6 +447,7 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
   idleScheduled = false
   // Borrow the frame budget: the same guard, spending idle time instead of a frame's.
   scanDeadline = performance.now() + Math.max(deadline.timeRemaining(), 1)
+  const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
   for (const cacheKey of [...stale]) {
     if (performance.now() >= scanDeadline) break
     const id = templateIdOf(cacheKey)
@@ -443,7 +455,7 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
       .slice(id.length + 1)
       .split('/')
       .map(Number)
-    const template = displayTemplates().find((candidate) => candidate.id === id)
+    const template = templatesById.get(id)
     if (template === undefined || x === undefined || y === undefined) {
       stale.delete(cacheKey)
       continue
@@ -472,7 +484,20 @@ const scheduleIdleScan = (): void => {
  * them and have to read every one back from a preview later — paying twice for pixels that went
  * past us while we were not looking.
  */
-export const wantsTilePixels = (): boolean => displayTemplates().length > 0
+export const wantsTilePixels = (tile?: TileCoord): boolean => {
+  const templates = displayTemplates().filter(isTemplateVisible)
+  if (tile === undefined) return templates.length > 0
+  const left = tile.x * TILE_SIZE
+  const top = tile.y * TILE_SIZE
+  return templates.some(
+    (template) =>
+      template.originY < top + TILE_SIZE &&
+      template.originY + template.height > top &&
+      horizontalSpans(template).some(
+        (span) => span.worldStart < left + TILE_SIZE && span.worldEnd > left,
+      ),
+  )
+}
 
 /** The switches, not what is on screen — see `claimedHiddenFor` for why the two differ. */
 const assertedHidden = (template: PlacedTemplate): readonly number[] =>
@@ -1136,12 +1161,12 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
   // hundreds to thousands in one go. `localTemplates()` copies and sorts the whole list, so asking
   // it per cache key per pixel was the cost of the whole function, several hundred thousand
   // copy-and-sorts on the decode path for one busy tile.
-  const templates = displayTemplates()
+  const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
   for (const cacheKey of keys) {
     const entry = cache.get(cacheKey)
     if (entry === undefined) continue
     const id = templateIdOf(cacheKey)
-    const template = templates.find((candidate) => candidate.id === id)
+    const template = templatesById.get(id)
     if (template === undefined || entry.templateSource !== template.indices) continue
 
     const localX = sourceXAt(template, x)
@@ -1275,9 +1300,39 @@ export const onMismatchesChanged = (listener: () => void): void => {
   changeListeners.push(listener)
 }
 
-onTilePixel((tile, x, y, placed) => {
+const MAX_PATCHED_PIXELS = 32
+
+onTilePixels((tile, triples) => {
   const before = changed
-  patchTile(tile, x, y, placed)
+  if (triples.length / 3 > MAX_PATCHED_PIXELS) {
+    const suffix = `|${tile.x}/${tile.y}`
+    let invalidated = false
+    for (const cacheKey of cache.keys()) {
+      if (!cacheKey.endsWith(suffix)) continue
+      stale.add(cacheKey)
+      patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
+      invalidated = true
+    }
+    for (const cacheKey of inFlight.keys()) {
+      if (!cacheKey.endsWith(suffix) || cache.has(cacheKey)) continue
+      patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
+    }
+    if (invalidated) {
+      scheduleIdleScan()
+      changed++
+    }
+  } else {
+    for (let i = 0; i < triples.length; i += 3) {
+      const localX = triples[i] as number
+      const localY = triples[i + 1] as number
+      patchTile(
+        tile,
+        tile.x * TILE_SIZE + localX,
+        tile.y * TILE_SIZE + localY,
+        triples[i + 2] as number,
+      )
+    }
+  }
   if (changed === before) return
   notifyChanged()
 })

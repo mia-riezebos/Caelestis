@@ -5,9 +5,14 @@ import { clearGpuProfile, measureProfile, profileGpu } from '../profile.js'
 import { isPlain } from '../templates/appearance.js'
 import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
-import { appearanceOf, displayTemplates, isTemplateVisible } from '../templates/local-store.js'
-import { horizontalSpans } from '../templates/placement.js'
-import { currentQuads, isDrawingTiles } from '../tile-transform.js'
+import {
+  appearanceOf,
+  displayTemplates,
+  isTemplateVisible,
+  type PlacedTemplate,
+} from '../templates/local-store.js'
+import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
+import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
 import { appearanceTransitions } from './appearance-transition.js'
 import { colourFades, templateFades } from './fade.js'
 import { markerLayer } from './markers.js'
@@ -311,6 +316,25 @@ const collect = (gl: WebGL2RenderingContext, live: ReadonlySet<string>): void =>
   for (const id of [...gpu.keys()]) if (!live.has(id)) release(gl, id)
 }
 
+/** Whether any source pixel can reach one of the tile quads wplace is drawing this frame. */
+const intersectsTiles = (
+  template: PlacedTemplate,
+  spans: readonly HorizontalSpan[],
+  tiles: readonly TileQuad[],
+): boolean => {
+  const top = template.originY + nudgeY
+  const bottom = top + template.height
+  return tiles.some((tile) => {
+    const tileLeft = tile.tile.x * TILE_SIZE
+    const tileTop = tile.tile.y * TILE_SIZE
+    if (bottom <= tileTop || top >= tileTop + TILE_SIZE) return false
+    return spans.some(
+      (span) =>
+        span.worldEnd + nudgeX > tileLeft && span.worldStart + nudgeX < tileLeft + TILE_SIZE,
+    )
+  })
+}
+
 export const overlayLayer = {
   id: LAYER_ID,
   type: 'custom' as const,
@@ -390,13 +414,16 @@ export const overlayLayer = {
     const bufferHeight = gl.drawingBufferHeight
 
     const all = displayTemplates()
-    collect(gl, new Set(all.map((template) => template.id)))
 
     // Switched off is a destination, not an exclusion: a template on its way out is still drawn,
     // at falling opacity, and only leaves once its ramp has run out.
     const now = performance.now()
     let animating = false
-    const visible: { template: (typeof all)[number]; fade: number }[] = []
+    const visible: {
+      template: (typeof all)[number]
+      fade: number
+      spans: readonly HorizontalSpan[]
+    }[] = []
     for (const template of all) {
       const { value, done } = templateFades.advance(
         template.id,
@@ -404,11 +431,17 @@ export const overlayLayer = {
         now,
       )
       if (!done) animating = true
-      if (value > 0) visible.push({ template, fade: value })
+      if (value > 0) {
+        const spans = horizontalSpans(template)
+        if (intersectsTiles(template, spans, tiles)) visible.push({ template, fade: value, spans })
+      }
     }
     const ids = new Set(all.map((template) => template.id))
     templateFades.prune(ids)
     appearanceTransitions.prune(ids)
+    // Offscreen textures can be large. Keep only the templates this frame could actually draw;
+    // panning back uploads them lazily again.
+    collect(gl, new Set(visible.map(({ template }) => template.id)))
     /**
      * The colour ramps are keyed per template *per palette entry*, so their keep-set is sixty-four
      * strings per template — built only when the set of templates has actually changed, rather than
@@ -467,7 +500,7 @@ export const overlayLayer = {
     // and the active unit on 1 — which its own state cache believes is 0. Skipping a frame has to
     // mean skipping it cleanly.
     try {
-      for (const { template, fade } of visible) {
+      for (const { template, fade, spans } of visible) {
         let entry = gpu.get(template.id)
         const sourceChanged =
           entry !== undefined &&
@@ -541,7 +574,7 @@ export const overlayLayer = {
           gl.uniform2f(uniform(gl, 'u_size'), source.width, source.height)
           const top = templateTop + source.y
           const bottom = top + source.height
-          for (const span of horizontalSpans(template)) {
+          for (const span of spans) {
             const sourceStart = Math.max(source.x, span.sourceStart)
             const sourceEnd = Math.min(source.x + source.width, span.sourceEnd)
             if (sourceEnd <= sourceStart) continue
