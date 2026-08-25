@@ -342,7 +342,14 @@ describe('D1SqlStore', () => {
       description: null,
       createdAt: millis(1_000),
     })
-    await store.insertTemplateVersion(templateVersion())
+    await store.insertTemplateVersion(
+      templateVersion({
+        colourTotals: [
+          { index: 0, total: 1 },
+          { index: 1, total: 1 },
+        ],
+      }),
+    )
     const tokenHash = 'c'.repeat(64)
     await store.recordTileObservation(
       {
@@ -362,6 +369,10 @@ describe('D1SqlStore', () => {
           correct: 1,
           wrong: 1,
           blank: 0,
+          colours: [
+            { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+            { index: 1, correct: 0, wrong: 1, blank: 0, total: 1 },
+          ],
           observedAt: millis(2_000),
         },
       ],
@@ -385,6 +396,10 @@ describe('D1SqlStore', () => {
           correct: 0,
           wrong: 0,
           blank: 2,
+          colours: [
+            { index: 0, correct: 0, wrong: 0, blank: 1, total: 1 },
+            { index: 1, correct: 0, wrong: 0, blank: 1, total: 1 },
+          ],
           observedAt: millis(1_000),
         },
       ],
@@ -419,6 +434,10 @@ describe('D1SqlStore', () => {
         wrong: 1,
         blank: 0,
         total: 2,
+        colours: [
+          { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+          { index: 1, correct: 0, wrong: 1, blank: 0, total: 1 },
+        ],
         observedAt: 2_000,
       },
     ])
@@ -527,7 +546,14 @@ describe('D1SqlStore', () => {
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
       INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700);
-      INSERT INTO template_versions VALUES ('attr-v', 'attr-t', 1800, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 99, 0, 0, 1, 1, 1, NULL, NULL, NULL, NULL);
+      INSERT INTO template_versions (
+        id, template_id, created_at_ms, created_with_token, created_by_user_id,
+        min_x, min_y, max_x, max_y, total_pixels
+      ) VALUES (
+        'attr-v', 'attr-t', 1800,
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        99, 0, 0, 1, 1, 1
+      );
     `)
     expect(
       d1.sqlite

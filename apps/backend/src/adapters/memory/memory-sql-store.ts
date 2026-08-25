@@ -597,12 +597,34 @@ export class MemorySqlStore implements SqlStore {
         (status) => status.templateId === templateId && status.versionId === version.versionId,
       )
       if (statuses.length === 0) continue
+      const classified = new Map<number, { correct: number; wrong: number; blank: number }>()
+      for (const status of statuses) {
+        for (const colour of status.colours ?? []) {
+          const held = classified.get(colour.index)
+          classified.set(colour.index, {
+            correct: (held?.correct ?? 0) + colour.correct,
+            wrong: (held?.wrong ?? 0) + colour.wrong,
+            blank: (held?.blank ?? 0) + colour.blank,
+          })
+        }
+      }
       out.push({
         templateId,
         correct: statuses.reduce((total, status) => total + status.correct, 0),
         wrong: statuses.reduce((total, status) => total + status.wrong, 0),
         blank: statuses.reduce((total, status) => total + status.blank, 0),
         total: version.totalPixels,
+        ...(version.colourTotals === undefined
+          ? {}
+          : {
+              colours: version.colourTotals.map(({ index, total }) => ({
+                index,
+                total,
+                correct: classified.get(index)?.correct ?? 0,
+                wrong: classified.get(index)?.wrong ?? 0,
+                blank: classified.get(index)?.blank ?? 0,
+              })),
+            }),
         observedAt: statuses.reduce(
           (latest, status) => Math.max(latest, status.observedAt),
           statuses[0]?.observedAt ?? 0,

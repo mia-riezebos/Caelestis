@@ -98,6 +98,10 @@ const classifyTarget = async (
   let correct = 0
   let wrong = 0
   let blank = 0
+  const colours = new Map<
+    number,
+    { index: number; correct: number; wrong: number; blank: number; total: number }
+  >()
   for (let y = 0; y < rect.height; y += 1) {
     const chunkRow = y * rect.width
     const canvasRow = (rect.top + y) * TILE_SIZE + rect.left
@@ -105,9 +109,25 @@ const classifyTarget = async (
       const wanted = chunk.indices[chunkRow + x] ?? TRANSPARENT_INDEX
       if (wanted === TRANSPARENT_INDEX) continue
       const actual = canvas[canvasRow + x] ?? TRANSPARENT_INDEX
-      if (actual === TRANSPARENT_INDEX) blank++
-      else if (actual === wanted) correct++
-      else wrong++
+      const colour = colours.get(wanted) ?? {
+        index: wanted,
+        correct: 0,
+        wrong: 0,
+        blank: 0,
+        total: 0,
+      }
+      colour.total++
+      if (actual === TRANSPARENT_INDEX) {
+        blank++
+        colour.blank++
+      } else if (actual === wanted) {
+        correct++
+        colour.correct++
+      } else {
+        wrong++
+        colour.wrong++
+      }
+      colours.set(wanted, colour)
     }
   }
   return {
@@ -117,6 +137,7 @@ const classifyTarget = async (
     correct,
     wrong,
     blank,
+    colours: [...colours.values()].sort((left, right) => left.index - right.index),
     observedAt: millis(observedAt),
   }
 }

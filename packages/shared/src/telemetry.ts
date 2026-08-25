@@ -115,8 +115,18 @@ export interface TemplateStatus {
   readonly wrong: number
   readonly blank: number
   readonly total: number
+  /** Per-template-colour progress, omitted by older servers without a stored colour histogram. */
+  readonly colours?: readonly TemplateColourStatus[]
   /** Newest tile observation feeding this figure. Stale coverage must be visible, not implied. */
   readonly observedAt: Millis
+}
+
+export interface TemplateColourStatus {
+  readonly index: number
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+  readonly total: number
 }
 
 export interface NodeStatus {

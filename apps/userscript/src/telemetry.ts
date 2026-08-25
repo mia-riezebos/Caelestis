@@ -1,5 +1,6 @@
 import {
   MAX_TILE_OFFERS,
+  PALETTE_SIZE,
   type PaintEvent,
   type StatusResponse,
   seconds,
@@ -20,7 +21,7 @@ import {
   onStateChange,
   type ServerContents,
 } from './state.js'
-import type { TemplateProgress } from './templates/mismatch.js'
+import type { TemplateColourProgress, TemplateProgress } from './templates/mismatch.js'
 import { type AcceptedPaint, onAcceptedPaint, onFetchedTile } from './tile-transform.js'
 import { accountIdentity, loadAccount } from './wplace-account.js'
 
@@ -270,6 +271,40 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
       Number(candidate.total)
   )
     return null
+  if (candidate.colours !== undefined) {
+    if (!Array.isArray(candidate.colours) || candidate.colours.length > PALETTE_SIZE) return null
+    const indices = new Set<number>()
+    let correct = 0
+    let wrong = 0
+    let blank = 0
+    let total = 0
+    for (const raw of candidate.colours) {
+      if (typeof raw !== 'object' || raw === null) return null
+      const colour = raw as Partial<NonNullable<TemplateStatus['colours']>[number]>
+      if (
+        ![colour.index, colour.correct, colour.wrong, colour.blank, colour.total].every(
+          (number) => Number.isSafeInteger(number) && Number(number) >= 0,
+        ) ||
+        Number(colour.index) >= PALETTE_SIZE - 1 ||
+        indices.has(Number(colour.index)) ||
+        Number(colour.total) === 0 ||
+        Number(colour.correct) + Number(colour.wrong) + Number(colour.blank) > Number(colour.total)
+      )
+        return null
+      indices.add(Number(colour.index))
+      correct += Number(colour.correct)
+      wrong += Number(colour.wrong)
+      blank += Number(colour.blank)
+      total += Number(colour.total)
+    }
+    if (
+      correct !== candidate.correct ||
+      wrong !== candidate.wrong ||
+      blank !== candidate.blank ||
+      total !== candidate.total
+    )
+      return null
+  }
   return candidate as TemplateStatus
 }
 
@@ -324,6 +359,24 @@ export const serverProgressFor = (
     known: status.correct + status.wrong + status.blank,
     total,
   }
+}
+
+export const serverColourProgressFor = (
+  server: ConnectedServer,
+  template: Pick<ServerTemplate, 'id' | 'totalPixels'>,
+): readonly TemplateColourProgress[] | null => {
+  const known = statuses.get(statusKey(server.url, template.id))
+  const status = known !== undefined && isCurrentServerConnection(known.server) ? known.value : null
+  const total = template.totalPixels ?? 0
+  if (status === null || status.total !== total || status.colours === undefined) return null
+  return status.colours.map((colour) => ({
+    index: colour.index,
+    completed: colour.correct,
+    mismatched: colour.wrong,
+    unpainted: colour.blank,
+    known: colour.correct + colour.wrong + colour.blank,
+    total: colour.total,
+  }))
 }
 
 export const onServerStatusChange = (listener: () => void): (() => void) => {

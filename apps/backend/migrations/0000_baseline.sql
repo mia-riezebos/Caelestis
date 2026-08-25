@@ -96,6 +96,7 @@ CREATE TABLE `template_versions` (
 	`max_x` integer NOT NULL,
 	`max_y` integer NOT NULL,
 	`total_pixels` integer NOT NULL,
+	`colour_totals_json` text,
 	`bounds_north` real,
 	`bounds_south` real,
 	`bounds_west` real,

@@ -98,6 +98,11 @@ describe('server telemetry client', () => {
                 wrong: 1,
                 blank: 1,
                 total: 3,
+                colours: [
+                  { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+                  { index: 1, correct: 0, wrong: 1, blank: 0, total: 1 },
+                  { index: 2, correct: 0, wrong: 0, blank: 1, total: 1 },
+                ],
                 observedAt: 1_000,
               },
             ],
@@ -109,7 +114,9 @@ describe('server telemetry client', () => {
         return new Response(null, { status: 204 })
       }),
     )
-    const { installTelemetry, serverProgressFor } = await import('./telemetry.js')
+    const { installTelemetry, serverColourProgressFor, serverProgressFor } = await import(
+      './telemetry.js'
+    )
     installTelemetry()
     harness.serverContents?.(server, { nodes: [], templates: [template] })
 
@@ -140,6 +147,11 @@ describe('server telemetry client', () => {
         total: 3,
       }),
     )
+    expect(serverColourProgressFor(server, template)).toEqual([
+      { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
+      { index: 1, completed: 0, mismatched: 1, unpainted: 0, known: 1, total: 1 },
+      { index: 2, completed: 0, mismatched: 0, unpainted: 1, known: 1, total: 1 },
+    ])
   })
 
   it('strips out-of-scope tiles from paint reports', async () => {

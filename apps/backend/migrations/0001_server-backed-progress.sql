@@ -21,6 +21,7 @@ CREATE TABLE `template_tile_statuses` (
 	`correct` integer NOT NULL,
 	`wrong` integer NOT NULL,
 	`blank` integer NOT NULL,
+	`colours_json` text NOT NULL,
 	`observed_at_ms` integer NOT NULL,
 	PRIMARY KEY(`template_id`, `version_id`, `tile_x`, `tile_y`),
 	FOREIGN KEY (`template_id`) REFERENCES `templates`(`id`) ON UPDATE no action ON DELETE cascade,

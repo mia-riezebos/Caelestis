@@ -555,6 +555,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "colours_json": {
+          "name": "colours_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "observed_at_ms": {
           "name": "observed_at_ms",
           "type": "integer",
@@ -694,6 +701,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "colour_totals_json": {
+          "name": "colour_totals_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "bounds_north": {

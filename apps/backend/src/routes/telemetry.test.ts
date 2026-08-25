@@ -133,6 +133,11 @@ describe('telemetry routes', () => {
           wrong: 1,
           blank: 1,
           total: 3,
+          colours: [
+            { index: 0, correct: 1, wrong: 0, blank: 0, total: 1 },
+            { index: 1, correct: 0, wrong: 0, blank: 1, total: 1 },
+            { index: 2, correct: 0, wrong: 1, blank: 0, total: 1 },
+          ],
           observedAt: now * 1_000,
         },
       ],

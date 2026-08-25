@@ -80,6 +80,29 @@ const toAccessToken = (row: typeof accessTokens.$inferSelect): AccessToken => ({
  */
 const VERSION_TILE_ROWS_PER_INSERT = 24
 
+interface ColourStatus {
+  readonly index: number
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+  readonly total: number
+}
+
+const parseColourTotals = (
+  value: string | null,
+): readonly { readonly index: number; readonly total: number }[] | undefined => {
+  if (value === null) return undefined
+  const parsed: unknown = JSON.parse(value)
+  return Array.isArray(parsed)
+    ? (parsed as readonly { readonly index: number; readonly total: number }[])
+    : undefined
+}
+
+const parseColourStatuses = (value: string): readonly ColourStatus[] => {
+  const parsed: unknown = JSON.parse(value)
+  return Array.isArray(parsed) ? (parsed as readonly ColourStatus[]) : []
+}
+
 /**
  * Case-insensitive path-prefix matching without a LIKE pattern.
  *
@@ -624,6 +647,8 @@ export class D1SqlStore implements SqlStore {
         maxX: version.bbox.maxX,
         maxY: version.bbox.maxY,
         totalPixels: version.totalPixels,
+        colourTotalsJson:
+          version.colourTotals === undefined ? null : JSON.stringify(version.colourTotals),
       }),
       // Tiles go in as multi-row inserts, not one statement each. D1 allows 50 queries per Worker
       // invocation on the free plan, so a 48-chunk template — a 48,000x1 upload reaches that without
@@ -683,6 +708,7 @@ export class D1SqlStore implements SqlStore {
         maxX: templateVersions.maxX,
         maxY: templateVersions.maxY,
         totalPixels: templateVersions.totalPixels,
+        colourTotalsJson: templateVersions.colourTotalsJson,
       })
       .from(templateVersions)
       .innerJoin(templates, eq(templates.id, templateVersions.templateId))
@@ -690,6 +716,7 @@ export class D1SqlStore implements SqlStore {
       .limit(1)
     const row = rows[0]
     if (row === undefined) return null
+    const colourTotals = parseColourTotals(row.colourTotalsJson)
 
     const chunks = await this.database
       .select({ tileX: versionTiles.tileX, tileY: versionTiles.tileY, hash: versionTiles.hash })
@@ -708,6 +735,7 @@ export class D1SqlStore implements SqlStore {
       createdAt: row.createdAt,
       bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
       totalPixels: row.totalPixels,
+      ...(colourTotals === undefined ? {} : { colourTotals }),
       chunks,
     }
   }
@@ -1037,6 +1065,7 @@ export class D1SqlStore implements SqlStore {
             correct: status.correct,
             wrong: status.wrong,
             blank: status.blank,
+            coloursJson: JSON.stringify(status.colours ?? []),
             observedAtMs: status.observedAt,
           })
           .onConflictDoUpdate({
@@ -1050,6 +1079,7 @@ export class D1SqlStore implements SqlStore {
               correct: status.correct,
               wrong: status.wrong,
               blank: status.blank,
+              coloursJson: JSON.stringify(status.colours ?? []),
               observedAtMs: status.observedAt,
             },
             setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt),
@@ -1074,6 +1104,8 @@ export class D1SqlStore implements SqlStore {
         wrong: sql<number>`sum(${templateTileStatuses.wrong})`,
         blank: sql<number>`sum(${templateTileStatuses.blank})`,
         total: templateVersions.totalPixels,
+        colourTotalsJson: templateVersions.colourTotalsJson,
+        colourRowsJson: sql<string>`json_group_array(${templateTileStatuses.coloursJson})`,
         observedAt: sql<number>`max(${templateTileStatuses.observedAtMs})`,
       })
       .from(templates)
@@ -1091,16 +1123,45 @@ export class D1SqlStore implements SqlStore {
           includeUnpublished ? undefined : isNotNull(templates.publishedAt),
         ),
       )
-      .groupBy(templates.id, templateVersions.totalPixels)
+      .groupBy(templates.id, templateVersions.totalPixels, templateVersions.colourTotalsJson)
       .orderBy(asc(templates.id))
-    return rows.map((row) => ({
-      templateId: row.templateId,
-      correct: Number(row.correct),
-      wrong: Number(row.wrong),
-      blank: Number(row.blank),
-      total: row.total,
-      observedAt: Number(row.observedAt) as Millis,
-    }))
+    return rows.map((row) => {
+      const totals = parseColourTotals(row.colourTotalsJson)
+      const classified = new Map<number, Omit<ColourStatus, 'index' | 'total'>>()
+      const colourRows: unknown = JSON.parse(row.colourRowsJson)
+      if (Array.isArray(colourRows)) {
+        for (const encoded of colourRows) {
+          if (typeof encoded !== 'string') continue
+          for (const colour of parseColourStatuses(encoded)) {
+            const held = classified.get(colour.index)
+            classified.set(colour.index, {
+              correct: (held?.correct ?? 0) + colour.correct,
+              wrong: (held?.wrong ?? 0) + colour.wrong,
+              blank: (held?.blank ?? 0) + colour.blank,
+            })
+          }
+        }
+      }
+      return {
+        templateId: row.templateId,
+        correct: Number(row.correct),
+        wrong: Number(row.wrong),
+        blank: Number(row.blank),
+        total: row.total,
+        ...(totals === undefined
+          ? {}
+          : {
+              colours: totals.map(({ index, total }) => ({
+                index,
+                total,
+                correct: classified.get(index)?.correct ?? 0,
+                wrong: classified.get(index)?.wrong ?? 0,
+                blank: classified.get(index)?.blank ?? 0,
+              })),
+            }),
+        observedAt: Number(row.observedAt) as Millis,
+      }
+    })
   }
 
   async claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean> {

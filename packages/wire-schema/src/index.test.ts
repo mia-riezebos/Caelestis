@@ -1316,6 +1316,49 @@ describe('cross-field and time-unit schemas', () => {
     })
   })
 
+  it('accepts per-colour status rows that exactly partition the template status', () => {
+    const status = {
+      templateId: TEMPLATE_ID,
+      correct: 1,
+      wrong: 1,
+      blank: 1,
+      total: 4,
+      colours: [
+        { index: 0, correct: 1, wrong: 0, blank: 1, total: 2 },
+        { index: 1, correct: 0, wrong: 1, blank: 0, total: 2 },
+      ],
+      observedAt: MILLIS,
+    }
+    expect(Schema.decodeUnknownSync(TemplateStatus)(status)).toEqual(status)
+  })
+
+  it('rejects per-colour status rows that do not partition the template total', () => {
+    expectRejected(TemplateStatus, {
+      templateId: TEMPLATE_ID,
+      correct: 1,
+      wrong: 0,
+      blank: 0,
+      total: 2,
+      colours: [{ index: 0, correct: 1, wrong: 0, blank: 0, total: 1 }],
+      observedAt: MILLIS,
+    })
+  })
+
+  it('rejects duplicate per-colour status rows', () => {
+    expectRejected(TemplateStatus, {
+      templateId: TEMPLATE_ID,
+      correct: 0,
+      wrong: 0,
+      blank: 2,
+      total: 2,
+      colours: [
+        { index: 0, correct: 0, wrong: 0, blank: 1, total: 1 },
+        { index: 0, correct: 0, wrong: 0, blank: 1, total: 1 },
+      ],
+      observedAt: MILLIS,
+    })
+  })
+
   it('rejects a node correct count above its total', () => {
     expectRejected(NodeStatus, {
       nodeId: NODE_ID,

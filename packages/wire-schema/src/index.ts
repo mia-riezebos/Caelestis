@@ -2,7 +2,9 @@ import type * as Shared from '@caelestis/shared'
 import {
   MAX_PAINT_COUNT,
   MAX_TILE_OFFERS,
+  PALETTE_SIZE,
   TILE_SIZE,
+  TRANSPARENT_INDEX,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -568,16 +570,39 @@ const TemplateStatusStruct = Schema.Struct({
   wrong: NonNegativeInteger,
   blank: NonNegativeInteger,
   total: NonNegativeInteger,
+  colours: Schema.optionalKey(
+    boundedArray(
+      Schema.Struct({
+        index: integerBetween(0, TRANSPARENT_INDEX - 1),
+        correct: NonNegativeInteger,
+        wrong: NonNegativeInteger,
+        blank: NonNegativeInteger,
+        total: NonNegativeInteger,
+      }),
+      PALETTE_SIZE,
+    ),
+  ),
   observedAt: Millis,
 })
 
-export const TemplateStatus = TemplateStatusStruct.pipe(
+export const TemplateStatus: Schema.Codec<Shared.TemplateStatus> = TemplateStatusStruct.pipe(
   Schema.check(
-    booleanFilter(
-      (status: Schema.Schema.Type<typeof TemplateStatusStruct>) =>
-        status.correct + status.wrong + status.blank <= status.total,
-      'correct, wrong and blank must not sum above total',
-    ),
+    booleanFilter((status: Schema.Schema.Type<typeof TemplateStatusStruct>) => {
+      if (status.correct + status.wrong + status.blank > status.total) return false
+      if (status.colours === undefined) return true
+      const unique = new Set(status.colours.map((colour) => colour.index))
+      return (
+        unique.size === status.colours.length &&
+        status.colours.every(
+          (colour) =>
+            colour.total > 0 && colour.correct + colour.wrong + colour.blank <= colour.total,
+        ) &&
+        status.colours.reduce((sum, colour) => sum + colour.correct, 0) === status.correct &&
+        status.colours.reduce((sum, colour) => sum + colour.wrong, 0) === status.wrong &&
+        status.colours.reduce((sum, colour) => sum + colour.blank, 0) === status.blank &&
+        status.colours.reduce((sum, colour) => sum + colour.total, 0) === status.total
+      )
+    }, 'classification counts must fit the total; colour rows must be unique and partition it'),
   ),
 )
 

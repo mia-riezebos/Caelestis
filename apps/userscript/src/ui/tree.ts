@@ -17,7 +17,7 @@ import {
   type TreeNode,
   takeProbedNodes,
 } from '../state.js'
-import { serverProgressFor } from '../telemetry.js'
+import { serverColourProgressFor, serverProgressFor } from '../telemetry.js'
 import {
   isServerTemplate,
   localTemplates,
@@ -2072,6 +2072,8 @@ export const treeContents = (
     server: ConnectedServer,
     template: ServerTemplate,
   ): readonly TemplateColourProgress[] | undefined => {
+    const serverProgress = serverColourProgressFor(server, template)
+    if (serverProgress !== null) return serverProgress
     const drawn = drawnByServer.get(server.url)?.get(template.id)
     return drawn === undefined ? undefined : colourProgressFor(drawn)
   }
@@ -2135,7 +2137,7 @@ export const treeContents = (
         : server === undefined ||
             serverTemplates.length === 0 ||
             !serverTemplates.every(
-              (template) => drawnByServer.get(server.url)?.has(template.id) === true,
+              (template) => serverTemplateColourProgress(server, template) !== undefined,
             )
           ? undefined
           : () =>
@@ -2323,6 +2325,7 @@ export const treeContents = (
         for (const template of published) {
           const templateKey = serverTemplateTreeKey(server, template.id)
           const drawn = drawnById.get(template.id)
+          const colourProgress = serverTemplateColourProgress(server, template)
           const visibilityKey = serverTemplateKey(server.url, template.id)
           const templateTarget: TreeTarget = {
             server,
@@ -2341,7 +2344,7 @@ export const treeContents = (
               createdAt: template.updatedAt,
               muted: !template.published,
               progress: serverTemplateProgress(server, template),
-              ...(drawn === undefined ? {} : { colourProgress: () => colourProgressFor(drawn) }),
+              ...(colourProgress === undefined ? {} : { colourProgress: () => colourProgress }),
               progressSortable: true,
               leadingActions: [
                 {

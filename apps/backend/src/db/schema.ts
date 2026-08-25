@@ -104,6 +104,7 @@ export const templateVersions = sqliteTable(
     maxX: integer('max_x').notNull(),
     maxY: integer('max_y').notNull(),
     totalPixels: integer('total_pixels').notNull(),
+    colourTotalsJson: text('colour_totals_json'),
     boundsNorth: real('bounds_north'),
     boundsSouth: real('bounds_south'),
     boundsWest: real('bounds_west'),
@@ -585,6 +586,7 @@ export const templateTileStatuses = sqliteTable(
     correct: integer('correct').notNull(),
     wrong: integer('wrong').notNull(),
     blank: integer('blank').notNull(),
+    coloursJson: text('colours_json').notNull(),
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
   },
   (table) => [
