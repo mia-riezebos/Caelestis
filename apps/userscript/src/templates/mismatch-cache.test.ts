@@ -11,7 +11,6 @@ const harness = vi.hoisted(() => ({
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   onTilePixels: vi.fn(),
   onTilePixelsEvicted: vi.fn(),
-  onServerMismatchTileInvalidated: vi.fn(),
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
@@ -29,7 +28,6 @@ vi.mock('../server-mismatch.js', () => ({
   beginServerMismatchFrame: vi.fn(),
   endServerMismatchFrame: vi.fn(),
   onServerMismatchesChanged: vi.fn(),
-  onServerMismatchTileInvalidated: harness.onServerMismatchTileInvalidated,
   serverMismatchMaskFor: () => harness.serverMask,
 }))
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
@@ -76,7 +74,6 @@ beforeEach(() => {
   harness.workerScan.mockReset()
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
-  harness.onServerMismatchTileInvalidated.mockReset()
 })
 
 describe('visible mismatch answer retention', () => {
@@ -256,10 +253,10 @@ describe('visible mismatch answer retention', () => {
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(0)
     endMismatchFrame()
 
-    const serverInvalidated = harness.onServerMismatchTileInvalidated.mock.calls[0]?.[0] as
-      | ((serverUrl: string, tile: { x: number; y: number }) => void)
+    const pixelsEvicted = harness.onTilePixelsEvicted.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }) => void)
       | undefined
-    serverInvalidated?.('https://templates.example', { x: 0, y: 0 })
+    pixelsEvicted?.({ x: 0, y: 0 })
     beginMismatchFrame()
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()

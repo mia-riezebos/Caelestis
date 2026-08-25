@@ -12,7 +12,6 @@ import {
   beginServerMismatchFrame,
   endServerMismatchFrame,
   onServerMismatchesChanged,
-  onServerMismatchTileInvalidated,
   serverMismatchMaskFor,
 } from '../server-mismatch.js'
 import {
@@ -944,7 +943,7 @@ const patchCount = new Map<string, number>()
 
 const inFlight = new Map<string, PendingScan>()
 
-/** Server masks superseded by newer exact pixels, until upload or exact-pixel cache eviction. */
+/** Server masks superseded by newer exact pixels, until exact-pixel cache eviction. */
 const supersededServerSource = new Map<string, string>()
 
 const requestScan = (
@@ -1357,15 +1356,6 @@ onTilePixels((tile, triples) => {
 onServerMismatchesChanged(() => {
   changed++
   notifyChanged()
-})
-
-onServerMismatchTileInvalidated((serverUrl, tile) => {
-  const suffix = `|${tile.x}/${tile.y}`
-  for (const [cacheKey, supersededServer] of supersededServerSource) {
-    if (supersededServer === serverUrl && cacheKey.endsWith(suffix)) {
-      supersededServerSource.delete(cacheKey)
-    }
-  }
 })
 
 onTilePixelsEvicted((tile) => {
