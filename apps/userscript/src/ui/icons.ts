@@ -17,6 +17,8 @@ export type IconName =
   | 'sort'
   | 'arrowUpward'
   | 'arrowDownward'
+  | 'expandMore'
+  | 'expandLess'
   | 'dragHandle'
   | 'caret'
   | 'folder'
@@ -59,6 +61,8 @@ const PATHS: Record<IconName, string> = {
   sort: 'M120-240v-80h240v80H120Zm0-200v-80h480v80H120Zm0-200v-80h720v80H120Z',
   arrowUpward: 'M440-160v-487L216-423l-56-57 320-320 320 320-56 57-224-224v487h-80Z',
   arrowDownward: 'M440-800v487L216-537l-56 57 320 320 320-320-56-57-224 224v-487h-80Z',
+  expandMore: 'M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z',
+  expandLess: 'M296-320l-56-56 240-240 240 240-56 56-184-184-184 184Z',
   // A right-pointing triangle, rotated 90 degrees when the row is open — the classic disclosure
   // control, and one icon rather than two so the transition can be animated.
   caret: 'M400-280v-400l200 200-200 200Z',

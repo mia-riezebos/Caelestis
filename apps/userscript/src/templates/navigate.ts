@@ -1,4 +1,4 @@
-import { canvasPixelToLatLng, TILE_SIZE } from '@caelestis/shared'
+import { type BoundingBox, canvasPixelToLatLng, TILE_SIZE, WORLD_PIXELS } from '@caelestis/shared'
 import { log } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { horizontalCentre } from './placement.js'
@@ -86,3 +86,15 @@ export const centreOf = (t: {
   width: t.width,
   height: t.height,
 })
+
+/** Centre and extent from a manifest row, including a box that wraps through world zero. */
+export const centreOfBounds = (bbox: BoundingBox): NavigateTarget => {
+  const width = bbox.maxX > bbox.minX ? bbox.maxX - bbox.minX : WORLD_PIXELS - bbox.minX + bbox.maxX
+  const height = bbox.maxY - bbox.minY
+  return {
+    x: (bbox.minX + width / 2) % WORLD_PIXELS,
+    y: bbox.minY + height / 2,
+    width,
+    height,
+  }
+}

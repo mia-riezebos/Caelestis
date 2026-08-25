@@ -26,7 +26,6 @@ import {
   moveNode as moveNodeOnServer,
   onServerContents,
   onStateChange,
-  type ProgressPlacement,
   patchTemplate,
   previewGlobalAppearance,
   probeServer,
@@ -63,8 +62,9 @@ import {
   setTemplatesFolder,
   templateAsPng,
 } from '../templates/local-store.js'
+import { onMismatchesChanged } from '../templates/mismatch.js'
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
-import { centreOf, navigateTo } from '../templates/navigate.js'
+import { centreOf, centreOfBounds, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import {
   endServerGeneration,
@@ -107,6 +107,7 @@ import {
   serverTemplateAt,
   serverTemplateTreeKey,
   startRenaming,
+  type TreeNavigationTarget,
   type TreeTarget,
   templatesForServer,
   templatesOfNode,
@@ -329,7 +330,12 @@ const _emptyState = (): HTMLElement => {
 
 const treeView = (): HTMLElement => {
   const view = document.createElement('div')
-  Object.assign(view.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
+  Object.assign(view.style, {
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: '0',
+    flex: '1',
+  })
 
   // Search and sort share a row: both are ways of finding one template among many, and giving sort
   // its own row would push the tree down for a control most people set once.
@@ -568,98 +574,6 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
   }
   row.append(text, control)
   return row
-}
-
-/**
- * A dropdown built from our own elements rather than a `<select>`.
- *
- * A native select's popup is drawn by the browser, so its corners cannot be given the `rounded-xl`
- * every other popout here uses — it rendered as a square-cornered list against rounded everything
- * else. Owning the list is the only way to make it match.
- *
- * Width is fixed rather than fitted to content, so a column of these lines up on both edges instead
- * of only the right; but narrower than it was, since sizing for the longest label in the app made
- * every short one look padded.
- */
-const select = (
-  options: readonly (readonly [string, string])[],
-  value: string,
-  onChange: (next: string) => void,
-): HTMLElement => {
-  const wrap = document.createElement('div')
-  wrap.style.position = 'relative'
-  wrap.style.flex = '0 0 auto'
-
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'btn btn-sm btn-outline justify-between font-normal'
-  button.style.width = '9rem'
-  const label = document.createElement('span')
-  label.className = 'caelestis-name'
-  label.style.textAlign = 'left'
-  label.textContent = options.find(([id]) => id === value)?.[1] ?? ''
-  const caret = icon('caret', 'size-4 opacity-60')
-  caret.style.transform = 'rotate(90deg)'
-  button.append(label, caret)
-
-  const close = (): void => {
-    wrap.querySelector('[data-caelestis-options]')?.remove()
-  }
-
-  button.addEventListener('click', () => {
-    if (wrap.querySelector('[data-caelestis-options]') !== null) {
-      close()
-      return
-    }
-    // Only one popout at a time, ours or another row's.
-    for (const el of document.querySelectorAll('[data-caelestis-options]')) el.remove()
-    const list = document.createElement('ul')
-    list.setAttribute('data-caelestis-options', '')
-    list.className = 'menu bg-base-100 shadow-2xl'
-    Object.assign(list.style, {
-      position: 'absolute',
-      right: '0',
-      top: 'calc(100% + 0.25rem)',
-      zIndex: '40',
-      // The same radius as the panel and every other popout. This is the whole reason it is not a
-      // native select.
-      borderRadius: SURFACE_RADIUS,
-      padding: '0.25rem',
-      width: '11rem',
-      display: 'block',
-    })
-    for (const [id, text] of options) {
-      const item = document.createElement('li')
-      const choice = document.createElement('button')
-      choice.type = 'button'
-      choice.className = 'flex items-center gap-2'
-      const tick = icon('check', 'size-4')
-      // Reserved rather than conditional, so the labels do not shift as the selection moves.
-      tick.style.visibility = id === value ? 'visible' : 'hidden'
-      const name = document.createElement('span')
-      name.textContent = text
-      choice.append(tick, name)
-      choice.addEventListener('click', () => {
-        close()
-        onChange(id)
-      })
-      item.appendChild(choice)
-      list.appendChild(item)
-    }
-    wrap.appendChild(list)
-    // Dismiss on a pointerdown outside, on the next tick so the opening click does not close it.
-    setTimeout(() => {
-      const dismiss = (event: PointerEvent): void => {
-        if (event.target instanceof Node && wrap.contains(event.target)) return
-        close()
-        window.removeEventListener('pointerdown', dismiss)
-      }
-      window.addEventListener('pointerdown', dismiss)
-    }, 0)
-  })
-
-  wrap.appendChild(button)
-  return wrap
 }
 
 /**
@@ -1028,24 +942,6 @@ const appearanceView = (): HTMLElement => {
   view.appendChild(sectionHeader('Appearance', 'tune'))
   view.appendChild(
     settingRow(
-      'Display progress bars',
-      null,
-      select(
-        [
-          ['inline', 'Inline'],
-          ['expanded', 'When expanded'],
-          ['hidden', 'Never'],
-        ],
-        state.progress,
-        (next) => {
-          setState({ progress: next as ProgressPlacement })
-          rerender()
-        },
-      ),
-    ),
-  )
-  view.appendChild(
-    settingRow(
       'Pixel style',
       null,
       pixelStylePresets(state.appearance, (values) => {
@@ -1090,13 +986,18 @@ const appearanceView = (): HTMLElement => {
       const next = Number(input.value)
       // Read the live value rather than the one captured when this row was built, so dragging one
       // slider cannot revert another.
-      setState({ appearance: { ...getState().appearance, [control.key]: next } })
+      setState({
+        appearance: { ...getState().appearance, [control.key]: next },
+      })
     }
     input.addEventListener('input', () => {
       dirty = true
       const next = Number(input.value)
       readout.textContent = control.format(next)
-      previewGlobalAppearance({ ...getState().appearance, [control.key]: next })
+      previewGlobalAppearance({
+        ...getState().appearance,
+        [control.key]: next,
+      })
       redraw()
     })
     input.addEventListener('keydown', (event) => {
@@ -1295,7 +1196,12 @@ const localTemplateId = (target: TreeTarget): string | null =>
  * at rather than anywhere the user chose, and while it is being positioned the origin that matters
  * is the live preview. Going to the stored one flew away from the thing being placed.
  */
-const goTo = (templateId: string): void => {
+const goTo = (target: TreeNavigationTarget): void => {
+  if (target.kind === 'server') {
+    navigateTo(centreOfBounds(target.bbox))
+    return
+  }
+  const { templateId } = target
   const template = localTemplates().find((candidate) => candidate.id === templateId)
   if (template === undefined) return
   const preview = previewOriginFor(templateId)
@@ -1334,7 +1240,9 @@ const applyRename = async (
   if (target.server !== null && target.templateId !== undefined) {
     // One column on the server, and deliberately not a new version: the pixels have not moved, so
     // nothing that caches chunks should be told to re-download them.
-    const result = await patchTemplate(target.server, target.templateId, { name })
+    const result = await patchTemplate(target.server, target.templateId, {
+      name,
+    })
     if (!result.ok) toast(result.message, 'error')
     await refreshCurrentNodes(target.server, rerender, true)
     return
@@ -1516,7 +1424,9 @@ const applyDelete = async (
         : `${target.name} and everything in it — ${contents} — will be permanently removed.`,
     ...(contents === null
       ? {}
-      : { note: 'Everyone connected to this server loses all of it, and it cannot be undone.' }),
+      : {
+          note: 'Everyone connected to this server loses all of it, and it cannot be undone.',
+        }),
     confirmLabel: 'Delete',
     restoreFocusTo,
   })
@@ -1561,7 +1471,10 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
   const box = document.createElement('div')
   box.setAttribute('data-caelestis-move', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+  Object.assign(box.style, {
+    margin: '0 0.5rem 0.5rem',
+    padding: '0.625rem 0.75rem',
+  })
 
   const label = document.createElement('span')
   label.textContent = `Move “${target.name}” to:`
@@ -1985,7 +1898,9 @@ const dropOnServerNode = async (
     return serverTemplateTreeKey(server, uploaded.id)
   }
   if (sourceBeforePublish.published) {
-    const published = await patchTemplate(server, uploaded.id, { published: true })
+    const published = await patchTemplate(server, uploaded.id, {
+      published: true,
+    })
     if (!published.ok) {
       toast(
         `Copied to ${destinationName} as a draft, but could not publish it; the source was kept.`,
@@ -2104,7 +2019,10 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
   const box = document.createElement('div')
   box.setAttribute('data-caelestis-replace', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+  Object.assign(box.style, {
+    margin: '0 0.5rem 0.5rem',
+    padding: '0.625rem 0.75rem',
+  })
 
   const label = document.createElement('span')
   label.textContent = `Replace “${target.name}” with:`
@@ -2272,7 +2190,7 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
             remove,
           ]
         : [
-            ['search', 'Go to', () => void goTo(templateId)],
+            ['search', 'Go to', () => void goTo({ kind: 'local', templateId })],
             [
               'move',
               'Move',
@@ -2449,7 +2367,10 @@ const copyToServer = async (
   const box = document.createElement('div')
   box.setAttribute('data-caelestis-copy', '')
   box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, { margin: '0 0.5rem 0.5rem', padding: '0.625rem 0.75rem' })
+  Object.assign(box.style, {
+    margin: '0 0.5rem 0.5rem',
+    padding: '0.625rem 0.75rem',
+  })
 
   const label = document.createElement('span')
   label.textContent = `Finding destinations for “${template.name}”…`
@@ -2858,7 +2779,12 @@ const buildPanel = (): HTMLElement => {
 
   const body = document.createElement('div')
   body.setAttribute('data-caelestis-body', '')
-  Object.assign(body.style, { display: 'flex', flexDirection: 'column', minHeight: '0', flex: '1' })
+  Object.assign(body.style, {
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: '0',
+    flex: '1',
+  })
   body.appendChild(treeView())
 
   panel.append(header, body)
@@ -3130,7 +3056,10 @@ export const installPanel = (): void => {
       sync()
     })
   }
-  new MutationObserver(queueSync).observe(document.body, { childList: true, subtree: true })
+  new MutationObserver(queueSync).observe(document.body, {
+    childList: true,
+    subtree: true,
+  })
   window.addEventListener('resize', () => {
     positionRail()
     const panel = document.getElementById(PANEL_ID)
@@ -3147,6 +3076,15 @@ export const installPanel = (): void => {
   // change.
   onStateChange(refreshView)
   onLocalChange(refreshView)
+  let progressRefreshQueued = false
+  onMismatchesChanged(() => {
+    if (progressRefreshQueued) return
+    progressRefreshQueued = true
+    requestAnimationFrame(() => {
+      progressRefreshQueued = false
+      if (currentView === 'tree') refreshView()
+    })
+  })
   for (const ending of ['dragend', 'focusout'])
     document.addEventListener(ending, repayRefresh, true)
   // Opening wplace's paint drawer changes what the appearance grid is showing without changing any

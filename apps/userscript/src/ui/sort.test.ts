@@ -34,4 +34,18 @@ describe('sort control', () => {
     expect(onChange).toHaveBeenCalledWith({ field: 'name', direction: 'asc' })
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
   })
+
+  it('offers progress with the most-complete direction first', () => {
+    const onChange = vi.fn()
+    const control = sortControl({ field: 'custom', direction: 'asc' }, onChange)
+    document.body.appendChild(control)
+    const progress = [
+      ...control.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
+    ].find((button) => button.textContent?.includes('Progress'))
+    if (progress === undefined) throw new Error('progress sort is missing')
+
+    progress.click()
+
+    expect(onChange).toHaveBeenCalledWith({ field: 'progress', direction: 'desc' })
+  })
 })

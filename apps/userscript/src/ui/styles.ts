@@ -14,8 +14,24 @@ const STYLE_ID = 'caelestis-styles'
 
 const CSS = `
 .caelestis-row {
+  position: relative;
   border-radius: 0.375rem;
   transition: background-color 100ms ease-out;
+}
+.caelestis-tree-connector {
+  position: absolute;
+  inset-block-start: -0.125rem;
+  inset-inline-start: 0.5rem;
+  height: calc(100% + 0.25rem);
+  overflow: visible;
+  color: var(--color-base-content, currentColor);
+  opacity: 0.22;
+  pointer-events: none;
+}
+.caelestis-tree-connector line {
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
 }
 /* A card only while pointed at: the tree is a list to scan, and a permanent card per row turns
    scanning into reading. */
@@ -31,6 +47,10 @@ const CSS = `
    A third, half-visible copy in the original slot is one too many. */
 .caelestis-row.caelestis-dragging {
   display: none;
+}
+.caelestis-row--expanded-progress {
+  flex-wrap: wrap;
+  row-gap: 0.25rem;
 }
 /* The gap the row would occupy, held open while dragging, rather than a line drawn on a
    neighbour. A line says "near here"; a hole says "here", and the list stops shifting under the
@@ -77,13 +97,47 @@ const CSS = `
 .caelestis-actions {
   transition: opacity 100ms ease-out;
 }
+.caelestis-row-tail {
+  display: grid;
+  align-items: center;
+  flex: 0 0 6.5rem;
+  width: 6.5rem;
+  min-width: 0;
+}
+.caelestis-row-tail > * {
+  grid-area: 1 / 1;
+}
+.caelestis-row-tail > .caelestis-actions {
+  justify-self: end;
+}
+.caelestis-row-tail > .caelestis-progress--inline {
+  width: 100%;
+  transition: opacity 100ms ease-out;
+}
 @media (hover: hover) {
   .caelestis-actions {
     opacity: 0;
   }
+  .caelestis-row-tail > .caelestis-actions {
+    pointer-events: none;
+  }
   .caelestis-row:hover .caelestis-actions,
   .caelestis-row:focus-within .caelestis-actions {
     opacity: 1;
+  }
+  .caelestis-row:hover .caelestis-row-tail > .caelestis-actions,
+  .caelestis-row:focus-within .caelestis-row-tail > .caelestis-actions {
+    pointer-events: auto;
+  }
+  .caelestis-row:hover .caelestis-row-tail > .caelestis-progress--inline,
+  .caelestis-row:focus-within .caelestis-row-tail > .caelestis-progress--inline {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+@media (hover: none) {
+  .caelestis-row-tail > .caelestis-progress--inline {
+    visibility: hidden;
   }
 }
 /* The swatch grid steps between powers of two rather than flowing with auto-fill.
@@ -296,6 +350,164 @@ const CSS = `
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.caelestis-progress {
+  display: flex;
+  min-width: 0;
+  color: var(--color-base-content, currentColor);
+}
+.caelestis-progress--inline {
+  flex: 0 0 6.5rem;
+  width: 6.5rem;
+}
+.caelestis-progress--expanded {
+  order: 10;
+  flex: 0 0 100%;
+  width: 100%;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-inline: 0;
+}
+.caelestis-progress-disclosure {
+  order: 10;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.125rem;
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 0;
+}
+.caelestis-progress-disclosure > .caelestis-progress--expanded {
+  order: initial;
+  flex: 1 1 auto;
+  width: auto;
+}
+.caelestis-progress-detail-actions {
+  flex: 0 0 auto;
+}
+.caelestis-progress-track {
+  display: flex;
+  width: 100%;
+  height: 0.375rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background-color: var(--color-base-300, rgba(0, 0, 0, 0.08));
+  /* Unknown coverage is track, not a fourth state. The faint hatch keeps it distinct from the
+     solid gray unpainted segment without competing with the three classified colours. */
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    color-mix(in srgb, var(--color-base-content, #64748b) 10%, transparent) 3px 4px
+  );
+}
+.caelestis-progress-meter {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  min-width: 0;
+}
+.caelestis-progress-meter > .caelestis-progress-track {
+  flex: 1 1 auto;
+  min-width: 1.75rem;
+}
+.caelestis-progress-percent {
+  flex: 0 0 4ch;
+  text-align: end;
+  font-size: 0.625rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.68;
+}
+.caelestis-progress-segment {
+  flex: 0 0 auto;
+  height: 100%;
+}
+.caelestis-progress-completed {
+  background: var(--caelestis-progress-completed, var(--color-primary, #2563eb));
+}
+.caelestis-progress-mismatched {
+  background: var(--color-error, #dc2626);
+}
+.caelestis-progress-unpainted {
+  background: var(--color-base-content, #737373);
+  opacity: 0.38;
+}
+.caelestis-progress-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  font-size: 0.625rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.caelestis-progress-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: none;
+}
+.caelestis-progress-legend-item::before {
+  content: '';
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: currentColor;
+}
+.caelestis-progress-legend-item.caelestis-progress-completed {
+  color: var(--color-primary, #2563eb);
+}
+.caelestis-progress-legend-item.caelestis-progress-mismatched {
+  color: var(--color-error, #dc2626);
+}
+.caelestis-progress-legend-item.caelestis-progress-unpainted {
+  color: var(--color-base-content, #737373);
+  opacity: 0.62;
+}
+.caelestis-progress-coverage {
+  margin-left: auto;
+  overflow: hidden;
+  color: inherit;
+  opacity: 0.55;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.caelestis-progress-colours {
+  order: 11;
+  display: flex;
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.caelestis-progress-colour-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+.caelestis-progress-colour-swatch {
+  flex: 0 0 0.625rem;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.caelestis-progress-colour-name {
+  flex: 0 0 5rem;
+  overflow: hidden;
+  font-size: 0.625rem;
+  line-height: 1;
+  opacity: 0.68;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.caelestis-progress-colour-row > .caelestis-progress--inline {
+  flex: 1 1 auto;
+  width: auto;
 }
 `
 

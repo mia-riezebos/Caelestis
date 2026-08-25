@@ -1,4 +1,4 @@
-import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@caelestis/shared'
+import { PALETTE_SIZE, TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@caelestis/shared'
 import { count } from '../debug.js'
 import {
   draftPixels,
@@ -11,7 +11,6 @@ import { claimedHiddenFor } from './colour-filter.js'
 import {
   appearanceOf,
   displayTemplates,
-  isTemplateVisible,
   onLocalChange,
   type PlacedTemplate,
 } from './local-store.js'
@@ -35,7 +34,7 @@ import { horizontalSpans, sourceXAt } from './placement.js'
 /** x,y,wanted-index triples in canvas pixels. Empty when the tile and template agree. */
 export type Mismatches = Float32Array
 
-interface Cached {
+interface Cached extends ScanOutcome {
   /** Identity, not contents: a re-captured tile is a new array, and that is the signal to redo it. */
   readonly source: Uint8Array
   /** Identity of the template pixels this answer was computed against. */
@@ -49,12 +48,22 @@ interface Cached {
    * the point the answer is read means the threshold, and the switch above it, cost nothing to change
    * their mind about: no tile is rescanned for either.
    */
-  readonly wrong: Mismatches
-  readonly unpainted: Mismatches
-  /** Pixels this tile asserts a colour for. The denominator the threshold is measured against. */
-  readonly asserted: number
   /** The two concatenated, built the first time they are asked for together. */
   both: Mismatches | null
+}
+
+/** Counts for the part of a template whose Wplace tiles have actually been scanned. */
+export interface TemplateProgress {
+  readonly completed: number
+  readonly mismatched: number
+  readonly unpainted: number
+  readonly known: number
+  /** All non-transparent pixels the template asks for, including tiles not scanned yet. */
+  readonly total: number
+}
+
+export interface TemplateColourProgress extends TemplateProgress {
+  readonly index: number
 }
 
 const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
@@ -103,14 +112,131 @@ const coverage = new Map<
 >()
 const coverageTotals = new Map<
   string,
-  Pick<Cached, 'asserted' | 'key' | 'templateSource'> & { readonly unpainted: number }
+  Pick<Cached, 'asserted' | 'key' | 'templateSource'> & {
+    readonly unpainted: number
+  }
 >()
+
+interface ProgressCoverage {
+  readonly templateId: string
+  readonly templateSource: Uint8Array
+  readonly key: string
+  readonly completed: number
+  readonly mismatched: number
+  readonly unpainted: number
+  readonly asserted: number
+  readonly byColour: Uint32Array
+}
+
+/**
+ * Count-only answers survive the marker LRU, so panning does not erase progress behind you.
+ *
+ * This deliberately has no template-size cap. The project supports templates far larger than a
+ * viewport, and evicting an already-scanned tile would make its progress silently run backwards.
+ * Each entry retains aggregate and sparse per-colour counters plus two identities, never the tile
+ * pixels or unpainted coordinates.
+ */
+const progressCoverage = new Map<string, ProgressCoverage>()
+const progressKeys = new Map<string, Set<string>>()
+const progressTotals = new Map<
+  string,
+  Omit<ProgressCoverage, 'templateId'> & { readonly byColour: Uint32Array }
+>()
+
+/** Add or subtract sparse scan tuples from one template's dense palette counters. */
+const mergeColourProgress = (target: Uint32Array, packed: Uint32Array, direction: 1 | -1): void => {
+  for (let at = 0; at < packed.length; at += 4) {
+    const index = packed[at]
+    if (index === undefined || index >= PALETTE_SIZE) continue
+    const targetAt = index * 3
+    for (let offset = 0; offset < 3; offset++) {
+      const value = packed[at + offset + 1] ?? 0
+      target[targetAt + offset] =
+        direction === 1
+          ? (target[targetAt + offset] ?? 0) + value
+          : Math.max(0, (target[targetAt + offset] ?? 0) - value)
+    }
+  }
+}
 
 /**
  * A cache key is `${templateId}|${x}/${y}`, and only the tile half has a known shape. A server
  * template's id is `srv:<encoded-url>:<id>`, so the last separator is the split, never the first.
  */
 const templateIdOf = (cacheKey: string): string => cacheKey.slice(0, cacheKey.lastIndexOf('|'))
+
+const forgetProgress = (cacheKey: string): void => {
+  const entry = progressCoverage.get(cacheKey)
+  if (entry === undefined) return
+  progressCoverage.delete(cacheKey)
+  const keys = progressKeys.get(entry.templateId)
+  keys?.delete(cacheKey)
+  if (keys?.size === 0) progressKeys.delete(entry.templateId)
+  const total = progressTotals.get(entry.templateId)
+  if (
+    total === undefined ||
+    total.key !== entry.key ||
+    total.templateSource !== entry.templateSource
+  )
+    return
+  const asserted = total.asserted - entry.asserted
+  if (asserted <= 0) {
+    progressTotals.delete(entry.templateId)
+    return
+  }
+  mergeColourProgress(total.byColour, entry.byColour, -1)
+  progressTotals.set(entry.templateId, {
+    ...total,
+    asserted,
+    completed: total.completed - entry.completed,
+    mismatched: total.mismatched - entry.mismatched,
+    unpainted: total.unpainted - entry.unpainted,
+    byColour: total.byColour,
+  })
+}
+
+const rememberProgress = (cacheKey: string, entry: Cached, key: string): void => {
+  const templateId = templateIdOf(cacheKey)
+  const heldKeys = progressKeys.get(templateId)
+  if (heldKeys !== undefined) {
+    for (const heldKey of [...heldKeys]) {
+      const held = progressCoverage.get(heldKey)
+      if (
+        held !== undefined &&
+        (held.templateSource !== entry.templateSource || held.key !== key)
+      ) {
+        forgetProgress(heldKey)
+      }
+    }
+  }
+  forgetProgress(cacheKey)
+  const one: ProgressCoverage = {
+    templateId,
+    templateSource: entry.templateSource,
+    key,
+    completed: entry.completed,
+    mismatched: entry.mismatched,
+    unpainted: entry.progressUnpainted,
+    asserted: entry.progressAsserted,
+    byColour: entry.progressByColour,
+  }
+  progressCoverage.set(cacheKey, one)
+  const keys = progressKeys.get(templateId) ?? new Set<string>()
+  keys.add(cacheKey)
+  progressKeys.set(templateId, keys)
+  const total = progressTotals.get(templateId)
+  const byColour = total?.byColour ?? new Uint32Array(PALETTE_SIZE * 3)
+  mergeColourProgress(byColour, one.byColour, 1)
+  progressTotals.set(templateId, {
+    templateSource: entry.templateSource,
+    key,
+    completed: (total?.completed ?? 0) + one.completed,
+    mismatched: (total?.mismatched ?? 0) + one.mismatched,
+    unpainted: (total?.unpainted ?? 0) + one.unpainted,
+    asserted: (total?.asserted ?? 0) + one.asserted,
+    byColour,
+  })
+}
 
 const forgetCoverage = (cacheKey: string): void => {
   const entry = coverage.get(cacheKey)
@@ -278,10 +404,7 @@ const scheduleIdleScan = (): void => {
  * them and have to read every one back from a preview later — paying twice for pixels that went
  * past us while we were not looking.
  */
-export const wantsTilePixels = (): boolean =>
-  displayTemplates().some(
-    (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
-  )
+export const wantsTilePixels = (): boolean => displayTemplates().length > 0
 
 /** The switches, not what is on screen — see `claimedHiddenFor` for why the two differ. */
 const assertedHidden = (template: PlacedTemplate): readonly number[] =>
@@ -293,8 +416,77 @@ const assertedHidden = (template: PlacedTemplate): readonly number[] =>
  * "Count unpainted" is deliberately not part of it, nor is its threshold. Both decide which of two
  * lists to hand back, not what goes in them, so neither is a reason to look at a tile again.
  */
+const progressSignature = (template: PlacedTemplate): string =>
+  `${template.originX},${template.originY},${template.wrapX === true ? 1 : 0}|${template.moved}`
+
 const signature = (template: PlacedTemplate): string =>
-  `${template.originX},${template.originY},${template.wrapX === true ? 1 : 0}|${template.moved}|${assertedHidden(template).join(',')}`
+  `${progressSignature(template)}|${assertedHidden(template).join(',')}`
+
+/** Progress for scanned tiles; unknown tiles remain outside the three classified counts. */
+export const progressFor = (template: PlacedTemplate): TemplateProgress => {
+  const total = Math.max(0, template.opaque)
+  const held = progressTotals.get(template.id)
+  if (
+    held === undefined ||
+    held.templateSource !== template.indices ||
+    held.key !== progressSignature(template)
+  ) {
+    return { completed: 0, mismatched: 0, unpainted: 0, known: 0, total }
+  }
+  const known = Math.min(total, held.asserted)
+  return {
+    completed: Math.min(known, held.completed),
+    mismatched: Math.min(known, held.mismatched),
+    unpainted: Math.min(known, held.unpainted),
+    known,
+    total,
+  }
+}
+
+/** Total requested pixels by palette index, cached by the immutable template pixel buffer. */
+const colourTotals = new WeakMap<Uint8Array, Uint32Array>()
+
+const colourTotalsFor = (template: PlacedTemplate): Uint32Array => {
+  const cached = colourTotals.get(template.indices)
+  if (cached !== undefined) return cached
+  const totals = new Uint32Array(PALETTE_SIZE)
+  for (const index of template.indices) {
+    if (index < PALETTE_SIZE && index !== TRANSPARENT_INDEX)
+      totals[index] = (totals[index] ?? 0) + 1
+  }
+  colourTotals.set(template.indices, totals)
+  return totals
+}
+
+/** Exact progress for every colour the template contains. */
+export const colourProgressFor = (template: PlacedTemplate): readonly TemplateColourProgress[] => {
+  const totals = colourTotalsFor(template)
+  const held = progressTotals.get(template.id)
+  const current =
+    held !== undefined &&
+    held.templateSource === template.indices &&
+    held.key === progressSignature(template)
+      ? held.byColour
+      : null
+  const progress: TemplateColourProgress[] = []
+  for (let index = 0; index < totals.length; index++) {
+    const total = totals[index] ?? 0
+    if (total === 0) continue
+    const at = index * 3
+    const completed = Math.min(total, current?.[at] ?? 0)
+    const mismatched = Math.min(total - completed, current?.[at + 1] ?? 0)
+    const unpainted = Math.min(total - completed - mismatched, current?.[at + 2] ?? 0)
+    progress.push({
+      index,
+      completed,
+      mismatched,
+      unpainted,
+      known: completed + mismatched + unpainted,
+      total,
+    })
+  }
+  return progress
+}
 
 /**
  * Everything the comparison needs, gathered for whichever thread is going to run it.
@@ -344,6 +536,7 @@ const buildJob = (
     // A pixel we are not claiming cannot be wrong: the wildcard asserts no colour, a filtered colour
     // is one the user has said to stop caring about, and the sentinel is a state rather than a hue.
     ignored: [TRANSPARENT_INDEX, UNPAINTED, ...assertedHidden(template)],
+    transparent: TRANSPARENT_INDEX,
     unpainted: UNPAINTED,
   }
 }
@@ -353,10 +546,12 @@ const store = (
   source: Uint8Array,
   templateSource: Uint8Array,
   key: string,
+  progressKey: string,
   outcome: ScanOutcome,
 ): Cached => {
   const entry: Cached = { source, templateSource, key, ...outcome, both: null }
   rememberCoverage(cacheKey, entry)
+  rememberProgress(cacheKey, entry, progressKey)
   remember(cacheKey, entry)
   count('mismatch:tiles scanned')
   count('mismatch:pixels marked', outcome.wrong.length / 3)
@@ -421,7 +616,12 @@ const requestScan = (
   // good". Those are different questions and folding them together leaked: a scan invalidated by a
   // paint left its entry behind, and `PendingScan.pixels` is the captured tile — a megabyte, pinned
   // for the session once the tile cache had evicted its own copy.
-  const mine: PendingScan = { pixels, templateSource, signature: asked, patches: patchesAtStart }
+  const mine: PendingScan = {
+    pixels,
+    templateSource,
+    signature: asked,
+    patches: patchesAtStart,
+  }
   inFlight.set(cacheKey, mine)
   stale.delete(cacheKey)
   void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
@@ -436,7 +636,7 @@ const requestScan = (
       return
     }
     stale.delete(cacheKey)
-    store(cacheKey, pixels, templateSource, key, outcome)
+    store(cacheKey, pixels, templateSource, key, progressSignature(template), outcome)
     changed++
     notifyChanged()
   })
@@ -468,7 +668,8 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     existing !== undefined &&
     existing.source === pixels &&
     existing.templateSource === template.indices &&
-    existing.key === key
+    existing.key === key &&
+    !stale.has(cacheKey)
   ) {
     stale.delete(cacheKey)
     remember(cacheKey, existing)
@@ -503,8 +704,11 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     pixels,
     template.indices,
     key,
+    progressSignature(template),
     scanTile(buildJob(template, tile, pixels, false), template.indices),
   )
+  changed++
+  notifyChanged()
   return answerFrom(entry, countsUnpainted(template))
 }
 
@@ -572,8 +776,9 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     if (wanted === undefined) continue
 
     const hidden = assertedHidden(template)
-    const asserted =
-      wanted !== TRANSPARENT_INDEX && wanted !== UNPAINTED && !hidden.includes(wanted)
+    const progressAsserted = wanted !== TRANSPARENT_INDEX && wanted !== UNPAINTED
+    const hiddenFromMarkers = progressAsserted && hidden.includes(wanted)
+    const asserted = progressAsserted && !hiddenFromMarkers
 
     /**
      * Which list this pixel belongs in now, if any.
@@ -594,6 +799,16 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     const inWrong = listed(entry.wrong)
     const inUnpainted = listed(entry.unpainted)
     const already = inWrong >= 0 ? 'wrong' : inUnpainted >= 0 ? 'unpainted' : null
+    // Marker lists deliberately carry no state for filtered colours, so they cannot tell us what
+    // this pixel counted as before the patch. Re-scan that tile in idle time instead of guessing and
+    // corrupting the progress total.
+    if (hiddenFromMarkers) {
+      stale.add(cacheKey)
+      scheduleIdleScan()
+      changed++
+      notifyChanged()
+      continue
+    }
     if (already === belongs) continue
 
     const minus = (marks: Mismatches, at: number): Mismatches => {
@@ -617,16 +832,57 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     if (belongs === 'wrong') wrong = plus(wrong)
     if (belongs === 'unpainted') unpainted = plus(unpainted)
 
-    const patched = {
+    let { completed, mismatched, progressUnpainted } = entry
+    let progressByColour = entry.progressByColour
+    if (progressAsserted) {
+      if (already === 'wrong') mismatched--
+      else if (already === 'unpainted') progressUnpainted--
+      else completed--
+      if (belongs === 'wrong') mismatched++
+      else if (belongs === 'unpainted') progressUnpainted++
+      else completed++
+
+      let colourAt = -1
+      for (let at = 0; at < progressByColour.length; at += 4) {
+        if (progressByColour[at] === wanted) {
+          colourAt = at
+          break
+        }
+      }
+      if (colourAt < 0) {
+        const next = new Uint32Array(progressByColour.length + 4)
+        next.set(progressByColour)
+        colourAt = progressByColour.length
+        next[colourAt] = wanted
+        progressByColour = next
+      } else {
+        progressByColour = progressByColour.slice()
+      }
+      const previousOffset = already === 'wrong' ? 2 : already === 'unpainted' ? 3 : 1
+      const nextOffset = belongs === 'wrong' ? 2 : belongs === 'unpainted' ? 3 : 1
+      progressByColour[colourAt + previousOffset] = Math.max(
+        0,
+        (progressByColour[colourAt + previousOffset] ?? 0) - 1,
+      )
+      progressByColour[colourAt + nextOffset] = (progressByColour[colourAt + nextOffset] ?? 0) + 1
+    }
+
+    const patched: Cached = {
       source: entry.source,
       templateSource: entry.templateSource,
       key: entry.key,
       wrong,
       unpainted,
       asserted: entry.asserted,
+      completed,
+      mismatched,
+      progressUnpainted,
+      progressAsserted: entry.progressAsserted,
+      progressByColour,
       both: null,
     }
     rememberCoverage(cacheKey, patched)
+    rememberProgress(cacheKey, patched, progressSignature(template))
     remember(cacheKey, patched)
     changed++
     count(belongs === null ? 'mismatch:pixel fixed' : `mismatch:pixel became ${belongs}`)
@@ -660,6 +916,8 @@ export const forgetMismatches = (id: string): void => {
     if (key.startsWith(`${id}|`)) forgetCoverage(key)
   }
   coverageTotals.delete(id)
+  for (const key of [...(progressKeys.get(id) ?? [])]) forgetProgress(key)
+  progressTotals.delete(id)
   for (const key of [...inFlight.keys()]) {
     if (key.startsWith(`${id}|`)) inFlight.delete(key)
   }

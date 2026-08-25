@@ -32,6 +32,8 @@ export interface ScanJob {
   readonly draft: Uint8Array | null
   /** Palette indices that assert nothing: the wildcard, the unpainted sentinel, anything filtered. */
   readonly ignored: readonly number[]
+  /** The palette index that means the template makes no assertion at this pixel. */
+  readonly transparent: number
   /** The value meaning "nothing placed here", which is a state rather than a colour. */
   readonly unpainted: number
 }
@@ -43,6 +45,13 @@ export interface ScanOutcome {
   readonly unpainted: Float32Array
   /** Pixels this tile asserts a colour for, so a caller can say how much is left. */
   readonly asserted: number
+  /** Progress counts ignore display-only colour filters, unlike the marker lists above. */
+  readonly completed: number
+  readonly mismatched: number
+  readonly progressUnpainted: number
+  readonly progressAsserted: number
+  /** Sparse `[palette index, completed, mismatched, unpainted]` progress tuples. */
+  readonly progressByColour: Uint32Array
 }
 
 export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome => {
@@ -54,7 +63,16 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   const right = Math.min(job.originX + job.width, tileLeft + tileSize)
   const bottom = Math.min(job.originY + job.height, tileTop + tileSize)
   if (right <= left || bottom <= top) {
-    return { wrong: new Float32Array(0), unpainted: new Float32Array(0), asserted: 0 }
+    return {
+      wrong: new Float32Array(0),
+      unpainted: new Float32Array(0),
+      asserted: 0,
+      completed: 0,
+      mismatched: 0,
+      progressUnpainted: 0,
+      progressAsserted: 0,
+      progressByColour: new Uint32Array(0),
+    }
   }
 
   // "Is this colour one we are asserting", as a lookup rather than a question. A `Set.has` per pixel
@@ -70,13 +88,18 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   const wrong: number[] = []
   const unpainted: number[] = []
   let assertedHere = 0
+  let completed = 0
+  let mismatched = 0
+  let progressUnpainted = 0
+  let progressAsserted = 0
+  // `scanTile` is stringified into a worker, so this deliberately uses the byte-sized palette
+  // domain rather than importing the application's current palette length.
+  const progressByColour = new Uint32Array(256 * 3)
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - job.originY) * job.width + (left - job.originX)
     let tileAt = (y - tileTop) * tileSize + (left - tileLeft) - bandOffset
     for (let x = left; x < right; x++, templateAt++, tileAt++) {
       const wanted = wantedPixels[templateAt] as number
-      if (asserted[wanted] === 0) continue
-      assertedHere++
       const drafted = draft === null ? unpaintedIndex : (draft[tileAt] as number)
       const placed =
         drafted !== unpaintedIndex
@@ -84,6 +107,26 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
           : server === null
             ? unpaintedIndex
             : (server[tileAt] as number)
+
+      // Progress describes the template, not the current display filter. A colour hidden from the
+      // overlay still needs painting and therefore still belongs in these counts.
+      if (wanted !== job.transparent && wanted !== unpaintedIndex) {
+        progressAsserted++
+        const colourAt = wanted * 3
+        if (placed === wanted) {
+          completed++
+          progressByColour[colourAt] = (progressByColour[colourAt] ?? 0) + 1
+        } else if (placed === unpaintedIndex) {
+          progressUnpainted++
+          progressByColour[colourAt + 2] = (progressByColour[colourAt + 2] ?? 0) + 1
+        } else {
+          mismatched++
+          progressByColour[colourAt + 1] = (progressByColour[colourAt + 1] ?? 0) + 1
+        }
+      }
+
+      if (asserted[wanted] === 0) continue
+      assertedHere++
       if (placed === wanted) continue
       // An empty pixel is only "not done yet" when nobody chose it. One drafted Transparent arrives
       // as a real palette index rather than the sentinel, so it lands with the mistakes.
@@ -92,9 +135,38 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     }
   }
 
+  let usedColours = 0
+  for (let index = 0; index < 256; index++) {
+    const at = index * 3
+    if (
+      progressByColour[at] !== 0 ||
+      progressByColour[at + 1] !== 0 ||
+      progressByColour[at + 2] !== 0
+    )
+      usedColours++
+  }
+  const packedProgress = new Uint32Array(usedColours * 4)
+  let packedAt = 0
+  for (let index = 0; index < 256; index++) {
+    const at = index * 3
+    const colourCompleted = progressByColour[at] as number
+    const colourMismatched = progressByColour[at + 1] as number
+    const colourUnpainted = progressByColour[at + 2] as number
+    if (colourCompleted === 0 && colourMismatched === 0 && colourUnpainted === 0) continue
+    packedProgress[packedAt++] = index
+    packedProgress[packedAt++] = colourCompleted
+    packedProgress[packedAt++] = colourMismatched
+    packedProgress[packedAt++] = colourUnpainted
+  }
+
   return {
     wrong: new Float32Array(wrong),
     unpainted: new Float32Array(unpainted),
     asserted: assertedHere,
+    completed,
+    mismatched,
+    progressUnpainted,
+    progressAsserted,
+    progressByColour: packedProgress,
   }
 }

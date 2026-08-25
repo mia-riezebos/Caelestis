@@ -208,6 +208,40 @@ describe('tree identity and ordering', () => {
     ).toEqual(['newer', 'older'])
   })
 
+  it('sorts templates by completion without moving folder slots', () => {
+    setState({ sort: { field: 'progress', direction: 'asc' }, customOrder: [] })
+    const progress = (completed: number) => ({
+      completed,
+      mismatched: 0,
+      unpainted: 100 - completed,
+      known: 100,
+      total: 100,
+    })
+
+    expect(
+      orderedItems(
+        [
+          {
+            key: 'done',
+            name: 'Done',
+            progress: progress(90),
+            progressSortable: true as const,
+            createdAt: 4,
+          },
+          { key: 'folder', name: 'Folder', progress: progress(50), createdAt: 3 },
+          {
+            key: 'todo',
+            name: 'Todo',
+            progress: progress(10),
+            progressSortable: true as const,
+            createdAt: 2,
+          },
+        ],
+        new Map(),
+      ).map((item) => item.key),
+    ).toEqual(['todo', 'folder', 'done'])
+  })
+
   it('forgets URL-scoped node state even when no server tree is loaded', () => {
     const prefix = `node:${encodeURIComponent('https://offline.example.com')}:`
     setState({

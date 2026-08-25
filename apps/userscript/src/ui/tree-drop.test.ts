@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getState, moveLocalFolder, setState } from '../state.js'
+import type { PlacedTemplate } from '../templates/local-store.js'
 import {
   forgetServerTree,
   nodeTreeKey,
@@ -10,6 +11,15 @@ import {
   type TreeCallbacks,
   treeContents,
 } from './tree.js'
+
+const localTemplateHarness = vi.hoisted(() => ({
+  templates: vi.fn(() => [] as PlacedTemplate[]),
+}))
+
+vi.mock('../templates/local-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../templates/local-store.js')>()),
+  localTemplates: localTemplateHarness.templates,
+}))
 
 const SERVER_URL = 'https://server.example.com'
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
@@ -25,6 +35,7 @@ const eventWithTransfer = (type: string, dataTransfer: DataTransfer, clientY = 0
 }
 
 afterEach(() => {
+  localTemplateHarness.templates.mockReturnValue([])
   forgetServerTree(SERVER_URL)
   setState({
     servers: [],
@@ -52,18 +63,313 @@ const serverNode = (id: string, name: string) => ({
   createdAt: 1_750_000_000_000,
 })
 
-const serverTemplate = (id: string, nodeId: string, name: string, updatedAt: number) => ({
+const serverTemplate = (id: string, nodeId: string | null, name: string, updatedAt: number) => ({
   id,
   nodeId,
   name,
   version: 'v1',
+  totalPixels: 100,
   published: true,
   updatedAt,
   bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
   chunks: [],
 })
 
+const placedTemplate = (): PlacedTemplate => ({
+  id: 'progress-template',
+  name: 'Progress template',
+  source: 'image',
+  originX: 0,
+  originY: 0,
+  width: 2,
+  height: 1,
+  indices: new Uint8Array([0, 4]),
+  moved: 0,
+  opaque: 2,
+  tiles: new Map(),
+  visible: true,
+  everPlaced: true,
+  appearance: null,
+  revision: 1,
+  owns: [],
+  folderId: null,
+})
+
 describe('tree drag and drop', () => {
+  it('keeps a fly-to action on server template rows', () => {
+    const server = connectedServer()
+    setState({
+      servers: [server],
+      localFolders: [],
+      customOrder: [],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    rememberServerContents(server, {
+      nodes: [],
+      templates: [{ ...serverTemplate(TEMPLATE_A_ID, null, 'Template', 1), published: false }],
+    })
+    const onGoTo = vi.fn()
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo,
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+
+    const tree = treeContents(callbacks, vi.fn())
+    const row = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+    )
+    const flyTo = row?.querySelector<HTMLButtonElement>('[aria-label="Go to"]')
+
+    expect(flyTo).not.toBeNull()
+    expect(
+      [...(row?.children ?? [])].some(
+        (child) => child instanceof HTMLElement && child.style.width === '1rem',
+      ),
+    ).toBe(false)
+    const connector = row?.querySelector<SVGSVGElement>(':scope > .caelestis-tree-connector')
+    expect(connector).not.toBeNull()
+    expect(connector?.querySelectorAll('line')).toHaveLength(2)
+    expect(row?.style.marginInline).toBe('0.25rem 0.5rem')
+    expect(flyTo?.parentElement?.classList.contains('caelestis-leading-actions')).toBe(true)
+    expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
+    expect(row?.querySelector('[aria-label="Expand progress"]')).not.toBeNull()
+    expect(row?.textContent).not.toContain('unpublished')
+    expect(row?.style.opacity).toBe('0.55')
+    flyTo?.click()
+    expect(onGoTo).toHaveBeenCalledWith({
+      kind: 'server',
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+    })
+  })
+
+  it('shows descendant progress on folder and server parent rows', () => {
+    const server = connectedServer()
+    const folder = serverNode(SOURCE_NODE_ID, 'Folder')
+    setState({
+      servers: [server],
+      localFolders: [],
+      customOrder: [],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    rememberServerContents(server, {
+      nodes: [folder],
+      templates: [
+        serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'A', 1),
+        { ...serverTemplate(TEMPLATE_B_ID, SOURCE_NODE_ID, 'B', 2), totalPixels: 50 },
+      ],
+    })
+
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo: vi.fn(),
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+    const render = () => treeContents(callbacks, vi.fn())
+    let tree = render()
+    const serverRow = tree.querySelector<HTMLElement>(`[data-caelestis-key="server:${SERVER_URL}"]`)
+    const folderRow = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
+    )
+    const templateRow = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+    )
+
+    expect(serverRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
+      '0 of 150 pixels scanned',
+    )
+    expect(folderRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
+      '0 of 150 pixels scanned',
+    )
+    expect(serverRow?.querySelector(':scope > .caelestis-tree-connector')).toBeNull()
+    expect(folderRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
+    expect(templateRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
+    expect(serverRow?.style.marginInline).toBe('0.25rem 0.5rem')
+    expect(folderRow?.style.marginInline).toBe(serverRow?.style.marginInline)
+    expect(templateRow?.style.marginInline).toBe(serverRow?.style.marginInline)
+    for (const row of [serverRow, folderRow]) {
+      const tail = row?.querySelector('.caelestis-row-tail')
+      expect(tail?.querySelector(':scope > .caelestis-progress--inline')).not.toBeNull()
+      expect(tail?.querySelector(':scope > .caelestis-actions')).not.toBeNull()
+    }
+
+    folderRow?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')?.click()
+    tree = render()
+    expect(
+      tree
+        .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+        ?.classList.contains('caelestis-row--expanded-progress'),
+    ).toBe(true)
+    const folderDetail = tree
+      .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+      ?.querySelector<HTMLElement>('.caelestis-progress--expanded')
+    expect(folderDetail?.style.marginInlineStart).toBe('20px')
+    expect(folderDetail?.style.width).toBe('calc(100% - 20px)')
+
+    tree
+      .querySelector<HTMLElement>(
+        `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+      )
+      ?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')
+      ?.click()
+    tree = render()
+    const templateDetail = tree
+      .querySelector(`[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`)
+      ?.querySelector<HTMLElement>('.caelestis-progress--expanded')
+    expect(templateDetail?.style.marginInlineStart).toBe('')
+    tree
+      .querySelector<HTMLElement>(
+        `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+      )
+      ?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
+      ?.click()
+
+    setState({ collapsed: ['local', nodeTreeKey(server, SOURCE_NODE_ID)] })
+    tree = render()
+    const collapsedFolder = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
+    )
+    expect(collapsedFolder?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
+    const reopenProgress = collapsedFolder?.querySelector<HTMLButtonElement>(
+      '[aria-label="Expand progress"]',
+    )
+    expect(reopenProgress).not.toBeNull()
+    reopenProgress?.click()
+
+    // The progress action opens its parent as required, then return disclosure to the default.
+    tree = render()
+    expect(
+      tree
+        .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+        ?.classList.contains('caelestis-row--expanded-progress'),
+    ).toBe(true)
+    tree
+      .querySelector<HTMLElement>(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+      ?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
+      ?.click()
+  })
+
+  it('continues the tree branches through an empty folder placeholder', () => {
+    const server = connectedServer()
+    const emptyFolder = serverNode(SOURCE_NODE_ID, 'Empty folder')
+    const populatedFolder = serverNode(DESTINATION_NODE_ID, 'Populated folder')
+    setState({
+      servers: [server],
+      localFolders: [],
+      customOrder: [],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    rememberServerContents(server, {
+      nodes: [emptyFolder, populatedFolder],
+      templates: [serverTemplate(TEMPLATE_A_ID, DESTINATION_NODE_ID, 'Template', 1)],
+    })
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo: vi.fn(),
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+
+    const tree = treeContents(callbacks, vi.fn())
+    const placeholder = [...tree.querySelectorAll<HTMLElement>('[aria-disabled="true"]')].find(
+      (row) => row.textContent === 'Empty.',
+    )
+    const connector = placeholder?.querySelector<SVGSVGElement>(
+      ':scope > .caelestis-tree-connector',
+    )
+
+    expect(connector).not.toBeNull()
+    expect(connector?.querySelectorAll('line')).toHaveLength(3)
+    expect(connector?.querySelector('line')?.getAttribute('y2')).toBe('100%')
+  })
+
+  it('keeps colour disclosure beside the expanded meter instead of the row actions', () => {
+    localTemplateHarness.templates.mockReturnValue([placedTemplate()])
+    setState({
+      servers: [],
+      localFolders: [],
+      customOrder: [],
+      collapsed: [],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo: vi.fn(),
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+    const render = () => treeContents(callbacks, vi.fn())
+    let tree = render()
+    tree
+      .querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
+      ?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')
+      ?.click()
+
+    tree = render()
+    let row = tree.querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
+    const collapse = row?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
+    const showColours = row?.querySelector<HTMLButtonElement>('[aria-label="Show colour progress"]')
+
+    expect(collapse?.parentElement?.classList.contains('caelestis-actions')).toBe(true)
+    expect(
+      showColours?.parentElement?.classList.contains('caelestis-progress-detail-actions'),
+    ).toBe(true)
+    expect(showColours?.parentElement?.classList.contains('caelestis-actions')).toBe(false)
+    expect(collapse?.parentElement).not.toBe(showColours?.parentElement)
+    expect(showColours?.closest('.caelestis-progress-disclosure')).not.toBeNull()
+    expect(
+      row?.querySelector('.caelestis-progress-disclosure > .caelestis-progress--expanded'),
+    ).not.toBeNull()
+
+    showColours?.click()
+    tree = render()
+    row = tree.querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
+    expect(
+      row
+        ?.querySelector('[aria-label="Hide colour progress"]')
+        ?.closest('.caelestis-progress-disclosure'),
+    ).not.toBeNull()
+    expect(row?.querySelector('.caelestis-progress-colours')).not.toBeNull()
+    row?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')?.click()
+  })
+
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {
     const server = connectedServer()
     const source = serverNode(SOURCE_NODE_ID, 'Source')

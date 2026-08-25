@@ -17,19 +17,39 @@ import {
   type TreeNode,
   takeProbedNodes,
 } from '../state.js'
-import { isServerTemplate, localTemplates, setLocalVisible } from '../templates/local-store.js'
+import {
+  isServerTemplate,
+  localTemplates,
+  type PlacedTemplate,
+  setLocalVisible,
+} from '../templates/local-store.js'
+import {
+  colourProgressFor,
+  progressFor,
+  type TemplateColourProgress,
+  type TemplateProgress,
+} from '../templates/mismatch.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
+import {
+  colourProgressDetails,
+  completionRatio,
+  emptyProgress,
+  progressIndicator,
+  sumColourProgress,
+  sumProgress,
+} from './progress.js'
 import { isReorderable } from './sort.js'
 
 /**
  * The tree: one root per source, plus `Local`.
  *
- * Row anatomy, left to right: **caret, kind icon, name, meta, row actions, checkbox**. The caret
- * leads because it is what makes a list read as a tree; the checkbox trails because it is what you
- * act on once you have found the row. Row actions sit just inside it and appear on hover, so a
- * quiet list stays quiet.
+ * Row anatomy, left to right: **optional caret, kind icon, persistent navigation, name, meta, row
+ * actions, checkbox**. Expandable rows earn the caret's space; leaves rely on their depth indent
+ * rather than carrying an empty control slot. The checkbox trails because it is what you act on
+ * once you have found the row. Secondary actions sit just inside it and appear on hover, while
+ * navigation stays visible at the row's leading edge.
  *
  * The whole row is the expand target — a caret is a 24px hit area on a 300px row, and everything
  * between them is dead space otherwise.
@@ -68,8 +88,8 @@ export interface TreeCallbacks {
   readonly onRename: (target: TreeTarget, name: string) => void
   readonly onDelete: (target: TreeTarget) => void
   readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
-  /** Frame a local template on the map. */
-  readonly onGoTo: (templateId: string) => void
+  /** Frame a local or not-yet-downloaded server template on the map. */
+  readonly onGoTo: (target: TreeNavigationTarget) => void
   readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
   readonly onError: (message: string) => void
@@ -95,6 +115,10 @@ export interface TreeCallbacks {
   ) => Promise<string | null>
 }
 
+export type TreeNavigationTarget =
+  | { readonly kind: 'local'; readonly templateId: string }
+  | { readonly kind: 'server'; readonly bbox: ServerTemplate['bbox'] }
+
 let activeTreeKey: string | null = null
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
 let renaming: string | null = null
@@ -104,6 +128,9 @@ let renameDraft: {
   selectionStart: number
   selectionEnd: number
 } | null = null
+type ProgressDisclosure = 'expanded' | 'colours'
+/** Per-row disclosure is session UI state, not an appearance preference. */
+const progressDisclosure = new Map<string, ProgressDisclosure>()
 const MAX_RENDERED_ROWS = 2_000
 
 /**
@@ -241,6 +268,10 @@ interface OrderedItem {
   readonly key: string
   readonly name: string
   readonly createdAt?: number
+  /** Absent for structural rows; progress sorting leaves those in their durable slots. */
+  readonly progress?: TemplateProgress | undefined
+  /** Aggregated folder progress is display-only; only leaves move under progress sorting. */
+  readonly progressSortable?: true | undefined
 }
 
 const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
@@ -334,7 +365,28 @@ export const orderedItems = <T extends OrderedItem>(
   unranked.sort(
     (a, b) => (b.createdAt ?? Number.NEGATIVE_INFINITY) - (a.createdAt ?? Number.NEGATIVE_INFINITY),
   )
-  return [...ranked.map(({ item }) => item), ...unranked].slice(0, bounded)
+  const custom = [...ranked.map(({ item }) => item), ...unranked]
+  if (getState().sort.field !== 'progress') return custom.slice(0, bounded)
+
+  // A folder is a place, not a score. Preserve every structural slot from the user's own order and
+  // sort only template rows among the slots templates already occupy. That keeps the hierarchy
+  // legible while still bringing the least/most complete work together at every sibling level.
+  const direction = getState().sort.direction === 'desc' ? -1 : 1
+  const templates = custom
+    .filter(
+      (item): item is T & { readonly progress: TemplateProgress } =>
+        item.progressSortable === true && item.progress !== undefined,
+    )
+    .sort(
+      (a, b) =>
+        direction * (completionRatio(a.progress) - completionRatio(b.progress)) ||
+        NAME_COLLATOR.compare(a.name, b.name) ||
+        a.key.localeCompare(b.key),
+    )
+  let templateAt = 0
+  return custom
+    .map((item) => (item.progressSortable !== true ? item : (templates[templateAt++] ?? item)))
+    .slice(0, bounded)
 }
 
 export const reorderedSiblings = (
@@ -476,7 +528,11 @@ export const templatesOfNode = (
  */
 export type NodeRefreshResult =
   | { readonly ok: true; readonly changed?: boolean }
-  | { readonly ok: false; readonly message: string; readonly superseded?: true }
+  | {
+      readonly ok: false
+      readonly message: string
+      readonly superseded?: true
+    }
 const refreshing = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
 const refreshControllers = new Map<string, AbortController>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
@@ -489,7 +545,11 @@ export const refreshNodes = async (
   force = false,
 ): Promise<NodeRefreshResult> => {
   if (!isCurrentServerConnection(server)) {
-    return { ok: false, message: 'The server connection changed before refresh.', superseded: true }
+    return {
+      ok: false,
+      message: 'The server connection changed before refresh.',
+      superseded: true,
+    }
   }
   const pending = refreshing.get(server)
   if (!force && pending !== undefined) {
@@ -522,16 +582,28 @@ const refreshOnce = async (
   const contents = await listServerContents(server, signal)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(server)) {
-    return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
+    return {
+      ok: false,
+      message: 'The server connection changed during refresh.',
+      superseded: true,
+    }
   }
   if (refreshGeneration.get(server.url) !== generation) {
-    return { ok: false, message: 'A newer refresh replaced this one.', superseded: true }
+    return {
+      ok: false,
+      message: 'A newer refresh replaced this one.',
+      superseded: true,
+    }
   }
   // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
   // emptying itself — a server that blinks should not take its folders off your screen.
   if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
   if (!isLatestServerContents(server.url, contents)) {
-    return { ok: false, message: 'A newer manifest replaced this one.', superseded: true }
+    return {
+      ok: false,
+      message: 'A newer manifest replaced this one.',
+      superseded: true,
+    }
   }
   const remembered = rememberServerContents(server, contents)
   if (!remembered.ok) return remembered
@@ -550,6 +622,7 @@ const sameTemplate = (left: ServerTemplate, right: ServerTemplate): boolean =>
   left.nodeId === right.nodeId &&
   left.name === right.name &&
   left.version === right.version &&
+  left.totalPixels === right.totalPixels &&
   left.published === right.published &&
   left.updatedAt === right.updatedAt &&
   left.bbox.minX === right.bbox.minX &&
@@ -576,7 +649,11 @@ export const rememberServerContents = (
 ): NodeRefreshResult => {
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(server)) {
-    return { ok: false, message: 'The server connection changed during refresh.', superseded: true }
+    return {
+      ok: false,
+      message: 'The server connection changed during refresh.',
+      superseded: true,
+    }
   }
   const { nodes, templates } = contents
   const identity = serverIdentity(server)
@@ -750,7 +827,9 @@ const moveKey = (
       : reorderedVisibleSiblings(allKeys, keys, from, to, after)
   if (next === null || (!inserting && next.every((key, index) => key === allKeys[index])))
     return 'unchanged'
-  setState({ customOrder: replaceSiblingOrder(getState().customOrder, affectedKeys, next) })
+  setState({
+    customOrder: replaceSiblingOrder(getState().customOrder, affectedKeys, next),
+  })
   return 'moved'
 }
 
@@ -775,7 +854,11 @@ const placeAmongVisibleSiblings = (
  * and the drop only has to read it.
  */
 /** The row being dragged, and the container it came from — needed to police reparenting. */
-let dragging: { key: string; parentKey: string | null; canReparent: boolean } | null = null
+let dragging: {
+  key: string
+  parentKey: string | null
+  canReparent: boolean
+} | null = null
 
 /** Keep server or local refreshes from replacing a row while the browser is dragging it. */
 export const isTreeDragActive = (): boolean => dragging !== null
@@ -931,12 +1014,25 @@ const clearDropMarks = (root: ParentNode): void => {
   for (const el of root.querySelectorAll('[data-caelestis-placeholder]')) el.remove()
 }
 
+interface RowAction {
+  readonly icon: IconName
+  readonly label: string
+  readonly run: () => void
+}
+
 interface RowOptions {
   readonly key: string
   readonly name: string
   readonly kind: IconName
   readonly depth: number
+  /** One continuation flag per visible tree column, ending with this row's sibling branch. */
+  readonly branches?: readonly boolean[] | undefined
   readonly meta?: string
+  readonly progress?: TemplateProgress
+  readonly colourProgress?: (() => readonly TemplateColourProgress[] | undefined) | undefined
+  readonly leadingActions?:
+    | ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
+    | undefined
   /** Containers accept a drop *into* them; leaves only reorder between siblings. */
   readonly container: boolean
   /** The row this one sits under, so a drop can resolve to a place in the tree rather than a row. */
@@ -953,7 +1049,7 @@ interface RowOptions {
   readonly forceExpanded?: boolean | undefined
   /** Dimmed, for a row that exists but is not doing anything yet — an unpublished template. */
   readonly muted?: boolean | undefined
-  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  readonly actions?: readonly RowAction[] | undefined
   /** Present only where the user can actually change things; absent means no rename affordance. */
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
@@ -1004,6 +1100,46 @@ const destinationLevel = (
       }
     : options.destinationSiblings?.(parentKey)
 
+const TREE_COLUMN = 18
+const DISCLOSURE_SLOT_WIDTH = 20
+const CONNECTOR_MIDPOINT = 18
+
+/** TUI-style tree pipes, drawn as vectors so an absent disclosure control reads as hierarchy. */
+const treeConnector = (
+  branches: readonly boolean[],
+  leaf: boolean,
+): { element: SVGSVGElement; width: number } | null => {
+  if (branches.length === 0) return null
+  const width = branches.length * TREE_COLUMN + (leaf ? DISCLOSURE_SLOT_WIDTH : 0)
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.classList.add('caelestis-tree-connector')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('width', String(width))
+  svg.style.width = `${width}px`
+
+  const line = (x1: number, y1: string, x2: number, y2: string): void => {
+    const segment = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+    segment.setAttribute('x1', String(x1))
+    segment.setAttribute('y1', y1)
+    segment.setAttribute('x2', String(x2))
+    segment.setAttribute('y2', y2)
+    segment.setAttribute('vector-effect', 'non-scaling-stroke')
+    svg.appendChild(segment)
+  }
+
+  for (let index = 0; index < branches.length - 1; index++) {
+    if (branches[index] === true) {
+      const x = index * TREE_COLUMN + TREE_COLUMN / 2
+      line(x, '0', x, '100%')
+    }
+  }
+  const current = branches.length - 1
+  const x = current * TREE_COLUMN + TREE_COLUMN / 2
+  line(x, '0', x, branches[current] === true ? '100%' : String(CONNECTOR_MIDPOINT))
+  line(x, String(CONNECTOR_MIDPOINT), width - 4, String(CONNECTOR_MIDPOINT))
+  return { element: svg, width }
+}
+
 const treeRow = (options: RowOptions): HTMLElement => {
   const draggable = isReorderable(getState().sort)
   const row = document.createElement('div')
@@ -1015,9 +1151,12 @@ const treeRow = (options: RowOptions): HTMLElement => {
   row.dataset.caelestisDepth = String(options.depth)
   if (options.container) row.dataset.caelestisContainer = ''
   row.style.padding = '0.25rem 0.5rem'
-  // One indent step per level, on top of the fixed gutter.
-  row.style.marginLeft = `${0.25 + options.depth * 1.125}rem`
-  row.style.marginRight = '0.5rem'
+  row.style.marginInline = '0.25rem 0.5rem'
+  const connector = treeConnector(options.branches ?? [], !options.container)
+  if (connector !== null) {
+    row.style.paddingInlineStart = `calc(0.5rem + ${connector.width}px)`
+    row.appendChild(connector.element)
+  }
   row.style.minHeight = '2rem'
   if (options.muted === true) row.style.opacity = '0.55'
   row.draggable = draggable
@@ -1034,17 +1173,30 @@ const treeRow = (options: RowOptions): HTMLElement => {
     glyph.style.transition = 'transform 120ms ease-out'
     glyph.style.transform = expanded ? 'rotate(90deg)' : 'rotate(0deg)'
     row.appendChild(glyph)
-  } else {
-    // A leaf still needs the caret's width, or its name hangs left of every sibling's.
-    const spacer = document.createElement('span')
-    spacer.style.flex = '0 0 auto'
-    spacer.style.width = '1rem'
-    row.appendChild(spacer)
   }
 
   const kind = icon(options.kind, 'size-4 opacity-60')
   kind.style.flex = '0 0 auto'
   row.appendChild(kind)
+
+  if (options.leadingActions !== undefined) {
+    const group = document.createElement('span')
+    group.className = 'caelestis-leading-actions flex items-center'
+    group.style.flex = '0 0 auto'
+    for (const action of options.leadingActions) {
+      const button = document.createElement('button')
+      button.className = 'btn btn-ghost btn-xs btn-circle'
+      button.title = action.label
+      button.setAttribute('aria-label', action.label)
+      button.appendChild(icon(action.icon, 'size-4'))
+      button.addEventListener('click', (event) => {
+        event.stopPropagation()
+        action.run()
+      })
+      group.appendChild(button)
+    }
+    row.appendChild(group)
+  }
 
   const editing = renaming === options.key && options.onRename !== undefined
   const input = document.createElement('input')
@@ -1104,6 +1256,89 @@ const treeRow = (options: RowOptions): HTMLElement => {
     row.appendChild(meta)
   }
 
+  const requestedDisclosure = progressDisclosure.get(options.key)
+  const hasProgress = options.progress !== undefined
+  const canShowExpandedProgress = hasProgress && (!options.container || expanded)
+  const resolvedColourProgress =
+    canShowExpandedProgress && requestedDisclosure === 'colours'
+      ? options.colourProgress?.()
+      : undefined
+  const disclosure: 'inline' | ProgressDisclosure =
+    !canShowExpandedProgress || requestedDisclosure === undefined
+      ? 'inline'
+      : requestedDisclosure === 'colours' && (resolvedColourProgress?.length ?? 0) === 0
+        ? 'expanded'
+        : requestedDisclosure
+  const progressPlacement = disclosure === 'inline' ? 'inline' : 'expanded'
+  const alignExpandedDetail = (element: HTMLElement): HTMLElement => {
+    if (!options.container) return element
+    // The header consumes a real caret here. Expanded details do not, so carry the slot into their
+    // own inline start rather than making container details appear one level shallower than leaves.
+    const width = `calc(100% - ${DISCLOSURE_SLOT_WIDTH}px)`
+    element.style.flexBasis = width
+    element.style.width = width
+    element.style.marginInlineStart = `${DISCLOSURE_SLOT_WIDTH}px`
+    return element
+  }
+  let progressElement: HTMLElement | null = null
+  if (options.progress !== undefined) {
+    if (progressPlacement === 'expanded') {
+      row.classList.add('caelestis-row--expanded-progress')
+    }
+    progressElement = progressIndicator(options.progress, progressPlacement)
+  }
+
+  const progressActions: RowAction[] = []
+  let colourProgressAction: RowAction | null = null
+  if (hasProgress) {
+    if (disclosure === 'inline') {
+      progressActions.push({
+        icon: 'expandMore',
+        label: 'Expand progress',
+        run: () => {
+          if (options.container && !expanded) {
+            setState({ collapsed: getState().collapsed.filter((key) => key !== options.key) })
+          }
+          progressDisclosure.set(options.key, 'expanded')
+          options.rerender()
+        },
+      })
+    } else {
+      progressActions.push({
+        icon: 'expandLess',
+        label: 'Collapse progress',
+        run: () => {
+          progressDisclosure.delete(options.key)
+          options.rerender()
+        },
+      })
+      if (options.colourProgress !== undefined) {
+        colourProgressAction = {
+          icon: 'palette',
+          label: disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress',
+          run: () => {
+            progressDisclosure.set(options.key, disclosure === 'colours' ? 'expanded' : 'colours')
+            options.rerender()
+          },
+        }
+      }
+    }
+  }
+
+  const actionButton = (action: RowAction): HTMLButtonElement => {
+    const button = document.createElement('button')
+    button.className = 'btn btn-ghost btn-xs btn-circle'
+    button.title = action.label
+    button.setAttribute('aria-label', action.label)
+    button.appendChild(icon(action.icon, 'size-4'))
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      action.run()
+    })
+    return button
+  }
+
+  let actionElement: HTMLElement | null = null
   if (editing) {
     // Confirm and cancel take the place of the row's own actions while renaming, so the row never
     // offers two different things to do with the same click.
@@ -1142,24 +1377,50 @@ const treeRow = (options: RowOptions): HTMLElement => {
       if (event.key === 'Enter') commit()
       if (event.key === 'Escape') cancel()
     })
-    row.appendChild(group)
-  } else if (options.actions !== undefined && options.actions.length > 0) {
-    const group = document.createElement('span')
-    group.className = 'caelestis-actions flex items-center gap-0.5'
-    group.style.flex = '0 0 auto'
-    for (const action of options.actions) {
-      const button = document.createElement('button')
-      button.className = 'btn btn-ghost btn-xs btn-circle'
-      button.title = action.label
-      button.setAttribute('aria-label', action.label)
-      button.appendChild(icon(action.icon, 'size-4'))
-      button.addEventListener('click', (event) => {
-        event.stopPropagation()
-        action.run()
-      })
-      group.appendChild(button)
+    actionElement = group
+  } else {
+    const actions = [...(options.actions ?? []), ...progressActions]
+    if (actions.length === 0) {
+      actionElement = null
+    } else {
+      const group = document.createElement('span')
+      group.className = 'caelestis-actions flex items-center gap-0.5'
+      group.style.flex = '0 0 auto'
+      for (const action of actions) group.appendChild(actionButton(action))
+      actionElement = group
     }
-    row.appendChild(group)
+  }
+
+  let renderedProgressElement = progressElement
+  if (progressPlacement === 'expanded' && progressElement !== null) {
+    let expandedDetail: HTMLElement = progressElement
+    if (!editing && colourProgressAction !== null) {
+      const line = document.createElement('span')
+      line.className = 'caelestis-progress-disclosure'
+      const detailActions = document.createElement('span')
+      detailActions.className = 'caelestis-progress-detail-actions'
+      detailActions.appendChild(actionButton(colourProgressAction))
+      line.append(progressElement, detailActions)
+      expandedDetail = line
+    }
+    renderedProgressElement = alignExpandedDetail(expandedDetail)
+  }
+
+  if (
+    progressPlacement === 'inline' &&
+    renderedProgressElement !== null &&
+    actionElement?.classList.contains('caelestis-actions') === true
+  ) {
+    const tail = document.createElement('span')
+    tail.className = 'caelestis-row-tail'
+    tail.append(renderedProgressElement, actionElement)
+    row.appendChild(tail)
+  } else {
+    if (renderedProgressElement !== null) row.appendChild(renderedProgressElement)
+    if (actionElement !== null) row.appendChild(actionElement)
+  }
+  if (disclosure === 'colours' && resolvedColourProgress !== undefined) {
+    row.appendChild(alignExpandedDetail(colourProgressDetails(resolvedColourProgress)))
   }
 
   /**
@@ -1432,11 +1693,17 @@ interface TreeItem {
   readonly childrenOf: string | null
   readonly createdAt?: number
   readonly meta?: string | undefined
+  readonly progress?: TemplateProgress
+  readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined
+  readonly progressSortable?: true
   readonly muted?: boolean | undefined
   readonly visible: boolean
   readonly setVisible: (on: boolean) => boolean | Promise<boolean>
   readonly canReparent: boolean
   readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  readonly leadingActions?:
+    | ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
+    | undefined
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined
   readonly onDropAt?:
@@ -1463,10 +1730,17 @@ interface TreeItem {
  */
 interface TreeSource {
   readonly children: (parentId: string | null) => readonly TreeItem[]
+  readonly progress: (parentId: string | null) => TemplateProgress | undefined
+  readonly colourProgress: (
+    parentId: string | null,
+  ) => readonly TemplateColourProgress[] | undefined
 }
 
 const groupedSource = (
-  entries: ReadonlyArray<{ readonly parentId: string | null; readonly item: TreeItem }>,
+  entries: ReadonlyArray<{
+    readonly parentId: string | null
+    readonly item: TreeItem
+  }>,
 ): TreeSource => {
   const byParent = new Map<string | null, TreeItem[]>()
   for (const { parentId, item } of entries) {
@@ -1474,7 +1748,90 @@ const groupedSource = (
     siblings.push(item)
     byParent.set(parentId, siblings)
   }
-  return { children: (parentId) => byParent.get(parentId) ?? [] }
+  const totals = new Map<string | null, TemplateProgress | undefined>()
+  const colourTotals = new Map<string | null, readonly TemplateColourProgress[] | undefined>()
+  const colourAvailability = new Map<string | null, boolean>()
+  const visiting = new Set<string | null>()
+  const colourVisiting = new Set<string | null>()
+  const progress = (parentId: string | null): TemplateProgress | undefined => {
+    if (totals.has(parentId)) return totals.get(parentId)
+    if (visiting.has(parentId)) return undefined
+    visiting.add(parentId)
+    const descendants: TemplateProgress[] = []
+    for (const item of byParent.get(parentId) ?? []) {
+      const itemProgress = item.childrenOf === null ? item.progress : progress(item.childrenOf)
+      if (itemProgress !== undefined) descendants.push(itemProgress)
+    }
+    visiting.delete(parentId)
+    const total = sumProgress(descendants)
+    totals.set(parentId, total)
+    return total
+  }
+  const hasColourProgress = (parentId: string | null): boolean => {
+    const cached = colourAvailability.get(parentId)
+    if (cached !== undefined) return cached
+    if (colourVisiting.has(parentId)) return false
+    colourVisiting.add(parentId)
+    let found = false
+    let available = true
+    for (const item of byParent.get(parentId) ?? []) {
+      const overall = item.childrenOf === null ? item.progress : progress(item.childrenOf)
+      if (overall === undefined) continue
+      found = true
+      const itemAvailable =
+        item.childrenOf === null
+          ? item.colourProgress !== undefined
+          : hasColourProgress(item.childrenOf)
+      if (!itemAvailable) {
+        available = false
+        break
+      }
+    }
+    colourVisiting.delete(parentId)
+    const result = found && available
+    colourAvailability.set(parentId, result)
+    return result
+  }
+  const colourProgress = (
+    parentId: string | null,
+  ): readonly TemplateColourProgress[] | undefined => {
+    if (colourTotals.has(parentId)) return colourTotals.get(parentId)
+    if (!hasColourProgress(parentId)) return undefined
+    if (colourVisiting.has(parentId)) return undefined
+    colourVisiting.add(parentId)
+    const descendants: Array<readonly TemplateColourProgress[]> = []
+    for (const item of byParent.get(parentId) ?? []) {
+      const itemProgress =
+        item.childrenOf === null ? item.colourProgress?.() : colourProgress(item.childrenOf)
+      if (itemProgress !== undefined) descendants.push(itemProgress)
+    }
+    colourVisiting.delete(parentId)
+    const total = sumColourProgress(descendants)
+    const overall = progress(parentId)
+    const complete =
+      total !== undefined &&
+      overall !== undefined &&
+      total.reduce((sum, entry) => sum + entry.total, 0) === overall.total
+        ? total
+        : undefined
+    colourTotals.set(parentId, complete)
+    return complete
+  }
+  return {
+    children: (parentId) =>
+      (byParent.get(parentId) ?? []).map((item) => {
+        if (item.childrenOf === null) return item
+        const total = progress(item.childrenOf)
+        const hasColours = hasColourProgress(item.childrenOf)
+        return {
+          ...item,
+          ...(total === undefined ? {} : { progress: total }),
+          ...(hasColours ? { colourProgress: () => colourProgress(item.childrenOf) ?? [] } : {}),
+        }
+      }),
+    progress,
+    colourProgress,
+  }
 }
 
 const matcherFor = (source: TreeSource, needle: string): ((item: TreeItem) => boolean) => {
@@ -1511,16 +1868,26 @@ interface SiblingLevel {
   readonly all: () => readonly string[]
 }
 
-const childText = (text: string, depth: number): HTMLElement => {
+const childText = (text: string, depth: number, branches: readonly boolean[] = []): HTMLElement => {
   const el = document.createElement('p')
   el.setAttribute('role', 'treeitem')
   el.setAttribute('aria-level', String(depth + 2))
   el.setAttribute('aria-disabled', 'true')
   el.className = 'text-xs opacity-60'
   el.style.padding = '0.125rem 0.75rem 0.375rem'
-  el.style.paddingLeft = `${2.5 + depth * 1.125}rem`
   el.dataset.caelestisDepth = String(depth)
-  el.textContent = text
+  const connector = treeConnector(branches, true)
+  if (connector === null) {
+    el.style.paddingInlineStart = `${2.5 + depth * 1.125}rem`
+    el.textContent = text
+  } else {
+    el.style.position = 'relative'
+    el.style.marginInline = '0.25rem 0.5rem'
+    el.style.paddingInlineStart = `calc(0.5rem + ${connector.width}px)`
+    const label = document.createElement('span')
+    label.textContent = text
+    el.append(connector.element, label)
+  }
   return el
 }
 
@@ -1556,6 +1923,7 @@ const renderLevel = (
   parentId: string | null,
   depth: number,
   parentKey: string,
+  ancestorBranches: readonly boolean[],
   rerender: () => void,
   needle: string,
   rank: ReadonlyMap<string, number>,
@@ -1574,18 +1942,20 @@ const renderLevel = (
     all: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
   })
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     if (budget.remaining <= 0) {
       budget.truncated = true
       break
     }
     const key = item.key
+    const branches = [...ancestorBranches, index < items.length - 1]
     into.appendChild(
       treeRow({
         key,
         name: item.name,
         kind: item.kind,
         depth,
+        branches,
         container: item.childrenOf !== null,
         siblings: keys,
         orderingSiblings: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
@@ -1610,6 +1980,9 @@ const renderLevel = (
           )
         },
         ...(item.meta === undefined ? {} : { meta: item.meta }),
+        ...(item.progress === undefined ? {} : { progress: item.progress }),
+        ...(item.colourProgress === undefined ? {} : { colourProgress: item.colourProgress }),
+        ...(item.leadingActions === undefined ? {} : { leadingActions: item.leadingActions }),
         ...(item.muted === undefined ? {} : { muted: item.muted }),
         ...(item.actions === undefined ? {} : { actions: item.actions }),
         ...(item.onRename === undefined ? {} : { onRename: item.onRename }),
@@ -1636,6 +2009,7 @@ const renderLevel = (
       item.childrenOf,
       depth + 1,
       key,
+      branches,
       rerender,
       needle,
       rank,
@@ -1648,7 +2022,9 @@ const renderLevel = (
 
   // Only inside something. "Nothing here" is worth saying about a folder you have just opened; at
   // the top of a source it is the source's own empty state, which says more than this can.
-  if (parentId !== null && matching.length === 0) into.appendChild(childText('Empty.', depth))
+  if (parentId !== null && matching.length === 0) {
+    into.appendChild(childText('Empty.', depth, [...ancestorBranches, false]))
+  }
 }
 
 export const treeContents = (
@@ -1673,6 +2049,40 @@ export const treeContents = (
   })
 
   const servers = getState().servers
+  const drawnTemplates = localTemplates()
+  const localOnly = drawnTemplates.filter((template) => !isServerTemplate(template))
+  const drawnByServer = new Map<string, Map<string, PlacedTemplate>>()
+  for (const template of drawnTemplates) {
+    if (template.serverUrl === undefined || template.serverTemplateId === undefined) continue
+    const templates = drawnByServer.get(template.serverUrl) ?? new Map<string, PlacedTemplate>()
+    templates.set(template.serverTemplateId, template)
+    drawnByServer.set(template.serverUrl, templates)
+  }
+  const serverTemplateProgress = (
+    server: ConnectedServer,
+    template: ServerTemplate,
+  ): TemplateProgress => {
+    const drawn = drawnByServer.get(server.url)?.get(template.id)
+    return drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn)
+  }
+  const serverTemplateColourProgress = (
+    server: ConnectedServer,
+    template: ServerTemplate,
+  ): readonly TemplateColourProgress[] | undefined => {
+    const drawn = drawnByServer.get(server.url)?.get(template.id)
+    return drawn === undefined ? undefined : colourProgressFor(drawn)
+  }
+  const completeColourProgress = (
+    overall: TemplateProgress | undefined,
+    groups: ReadonlyArray<readonly TemplateColourProgress[]>,
+  ): readonly TemplateColourProgress[] | undefined => {
+    const colours = sumColourProgress(groups)
+    return colours !== undefined &&
+      overall !== undefined &&
+      colours.reduce((sum, entry) => sum + entry.total, 0) === overall.total
+      ? colours
+      : undefined
+  }
   const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
   const categories = [
     { key: 'local', name: 'Local' },
@@ -1684,7 +2094,10 @@ export const treeContents = (
   const keys = categories.map((item) => item.key)
   const ordered = orderedItems(categories, rank).map((item) => item.key)
   const needle = query.trim().toLocaleLowerCase()
-  const budget: RenderBudget = { remaining: MAX_RENDERED_ROWS, truncated: false }
+  const budget: RenderBudget = {
+    remaining: MAX_RENDERED_ROWS,
+    truncated: false,
+  }
   const siblingLevels = new Map<string, SiblingLevel>()
 
   for (const key of ordered) {
@@ -1701,6 +2114,35 @@ export const treeContents = (
     // Only where the code can actually act. Offering create to someone who will only ever get a
     // 403 is worse than not offering it — Local always can, since nothing gates it.
     const canEdit = isLocal || (server?.isAdmin ?? false)
+    const parentProgress = isLocal
+      ? sumProgress(localOnly.map(progressFor))
+      : server === undefined
+        ? undefined
+        : sumProgress(
+            (rowsFor(server)?.templates ?? []).map((template) =>
+              serverTemplateProgress(server, template),
+            ),
+          )
+    const serverTemplates = server === undefined ? [] : (rowsFor(server)?.templates ?? [])
+    const parentColourProgress: (() => readonly TemplateColourProgress[] | undefined) | undefined =
+      isLocal
+        ? localOnly.length === 0
+          ? undefined
+          : () => completeColourProgress(parentProgress, localOnly.map(colourProgressFor))
+        : server === undefined ||
+            serverTemplates.length === 0 ||
+            !serverTemplates.every(
+              (template) => drawnByServer.get(server.url)?.has(template.id) === true,
+            )
+          ? undefined
+          : () =>
+              completeColourProgress(
+                parentProgress,
+                serverTemplates.flatMap((template) => {
+                  const colours = serverTemplateColourProgress(server, template)
+                  return colours === undefined ? [] : [colours]
+                }),
+              )
 
     wrap.appendChild(
       treeRow({
@@ -1716,6 +2158,8 @@ export const treeContents = (
         destinationSiblings: (destinationParentKey) =>
           destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
         parentKey: null,
+        ...(parentProgress === undefined ? {} : { progress: parentProgress }),
+        ...(parentColourProgress === undefined ? {} : { colourProgress: parentColourProgress }),
         rerender,
         onError: callbacks.onError,
         /**
@@ -1849,7 +2293,9 @@ export const treeContents = (
                   }
                 : {}),
               ...(canEdit
-                ? { onRename: (value: string) => callbacks.onRename(nodeTarget, value) }
+                ? {
+                    onRename: (value: string) => callbacks.onRename(nodeTarget, value),
+                  }
                 : {}),
               ...(canEdit
                 ? {
@@ -1870,11 +2316,7 @@ export const treeContents = (
             },
           })
         }
-        const drawnById = new Map(
-          localTemplates()
-            .filter((candidate) => candidate.serverUrl === server.url)
-            .map((candidate) => [candidate.serverTemplateId, candidate]),
-        )
+        const drawnById = drawnByServer.get(server.url) ?? new Map<string, PlacedTemplate>()
         for (const template of published) {
           const templateKey = serverTemplateTreeKey(server, template.id)
           const drawn = drawnById.get(template.id)
@@ -1895,7 +2337,16 @@ export const treeContents = (
               childrenOf: null,
               createdAt: template.updatedAt,
               muted: !template.published,
-              ...(template.published ? {} : { meta: 'unpublished' }),
+              progress: serverTemplateProgress(server, template),
+              ...(drawn === undefined ? {} : { colourProgress: () => colourProgressFor(drawn) }),
+              progressSortable: true,
+              leadingActions: [
+                {
+                  icon: 'search',
+                  label: 'Go to',
+                  run: () => callbacks.onGoTo({ kind: 'server', bbox: template.bbox }),
+                },
+              ],
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
               setVisible: async (on) => {
                 // A drawn server row owns the dual commit: live bitmaps and the durable scope either
@@ -1913,7 +2364,9 @@ export const treeContents = (
                   }
                 : {}),
               ...(canEdit
-                ? { onRename: (value: string) => callbacks.onRename(templateTarget, value) }
+                ? {
+                    onRename: (value: string) => callbacks.onRename(templateTarget, value),
+                  }
                 : {}),
             },
           })
@@ -1927,6 +2380,7 @@ export const treeContents = (
           null,
           1,
           key,
+          [],
           rerender,
           needle,
           rank,
@@ -1959,7 +2413,7 @@ export const treeContents = (
       // Local means "only in this browser". Server templates share the store — everything that
       // draws them takes a `PlacedTemplate` and does not care where it came from — but they are
       // listed under the server publishing them, not here.
-      const mine = localTemplates().filter((template) => !isServerTemplate(template))
+      const mine = localOnly
       const entries: Array<{ parentId: string | null; item: TreeItem }> = []
       for (const folder of getState().localFolders) {
         const folderTarget: TreeTarget = {
@@ -2011,14 +2465,23 @@ export const treeContents = (
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
+            progress: progressFor(template),
+            colourProgress: () => colourProgressFor(template),
+            progressSortable: true,
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),
             canReparent: true,
             onDropAt: callbacks.onMoveLocal,
             onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
             onRename: (value) => callbacks.onRename(templateTarget, value),
+            leadingActions: [
+              {
+                icon: 'search',
+                label: 'Go to',
+                run: () => callbacks.onGoTo({ kind: 'local', templateId: template.id }),
+              },
+            ],
             actions: [
-              { icon: 'search', label: 'Go to', run: () => callbacks.onGoTo(template.id) },
               {
                 icon: 'uploadFile',
                 label: 'Copy to a server',
@@ -2037,6 +2500,7 @@ export const treeContents = (
         null,
         1,
         'local',
+        [],
         rerender,
         needle,
         rank,
@@ -2058,7 +2522,12 @@ export const treeContents = (
       importButton.textContent = 'Import a template'
       importButton.title = 'A .wplace file, a Blue Marble export, or an image'
       importButton.addEventListener('click', () =>
-        callbacks.onImportTemplate({ server: null, nodeId: null, key: 'local', name: 'Local' }),
+        callbacks.onImportTemplate({
+          server: null,
+          nodeId: null,
+          key: 'local',
+          name: 'Local',
+        }),
       )
       actions.appendChild(importButton)
       wrap.appendChild(actions)
