@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.1.1
+
+### Patch Changes
+
+- 7da8563: Default origin-only template servers to the `/backend` base path while preserving explicitly configured base paths.
+
 ## 0.1.0
 
 ### Minor Changes
