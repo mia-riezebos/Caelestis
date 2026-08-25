@@ -1,9 +1,11 @@
 CREATE TABLE `canvas_tiles` (
+	`season` integer NOT NULL,
 	`tile_x` integer NOT NULL,
 	`tile_y` integer NOT NULL,
 	`sha256` text NOT NULL,
 	`observed_at_ms` integer NOT NULL,
-	PRIMARY KEY(`tile_x`, `tile_y`),
+	PRIMARY KEY(`season`, `tile_x`, `tile_y`),
+	CONSTRAINT "canvas_tiles_season_check" CHECK(typeof("canvas_tiles"."season") = 'integer' AND "canvas_tiles"."season" >= 0),
 	CONSTRAINT "canvas_tiles_coordinate_check" CHECK(typeof("canvas_tiles"."tile_x") = 'integer' AND typeof("canvas_tiles"."tile_y") = 'integer'
         AND "canvas_tiles"."tile_x" BETWEEN 0 AND 2047
         AND "canvas_tiles"."tile_y" BETWEEN 0 AND 2047),

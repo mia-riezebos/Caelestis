@@ -551,11 +551,14 @@ export class MemorySqlStore implements SqlStore {
     return targets.sort((left, right) => left.templateId.localeCompare(right.templateId))
   }
 
-  async readLatestTile(tile: {
-    readonly x: number
-    readonly y: number
-  }): Promise<TileObservation | null> {
-    const held = this.canvasTiles.get(tileKey(tile))
+  async readLatestTile(
+    season: number,
+    tile: {
+      readonly x: number
+      readonly y: number
+    },
+  ): Promise<TileObservation | null> {
+    const held = this.canvasTiles.get(`${season}\u0000${tileKey(tile)}`)
     return held === undefined ? null : { ...held, tile: { ...held.tile } }
   }
 
@@ -563,7 +566,7 @@ export class MemorySqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
   ): Promise<void> {
-    const key = tileKey(observation.tile)
+    const key = `${observation.season}\u0000${tileKey(observation.tile)}`
     const held = this.canvasTiles.get(key)
     if (held === undefined || held.observedAt <= observation.observedAt) {
       this.canvasTiles.set(key, { ...observation, tile: { ...observation.tile } })

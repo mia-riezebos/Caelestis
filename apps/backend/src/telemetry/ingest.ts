@@ -138,6 +138,7 @@ const recordObservation = async (
     await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)))
   ).filter((status): status is TemplateTileStatusRecord => status !== null)
   const observation: TileObservation = {
+    season: metadata.season,
     tile: metadata.tile,
     hash: metadata.hash,
     observedAt: millis(observedAtMs),
@@ -210,7 +211,7 @@ export const recordPaint = async (
     const tile = { x: paintedTile.x, y: paintedTile.y }
     const targets = await ports.sql.listTelemetryTargets(event.season, tile, includeUnpublished)
     if (targets.length === 0) continue
-    const latest = await ports.sql.readLatestTile(tile)
+    const latest = await ports.sql.readLatestTile(event.season, tile)
     const previousBytes = latest === null ? null : await ports.blobs.get('tiles', latest.hash)
     const previous =
       previousBytes === null ? null : await decodeCanvas(previousBytes).catch(() => null)

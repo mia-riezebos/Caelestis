@@ -309,6 +309,7 @@ export interface TelemetryTarget extends ManifestTileRecord {
 }
 
 export interface TileObservation {
+  readonly season: number
   readonly tile: TileCoord
   readonly hash: string
   readonly observedAt: Millis
@@ -317,7 +318,7 @@ export interface TileObservation {
   readonly reportedByUserId: number
 }
 
-export type LatestTileObservation = Pick<TileObservation, 'tile' | 'hash' | 'observedAt'>
+export type LatestTileObservation = Pick<TileObservation, 'season' | 'tile' | 'hash' | 'observedAt'>
 
 export interface TemplateTileStatusRecord {
   readonly templateId: string
@@ -561,7 +562,7 @@ export interface SqlStore {
     includeUnpublished: boolean,
   ): Promise<readonly TelemetryTarget[]>
 
-  readLatestTile(tile: TileCoord): Promise<LatestTileObservation | null>
+  readLatestTile(season: number, tile: TileCoord): Promise<LatestTileObservation | null>
 
   recordTileObservation(
     observation: TileObservation,

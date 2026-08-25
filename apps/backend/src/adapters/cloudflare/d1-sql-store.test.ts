@@ -346,6 +346,7 @@ describe('D1SqlStore', () => {
     const tokenHash = 'c'.repeat(64)
     await store.recordTileObservation(
       {
+        season: 1,
         tile: { x: 0, y: 0 },
         hash: 'd'.repeat(64),
         observedAt: millis(2_000),
@@ -368,6 +369,7 @@ describe('D1SqlStore', () => {
     // An older upload may finish later. It belongs in history but cannot replace current truth.
     await store.recordTileObservation(
       {
+        season: 1,
         tile: { x: 0, y: 0 },
         hash: 'e'.repeat(64),
         observedAt: millis(1_000),
@@ -387,10 +389,28 @@ describe('D1SqlStore', () => {
         },
       ],
     )
+    await store.recordTileObservation(
+      {
+        season: 2,
+        tile: { x: 0, y: 0 },
+        hash: 'f'.repeat(64),
+        observedAt: millis(3_000),
+        reportedAt: seconds(3),
+        reportedWithToken: tokenHash,
+        reportedByUserId: 42,
+      },
+      [],
+    )
 
-    await expect(store.readLatestTile({ x: 0, y: 0 })).resolves.toMatchObject({
+    await expect(store.readLatestTile(1, { x: 0, y: 0 })).resolves.toMatchObject({
+      season: 1,
       hash: 'd'.repeat(64),
       observedAt: 2_000,
+    })
+    await expect(store.readLatestTile(2, { x: 0, y: 0 })).resolves.toMatchObject({
+      season: 2,
+      hash: 'f'.repeat(64),
+      observedAt: 3_000,
     })
     await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
       {

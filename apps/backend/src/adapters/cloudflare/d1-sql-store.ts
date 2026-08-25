@@ -969,16 +969,27 @@ export class D1SqlStore implements SqlStore {
       )
   }
 
-  async readLatestTile(tile: { readonly x: number; readonly y: number }) {
+  async readLatestTile(season: number, tile: { readonly x: number; readonly y: number }) {
     const rows = await this.database
       .select()
       .from(canvasTiles)
-      .where(and(eq(canvasTiles.tileX, tile.x), eq(canvasTiles.tileY, tile.y)))
+      .where(
+        and(
+          eq(canvasTiles.season, season),
+          eq(canvasTiles.tileX, tile.x),
+          eq(canvasTiles.tileY, tile.y),
+        ),
+      )
       .limit(1)
     const row = rows[0]
     return row === undefined
       ? null
-      : { tile: { x: row.tileX, y: row.tileY }, hash: row.sha256, observedAt: row.observedAtMs }
+      : {
+          season: row.season,
+          tile: { x: row.tileX, y: row.tileY },
+          hash: row.sha256,
+          observedAt: row.observedAtMs,
+        }
   }
 
   async recordTileObservation(
@@ -988,6 +999,7 @@ export class D1SqlStore implements SqlStore {
     const history = this.database
       .insert(tileHistory)
       .values({
+        season: observation.season,
         tileX: observation.tile.x,
         tileY: observation.tile.y,
         resolutionS: seconds(0),
@@ -1000,13 +1012,14 @@ export class D1SqlStore implements SqlStore {
     const current = this.database
       .insert(canvasTiles)
       .values({
+        season: observation.season,
         tileX: observation.tile.x,
         tileY: observation.tile.y,
         sha256: observation.hash,
         observedAtMs: observation.observedAt,
       })
       .onConflictDoUpdate({
-        target: [canvasTiles.tileX, canvasTiles.tileY],
+        target: [canvasTiles.season, canvasTiles.tileX, canvasTiles.tileY],
         set: { sha256: observation.hash, observedAtMs: observation.observedAt },
         setWhere: lte(canvasTiles.observedAtMs, observation.observedAt),
       })
