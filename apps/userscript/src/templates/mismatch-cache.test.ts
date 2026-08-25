@@ -118,4 +118,17 @@ describe('visible mismatch answer retention', () => {
     expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toHaveLength(129 * 3)
     endMismatchFrame()
   })
+
+  it('exposes unpainted work to selected-colour markers when magenta excludes it', async () => {
+    const selected = template(201)
+    harness.pixels[0] = 255
+    const { beginMismatchFrame, disagreementsIn, endMismatchFrame, mismatchesIn } = await import(
+      './mismatch.js'
+    )
+
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(0)
+    expect(disagreementsIn(selected, { x: 0, y: 0 })).toEqual(new Float32Array([0, 0, 0]))
+    endMismatchFrame()
+  })
 })

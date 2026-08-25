@@ -988,7 +988,11 @@ const requestScan = (
  * background refresh rather than a correction — where returning null would blink every marker on the
  * tile out for as long as the rescan took.
  */
-export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null => {
+const mismatchAnswer = (
+  template: PlacedTemplate,
+  tile: TileCoord,
+  includeAllUnpainted: boolean,
+): Mismatches | null => {
   const cacheKey = `${template.id}|${tile.x}/${tile.y}`
   requestedThisFrame?.add(cacheKey)
   const key = signature(template)
@@ -1003,7 +1007,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
       !stale.has(cacheKey)
     ) {
       remember(cacheKey, existing)
-      return answerFrom(existing, countsUnpainted(template))
+      return answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
     }
     stale.delete(cacheKey)
     const entry = store(
@@ -1014,7 +1018,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
       progressSignature(template),
       scanServerMask(template, tile, serverMask),
     )
-    return answerFrom(entry, countsUnpainted(template))
+    return answerFrom(entry, includeAllUnpainted || countsUnpainted(template))
   }
   const pixels = tilePixels(tile)
   if (pixels === null) {
@@ -1033,12 +1037,14 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   ) {
     stale.delete(cacheKey)
     remember(cacheKey, existing)
-    return answerFrom(existing, countsUnpainted(template))
+    return answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
   }
 
   if (hasWorker()) {
     requestScan(template, tile, pixels, cacheKey, key)
-    return existing === undefined ? null : answerFrom(existing, countsUnpainted(template))
+    return existing === undefined
+      ? null
+      : answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
   }
 
   /**
@@ -1055,7 +1061,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
     scheduleIdleScan()
     if (existing === undefined) return null
     count('mismatch:showed the previous answer while busy')
-    return answerFrom(existing, countsUnpainted(template))
+    return answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
   }
   stale.delete(cacheKey)
 
@@ -1069,8 +1075,16 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   )
   changed++
   notifyChanged()
-  return answerFrom(entry, countsUnpainted(template))
+  return answerFrom(entry, includeAllUnpainted || countsUnpainted(template))
 }
+
+/** Mismatches shown by the magenta marker, including unpainted only when its appearance allows it. */
+export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null =>
+  mismatchAnswer(template, tile, false)
+
+/** Every wrong or unpainted pixel, used to narrow the selected-colour work list. */
+export const disagreementsIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null =>
+  mismatchAnswer(template, tile, true)
 
 /**
  * Update one cached answer for one changed pixel, instead of asking the tile again.

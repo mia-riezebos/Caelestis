@@ -3,18 +3,19 @@ import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { getState } from '../state.js'
 import { isColourHidden, toRgbUnit } from '../templates/appearance.js'
-import {
-  beginColourMarkerFrame,
-  colourMarksIn,
-  endColourMarkerFrame,
-} from '../templates/colour-marker.js'
+import { colourMarksIn } from '../templates/colour-marker.js'
 import {
   appearanceOf,
   displayTemplates,
   isTemplateVisible,
   type PlacedTemplate,
 } from '../templates/local-store.js'
-import { beginMismatchFrame, endMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
+import {
+  beginMismatchFrame,
+  disagreementsIn,
+  endMismatchFrame,
+  mismatchesIn,
+} from '../templates/mismatch.js'
 import { horizontalSpans } from '../templates/placement.js'
 import {
   currentQuads,
@@ -494,9 +495,13 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
       if (selectedFade > 0 && selected >= 0) {
-        const marks = colourMarksIn(template, tile.tile, selected)
-        if (marks.length > 0) {
-          selectedWork.push({ tile, marks, style: selectedStyle, fade: selectedFade })
+        const disagreements = disagreementsIn(template, tile.tile)
+        if (disagreements === null) deferred = true
+        else {
+          const marks = colourMarksIn(disagreements, selected)
+          if (marks.length > 0) {
+            selectedWork.push({ tile, marks, style: selectedStyle, fade: selectedFade })
+          }
         }
       }
       const mismatches = mismatchesIn(template, tile.tile)
@@ -549,15 +554,10 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 
 const drawAll = (gl: WebGL2RenderingContext): void => {
   beginMismatchFrame()
-  beginColourMarkerFrame()
   try {
     drawVisible(gl)
   } finally {
-    try {
-      endColourMarkerFrame()
-    } finally {
-      endMismatchFrame()
-    }
+    endMismatchFrame()
   }
 }
 
