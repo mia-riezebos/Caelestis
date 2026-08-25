@@ -16,7 +16,10 @@
       "!.scratch",
       "!.claude",
       "!**/migrations/meta",
-      "!**/migrations/**/*.sql"
+      "!**/migrations/**/*.sql",
+      "!**/.svelte-kit",
+      "!**/*.svelte",
+      "!apps/frontend/src/app.css"
     ]
   },
   "formatter": {

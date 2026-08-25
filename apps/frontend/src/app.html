@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Caelestis</title>
+    <script>
+      // Applied before first paint so a stored theme choice never flashes the other theme.
+      // No stored choice means no data-theme attribute, which lets daisyui's prefersdark rule
+      // follow the OS setting.
+      const theme = localStorage.getItem('caelestis:theme')
+      if (theme === 'caelestis' || theme === 'caelestis-dark') {
+        document.documentElement.dataset.theme = theme
+      }
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

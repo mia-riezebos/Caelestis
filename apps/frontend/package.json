@@ -4,6 +4,37 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "clean": "rm -rf dist .turbo"
+    "dev": "vite dev",
+    "build": "vite build",
+    "deploy": "pnpm build && wrangler deploy",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "clean": "rm -rf dist .turbo .svelte-kit"
+  },
+  "dependencies": {
+    "@caelestis/shared": "workspace:*",
+    "@lucide/svelte": "^1.34.0",
+    "bits-ui": "^2.16.3",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.3.1",
+    "tailwind-variants": "^3.3.0"
+  },
+  "devDependencies": {
+    "@fontsource-variable/nunito": "^5.3.0",
+    "@fontsource/silkscreen": "^5.3.0",
+    "@internationalized/date": "^3.12.0",
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.63.0",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tailwindcss/vite": "^4.3.3",
+    "daisyui": "^5.5.8",
+    "svelte": "^5.56.1",
+    "svelte-check": "^4.6.0",
+    "tailwindcss": "^4.3.3",
+    "tw-animate-css": "^1.4.0",
+    "typescript": "^5.7.3",
+    "vite": "^8.0.16",
+    "wrangler": "^4.114.0"
   }
 }

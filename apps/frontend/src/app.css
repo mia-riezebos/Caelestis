@@ -1,0 +1,223 @@
+/*
+ * Caelestis dashboard theme.
+ *
+ * Two layers share one set of tokens: daisyui carries the wplace-flavoured look (the userscript
+ * already inherits wplace's daisyui variables, so the dashboard speaking the same dialect keeps the
+ * two surfaces siblings), and the shadcn-svelte components are bridged onto the daisyui palette in
+ * the `@theme inline` block below rather than carrying a second palette of their own.
+ *
+ * Accents are drawn from the wplace paint palette itself (packages/shared/src/palette.ts):
+ * primary = Blue #4093E4, secondary = Purple #AA38B9, accent = Gold #F6AA09, success = Dark Green
+ * #0EB968, error = Red #ED1C24 — the canvas's own pigments, not a foreign brand.
+ */
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/nunito';
+@import '@fontsource/silkscreen';
+
+@plugin 'daisyui' {
+  themes: caelestis --default, caelestis-dark --prefersdark;
+}
+
+@plugin 'daisyui/theme' {
+  name: 'caelestis';
+  default: true;
+  color-scheme: light;
+
+  /* Map paper: warm parchment canvas under bright white floating panels, like wplace's map. */
+  --color-base-100: oklch(99.5% 0.003 90);
+  --color-base-200: oklch(95.5% 0.012 90);
+  --color-base-300: oklch(90% 0.016 90);
+  --color-base-content: oklch(26% 0.012 60);
+
+  --color-primary: oklch(63.5% 0.145 253);
+  --color-primary-content: oklch(98% 0.01 253);
+  --color-secondary: oklch(55% 0.2 322);
+  --color-secondary-content: oklch(97% 0.02 322);
+  --color-accent: oklch(78% 0.155 75);
+  --color-accent-content: oklch(28% 0.06 75);
+  --color-neutral: oklch(26% 0.012 60);
+  --color-neutral-content: oklch(97% 0.005 90);
+
+  --color-info: oklch(66% 0.11 185);
+  --color-info-content: oklch(98% 0.02 185);
+  --color-success: oklch(67% 0.165 155);
+  --color-success-content: oklch(98% 0.02 155);
+  --color-warning: oklch(78% 0.155 75);
+  --color-warning-content: oklch(28% 0.06 75);
+  --color-error: oklch(59.5% 0.225 27);
+  --color-error-content: oklch(98% 0.02 27);
+
+  /* wplace chrome rhythm: soft-rounded panels, pill-ish controls, a visible chunky border. */
+  --radius-box: 1rem;
+  --radius-field: 0.625rem;
+  --radius-selector: 2rem;
+  --size-field: 0.25rem;
+  --size-selector: 0.25rem;
+  --border: 1.5px;
+  --depth: 1;
+  --noise: 0;
+}
+
+@plugin 'daisyui/theme' {
+  name: 'caelestis-dark';
+  prefersdark: true;
+  color-scheme: dark;
+
+  /* Night canvas: the same hierarchy inverted, borders over shadows, whisper elevation steps. */
+  --color-base-100: oklch(23% 0.014 285);
+  --color-base-200: oklch(20% 0.013 285);
+  --color-base-300: oklch(28% 0.016 285);
+  --color-base-content: oklch(92% 0.008 90);
+
+  --color-primary: oklch(70% 0.125 253);
+  --color-primary-content: oklch(18% 0.04 253);
+  --color-secondary: oklch(66% 0.16 322);
+  --color-secondary-content: oklch(18% 0.05 322);
+  --color-accent: oklch(80% 0.145 75);
+  --color-accent-content: oklch(24% 0.06 75);
+  --color-neutral: oklch(92% 0.008 90);
+  --color-neutral-content: oklch(22% 0.012 285);
+
+  --color-info: oklch(72% 0.1 185);
+  --color-info-content: oklch(18% 0.04 185);
+  --color-success: oklch(70% 0.145 155);
+  --color-success-content: oklch(18% 0.05 155);
+  --color-warning: oklch(80% 0.145 75);
+  --color-warning-content: oklch(24% 0.06 75);
+  --color-error: oklch(66% 0.185 27);
+  --color-error-content: oklch(16% 0.05 27);
+
+  --radius-box: 1rem;
+  --radius-field: 0.625rem;
+  --radius-selector: 2rem;
+  --size-field: 0.25rem;
+  --size-selector: 0.25rem;
+  --border: 1.5px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/*
+ * Bridge: the shadcn-svelte registry components speak `bg-background` / `text-muted-foreground`;
+ * every one of those resolves to a daisyui token so a theme swap re-skins both component families
+ * at once and a third theme stays a value-set, never a refactor.
+ */
+@theme inline {
+  --font-sans: 'Nunito Variable', ui-rounded, system-ui, -apple-system, sans-serif;
+  --font-pixel: 'Silkscreen', monospace;
+
+  --color-background: var(--color-base-100);
+  --color-foreground: var(--color-base-content);
+  --color-card: var(--color-base-100);
+  --color-card-foreground: var(--color-base-content);
+  --color-popover: var(--color-base-100);
+  --color-popover-foreground: var(--color-base-content);
+  --color-primary-foreground: var(--color-primary-content);
+  --color-secondary-foreground: var(--color-secondary-content);
+  --color-muted: var(--color-base-200);
+  --color-muted-foreground: color-mix(in oklab, var(--color-base-content) 64%, transparent);
+  --color-accent-foreground: var(--color-accent-content);
+  --color-destructive: var(--color-error);
+  --color-destructive-foreground: var(--color-error-content);
+  --color-border: var(--color-base-300);
+  --color-input: var(--color-base-300);
+  --color-ring: var(--color-primary);
+}
+
+/*
+ * Chart tokens, validated per mode with the dataviz palette validator (CVD ΔE, lightness band,
+ * contrast). Series colors are entities, not statuses: "placed" wears the canvas blue, "correct"
+ * the canvas green, in both modes at that mode's legal lightness. The heat ramp is one hue,
+ * light-to-dark, for the contribution heatmap.
+ */
+:root,
+[data-theme='caelestis'] {
+  --chart-placed: #4093e4;
+  --chart-correct: #0eb968;
+  --heat-1: oklch(90% 0.05 253);
+  --heat-2: oklch(78% 0.09 253);
+  --heat-3: oklch(66% 0.13 253);
+  --heat-4: oklch(54% 0.14 253);
+  --heat-5: oklch(42% 0.13 253);
+}
+
+[data-theme='caelestis-dark'] {
+  --chart-placed: #4a8cd9;
+  --chart-correct: #16a566;
+  --heat-1: oklch(32% 0.06 253);
+  --heat-2: oklch(42% 0.09 253);
+  --heat-3: oklch(52% 0.11 253);
+  --heat-4: oklch(62% 0.13 253);
+  --heat-5: oklch(72% 0.13 253);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --chart-placed: #4a8cd9;
+    --chart-correct: #16a566;
+    --heat-1: oklch(32% 0.06 253);
+    --heat-2: oklch(42% 0.09 253);
+    --heat-3: oklch(52% 0.11 253);
+    --heat-4: oklch(62% 0.13 253);
+    --heat-5: oklch(72% 0.13 253);
+  }
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    /* The map-paper ground the panels float on: base-200 with a faint 24px pixel grid. */
+    background-color: var(--color-base-200);
+    background-image:
+      linear-gradient(color-mix(in oklab, var(--color-base-content) 4%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in oklab, var(--color-base-content) 4%, transparent) 1px, transparent 1px);
+    background-size: 24px 24px;
+    color: var(--color-base-content);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+}
+
+@utility pixelated {
+  image-rendering: pixelated;
+}
+
+@utility alpha-checker {
+  /* The transparency checkerboard behind any canvas excerpt, pixel-editor style. */
+  background-image: conic-gradient(
+    color-mix(in oklab, var(--color-base-content) 7%, transparent) 0 25%,
+    transparent 0 50%,
+    color-mix(in oklab, var(--color-base-content) 7%, transparent) 0 75%,
+    transparent 0
+  );
+  background-size: 16px 16px;
+}
+
+@utility font-pixel {
+  font-family: var(--font-pixel);
+  letter-spacing: 0.02em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
