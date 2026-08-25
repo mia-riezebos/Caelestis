@@ -26,7 +26,7 @@ const harness = async () => {
   const ports: Ports = { blobs, sql, counters }
   await sql.insertNode({
     id: NODE_ID,
-    season: 1,
+    season: 0,
     parentId: null,
     path: '/templates',
     name: 'Templates',
@@ -95,7 +95,7 @@ describe('telemetry routes', () => {
     const offer = {
       wplaceUserId: 42,
       displayName: 'Mia',
-      season: 1,
+      season: 0,
       offers: [{ tile: '0/0', sha256: hash, ts: now }],
     }
 
@@ -112,7 +112,7 @@ describe('telemetry routes', () => {
       headers: {
         ...bearer(reportToken),
         'content-type': 'image/png',
-        'x-caelestis-season': '1',
+        'x-caelestis-season': '0',
         'x-caelestis-observed-at': String(now),
         'x-caelestis-wplace-user-id': '42',
         'x-caelestis-display-name': encodeURIComponent('Mía 🎨'),
@@ -121,7 +121,7 @@ describe('telemetry routes', () => {
     })
     expect(uploaded.status).toBe(204)
 
-    const status = await app.request('/telemetry/status?season=1', {
+    const status = await app.request('/telemetry/status?season=0', {
       headers: bearer(reportToken),
     })
     expect(status.status).toBe(200)
@@ -170,7 +170,7 @@ describe('telemetry routes', () => {
       method: 'PUT',
       headers: {
         ...bearer(reportToken),
-        'x-caelestis-season': '1',
+        'x-caelestis-season': '0',
         'x-caelestis-observed-at': String(now),
         'x-caelestis-wplace-user-id': '42',
         'x-caelestis-display-name': 'Mia',
@@ -181,7 +181,7 @@ describe('telemetry routes', () => {
       eventId: EVENT_ID,
       wplaceUserId: 42,
       displayName: 'Mia',
-      season: 1,
+      season: 0,
       ts: now,
       tiles: [{ x: 0, y: 0, pixels: { x: [2], y: [0], colors: [3] } }],
       painted: 1,

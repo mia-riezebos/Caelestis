@@ -54,7 +54,7 @@ const server: ConnectedServer = {
   token: 'report-token',
   status: 'connected',
   isAdmin: false,
-  season: 1,
+  season: 0,
 }
 
 const template: ServerTemplate = {
@@ -103,7 +103,7 @@ describe('server telemetry client', () => {
 
     harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
     harness.acceptedPaint?.({
-      season: 1,
+      season: 0,
       observedAt: 1_800_000_000,
       painted: 1,
       tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
@@ -169,7 +169,7 @@ describe('server telemetry client', () => {
     expect(JSON.parse(String(offer?.init?.body))).toMatchObject({
       wplaceUserId: 42,
       displayName: 'Mía 🎨',
-      season: 1,
+      season: 0,
       offers: [{ tile: '1/2' }],
     })
     const upload = requests.find(({ url }) => url.includes('/telemetry/tiles/1/2/'))
@@ -207,7 +207,7 @@ describe('server telemetry client', () => {
     installTelemetry()
     harness.serverContents?.(server, { nodes: [], templates: [template] })
     harness.acceptedPaint?.({
-      season: 1,
+      season: 0,
       observedAt: 1_800_000_000,
       painted: 1,
       tiles: [
@@ -220,7 +220,7 @@ describe('server telemetry client', () => {
     expect(reports[0]).toMatchObject({
       wplaceUserId: 42,
       displayName: 'Mía 🎨',
-      season: 1,
+      season: 0,
       painted: null,
       tiles: [{ x: 1, y: 2 }],
     })
