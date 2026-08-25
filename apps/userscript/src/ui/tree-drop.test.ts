@@ -189,6 +189,29 @@ describe('tree drag and drop', () => {
         .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
         ?.classList.contains('caelestis-row--expanded-progress'),
     ).toBe(true)
+    const folderDetail = tree
+      .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+      ?.querySelector<HTMLElement>('.caelestis-progress--expanded')
+    expect(folderDetail?.style.marginInlineStart).toBe('20px')
+    expect(folderDetail?.style.width).toBe('calc(100% - 20px)')
+
+    tree
+      .querySelector<HTMLElement>(
+        `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+      )
+      ?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')
+      ?.click()
+    tree = render()
+    const templateDetail = tree
+      .querySelector(`[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`)
+      ?.querySelector<HTMLElement>('.caelestis-progress--expanded')
+    expect(templateDetail?.style.marginInlineStart).toBe('')
+    tree
+      .querySelector<HTMLElement>(
+        `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+      )
+      ?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
+      ?.click()
 
     setState({ collapsed: ['local', nodeTreeKey(server, SOURCE_NODE_ID)] })
     tree = render()

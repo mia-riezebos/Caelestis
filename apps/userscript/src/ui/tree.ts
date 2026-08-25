@@ -1095,7 +1095,7 @@ const destinationLevel = (
     : options.destinationSiblings?.(parentKey)
 
 const TREE_COLUMN = 18
-const LEAF_DISCLOSURE_WIDTH = 20
+const DISCLOSURE_SLOT_WIDTH = 20
 const CONNECTOR_MIDPOINT = 18
 
 /** TUI-style tree pipes, drawn as vectors so an absent disclosure control reads as hierarchy. */
@@ -1104,7 +1104,7 @@ const treeConnector = (
   leaf: boolean,
 ): { element: SVGSVGElement; width: number } | null => {
   if (branches.length === 0) return null
-  const width = branches.length * TREE_COLUMN + (leaf ? LEAF_DISCLOSURE_WIDTH : 0)
+  const width = branches.length * TREE_COLUMN + (leaf ? DISCLOSURE_SLOT_WIDTH : 0)
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.classList.add('caelestis-tree-connector')
   svg.setAttribute('aria-hidden', 'true')
@@ -1264,12 +1264,23 @@ const treeRow = (options: RowOptions): HTMLElement => {
         ? 'expanded'
         : requestedDisclosure
   const progressPlacement = disclosure === 'inline' ? 'inline' : 'expanded'
+  const alignExpandedDetail = (element: HTMLElement): HTMLElement => {
+    if (!options.container) return element
+    // The header consumes a real caret here. Expanded details do not, so carry the slot into their
+    // own inline start rather than making container details appear one level shallower than leaves.
+    const width = `calc(100% - ${DISCLOSURE_SLOT_WIDTH}px)`
+    element.style.flexBasis = width
+    element.style.width = width
+    element.style.marginInlineStart = `${DISCLOSURE_SLOT_WIDTH}px`
+    return element
+  }
   let progressElement: HTMLElement | null = null
   if (options.progress !== undefined) {
     if (progressPlacement === 'expanded') {
       row.classList.add('caelestis-row--expanded-progress')
     }
     progressElement = progressIndicator(options.progress, progressPlacement)
+    if (progressPlacement === 'expanded') alignExpandedDetail(progressElement)
   }
 
   const progressActions: Array<{ icon: IconName; label: string; run: () => void }> = []
@@ -1386,7 +1397,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
     if (actionElement !== null) row.appendChild(actionElement)
   }
   if (disclosure === 'colours' && resolvedColourProgress !== undefined) {
-    row.appendChild(colourProgressDetails(resolvedColourProgress))
+    row.appendChild(alignExpandedDetail(colourProgressDetails(resolvedColourProgress)))
   }
 
   /**
