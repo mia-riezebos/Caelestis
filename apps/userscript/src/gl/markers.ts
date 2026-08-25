@@ -17,8 +17,8 @@ import {
   endMismatchFrame,
   mismatchesIn,
 } from '../templates/mismatch.js'
-import { horizontalSpans } from '../templates/placement.js'
 import type { MismatchMarks } from '../templates/mismatch-marks.js'
+import { horizontalSpans } from '../templates/placement.js'
 import {
   currentQuads,
   isDrawingTiles,

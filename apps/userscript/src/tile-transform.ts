@@ -1385,13 +1385,7 @@ const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
         y,
         data[at + 3] === 0
           ? UNPAINTED
-          : exactRgbIndex(
-              table,
-              data[at] ?? 0,
-              data[at + 1] ?? 0,
-              data[at + 2] ?? 0,
-              UNPAINTED,
-            ),
+          : exactRgbIndex(table, data[at] ?? 0, data[at + 1] ?? 0, data[at + 2] ?? 0, UNPAINTED),
       )
     }
   }
@@ -1526,13 +1520,7 @@ const capture = (
           const index =
             data[i + 3] === 0
               ? UNPAINTED
-              : exactRgbIndex(
-                  table,
-                  data[i] ?? 0,
-                  data[i + 1] ?? 0,
-                  data[i + 2] ?? 0,
-                  UNPAINTED,
-                )
+              : exactRgbIndex(table, data[i] ?? 0, data[i + 1] ?? 0, data[i + 2] ?? 0, UNPAINTED)
           // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
           if (from === 'preview') {
             const x = p % TILE_SIZE

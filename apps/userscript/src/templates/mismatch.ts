@@ -23,7 +23,6 @@ import {
   UNPAINTED,
 } from '../tile-transform.js'
 import { claimedHiddenFor } from './colour-filter.js'
-import { type MismatchMarks, packMismatchMark } from './mismatch-marks.js'
 import {
   appearanceOf,
   displayTemplates,
@@ -32,6 +31,7 @@ import {
   type PlacedTemplate,
   templateTileKeys,
 } from './local-store.js'
+import { type MismatchMarks, packMismatchMark } from './mismatch-marks.js'
 import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
 import { forgetInWorker, hasWorker, scanInWorker } from './mismatch-worker.js'
 import { horizontalSpans, sourceXAt, wrappedDeltaX } from './placement.js'

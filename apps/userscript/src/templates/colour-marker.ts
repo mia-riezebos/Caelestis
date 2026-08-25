@@ -4,7 +4,7 @@
  * The input contains only wrong or unpainted pixels. Correct template pixels never reach this
  * module, so the selected-colour marker cannot accidentally become a second overlay renderer.
  */
-import { markWanted, type MismatchMarks } from './mismatch-marks.js'
+import { type MismatchMarks, markWanted } from './mismatch-marks.js'
 
 const cache = new WeakMap<MismatchMarks, Map<number, MismatchMarks>>()
 
