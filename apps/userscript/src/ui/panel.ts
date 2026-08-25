@@ -1139,14 +1139,14 @@ const settingsView = (): HTMLElement => {
   view.appendChild(
     settingRow(
       'Report my activity',
-      'Sends your paint activity on templates to the respective servers.',
+      'Shares paint activity only in areas covered by server templates, and only with the servers providing those templates. Together with shared tiles, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
       checkbox(state.reportPaints, (next) => setState({ reportPaints: next })),
     ),
   )
   view.appendChild(
     settingRow(
       'Share tiles',
-      'Forwards tiles with templates to respective servers.',
+      'Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates. Together with reported activity, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
       checkbox(state.shareTiles, (next) => setState({ shareTiles: next })),
     ),
   )

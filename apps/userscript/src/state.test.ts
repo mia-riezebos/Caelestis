@@ -23,6 +23,26 @@ afterEach(() => {
 })
 
 describe('server state boundaries', () => {
+  it('enables contribution sharing for fresh and legacy state', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({})),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState()).toMatchObject({ reportPaints: true, shareTiles: true })
+  })
+
+  it('preserves explicit contribution-sharing opt-outs', async () => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({ reportPaints: false, shareTiles: false })),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState()).toMatchObject({ reportPaints: false, shareTiles: false })
+  })
+
   it('canonicalises equivalent URLs to one stable connection identity', async () => {
     const { canonicalServerUrl } = await import('./state.js')
 
@@ -915,9 +935,9 @@ describe('server state boundaries', () => {
     })
     onStateChange(reached)
 
-    expect(() => setState({ shareTiles: true })).not.toThrow()
+    expect(() => setState({ shareTiles: false })).not.toThrow()
 
-    expect(getState().shareTiles).toBe(true)
+    expect(getState().shareTiles).toBe(false)
     expect(reached).toHaveBeenCalledOnce()
   })
 

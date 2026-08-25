@@ -157,8 +157,8 @@ const DEFAULT_STATE: State = {
   hiddenScopes: [],
   serverTemplatePreferences: [],
   appearance: DEFAULT_APPEARANCE,
-  reportPaints: false,
-  shareTiles: false,
+  reportPaints: true,
+  shareTiles: true,
 }
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -864,8 +864,10 @@ export const loadState = (): State => {
             ? remapStoredAppearance(stored.appearance ?? null)
             : (stored.appearance ?? null),
         ) ?? DEFAULT_APPEARANCE,
-      reportPaints: stored.reportPaints === true,
-      shareTiles: stored.shareTiles === true,
+      // Contribution sharing is opt-out. Missing fields are older saved state, not a decision to
+      // disable either feed; an explicit false remains durable across reloads.
+      reportPaints: stored.reportPaints !== false,
+      shareTiles: stored.shareTiles !== false,
     }
     log('install', 'state loaded', { servers: state.servers.length })
     if (storedRaw.legacyPalette || scopesMigrated) writeRaw(JSON.stringify(state))
