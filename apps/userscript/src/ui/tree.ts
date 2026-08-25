@@ -37,6 +37,8 @@ import {
   colourProgressDetails,
   completionRatio,
   emptyProgress,
+  freshestColourProgress,
+  freshestProgress,
   progressIndicator,
   sumColourProgress,
   sumProgress,
@@ -2064,14 +2066,27 @@ export const treeContents = (
     template: ServerTemplate,
   ): TemplateProgress => {
     const serverProgress = serverProgressFor(server, template)
-    return serverProgress ?? emptyProgress(template.totalPixels ?? 0)
+    const baseline = serverProgress ?? emptyProgress(template.totalPixels ?? 0)
+    const drawn = drawnByServer.get(server.url)?.get(template.id)
+    if (drawn === undefined) return baseline
+    const serverColours = serverColourProgressFor(server, template)
+    if (serverColours !== null) {
+      return (
+        sumProgress(freshestColourProgress(serverColours, colourProgressFor(drawn))) ?? baseline
+      )
+    }
+    return freshestProgress(baseline, progressFor(drawn))
   }
   const serverTemplateColourProgress = (
     server: ConnectedServer,
     template: ServerTemplate,
   ): readonly TemplateColourProgress[] | undefined => {
     const serverProgress = serverColourProgressFor(server, template)
-    return serverProgress ?? undefined
+    if (serverProgress === null) return undefined
+    const drawn = drawnByServer.get(server.url)?.get(template.id)
+    return drawn === undefined
+      ? serverProgress
+      : freshestColourProgress(serverProgress, colourProgressFor(drawn))
   }
   const completeColourProgress = (
     overall: TemplateProgress | undefined,

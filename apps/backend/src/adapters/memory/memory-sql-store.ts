@@ -597,7 +597,10 @@ export class MemorySqlStore implements SqlStore {
         (status) => status.templateId === templateId && status.versionId === version.versionId,
       )
       if (statuses.length === 0) continue
-      const classified = new Map<number, { correct: number; wrong: number; blank: number }>()
+      const classified = new Map<
+        number,
+        { correct: number; wrong: number; blank: number; total: number }
+      >()
       for (const status of statuses) {
         for (const colour of status.colours ?? []) {
           const held = classified.get(colour.index)
@@ -605,19 +608,29 @@ export class MemorySqlStore implements SqlStore {
             correct: (held?.correct ?? 0) + colour.correct,
             wrong: (held?.wrong ?? 0) + colour.wrong,
             blank: (held?.blank ?? 0) + colour.blank,
+            total: (held?.total ?? 0) + colour.total,
           })
         }
       }
+      const classifiedTotals = [...classified].map(([index, colour]) => ({
+        index,
+        total: colour.total,
+      }))
+      const colourTotals =
+        version.colourTotals ??
+        (classifiedTotals.reduce((sum, colour) => sum + colour.total, 0) === version.totalPixels
+          ? classifiedTotals.sort((left, right) => left.index - right.index)
+          : undefined)
       out.push({
         templateId,
         correct: statuses.reduce((total, status) => total + status.correct, 0),
         wrong: statuses.reduce((total, status) => total + status.wrong, 0),
         blank: statuses.reduce((total, status) => total + status.blank, 0),
         total: version.totalPixels,
-        ...(version.colourTotals === undefined
+        ...(colourTotals === undefined
           ? {}
           : {
-              colours: version.colourTotals.map(({ index, total }) => ({
+              colours: colourTotals.map(({ index, total }) => ({
                 index,
                 total,
                 correct: classified.get(index)?.correct ?? 0,

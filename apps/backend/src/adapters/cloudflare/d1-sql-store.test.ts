@@ -443,6 +443,60 @@ describe('D1SqlStore', () => {
     ])
   })
 
+  it('recovers a legacy version colour histogram from complete classified tile rows', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    await store.recordTileObservation(
+      {
+        season: 1,
+        tile: { x: 0, y: 0 },
+        hash: 'd'.repeat(64),
+        observedAt: millis(2_000),
+        reportedAt: seconds(2),
+        reportedWithToken: 'c'.repeat(64),
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'version-1',
+          tile: { x: 0, y: 0 },
+          correct: 1,
+          wrong: 0,
+          blank: 1,
+          colours: [
+            { index: 4, correct: 1, wrong: 0, blank: 0, total: 1 },
+            { index: 9, correct: 0, wrong: 0, blank: 1, total: 1 },
+          ],
+          observedAt: millis(2_000),
+        },
+      ],
+    )
+
+    await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
+      {
+        templateId: 'template-1',
+        correct: 1,
+        wrong: 0,
+        blank: 1,
+        total: 2,
+        colours: [
+          { index: 4, correct: 1, wrong: 0, blank: 0, total: 1 },
+          { index: 9, correct: 0, wrong: 0, blank: 1, total: 1 },
+        ],
+        observedAt: 2_000,
+      },
+    ])
+  })
+
   it('claims paint event ids once', async () => {
     await expect(store.claimPaintEvent('event-1', 42, millis(1_000))).resolves.toBe(true)
     await expect(store.claimPaintEvent('event-1', 42, millis(2_000))).resolves.toBe(false)

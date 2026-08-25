@@ -1126,8 +1126,8 @@ export class D1SqlStore implements SqlStore {
       .groupBy(templates.id, templateVersions.totalPixels, templateVersions.colourTotalsJson)
       .orderBy(asc(templates.id))
     return rows.map((row) => {
-      const totals = parseColourTotals(row.colourTotalsJson)
-      const classified = new Map<number, Omit<ColourStatus, 'index' | 'total'>>()
+      const storedTotals = parseColourTotals(row.colourTotalsJson)
+      const classified = new Map<number, Omit<ColourStatus, 'index'>>()
       const colourRows: unknown = JSON.parse(row.colourRowsJson)
       if (Array.isArray(colourRows)) {
         for (const encoded of colourRows) {
@@ -1138,10 +1138,24 @@ export class D1SqlStore implements SqlStore {
               correct: (held?.correct ?? 0) + colour.correct,
               wrong: (held?.wrong ?? 0) + colour.wrong,
               blank: (held?.blank ?? 0) + colour.blank,
+              total: (held?.total ?? 0) + colour.total,
             })
           }
         }
       }
+      // Versions created before colour histograms were stored still have exact per-colour totals in
+      // every classified tile row. Once those rows cover the whole template, their totals are the
+      // missing histogram. Do not expose a partial partition: the wire schema deliberately requires
+      // colour rows to add up to the template total.
+      const classifiedTotals = [...classified].map(([index, colour]) => ({
+        index,
+        total: colour.total,
+      }))
+      const totals =
+        storedTotals ??
+        (classifiedTotals.reduce((sum, colour) => sum + colour.total, 0) === row.total
+          ? classifiedTotals.sort((left, right) => left.index - right.index)
+          : undefined)
       return {
         templateId: row.templateId,
         correct: Number(row.correct),

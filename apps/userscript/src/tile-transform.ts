@@ -1027,10 +1027,11 @@ let chasing = 0
  */
 const CHASE_LIMIT = 4
 
-export const ensureTilePixels = (tile: TileCoord): void => {
-  if (!capturePixels || tileUrlShape === null) return
+export const ensureTilePixels = (tile: TileCoord): boolean => {
+  if (!capturePixels || tileUrlShape === null) return false
   const key = tileKey(tile)
-  if (pixelsOfTile.has(key) || chased.has(key) || chasing >= CHASE_LIMIT) return
+  if (pixelsOfTile.has(key)) return true
+  if (chased.has(key) || chasing >= CHASE_LIMIT) return false
   chased.add(key)
   chasing++
   const url = tileUrlShape.replace('{x}', String(tile.x)).replace('{y}', String(tile.y))
@@ -1060,6 +1061,24 @@ export const ensureTilePixels = (tile: TileCoord): void => {
       chasing--
     }
   })()
+  return true
+}
+
+/** Resolve once an on-demand tile chase has produced exact palette indices. */
+export const loadTilePixels = async (
+  tile: TileCoord,
+  timeoutMs = 15_000,
+): Promise<Uint8Array | null> => {
+  const existing = tilePixels(tile)
+  if (existing !== null) return existing
+  if (!ensureTilePixels(tile)) return null
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    const loaded = tilePixels(tile)
+    if (loaded !== null) return loaded
+  }
+  return null
 }
 
 /**

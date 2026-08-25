@@ -29,6 +29,10 @@ vi.mock('./map-handle.js', () => ({
   getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
   installMapCapture: vi.fn(),
 }))
+vi.mock('./paint-palette.js', () => ({
+  installPaintPaletteProgress: vi.fn(),
+  paintPaletteProgress: vi.fn(() => []),
+}))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: { markMismatch: false }, onlySelectedColour: false }),

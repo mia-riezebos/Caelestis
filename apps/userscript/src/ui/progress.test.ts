@@ -4,6 +4,8 @@ import {
   colourProgressDetails,
   completionPercent,
   completionRatio,
+  freshestColourProgress,
+  freshestProgress,
   progressIndicator,
   progressLabel,
   sumProgress,
@@ -35,6 +37,46 @@ describe('template progress', () => {
     expect(
       sumProgress([progress, { completed: 10, mismatched: 5, unpainted: 5, known: 20, total: 50 }]),
     ).toEqual({ completed: 50, mismatched: 15, unpainted: 35, known: 100, total: 150 })
+  })
+
+  it('uses complete local truth without replacing unknown server coverage', () => {
+    const server = { completed: 40, mismatched: 10, unpainted: 30, known: 80, total: 100 }
+    expect(
+      freshestProgress(server, {
+        completed: 20,
+        mismatched: 0,
+        unpainted: 0,
+        known: 20,
+        total: 100,
+      }),
+    ).toBe(server)
+    expect(
+      freshestProgress(server, {
+        completed: 90,
+        mismatched: 5,
+        unpainted: 5,
+        known: 100,
+        total: 100,
+      }),
+    ).toEqual({ completed: 90, mismatched: 5, unpainted: 5, known: 100, total: 100 })
+  })
+
+  it('replaces each fully known local colour independently', () => {
+    expect(
+      freshestColourProgress(
+        [
+          { index: 0, completed: 2, mismatched: 1, unpainted: 1, known: 4, total: 4 },
+          { index: 1, completed: 1, mismatched: 1, unpainted: 0, known: 2, total: 4 },
+        ],
+        [
+          { index: 0, completed: 4, mismatched: 0, unpainted: 0, known: 4, total: 4 },
+          { index: 1, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 4 },
+        ],
+      ),
+    ).toEqual([
+      { index: 0, completed: 4, mismatched: 0, unpainted: 0, known: 4, total: 4 },
+      { index: 1, completed: 1, mismatched: 1, unpainted: 0, known: 2, total: 4 },
+    ])
   })
 
   it('renders one identified meter row for every template colour', () => {

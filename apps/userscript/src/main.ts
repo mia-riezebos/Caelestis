@@ -9,6 +9,7 @@ import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, setNudge } from './gl/layer.js'
 import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
+import { installPaintPaletteProgress, paintPaletteProgress } from './paint-palette.js'
 import { shortcutFor } from './shortcuts.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
 import { installTelemetry } from './telemetry.js'
@@ -263,7 +264,11 @@ const main = (): void => {
           drawing: isTemplateVisible(template),
           folderId: template.folderId,
           server: template.serverUrl ?? null,
+          serverTemplateId: template.serverTemplateId ?? null,
+          opaque: template.opaque,
         })),
+      /** The exact aggregate currently decorating Wplace's native paint palette. */
+      paletteProgress: () => paintPaletteProgress(),
       /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
       quads: () =>
         lastFrame === null
@@ -303,6 +308,7 @@ const main = (): void => {
     watchPaintSelection()
     onPaintSelectionChange(repaint)
   })
+  step('paint palette progress', installPaintPaletteProgress)
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
   step('keyboard shortcuts', installKeys)
