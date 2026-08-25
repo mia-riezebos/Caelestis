@@ -80,6 +80,16 @@ let tried = false
 let nextId = 0
 const waiting = new Map<number, (reply: Reply | null) => void>()
 const REPLY_TIMEOUT_MS = 15_000
+const MAX_QUEUED_SCANS = 32
+
+interface QueuedScan {
+  readonly job: ScanJob
+  readonly indices: Uint8Array
+  readonly resolve: (outcome: ScanOutcome | null) => void
+}
+
+const queuedScans: QueuedScan[] = []
+let scanActive = false
 
 /** Template pixels the worker has been given, by identity — a re-import is a different array. */
 const sent = new Map<string, Uint8Array>()
@@ -90,6 +100,7 @@ const abandon = (why: string, detail: unknown): void => {
   worker?.terminate()
   worker = null
   sent.clear()
+  for (const queued of queuedScans.splice(0)) queued.resolve(null)
   for (const [, settle] of waiting) settle(null)
   waiting.clear()
 }
@@ -136,7 +147,7 @@ export const hasWorker = (): boolean => ensureWorker() !== null
  * that forbids workers and a worker that has died, and it is why the pure function this is built
  * from is exported rather than hidden in here.
  */
-export const scanInWorker = async (
+const runScan = async (
   job: ScanJob,
   indices: Uint8Array,
 ): Promise<ScanOutcome | null> => {
@@ -148,7 +159,8 @@ export const scanInWorker = async (
     // The bands are ours: sliced for this job and never read again, so they transfer rather than
     // copy. The template's pixels are not — we hold them — so those go across as a copy, once.
     const transfer: Transferable[] = []
-    if (job.server !== null) transfer.push(job.server.buffer)
+    if (job.kind === 'pixels' && job.server !== null) transfer.push(job.server.buffer)
+    if (job.kind === 'mask') transfer.push(job.maskPacked.buffer)
     if (job.draft !== null) transfer.push(job.draft.buffer)
     const payload = { ...job, id, indices: withIndices ? indices : null }
     return new Promise((resolve) => {
@@ -184,7 +196,11 @@ export const scanInWorker = async (
     count('mismatch:worker had no pixels for that template')
     return null
   }
-  recordProfileDuration('Mismatch scan', reply.durationMs ?? 0, 'worker')
+  recordProfileDuration(
+    job.kind === 'mask' ? 'Server mismatch scan' : 'Mismatch scan',
+    reply.durationMs ?? 0,
+    'worker',
+  )
   return {
     wrong: reply.wrong ?? new Float32Array(0),
     unpainted: reply.unpainted ?? new Float32Array(0),
@@ -197,11 +213,50 @@ export const scanInWorker = async (
   }
 }
 
+const drainScans = (): void => {
+  if (scanActive) return
+  const next = queuedScans.shift()
+  if (next === undefined) return
+  scanActive = true
+  void runScan(next.job, next.indices)
+    .then(next.resolve, () => next.resolve(null))
+    .finally(() => {
+      scanActive = false
+      drainScans()
+    })
+}
+
+/**
+ * A worker has one execution lane. Keep the browser-side queue bounded instead of transferring an
+ * entire viewport's megabyte bands into an unobservable worker backlog.
+ */
+export const scanInWorker = (
+  job: ScanJob,
+  indices: Uint8Array,
+): Promise<ScanOutcome | null> => {
+  if (ensureWorker() === null) return Promise.resolve(null)
+  if (queuedScans.length >= MAX_QUEUED_SCANS) {
+    count('mismatch:worker queue full')
+    return Promise.resolve(null)
+  }
+  return new Promise((resolve) => {
+    queuedScans.push({ job, indices, resolve })
+    drainScans()
+  })
+}
+
 /** Drop a template's pixels from the worker when it is gone, so a long session does not accumulate. */
 export const forgetInWorker = (id: string): void => {
   sent.delete(id)
   worker?.postMessage({ forget: true, templateKey: id })
 }
 
-export const mismatchWorkerMemoryBytes = (): number =>
-  [...sent.values()].reduce((total, indices) => total + indices.byteLength, 0)
+export const mismatchWorkerMemoryBytes = (): number => {
+  let bytes = [...sent.values()].reduce((total, indices) => total + indices.byteLength, 0)
+  for (const queued of queuedScans) {
+    bytes += queued.job.draft?.byteLength ?? 0
+    bytes += queued.job.kind === 'pixels' ? (queued.job.server?.byteLength ?? 0) : 0
+    bytes += queued.job.kind === 'mask' ? queued.job.maskPacked.byteLength : 0
+  }
+  return bytes
+}

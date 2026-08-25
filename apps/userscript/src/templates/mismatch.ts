@@ -1,13 +1,10 @@
 import {
-  BLANK,
   type MismatchMask,
-  mismatchClassAt,
   PALETTE_SIZE,
   parseTileKey,
   TILE_SIZE,
   type TileCoord,
   TRANSPARENT_INDEX,
-  WRONG,
 } from '@caelestis/shared'
 import { count } from '../debug.js'
 import { measureProfile } from '../profile.js'
@@ -793,6 +790,7 @@ const buildJob = (
     return forWorker ? source.slice(bandTop * TILE_SIZE, bandBottom * TILE_SIZE) : source
   }
   return {
+    kind: 'pixels',
     templateKey: template.id,
     indices: null,
     width: template.width,
@@ -816,6 +814,54 @@ const buildJob = (
   }
 }
 
+/** Build the same scan input from a server's compact two-bit classification mask. */
+const buildMaskJob = (
+  template: PlacedTemplate,
+  tile: TileCoord,
+  mask: MismatchMask,
+  forWorker: boolean,
+): ScanJob => {
+  const tileLeft = tile.x * TILE_SIZE
+  const tileTop = tile.y * TILE_SIZE
+  const span = horizontalSpans(template).find(
+    (candidate) => candidate.worldStart < tileLeft + TILE_SIZE && candidate.worldEnd > tileLeft,
+  )
+  const top = Math.max(template.originY, tileTop + mask.top)
+  const bottom = Math.min(template.originY + template.height, tileTop + mask.top + mask.height)
+  const bandTop = forWorker ? Math.max(0, Math.min(TILE_SIZE, top - tileTop)) : 0
+  const bandBottom = forWorker
+    ? Math.max(bandTop, Math.min(TILE_SIZE, bottom - tileTop))
+    : TILE_SIZE
+  const draft = draftPixels(tile)
+  return {
+    kind: 'mask',
+    templateKey: template.id,
+    indices: null,
+    width: template.width,
+    height: template.height,
+    originX: span === undefined ? template.originX : span.worldStart - span.sourceStart,
+    originY: template.originY,
+    tileX: tile.x,
+    tileY: tile.y,
+    tileSize: TILE_SIZE,
+    bandTop,
+    draft:
+      draft === null
+        ? null
+        : forWorker
+          ? draft.slice(bandTop * TILE_SIZE, bandBottom * TILE_SIZE)
+          : draft,
+    ignored: [TRANSPARENT_INDEX, UNPAINTED, ...assertedHidden(template)],
+    transparent: TRANSPARENT_INDEX,
+    unpainted: UNPAINTED,
+    maskLeft: mask.left,
+    maskTop: mask.top,
+    maskWidth: mask.width,
+    maskHeight: mask.height,
+    maskPacked: forWorker ? mask.packed.slice() : mask.packed,
+  }
+}
+
 const store = (
   cacheKey: string,
   source: Uint8Array,
@@ -834,85 +880,6 @@ const store = (
   return entry
 }
 
-/** Turn the server's compact classification mask into the renderer's exact point lists. */
-const scanServerMask = (
-  template: PlacedTemplate,
-  tile: TileCoord,
-  mask: MismatchMask,
-): ScanOutcome => {
-  const tileLeft = tile.x * TILE_SIZE
-  const tileTop = tile.y * TILE_SIZE
-  const hidden = new Set(assertedHidden(template))
-  const wrong: number[] = []
-  const unpainted: number[] = []
-  let asserted = 0
-  let completed = 0
-  let mismatched = 0
-  let progressUnpainted = 0
-  let progressAsserted = 0
-  const byColour = new Uint32Array(256 * 3)
-  for (let localY = mask.top; localY < mask.top + mask.height; localY += 1) {
-    const y = tileTop + localY
-    const sourceY = y - template.originY
-    if (sourceY < 0 || sourceY >= template.height) continue
-    for (let localX = mask.left; localX < mask.left + mask.width; localX += 1) {
-      const x = tileLeft + localX
-      const sourceX = sourceXAt(template, x)
-      if (sourceX === null) continue
-      const wanted = template.indices[sourceY * template.width + sourceX]
-      if (wanted === undefined || wanted === TRANSPARENT_INDEX || wanted === UNPAINTED) continue
-      const classification = mismatchClassAt(mask, localX, localY)
-      if (classification === null) continue
-      progressAsserted++
-      const colourAt = wanted * 3
-      if (classification === WRONG) {
-        mismatched++
-        byColour[colourAt + 1] = (byColour[colourAt + 1] ?? 0) + 1
-      } else if (classification === BLANK) {
-        progressUnpainted++
-        byColour[colourAt + 2] = (byColour[colourAt + 2] ?? 0) + 1
-      } else {
-        completed++
-        byColour[colourAt] = (byColour[colourAt] ?? 0) + 1
-      }
-      if (hidden.has(wanted)) continue
-      asserted++
-      if (classification === WRONG) wrong.push(x, y, wanted)
-      else if (classification === BLANK) unpainted.push(x, y, wanted)
-    }
-  }
-  let usedColours = 0
-  for (let index = 0; index < 256; index += 1) {
-    const at = index * 3
-    if ((byColour[at] ?? 0) + (byColour[at + 1] ?? 0) + (byColour[at + 2] ?? 0) > 0) {
-      usedColours++
-    }
-  }
-  const progressByColour = new Uint32Array(usedColours * 4)
-  let at = 0
-  for (let index = 0; index < 256; index += 1) {
-    const colourAt = index * 3
-    const one = byColour[colourAt] ?? 0
-    const two = byColour[colourAt + 1] ?? 0
-    const three = byColour[colourAt + 2] ?? 0
-    if (one + two + three === 0) continue
-    progressByColour[at++] = index
-    progressByColour[at++] = one
-    progressByColour[at++] = two
-    progressByColour[at++] = three
-  }
-  return {
-    wrong: new Float32Array(wrong),
-    unpainted: new Float32Array(unpainted),
-    asserted,
-    completed,
-    mismatched,
-    progressUnpainted,
-    progressAsserted,
-    progressByColour,
-  }
-}
-
 /**
  * Tiles a worker is already looking at, against the tile array they were asked about.
  *
@@ -920,7 +887,7 @@ const scanServerMask = (
  * tile, each with its own band copied out of it.
  */
 interface PendingScan {
-  readonly pixels: Uint8Array
+  readonly source: Uint8Array
   readonly templateSource: Uint8Array
   /**
    * What the job was asked about, beyond the two byte arrays.
@@ -948,17 +915,17 @@ const inFlight = new Map<string, PendingScan>()
 
 const requestScan = (
   template: PlacedTemplate,
-  tile: TileCoord,
-  pixels: Uint8Array,
+  source: Uint8Array,
   cacheKey: string,
   key: string,
+  job: ScanJob,
 ): void => {
   const templateSource = template.indices
   const asked = signature(template)
   const patchesAtStart = patchCount.get(cacheKey) ?? 0
   const pending = inFlight.get(cacheKey)
   if (
-    pending?.pixels === pixels &&
+    pending?.source === source &&
     pending.templateSource === templateSource &&
     pending.signature === asked &&
     pending.patches === patchesAtStart
@@ -968,17 +935,17 @@ const requestScan = (
   }
   // Identity by object, so the reply can tell "the entry is still mine" from "the answer is still
   // good". Those are different questions and folding them together leaked: a scan invalidated by a
-  // paint left its entry behind, and `PendingScan.pixels` is the captured tile — a megabyte, pinned
+  // paint left its entry behind, and `PendingScan.source` is the captured tile — a megabyte, pinned
   // for the session once the tile cache had evicted its own copy.
   const mine: PendingScan = {
-    pixels,
+    source,
     templateSource,
     signature: asked,
     patches: patchesAtStart,
   }
   inFlight.set(cacheKey, mine)
   stale.delete(cacheKey)
-  void scanInWorker(buildJob(template, tile, pixels, true), template.indices).then((outcome) => {
+  void scanInWorker(job, template.indices).then((outcome) => {
     // A later request replaced the entry, so it owns this key now and this reply is nobody's.
     if (inFlight.get(cacheKey) !== mine) return
     inFlight.delete(cacheKey)
@@ -990,7 +957,7 @@ const requestScan = (
       return
     }
     stale.delete(cacheKey)
-    store(cacheKey, pixels, templateSource, key, progressSignature(template), outcome)
+    store(cacheKey, source, templateSource, key, progressSignature(template), outcome)
     changed++
     notifyChanged()
   })
@@ -1028,6 +995,18 @@ const mismatchAnswer = (
       remember(cacheKey, existing)
       return answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
     }
+    if (hasWorker()) {
+      requestScan(
+        template,
+        serverMask.packed,
+        cacheKey,
+        key,
+        buildMaskJob(template, tile, serverMask, true),
+      )
+      return existing === undefined
+        ? null
+        : answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
+    }
     stale.delete(cacheKey)
     const entry = store(
       cacheKey,
@@ -1035,7 +1014,9 @@ const mismatchAnswer = (
       template.indices,
       key,
       progressSignature(template),
-      scanServerMask(template, tile, serverMask),
+      measureProfile('Server mismatch expansion', () =>
+        scanTile(buildMaskJob(template, tile, serverMask, false), template.indices),
+      ),
     )
     return answerFrom(entry, includeAllUnpainted || countsUnpainted(template))
   }
@@ -1060,7 +1041,7 @@ const mismatchAnswer = (
   }
 
   if (hasWorker()) {
-    requestScan(template, tile, pixels, cacheKey, key)
+    requestScan(template, pixels, cacheKey, key, buildJob(template, tile, pixels, true))
     return existing === undefined
       ? null
       : answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
