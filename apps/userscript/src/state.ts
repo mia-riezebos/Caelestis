@@ -2,6 +2,7 @@ import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/s
 import { log, warn } from './debug.js'
 import { discardResponseBody } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
+import { canonicalServerUrl, serverEndpoint } from './server-url.js'
 import {
   APPEARANCE_GROUPS,
   type Appearance,
@@ -37,7 +38,7 @@ export interface ServerInfo {
 }
 
 export interface ConnectedServer {
-  /** Origin as the user typed it, normalised — the identity of the connection. */
+  /** Host and optional base path as the user typed them, normalised — the connection identity. */
   readonly url: string
   readonly info: ServerInfo | null
   readonly token: string | null
@@ -346,19 +347,7 @@ const serverInfoFrom = (value: unknown): ServerInfo | null => {
   }
 }
 
-export const canonicalServerUrl = (value: string): string => {
-  const parsed = new URL(value.trim())
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new TypeError('server URL must use HTTP or HTTPS')
-  }
-  if (parsed.username !== '' || parsed.password !== '') {
-    throw new TypeError('server URL must not contain credentials')
-  }
-  parsed.search = ''
-  parsed.hash = ''
-  const path = parsed.pathname.replace(/\/+$/, '')
-  return `${parsed.origin}${path}`
-}
+export { canonicalServerUrl, serverEndpoint } from './server-url.js'
 
 const treeNodeFrom = (raw: unknown): TreeNode | null => {
   if (!isRecord(raw)) return null
@@ -1176,7 +1165,7 @@ const fetchNodes = async (
 ): Promise<NodeListResult> => {
   try {
     const { response, body } = await remoteJson(
-      `${base}/admin/nodes?season=${season}`,
+      serverEndpoint(base, `/admin/nodes?season=${season}`),
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
       },
@@ -1210,7 +1199,7 @@ const probeAdminScope = async (
     // full folder tree against the 64 KB cap meant for a one-line mutation reply, and any server
     // with a real tree therefore reported that our token could only read it.
     return await remoteCall(
-      `${base}/admin/nodes?season=${season}`,
+      serverEndpoint(base, `/admin/nodes?season=${season}`),
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
         ...(signal === undefined ? {} : { signal }),
@@ -1290,7 +1279,7 @@ export const probeServer = async (
   let observedInfo: ServerInfo | null = null
   try {
     const { response, body } = await remoteJson(
-      `${base}/server`,
+      serverEndpoint(base, '/server'),
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
         signal: probeController.signal,
@@ -1328,7 +1317,7 @@ export const probeServer = async (
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
     const fetchManifest = (credential: string | null) =>
-      gatedManifestJson(`${base}/manifest`, {
+      gatedManifestJson(serverEndpoint(base, '/manifest'), {
         headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
         signal: probeController.signal,
       })
@@ -1469,7 +1458,7 @@ export const createNode = async (
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/nodes`, {
+    const { response, body } = await remoteJson(serverEndpoint(server.url, '/admin/nodes'), {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -1614,11 +1603,14 @@ export const renameNode = async (
   name: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
-      method: 'PATCH',
-      headers: adminHeaders(server),
-      body: JSON.stringify({ name }),
-    })
+    const { response, body } = await remoteJson(
+      serverEndpoint(server.url, `/admin/nodes/${nodeId}`),
+      {
+        method: 'PATCH',
+        headers: adminHeaders(server),
+        body: JSON.stringify({ name }),
+      },
+    )
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     return {
@@ -1643,10 +1635,13 @@ export const deleteNode = async (
       expected === null
         ? ''
         : `?cascade=true&expectedNodes=${expected.nodes}&expectedTemplates=${expected.templates}`
-    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}${cascade}`, {
-      method: 'DELETE',
-      headers: adminHeaders(server),
-    })
+    const { response, body } = await remoteJson(
+      serverEndpoint(server.url, `/admin/nodes/${nodeId}${cascade}`),
+      {
+        method: 'DELETE',
+        headers: adminHeaders(server),
+      },
+    )
     if (response.ok) return { ok: true }
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     return {
@@ -1697,7 +1692,7 @@ export const uploadTemplate = async (
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
     const { response, body } = await remoteJson(
-      `${server.url}/admin/templates`,
+      serverEndpoint(server.url, '/admin/templates'),
       {
         method: 'POST',
         headers:
@@ -1746,11 +1741,14 @@ export const moveNode = async (
   parentId: string | null,
 ): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}`, {
-      method: 'PATCH',
-      headers: adminHeaders(server),
-      body: JSON.stringify({ parentId }),
-    })
+    const { response, body } = await remoteJson(
+      serverEndpoint(server.url, `/admin/nodes/${nodeId}`),
+      {
+        method: 'PATCH',
+        headers: adminHeaders(server),
+        body: JSON.stringify({ parentId }),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
     return {
@@ -1770,9 +1768,12 @@ export const countNodeSubtree = async (
   nodeId: string,
 ): Promise<{ nodes: number; templates: number } | null> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/nodes/${nodeId}/subtree`, {
-      headers: adminHeaders(server),
-    })
+    const { response, body } = await remoteJson(
+      serverEndpoint(server.url, `/admin/nodes/${nodeId}/subtree`),
+      {
+        headers: adminHeaders(server),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
     const parsed = body as { nodes?: unknown; templates?: unknown }
@@ -1883,7 +1884,7 @@ export const listServerContents = async (
   const request = ++manifestRequestSequence
   try {
     const { response, body } = await remoteJson(
-      `${server.url}/manifest?season=${server.season}`,
+      serverEndpoint(server.url, `/manifest?season=${server.season}`),
       {
         headers:
           activeServerToken(server) === null
@@ -1988,11 +1989,14 @@ export const patchTemplate = async (
   patch: { name?: string; nodeId?: string | null; published?: boolean },
 ): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
-      method: 'PATCH',
-      headers: adminHeaders(server),
-      body: JSON.stringify(patch),
-    })
+    const { response, body } = await remoteJson(
+      serverEndpoint(server.url, `/admin/templates/${templateId}`),
+      {
+        method: 'PATCH',
+        headers: adminHeaders(server),
+        body: JSON.stringify(patch),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
     return {
@@ -2034,7 +2038,7 @@ export const renameServer = async (
   }
   activeServerRenames.add(server.url)
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/server`, {
+    const { response, body } = await remoteJson(serverEndpoint(server.url, '/admin/server'), {
       method: 'PATCH',
       headers: adminHeaders(server),
       body: JSON.stringify({ name: trimmed }),
@@ -2050,7 +2054,11 @@ export const renameServer = async (
     if (current !== undefined && current.info !== null && server.info !== null) {
       let refreshed: ServerInfo | null = null
       try {
-        const metadata = await remoteJson(`${current.url}/server`, {}, SERVER_JSON_BYTES)
+        const metadata = await remoteJson(
+          serverEndpoint(current.url, '/server'),
+          {},
+          SERVER_JSON_BYTES,
+        )
         if (metadata.response.ok) refreshed = serverInfoFrom(metadata.body)
       } catch {
         // The PATCH already committed. A failed cosmetic refresh must not turn success into failure.
@@ -2092,10 +2100,13 @@ export const deleteTemplate = async (
   templateId: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/templates/${templateId}`, {
-      method: 'DELETE',
-      headers: adminHeaders(server),
-    })
+    const { response, body } = await remoteJson(
+      serverEndpoint(server.url, `/admin/templates/${templateId}`),
+      {
+        method: 'DELETE',
+        headers: adminHeaders(server),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) return { ok: true }
     return {
@@ -2126,7 +2137,7 @@ export const uploadTemplateVersion = async (
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
     const { response, body } = await remoteJson(
-      `${server.url}/admin/templates/${templateId}/versions`,
+      serverEndpoint(server.url, `/admin/templates/${templateId}/versions`),
       {
         method: 'POST',
         headers:
@@ -2223,9 +2234,12 @@ export const listAccessTokens = async (
 ): Promise<AccessTokenPage | null> => {
   try {
     const suffix = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
-    const { response, body } = await remoteJson(`${server.url}/admin/tokens${suffix}`, {
-      headers: adminHeaders(server),
-    })
+    const { response, body } = await remoteJson(
+      serverEndpoint(server.url, `/admin/tokens${suffix}`),
+      {
+        headers: adminHeaders(server),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
     const tokens = isRecord(body) ? body.tokens : undefined
@@ -2254,7 +2268,7 @@ export const createAccessToken = async (
   scope: AccessToken['scope'],
 ): Promise<{ ok: true; token: string } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(`${server.url}/admin/tokens`, {
+    const { response, body } = await remoteJson(serverEndpoint(server.url, '/admin/tokens'), {
       method: 'POST',
       headers: adminHeaders(server),
       body: JSON.stringify({ label, scope }),
@@ -2280,7 +2294,7 @@ export const revokeAccessToken = async (
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
     const { response, body } = await remoteJson(
-      `${server.url}/admin/tokens/${encodeURIComponent(tokenHash)}`,
+      serverEndpoint(server.url, `/admin/tokens/${encodeURIComponent(tokenHash)}`),
       {
         method: 'DELETE',
         headers: adminHeaders(server),
