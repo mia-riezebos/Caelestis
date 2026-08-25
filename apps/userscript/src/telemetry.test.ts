@@ -192,6 +192,55 @@ describe('server telemetry client', () => {
     ])
   })
 
+  it('refreshes progress when an offer records a blob the server already has', async () => {
+    let offered = false
+    let statusReadsAfterOffer = 0
+    const requests: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        requests.push(url)
+        if (url.includes('/telemetry/status')) {
+          if (!offered) return Response.json({ templates: [] })
+          statusReadsAfterOffer += 1
+          return Response.json({
+            templates: [
+              {
+                templateId: template.id,
+                correct: 1,
+                wrong: 1,
+                blank: 1,
+                total: 3,
+                observedAt: 1_000,
+              },
+            ],
+          })
+        }
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          offered = true
+          return Response.json({ wanted: [] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry, serverProgressFor } = await import('./telemetry.js')
+    installTelemetry()
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+
+    await vi.waitFor(() => expect(statusReadsAfterOffer).toBe(1))
+    expect(requests.some((url) => url.includes('/telemetry/tiles/1/2/'))).toBe(false)
+    expect(serverProgressFor(server, template)).toEqual({
+      completed: 1,
+      mismatched: 1,
+      unpainted: 1,
+      known: 3,
+      total: 3,
+    })
+  })
+
   it('strips out-of-scope tiles from paint reports', async () => {
     const reports: unknown[] = []
     vi.stubGlobal(

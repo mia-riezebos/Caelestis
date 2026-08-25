@@ -139,7 +139,6 @@ const uploadWanted = async (
           })
       }),
   )
-  if (uploaded.size > 0) await refreshStatus(server)
   return uploaded
 }
 
@@ -189,6 +188,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
     ),
   )
   const uploaded = await uploadWanted(server, identity, entries, wanted)
+  await refreshStatus(server)
   const previousDedupe = offered.get(server.url)
   const dedupe =
     previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
