@@ -89,6 +89,7 @@ import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
+import { refreshProgressIndicators } from './progress.js'
 import { serverDestinations } from './server-destinations.js'
 import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
@@ -3106,7 +3107,9 @@ export const installPanel = (): void => {
     progressRefreshQueued = true
     requestAnimationFrame(() => {
       progressRefreshQueued = false
-      if (currentView === 'tree') refreshView()
+      if (currentView !== 'tree') return
+      const panel = document.getElementById(PANEL_ID)
+      if (panel !== null) refreshProgressIndicators(panel)
     })
   })
   onServerStatusChange(() => {

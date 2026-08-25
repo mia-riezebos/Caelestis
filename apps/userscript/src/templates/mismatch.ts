@@ -345,6 +345,9 @@ const remember = (cacheKey: string, entry: Cached): void => {
 /** Bumped whenever a cached answer is patched, so a listener can tell that anything happened. */
 let changed = 0
 
+/** Monotonic token for UI caches that derive progress from mismatch state. */
+export const mismatchRevision = (): number => changed
+
 const changeListeners: Array<() => void> = []
 
 /**
