@@ -215,6 +215,49 @@ describe('tree drag and drop', () => {
       ?.click()
   })
 
+  it('continues the tree branches through an empty folder placeholder', () => {
+    const server = connectedServer()
+    const emptyFolder = serverNode(SOURCE_NODE_ID, 'Empty folder')
+    const populatedFolder = serverNode(DESTINATION_NODE_ID, 'Populated folder')
+    setState({
+      servers: [server],
+      localFolders: [],
+      customOrder: [],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    rememberServerContents(server, {
+      nodes: [emptyFolder, populatedFolder],
+      templates: [serverTemplate(TEMPLATE_A_ID, DESTINATION_NODE_ID, 'Template', 1)],
+    })
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo: vi.fn(),
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+
+    const tree = treeContents(callbacks, vi.fn())
+    const placeholder = [...tree.querySelectorAll<HTMLElement>('[aria-disabled="true"]')].find(
+      (row) => row.textContent === 'Empty.',
+    )
+    const connector = placeholder?.querySelector<SVGSVGElement>(
+      ':scope > .caelestis-tree-connector',
+    )
+
+    expect(connector).not.toBeNull()
+    expect(connector?.querySelectorAll('line')).toHaveLength(3)
+    expect(connector?.querySelector('line')?.getAttribute('y2')).toBe('100%')
+  })
+
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {
     const server = connectedServer()
     const source = serverNode(SOURCE_NODE_ID, 'Source')

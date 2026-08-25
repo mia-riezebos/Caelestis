@@ -1834,16 +1834,26 @@ interface SiblingLevel {
   readonly all: () => readonly string[]
 }
 
-const childText = (text: string, depth: number): HTMLElement => {
+const childText = (text: string, depth: number, branches: readonly boolean[] = []): HTMLElement => {
   const el = document.createElement('p')
   el.setAttribute('role', 'treeitem')
   el.setAttribute('aria-level', String(depth + 2))
   el.setAttribute('aria-disabled', 'true')
   el.className = 'text-xs opacity-60'
   el.style.padding = '0.125rem 0.75rem 0.375rem'
-  el.style.paddingLeft = `${2.5 + depth * 1.125}rem`
   el.dataset.caelestisDepth = String(depth)
-  el.textContent = text
+  const connector = treeConnector(branches, true)
+  if (connector === null) {
+    el.style.paddingInlineStart = `${2.5 + depth * 1.125}rem`
+    el.textContent = text
+  } else {
+    el.style.position = 'relative'
+    el.style.marginInline = '0.25rem 0.5rem'
+    el.style.paddingInlineStart = `calc(0.5rem + ${connector.width}px)`
+    const label = document.createElement('span')
+    label.textContent = text
+    el.append(connector.element, label)
+  }
   return el
 }
 
@@ -1978,7 +1988,9 @@ const renderLevel = (
 
   // Only inside something. "Nothing here" is worth saying about a folder you have just opened; at
   // the top of a source it is the source's own empty state, which says more than this can.
-  if (parentId !== null && matching.length === 0) into.appendChild(childText('Empty.', depth))
+  if (parentId !== null && matching.length === 0) {
+    into.appendChild(childText('Empty.', depth, [...ancestorBranches, false]))
+  }
 }
 
 export const treeContents = (
