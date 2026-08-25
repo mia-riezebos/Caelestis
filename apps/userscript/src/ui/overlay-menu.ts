@@ -1709,7 +1709,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
   }
   disableFollowing(pixels)
 
-  const markers = groupBox('markers', 'Mismatches')
+  const markers = groupBox('markers', 'Markers')
   markers.body.appendChild(
     mismatchSettings(
       appearance,
@@ -1718,7 +1718,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
         if (properties.length === 0) return
         const box = defaultsBoxes.get('markers')
         if (box !== undefined) box.checked = false
-        edit(properties, 'mismatch markers', () => patch)
+        edit(properties, 'markers', () => patch)
       },
       rerender,
       {

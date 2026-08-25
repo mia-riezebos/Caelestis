@@ -2,7 +2,8 @@ import { TILE_SIZE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { getState } from '../state.js'
-import { toRgbUnit } from '../templates/appearance.js'
+import { isColourHidden, toRgbUnit } from '../templates/appearance.js'
+import { colourMarksIn } from '../templates/colour-marker.js'
 import {
   appearanceOf,
   displayTemplates,
@@ -390,15 +391,29 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
    */
   const now = performance.now()
   let animating = false
-  const wanted: { template: PlacedTemplate; fade: number }[] = []
+  const selected = isPaintOpen() ? (selectedColour() ?? -1) : -1
+  const wanted: {
+    template: PlacedTemplate
+    mismatchFade: number
+    selectedFade: number
+  }[] = []
+  const markerKeys = new Set<string>()
   const trackProgress = true
   for (const template of displayTemplates()) {
-    const { value, done } = markerFades.advance(
-      template.id,
-      appearanceOf(template).markMismatch ? 1 : 0,
+    const appearance = appearanceOf(template)
+    const mismatchKey = `mismatch:${template.id}`
+    const selectedKey = `selected:${template.id}`
+    markerKeys.add(mismatchKey)
+    markerKeys.add(selectedKey)
+    const mismatch = markerFades.advance(mismatchKey, appearance.markMismatch ? 1 : 0, now)
+    const selectedMarker = markerFades.advance(
+      selectedKey,
+      appearance.markSelectedColour && selected >= 0 && !isColourHidden(appearance, selected)
+        ? 1
+        : 0,
       now,
     )
-    if (!done) animating = true
+    if (!mismatch.done || !selectedMarker.done) animating = true
     // Multiplied by the template's own ramp: markers belong to it, so one arriving with its markers
     // on brings them with it rather than laying them over a template that is not there yet.
     // Hiding the template is already in there: its own ramp is on its way to zero, and the markers
@@ -409,10 +424,13 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
       now,
     )
     if (!templateFade.done) animating = true
-    const fade = value * templateFade.value
-    if (fade > 0 || (trackProgress && isTemplateVisible(template))) wanted.push({ template, fade })
+    const mismatchFade = mismatch.value * templateFade.value
+    const selectedFade = selectedMarker.value * templateFade.value
+    if (mismatchFade > 0 || selectedFade > 0 || (trackProgress && isTemplateVisible(template))) {
+      wanted.push({ template, mismatchFade, selectedFade })
+    }
   }
-  markerFades.prune(new Set(displayTemplates().map((template) => template.id)))
+  markerFades.prune(markerKeys)
   if (animating) {
     const map = getMap() as { triggerRepaint?: () => void } | null
     map?.triggerRepaint?.()
@@ -438,17 +456,19 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     return true
   }
 
-  const work: {
+  type Work = {
     tile: TileQuad
     marks: Float32Array
     style: MarkerStyle
     fade: number
-  }[] = []
+  }
+  const selectedWork: Work[] = []
+  const mismatchWork: Work[] = []
   let deferred = false
-  const selected = getState().onlySelectedColour && isPaintOpen() ? (selectedColour() ?? -1) : -1
-  for (const { template, fade } of wanted) {
+  const mismatchSelection = getState().onlySelectedColour && isPaintOpen() ? selected : -1
+  for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
-    const style: MarkerStyle = {
+    const mismatchStyle: MarkerStyle = {
       size: appearance.markerSize,
       thickness: 2,
       colour: toRgbUnit(appearance.markerColour),
@@ -459,16 +479,33 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
           ? null
           : toRgbUnit(appearance.otherColour),
       otherOpacity: appearance.dimOthers ? appearance.otherOpacity : 1,
-      selected,
+      selected: mismatchSelection,
+    }
+    const selectedStyle: MarkerStyle = {
+      size: appearance.selectedMarkerSize,
+      thickness: 2,
+      colour: toRgbUnit(appearance.selectedMarkerColour),
+      otherColour: null,
+      otherOpacity: 1,
+      selected: -1,
     }
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
-      const marks = mismatchesIn(template, tile.tile)
-      if (marks === null) deferred = true
-      else if (fade > 0 && marks.length > 0) work.push({ tile, marks, style, fade })
+      if (selectedFade > 0 && selected >= 0) {
+        const marks = colourMarksIn(template, tile.tile, selected)
+        if (marks.length > 0) {
+          selectedWork.push({ tile, marks, style: selectedStyle, fade: selectedFade })
+        }
+      }
+      const mismatches = mismatchesIn(template, tile.tile)
+      if (mismatches === null) deferred = true
+      else if (mismatchFade > 0 && mismatches.length > 0) {
+        mismatchWork.push({ tile, marks: mismatches, style: mismatchStyle, fade: mismatchFade })
+      }
     }
   }
-  count('marker:tiles with marks', work.length)
+  count('marker:selected-colour tiles with marks', selectedWork.length)
+  count('marker:mismatch tiles with marks', mismatchWork.length)
 
   const hadBlend = gl.isEnabled(gl.BLEND)
   const hadDepth = gl.isEnabled(gl.DEPTH_TEST)
@@ -488,7 +525,9 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   // rest of that frame with our program bound, blending forced and depth test off. Skipping a frame
   // has to mean skipping it cleanly, in both files.
   try {
-    for (const one of work) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+    // The selected colour is a guide; a real mismatch is the error signal and wins where they meet.
+    for (const one of selectedWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+    for (const one of mismatchWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
   } finally {
     gl.bindVertexArray(previousVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)

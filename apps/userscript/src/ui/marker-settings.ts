@@ -43,8 +43,8 @@ interface RowOptions {
   readonly hint?: string
 }
 
-type MarkerRangeKey = 'markerSize' | 'unpaintedLimit' | 'otherOpacity'
-type MarkerColourKey = 'markerColour' | 'otherColour'
+type MarkerRangeKey = 'markerSize' | 'selectedMarkerSize' | 'unpaintedLimit' | 'otherOpacity'
+type MarkerColourKey = 'markerColour' | 'selectedMarkerColour' | 'otherColour'
 
 interface MismatchOptions {
   readonly compact?: boolean
@@ -335,6 +335,57 @@ export const mismatchSettings = (
     setEnabled(limit, values.markUnpainted)
     setEnabled(dim, values.dimOthers)
   }
+
+  const selectedGroup = document.createElement('div')
+  selectedGroup.className = 'flex flex-col'
+  selectedGroup.dataset.caelestisMarker = 'selected-colour'
+  selectedGroup.appendChild(
+    row(
+      'Mark selected colour pixels',
+      tick(values.markSelectedColour, (next) => {
+        write({ markSelectedColour: next })
+        rerender()
+      }),
+      at(0, 'Follows the colour selected in Wplace'),
+    ),
+  )
+
+  const selectedUnder = document.createElement('div')
+  selectedUnder.className = 'flex flex-col'
+  selectedUnder.append(
+    row(
+      'Size',
+      track(
+        { min: 3, max: 33, step: 1, format: (v) => `${Math.round(v)}px` },
+        values.selectedMarkerSize,
+        (next) => {
+          if (draftRange !== undefined && !draftRange.clear('selectedMarkerSize')) return
+          write({ selectedMarkerSize: next })
+        },
+        (next) => draftRange?.set('selectedMarkerSize', next),
+        protectRange,
+      ),
+      at(1),
+    ),
+    row(
+      'Colour',
+      swatch(
+        'Selected colour marker colour',
+        'selectedMarkerColour',
+        values.selectedMarkerColour,
+        (next) => {
+          if (draftColour !== undefined && !draftColour.clear('selectedMarkerColour')) return
+          write({ selectedMarkerColour: next })
+        },
+        (next) => draftColour?.set('selectedMarkerColour', next),
+        rerender,
+      ),
+      at(1),
+    ),
+  )
+  selectedGroup.appendChild(selectedUnder)
+  setEnabled(selectedUnder, values.markSelectedColour)
+  wrap.appendChild(selectedGroup)
   return wrap
 }
 

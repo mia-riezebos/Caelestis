@@ -79,6 +79,12 @@ export interface Appearance {
   readonly markerColour: string
   /** Its size in CSS pixels — the same size at every zoom, so this is the whole of it. */
   readonly markerSize: number
+  /** Mark every overlay pixel that asks for Wplace's currently selected paint colour. */
+  readonly markSelectedColour: boolean
+  /** The selected-colour crosshair's colour, kept separate from mismatch magenta. */
+  readonly selectedMarkerColour: string
+  /** Selected-colour crosshair size in CSS pixels. */
+  readonly selectedMarkerSize: number
   /**
    * Whether markers you cannot act on right now are drawn differently from the ones you can.
    *
@@ -126,6 +132,9 @@ export const GROUP_FIELDS: Record<AppearanceGroup, readonly (keyof Appearance)[]
     'unpaintedLimit',
     'markerColour',
     'markerSize',
+    'markSelectedColour',
+    'selectedMarkerColour',
+    'selectedMarkerSize',
     'dimOthers',
     'otherOpacity',
     'otherColour',
@@ -163,6 +172,11 @@ export const DEFAULT_APPEARANCE: Appearance = {
   // marker. 9 CSS pixels was arrived at by looking at it on a Retina display.
   markerColour: '#ff00ff',
   markerSize: 9,
+  markSelectedColour: false,
+  // Cyan stays distinct from both mismatch magenta and the paint palette in grayscale by shape and
+  // placement, while remaining easy to find against Wplace's pale and dark map regions.
+  selectedMarkerColour: '#00e5ff',
+  selectedMarkerSize: 9,
   dimOthers: true,
   otherOpacity: 0.15,
   otherColour: null,
@@ -350,6 +364,10 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
     ),
     markerColour: colour(source.markerColour) ?? DEFAULT_APPEARANCE.markerColour,
     markerSize: number('markerSize', DEFAULT_APPEARANCE.markerSize, 3, 33),
+    markSelectedColour: source.markSelectedColour === true,
+    selectedMarkerColour:
+      colour(source.selectedMarkerColour) ?? DEFAULT_APPEARANCE.selectedMarkerColour,
+    selectedMarkerSize: number('selectedMarkerSize', DEFAULT_APPEARANCE.selectedMarkerSize, 3, 33),
     otherOpacity: number('otherOpacity', DEFAULT_APPEARANCE.otherOpacity, 0, 1),
     otherColour: colour(source.otherColour),
   }

@@ -1023,7 +1023,7 @@ const appearanceView = (): HTMLElement => {
   }
   view.appendChild(sliders)
 
-  view.appendChild(sectionHeader('Mismatches', 'search'))
+  view.appendChild(sectionHeader('Markers', 'search'))
   const setAppearance = (patch: Partial<typeof state.appearance>): void => {
     setState({ appearance: { ...getState().appearance, ...patch } })
   }
