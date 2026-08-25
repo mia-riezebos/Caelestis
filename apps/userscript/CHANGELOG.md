@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.6
+
+### Patch Changes
+
+- 4fb0313: Load mismatch markers from server telemetry while keeping local paint updates immediate.
+
 ## 0.2.5
 
 ### Patch Changes
