@@ -2064,18 +2064,14 @@ export const treeContents = (
     template: ServerTemplate,
   ): TemplateProgress => {
     const serverProgress = serverProgressFor(server, template)
-    if (serverProgress !== null) return serverProgress
-    const drawn = drawnByServer.get(server.url)?.get(template.id)
-    return drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn)
+    return serverProgress ?? emptyProgress(template.totalPixels ?? 0)
   }
   const serverTemplateColourProgress = (
     server: ConnectedServer,
     template: ServerTemplate,
   ): readonly TemplateColourProgress[] | undefined => {
     const serverProgress = serverColourProgressFor(server, template)
-    if (serverProgress !== null) return serverProgress
-    const drawn = drawnByServer.get(server.url)?.get(template.id)
-    return drawn === undefined ? undefined : colourProgressFor(drawn)
+    return serverProgress ?? undefined
   }
   const completeColourProgress = (
     overall: TemplateProgress | undefined,

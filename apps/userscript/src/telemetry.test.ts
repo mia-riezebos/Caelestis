@@ -82,6 +82,42 @@ afterEach(() => {
 })
 
 describe('server telemetry client', () => {
+  it('replays tiles and accepted paints observed before manifest coverage arrives', async () => {
+    const requests: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        requests.push(url)
+        if (url.includes('/telemetry/status')) return Response.json({ templates: [] })
+        if (url.endsWith('/telemetry/tiles/offers')) {
+          return Response.json({ wanted: ['1/2'] })
+        }
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    harness.fetchedTile?.({ x: 1, y: 2 }, new Uint8Array([1, 2, 3]), 1_800_000_000)
+    harness.acceptedPaint?.({
+      season: 1,
+      observedAt: 1_800_000_000,
+      painted: 1,
+      tiles: [{ x: 1, y: 2, pixels: { x: [3], y: [4], colors: [5] } }],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(requests.some((url) => url.includes('/telemetry/tiles/offers'))).toBe(false)
+    expect(requests.some((url) => url.includes('/telemetry/paints'))).toBe(false)
+
+    harness.serverContents?.(server, { nodes: [], templates: [template] })
+
+    await vi.waitFor(() => {
+      expect(requests.some((url) => url.includes('/telemetry/tiles/1/2/'))).toBe(true)
+      expect(requests.some((url) => url.includes('/telemetry/paints'))).toBe(true)
+    })
+  })
+
   it('reports only covered tiles and reads progress back from the server', async () => {
     const requests: Array<{ url: string; init: RequestInit | undefined }> = []
     vi.stubGlobal(

@@ -29,6 +29,9 @@ const OFFER_DELAY_MS = 250
 const STATUS_POLL_MS = 30_000
 const REQUEST_TIMEOUT_MS = 15_000
 const RETRIES = 3
+const MAX_RECENT_TILES = 32
+const MAX_RECENT_TILE_BYTES = 32 * 1_024 * 1_024
+const MAX_RECENT_PAINTS = 64
 
 interface OfferedTile extends TileOffer {
   readonly coord: TileCoord
@@ -55,12 +58,21 @@ interface ServerStatus {
   readonly value: TemplateStatus
 }
 
+interface ObservedPaint {
+  readonly eventId: string
+  readonly paint: AcceptedPaint
+}
+
 const coverage = new Map<string, ServerCoverage>()
 const queued = new Map<string, ServerQueue>()
 const offered = new Map<string, ServerDedupe>()
+const reportedPaints = new Map<string, ServerDedupe>()
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const statuses = new Map<string, ServerStatus>()
 const statusListeners = new Set<() => void>()
+const recentTiles = new Map<string, OfferedTile>()
+const recentPaints: ObservedPaint[] = []
+let recentTileBytes = 0
 
 const statusKey = (serverUrl: string, templateId: string): string =>
   `${serverUrl}\u0000${templateId}`
@@ -91,23 +103,18 @@ const fetchWithRetry = async (url: string, init: RequestInit): Promise<Response 
 const coverageFrom = (contents: ServerContents): ReadonlySet<string> =>
   new Set(contents.templates.flatMap((template) => template.chunks.map((chunk) => chunk.tile)))
 
-const rememberContents = (server: ConnectedServer, contents: ServerContents): void => {
-  if (!isCurrentServerConnection(server)) return
-  coverage.set(server.url, { server, tiles: coverageFrom(contents) })
-  void refreshStatus(server).catch(reportTelemetryError)
-}
-
 const uploadWanted = async (
   server: ConnectedServer,
   identity: NonNullable<ReturnType<typeof accountIdentity>>,
   entries: readonly OfferedTile[],
   wanted: ReadonlySet<string>,
-): Promise<void> => {
+): Promise<ReadonlySet<string>> => {
+  const uploaded = new Set<string>()
   await Promise.all(
     entries
       .filter((entry) => wanted.has(entry.tile))
-      .map((entry) =>
-        fetchWithRetry(
+      .map(async (entry) => {
+        const response = await fetchWithRetry(
           `${server.url}/telemetry/tiles/${entry.coord.x}/${entry.coord.y}/${entry.sha256}`,
           {
             method: 'PUT',
@@ -121,10 +128,18 @@ const uploadWanted = async (
             },
             body: entry.bytes.slice().buffer,
           },
-        ),
-      ),
+        )
+        if (response?.ok) uploaded.add(`${entry.tile}\u0000${entry.sha256}`)
+        else if (response !== null)
+          warn('install', 'telemetry tile upload was rejected', {
+            server: server.url,
+            tile: entry.tile,
+            status: response.status,
+          })
+      }),
   )
-  await refreshStatus(server)
+  if (uploaded.size > 0) await refreshStatus(server)
+  return uploaded
 }
 
 const flushOffers = async (serverUrl: string): Promise<void> => {
@@ -152,7 +167,14 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       offers: entries.map(({ tile, sha256, ts }) => ({ tile, sha256, ts })),
     }),
   })
-  if (response === null || !response.ok) return
+  if (response === null || !response.ok) {
+    if (response !== null)
+      warn('install', 'telemetry tile offer was rejected', {
+        server: server.url,
+        status: response.status,
+      })
+    return
+  }
   const body: unknown = await response.json().catch(() => null)
   if (
     typeof body !== 'object' ||
@@ -165,7 +187,17 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
       (tile): tile is string => typeof tile === 'string',
     ),
   )
-  await uploadWanted(server, identity, entries, wanted)
+  const uploaded = await uploadWanted(server, identity, entries, wanted)
+  const previousDedupe = offered.get(server.url)
+  const dedupe =
+    previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
+      ? previousDedupe
+      : { server, values: new Set<string>() }
+  for (const entry of entries) {
+    const offerKey = `${entry.tile}\u0000${entry.sha256}`
+    if (!wanted.has(entry.tile) || uploaded.has(offerKey)) dedupe.values.add(offerKey)
+  }
+  offered.set(server.url, dedupe)
   if (pending.entries.size > entries.length) {
     const rest = new Map([...pending.entries].slice(entries.length))
     queued.set(serverUrl, { server, entries: rest })
@@ -181,46 +213,71 @@ const scheduleFlush = (serverUrl: string): void => {
   )
 }
 
-const shareTile = async (tile: TileCoord, bytes: Uint8Array, observedAt: number): Promise<void> => {
+const shareObservedTile = (entry: OfferedTile): void => {
   if (!getState().shareTiles) return
-  const key = tileKey(tile)
-  const hash = await sha256Hex(bytes)
   for (const server of getState().servers) {
-    if (server.status !== 'connected' || server.season === null || !coverageFor(server)?.has(key))
+    if (
+      server.status !== 'connected' ||
+      server.season === null ||
+      !coverageFor(server)?.has(entry.tile)
+    )
       continue
     const previousDedupe = offered.get(server.url)
     const dedupe =
       previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
         ? previousDedupe
         : { server, values: new Set<string>() }
-    const offerKey = `${key}\u0000${hash}`
+    const offerKey = `${entry.tile}\u0000${entry.sha256}`
     if (dedupe.values.has(offerKey)) continue
-    dedupe.values.add(offerKey)
-    offered.set(server.url, dedupe)
     const previousQueue = queued.get(server.url)
     const serverQueue =
       previousQueue !== undefined && isCurrentServerConnection(previousQueue.server)
         ? previousQueue
         : { server, entries: new Map<string, OfferedTile>() }
-    serverQueue.entries.set(key, {
-      tile: key,
-      coord: tile,
-      sha256: hash,
-      ts: seconds(observedAt),
-      bytes,
-    })
+    serverQueue.entries.set(entry.tile, entry)
     queued.set(server.url, serverQueue)
     scheduleFlush(server.url)
   }
 }
 
-const reportPaint = async (paint: AcceptedPaint): Promise<void> => {
+const rememberTile = (entry: OfferedTile): void => {
+  const previous = recentTiles.get(entry.tile)
+  if (previous !== undefined) recentTileBytes -= previous.bytes.byteLength
+  recentTiles.delete(entry.tile)
+  recentTiles.set(entry.tile, entry)
+  recentTileBytes += entry.bytes.byteLength
+  while (recentTiles.size > MAX_RECENT_TILES || recentTileBytes > MAX_RECENT_TILE_BYTES) {
+    const oldest = recentTiles.entries().next()
+    if (oldest.done) break
+    recentTiles.delete(oldest.value[0])
+    recentTileBytes -= oldest.value[1].bytes.byteLength
+  }
+}
+
+const observeTile = async (
+  tile: TileCoord,
+  bytes: Uint8Array,
+  observedAt: number,
+): Promise<void> => {
+  if (!getState().shareTiles) return
+  const entry: OfferedTile = {
+    tile: tileKey(tile),
+    coord: tile,
+    sha256: await sha256Hex(bytes),
+    ts: seconds(observedAt),
+    bytes,
+  }
+  rememberTile(entry)
+  shareObservedTile(entry)
+}
+
+const reportPaint = async (observation: ObservedPaint): Promise<void> => {
   if (!getState().reportPaints) return
   await loadAccount()
   const identity = accountIdentity()
   if (identity === null) return
+  const { eventId, paint } = observation
   const submitted = paint.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
-  const eventId = uuidV7()
   await Promise.all(
     getState().servers.map(async (server) => {
       const serverCoverage = coverageFor(server)
@@ -232,6 +289,14 @@ const reportPaint = async (paint: AcceptedPaint): Promise<void> => {
         return
       const tiles = paint.tiles.filter((tile) => serverCoverage.has(tileKey(tile)))
       if (tiles.length === 0) return
+      const previousDedupe = reportedPaints.get(server.url)
+      const dedupe =
+        previousDedupe !== undefined && isCurrentServerConnection(previousDedupe.server)
+          ? previousDedupe
+          : { server, values: new Set<string>() }
+      if (dedupe.values.has(eventId)) return
+      dedupe.values.add(eventId)
+      reportedPaints.set(server.url, dedupe)
       const scopedSubmitted = tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
       const event: PaintEvent = {
         eventId,
@@ -246,13 +311,41 @@ const reportPaint = async (paint: AcceptedPaint): Promise<void> => {
               ? scopedSubmitted
               : null,
       }
-      await fetchWithRetry(`${server.url}/telemetry/paints`, {
+      const response = await fetchWithRetry(`${server.url}/telemetry/paints`, {
         method: 'POST',
         headers: { ...authHeaders(server), 'content-type': 'application/json' },
         body: JSON.stringify(event),
       })
+      if (response?.ok) return
+      dedupe.values.delete(eventId)
+      if (response !== null)
+        warn('install', 'telemetry paint report was rejected', {
+          server: server.url,
+          status: response.status,
+        })
     }),
   )
+}
+
+const observePaint = (paint: AcceptedPaint): void => {
+  if (!getState().reportPaints) return
+  const observation = { eventId: uuidV7(), paint }
+  recentPaints.push(observation)
+  if (recentPaints.length > MAX_RECENT_PAINTS) recentPaints.shift()
+  void reportPaint(observation).catch(reportTelemetryError)
+}
+
+const replayRecent = (server: ConnectedServer): void => {
+  if (!isCurrentServerConnection(server)) return
+  for (const tile of recentTiles.values()) shareObservedTile(tile)
+  for (const paint of recentPaints) void reportPaint(paint).catch(reportTelemetryError)
+}
+
+const rememberContents = (server: ConnectedServer, contents: ServerContents): void => {
+  if (!isCurrentServerConnection(server)) return
+  coverage.set(server.url, { server, tiles: coverageFrom(contents) })
+  replayRecent(server)
+  void refreshStatus(server).catch(reportTelemetryError)
 }
 
 const templateStatusFrom = (value: unknown): TemplateStatus | null => {
@@ -391,14 +484,16 @@ export const installTelemetry = (): void => {
   installed = true
   onServerContents(rememberContents)
   onFetchedTile((tile, bytes, observedAt) => {
-    void shareTile(tile, bytes, observedAt).catch(reportTelemetryError)
+    void observeTile(tile, bytes, observedAt).catch(reportTelemetryError)
   })
   onAcceptedPaint((paint) => {
-    void reportPaint(paint).catch(reportTelemetryError)
+    observePaint(paint)
   })
   onStateChange(() => {
     for (const server of getState().servers) {
-      if (server.status === 'connected') void refreshStatus(server).catch(reportTelemetryError)
+      if (server.status !== 'connected') continue
+      replayRecent(server)
+      void refreshStatus(server).catch(reportTelemetryError)
     }
   })
   setInterval(() => {
