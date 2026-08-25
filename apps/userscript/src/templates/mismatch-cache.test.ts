@@ -10,6 +10,8 @@ const harness = vi.hoisted(() => ({
   workerAvailable: false,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   onTilePixels: vi.fn(),
+  onTilePixelsEvicted: vi.fn(),
+  onServerMismatchTileInvalidated: vi.fn(),
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
@@ -19,6 +21,7 @@ vi.mock('../tile-transform.js', () => ({
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
   onTilePixels: harness.onTilePixels,
+  onTilePixelsEvicted: harness.onTilePixelsEvicted,
   tilePixels: () => harness.pixels,
   UNPAINTED: 255,
 }))
@@ -26,6 +29,7 @@ vi.mock('../server-mismatch.js', () => ({
   beginServerMismatchFrame: vi.fn(),
   endServerMismatchFrame: vi.fn(),
   onServerMismatchesChanged: vi.fn(),
+  onServerMismatchTileInvalidated: harness.onServerMismatchTileInvalidated,
   serverMismatchMaskFor: () => harness.serverMask,
 }))
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
@@ -71,6 +75,8 @@ beforeEach(() => {
   harness.workerAvailable = false
   harness.workerScan.mockReset()
   harness.onTilePixels.mockReset()
+  harness.onTilePixelsEvicted.mockReset()
+  harness.onServerMismatchTileInvalidated.mockReset()
 })
 
 describe('visible mismatch answer retention', () => {
@@ -239,5 +245,23 @@ describe('visible mismatch answer retention', () => {
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()
     expect(harness.workerScan.mock.calls[0]?.[0]).toMatchObject({ kind: 'pixels' })
+
+    beginMismatchFrame()
+    endMismatchFrame()
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    )
+    harness.workerAvailable = false
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(0)
+    endMismatchFrame()
+
+    const serverInvalidated = harness.onServerMismatchTileInvalidated.mock.calls[0]?.[0] as
+      | ((serverUrl: string, tile: { x: number; y: number }) => void)
+      | undefined
+    serverInvalidated?.('https://templates.example', { x: 0, y: 0 })
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
   })
 })

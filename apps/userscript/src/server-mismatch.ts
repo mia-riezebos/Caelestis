@@ -31,6 +31,7 @@ const masks = new Map<string, HeldMask>()
 const misses = new Map<string, HeldMiss>()
 const pending = new Map<string, Promise<void>>()
 const listeners = new Set<() => void>()
+const tileInvalidationListeners = new Set<(serverUrl: string, tile: TileCoord) => void>()
 let requestedThisFrame: Set<string> | null = null
 
 const keyFor = (
@@ -170,7 +171,16 @@ export const invalidateServerMismatchTile = (serverUrl: string, tile: TileCoord)
   for (const key of [...misses.keys()]) {
     if (key.startsWith(prefix) && key.endsWith(suffix)) misses.delete(key)
   }
+  for (const listener of tileInvalidationListeners) listener(serverUrl, tile)
   if (changed) notify()
+}
+
+/** A successful tile upload makes a subsequent server mask authoritative again. */
+export const onServerMismatchTileInvalidated = (
+  listener: (serverUrl: string, tile: TileCoord) => void,
+): (() => void) => {
+  tileInvalidationListeners.add(listener)
+  return () => tileInvalidationListeners.delete(listener)
 }
 
 export const onServerMismatchesChanged = (listener: () => void): (() => void) => {

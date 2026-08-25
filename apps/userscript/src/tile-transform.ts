@@ -971,6 +971,7 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
  * drawer's source-only colour picker.
  */
 const pixelsOfTile = new Map<string, Uint8Array>()
+const tilePixelEvictionListeners = new Set<(tile: TileCoord) => void>()
 const KEEP_TILE_PIXELS = tilePixelCacheLimit(
   (navigator as Navigator & { readonly deviceMemory?: number }).deviceMemory,
 )
@@ -1009,6 +1010,12 @@ export const captureTilePixels = (
   log('install', `tile pixel capture ${on ? 'on' : 'off'}`)
 }
 
+/** Observe bounded-cache eviction so derived state cannot outlive the exact pixels it describes. */
+export const onTilePixelsEvicted = (listener: (tile: TileCoord) => void): (() => void) => {
+  tilePixelEvictionListeners.add(listener)
+  return () => tilePixelEvictionListeners.delete(listener)
+}
+
 const rememberTilePixels = (key: string, pixels: Uint8Array): void => {
   pixelsOfTile.delete(key)
   pixelsOfTile.set(key, pixels)
@@ -1016,6 +1023,10 @@ const rememberTilePixels = (key: string, pixels: Uint8Array): void => {
     const oldest = pixelsOfTile.keys().next()
     if (oldest.done) break
     pixelsOfTile.delete(oldest.value)
+    const evicted = parseTileKey(oldest.value)
+    if (evicted !== null) {
+      for (const listener of tilePixelEvictionListeners) listener(evicted)
+    }
     // An evicted tile is fetchable again when it next enters the viewport.
     chased.delete(oldest.value)
   }

@@ -12,6 +12,7 @@ import {
   beginServerMismatchFrame,
   endServerMismatchFrame,
   onServerMismatchesChanged,
+  onServerMismatchTileInvalidated,
   serverMismatchMaskFor,
 } from '../server-mismatch.js'
 import {
@@ -19,6 +20,7 @@ import {
   ensureTilePixels,
   loadTilePixels,
   onTilePixels,
+  onTilePixelsEvicted,
   tilePixels,
   UNPAINTED,
 } from '../tile-transform.js'
@@ -428,9 +430,6 @@ export const endMismatchFrame = (): void => {
   }
   for (const cacheKey of [...patchCount.keys()]) {
     if (!cache.has(cacheKey) && !inFlight.has(cacheKey)) patchCount.delete(cacheKey)
-  }
-  for (const cacheKey of [...supersededServerSource.keys()]) {
-    if (!cache.has(cacheKey) && !inFlight.has(cacheKey)) supersededServerSource.delete(cacheKey)
   }
   endServerMismatchFrame()
 }
@@ -945,8 +944,8 @@ const patchCount = new Map<string, number>()
 
 const inFlight = new Map<string, PendingScan>()
 
-/** Server masks superseded by a newer exact tile capture, until the server returns a new mask. */
-const supersededServerSource = new Map<string, Uint8Array>()
+/** Server masks superseded by newer exact pixels, until upload or exact-pixel cache eviction. */
+const supersededServerSource = new Map<string, string>()
 
 const requestScan = (
   template: PlacedTemplate,
@@ -1019,8 +1018,10 @@ const mismatchAnswer = (
   const key = signature(template)
   const serverMask = serverMismatchMaskFor(template, tile)
   const superseded = supersededServerSource.get(cacheKey)
-  if (serverMask !== null && serverMask.packed !== superseded) {
-    if (superseded !== undefined) supersededServerSource.delete(cacheKey)
+  if (superseded !== undefined && superseded !== template.serverUrl) {
+    supersededServerSource.delete(cacheKey)
+  }
+  if (serverMask !== null && superseded !== template.serverUrl) {
     const existing = cache.get(cacheKey)
     if (
       existing !== undefined &&
@@ -1313,17 +1314,24 @@ onTilePixels((tile, triples) => {
   if (triples.length / 3 > MAX_PATCHED_PIXELS) {
     const suffix = `|${tile.x}/${tile.y}`
     const pixels = tilePixels(tile)
+    const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
     let invalidated = false
     for (const [cacheKey, entry] of cache) {
       if (!cacheKey.endsWith(suffix)) continue
-      if (entry.source !== pixels) supersededServerSource.set(cacheKey, entry.source)
+      const serverUrl = templatesById.get(templateIdOf(cacheKey))?.serverUrl
+      if (entry.source !== pixels && serverUrl !== undefined) {
+        supersededServerSource.set(cacheKey, serverUrl)
+      }
       stale.add(cacheKey)
       patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
       invalidated = true
     }
     for (const [cacheKey, pending] of inFlight) {
       if (!cacheKey.endsWith(suffix) || cache.has(cacheKey)) continue
-      if (pending.source !== pixels) supersededServerSource.set(cacheKey, pending.source)
+      const serverUrl = templatesById.get(templateIdOf(cacheKey))?.serverUrl
+      if (pending.source !== pixels && serverUrl !== undefined) {
+        supersededServerSource.set(cacheKey, serverUrl)
+      }
       patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
     }
     if (invalidated) {
@@ -1349,6 +1357,22 @@ onTilePixels((tile, triples) => {
 onServerMismatchesChanged(() => {
   changed++
   notifyChanged()
+})
+
+onServerMismatchTileInvalidated((serverUrl, tile) => {
+  const suffix = `|${tile.x}/${tile.y}`
+  for (const [cacheKey, supersededServer] of supersededServerSource) {
+    if (supersededServer === serverUrl && cacheKey.endsWith(suffix)) {
+      supersededServerSource.delete(cacheKey)
+    }
+  }
+})
+
+onTilePixelsEvicted((tile) => {
+  const suffix = `|${tile.x}/${tile.y}`
+  for (const cacheKey of supersededServerSource.keys()) {
+    if (cacheKey.endsWith(suffix)) supersededServerSource.delete(cacheKey)
+  }
 })
 
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
