@@ -429,6 +429,9 @@ export const endMismatchFrame = (): void => {
   for (const cacheKey of [...patchCount.keys()]) {
     if (!cache.has(cacheKey) && !inFlight.has(cacheKey)) patchCount.delete(cacheKey)
   }
+  for (const cacheKey of [...supersededServerSource.keys()]) {
+    if (!cache.has(cacheKey) && !inFlight.has(cacheKey)) supersededServerSource.delete(cacheKey)
+  }
   endServerMismatchFrame()
 }
 
@@ -942,6 +945,9 @@ const patchCount = new Map<string, number>()
 
 const inFlight = new Map<string, PendingScan>()
 
+/** Server masks superseded by a newer exact tile capture, until the server returns a new mask. */
+const supersededServerSource = new Map<string, Uint8Array>()
+
 const requestScan = (
   template: PlacedTemplate,
   source: Uint8Array,
@@ -1012,7 +1018,9 @@ const mismatchAnswer = (
   requestedThisFrame?.add(cacheKey)
   const key = signature(template)
   const serverMask = serverMismatchMaskFor(template, tile)
-  if (serverMask !== null) {
+  const superseded = supersededServerSource.get(cacheKey)
+  if (serverMask !== null && serverMask.packed !== superseded) {
+    if (superseded !== undefined) supersededServerSource.delete(cacheKey)
     const existing = cache.get(cacheKey)
     if (
       existing !== undefined &&
@@ -1304,15 +1312,18 @@ onTilePixels((tile, triples) => {
   const before = changed
   if (triples.length / 3 > MAX_PATCHED_PIXELS) {
     const suffix = `|${tile.x}/${tile.y}`
+    const pixels = tilePixels(tile)
     let invalidated = false
-    for (const cacheKey of cache.keys()) {
+    for (const [cacheKey, entry] of cache) {
       if (!cacheKey.endsWith(suffix)) continue
+      if (entry.source !== pixels) supersededServerSource.set(cacheKey, entry.source)
       stale.add(cacheKey)
       patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
       invalidated = true
     }
-    for (const cacheKey of inFlight.keys()) {
+    for (const [cacheKey, pending] of inFlight) {
       if (!cacheKey.endsWith(suffix) || cache.has(cacheKey)) continue
+      if (pending.source !== pixels) supersededServerSource.set(cacheKey, pending.source)
       patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
     }
     if (invalidated) {
@@ -1359,6 +1370,9 @@ export const forgetMismatches = (id: string): void => {
   }
   for (const key of [...stale]) {
     if (key.startsWith(`${id}|`)) stale.delete(key)
+  }
+  for (const key of [...supersededServerSource.keys()]) {
+    if (key.startsWith(`${id}|`)) supersededServerSource.delete(key)
   }
   forgetInWorker(id)
 }

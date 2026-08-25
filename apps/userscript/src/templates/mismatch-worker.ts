@@ -246,6 +246,12 @@ export const scanInWorker = (job: ScanJob, indices: Uint8Array): Promise<ScanOut
 /** Drop a template's pixels from the worker when it is gone, so a long session does not accumulate. */
 export const forgetInWorker = (id: string): void => {
   sent.delete(id)
+  for (let index = queuedScans.length - 1; index >= 0; index--) {
+    const queued = queuedScans[index]
+    if (queued?.job.templateKey !== id) continue
+    queuedScans.splice(index, 1)
+    queued.resolve(null)
+  }
   worker?.postMessage({ forget: true, templateKey: id })
 }
 

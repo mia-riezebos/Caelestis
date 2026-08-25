@@ -2429,6 +2429,9 @@ export const install = (
           count('paint:draw of an unnamed draft canvas')
           return
         }
+        // Do not stamp a preview that capture() will reject. Interest can expand while capture stays
+        // enabled; leaving this texture unstamped makes that unchanged preview eligible then.
+        if (captureInterest !== null && !captureInterest(tile)) return
         const stale = capturedAt.get(texture) !== captureGeneration
         if (!stale && !dirtyCanvases.has(source)) return
         dirtyCanvases.delete(source)

@@ -210,4 +210,34 @@ describe('visible mismatch answer retention', () => {
     endMismatchFrame()
     expect(harness.workerScan).toHaveBeenCalledOnce()
   })
+
+  it('uses newly captured pixels instead of a superseded server mask after a busy tile update', async () => {
+    const selected = {
+      ...template(204),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    )
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+
+    harness.pixels.fill(0)
+    harness.workerAvailable = true
+    harness.workerScan.mockReturnValueOnce(new Promise(() => undefined))
+    const listener = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+    listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 0]).flat())
+
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+    expect(harness.workerScan.mock.calls[0]?.[0]).toMatchObject({ kind: 'pixels' })
+  })
 })
