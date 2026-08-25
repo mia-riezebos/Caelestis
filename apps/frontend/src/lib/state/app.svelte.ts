@@ -19,7 +19,7 @@ class AppState {
   statuses = $state<ReadonlyMap<string, TemplateStatus>>(new Map())
   canvas = $state<ReadonlyMap<TileKey, CanvasTileSummary>>(new Map())
   loading = $state(false)
-  /** 401/403 means the server wants a token we don't hold — the connect dialog's cue. */
+  /** A 401 or 403 opens the connect dialog. */
   authRequired = $state(false)
   error = $state<string | null>(null)
 
@@ -32,8 +32,8 @@ class AppState {
     this.error = null
     this.authRequired = false
     try {
-      // `/server` is public and says whether reads need a token at all (the operator's
-      // OPEN_ACCESS toggle) — an open server must never see the connect dialog.
+      // `/server` is public and reports whether reads need a token. An open server must not show
+      // the connect dialog.
       const server = await getServer()
       this.server = server
       if (server.auth === 'access_token' && readToken() === null) {

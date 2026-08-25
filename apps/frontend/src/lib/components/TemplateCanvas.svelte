@@ -23,8 +23,7 @@ let {
   class?: string
 } = $props()
 
-// The artwork plus half its own size of surroundings, clamped to the tiles it actually lives on —
-// a card preview shows the template in place, not floating on a void.
+// Include nearby canvas within the template's tiles. This keeps the card preview grounded in place.
 const rect = $derived(paddedRect(templateRect(template), 0.5, tileUnionRect(template)))
 
 let tilesLayer = $state<HTMLCanvasElement | null>(null)

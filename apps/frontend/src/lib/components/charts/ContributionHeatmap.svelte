@@ -39,7 +39,7 @@ const grid = $derived.by(() => {
 
 const max = $derived(Math.max(1, ...byDay.values()))
 
-// Sequential single-hue ramp: level by quarter of the observed maximum, zero stays surface.
+// Split the observed range into five levels. Keep zero at the base colour.
 const level = (placed: number): string => {
   if (placed === 0) return 'color-mix(in oklab, var(--color-base-content) 8%, transparent)'
   const step = Math.min(5, Math.max(1, Math.ceil((placed / max) * 5)))

@@ -4,9 +4,8 @@ import { type TemplateColourStatus, WPLACE_PALETTE } from '@caelestis/shared'
 let { colours }: { colours: readonly TemplateColourStatus[] } = $props()
 
 /**
- * The sort vocabulary painters know from other overlay tools: beyond index and percentage, the
- * orders that answer "what do I paint next" — most pixels left, biggest colour, and the free or
- * premium pigments first for accounts that only own half the palette.
+ * Keep the sort choices familiar to painters. The remaining and total orders help choose the next
+ * colour. Free and premium orders match partial palette ownership.
  */
 const SORTS = [
   { key: 'index', label: 'palette index' },
@@ -61,10 +60,7 @@ const rows = $derived.by(() => {
 })
 </script>
 
-<!--
-  One row per palette colour the template uses, the mini meter tinted with the pigment itself —
-  colour is the entity here, so wearing it is identity, not decoration. Counts carry the numbers.
--->
+<!-- Each row uses its palette colour for the swatch and progress meter. -->
 <div class="mb-2 flex items-center justify-end gap-2">
   <label class="text-xs text-base-content/60" for="colour-sort">Sort by</label>
   <select

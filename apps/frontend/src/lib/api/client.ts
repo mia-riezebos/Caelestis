@@ -13,10 +13,9 @@ import { resolveServerUrl } from './server-url.js'
 /**
  * The template server the dashboard reads from.
  *
- * A deployment fronts exactly one server — `VITE_CAELESTIS_SERVER` at build time, the page's own
- * origin plus `/backend` otherwise, wrangler's port plus `/backend` in dev. Deliberately not
- * user-configurable: whoever is on this frontend is here for this server. Only the access token is
- * theirs, and it lives in localStorage.
+ * A deployment reads one server. `VITE_CAELESTIS_SERVER` sets its full URL. Production uses the
+ * page origin plus `/backend`; development uses Wrangler on port 8787. The access token stays in
+ * localStorage.
  */
 const TOKEN_KEY = 'caelestis:token'
 
@@ -121,9 +120,8 @@ export const getTileHistory = (
 /**
  * Authenticated image loading.
  *
- * `/chunks` and `/tiles` require a bearer token, which an `<img src>` cannot carry — so images are
- * fetched as blobs and handed out as object URLs, cached by path. Both namespaces are
- * content-addressed and immutable, so the cache never needs invalidation, only bounding.
+ * `/chunks` and `/tiles` require a bearer token, which an `<img src>` cannot carry. Fetch each image
+ * as a blob and return an object URL. Content hashes make cache invalidation unnecessary.
  */
 const blobCache = new Map<string, Promise<string>>()
 const BLOB_CACHE_LIMIT = 512

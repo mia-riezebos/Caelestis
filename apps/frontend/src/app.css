@@ -1,14 +1,12 @@
 /*
  * Caelestis dashboard theme.
  *
- * Two layers share one set of tokens: daisyui carries the wplace-flavoured look (the userscript
- * already inherits wplace's daisyui variables, so the dashboard speaking the same dialect keeps the
- * two surfaces siblings), and the shadcn-svelte components are bridged onto the daisyui palette in
- * the `@theme inline` block below rather than carrying a second palette of their own.
+ * DaisyUI and shadcn-svelte share one Wplace-inspired theme. The `@theme inline` block maps the
+ * shadcn-svelte components onto the DaisyUI palette.
  *
  * Accents are drawn from the wplace paint palette itself (packages/shared/src/palette.ts):
  * primary = Blue #4093E4, secondary = Purple #AA38B9, accent = Gold #F6AA09, success = Dark Green
- * #0EB968, error = Red #ED1C24 — the canvas's own pigments, not a foreign brand.
+ * #0EB968, error = Red #ED1C24. These colours come from the canvas palette.
  */
 @import 'tailwindcss';
 @import 'tw-animate-css';

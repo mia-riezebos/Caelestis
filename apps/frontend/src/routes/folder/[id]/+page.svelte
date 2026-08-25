@@ -24,7 +24,7 @@ const folder = $derived(
 const templateIds = $derived(folder === null ? [] : folderTemplateIds(folder))
 const colours = $derived(folder === null ? null : folderColourStatuses(folder))
 
-// The parent chain, root first, each segment a link — the path string alone was a dead end.
+// Build linked breadcrumbs from the root to this folder.
 const ancestors = $derived.by(() => {
   if (folder === null || app.manifest === null) return []
   const byId = new Map(app.manifest.nodes.map((node) => [node.id, node]))

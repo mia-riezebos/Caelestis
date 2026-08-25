@@ -15,7 +15,7 @@ onMount(() => {
   void app.load()
 })
 
-// Auth failures anywhere surface as the connect dialog — the one action that can fix them.
+// An auth failure opens the connect dialog. A valid token fixes it.
 $effect(() => {
   if (app.authRequired) connectOpen = true
 })

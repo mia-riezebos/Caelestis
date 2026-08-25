@@ -21,8 +21,7 @@ const width = (value: number): string =>
 </script>
 
 <!--
-  The userscript's three-segment meter: completed / mismatched / still blank. The remainder of the
-  track is *unscanned* — deliberately left as empty track rather than claimed as a fourth state.
+  The meter shows completed, mismatched, and blank pixels. Unscanned pixels leave the track empty.
 -->
 <div class={cn('flex min-w-0 items-center gap-2', className)}>
   <div

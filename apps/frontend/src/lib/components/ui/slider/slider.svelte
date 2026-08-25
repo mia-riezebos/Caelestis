@@ -31,8 +31,8 @@ get along, so we shut typescript up by casting `value` to `never`.
 			data-slot="slider-track"
 			data-orientation={orientation}
 			class={cn(
-				// Explicit sizes rather than the registry's data-horizontal: variants — this bits-ui
-				// emits data-orientation, which those variants never match, leaving a zero-height track.
+				// Use explicit sizes. This bits-ui version emits data-orientation, but the registry
+				// variants expect data-horizontal and leave the track at zero height.
 				"relative grow overflow-hidden rounded-full bg-base-300",
 				orientation === 'horizontal' ? 'h-1.5 w-full' : 'h-full w-1.5'
 			)}

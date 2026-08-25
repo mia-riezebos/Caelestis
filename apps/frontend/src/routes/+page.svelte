@@ -9,7 +9,7 @@ const tree = $derived(app.tree)
 
 {#if app.error !== null}
   <div class="alert alert-error">
-    <span>Could not reach the template server: {app.error}</span>
+    <span>Could not reach the template server. {app.error}</span>
     <button class="btn btn-sm" onclick={() => app.load()}>Retry</button>
   </div>
 {:else if tree === null}
@@ -39,8 +39,7 @@ const tree = $derived(app.tree)
       <div class="rounded-2xl border-[1.5px] border-dashed border-base-300 p-10 text-center text-base-content/60">
         <p class="font-semibold">No templates yet</p>
         <p class="mt-1 text-sm">
-          Upload templates through the userscript's manager, and they'll show up here with live
-          progress from the canvas.
+          Upload templates in the userscript. Their canvas progress will appear here.
         </p>
       </div>
     {/if}

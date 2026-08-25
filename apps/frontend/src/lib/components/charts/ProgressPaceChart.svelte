@@ -15,10 +15,8 @@
   } = $props()
 
   /**
-   * The chart the telemetry issue settled on: one delta fetch, everything else derived here.
-   * Stacked cumulative areas — correct under placed-but-mismatched — carry "how many pixels
-   * painted"; rolling pace windows `pace_W(t) = (cum(t) − cum(t−W)) / W` ride the right axis.
-   * Window size is an ordered dimension: one hue, light→dark and thin→thick, never seven hues.
+   * Fetch deltas once and derive each chart series here. Stacked areas show correct and mismatched
+   * pixels. Rolling pace windows use the right axis. Longer windows use darker, thicker lines.
    */
   const WINDOWS = [
     { key: '30m', seconds: 1_800 },
@@ -37,7 +35,7 @@
     enabledWindows = next
   }
 
-  /** A window under 2× the tier's resolution has too few samples to mean anything — grey it out. */
+  /** Disable a window when its tier provides fewer than two samples. */
   const windowUsable = (seconds: number): boolean => seconds >= 2 * resolution
 
   interface Point {
@@ -103,7 +101,7 @@
     ),
   )
 
-  /** Ordered ramp: mix the series blue toward the surface — faint for short windows, full for long. */
+  /** Use lighter blue for short windows and darker blue for long windows. */
   const paceColor = (rank: number): string =>
     `color-mix(in oklab, var(--chart-placed) ${Math.round(35 + rank * 65)}%, var(--color-base-100))`
   const paceWidth = (rank: number): number => 1 + rank * 1.5
@@ -175,7 +173,7 @@
   const onPointerMove = (event: PointerEvent): void => {
     if (points.length === 0) return
     const bounds = (event.currentTarget as SVGSVGElement).getBoundingClientRect()
-    // Map through the plot area, not the whole svg — the axis gutters are not time.
+    // Map time through the plot area and exclude the axis gutters.
     const plotX = event.clientX - bounds.left - pad.left
     const t = from + (plotX / (width - pad.left - pad.right)) * (to - from)
     let nearest = points[0]
@@ -204,7 +202,7 @@
     <span class="inline-flex items-center gap-1.5">
       <span class="size-2.5 rounded-xs bg-error/60"></span> painted, mismatched
     </span>
-    <span class="ms-2 text-base-content/40">pace:</span>
+    <span class="ms-2 text-base-content/40">pace</span>
     {#each WINDOWS as window, index (window.key)}
       {@const usable = windowUsable(window.seconds)}
       <button
@@ -329,7 +327,7 @@
           {@const value = hoverPace(pace.seconds, hover.t)}
           {#if value !== null}
             <div class="tabular-nums text-base-content/70">
-              pace {pace.key}: {formatCount(value)} px/h
+              pace {pace.key} · {formatCount(value)} px/h
             </div>
           {/if}
         {/each}

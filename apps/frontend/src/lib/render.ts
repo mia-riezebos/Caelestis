@@ -22,8 +22,7 @@ export interface CanvasRect {
 }
 
 /**
- * The full extent of every tile the template paints in — whole tiles, not the cropped bbox, so a
- * viewer shows the artwork's surroundings exactly as far as the template's own tiles reach.
+ * Return every whole tile touched by the template. The viewer uses these tiles as its boundary.
  */
 export const tileUnionRect = (template: Template): CanvasRect => {
   let minTX = Number.POSITIVE_INFINITY
@@ -175,7 +174,7 @@ export const chunkPlacements = (template: Template): ChunkPlacement[] => {
   for (const chunk of template.chunks) {
     const coord = parseTileKey(chunk.tile)
     if (coord === null) continue
-    // A chunk image is exactly bbox ∩ tile — its top-left is the later of the two starts per axis.
+    // A chunk is the intersection of its bounding box and tile. Its top-left uses the later start.
     placements.push({
       hash: chunk.hash,
       x: Math.max(coord.x * TILE_SIZE, template.bbox.minX),
@@ -222,9 +221,8 @@ export const drawTemplateChunks = (
   for (const chunk of template.chunks) {
     const coord = parseTileKey(chunk.tile)
     if (coord === null) continue
-    // A chunk image is exactly bbox ∩ tile, so its top-left is the later of the tile start and the
-    // bbox start on each axis — the same derivation the userscript's assembler uses. The rect only
-    // translates; it never decides where a chunk begins.
+    // A chunk is the intersection of its bounding box and tile. Its top-left uses the later start
+    // on each axis. The rectangle only translates it.
     const drawX = Math.max(coord.x * TILE_SIZE, template.bbox.minX) - rect.x
     const drawY = Math.max(coord.y * TILE_SIZE, template.bbox.minY) - rect.y
     chunkImage(chunk.hash)

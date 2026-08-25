@@ -102,8 +102,8 @@ let overlayAlpha = $state(0)
   const live = $derived(scrub >= timeline.length)
   const scrubTime = $derived(live ? null : timeline[scrub])
 
-  // What each tile shows: the live observation, or its newest snapshot at or before the scrub
-  // time — a tile nobody photographed that hour keeps its last known state.
+  // Each tile shows its live state or its newest snapshot at the scrub time. Missing snapshots keep
+  // the tile's last known state.
   const hashFor = $derived.by(() => {
     const map = frames
     const t = scrubTime
@@ -218,7 +218,7 @@ let overlayAlpha = $state(0)
           <Skeleton class="h-6 w-full" />
         {:else if timeline.length === 0}
           <span class="text-sm text-base-content/50">
-            No tile snapshots in this window yet — frames appear as userscript users pass over the area.
+            No tile snapshots yet. New snapshots appear when userscript users visit this area.
           </span>
         {:else}
           <button

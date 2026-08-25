@@ -7,11 +7,10 @@ import type {
 } from '@caelestis/shared'
 
 /**
- * The userscript's progress vocabulary, kept verbatim so the two surfaces read the same:
+ * Use the same progress terms as the userscript.
  * completed / mismatched / unpainted are the three meter segments, `known` is how much of the
  * template any tile observation has actually covered, and `total` is the denominator. The gap
- * between `known` and `total` is *unscanned*, not unpainted — the meter leaves it as empty track
- * rather than claiming a fourth state.
+ * between `known` and `total` is *unscanned*, not unpainted. The meter leaves it empty.
  */
 export interface Progress {
   readonly completed: number
@@ -81,9 +80,8 @@ const byName = (left: { name: string }, right: { name: string }): number =>
   left.name.localeCompare(right.name)
 
 /**
- * Only published templates count toward a folder's rollup. An admin sees unpublished templates
- * listed — the manifest includes them for that scope — but a draft must not drag a folder's
- * meter down before it exists for anyone else.
+ * Only published templates count toward a folder's total. Admins can still see drafts, but drafts
+ * must not change progress for other users.
  */
 const countable = (templates: readonly TreeTemplate[]): readonly Progress[] =>
   templates.filter((t) => t.template.published).map((t) => t.progress)
@@ -91,9 +89,8 @@ const countable = (templates: readonly TreeTemplate[]): readonly Progress[] =>
 /**
  * Resolve the manifest's flat node/template lists into a rendered tree.
  *
- * A template with a `nodeId` the manifest does not carry falls back to the root rather than
- * vanishing — the manifest assembler already drops genuinely orphaned rows, so this only defends
- * against a read tear between two polls.
+ * A template with a missing `nodeId` falls back to the root. The manifest already drops orphaned
+ * rows, so this only covers a read split between two polls.
  */
 export const buildTree = (
   manifest: Manifest,
@@ -152,8 +149,8 @@ export const buildTree = (
 
 /**
  * Every published template id inside a folder, for folder-scoped history/leaderboard queries.
- * Unpublished ids are left out for the same reason `countable` skips them in the rollup — and the
- * server would refuse to serve them to a read scope anyway.
+ * Skip unpublished IDs because they do not count toward totals. The server also hides them from
+ * read tokens.
  */
 export const folderTemplateIds = (folder: TreeFolder): string[] => [
   ...folder.templates.filter((t) => t.template.published).map((t) => t.template.id),
@@ -161,9 +158,8 @@ export const folderTemplateIds = (folder: TreeFolder): string[] => [
 ]
 
 /**
- * The folder's per-colour rollup: one summed row per palette index across every published
- * descendant, or null when any reporting template lacks a colour breakdown — a partial sum would
- * read as the folder's truth while silently missing whole templates.
+ * Sum each palette index across published descendants. Return null if any template lacks colour
+ * data because a partial total would be wrong.
  */
 export const folderColourStatuses = (
   folder: TreeFolder,

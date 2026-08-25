@@ -13,7 +13,7 @@
   }: {
     templateIds: readonly string[]
     season: number
-    /** Unpainted-or-wrong pixels right now — the ETA numerator. */
+    /** Current unpainted and mismatched pixels used for the ETA. */
     remainingPixels: number
   } = $props()
 
@@ -97,7 +97,7 @@
     }
   })
 
-  // Pace over the trailing 24h, as pixels per hour — the headline over the chart.
+  // Show the last 24 hours as pixels per hour.
   const pace = $derived.by(() => {
     if (history === null) return null
     const cutoff = to - 86_400
@@ -140,7 +140,7 @@
     </div>
     {#if failed}
       <div class="flex h-[240px] items-center justify-center text-sm text-base-content/50">
-        Pace history is unavailable on this server.
+        Could not load pace history.
       </div>
     {:else if history === null}
       <Skeleton class="h-[240px] w-full" />

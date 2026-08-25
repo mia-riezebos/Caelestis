@@ -23,7 +23,7 @@ const relativeDay = (day: number): string => {
 
 {#if entries.length === 0}
   <div class="flex h-32 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm text-base-content/50">
-    No painters reported yet — contributions appear once userscript users paint with reporting on.
+    No contributions yet. Paint activity appears here when userscript reporting is on.
   </div>
 {:else}
   <Table.Root>

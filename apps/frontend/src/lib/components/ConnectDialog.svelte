@@ -25,7 +25,7 @@ const connect = async (event: SubmitEvent): Promise<void> => {
     <Dialog.Header>
       <Dialog.Title>Access token</Dialog.Title>
       <Dialog.Description>
-        This server requires a token to read — the same one you use in the userscript.
+        Enter the access token you use in the userscript.
       </Dialog.Description>
     </Dialog.Header>
     <form class="flex flex-col gap-3" onsubmit={connect}>
@@ -38,7 +38,7 @@ const connect = async (event: SubmitEvent): Promise<void> => {
         bind:value={token}
       />
       {#if app.authRequired && readToken() !== null}
-        <p class="text-sm text-error">That token was rejected — it may have been revoked.</p>
+        <p class="text-sm text-error">This token no longer works. It may have been revoked.</p>
       {/if}
       <Dialog.Footer>
         <Button type="submit">Connect</Button>

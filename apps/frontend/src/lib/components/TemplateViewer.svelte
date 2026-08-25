@@ -22,7 +22,7 @@
     class: className,
   }: {
     template: Template
-    /** Which snapshot each tile shows — live canvas or a timelapse frame. */
+    /** Select the live canvas or a timelapse frame for each tile. */
     hashFor: (key: TileKey) => string | undefined
     overlayAlpha?: number
     class?: string
@@ -86,9 +86,8 @@
   }
 
   /**
-   * Direct immediate-mode drawing: every present culls to the viewport and draws whichever images
-   * have arrived — basemap, then canvas tiles, then template art. Images load on first miss and
-   * re-present when they land, so there are no world-sized intermediate buffers to allocate.
+   * Draw only images inside the viewport. Draw the basemap first, then canvas tiles and template
+   * art. Redraw when an image loads instead of allocating a world-sized buffer.
    */
   const ready = new Map<string, HTMLImageElement>()
   const pending = new Set<string>()
@@ -129,7 +128,7 @@
       height: viewHeight / zoom,
     }
 
-    // Basemap over the whole viewport — beyond the mirrored canvas there is still a world.
+    // Draw the basemap across the viewport, including areas beyond the mirrored canvas.
     const z = osmZoomFor(scale)
     const span = osmSpan(z)
     ctx.imageSmoothingEnabled = true
@@ -242,7 +241,7 @@
 
   const onPointerDown = (event: PointerEvent): void => {
     // Capturing here retargets the eventual click to the container, so a press that begins on a
-    // zoom button must never start a drag — the button's own click would silently vanish.
+    // zoom button must not start a drag because capture would swallow its click.
     if (event.target instanceof Element && event.target.closest('button') !== null) return
     ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
