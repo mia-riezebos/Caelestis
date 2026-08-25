@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sampleMarkers } from './marker-sample.js'
+import { markerSampleLimit, sampleMarkers } from './marker-sample.js'
 
 describe('marker density sampling', () => {
   it('keeps small lists by identity', () => {
@@ -22,5 +22,15 @@ describe('marker density sampling', () => {
     sampleMarkers(marks, 3)
 
     expect(sampleMarkers(marks, 2)).not.toBe(first)
+  })
+
+  it('bounds dense markers by their visible footprint and keeps nearby zooms in one LOD', () => {
+    const first = markerSampleLimit(1000, 1000, 18)
+    const nearby = markerSampleLimit(1001, 1001, 18)
+
+    expect(first).toBe(16_384)
+    expect(nearby).toBe(first)
+    expect(first).toBeLessThan(1_000_000)
+    expect(markerSampleLimit(1000, 1000, 2)).toBe(1_000_000)
   })
 })

@@ -12,6 +12,26 @@ interface MarkerSample {
 
 const samples = new WeakMap<Float32Array, MarkerSample>()
 
+/**
+ * A stable density ceiling for one tile.
+ *
+ * Crosshairs overlap long before there is one per backing-store pixel. Give each one roughly half
+ * its diameter in each direction, then round the answer up to a power-of-two LOD so fractional zoom
+ * changes do not allocate and upload a different sample on every frame.
+ */
+export const markerSampleLimit = (
+  width: number,
+  height: number,
+  markerDevicePixels: number,
+): number => {
+  const area = Math.max(0, Math.floor(Math.abs(width * height)))
+  if (area === 0) return 0
+  const spacing = Math.max(1, Math.abs(markerDevicePixels) / 2)
+  const denseLimit = Math.max(1, Math.floor(area / (spacing * spacing)))
+  const lod = 2 ** Math.ceil(Math.log2(denseLimit))
+  return Math.min(area, lod)
+}
+
 export const sampleMarkers = (marks: Float32Array, maxPoints: number): Float32Array => {
   const points = Math.floor(marks.length / 3)
   const limit = Math.max(0, Math.floor(maxPoints))

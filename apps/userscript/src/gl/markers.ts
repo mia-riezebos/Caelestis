@@ -26,7 +26,7 @@ import {
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { markerFades, templateFades } from './fade.js'
-import { sampleMarkers } from './marker-sample.js'
+import { markerSampleLimit, sampleMarkers } from './marker-sample.js'
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -490,6 +490,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const selectedWork: Work[] = []
   const mismatchWork: Work[] = []
   let deferred = false
+  const scale = deviceScale(gl)
   const mismatchSelection = getState().onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
@@ -516,12 +517,14 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     }
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
-      const markerLimit = Math.max(1, Math.floor(Math.abs(tile.width * tile.height)))
       if (selectedFade > 0 && selected >= 0) {
         const disagreements = disagreementsIn(template, tile.tile)
         if (disagreements === null) deferred = true
         else {
-          const marks = sampleMarkers(colourMarksIn(disagreements, selected), markerLimit)
+          const marks = sampleMarkers(
+            colourMarksIn(disagreements, selected),
+            markerSampleLimit(tile.width, tile.height, appearance.selectedMarkerSize * scale),
+          )
           if (marks.length > 0) {
             selectedWork.push({ tile, marks, style: selectedStyle, fade: selectedFade })
           }
@@ -532,7 +535,10 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
       else if (mismatchFade > 0 && mismatches.length > 0) {
         mismatchWork.push({
           tile,
-          marks: sampleMarkers(mismatches, markerLimit),
+          marks: sampleMarkers(
+            mismatches,
+            markerSampleLimit(tile.width, tile.height, appearance.markerSize * scale),
+          ),
           style: mismatchStyle,
           fade: mismatchFade,
         })
