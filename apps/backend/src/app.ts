@@ -6,7 +6,7 @@ import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
-import { createChunkRoutes, createTemplateRoutes } from './routes/templates.js'
+import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
 
 /**
@@ -96,6 +96,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.route('/admin/nodes', createNodeRoutes(ports, auth))
   app.route('/admin/templates', createTemplateRoutes(ports, auth))
   app.route('/chunks', createChunkRoutes(ports, auth))
+  app.route('/tiles', createTileRoutes(ports, auth))
   app.route('/telemetry', createTelemetryRoutes(ports, auth, { currentSeason }))
 
   return app

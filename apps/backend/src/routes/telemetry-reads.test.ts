@@ -1,0 +1,413 @@
+import {
+  encodeIndexedPng,
+  millis,
+  seconds,
+  sha256Hex,
+  TILE_SIZE,
+  TRANSPARENT_INDEX,
+} from '@caelestis/shared'
+import { describe, expect, it } from 'vitest'
+import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
+import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
+import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
+import { createApp } from '../app.js'
+import type { ContributionDelta, Ports } from '../ports/index.js'
+
+const BOOTSTRAP = 'bootstrap-operator-token'
+const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
+const TOKEN_DIGEST = 'a'.repeat(64)
+const DAY = seconds(1_750_032_000) // a UTC midnight
+const NEXT_DAY = seconds(1_750_032_000 + 86_400)
+
+const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
+
+const harness = async () => {
+  const blobs = new MemoryBlobStore()
+  const sql = new MemorySqlStore()
+  const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
+  const ports: Ports = { blobs, sql, counters }
+  await sql.insertNode({
+    id: NODE_ID,
+    season: 0,
+    parentId: null,
+    path: '/templates',
+    name: 'Templates',
+    description: null,
+    createdAt: millis(Date.now()),
+  })
+  return {
+    blobs,
+    sql,
+    counters,
+    app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
+  }
+}
+
+const mintToken = async (
+  app: Awaited<ReturnType<typeof harness>>['app'],
+  scope: 'read' | 'report',
+): Promise<string> => {
+  const response = await app.request('/admin/tokens', {
+    method: 'POST',
+    headers: { ...bearer(BOOTSTRAP), 'content-type': 'application/json' },
+    body: JSON.stringify({ label: scope, scope }),
+  })
+  return ((await response.json()) as { token: string }).token
+}
+
+const createTemplate = async (
+  app: Awaited<ReturnType<typeof harness>>['app'],
+  publish: boolean,
+): Promise<string> => {
+  const png = await encodeIndexedPng(3, 1, new Uint8Array([0, 1, 2]))
+  const form = new FormData()
+  form.set('png', new File([png.slice()], 'template.png', { type: 'image/png' }))
+  form.set('nodeId', NODE_ID)
+  form.set('name', 'Telemetry template')
+  form.set('originX', '0')
+  form.set('originY', '0')
+  const created = await app.request('/admin/templates', {
+    method: 'POST',
+    headers: bearer(BOOTSTRAP),
+    body: form,
+  })
+  const { templateId } = (await created.json()) as { templateId: string }
+  if (publish) {
+    await app.request(`/admin/templates/${templateId}`, {
+      method: 'PATCH',
+      headers: { ...bearer(BOOTSTRAP), 'content-type': 'application/json' },
+      body: JSON.stringify({ published: true }),
+    })
+  }
+  return templateId
+}
+
+const createPublishedTemplate = (
+  app: Awaited<ReturnType<typeof harness>>['app'],
+): Promise<string> => createTemplate(app, true)
+
+const canvasTile = async (): Promise<Uint8Array> => {
+  const indices = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+  indices[0] = 0
+  indices[2] = 1
+  return encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
+}
+
+const uploadCanvasTile = async (
+  app: Awaited<ReturnType<typeof harness>>['app'],
+  reportToken: string,
+  observedAt: number,
+): Promise<string> => {
+  const bytes = await canvasTile()
+  const hash = await sha256Hex(bytes)
+  const uploaded = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+    method: 'PUT',
+    headers: {
+      ...bearer(reportToken),
+      'content-type': 'image/png',
+      'x-caelestis-season': '0',
+      'x-caelestis-observed-at': String(observedAt),
+      'x-caelestis-wplace-user-id': '42',
+      'x-caelestis-display-name': 'Mia',
+    },
+    body: bytes,
+  })
+  expect(uploaded.status).toBe(204)
+  return hash
+}
+
+const contribution = (overrides: Partial<ContributionDelta>): ContributionDelta => ({
+  templateId: 'set-me',
+  wplaceUserId: 7,
+  day: DAY,
+  reportedWithToken: TOKEN_DIGEST,
+  reportedByUserId: 1,
+  placed: 10,
+  correct: 8,
+  repairs: 2,
+  ...overrides,
+})
+
+describe('telemetry read routes', () => {
+  it('serves folded pace history over a half-open range', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    await sql.appendBuckets([
+      {
+        templateId,
+        resolution: 60,
+        bucketStart: seconds(1_749_988_800),
+        placed: 5,
+        correct: 4,
+        repairs: 1,
+      },
+      {
+        templateId,
+        resolution: 60,
+        bucketStart: seconds(1_749_988_860),
+        placed: 2,
+        correct: 2,
+        repairs: 0,
+      },
+    ])
+
+    const response = await app.request(
+      `/telemetry/history?templateIds=${templateId}&resolution=60&from=1749988800&to=1749988860`,
+      { headers: bearer(readToken) },
+    )
+    expect(response.status).toBe(200)
+    // Half-open: the bucket starting exactly at `to` is excluded.
+    await expect(response.json()).resolves.toEqual({
+      buckets: [
+        {
+          templateId,
+          resolution: 60,
+          bucketStart: 1_749_988_800,
+          placed: 5,
+          correct: 4,
+          repairs: 1,
+        },
+      ],
+    })
+  })
+
+  it('rejects malformed history queries and unauthenticated readers', async () => {
+    const { app } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const query = (params: string) =>
+      app.request(`/telemetry/history?${params}`, { headers: bearer(readToken) })
+
+    expect((await query(`resolution=60&from=1&to=2`)).status).toBe(400)
+    expect((await query(`templateIds=not-a-uuid&resolution=60&from=1&to=2`)).status).toBe(400)
+    expect((await query(`templateIds=${templateId}&resolution=61&from=1&to=2`)).status).toBe(400)
+    expect((await query(`templateIds=${templateId}&resolution=60&from=2&to=2`)).status).toBe(400)
+    expect((await query(`templateIds=${templateId}&resolution=60&from=2&to=1`)).status).toBe(400)
+    expect((await query(`templateIds=${templateId}&resolution=60&from=x&to=2`)).status).toBe(400)
+
+    const unauthenticated = await app.request(
+      `/telemetry/history?templateIds=${templateId}&resolution=60&from=1&to=2`,
+    )
+    expect(unauthenticated.status).toBe(401)
+  })
+
+  it('never double-credits a painter-day two reporters both described', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    await sql.rememberPainter(7, 'Mia', millis(Date.now()))
+    await sql.addContributions([
+      contribution({ templateId, reportedByUserId: 1, placed: 10, correct: 8, repairs: 2 }),
+      contribution({ templateId, reportedByUserId: 2, placed: 6, correct: 6, repairs: 3 }),
+    ])
+
+    const response = await app.request(
+      `/telemetry/contributions?templateIds=${templateId}&from=${DAY}&to=${NEXT_DAY}`,
+      { headers: bearer(readToken) },
+    )
+    expect(response.status).toBe(200)
+    // MAX per counter across the two reporter rows — not the 16/14/5 a SUM would fabricate.
+    await expect(response.json()).resolves.toEqual({
+      days: [
+        {
+          templateId,
+          day: DAY,
+          wplaceUserId: 7,
+          displayName: 'Mia',
+          placed: 10,
+          correct: 8,
+          repairs: 3,
+        },
+      ],
+    })
+
+    const missingRange = await app.request(`/telemetry/contributions?templateIds=${templateId}`, {
+      headers: bearer(readToken),
+    })
+    expect(missingRange.status).toBe(400)
+    const unauthenticated = await app.request(
+      `/telemetry/contributions?templateIds=${templateId}&from=${DAY}&to=${NEXT_DAY}`,
+    )
+    expect(unauthenticated.status).toBe(401)
+  })
+
+  it('ranks painters by de-duplicated totals with active days and a last day', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    await sql.rememberPainter(7, 'Mia', millis(Date.now()))
+    await sql.rememberPainter(9, 'Kess', millis(Date.now()))
+    await sql.addContributions([
+      // Painter 7's first day, seen by two reporters — counted once.
+      contribution({ templateId, wplaceUserId: 7, reportedByUserId: 1 }),
+      contribution({ templateId, wplaceUserId: 7, reportedByUserId: 2 }),
+      contribution({
+        templateId,
+        wplaceUserId: 7,
+        day: NEXT_DAY,
+        placed: 3,
+        correct: 3,
+        repairs: 0,
+      }),
+      contribution({ templateId, wplaceUserId: 9, placed: 20, correct: 5, repairs: 0 }),
+    ])
+
+    const response = await app.request('/telemetry/leaderboard?season=0', {
+      headers: bearer(readToken),
+    })
+    expect(response.status).toBe(200)
+    // Sorted by correct descending — painter 9 placed more but corrected less.
+    await expect(response.json()).resolves.toEqual({
+      entries: [
+        {
+          wplaceUserId: 7,
+          displayName: 'Mia',
+          placed: 13,
+          correct: 11,
+          repairs: 2,
+          activeDays: 2,
+          lastDay: NEXT_DAY,
+        },
+        {
+          wplaceUserId: 9,
+          displayName: 'Kess',
+          placed: 20,
+          correct: 5,
+          repairs: 0,
+          activeDays: 1,
+          lastDay: DAY,
+        },
+      ],
+    })
+
+    const limited = await app.request('/telemetry/leaderboard?season=0&limit=1', {
+      headers: bearer(readToken),
+    })
+    const { entries } = (await limited.json()) as { entries: { wplaceUserId: number }[] }
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.wplaceUserId).toBe(7)
+
+    expect(
+      (
+        await app.request('/telemetry/leaderboard?season=0&limit=201', {
+          headers: bearer(readToken),
+        })
+      ).status,
+    ).toBe(400)
+    expect(
+      (await app.request('/telemetry/leaderboard?season=-1', { headers: bearer(readToken) }))
+        .status,
+    ).toBe(400)
+    expect((await app.request('/telemetry/leaderboard?season=0')).status).toBe(401)
+  })
+
+  it("hides an unpublished template's telemetry from read scope on every id-taking route", async () => {
+    const { app, sql } = await harness()
+    const templateId = await createTemplate(app, false)
+    const readToken = await mintToken(app, 'read')
+    await sql.rememberPainter(7, 'Mia', millis(Date.now()))
+    await sql.appendBuckets([
+      {
+        templateId,
+        resolution: 60,
+        bucketStart: seconds(1_749_988_800),
+        placed: 5,
+        correct: 4,
+        repairs: 1,
+      },
+    ])
+    await sql.addContributions([contribution({ templateId })])
+
+    // A read-scoped caller holding the id — say from a manifest poll made before the template was
+    // unpublished — gets empty results, indistinguishable from an id that names nothing.
+    const history = (params = '') =>
+      app.request(
+        `/telemetry/history?templateIds=${templateId}&resolution=60&from=1749988800&to=1749988900`,
+        { headers: bearer(params === 'admin' ? BOOTSTRAP : readToken) },
+      )
+    await expect((await history()).json()).resolves.toEqual({ buckets: [] })
+
+    const contributions = (token: string) =>
+      app.request(`/telemetry/contributions?templateIds=${templateId}&from=${DAY}&to=${NEXT_DAY}`, {
+        headers: bearer(token),
+      })
+    await expect((await contributions(readToken)).json()).resolves.toEqual({ days: [] })
+
+    const leaderboard = (token: string) =>
+      app.request('/telemetry/leaderboard?season=0', { headers: bearer(token) })
+    await expect((await leaderboard(readToken)).json()).resolves.toEqual({ entries: [] })
+
+    // The admin gate is the same one the manifest applies: full visibility.
+    const adminHistory = (await (await history('admin')).json()) as { buckets: unknown[] }
+    expect(adminHistory.buckets).toHaveLength(1)
+    const adminDays = (await (await contributions(BOOTSTRAP)).json()) as { days: unknown[] }
+    expect(adminDays.days).toHaveLength(1)
+    const adminEntries = (await (await leaderboard(BOOTSTRAP)).json()) as { entries: unknown[] }
+    expect(adminEntries.entries).toHaveLength(1)
+  })
+
+  it('lists current canvas tiles and serves each frame of a tile timelapse', async () => {
+    const { app } = await harness()
+    await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const reportToken = await mintToken(app, 'report')
+    const now = Math.floor(Date.now() / 1_000)
+    const hash = await uploadCanvasTile(app, reportToken, now)
+
+    const canvas = await app.request('/telemetry/canvas?season=0', {
+      headers: bearer(readToken),
+    })
+    expect(canvas.status).toBe(200)
+    await expect(canvas.json()).resolves.toEqual({
+      tiles: [{ tile: '0/0', hash, observedAt: now * 1_000 }],
+    })
+
+    const history = await app.request(
+      `/telemetry/tiles/0/0/history?season=0&resolution=0&from=${now - 3_600}&to=${now + 3_600}`,
+      { headers: bearer(readToken) },
+    )
+    expect(history.status).toBe(200)
+    const { frames } = (await history.json()) as {
+      frames: { bucketStart: number; hash: string; reporters: number }[]
+    }
+    expect(frames).toEqual([{ bucketStart: expect.any(Number), hash, reporters: 1 }])
+
+    const badResolution = await app.request(
+      `/telemetry/tiles/0/0/history?season=0&resolution=61&from=${now - 1}&to=${now + 1}`,
+      { headers: bearer(readToken) },
+    )
+    expect(badResolution.status).toBe(400)
+    const offCanvas = await app.request(
+      `/telemetry/tiles/2048/0/history?season=0&resolution=0&from=${now - 1}&to=${now + 1}`,
+      { headers: bearer(readToken) },
+    )
+    expect(offCanvas.status).toBe(400)
+    const unauthenticated = await app.request(
+      `/telemetry/tiles/0/0/history?season=0&resolution=0&from=${now - 1}&to=${now + 1}`,
+    )
+    expect(unauthenticated.status).toBe(401)
+  })
+
+  it('serves mirrored tile blobs by hash like template chunks', async () => {
+    const { app } = await harness()
+    await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const reportToken = await mintToken(app, 'report')
+    const hash = await uploadCanvasTile(app, reportToken, Math.floor(Date.now() / 1_000))
+
+    const response = await app.request(`/tiles/${hash}`, { headers: bearer(readToken) })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(response.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
+    expect(await sha256Hex(new Uint8Array(await response.arrayBuffer()))).toBe(hash)
+
+    const absent = await app.request(`/tiles/${'b'.repeat(64)}`, { headers: bearer(readToken) })
+    expect(absent.status).toBe(404)
+    await expect(absent.json()).resolves.toEqual({ error: 'not found' })
+    expect((await app.request('/tiles/not-a-hash', { headers: bearer(readToken) })).status).toBe(
+      400,
+    )
+    expect((await app.request(`/tiles/${hash}`)).status).toBe(401)
+  })
+})

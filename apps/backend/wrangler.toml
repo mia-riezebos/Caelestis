@@ -43,3 +43,9 @@ BASE_PATH = "/backend"
 
 [observability]
 enabled = true
+
+# The server's own tile mirror: every 6 hours it refetches the tiles templates live on plus a
+# one-tile ring of surroundings, so timelapses keep moving and the frontend viewer has real canvas
+# context even when no userscript user has passed over the area.
+[triggers]
+crons = ["0 */6 * * *"]

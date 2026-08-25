@@ -1,15 +1,31 @@
-import { type Millis, type TemplateStatus, tileKey, WORLD_PIXELS } from '@caelestis/shared'
+import {
+  type ContributionDay,
+  type Millis,
+  type Seconds,
+  type TemplateStatus,
+  type TileCoord,
+  type TileHistoryFrame,
+  tileKey,
+  WORLD_PIXELS,
+} from '@caelestis/shared'
 import {
   type AccessToken,
   type AccessTokenQuery,
   assertValidAccessToken,
   assertValidBuckets,
+  assertValidContributionQuery,
+  assertValidPublishedFilter,
   assertValidTemplateVersion,
+  assertValidTileHistoryQuery,
   type BucketQuery,
   type ContributionDelta,
+  type ContributionQuery,
   compareAccessTokens,
   compareBuckets,
+  compareContributionDays,
+  foldTileFrames,
   InvalidNodeParentError,
+  type LatestTileObservation,
   MAX_NODE_PATH_LENGTH,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
@@ -31,6 +47,7 @@ import {
   type TemplateRecord,
   type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  type TileHistoryQuery,
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -48,6 +65,27 @@ const foldPath = (path: string): string => path.replace(/[A-Z]/g, (c) => c.toLow
 
 const bucketKey = (bucket: TelemetryBucket): string =>
   `${bucket.templateId}\u0000${bucket.resolution}\u0000${bucket.bucketStart}`
+
+/** One `tile_history` row: an observation as one account reported it, keyed like D1's primary key. */
+interface TileHistoryRow {
+  readonly season: number
+  readonly tile: TileCoord
+  readonly resolution: number
+  readonly bucketStart: Seconds
+  readonly hash: string
+  readonly reportedByUserId: number
+}
+
+const tileHistoryRowKey = (row: TileHistoryRow): string =>
+  [
+    row.season,
+    row.tile.x,
+    row.tile.y,
+    row.resolution,
+    row.bucketStart,
+    row.hash,
+    row.reportedByUserId,
+  ].join('/')
 
 export class MemorySqlStore implements SqlStore {
   private readonly buckets = new Map<string, TelemetryBucket>()
@@ -67,6 +105,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly appliedEvents = new Set<string>()
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
+  private readonly tileHistory = new Map<string, TileHistoryRow>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -566,6 +605,19 @@ export class MemorySqlStore implements SqlStore {
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
   ): Promise<void> {
+    // The raw tile-history tier, mirroring D1's insert-or-ignore: resolution 0, bucketed at the
+    // report time itself. Without this row the memory oracle had no timelapse at all, so a
+    // `readTileHistory` route test could only ever pin the empty answer.
+    const row: TileHistoryRow = {
+      season: observation.season,
+      tile: { ...observation.tile },
+      resolution: 0,
+      bucketStart: observation.reportedAt,
+      hash: observation.hash,
+      reportedByUserId: observation.reportedByUserId,
+    }
+    const historyKey = tileHistoryRowKey(row)
+    if (!this.tileHistory.has(historyKey)) this.tileHistory.set(historyKey, row)
     const key = `${observation.season}\u0000${tileKey(observation.tile)}`
     const held = this.canvasTiles.get(key)
     if (held === undefined || held.observedAt <= observation.observedAt) {
@@ -728,5 +780,93 @@ export class MemorySqlStore implements SqlStore {
       )
       .sort(compareBuckets)
       .map((bucket) => ({ ...bucket }))
+  }
+
+  async readContributions(query: ContributionQuery): Promise<readonly ContributionDay[]> {
+    assertValidContributionQuery(query)
+    const wanted = query.templateIds === undefined ? null : new Set(query.templateIds)
+    // Reduce, then let the caller sum. One painter-day exists once per *reporter*, so the maximum
+    // of each counter across those rows is the day's truth — see `readContributions` on the port.
+    const reduced = new Map<string, ContributionDay>()
+    for (const row of this.contributions.values()) {
+      if (wanted !== null && !wanted.has(row.templateId)) continue
+      if (query.season !== undefined && this.templates.get(row.templateId)?.season !== query.season)
+        continue
+      // The publish gate applies to explicit-id queries too — see `includeUnpublished` on the port.
+      if (!query.includeUnpublished && this.templates.get(row.templateId)?.publishedAt == null)
+        continue
+      if (query.fromSeconds !== undefined && row.day < query.fromSeconds) continue
+      if (query.toSeconds !== undefined && row.day >= query.toSeconds) continue
+      const key = `${row.wplaceUserId}/${row.templateId}/${row.day}`
+      const held = reduced.get(key)
+      reduced.set(key, {
+        templateId: row.templateId,
+        day: row.day,
+        wplaceUserId: row.wplaceUserId,
+        displayName: this.painters.get(row.wplaceUserId)?.displayName ?? String(row.wplaceUserId),
+        placed: Math.max(held?.placed ?? 0, row.placed),
+        correct: Math.max(held?.correct ?? 0, row.correct),
+        repairs: Math.max(held?.repairs ?? 0, row.repairs),
+      })
+    }
+    return [...reduced.values()].sort(compareContributionDays)
+  }
+
+  async filterPublishedTemplateIds(ids: readonly string[]): Promise<readonly string[]> {
+    assertValidPublishedFilter(ids)
+    const seen = new Set<string>()
+    const published: string[] = []
+    for (const id of ids) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      if (this.templates.get(id)?.publishedAt != null) published.push(id)
+    }
+    return published
+  }
+
+  async listLatestTiles(season: number): Promise<readonly LatestTileObservation[]> {
+    return [...this.canvasTiles.values()]
+      .filter((held) => held.season === season)
+      .sort((left, right) => left.tile.x - right.tile.x || left.tile.y - right.tile.y)
+      .map((held) => ({
+        season: held.season,
+        tile: { ...held.tile },
+        hash: held.hash,
+        observedAt: held.observedAt,
+      }))
+  }
+
+  async readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]> {
+    assertValidTileHistoryQuery(query)
+    // Reporters are counted as distinct accounts, though the Set is belt-and-braces here: the row
+    // key already includes the account, so one account cannot appear twice for one (bucket, hash).
+    const groups = new Map<string, { bucketStart: Seconds; hash: string; accounts: Set<number> }>()
+    for (const row of this.tileHistory.values()) {
+      if (
+        row.season !== query.season ||
+        row.tile.x !== query.tile.x ||
+        row.tile.y !== query.tile.y ||
+        row.resolution !== query.resolution ||
+        row.bucketStart < query.fromSeconds ||
+        row.bucketStart >= query.toSeconds
+      ) {
+        continue
+      }
+      const key = `${row.bucketStart}/${row.hash}`
+      const held = groups.get(key) ?? {
+        bucketStart: row.bucketStart,
+        hash: row.hash,
+        accounts: new Set<number>(),
+      }
+      held.accounts.add(row.reportedByUserId)
+      groups.set(key, held)
+    }
+    return foldTileFrames(
+      [...groups.values()].map((group) => ({
+        bucketStart: group.bucketStart,
+        hash: group.hash,
+        reporters: group.accounts.size,
+      })),
+    )
   }
 }

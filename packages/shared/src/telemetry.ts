@@ -140,6 +140,95 @@ export interface NodeStatus {
   readonly observedAt: Millis
 }
 
+/**
+ * The frontend's time-series read surface, which the userscript deliberately does not have — see
+ * the note on `TemplateStatus`. Everything below is a response shape for the read-scope telemetry
+ * endpoints a dashboard draws pace charts, contribution graphs, leaderboards and timelapses from.
+ */
+
+/** One folded bucket of the decay ladder, as `GET /telemetry/history` serves it. */
+export interface HistoryBucket {
+  readonly templateId: string
+  /** Bucket width in seconds — 60, 300, 900, 3600, 21600. */
+  readonly resolution: number
+  /** Unix seconds, floored to `resolution`. */
+  readonly bucketStart: Seconds
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
+}
+
+/** Folded pace history for a set of templates at one resolution over a half-open range. */
+export interface HistoryResponse {
+  readonly buckets: readonly HistoryBucket[]
+}
+
+/**
+ * One painter's day on one template.
+ *
+ * Already reduced across reporters: several clients report the same painter-day, and each carries
+ * its own partial view, so the server takes the maximum per counter before serving anything — a
+ * reporter that saw less of the day cannot disprove one that saw more. Summing these rows is
+ * therefore safe; summing the underlying reporter rows never was.
+ */
+export interface ContributionDay extends PainterIdentity {
+  readonly templateId: string
+  /** UTC midnight, Unix seconds — the floor of the report time to 86400. */
+  readonly day: Seconds
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
+}
+
+/** Per-painter-per-day contributions, for contribution graphs. */
+export interface ContributionsResponse {
+  readonly days: readonly ContributionDay[]
+}
+
+/** One painter's aggregate standing, sorted by correct then placed, both descending. */
+export interface LeaderboardEntry extends PainterIdentity {
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
+  /** Distinct days with any contribution in the queried window. */
+  readonly activeDays: number
+  /** The most recent contributing day, UTC midnight in Unix seconds. */
+  readonly lastDay: Seconds
+}
+
+export interface LeaderboardResponse {
+  readonly entries: readonly LeaderboardEntry[]
+}
+
+/** The newest accepted observation of one canvas tile. The bytes live at `GET /tiles/:hash`. */
+export interface CanvasTileSummary {
+  readonly tile: TileKey
+  readonly hash: string
+  readonly observedAt: Millis
+}
+
+/** Every observed tile's current hash for a season — only observed tiles, so bounded in practice. */
+export interface CanvasTilesResponse {
+  readonly tiles: readonly CanvasTileSummary[]
+}
+
+/**
+ * One frame of a tile's timelapse: the hash the most reporters agreed on for one bucket.
+ *
+ * When a bucket holds competing hashes the server keeps the one with the most distinct reporters,
+ * tie-broken toward the lexically smaller hash so two adapters — and two requests — agree.
+ */
+export interface TileHistoryFrame {
+  readonly bucketStart: Seconds
+  readonly hash: string
+  /** Distinct reporting accounts behind this hash — quorum, not repetition. */
+  readonly reporters: number
+}
+
+export interface TileHistoryResponse {
+  readonly frames: readonly TileHistoryFrame[]
+}
+
 export type AlarmKind = 'regression' | 'sustained-griefing'
 
 /**

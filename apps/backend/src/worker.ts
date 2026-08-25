@@ -3,6 +3,7 @@ import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-stor
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
 import { createApp } from './app.js'
 import type { Ports } from './ports/index.js'
+import { fetchCanvasTiles } from './telemetry/fetcher.js'
 
 export { TelemetryShard } from './telemetry-shard.js'
 
@@ -65,5 +66,15 @@ export default {
       currentSeason: parseSeason(env.SEASON),
       openAccess: env.OPEN_ACCESS === 'true',
     }).fetch(mountedRequest)
+  },
+
+  // The 6-hour tile mirror — see [triggers] in wrangler.toml and telemetry/fetcher.ts.
+  async scheduled(_controller, env, ctx): Promise<void> {
+    const ports: Ports = {
+      blobs: new R2BlobStore(env.BLOBS),
+      sql: new D1SqlStore(env.DB),
+      counters: new DurableObjectCounterStore(env.TELEMETRY),
+    }
+    ctx.waitUntil(fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }))
   },
 } satisfies ExportedHandler<Env>

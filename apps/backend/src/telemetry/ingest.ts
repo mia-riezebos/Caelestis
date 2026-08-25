@@ -30,7 +30,7 @@ interface Reporter {
   readonly tokenHash: string
 }
 
-interface TileMetadata extends Reporter {
+export interface TileMetadata extends Reporter {
   readonly season: number
   readonly tile: TileCoord
   readonly hash: string
@@ -142,7 +142,16 @@ const classifyTarget = async (
   }
 }
 
-const recordObservation = async (
+/**
+ * Persist an accepted tile: the observation row, its raw history entry, and a status per template
+ * chunk the tile carries.
+ *
+ * Records unconditionally, even with zero covering templates. The reporter routes never reach here
+ * uncovered — `uploadTile` refuses and `offerTile` answers `ignored` first — but the server's own
+ * fetcher deliberately stores a ring of surrounding tiles no template covers, purely as timelapse
+ * and viewer context.
+ */
+export const recordObservation = async (
   ports: Ports,
   metadata: TileMetadata,
   bytes: Uint8Array,
@@ -153,7 +162,6 @@ const recordObservation = async (
     metadata.tile,
     metadata.includeUnpublished,
   )
-  if (targets.length === 0) return
   const observedAtMs = metadata.observedAt * 1_000
   const statuses = (
     await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)))

@@ -3,7 +3,11 @@ import { Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   Alarm,
+  CanvasTilesResponse,
   Chunk,
+  ContributionsResponse,
+  HistoryResponse,
+  LeaderboardResponse,
   Manifest,
   Node,
   NodeStatus,
@@ -13,6 +17,7 @@ import {
   ServerInfo,
   Template,
   TemplateStatus,
+  TileHistoryResponse,
   TileOffer,
   TileOfferResponse,
 } from './index.js'
@@ -1398,4 +1403,81 @@ describe('cross-field and time-unit schemas', () => {
       })
     },
   )
+})
+
+describe('telemetry read responses', () => {
+  const DAY = 1_750_032_000 // a UTC midnight
+  const validBucket = {
+    templateId: TEMPLATE_ID,
+    resolution: 60,
+    bucketStart: 1_749_988_800,
+    placed: 5,
+    correct: 4,
+    repairs: 1,
+  }
+  const validDay = {
+    templateId: TEMPLATE_ID,
+    day: DAY,
+    wplaceUserId: 7,
+    displayName: 'Mia',
+    placed: 10,
+    correct: 8,
+    repairs: 2,
+  }
+  const validEntry = {
+    wplaceUserId: 7,
+    displayName: 'Mia',
+    placed: 10,
+    correct: 8,
+    repairs: 2,
+    activeDays: 1,
+    lastDay: DAY,
+  }
+  const validFrame = { bucketStart: SECONDS, hash: HASH, reporters: 1 }
+
+  it('accepts a history response and rejects a misaligned or disordered bucket', () => {
+    const response = { buckets: [validBucket] }
+    expect(Schema.decodeUnknownSync(HistoryResponse)(response)).toEqual(response)
+    expectRejected(HistoryResponse, { buckets: [{ ...validBucket, bucketStart: 1_749_988_801 }] })
+    expectRejected(HistoryResponse, { buckets: [{ ...validBucket, resolution: 61 }] })
+    expectRejected(HistoryResponse, { buckets: [{ ...validBucket, correct: 6 }] })
+  })
+
+  it('accepts contributions and rejects a duplicate painter-day or off-midnight day', () => {
+    const response = { days: [validDay] }
+    expect(Schema.decodeUnknownSync(ContributionsResponse)(response)).toEqual(response)
+    // Two rows for one painter-day are reporter rows that were never reduced — the exact payload
+    // the MAX-then-SUM rule exists to keep off the wire.
+    expectRejected(ContributionsResponse, { days: [validDay, { ...validDay, placed: 12 }] })
+    expectRejected(ContributionsResponse, { days: [{ ...validDay, day: DAY + 1 }] })
+    expectRejected(ContributionsResponse, { days: [{ ...validDay, displayName: '' }] })
+  })
+
+  it('accepts a leaderboard and rejects one out of order or with a duplicate painter', () => {
+    const runnerUp = { ...validEntry, wplaceUserId: 9, correct: 3, placed: 12, repairs: 0 }
+    const response = { entries: [validEntry, runnerUp] }
+    expect(Schema.decodeUnknownSync(LeaderboardResponse)(response)).toEqual(response)
+    expectRejected(LeaderboardResponse, { entries: [runnerUp, validEntry] })
+    expectRejected(LeaderboardResponse, { entries: [validEntry, { ...validEntry }] })
+    expectRejected(LeaderboardResponse, { entries: [{ ...validEntry, activeDays: 0 }] })
+  })
+
+  it('accepts canvas tiles and rejects a tile listed twice', () => {
+    const response = { tiles: [{ tile: '0/0', hash: HASH, observedAt: MILLIS }] }
+    expect(Schema.decodeUnknownSync(CanvasTilesResponse)(response)).toEqual(response)
+    expectRejected(CanvasTilesResponse, {
+      tiles: [...response.tiles, { tile: '0/0', hash: 'b'.repeat(64), observedAt: MILLIS }],
+    })
+  })
+
+  it('accepts a timelapse and rejects unordered buckets, tied buckets or zero reporters', () => {
+    const later = { ...validFrame, bucketStart: SECONDS + 60, hash: 'b'.repeat(64) }
+    const response = { frames: [validFrame, later] }
+    expect(Schema.decodeUnknownSync(TileHistoryResponse)(response)).toEqual(response)
+    expectRejected(TileHistoryResponse, { frames: [later, validFrame] })
+    expectRejected(TileHistoryResponse, {
+      frames: [validFrame, { ...validFrame, hash: 'b'.repeat(64) }],
+    })
+    expectRejected(TileHistoryResponse, { frames: [{ ...validFrame, reporters: 0 }] })
+  })
 })

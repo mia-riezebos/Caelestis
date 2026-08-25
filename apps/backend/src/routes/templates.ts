@@ -236,22 +236,26 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
   return routes
 }
 
-export const createChunkRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) => {
+const createBlobRoutes = (
+  ports: Pick<Ports, 'blobs' | 'sql'>,
+  auth: AuthOptions,
+  namespace: 'chunks' | 'tiles',
+) => {
   const routes = new Hono()
 
   routes.use('/*', requireScope(auth, 'read'))
 
   routes.get('/:hash', async (c) => {
     const hash = c.req.param('hash')
-    if (!SHA256_HEX.test(hash)) return c.json({ error: 'invalid chunk hash' }, 400)
+    if (!SHA256_HEX.test(hash)) return c.json({ error: `invalid ${namespace} hash` }, 400)
 
-    const bytes = await ports.blobs.get('chunks', hash)
+    const bytes = await ports.blobs.get(namespace, hash)
     if (bytes === null) return c.json({ error: 'not found' }, 404)
 
     // `private`, because this route is behind a read scope. `public` invites any standards-compliant
     // shared cache to store the response and hand it to a later request that carries no
-    // Authorization at all — so one authorised fetch would make a chunk readable by anyone who knows
-    // its hash. Chunks are immutable and content-addressed, so a client may still cache one
+    // Authorization at all — so one authorised fetch would make a blob readable by anyone who knows
+    // its hash. Both namespaces are immutable and content-addressed, so a client may still cache one
     // forever; what it may not do is cache it on someone else's behalf.
     return c.body(new Uint8Array(bytes), 200, {
       'content-type': 'image/png',
@@ -261,3 +265,13 @@ export const createChunkRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: Aut
 
   return routes
 }
+
+export const createChunkRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) =>
+  createBlobRoutes(ports, auth, 'chunks')
+
+/**
+ * Mirrored canvas tiles, served exactly like template chunks: the timelapse endpoint answers with
+ * hashes, and this is where a frontend exchanges one for its pixels.
+ */
+export const createTileRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: AuthOptions) =>
+  createBlobRoutes(ports, auth, 'tiles')

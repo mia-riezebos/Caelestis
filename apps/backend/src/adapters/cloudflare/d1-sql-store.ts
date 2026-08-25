@@ -1,4 +1,10 @@
-import { type Millis, seconds, WORLD_PIXELS } from '@caelestis/shared'
+import {
+  type ContributionDay,
+  type Millis,
+  seconds,
+  type TileHistoryFrame,
+  WORLD_PIXELS,
+} from '@caelestis/shared'
 import {
   and,
   asc,
@@ -35,11 +41,18 @@ import {
   type AccessToken,
   type AccessTokenQuery,
   assertValidBuckets,
+  assertValidContributionQuery,
+  assertValidPublishedFilter,
   assertValidTemplateVersion,
+  assertValidTileHistoryQuery,
   type BucketQuery,
   type ContributionDelta,
+  type ContributionQuery,
   compareBuckets,
+  compareContributionDays,
+  foldTileFrames,
   InvalidNodeParentError,
+  type LatestTileObservation,
   MAX_NODE_PATH_LENGTH,
   MAX_READ_BUCKETS_TEMPLATE_IDS,
   type ManifestTemplateRecord,
@@ -62,6 +75,7 @@ import {
   type TemplateRecord,
   type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  type TileHistoryQuery,
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -1365,5 +1379,140 @@ export class D1SqlStore implements SqlStore {
     // Array.prototype.sort is stable. Dropping it changes no outcome, so no test can pin it — said
     // here rather than left looking load-bearing.
     return rows.map(fromRow).sort(compareBuckets)
+  }
+
+  async readContributions(query: ContributionQuery): Promise<readonly ContributionDay[]> {
+    assertValidContributionQuery(query)
+    // The season and publish filters are one IN-subquery rather than a join, so one builder shape
+    // serves the season-only, ids-only and intersected forms — and the group key stays the three
+    // columns the reduction is defined over, with nothing joined in to widen it. The publish gate
+    // applies to explicit-id queries too: a read-scoped caller holding a stale id must get the
+    // same nothing the manifest gives it.
+    const templateGate =
+      query.season === undefined && query.includeUnpublished
+        ? undefined
+        : inArray(
+            contributions.templateId,
+            this.database
+              .select({ id: templates.id })
+              .from(templates)
+              .where(
+                and(
+                  query.season === undefined ? undefined : eq(templates.season, query.season),
+                  query.includeUnpublished ? undefined : isNotNull(templates.publishedAt),
+                ),
+              ),
+          )
+    const readChunk = (chunk: readonly string[] | null) =>
+      this.database
+        .select({
+          templateId: contributions.templateId,
+          day: contributions.dayS,
+          wplaceUserId: contributions.wplaceUserId,
+          // MAX-then-SUM, and this is the MAX: one row per reporter describes the same painter-day,
+          // so the largest view per counter is the day's truth and summing reporter rows multiplies
+          // credit by reporter count. See the rollup note on the `contributions` schema.
+          displayName: sql<string | null>`max(${painters.displayName})`,
+          placed: sql<number>`max(${contributions.placed})`,
+          correct: sql<number>`max(${contributions.correct})`,
+          repairs: sql<number>`max(${contributions.repairs})`,
+        })
+        .from(contributions)
+        .leftJoin(painters, eq(painters.wplaceUserId, contributions.wplaceUserId))
+        .where(
+          and(
+            chunk === null ? undefined : inArray(contributions.templateId, chunk),
+            templateGate,
+            query.fromSeconds === undefined
+              ? undefined
+              : gte(contributions.dayS, query.fromSeconds),
+            query.toSeconds === undefined ? undefined : lt(contributions.dayS, query.toSeconds),
+          ),
+        )
+        .groupBy(contributions.templateId, contributions.dayS, contributions.wplaceUserId)
+
+    // Chunked like `readBuckets`, and safe for the same structural reason: the group key contains
+    // the template id, so every group lands wholly inside one chunk and concatenation loses nothing.
+    let rows: Awaited<ReturnType<typeof readChunk>> = []
+    if (query.templateIds === undefined) {
+      rows = await readChunk(null)
+    } else {
+      const templateIds = [...new Set(query.templateIds)]
+      for (let offset = 0; offset < templateIds.length; offset += READ_BUCKETS_CHUNK_SIZE) {
+        rows = rows.concat(
+          await readChunk(templateIds.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)),
+        )
+      }
+    }
+    return rows
+      .map((row) => ({
+        templateId: row.templateId,
+        day: row.day,
+        wplaceUserId: row.wplaceUserId,
+        // A painter seen only through another member's reports has no `painters` row yet; the id as
+        // a string keeps the label non-empty, which the wire schema requires of every display name.
+        displayName: row.displayName ?? String(row.wplaceUserId),
+        placed: row.placed,
+        correct: row.correct,
+        repairs: row.repairs,
+      }))
+      .sort(compareContributionDays)
+  }
+
+  async filterPublishedTemplateIds(ids: readonly string[]): Promise<readonly string[]> {
+    assertValidPublishedFilter(ids)
+    const distinct = [...new Set(ids)]
+    // Chunked like `readBuckets` for the same bound-parameter budget; membership is per-id, so
+    // concatenating chunk results loses nothing.
+    const published = new Set<string>()
+    for (let offset = 0; offset < distinct.length; offset += READ_BUCKETS_CHUNK_SIZE) {
+      const chunk = distinct.slice(offset, offset + READ_BUCKETS_CHUNK_SIZE)
+      const rows = await this.database
+        .select({ id: templates.id })
+        .from(templates)
+        .where(and(inArray(templates.id, chunk), isNotNull(templates.publishedAt)))
+      for (const row of rows) published.add(row.id)
+    }
+    return distinct.filter((id) => published.has(id))
+  }
+
+  async listLatestTiles(season: number): Promise<readonly LatestTileObservation[]> {
+    const rows = await this.database
+      .select()
+      .from(canvasTiles)
+      .where(eq(canvasTiles.season, season))
+      .orderBy(asc(canvasTiles.tileX), asc(canvasTiles.tileY))
+    return rows.map((row) => ({
+      season: row.season,
+      tile: { x: row.tileX, y: row.tileY },
+      hash: row.sha256,
+      observedAt: row.observedAtMs,
+    }))
+  }
+
+  async readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]> {
+    assertValidTileHistoryQuery(query)
+    const rows = await this.database
+      .select({
+        bucketStart: tileHistory.bucketStartS,
+        hash: tileHistory.sha256,
+        // Distinct accounts, not rows — quorum a client cannot inflate by replaying its own hash.
+        // Redundant against today's primary key, which already separates reporters, and kept so the
+        // count stays honest if the key ever widens.
+        reporters: sql<number>`count(distinct ${tileHistory.reportedByUserId})`,
+      })
+      .from(tileHistory)
+      .where(
+        and(
+          eq(tileHistory.season, query.season),
+          eq(tileHistory.tileX, query.tile.x),
+          eq(tileHistory.tileY, query.tile.y),
+          eq(tileHistory.resolutionS, seconds(query.resolution)),
+          gte(tileHistory.bucketStartS, query.fromSeconds),
+          lt(tileHistory.bucketStartS, query.toSeconds),
+        ),
+      )
+      .groupBy(tileHistory.bucketStartS, tileHistory.sha256)
+    return foldTileFrames(rows)
   }
 }

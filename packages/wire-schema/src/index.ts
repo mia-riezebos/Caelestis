@@ -629,6 +629,201 @@ export const StatusResponse = Schema.Struct({
   templates: boundedArray(TemplateStatus, MAX_MANIFEST_TEMPLATES),
 })
 
+/**
+ * Sized like MAX_MANIFEST_CHUNKS: to a payload that can be processed, not to what the tables could
+ * hold. 90 templates at minute resolution is ~130,000 buckets per day, so this admits a full day of
+ * the widest legal query with headroom while refusing the multi-week minute-resolution pull that
+ * should have asked a coarser tier.
+ */
+const MAX_HISTORY_BUCKETS = 200_000
+/** Painters × templates × days; an alliance-season at dashboard scale, not a canvas-sized bound. */
+const MAX_CONTRIBUTION_DAYS = 100_000
+/** The route clamps `limit` to 200, so anything larger is not a response this server produced. */
+const MAX_LEADERBOARD_ENTRIES = 200
+/** Only observed tiles have rows and reporters only observe template-covered tiles — thousands,
+ * not the canvas's four million. */
+const MAX_CANVAS_TILES = 100_000
+/** One frame per bucket: a year of raw per-report frames at one a minute stays under this. */
+const MAX_TILE_HISTORY_FRAMES = 600_000
+
+/**
+ * Stated as a filter over `number` rather than `Schema.Literals`, so the decoded type stays the
+ * plain `number` the shared `HistoryBucket` declares while the value domain stays the ladder.
+ */
+const LadderResolution = Schema.Number.pipe(
+  Schema.check(
+    booleanFilter(
+      (resolution: number) => [60, 300, 900, 3_600, 21_600].includes(resolution),
+      'resolution must be a decay-ladder tier',
+    ),
+  ),
+)
+
+/** UTC midnight: a day bucket is the floor of a report time to 86400, like `contributions.day_s`. */
+const DaySeconds = Seconds.pipe(
+  Schema.check(
+    booleanFilter((day: Shared.Seconds) => day % 86_400 === 0, 'a day must be a UTC midnight'),
+  ),
+)
+
+const orderedCounters = <
+  T extends { readonly placed: number; readonly correct: number; readonly repairs: number },
+>(
+  value: T,
+): boolean => value.repairs <= value.correct && value.correct <= value.placed
+
+const HistoryBucketStruct = Schema.Struct({
+  templateId: Identifier,
+  resolution: LadderResolution,
+  bucketStart: Seconds,
+  placed: NonNegativeInteger,
+  correct: NonNegativeInteger,
+  repairs: NonNegativeInteger,
+})
+
+export const HistoryBucket = HistoryBucketStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (bucket: Schema.Schema.Type<typeof HistoryBucketStruct>) =>
+        bucket.bucketStart % bucket.resolution === 0 && orderedCounters(bucket),
+      'bucketStart must align to the resolution and counters must satisfy repairs <= correct <= placed',
+    ),
+  ),
+)
+
+export const HistoryResponse = Schema.Struct({
+  buckets: boundedArray(HistoryBucket, MAX_HISTORY_BUCKETS),
+})
+
+const ContributionDayStruct = Schema.Struct({
+  templateId: Identifier,
+  day: DaySeconds,
+  wplaceUserId: NonNegativeInteger,
+  /** Never empty: a painter with no `painters` row is served their id as a string. */
+  displayName: Name,
+  placed: NonNegativeInteger,
+  correct: NonNegativeInteger,
+  repairs: NonNegativeInteger,
+})
+
+export const ContributionDay = ContributionDayStruct.pipe(
+  Schema.check(
+    booleanFilter(orderedCounters, 'counters must satisfy repairs <= correct <= placed'),
+  ),
+)
+
+const ContributionsResponseStruct = Schema.Struct({
+  days: boundedArray(ContributionDay, MAX_CONTRIBUTION_DAYS),
+})
+
+export const ContributionsResponse = ContributionsResponseStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (response: Schema.Schema.Type<typeof ContributionsResponseStruct>) =>
+        new Set(
+          response.days.map((entry) => `${entry.templateId}/${entry.day}/${entry.wplaceUserId}`),
+        ).size === response.days.length,
+      'one row per painter, template and day — reporter rows must be reduced before serving',
+    ),
+  ),
+)
+
+const LeaderboardEntryStruct = Schema.Struct({
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+  placed: NonNegativeInteger,
+  correct: NonNegativeInteger,
+  repairs: NonNegativeInteger,
+  activeDays: NonNegativeInteger,
+  lastDay: DaySeconds,
+})
+
+export const LeaderboardEntry = LeaderboardEntryStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (entry: Schema.Schema.Type<typeof LeaderboardEntryStruct>) =>
+        orderedCounters(entry) && entry.activeDays >= 1,
+      'counters must satisfy repairs <= correct <= placed and an entry needs at least one active day',
+    ),
+  ),
+)
+
+const LeaderboardResponseStruct = Schema.Struct({
+  entries: boundedArray(LeaderboardEntry, MAX_LEADERBOARD_ENTRIES),
+})
+
+export const LeaderboardResponse = LeaderboardResponseStruct.pipe(
+  Schema.check(
+    booleanFilter((response: Schema.Schema.Type<typeof LeaderboardResponseStruct>) => {
+      const users = new Set(response.entries.map((entry) => entry.wplaceUserId))
+      if (users.size !== response.entries.length) return false
+      return response.entries.every(
+        (entry, index) =>
+          index === 0 ||
+          // biome-ignore lint/style/noNonNullAssertion: index > 0 keeps it inside the array
+          response.entries[index - 1]!.correct > entry.correct ||
+          // biome-ignore lint/style/noNonNullAssertion: index > 0 keeps it inside the array
+          (response.entries[index - 1]!.correct === entry.correct &&
+            // biome-ignore lint/style/noNonNullAssertion: index > 0 keeps it inside the array
+            response.entries[index - 1]!.placed >= entry.placed),
+      )
+    }, 'entries must be unique per painter and sorted by correct then placed, descending'),
+  ),
+)
+
+export const CanvasTileSummary = Schema.Struct({
+  tile: TileKey,
+  hash: Hash,
+  observedAt: Millis,
+})
+
+const CanvasTilesResponseStruct = Schema.Struct({
+  tiles: boundedArray(CanvasTileSummary, MAX_CANVAS_TILES),
+})
+
+export const CanvasTilesResponse = CanvasTilesResponseStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (response: Schema.Schema.Type<typeof CanvasTilesResponseStruct>) =>
+        new Set(response.tiles.map((entry) => entry.tile)).size === response.tiles.length,
+      'a season holds one current observation per tile',
+    ),
+  ),
+)
+
+const TileHistoryFrameStruct = Schema.Struct({
+  bucketStart: Seconds,
+  hash: Hash,
+  reporters: NonNegativeInteger,
+})
+
+export const TileHistoryFrame = TileHistoryFrameStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (frame: Schema.Schema.Type<typeof TileHistoryFrameStruct>) => frame.reporters >= 1,
+      'a frame nobody reported is not an observation',
+    ),
+  ),
+)
+
+const TileHistoryResponseStruct = Schema.Struct({
+  frames: boundedArray(TileHistoryFrame, MAX_TILE_HISTORY_FRAMES),
+})
+
+export const TileHistoryResponse = TileHistoryResponseStruct.pipe(
+  Schema.check(
+    booleanFilter(
+      (response: Schema.Schema.Type<typeof TileHistoryResponseStruct>) =>
+        response.frames.every(
+          (frame, index) =>
+            // biome-ignore lint/style/noNonNullAssertion: index > 0 keeps it inside the array
+            index === 0 || response.frames[index - 1]!.bucketStart < frame.bucketStart,
+        ),
+      'frames must be strictly ascending by bucket start — one winning hash per bucket',
+    ),
+  ),
+)
+
 const AlarmStruct = Schema.Struct({
   id: Identifier,
   templateId: Identifier,
@@ -671,6 +866,16 @@ assertExact<Exact<Schema.Schema.Type<typeof TileOfferBatch>, Shared.TileOfferBat
 assertExact<Exact<Schema.Schema.Type<typeof TemplateStatus>, Shared.TemplateStatus>>()
 assertExact<Exact<Schema.Schema.Type<typeof NodeStatus>, Shared.NodeStatus>>()
 assertExact<Exact<Schema.Schema.Type<typeof StatusResponse>, Shared.StatusResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof HistoryBucket>, Shared.HistoryBucket>>()
+assertExact<Exact<Schema.Schema.Type<typeof HistoryResponse>, Shared.HistoryResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof ContributionDay>, Shared.ContributionDay>>()
+assertExact<Exact<Schema.Schema.Type<typeof ContributionsResponse>, Shared.ContributionsResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof LeaderboardEntry>, Shared.LeaderboardEntry>>()
+assertExact<Exact<Schema.Schema.Type<typeof LeaderboardResponse>, Shared.LeaderboardResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof CanvasTileSummary>, Shared.CanvasTileSummary>>()
+assertExact<Exact<Schema.Schema.Type<typeof CanvasTilesResponse>, Shared.CanvasTilesResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof TileHistoryFrame>, Shared.TileHistoryFrame>>()
+assertExact<Exact<Schema.Schema.Type<typeof TileHistoryResponse>, Shared.TileHistoryResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof Alarm>, Shared.Alarm>>()
 
 assertExact<Exact<Schema.Codec.Encoded<typeof ServerInfo>, Shared.ServerInfo>>()
@@ -688,4 +893,16 @@ assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferBatch>, Shared.TileOfferB
 assertExact<Exact<Schema.Codec.Encoded<typeof TemplateStatus>, Shared.TemplateStatus>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof NodeStatus>, Shared.NodeStatus>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof StatusResponse>, Shared.StatusResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof HistoryBucket>, Shared.HistoryBucket>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof HistoryResponse>, Shared.HistoryResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof ContributionDay>, Shared.ContributionDay>>()
+assertExact<
+  Exact<Schema.Codec.Encoded<typeof ContributionsResponse>, Shared.ContributionsResponse>
+>()
+assertExact<Exact<Schema.Codec.Encoded<typeof LeaderboardEntry>, Shared.LeaderboardEntry>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof LeaderboardResponse>, Shared.LeaderboardResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof CanvasTileSummary>, Shared.CanvasTileSummary>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof CanvasTilesResponse>, Shared.CanvasTilesResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TileHistoryFrame>, Shared.TileHistoryFrame>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TileHistoryResponse>, Shared.TileHistoryResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof Alarm>, Shared.Alarm>>()

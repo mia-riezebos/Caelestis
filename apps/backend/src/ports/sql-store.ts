@@ -1,10 +1,12 @@
 import {
+  type ContributionDay,
   type Millis,
   PALETTE_SIZE,
   type PixelBounds,
   type Seconds,
   type TemplateStatus,
   type TileCoord,
+  type TileHistoryFrame,
   TRANSPARENT_INDEX,
   WORLD_PIXELS,
   WORLD_TILES,
@@ -50,13 +52,13 @@ export const READ_BUCKETS_CHUNK_SIZE = 90
 const READ_BUCKETS_CHUNK_BUDGET = 40
 export const MAX_READ_BUCKETS_TEMPLATE_IDS = READ_BUCKETS_CHUNK_SIZE * READ_BUCKETS_CHUNK_BUDGET
 
-export const tooManyTemplateIds = (count: number): Error =>
+export const tooManyTemplateIds = (count: number, method = 'readBuckets'): Error =>
   new Error(
-    `readBuckets accepts at most ${MAX_READ_BUCKETS_TEMPLATE_IDS} template ids per call; received ${count}`,
+    `${method} accepts at most ${MAX_READ_BUCKETS_TEMPLATE_IDS} template ids per call; received ${count}`,
   )
 
 /** Bucket widths the decay ladder folds to, matching `telemetry_buckets_resolution_check`. */
-const LADDER_RESOLUTIONS: readonly number[] = [60, 300, 900, 3_600, 21_600]
+export const LADDER_RESOLUTIONS: readonly number[] = [60, 300, 900, 3_600, 21_600]
 
 /**
  * The domain `telemetry_buckets` will actually store, stated where both adapters can honour it.
@@ -127,6 +129,125 @@ export interface BucketQuery {
  * instead of stubbing out credential methods they never call.
  */
 export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets'>
+
+/**
+ * What `readContributions` may be asked for.
+ *
+ * At least one of `season` and `templateIds` is required — with neither, the query is a full-table
+ * scan over every season's contributions, which no caller means and which grows without bound.
+ * `season` widens to every template in that season; `templateIds` narrows to the named ones; both
+ * together intersect. The time range is half-open `[from, to)` on `day` and optional at this layer,
+ * because the leaderboard legitimately reads a whole season.
+ */
+export interface ContributionQuery {
+  /** Restrict to templates in this season, resolved through the `templates` table. */
+  readonly season?: number
+  /** Restrict to these templates. Duplicate ids are read once; the read-cap applies. */
+  readonly templateIds?: readonly string[]
+  readonly fromSeconds?: Seconds
+  readonly toSeconds?: Seconds
+  /**
+   * Whether unpublished templates' rows may appear, mirroring the manifest's admin gate.
+   *
+   * Required rather than defaulted, and enforced in the adapter rather than the route, for the
+   * same reason `includeUnpublished` is everywhere else in this store: an unpublished template is
+   * invisible to a read-scoped caller, and a caller that merely *knows* its id — from a manifest
+   * poll made before it was unpublished — must not be able to keep reading its telemetry through
+   * this side door. Explicit-id and season queries are filtered alike.
+   */
+  readonly includeUnpublished: boolean
+}
+
+/**
+ * The domain `readContributions` accepts, stated where both adapters can honour it.
+ *
+ * The id cap is D1's bound-parameter budget wearing a port-level name, exactly as `readBuckets`
+ * documents — and the "name a season or some templates" rule is here rather than in a route so the
+ * memory oracle refuses the unbounded scan production would.
+ */
+export const assertValidContributionQuery = (query: ContributionQuery): void => {
+  if (query.season === undefined && query.templateIds === undefined) {
+    throw new Error('readContributions requires a season or template ids')
+  }
+  const distinct = new Set(query.templateIds ?? []).size
+  if (distinct > MAX_READ_BUCKETS_TEMPLATE_IDS) {
+    throw tooManyTemplateIds(distinct, 'readContributions')
+  }
+}
+
+/** The id-cap for `filterPublishedTemplateIds`, stated where both adapters can honour it. */
+export const assertValidPublishedFilter = (ids: readonly string[]): void => {
+  const distinct = new Set(ids).size
+  if (distinct > MAX_READ_BUCKETS_TEMPLATE_IDS) {
+    throw tooManyTemplateIds(distinct, 'filterPublishedTemplateIds')
+  }
+}
+
+/**
+ * The single order every `readContributions` implementation returns. Binary comparison for the same
+ * reason as `compareBuckets`: it matches SQLite's collation and `localeCompare` does not.
+ */
+export const compareContributionDays = (left: ContributionDay, right: ContributionDay): number => {
+  if (left.templateId < right.templateId) return -1
+  if (left.templateId > right.templateId) return 1
+  return left.day - right.day || left.wplaceUserId - right.wplaceUserId
+}
+
+/** Bucket widths `tile_history` folds to, matching `tile_history_resolution_s_check`. 0 is raw. */
+export const TILE_HISTORY_RESOLUTIONS: readonly number[] = [0, 3_600, 21_600, 86_400]
+
+export interface TileHistoryQuery {
+  readonly season: number
+  readonly tile: TileCoord
+  /** A `TILE_HISTORY_RESOLUTIONS` tier — 0 reads the raw observations. */
+  readonly resolution: number
+  readonly fromSeconds: Seconds
+  readonly toSeconds: Seconds
+}
+
+/** The domain `readTileHistory` accepts, stated once so the two adapters cannot drift apart. */
+export const assertValidTileHistoryQuery = (query: TileHistoryQuery): void => {
+  if (!TILE_HISTORY_RESOLUTIONS.includes(query.resolution)) {
+    throw new Error(`readTileHistory resolution ${query.resolution} is not a ladder tier`)
+  }
+  const { x, y } = query.tile
+  if (![x, y].every(Number.isSafeInteger) || x < 0 || x >= WORLD_TILES || y < 0 || y >= WORLD_TILES)
+    throw new Error(`readTileHistory tile ${x}/${y} is outside the canvas`)
+}
+
+/** One grouped `tile_history` row: a hash and how many distinct accounts reported it. */
+export interface TileFrameCandidate {
+  readonly bucketStart: Seconds
+  readonly hash: string
+  readonly reporters: number
+}
+
+/**
+ * Collapse grouped tile-history rows to one frame per bucket, sorted by bucket start ascending.
+ *
+ * Kept here rather than in either adapter because the tie rules are the contract: the hash with the
+ * most distinct reporters wins, and an even split goes to the lexically smaller hash — `<`, not
+ * `localeCompare`, for the reason `compareBuckets` states. A timelapse must not flicker between
+ * competing hashes depending on which adapter, or which map iteration order, answered.
+ */
+export const foldTileFrames = (
+  candidates: readonly TileFrameCandidate[],
+): readonly TileHistoryFrame[] => {
+  const best = new Map<number, TileFrameCandidate>()
+  for (const candidate of candidates) {
+    const held = best.get(candidate.bucketStart)
+    if (
+      held === undefined ||
+      candidate.reporters > held.reporters ||
+      (candidate.reporters === held.reporters && candidate.hash < held.hash)
+    ) {
+      best.set(candidate.bucketStart, candidate)
+    }
+  }
+  return [...best.values()]
+    .sort((left, right) => left.bucketStart - right.bucketStart)
+    .map(({ bucketStart, hash, reporters }) => ({ bucketStart, hash, reporters }))
+}
 
 /**
  * The scope domain `access_tokens_scope_check` enforces, stated where both adapters can honour it.
@@ -658,4 +779,53 @@ export interface SqlStore {
    * Rejects more than `MAX_READ_BUCKETS_TEMPLATE_IDS` distinct ids. Duplicate ids are read once.
    */
   readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]>
+
+  /**
+   * Per-painter-per-day contributions, reduced across reporters before anything sums them.
+   *
+   * `(wplace_user_id, template_id, day_s)` is deliberately not unique — every member of an alliance
+   * reports, so several rows describe one painter's day. This read collapses them with the maximum
+   * of each counter per (user, template, day), because a reporter that saw less of a day cannot
+   * disprove one that saw more, and returns rows a caller may then sum freely. **No caller ever
+   * sums the raw reporter rows** — that multiplies a painter's credit by their reporter count,
+   * which is the exact failure mode the `contributions` schema comment exists to name.
+   *
+   * `displayName` comes from `painters` and falls back to the user id as a string, so a painter
+   * seen only through another member's reports still has a label.
+   *
+   * Ordered by `compareContributionDays`. Rejects a query naming neither season nor templates, and
+   * more than `MAX_READ_BUCKETS_TEMPLATE_IDS` distinct ids.
+   */
+  readContributions(query: ContributionQuery): Promise<readonly ContributionDay[]>
+
+  /**
+   * The subset of `ids` that name published templates, in input order with duplicates dropped.
+   *
+   * The publish gate for reads that take raw template ids and do not go through the manifest —
+   * `/telemetry/history` resolves a read-scoped caller's ids through this before touching buckets,
+   * so an unpublished template's telemetry is exactly as invisible as the template itself. An id
+   * that names nothing is dropped silently: to a non-admin caller, missing and unpublished are
+   * deliberately the same answer.
+   *
+   * Rejects more than `MAX_READ_BUCKETS_TEMPLATE_IDS` distinct ids — the same D1 bound-parameter
+   * budget as every other id-list read.
+   */
+  filterPublishedTemplateIds(ids: readonly string[]): Promise<readonly string[]>
+
+  /**
+   * The latest accepted observation of every observed tile in a season, ordered by x then y.
+   *
+   * Unbounded on purpose: only observed tiles have rows, and reporters only observe tiles a
+   * template covers, so this is thousands of rows at the outside — not the canvas's four million.
+   */
+  listLatestTiles(season: number): Promise<readonly LatestTileObservation[]>
+
+  /**
+   * One tile's timelapse frames at one `tile_history` tier over a half-open range.
+   *
+   * Rows are grouped by (bucketStart, hash) with reporters counted as distinct accounts, then
+   * folded to one frame per bucket by `foldTileFrames` — most reporters wins, ties to the lexically
+   * smaller hash — and returned in bucket order.
+   */
+  readTileHistory(query: TileHistoryQuery): Promise<readonly TileHistoryFrame[]>
 }
