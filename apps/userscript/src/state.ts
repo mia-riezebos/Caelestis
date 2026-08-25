@@ -123,7 +123,6 @@ export interface ServerTemplatePreference {
   readonly owns: readonly AppearanceGroup[]
 }
 
-export type ProgressPlacement = 'inline' | 'expanded' | 'hidden'
 export type ColourPreset = 'all' | 'free' | 'premium' | 'owned'
 
 export interface State {
@@ -135,7 +134,6 @@ export interface State {
   /** Panel width in pixels, dragged by the handle on its left edge. */
   readonly panelWidth: number
   readonly sort: SortOrder
-  readonly progress: ProgressPlacement
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
   readonly onlySelectedColour: boolean
@@ -153,7 +151,6 @@ const DEFAULT_STATE: State = {
   collapsed: [],
   panelWidth: 320,
   sort: DEFAULT_SORT,
-  progress: 'inline',
   hiddenColours: [],
   onlySelectedColour: false,
   localFolders: [],
@@ -759,8 +756,6 @@ export const loadState = (): State => {
       typeof stored.panelWidth === 'number' && Number.isFinite(stored.panelWidth)
         ? Math.min(720, Math.max(260, stored.panelWidth))
         : DEFAULT_STATE.panelWidth
-    const progress: ProgressPlacement =
-      stored.progress === 'expanded' || stored.progress === 'hidden' ? stored.progress : 'inline'
     const localFolders: LocalFolder[] = []
     const folderIds = new Set<string>()
     if (Array.isArray(stored.localFolders)) {
@@ -858,7 +853,6 @@ export const loadState = (): State => {
       collapsed,
       panelWidth,
       sort,
-      progress,
       hiddenColours,
       onlySelectedColour: stored.onlySelectedColour === true,
       localFolders,

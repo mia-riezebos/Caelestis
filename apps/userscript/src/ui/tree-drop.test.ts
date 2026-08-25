@@ -32,7 +32,6 @@ afterEach(() => {
     customOrder: [],
     collapsed: [],
     sort: { field: 'custom', direction: 'asc' },
-    progress: 'inline',
   })
 })
 
@@ -74,7 +73,6 @@ describe('tree drag and drop', () => {
       customOrder: [],
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
-      progress: 'expanded',
     })
     rememberServerContents(server, {
       nodes: [],
@@ -104,7 +102,8 @@ describe('tree drag and drop', () => {
 
     expect(flyTo).not.toBeNull()
     expect(flyTo?.parentElement?.classList.contains('caelestis-leading-actions')).toBe(true)
-    expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(true)
+    expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
+    expect(row?.querySelector('[aria-label="Expand progress"]')).not.toBeNull()
     expect(row?.textContent).not.toContain('unpublished')
     expect(row?.style.opacity).toBe('0.55')
     flyTo?.click()
@@ -123,7 +122,6 @@ describe('tree drag and drop', () => {
       customOrder: [],
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
-      progress: 'inline',
     })
     rememberServerContents(server, {
       nodes: [folder],
@@ -133,23 +131,22 @@ describe('tree drag and drop', () => {
       ],
     })
 
-    const tree = treeContents(
-      {
-        onAddServer: vi.fn(),
-        onCreateFolder: vi.fn(),
-        onImportTemplate: vi.fn(),
-        onRename: vi.fn(),
-        onDelete: vi.fn(),
-        onContextMenu: vi.fn(),
-        onGoTo: vi.fn(),
-        onPlace: vi.fn(),
-        onCopyToServer: vi.fn(),
-        onError: vi.fn(),
-        onMoveLocal: vi.fn(),
-        onDropInServer: vi.fn(),
-      },
-      vi.fn(),
-    )
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+      onContextMenu: vi.fn(),
+      onGoTo: vi.fn(),
+      onPlace: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onError: vi.fn(),
+      onMoveLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+    const render = () => treeContents(callbacks, vi.fn())
+    let tree = render()
     const serverRow = tree.querySelector<HTMLElement>(`[data-caelestis-key="server:${SERVER_URL}"]`)
     const folderRow = tree.querySelector<HTMLElement>(
       `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
@@ -166,6 +163,38 @@ describe('tree drag and drop', () => {
       expect(tail?.querySelector(':scope > .caelestis-progress--inline')).not.toBeNull()
       expect(tail?.querySelector(':scope > .caelestis-actions')).not.toBeNull()
     }
+
+    folderRow?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')?.click()
+    tree = render()
+    expect(
+      tree
+        .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+        ?.classList.contains('caelestis-row--expanded-progress'),
+    ).toBe(true)
+
+    setState({ collapsed: ['local', nodeTreeKey(server, SOURCE_NODE_ID)] })
+    tree = render()
+    const collapsedFolder = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
+    )
+    expect(collapsedFolder?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
+    const reopenProgress = collapsedFolder?.querySelector<HTMLButtonElement>(
+      '[aria-label="Expand progress"]',
+    )
+    expect(reopenProgress).not.toBeNull()
+    reopenProgress?.click()
+
+    // The progress action opens its parent as required, then return disclosure to the default.
+    tree = render()
+    expect(
+      tree
+        .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+        ?.classList.contains('caelestis-row--expanded-progress'),
+    ).toBe(true)
+    tree
+      .querySelector<HTMLElement>(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
+      ?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
+      ?.click()
   })
 
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {

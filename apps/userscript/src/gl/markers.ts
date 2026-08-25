@@ -391,7 +391,7 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   const now = performance.now()
   let animating = false
   const wanted: { template: PlacedTemplate; fade: number }[] = []
-  const trackProgress = getState().progress !== 'hidden'
+  const trackProgress = true
   for (const template of displayTemplates()) {
     const { value, done } = markerFades.advance(
       template.id,

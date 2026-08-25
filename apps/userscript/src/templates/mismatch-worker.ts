@@ -45,7 +45,7 @@ self.onmessage = (event) => {
   const outcome = scanTile(job, wanted)
   self.postMessage(
     { id: job.id, ...outcome },
-    [outcome.wrong.buffer, outcome.unpainted.buffer],
+    [outcome.wrong.buffer, outcome.unpainted.buffer, outcome.progressByColour.buffer],
   )
 }
 `
@@ -60,6 +60,7 @@ interface Reply {
   readonly mismatched?: number
   readonly progressUnpainted?: number
   readonly progressAsserted?: number
+  readonly progressByColour?: Uint32Array
 }
 
 /**
@@ -188,6 +189,7 @@ export const scanInWorker = async (
     mismatched: reply.mismatched ?? 0,
     progressUnpainted: reply.progressUnpainted ?? 0,
     progressAsserted: reply.progressAsserted ?? 0,
+    progressByColour: reply.progressByColour ?? new Uint32Array(0),
   }
 }
 

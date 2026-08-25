@@ -1,6 +1,5 @@
-import { TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@caelestis/shared'
+import { PALETTE_SIZE, TILE_SIZE, type TileCoord, TRANSPARENT_INDEX } from '@caelestis/shared'
 import { count } from '../debug.js'
-import { getState } from '../state.js'
 import {
   draftPixels,
   ensureTilePixels,
@@ -12,7 +11,6 @@ import { claimedHiddenFor } from './colour-filter.js'
 import {
   appearanceOf,
   displayTemplates,
-  isTemplateVisible,
   onLocalChange,
   type PlacedTemplate,
 } from './local-store.js'
@@ -62,6 +60,10 @@ export interface TemplateProgress {
   readonly known: number
   /** All non-transparent pixels the template asks for, including tiles not scanned yet. */
   readonly total: number
+}
+
+export interface TemplateColourProgress extends TemplateProgress {
+  readonly index: number
 }
 
 const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
@@ -123,6 +125,7 @@ interface ProgressCoverage {
   readonly mismatched: number
   readonly unpainted: number
   readonly asserted: number
+  readonly byColour: Uint32Array
 }
 
 /**
@@ -130,11 +133,31 @@ interface ProgressCoverage {
  *
  * This deliberately has no template-size cap. The project supports templates far larger than a
  * viewport, and evicting an already-scanned tile would make its progress silently run backwards.
- * Each entry retains counters and two identities, never the tile pixels or unpainted coordinates.
+ * Each entry retains aggregate and sparse per-colour counters plus two identities, never the tile
+ * pixels or unpainted coordinates.
  */
 const progressCoverage = new Map<string, ProgressCoverage>()
 const progressKeys = new Map<string, Set<string>>()
-const progressTotals = new Map<string, Omit<ProgressCoverage, 'templateId'>>()
+const progressTotals = new Map<
+  string,
+  Omit<ProgressCoverage, 'templateId'> & { readonly byColour: Uint32Array }
+>()
+
+/** Add or subtract sparse scan tuples from one template's dense palette counters. */
+const mergeColourProgress = (target: Uint32Array, packed: Uint32Array, direction: 1 | -1): void => {
+  for (let at = 0; at < packed.length; at += 4) {
+    const index = packed[at]
+    if (index === undefined || index >= PALETTE_SIZE) continue
+    const targetAt = index * 3
+    for (let offset = 0; offset < 3; offset++) {
+      const value = packed[at + offset + 1] ?? 0
+      target[targetAt + offset] =
+        direction === 1
+          ? (target[targetAt + offset] ?? 0) + value
+          : Math.max(0, (target[targetAt + offset] ?? 0) - value)
+    }
+  }
+}
 
 /**
  * A cache key is `${templateId}|${x}/${y}`, and only the tile half has a known shape. A server
@@ -161,12 +184,14 @@ const forgetProgress = (cacheKey: string): void => {
     progressTotals.delete(entry.templateId)
     return
   }
+  mergeColourProgress(total.byColour, entry.byColour, -1)
   progressTotals.set(entry.templateId, {
     ...total,
     asserted,
     completed: total.completed - entry.completed,
     mismatched: total.mismatched - entry.mismatched,
     unpainted: total.unpainted - entry.unpainted,
+    byColour: total.byColour,
   })
 }
 
@@ -193,12 +218,15 @@ const rememberProgress = (cacheKey: string, entry: Cached, key: string): void =>
     mismatched: entry.mismatched,
     unpainted: entry.progressUnpainted,
     asserted: entry.progressAsserted,
+    byColour: entry.progressByColour,
   }
   progressCoverage.set(cacheKey, one)
   const keys = progressKeys.get(templateId) ?? new Set<string>()
   keys.add(cacheKey)
   progressKeys.set(templateId, keys)
   const total = progressTotals.get(templateId)
+  const byColour = total?.byColour ?? new Uint32Array(PALETTE_SIZE * 3)
+  mergeColourProgress(byColour, one.byColour, 1)
   progressTotals.set(templateId, {
     templateSource: entry.templateSource,
     key,
@@ -206,6 +234,7 @@ const rememberProgress = (cacheKey: string, entry: Cached, key: string): void =>
     mismatched: (total?.mismatched ?? 0) + one.mismatched,
     unpainted: (total?.unpainted ?? 0) + one.unpainted,
     asserted: (total?.asserted ?? 0) + one.asserted,
+    byColour,
   })
 }
 
@@ -375,11 +404,7 @@ const scheduleIdleScan = (): void => {
  * them and have to read every one back from a preview later — paying twice for pixels that went
  * past us while we were not looking.
  */
-export const wantsTilePixels = (): boolean =>
-  getState().progress !== 'hidden' ||
-  displayTemplates().some(
-    (template) => isTemplateVisible(template) && appearanceOf(template).markMismatch,
-  )
+export const wantsTilePixels = (): boolean => displayTemplates().length > 0
 
 /** The switches, not what is on screen — see `claimedHiddenFor` for why the two differ. */
 const assertedHidden = (template: PlacedTemplate): readonly number[] =>
@@ -416,6 +441,51 @@ export const progressFor = (template: PlacedTemplate): TemplateProgress => {
     known,
     total,
   }
+}
+
+/** Total requested pixels by palette index, cached by the immutable template pixel buffer. */
+const colourTotals = new WeakMap<Uint8Array, Uint32Array>()
+
+const colourTotalsFor = (template: PlacedTemplate): Uint32Array => {
+  const cached = colourTotals.get(template.indices)
+  if (cached !== undefined) return cached
+  const totals = new Uint32Array(PALETTE_SIZE)
+  for (const index of template.indices) {
+    if (index < PALETTE_SIZE && index !== TRANSPARENT_INDEX)
+      totals[index] = (totals[index] ?? 0) + 1
+  }
+  colourTotals.set(template.indices, totals)
+  return totals
+}
+
+/** Exact progress for every colour the template contains. */
+export const colourProgressFor = (template: PlacedTemplate): readonly TemplateColourProgress[] => {
+  const totals = colourTotalsFor(template)
+  const held = progressTotals.get(template.id)
+  const current =
+    held !== undefined &&
+    held.templateSource === template.indices &&
+    held.key === progressSignature(template)
+      ? held.byColour
+      : null
+  const progress: TemplateColourProgress[] = []
+  for (let index = 0; index < totals.length; index++) {
+    const total = totals[index] ?? 0
+    if (total === 0) continue
+    const at = index * 3
+    const completed = Math.min(total, current?.[at] ?? 0)
+    const mismatched = Math.min(total - completed, current?.[at + 1] ?? 0)
+    const unpainted = Math.min(total - completed - mismatched, current?.[at + 2] ?? 0)
+    progress.push({
+      index,
+      completed,
+      mismatched,
+      unpainted,
+      known: completed + mismatched + unpainted,
+      total,
+    })
+  }
+  return progress
 }
 
 /**
@@ -763,6 +833,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     if (belongs === 'unpainted') unpainted = plus(unpainted)
 
     let { completed, mismatched, progressUnpainted } = entry
+    let progressByColour = entry.progressByColour
     if (progressAsserted) {
       if (already === 'wrong') mismatched--
       else if (already === 'unpainted') progressUnpainted--
@@ -770,6 +841,30 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
       if (belongs === 'wrong') mismatched++
       else if (belongs === 'unpainted') progressUnpainted++
       else completed++
+
+      let colourAt = -1
+      for (let at = 0; at < progressByColour.length; at += 4) {
+        if (progressByColour[at] === wanted) {
+          colourAt = at
+          break
+        }
+      }
+      if (colourAt < 0) {
+        const next = new Uint32Array(progressByColour.length + 4)
+        next.set(progressByColour)
+        colourAt = progressByColour.length
+        next[colourAt] = wanted
+        progressByColour = next
+      } else {
+        progressByColour = progressByColour.slice()
+      }
+      const previousOffset = already === 'wrong' ? 2 : already === 'unpainted' ? 3 : 1
+      const nextOffset = belongs === 'wrong' ? 2 : belongs === 'unpainted' ? 3 : 1
+      progressByColour[colourAt + previousOffset] = Math.max(
+        0,
+        (progressByColour[colourAt + previousOffset] ?? 0) - 1,
+      )
+      progressByColour[colourAt + nextOffset] = (progressByColour[colourAt + nextOffset] ?? 0) + 1
     }
 
     const patched: Cached = {
@@ -783,6 +878,7 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
       mismatched,
       progressUnpainted,
       progressAsserted: entry.progressAsserted,
+      progressByColour,
       both: null,
     }
     rememberCoverage(cacheKey, patched)

@@ -26,7 +26,6 @@ import {
   moveNode as moveNodeOnServer,
   onServerContents,
   onStateChange,
-  type ProgressPlacement,
   patchTemplate,
   previewGlobalAppearance,
   probeServer,
@@ -578,98 +577,6 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
 }
 
 /**
- * A dropdown built from our own elements rather than a `<select>`.
- *
- * A native select's popup is drawn by the browser, so its corners cannot be given the `rounded-xl`
- * every other popout here uses — it rendered as a square-cornered list against rounded everything
- * else. Owning the list is the only way to make it match.
- *
- * Width is fixed rather than fitted to content, so a column of these lines up on both edges instead
- * of only the right; but narrower than it was, since sizing for the longest label in the app made
- * every short one look padded.
- */
-const select = (
-  options: readonly (readonly [string, string])[],
-  value: string,
-  onChange: (next: string) => void,
-): HTMLElement => {
-  const wrap = document.createElement('div')
-  wrap.style.position = 'relative'
-  wrap.style.flex = '0 0 auto'
-
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'btn btn-sm btn-outline justify-between font-normal'
-  button.style.width = '9rem'
-  const label = document.createElement('span')
-  label.className = 'caelestis-name'
-  label.style.textAlign = 'left'
-  label.textContent = options.find(([id]) => id === value)?.[1] ?? ''
-  const caret = icon('caret', 'size-4 opacity-60')
-  caret.style.transform = 'rotate(90deg)'
-  button.append(label, caret)
-
-  const close = (): void => {
-    wrap.querySelector('[data-caelestis-options]')?.remove()
-  }
-
-  button.addEventListener('click', () => {
-    if (wrap.querySelector('[data-caelestis-options]') !== null) {
-      close()
-      return
-    }
-    // Only one popout at a time, ours or another row's.
-    for (const el of document.querySelectorAll('[data-caelestis-options]')) el.remove()
-    const list = document.createElement('ul')
-    list.setAttribute('data-caelestis-options', '')
-    list.className = 'menu bg-base-100 shadow-2xl'
-    Object.assign(list.style, {
-      position: 'absolute',
-      right: '0',
-      top: 'calc(100% + 0.25rem)',
-      zIndex: '40',
-      // The same radius as the panel and every other popout. This is the whole reason it is not a
-      // native select.
-      borderRadius: SURFACE_RADIUS,
-      padding: '0.25rem',
-      width: '11rem',
-      display: 'block',
-    })
-    for (const [id, text] of options) {
-      const item = document.createElement('li')
-      const choice = document.createElement('button')
-      choice.type = 'button'
-      choice.className = 'flex items-center gap-2'
-      const tick = icon('check', 'size-4')
-      // Reserved rather than conditional, so the labels do not shift as the selection moves.
-      tick.style.visibility = id === value ? 'visible' : 'hidden'
-      const name = document.createElement('span')
-      name.textContent = text
-      choice.append(tick, name)
-      choice.addEventListener('click', () => {
-        close()
-        onChange(id)
-      })
-      item.appendChild(choice)
-      list.appendChild(item)
-    }
-    wrap.appendChild(list)
-    // Dismiss on a pointerdown outside, on the next tick so the opening click does not close it.
-    setTimeout(() => {
-      const dismiss = (event: PointerEvent): void => {
-        if (event.target instanceof Node && wrap.contains(event.target)) return
-        close()
-        window.removeEventListener('pointerdown', dismiss)
-      }
-      window.addEventListener('pointerdown', dismiss)
-    }, 0)
-  })
-
-  wrap.appendChild(button)
-  return wrap
-}
-
-/**
  * A fraction, as a slider reading out in per cent.
  *
  * Sized to sit where a checkbox sits in a `settingRow`, so a switch and a limit line up as the pair
@@ -1033,24 +940,6 @@ const appearanceView = (): HTMLElement => {
   const state = getState()
 
   view.appendChild(sectionHeader('Appearance', 'tune'))
-  view.appendChild(
-    settingRow(
-      'Display progress bars',
-      null,
-      select(
-        [
-          ['inline', 'Inline'],
-          ['expanded', 'Expanded'],
-          ['hidden', 'Never'],
-        ],
-        state.progress,
-        (next) => {
-          setState({ progress: next as ProgressPlacement })
-          rerender()
-        },
-      ),
-    ),
-  )
   view.appendChild(
     settingRow(
       'Pixel style',
@@ -3189,7 +3078,7 @@ export const installPanel = (): void => {
   onLocalChange(refreshView)
   let progressRefreshQueued = false
   onMismatchesChanged(() => {
-    if (progressRefreshQueued || getState().progress === 'hidden') return
+    if (progressRefreshQueued) return
     progressRefreshQueued = true
     requestAnimationFrame(() => {
       progressRefreshQueued = false

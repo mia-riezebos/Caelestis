@@ -32,6 +32,7 @@ describe('mismatch scan progress', () => {
     })
     expect([...outcome.wrong]).toEqual([])
     expect([...outcome.unpainted]).toEqual([2, 0, 3])
+    expect([...outcome.progressByColour]).toEqual([1, 1, 0, 0, 2, 0, 1, 0, 3, 0, 0, 1])
   })
 
   it('keeps display-hidden colours in progress while excluding them from marker coordinates', () => {

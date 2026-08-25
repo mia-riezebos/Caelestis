@@ -1,4 +1,5 @@
-import type { TemplateProgress } from '../templates/mismatch.js'
+import { WPLACE_PALETTE } from '@caelestis/shared'
+import type { TemplateColourProgress, TemplateProgress } from '../templates/mismatch.js'
 
 /** A count-only answer for a template whose pixels have not reached this browser yet. */
 export const emptyProgress = (total: number): TemplateProgress => ({
@@ -29,6 +30,27 @@ export const sumProgress = (entries: readonly TemplateProgress[]): TemplateProgr
     }),
     { completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 0 },
   )
+}
+
+export const sumColourProgress = (
+  groups: ReadonlyArray<readonly TemplateColourProgress[]>,
+): readonly TemplateColourProgress[] | undefined => {
+  if (groups.length === 0) return undefined
+  const totals = new Map<number, TemplateColourProgress>()
+  for (const group of groups) {
+    for (const entry of group) {
+      const held = totals.get(entry.index)
+      totals.set(entry.index, {
+        index: entry.index,
+        completed: (held?.completed ?? 0) + entry.completed,
+        mismatched: (held?.mismatched ?? 0) + entry.mismatched,
+        unpainted: (held?.unpainted ?? 0) + entry.unpainted,
+        known: (held?.known ?? 0) + entry.known,
+        total: (held?.total ?? 0) + entry.total,
+      })
+    }
+  }
+  return [...totals.values()].sort((a, b) => a.index - b.index)
 }
 
 const number = (value: number): string => Math.max(0, value).toLocaleString()
@@ -94,5 +116,36 @@ export const progressIndicator = (
     root.appendChild(legend)
   }
 
+  return root
+}
+
+/** One compact meter row per colour actually present in the template or aggregate. */
+export const colourProgressDetails = (entries: readonly TemplateColourProgress[]): HTMLElement => {
+  const root = document.createElement('span')
+  root.className = 'caelestis-progress-colours'
+  for (const entry of entries) {
+    const colour = WPLACE_PALETTE[entry.index]
+    if (colour === undefined) continue
+    const row = document.createElement('span')
+    row.className = 'caelestis-progress-colour-row'
+    row.setAttribute('aria-label', `${colour.name}. ${progressLabel(entry)}`)
+
+    const swatch = document.createElement('span')
+    swatch.className = 'caelestis-progress-colour-swatch'
+    swatch.style.backgroundColor = colour.hex
+
+    const name = document.createElement('span')
+    name.className = 'caelestis-progress-colour-name'
+    name.textContent = colour.name
+    name.title = colour.name
+
+    const meter = progressIndicator(entry, 'inline')
+    meter.style.setProperty('--caelestis-progress-completed', colour.hex)
+    meter.removeAttribute('role')
+    meter.removeAttribute('aria-label')
+    meter.removeAttribute('title')
+    row.append(swatch, name, meter)
+    root.appendChild(row)
+  }
   return root
 }

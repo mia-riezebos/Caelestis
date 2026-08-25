@@ -34,6 +34,7 @@ const CSS = `
 }
 .caelestis-row--expanded-progress {
   flex-wrap: wrap;
+  row-gap: 0.25rem;
 }
 /* The gap the row would occupy, held open while dragging, rather than a line drawn on a
    neighbour. A line says "near here"; a hole says "here", and the list stops shifting under the
@@ -346,11 +347,11 @@ const CSS = `
 .caelestis-progress--expanded {
   order: 10;
   flex: 0 0 100%;
+  width: 100%;
   box-sizing: border-box;
   flex-direction: column;
   gap: 0.2rem;
-  padding-left: 2.25rem;
-  padding-right: 1.75rem;
+  padding-inline: 0;
 }
 .caelestis-progress-track {
   display: flex;
@@ -379,7 +380,7 @@ const CSS = `
   min-width: 1.75rem;
 }
 .caelestis-progress-percent {
-  flex: 0 0 2rem;
+  flex: 0 0 4ch;
   text-align: end;
   font-size: 0.625rem;
   line-height: 1;
@@ -391,7 +392,7 @@ const CSS = `
   height: 100%;
 }
 .caelestis-progress-completed {
-  background: var(--color-primary, #2563eb);
+  background: var(--caelestis-progress-completed, var(--color-primary, #2563eb));
 }
 .caelestis-progress-mismatched {
   background: var(--color-error, #dc2626);
@@ -439,6 +440,41 @@ const CSS = `
   opacity: 0.55;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.caelestis-progress-colours {
+  order: 11;
+  display: flex;
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.caelestis-progress-colour-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+.caelestis-progress-colour-swatch {
+  flex: 0 0 0.625rem;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.caelestis-progress-colour-name {
+  flex: 0 0 5rem;
+  overflow: hidden;
+  font-size: 0.625rem;
+  line-height: 1;
+  opacity: 0.68;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.caelestis-progress-colour-row > .caelestis-progress--inline {
+  flex: 1 1 auto;
+  width: auto;
 }
 `
 

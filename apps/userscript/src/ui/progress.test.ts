@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest'
 import {
+  colourProgressDetails,
   completionPercent,
   completionRatio,
   progressIndicator,
@@ -34,5 +35,23 @@ describe('template progress', () => {
     expect(
       sumProgress([progress, { completed: 10, mismatched: 5, unpainted: 5, known: 20, total: 50 }]),
     ).toEqual({ completed: 50, mismatched: 15, unpainted: 35, known: 100, total: 150 })
+  })
+
+  it('renders one identified meter row for every template colour', () => {
+    const details = colourProgressDetails([
+      { index: 0, completed: 3, mismatched: 1, unpainted: 0, known: 4, total: 5 },
+      { index: 4, completed: 2, mismatched: 0, unpainted: 1, known: 3, total: 3 },
+    ])
+
+    const rows = details.querySelectorAll('.caelestis-progress-colour-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.getAttribute('aria-label')).toContain('Black')
+    expect(rows[1]?.getAttribute('aria-label')).toContain('White')
+    expect(rows[0]?.querySelector('.caelestis-progress-percent')?.textContent).toBe('60%')
+    expect(
+      rows[0]
+        ?.querySelector<HTMLElement>('.caelestis-progress')
+        ?.style.getPropertyValue('--caelestis-progress-completed'),
+    ).toBe('#000000')
   })
 })

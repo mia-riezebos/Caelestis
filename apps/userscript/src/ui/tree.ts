@@ -23,11 +23,23 @@ import {
   type PlacedTemplate,
   setLocalVisible,
 } from '../templates/local-store.js'
-import { progressFor, type TemplateProgress } from '../templates/mismatch.js'
+import {
+  colourProgressFor,
+  progressFor,
+  type TemplateColourProgress,
+  type TemplateProgress,
+} from '../templates/mismatch.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
-import { completionRatio, emptyProgress, progressIndicator, sumProgress } from './progress.js'
+import {
+  colourProgressDetails,
+  completionRatio,
+  emptyProgress,
+  progressIndicator,
+  sumColourProgress,
+  sumProgress,
+} from './progress.js'
 import { isReorderable } from './sort.js'
 
 /**
@@ -115,6 +127,9 @@ let renameDraft: {
   selectionStart: number
   selectionEnd: number
 } | null = null
+type ProgressDisclosure = 'expanded' | 'colours'
+/** Per-row disclosure is session UI state, not an appearance preference. */
+const progressDisclosure = new Map<string, ProgressDisclosure>()
 const MAX_RENDERED_ROWS = 2_000
 
 /**
@@ -1005,6 +1020,7 @@ interface RowOptions {
   readonly depth: number
   readonly meta?: string
   readonly progress?: TemplateProgress
+  readonly colourProgress?: (() => readonly TemplateColourProgress[] | undefined) | undefined
   readonly leadingActions?:
     | ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
     | undefined
@@ -1194,13 +1210,62 @@ const treeRow = (options: RowOptions): HTMLElement => {
     row.appendChild(meta)
   }
 
-  const progressPlacement = getState().progress
+  const requestedDisclosure = progressDisclosure.get(options.key)
+  const hasProgress = options.progress !== undefined
+  const canShowExpandedProgress = hasProgress && (!options.container || expanded)
+  const resolvedColourProgress =
+    canShowExpandedProgress && requestedDisclosure === 'colours'
+      ? options.colourProgress?.()
+      : undefined
+  const disclosure: 'inline' | ProgressDisclosure =
+    !canShowExpandedProgress || requestedDisclosure === undefined
+      ? 'inline'
+      : requestedDisclosure === 'colours' && (resolvedColourProgress?.length ?? 0) === 0
+        ? 'expanded'
+        : requestedDisclosure
+  const progressPlacement = disclosure === 'inline' ? 'inline' : 'expanded'
   let progressElement: HTMLElement | null = null
-  if (options.progress !== undefined && progressPlacement !== 'hidden') {
+  if (options.progress !== undefined) {
     if (progressPlacement === 'expanded') {
       row.classList.add('caelestis-row--expanded-progress')
     }
     progressElement = progressIndicator(options.progress, progressPlacement)
+  }
+
+  const progressActions: Array<{ icon: IconName; label: string; run: () => void }> = []
+  if (hasProgress) {
+    if (disclosure === 'inline') {
+      progressActions.push({
+        icon: 'expandMore',
+        label: 'Expand progress',
+        run: () => {
+          if (options.container && !expanded) {
+            setState({ collapsed: getState().collapsed.filter((key) => key !== options.key) })
+          }
+          progressDisclosure.set(options.key, 'expanded')
+          options.rerender()
+        },
+      })
+    } else {
+      progressActions.push({
+        icon: 'expandLess',
+        label: 'Collapse progress',
+        run: () => {
+          progressDisclosure.delete(options.key)
+          options.rerender()
+        },
+      })
+      if (options.colourProgress !== undefined) {
+        progressActions.push({
+          icon: 'palette',
+          label: disclosure === 'colours' ? 'Hide colour progress' : 'Show colour progress',
+          run: () => {
+            progressDisclosure.set(options.key, disclosure === 'colours' ? 'expanded' : 'colours')
+            options.rerender()
+          },
+        })
+      }
+    }
   }
 
   let actionElement: HTMLElement | null = null
@@ -1243,23 +1308,28 @@ const treeRow = (options: RowOptions): HTMLElement => {
       if (event.key === 'Escape') cancel()
     })
     actionElement = group
-  } else if (options.actions !== undefined && options.actions.length > 0) {
-    const group = document.createElement('span')
-    group.className = 'caelestis-actions flex items-center gap-0.5'
-    group.style.flex = '0 0 auto'
-    for (const action of options.actions) {
-      const button = document.createElement('button')
-      button.className = 'btn btn-ghost btn-xs btn-circle'
-      button.title = action.label
-      button.setAttribute('aria-label', action.label)
-      button.appendChild(icon(action.icon, 'size-4'))
-      button.addEventListener('click', (event) => {
-        event.stopPropagation()
-        action.run()
-      })
-      group.appendChild(button)
+  } else {
+    const actions = [...(options.actions ?? []), ...progressActions]
+    if (actions.length === 0) {
+      actionElement = null
+    } else {
+      const group = document.createElement('span')
+      group.className = 'caelestis-actions flex items-center gap-0.5'
+      group.style.flex = '0 0 auto'
+      for (const action of actions) {
+        const button = document.createElement('button')
+        button.className = 'btn btn-ghost btn-xs btn-circle'
+        button.title = action.label
+        button.setAttribute('aria-label', action.label)
+        button.appendChild(icon(action.icon, 'size-4'))
+        button.addEventListener('click', (event) => {
+          event.stopPropagation()
+          action.run()
+        })
+        group.appendChild(button)
+      }
+      actionElement = group
     }
-    actionElement = group
   }
 
   if (
@@ -1274,6 +1344,9 @@ const treeRow = (options: RowOptions): HTMLElement => {
   } else {
     if (progressElement !== null) row.appendChild(progressElement)
     if (actionElement !== null) row.appendChild(actionElement)
+  }
+  if (disclosure === 'colours' && resolvedColourProgress !== undefined) {
+    row.appendChild(colourProgressDetails(resolvedColourProgress))
   }
 
   /**
@@ -1547,6 +1620,7 @@ interface TreeItem {
   readonly createdAt?: number
   readonly meta?: string | undefined
   readonly progress?: TemplateProgress
+  readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined
   readonly progressSortable?: true
   readonly muted?: boolean | undefined
   readonly visible: boolean
@@ -1583,6 +1657,9 @@ interface TreeItem {
 interface TreeSource {
   readonly children: (parentId: string | null) => readonly TreeItem[]
   readonly progress: (parentId: string | null) => TemplateProgress | undefined
+  readonly colourProgress: (
+    parentId: string | null,
+  ) => readonly TemplateColourProgress[] | undefined
 }
 
 const groupedSource = (
@@ -1598,7 +1675,10 @@ const groupedSource = (
     byParent.set(parentId, siblings)
   }
   const totals = new Map<string | null, TemplateProgress | undefined>()
+  const colourTotals = new Map<string | null, readonly TemplateColourProgress[] | undefined>()
+  const colourAvailability = new Map<string | null, boolean>()
   const visiting = new Set<string | null>()
+  const colourVisiting = new Set<string | null>()
   const progress = (parentId: string | null): TemplateProgress | undefined => {
     if (totals.has(parentId)) return totals.get(parentId)
     if (visiting.has(parentId)) return undefined
@@ -1613,14 +1693,70 @@ const groupedSource = (
     totals.set(parentId, total)
     return total
   }
+  const hasColourProgress = (parentId: string | null): boolean => {
+    const cached = colourAvailability.get(parentId)
+    if (cached !== undefined) return cached
+    if (colourVisiting.has(parentId)) return false
+    colourVisiting.add(parentId)
+    let found = false
+    let available = true
+    for (const item of byParent.get(parentId) ?? []) {
+      const overall = item.childrenOf === null ? item.progress : progress(item.childrenOf)
+      if (overall === undefined) continue
+      found = true
+      const itemAvailable =
+        item.childrenOf === null
+          ? item.colourProgress !== undefined
+          : hasColourProgress(item.childrenOf)
+      if (!itemAvailable) {
+        available = false
+        break
+      }
+    }
+    colourVisiting.delete(parentId)
+    const result = found && available
+    colourAvailability.set(parentId, result)
+    return result
+  }
+  const colourProgress = (
+    parentId: string | null,
+  ): readonly TemplateColourProgress[] | undefined => {
+    if (colourTotals.has(parentId)) return colourTotals.get(parentId)
+    if (!hasColourProgress(parentId)) return undefined
+    if (colourVisiting.has(parentId)) return undefined
+    colourVisiting.add(parentId)
+    const descendants: Array<readonly TemplateColourProgress[]> = []
+    for (const item of byParent.get(parentId) ?? []) {
+      const itemProgress =
+        item.childrenOf === null ? item.colourProgress?.() : colourProgress(item.childrenOf)
+      if (itemProgress !== undefined) descendants.push(itemProgress)
+    }
+    colourVisiting.delete(parentId)
+    const total = sumColourProgress(descendants)
+    const overall = progress(parentId)
+    const complete =
+      total !== undefined &&
+      overall !== undefined &&
+      total.reduce((sum, entry) => sum + entry.total, 0) === overall.total
+        ? total
+        : undefined
+    colourTotals.set(parentId, complete)
+    return complete
+  }
   return {
     children: (parentId) =>
       (byParent.get(parentId) ?? []).map((item) => {
         if (item.childrenOf === null) return item
         const total = progress(item.childrenOf)
-        return total === undefined ? item : { ...item, progress: total }
+        const hasColours = hasColourProgress(item.childrenOf)
+        return {
+          ...item,
+          ...(total === undefined ? {} : { progress: total }),
+          ...(hasColours ? { colourProgress: () => colourProgress(item.childrenOf) ?? [] } : {}),
+        }
       }),
     progress,
+    colourProgress,
   }
 }
 
@@ -1758,6 +1894,7 @@ const renderLevel = (
         },
         ...(item.meta === undefined ? {} : { meta: item.meta }),
         ...(item.progress === undefined ? {} : { progress: item.progress }),
+        ...(item.colourProgress === undefined ? {} : { colourProgress: item.colourProgress }),
         ...(item.leadingActions === undefined ? {} : { leadingActions: item.leadingActions }),
         ...(item.muted === undefined ? {} : { muted: item.muted }),
         ...(item.actions === undefined ? {} : { actions: item.actions }),
@@ -1838,6 +1975,24 @@ export const treeContents = (
     const drawn = drawnByServer.get(server.url)?.get(template.id)
     return drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn)
   }
+  const serverTemplateColourProgress = (
+    server: ConnectedServer,
+    template: ServerTemplate,
+  ): readonly TemplateColourProgress[] | undefined => {
+    const drawn = drawnByServer.get(server.url)?.get(template.id)
+    return drawn === undefined ? undefined : colourProgressFor(drawn)
+  }
+  const completeColourProgress = (
+    overall: TemplateProgress | undefined,
+    groups: ReadonlyArray<readonly TemplateColourProgress[]>,
+  ): readonly TemplateColourProgress[] | undefined => {
+    const colours = sumColourProgress(groups)
+    return colours !== undefined &&
+      overall !== undefined &&
+      colours.reduce((sum, entry) => sum + entry.total, 0) === overall.total
+      ? colours
+      : undefined
+  }
   const rank = new Map(getState().customOrder.map((key, index) => [key, index]))
   const categories = [
     { key: 'local', name: 'Local' },
@@ -1878,6 +2033,26 @@ export const treeContents = (
               serverTemplateProgress(server, template),
             ),
           )
+    const serverTemplates = server === undefined ? [] : (rowsFor(server)?.templates ?? [])
+    const parentColourProgress: (() => readonly TemplateColourProgress[] | undefined) | undefined =
+      isLocal
+        ? localOnly.length === 0
+          ? undefined
+          : () => completeColourProgress(parentProgress, localOnly.map(colourProgressFor))
+        : server === undefined ||
+            serverTemplates.length === 0 ||
+            !serverTemplates.every(
+              (template) => drawnByServer.get(server.url)?.has(template.id) === true,
+            )
+          ? undefined
+          : () =>
+              completeColourProgress(
+                parentProgress,
+                serverTemplates.flatMap((template) => {
+                  const colours = serverTemplateColourProgress(server, template)
+                  return colours === undefined ? [] : [colours]
+                }),
+              )
 
     wrap.appendChild(
       treeRow({
@@ -1894,6 +2069,7 @@ export const treeContents = (
           destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
         parentKey: null,
         ...(parentProgress === undefined ? {} : { progress: parentProgress }),
+        ...(parentColourProgress === undefined ? {} : { colourProgress: parentColourProgress }),
         rerender,
         onError: callbacks.onError,
         /**
@@ -2072,6 +2248,7 @@ export const treeContents = (
               createdAt: template.updatedAt,
               muted: !template.published,
               progress: serverTemplateProgress(server, template),
+              ...(drawn === undefined ? {} : { colourProgress: () => colourProgressFor(drawn) }),
               progressSortable: true,
               leadingActions: [
                 {
@@ -2198,6 +2375,7 @@ export const treeContents = (
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
             progress: progressFor(template),
+            colourProgress: () => colourProgressFor(template),
             progressSortable: true,
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),

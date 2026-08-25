@@ -50,6 +50,8 @@ export interface ScanOutcome {
   readonly mismatched: number
   readonly progressUnpainted: number
   readonly progressAsserted: number
+  /** Sparse `[palette index, completed, mismatched, unpainted]` progress tuples. */
+  readonly progressByColour: Uint32Array
 }
 
 export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome => {
@@ -69,6 +71,7 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
       mismatched: 0,
       progressUnpainted: 0,
       progressAsserted: 0,
+      progressByColour: new Uint32Array(0),
     }
   }
 
@@ -89,6 +92,9 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   let mismatched = 0
   let progressUnpainted = 0
   let progressAsserted = 0
+  // `scanTile` is stringified into a worker, so this deliberately uses the byte-sized palette
+  // domain rather than importing the application's current palette length.
+  const progressByColour = new Uint32Array(256 * 3)
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - job.originY) * job.width + (left - job.originX)
     let tileAt = (y - tileTop) * tileSize + (left - tileLeft) - bandOffset
@@ -106,9 +112,17 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
       // overlay still needs painting and therefore still belongs in these counts.
       if (wanted !== job.transparent && wanted !== unpaintedIndex) {
         progressAsserted++
-        if (placed === wanted) completed++
-        else if (placed === unpaintedIndex) progressUnpainted++
-        else mismatched++
+        const colourAt = wanted * 3
+        if (placed === wanted) {
+          completed++
+          progressByColour[colourAt] = (progressByColour[colourAt] ?? 0) + 1
+        } else if (placed === unpaintedIndex) {
+          progressUnpainted++
+          progressByColour[colourAt + 2] = (progressByColour[colourAt + 2] ?? 0) + 1
+        } else {
+          mismatched++
+          progressByColour[colourAt + 1] = (progressByColour[colourAt + 1] ?? 0) + 1
+        }
       }
 
       if (asserted[wanted] === 0) continue
@@ -121,6 +135,30 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     }
   }
 
+  let usedColours = 0
+  for (let index = 0; index < 256; index++) {
+    const at = index * 3
+    if (
+      progressByColour[at] !== 0 ||
+      progressByColour[at + 1] !== 0 ||
+      progressByColour[at + 2] !== 0
+    )
+      usedColours++
+  }
+  const packedProgress = new Uint32Array(usedColours * 4)
+  let packedAt = 0
+  for (let index = 0; index < 256; index++) {
+    const at = index * 3
+    const colourCompleted = progressByColour[at] as number
+    const colourMismatched = progressByColour[at + 1] as number
+    const colourUnpainted = progressByColour[at + 2] as number
+    if (colourCompleted === 0 && colourMismatched === 0 && colourUnpainted === 0) continue
+    packedProgress[packedAt++] = index
+    packedProgress[packedAt++] = colourCompleted
+    packedProgress[packedAt++] = colourMismatched
+    packedProgress[packedAt++] = colourUnpainted
+  }
+
   return {
     wrong: new Float32Array(wrong),
     unpainted: new Float32Array(unpainted),
@@ -129,5 +167,6 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     mismatched,
     progressUnpainted,
     progressAsserted,
+    progressByColour: packedProgress,
   }
 }
