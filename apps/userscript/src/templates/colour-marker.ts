@@ -10,8 +10,32 @@ interface ColourMarkerTemplate {
   readonly wrapX?: boolean
 }
 
-const MAX_ENTRIES_PER_SOURCE = 128
 const cache = new WeakMap<Uint8Array, Map<string, Float32Array>>()
+const activeSources = new Set<Uint8Array>()
+let requestedThisFrame: Map<Uint8Array, Set<string>> | null = null
+
+export const beginColourMarkerFrame = (): void => {
+  requestedThisFrame = new Map()
+}
+
+/** Retain selected-colour answers only for template/tile pairs in the current viewport. */
+export const endColourMarkerFrame = (): void => {
+  const requested = requestedThisFrame
+  requestedThisFrame = null
+  if (requested === null) return
+  for (const source of [...activeSources]) {
+    const keys = requested.get(source)
+    const entries = cache.get(source)
+    if (keys === undefined || entries === undefined) {
+      cache.delete(source)
+      activeSources.delete(source)
+      continue
+    }
+    for (const key of [...entries.keys()]) {
+      if (!keys.has(key)) entries.delete(key)
+    }
+  }
+}
 
 /** World-space x,y,wanted triples for one template colour inside one canvas tile. */
 export const colourMarksIn = (
@@ -20,6 +44,12 @@ export const colourMarksIn = (
   selected: number,
 ): Float32Array => {
   const key = `${template.originX}/${template.originY}/${template.width}/${template.height}/${template.wrapX === true ? 1 : 0}|${tile.x}/${tile.y}|${selected}`
+  if (requestedThisFrame !== null) {
+    activeSources.add(template.indices)
+    const requested = requestedThisFrame.get(template.indices) ?? new Set<string>()
+    requested.add(key)
+    requestedThisFrame.set(template.indices, requested)
+  }
   const held = cache.get(template.indices)
   const cached = held?.get(key)
   if (cached !== undefined) {
@@ -52,11 +82,6 @@ export const colourMarksIn = (
   const marks = new Float32Array(points)
   const entries = held ?? new Map<string, Float32Array>()
   entries.set(key, marks)
-  while (entries.size > MAX_ENTRIES_PER_SOURCE) {
-    const oldest = entries.keys().next()
-    if (oldest.done) break
-    entries.delete(oldest.value)
-  }
   if (held === undefined) cache.set(template.indices, entries)
   return marks
 }

@@ -120,7 +120,6 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
 }
 
 const cache = new Map<string, Cached>()
-const KEEP_ANSWERS = 128
 const coverage = new Map<
   string,
   Pick<Cached, 'asserted' | 'key' | 'templateSource'> & {
@@ -304,16 +303,6 @@ const rememberCoverage = (cacheKey: string, entry: Cached): void => {
 const remember = (cacheKey: string, entry: Cached): void => {
   cache.delete(cacheKey)
   cache.set(cacheKey, entry)
-  while (cache.size > KEEP_ANSWERS) {
-    const oldest = cache.keys().next()
-    if (!oldest.done) {
-      cache.delete(oldest.value)
-      forgetCoverage(oldest.value)
-      // The counter is only meaningful while an answer or a scan refers to it. Kept past both, it
-      // was the one structure here with no bound, growing with every tile ever painted on.
-      if (!inFlight.has(oldest.value)) patchCount.delete(oldest.value)
-    }
-  }
 }
 
 /** Bumped whenever a cached answer is patched, so a listener can tell that anything happened. */
@@ -361,10 +350,40 @@ const notifyChanged = (): void => {
  */
 const SCAN_BUDGET_MS = 8
 let scanDeadline = 0
+let requestedThisFrame: Set<string> | null = null
 
 /** Called once per frame by the renderer, before it asks for anything. */
 export const beginMismatchFrame = (): void => {
   scanDeadline = performance.now() + SCAN_BUDGET_MS
+  requestedThisFrame = new Set()
+}
+
+/**
+ * Keep every answer the current viewport requested and drop everything outside it.
+ *
+ * A fixed-size LRU made marker count depend on how many template/tile intersections happened to be
+ * visible: the 129th answer evicted the first while the same frame still needed both. The viewport is
+ * already the renderer's natural bound, so it is also the cache bound.
+ */
+export const endMismatchFrame = (): void => {
+  const requested = requestedThisFrame
+  requestedThisFrame = null
+  scanDeadline = 0
+  if (requested === null) return
+  for (const cacheKey of [...cache.keys()]) {
+    if (requested.has(cacheKey)) continue
+    cache.delete(cacheKey)
+    forgetCoverage(cacheKey)
+  }
+  for (const cacheKey of [...inFlight.keys()]) {
+    if (!requested.has(cacheKey)) inFlight.delete(cacheKey)
+  }
+  for (const cacheKey of [...stale]) {
+    if (!requested.has(cacheKey)) stale.delete(cacheKey)
+  }
+  for (const cacheKey of [...patchCount.keys()]) {
+    if (!cache.has(cacheKey) && !inFlight.has(cacheKey)) patchCount.delete(cacheKey)
+  }
 }
 
 /**
@@ -884,6 +903,7 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
   }
 
   const cacheKey = `${template.id}|${tile.x}/${tile.y}`
+  requestedThisFrame?.add(cacheKey)
   const key = signature(template)
   const existing = cache.get(cacheKey)
   if (
@@ -964,12 +984,11 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
   // in-flight one, so counting cache keys alone left exactly that scan uncountable: a paint landing
   // during it changed nothing the identity checks look at, and the pre-paint answer was cached and
   // then reused indefinitely.
-  // The keys for this tile, collected once. Usually one or two, against a cache of 128 — so this is
-  // both the snapshot the loop below needs and far less than copying the whole cache per pixel.
+  // The keys for this tile, collected once. This is both the snapshot the loop below needs and far
+  // less than copying every visible answer per pixel.
   //
   // A snapshot rather than a live iteration, because `remember` deletes and re-inserts the key it
-  // patches, which would move it behind a live iterator and show it to us twice, and can evict a
-  // different key while we are walking.
+  // patches, which would move it behind a live iterator and show it to us twice.
   const suffix = `|${tile.x}/${tile.y}`
   const keys: string[] = []
   for (const key of cache.keys()) {

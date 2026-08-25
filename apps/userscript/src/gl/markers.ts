@@ -3,14 +3,18 @@ import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
 import { getState } from '../state.js'
 import { isColourHidden, toRgbUnit } from '../templates/appearance.js'
-import { colourMarksIn } from '../templates/colour-marker.js'
+import {
+  beginColourMarkerFrame,
+  colourMarksIn,
+  endColourMarkerFrame,
+} from '../templates/colour-marker.js'
 import {
   appearanceOf,
   displayTemplates,
   isTemplateVisible,
   type PlacedTemplate,
 } from '../templates/local-store.js'
-import { beginMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
+import { beginMismatchFrame, endMismatchFrame, mismatchesIn } from '../templates/mismatch.js'
 import { horizontalSpans } from '../templates/placement.js'
 import {
   currentQuads,
@@ -375,7 +379,7 @@ const RETRY_MS = 250
 let nextRetry = 0
 
 /** Every marked pixel of every template that asks for it, over every tile on screen. */
-const drawAll = (gl: WebGL2RenderingContext): void => {
+const drawVisible = (gl: WebGL2RenderingContext): void => {
   if (!isDrawingTiles()) return
   const tiles = currentQuads()
   if (tiles.length === 0) return
@@ -438,8 +442,6 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
   if (wanted.length === 0) return
 
   count('marker:layer rendered')
-  beginMismatchFrame()
-
   // Only the tiles a template covers. Asking about a tile is not free — one whose pixels have not
   // been captured triggers a fetch and a 1000x1000 `getImageData`.
   const covers = (template: PlacedTemplate, tile: TileQuad): boolean => {
@@ -542,6 +544,20 @@ const drawAll = (gl: WebGL2RenderingContext): void => {
     const map = getMap() as { triggerRepaint?: () => void } | null
     map?.triggerRepaint?.()
     count('marker:asked for another frame')
+  }
+}
+
+const drawAll = (gl: WebGL2RenderingContext): void => {
+  beginMismatchFrame()
+  beginColourMarkerFrame()
+  try {
+    drawVisible(gl)
+  } finally {
+    try {
+      endColourMarkerFrame()
+    } finally {
+      endMismatchFrame()
+    }
   }
 }
 
