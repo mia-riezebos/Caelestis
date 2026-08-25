@@ -50,14 +50,14 @@ jobs:
       - name: Check release tooling
         run: pnpm test:release
 
+      - name: Build userscript and dependencies
+        run: pnpm --filter @caelestis/userscript... build
+
       - name: Typecheck userscript and dependencies
         run: pnpm --filter @caelestis/userscript... check
 
       - name: Test userscript and dependencies
         run: pnpm --filter @caelestis/userscript... test
-
-      - name: Build userscript and dependencies
-        run: pnpm --filter @caelestis/userscript... build
 
       - name: Open or update the userscript release pull request
         id: changesets

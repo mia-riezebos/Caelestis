@@ -62,14 +62,14 @@ jobs:
       - name: Check release tooling
         run: pnpm test:release
 
+      - name: Build userscript and dependencies
+        run: pnpm --filter @caelestis/userscript... build
+
       - name: Typecheck userscript and dependencies
         run: pnpm --filter @caelestis/userscript... check
 
       - name: Test userscript and dependencies
         run: pnpm --filter @caelestis/userscript... test
-
-      - name: Build userscript and dependencies
-        run: pnpm --filter @caelestis/userscript... build
 
       - name: Upload userscript build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
