@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.2
+
+### Patch Changes
+
+- b1a6639: Resize template menus when appearance groups expand and keep pixel-style sliders live while tweening.
+
 ## 0.2.1
 
 ### Patch Changes
