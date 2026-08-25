@@ -8,20 +8,21 @@ import type {
   StatusResponse,
   TileHistoryResponse,
 } from '@caelestis/shared'
+import { resolveServerUrl } from './server-url.js'
 
 /**
  * The template server the dashboard reads from.
  *
  * A deployment fronts exactly one server — `VITE_CAELESTIS_SERVER` at build time, the page's own
- * origin otherwise, wrangler's port in dev. Deliberately not user-configurable: whoever is on this
- * frontend is here for this server. Only the access token is theirs, and it lives in localStorage.
+ * origin plus `/backend` otherwise, wrangler's port plus `/backend` in dev. Deliberately not
+ * user-configurable: whoever is on this frontend is here for this server. Only the access token is
+ * theirs, and it lives in localStorage.
  */
 const TOKEN_KEY = 'caelestis:token'
 
 export const serverUrl = ((): string => {
   const configured = import.meta.env.VITE_CAELESTIS_SERVER as string | undefined
-  if (configured !== undefined && configured.length > 0) return configured.replace(/\/+$/, '')
-  return import.meta.env.DEV ? 'http://127.0.0.1:8787' : window.location.origin
+  return resolveServerUrl(configured, import.meta.env.DEV, window.location.origin)
 })()
 
 export const readToken = (): string | null => localStorage.getItem(TOKEN_KEY)
