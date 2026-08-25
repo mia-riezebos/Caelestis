@@ -96,7 +96,6 @@ CREATE TABLE `template_versions` (
 	`max_x` integer NOT NULL,
 	`max_y` integer NOT NULL,
 	`total_pixels` integer NOT NULL,
-	`colour_totals_json` text,
 	`bounds_north` real,
 	`bounds_south` real,
 	`bounds_west` real,
@@ -141,7 +140,6 @@ CREATE TABLE `templates` (
 );
 --> statement-breakpoint
 CREATE TABLE `tile_history` (
-	`season` integer NOT NULL,
 	`tile_x` integer NOT NULL,
 	`tile_y` integer NOT NULL,
 	`resolution_s` integer NOT NULL,
@@ -149,9 +147,8 @@ CREATE TABLE `tile_history` (
 	`sha256` text NOT NULL,
 	`reported_with_token` text NOT NULL,
 	`reported_by_user_id` integer NOT NULL,
-	PRIMARY KEY(`season`, `tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by_user_id`),
+	PRIMARY KEY(`tile_x`, `tile_y`, `resolution_s`, `bucket_start_s`, `sha256`, `reported_by_user_id`),
 	CONSTRAINT "tile_history_resolution_s_check" CHECK("tile_history"."resolution_s" IN (0, 3600, 21600, 86400)),
-	CONSTRAINT "tile_history_season_check" CHECK(typeof("tile_history"."season") = 'integer' AND "tile_history"."season" >= 0),
 	CONSTRAINT "tile_history_sha256_check" CHECK(typeof("tile_history"."sha256") = 'text' AND length("tile_history"."sha256") = 64
         AND "tile_history"."sha256" NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT "tile_history_reported_with_token_check" CHECK(typeof("tile_history"."reported_with_token") = 'text' AND length("tile_history"."reported_with_token") = 64
