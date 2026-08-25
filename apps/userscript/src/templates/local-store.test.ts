@@ -1431,6 +1431,47 @@ describe('local template lifecycle', () => {
     expect(createImageBitmap).toHaveBeenCalledTimes(bitmapCalls)
   })
 
+  it('admits server overlays by pixel budget without prebuilding source bitmaps', async () => {
+    const store = await import('./local-store.js')
+    const bitmapCalls = vi.mocked(createImageBitmap).mock.calls.length
+
+    for (let index = 0; index < 93; index++) {
+      await store.putServerTemplate({
+        ...template({ id: `srv:https://example.test:template-${index}`, originX: index }),
+        serverUrl: 'https://example.test',
+        serverTemplateId: `template-${index}`,
+        serverNodeId: null,
+        serverVersion: 'version-1',
+      })
+    }
+
+    expect(store.localTemplates()).toHaveLength(93)
+    expect(store.localTemplates().every((candidate) => candidate.tiles.size === 0)).toBe(true)
+    expect(createImageBitmap).toHaveBeenCalledTimes(bitmapCalls)
+  })
+
+  it('builds local source bitmaps when copying a server overlay into Local', async () => {
+    const store = await import('./local-store.js')
+    const serverTemplate = {
+      ...template({ id: 'srv:https://example.test:template-1' }),
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'template-1',
+      serverNodeId: null,
+      serverVersion: 'version-1',
+      serverTileKeys: ['0/0'],
+    }
+    await store.putServerTemplate(serverTemplate)
+    const installed = store.localTemplates()[0]
+    expect(installed?.tiles.size).toBe(0)
+    if (installed === undefined) throw new Error('server template was not installed')
+
+    const copied = await store.copyAsLocalTemplate(installed, 'local-copy')
+
+    expect(store.isServerTemplate(copied)).toBe(false)
+    expect(copied.tiles.size).toBe(1)
+    expect(createImageBitmap).toHaveBeenCalled()
+  })
+
   it('serializes same-version server metadata after an in-flight user mutation', async () => {
     const store = await import('./local-store.js')
     const serverTemplate = {
@@ -1496,13 +1537,8 @@ describe('local template lifecycle', () => {
       serverVersion: 'version-1',
     }
     await store.putServerTemplate(serverTemplate)
-    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
-    const pending = deferOneBitmap()
-
     const refreshing = store.putServerTemplate({ ...serverTemplate, serverVersion: 'version-2' })
-    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
     const hiding = store.setLocalVisible(serverTemplate.id, false)
-    pending.resolve(bitmap(1_000, 1_000))
 
     await expect(refreshing).resolves.toBe(true)
     await expect(hiding).resolves.toBe(true)
@@ -1520,19 +1556,15 @@ describe('local template lifecycle', () => {
       serverVersion: 'version-1',
     }
     await store.putServerTemplate(serverTemplate)
-    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
-    const pending = deferOneBitmap()
     let current = true
 
     const stale = store.putServerTemplate(
       { ...serverTemplate, serverVersion: 'version-2' },
       () => current,
     )
-    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
     current = false
     const forgetting = store.forgetServerTemplates(serverTemplate.serverUrl)
     const replacement = store.putServerTemplate({ ...serverTemplate, serverVersion: 'version-3' })
-    pending.resolve(bitmap(1_000, 1_000))
 
     await expect(stale).resolves.toBe(false)
     await expect(forgetting).resolves.toBeUndefined()
@@ -1552,13 +1584,9 @@ describe('local template lifecycle', () => {
     }
     await store.putServerTemplate(serverTemplate)
     await store.setLocalVisible(serverTemplate.id, false)
-    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
-    const pending = deferOneBitmap()
 
     const revealing = store.setLocalVisible(serverTemplate.id, true)
-    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
     const forgetting = store.forgetServerTemplate(serverTemplate.id)
-    pending.resolve(bitmap(1_000, 1_000))
 
     await expect(revealing).resolves.toBe(true)
     await expect(forgetting).resolves.toBeUndefined()
@@ -1576,13 +1604,9 @@ describe('local template lifecycle', () => {
     }
     await store.putServerTemplate(serverTemplate)
     await store.setLocalVisible(serverTemplate.id, false)
-    const beforeCalls = vi.mocked(createImageBitmap).mock.calls.length
-    const pending = deferOneBitmap()
 
     const revealing = store.setLocalVisible(serverTemplate.id, true)
-    await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(beforeCalls + 1))
     const forgetting = store.forgetServerTemplates(serverTemplate.serverUrl)
-    pending.resolve(bitmap(1_000, 1_000))
 
     await expect(revealing).resolves.toBe(true)
     await expect(forgetting).resolves.toBeUndefined()
@@ -1643,20 +1667,19 @@ describe('local template lifecycle', () => {
       serverTemplateId: 'template-1',
       serverNodeId: 'folder-1',
       serverVersion: 'version-1',
+      serverTileKeys: ['2047/0', '0/0'],
       wrapX: true,
     })
 
     const [wrapped] = store.localTemplates()
     expect(wrapped).toBeDefined()
     if (wrapped === undefined) throw new Error('wrapped template was not installed')
-    expect([...(wrapped?.tiles.keys() ?? [])].sort()).toEqual(['0/0', '2047/0'])
+    expect([...store.templateTileKeys(wrapped)].sort()).toEqual(['0/0', '2047/0'])
     expect(store.canCopyAsLocalTemplate(wrapped)).toBe(false)
     expect(store.canCopyAsLocalTemplate({ ...wrapped, originX: 10 })).toBe(true)
     await expect(store.removeLocalTemplate(wrapped.id)).resolves.toBe(false)
     expect(store.localTemplates()).toContain(wrapped)
-    expect(bitmapInputs).toHaveLength(2)
-    expect(bitmapInputs[0]?.data[999 * 4 + 3]).toBe(255)
-    expect(bitmapInputs[1]?.data[3]).toBe(255)
+    expect(wrapped.tiles.size).toBe(0)
   })
 
   it('moves several folder children only after their one durable batch succeeds', async () => {

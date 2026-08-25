@@ -52,7 +52,6 @@ const MAX_CHUNK_BYTES = 8 * 1024 * 1024
 const MAX_TEMPLATE_CHUNKS = 400
 /** Encoded work per template. Decoded pixels have their own 64M-pixel bound below. */
 const MAX_TEMPLATE_TRANSFER_BYTES = 64 * 1024 * 1024
-const MAX_TEMPLATE_ATTEMPTS_PER_SYNC = 64
 const MAX_TEMPLATE_ASSEMBLY_MS = 120_000
 const ASSEMBLY_CONCURRENCY = 4
 let activeAssemblies = 0
@@ -339,7 +338,6 @@ export const rejectServerContentsForSync = (contents: ServerContents): void => {
  */
 const generations = new Map<string, number>()
 const generationControllers = new Map<string, { generation: number; controller: AbortController }>()
-const templateAttemptCursors = new Map<string, string>()
 
 const generationOf = (serverUrl: string): number => generations.get(serverUrl) ?? 0
 
@@ -358,7 +356,6 @@ export const endServerGeneration = (serverUrl: string): void => {
   generationControllers.delete(serverUrl)
   generations.set(serverUrl, generationOf(serverUrl) + 1)
   pendingServerSyncs.delete(serverUrl)
-  templateAttemptCursors.delete(serverUrl)
   // A new connection must not queue behind the obsolete drain. The old run's release callback is
   // identity guarded, so it cannot delete the replacement when it eventually settles.
   serverSyncRuns.delete(serverUrl)
@@ -430,18 +427,7 @@ const syncServerTemplatesOnce = async (
   }
   for (const [key, template] of wanted) latestVersion.set(key, template.version)
 
-  const orderedTemplates = [...wanted]
-  const previousAttempt = templateAttemptCursors.get(server.url)
-  const previousIndex = orderedTemplates.findIndex(([key]) => key === previousAttempt)
-  const rotatedTemplates =
-    previousIndex === -1
-      ? orderedTemplates
-      : [
-          ...orderedTemplates.slice(previousIndex + 1),
-          ...orderedTemplates.slice(0, previousIndex + 1),
-        ]
-  let attemptedTemplates = 0
-  for (const [key, template] of rotatedTemplates) {
+  for (const [key, template] of wanted) {
     if (!current()) return
     const held = localTemplates().find((candidate) => candidate.id === key)
     // The version is the whole point of the sync being cheap: same version, same pixels, nothing to
@@ -454,12 +440,17 @@ const syncServerTemplatesOnce = async (
     }
     if (inFlight.get(key) === generation) continue
     // Asked before the download, not after. A server may advertise a manifest far larger than the
-    // rendering budget, and decoding a template only to have the store refuse it means an
-    // `ImageBitmap` built for every one of them on every poll.
-    if (!hasRoomForServerTemplate(key)) continue
-    if (attemptedTemplates >= MAX_TEMPLATE_ATTEMPTS_PER_SYNC) break
-    attemptedTemplates++
-    templateAttemptCursors.set(server.url, key)
+    // rendering budget, and decoding a template only to have the store refuse it wastes the entire
+    // chunk transfer and assembly on every poll.
+    const wrapsX = template.bbox.minX > template.bbox.maxX
+    const width = wrapsX
+      ? WORLD_PIXELS - template.bbox.minX + template.bbox.maxX
+      : template.bbox.maxX - template.bbox.minX
+    const height = template.bbox.maxY - template.bbox.minY
+    const pixels = width * height
+    if (!Number.isSafeInteger(pixels) || pixels <= 0 || !hasRoomForServerTemplate(key, pixels)) {
+      continue
+    }
     inFlight.set(key, generation)
     try {
       const attemptSignal = AbortSignal.any([signal, AbortSignal.timeout(MAX_TEMPLATE_ASSEMBLY_MS)])
@@ -476,7 +467,7 @@ const syncServerTemplatesOnce = async (
           // version — or no longer asks for this template at all. Installing now would draw artwork
           // that has already been replaced, or bring a deleted overlay back.
           if (latestVersion.get(key) !== template.version) return 'continue'
-          if (!hasRoomForServerTemplate(key)) return 'continue'
+          if (!hasRoomForServerTemplate(key, built.indices.length)) return 'continue'
           // Hold the shared assembly slot through persistence so its decoded buffer cannot pile up
           // behind other completed assemblies while the store is busy.
           const installed = await putServerTemplate(
@@ -500,6 +491,7 @@ const syncServerTemplatesOnce = async (
               serverTemplateId: template.id,
               serverNodeId: template.nodeId,
               serverVersion: template.version,
+              serverTileKeys: template.chunks.map((chunk) => chunk.tile),
               wrapX: template.bbox.minX > template.bbox.maxX,
             },
             () => current() && latestVersion.get(key) === template.version,

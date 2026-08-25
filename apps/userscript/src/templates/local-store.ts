@@ -48,14 +48,10 @@ import { horizontalSpans } from './placement.js'
 import { nodeChainVisible, serverNodeParents, serverNodesRevision } from './server-nodes.js'
 
 /**
- * Local templates, and the per-tile bitmaps the overlay actually draws.
+ * Indexed template pixels shared by rendering, mismatch scans, colour picking and local editing.
  *
- * The renderer runs every frame and must not do per-pixel work there, so each template is sliced
- * once into one `ImageBitmap` per tile it touches. Drawing then costs one `drawImage` per visible
- * tile, whatever the template's size — which is what keeps a 1612x2584 import from costing anything
- * per frame.
- *
- * Re-slicing happens only when a template moves, which is a drag, not a frame.
+ * The WebGL renderer uploads the indices directly. Local templates also keep bitmap mip chains for
+ * the remaining CPU operations that need them; server templates use manifest tile keys instead.
  */
 
 /**
@@ -74,7 +70,7 @@ export interface TileLevels {
 }
 
 export interface PlacedTemplate extends ImportedTemplate {
-  /** Keyed `x/y`; only tiles the template actually covers appear. */
+  /** Keyed `x/y`; local templates retain bitmap mip chains for legacy CPU operations. */
   readonly tiles: ReadonlyMap<string, TileLevels>
   readonly visible: boolean
   /**
@@ -123,6 +119,8 @@ export interface PlacedTemplate extends ImportedTemplate {
   readonly serverVersion?: string
   /** The source continues at x=0 after reaching the world's east edge. Server templates only. */
   readonly wrapX?: boolean
+  /** Painted world tiles advertised by the server manifest. Server templates only. */
+  readonly serverTileKeys?: readonly string[]
 }
 
 /** Whether this template is a copy of something a server publishes. */
@@ -142,7 +140,6 @@ const pendingAdds = new Set<string>()
 const listeners: Array<() => void> = []
 const previewListeners: Array<() => void> = []
 const MAX_LOCAL_TEMPLATES = 64
-const MAX_SERVER_TEMPLATES = 64
 const MAX_LOCAL_INDEX_PIXELS = 64 * 1024 * 1024
 const MAX_RESTORE_CANDIDATES = MAX_LOCAL_TEMPLATES * 4
 const MAX_RESTORE_HYDRATED_PIXELS = MAX_LOCAL_INDEX_PIXELS * 2
@@ -1115,12 +1112,23 @@ const committedRevision = (result: SaveResult): number | null =>
  *
  * `putServerTemplate` refuses past the budget, but only after its caller has fetched and decoded the
  * pixels. A server is free to advertise a manifest far larger than the budget, so the caller needs to
- * know before it spends the work — replacing one already held always has room, since it takes the
- * slot it is already in.
+ * know before it spends the work. Admission is based on decoded pixels, the resource the WebGL
+ * renderer actually retains, rather than an arbitrary template count.
  */
-export const hasRoomForServerTemplate = (id: string): boolean =>
-  templates.has(id) ||
-  [...templates.values()].filter(isServerTemplate).length < MAX_SERVER_TEMPLATES
+export const hasRoomForServerTemplate = (id: string, nextPixels: number): boolean => {
+  if (!Number.isSafeInteger(nextPixels) || nextPixels < 0) return false
+  const existing = templates.get(id)
+  if (existing !== undefined && !isServerTemplate(existing)) return false
+  return (
+    indexIncreaseWithinBudget(
+      retainedIndexPixels,
+      pendingIndexPixels,
+      existing?.indices.length ?? 0,
+      nextPixels,
+      MAX_LOCAL_INDEX_PIXELS,
+    ) !== null
+  )
+}
 
 /**
  * Put a template published by a server into the store, replacing any earlier copy of it.
@@ -1135,6 +1143,7 @@ export const putServerTemplate = async (
     serverTemplateId: string
     serverNodeId: string | null
     serverVersion: string
+    serverTileKeys?: readonly string[]
     wrapX?: boolean
   },
   /** Checked after every awaited step, immediately before the live row may change. */
@@ -1148,27 +1157,17 @@ export const putServerTemplate = async (
     if (existing !== undefined && !isServerTemplate(existing)) {
       throw new RangeError('server template id collides with a local template')
     }
-    if (
-      existing === undefined &&
-      [...templates.values()].filter(isServerTemplate).length >= MAX_SERVER_TEMPLATES
-    ) {
-      throw new RangeError('server template count exceeds the local rendering budget')
-    }
     const visible = existing?.visible ?? isScopeVisible(template.id)
     const preference = existing === undefined ? serverTemplatePreference(template.id) : undefined
-    const tiles = visible ? await slice(template) : new Map<string, TileLevels>()
-    if (!isCurrent()) {
-      if (visible) releaseCandidateTiles(tiles)
-      return false
-    }
+    const tiles = new Map<string, TileLevels>()
+    if (!isCurrent()) return false
     const priorTileCount = existing?.tiles.size ?? 0
     const priorPixels = existing?.indices.length ?? 0
     const pixelIncrease = template.indices.length - priorPixels
     if (
       retainedIndexPixels + pendingIndexPixels + pixelIncrease > MAX_LOCAL_INDEX_PIXELS ||
-      !claimSourceReplacement(priorTileCount, tiles.size)
+      !claimSourceReplacement(priorTileCount, 0)
     ) {
-      releaseCandidateTiles(tiles)
       throw new RangeError('server templates exceed the local rendering budget')
     }
     templates.set(template.id, {
@@ -1184,7 +1183,7 @@ export const putServerTemplate = async (
       folderId: null,
     })
     retainedIndexPixels += pixelIncrease
-    installSourceReplacement(priorTileCount, tiles.size)
+    installSourceReplacement(priorTileCount, 0)
     if (existing !== undefined) closeTiles(existing.tiles)
     clearStamped(template.id)
     notify()
@@ -1329,8 +1328,8 @@ export const addLocalTemplate = async (template: ImportedTemplate): Promise<Plac
  * Picking the imported fields explicitly makes a server identity unrepresentable in the copy. An
  * image import is normally pending until its first placement; this copy already has a position, so
  * marking that placement immediately is also what commits it to IndexedDB before its source can be
- * removed. A server source transfers its immutable indices and tiles to the Local identity after
- * that commit, so a move at the aggregate budget does not need to retain the same artwork twice.
+ * removed. A server source transfers its immutable indices to the Local identity after that commit,
+ * so a move at the aggregate pixel budget does not need to retain the same artwork twice.
  */
 /** Durable Local placement does not carry the server-only antimeridian representation. */
 export const canCopyAsLocalTemplate = (template: PlacedTemplate): boolean =>
@@ -1388,9 +1387,9 @@ export const copyAsLocalTemplate = async (
     pendingAdds.add(id)
     let builtTiles: Map<string, TileLevels> | null = null
     try {
-      if (!template.visible) builtTiles = await slice(imported)
-      const tiles = builtTiles ?? template.tiles
-      if (builtTiles !== null && !claimSourceReplacement(template.tiles.size, builtTiles.size)) {
+      builtTiles = await slice(imported)
+      const tiles = builtTiles
+      if (!claimSourceReplacement(template.tiles.size, builtTiles.size)) {
         releaseCandidateTiles(builtTiles)
         builtTiles = null
         throw new RangeError('local templates exceed the retained source bitmap budget')
@@ -2080,7 +2079,10 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
     if (existing.visible === visible && desired === visible) return true
     let tiles: ReadonlyMap<string, TileLevels>
     try {
-      tiles = visible ? await slice(existing) : new Map<string, TileLevels>()
+      tiles =
+        visible && !isServerTemplate(existing)
+          ? await slice(existing)
+          : new Map<string, TileLevels>()
     } catch (error) {
       warn('install', `visibility for ${existing.name} could not build source bitmaps`, error)
       return false
@@ -2123,6 +2125,10 @@ export const setLocalVisible = async (id: string, visible: boolean): Promise<boo
     return true
   })
 }
+
+/** World tiles worth scanning for navigation and mismatch work. */
+export const templateTileKeys = (template: PlacedTemplate): Iterable<string> =>
+  template.serverTileKeys ?? template.tiles.keys()
 
 /**
  * The level to draw for a given on-screen width.

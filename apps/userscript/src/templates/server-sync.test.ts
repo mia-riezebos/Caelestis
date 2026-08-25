@@ -118,6 +118,24 @@ describe('server template sync', () => {
     expect(templateTransferWithinBudget(64 * 1024 * 1024, 1)).toBe(false)
   })
 
+  it('syncs every unpublished template that fits the aggregate pixel budget', async () => {
+    const templates = Array.from({ length: 93 }, (_, index) => ({
+      id: `draft-${index}`,
+      nodeId: null,
+      name: `Draft ${index}`,
+      version: 'v1',
+      published: false,
+      updatedAt: 1,
+      bbox: { minX: index, minY: 0, maxX: index + 1, maxY: 1 },
+      chunks: [],
+    }))
+    const { syncServerTemplates } = await import('./server-sync.js')
+
+    await syncServerTemplates(connected, templates)
+
+    expect(store.putServerTemplate).toHaveBeenCalledTimes(93)
+  })
+
   it('does not cache a chunk that exceeds the template remaining transfer budget', async () => {
     const bytes = new Uint8Array([1, 2])
     const hash = await sha256Hex(bytes)

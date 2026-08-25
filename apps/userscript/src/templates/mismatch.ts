@@ -21,6 +21,7 @@ import {
   isTemplateVisible,
   onLocalChange,
   type PlacedTemplate,
+  templateTileKeys,
 } from './local-store.js'
 import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
 import { forgetInWorker, hasWorker, scanInWorker } from './mismatch-worker.js'
@@ -545,7 +546,7 @@ const navigationCandidates = (reference: {
     if (!isTemplateVisible(template)) continue
     const templateTop = template.originY
     const templateBottom = template.originY + template.height
-    for (const key of template.tiles.keys()) {
+    for (const key of templateTileKeys(template)) {
       const tile = parseTileKey(key)
       if (tile === null) continue
       const tileLeft = tile.x * TILE_SIZE

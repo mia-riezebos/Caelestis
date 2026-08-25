@@ -40,6 +40,7 @@ vi.mock('./local-store.js', () => ({
   displayTemplates: () => [harness.template],
   isTemplateVisible: () => true,
   onLocalChange: vi.fn(),
+  templateTileKeys: (template: typeof harness.template) => template.tiles.keys(),
 }))
 vi.mock('./mismatch-worker.js', () => ({
   forgetInWorker: vi.fn(),
