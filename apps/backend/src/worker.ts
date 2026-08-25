@@ -25,11 +25,27 @@ const parseSeason = (value: string | undefined): number | undefined => {
   return season
 }
 
+const requestAtBasePath = (request: Request, configured: string | undefined): Request | null => {
+  if (configured === undefined || configured === '' || configured === '/') return request
+  if (!configured.startsWith('/') || configured.endsWith('/') || /[?#]/.test(configured)) {
+    throw new Error(
+      `BASE_PATH is not an absolute path without a trailing slash: ${JSON.stringify(configured)}`,
+    )
+  }
+  const url = new URL(request.url)
+  if (url.pathname !== configured && !url.pathname.startsWith(`${configured}/`)) return null
+  url.pathname = url.pathname.slice(configured.length) || '/'
+  return new Request(url, request)
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (env.SHARD_STRATEGY !== 'single') {
       throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
     }
+
+    const mountedRequest = requestAtBasePath(request, env.BASE_PATH)
+    if (mountedRequest === null) return new Response('Not Found', { status: 404 })
 
     const ports: Ports = {
       blobs: new R2BlobStore(env.BLOBS),
@@ -48,6 +64,6 @@ export default {
       // could not be opened at all.
       currentSeason: parseSeason(env.SEASON),
       openAccess: env.OPEN_ACCESS === 'true',
-    }).fetch(request)
+    }).fetch(mountedRequest)
   },
 } satisfies ExportedHandler<Env>

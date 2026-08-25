@@ -7,8 +7,8 @@ workers_dev = false
 preview_urls = false
 
 [[routes]]
-pattern = "backend.caelestis.mia.cx"
-custom_domain = true
+pattern = "caelestis.mia.cx/backend/*"
+zone_name = "mia.cx"
 
 [[r2_buckets]]
 binding = "BLOBS"
@@ -38,6 +38,8 @@ SERVER_DESCRIPTION = "The official Caelestis template server"
 SEASON = "0"
 # "true" serves the read surface without a token and makes /server advertise auth: 'none'.
 OPEN_ACCESS = "false"
+# Mount the runtime adapter here while keeping the portable Hono app root-relative.
+BASE_PATH = "/backend"
 
 [observability]
 enabled = true

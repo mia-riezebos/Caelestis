@@ -114,3 +114,17 @@ it('forwards the configured identity, season and open access to the app', async 
   expect(manifest.status).toBe(200)
   await expect(manifest.json()).resolves.toMatchObject({ season: 0 })
 })
+
+it('mounts the runtime app beneath its configured base path', async () => {
+  const configured = {
+    ...env(),
+    BASE_PATH: '/backend',
+  } as unknown as Env
+
+  const mounted = await worker.fetch(new Request('https://example.com/backend/health'), configured)
+  const outside = await worker.fetch(new Request('https://example.com/health'), configured)
+
+  expect(mounted.status).toBe(200)
+  await expect(mounted.json()).resolves.toEqual({ ok: true })
+  expect(outside.status).toBe(404)
+})

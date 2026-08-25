@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const HEALTH_URL = 'http://127.0.0.1:8787/health'
+const HEALTH_URL = 'http://127.0.0.1:8787/backend/health'
 const TUNNEL = process.env.CAELESTIS_TUNNEL ?? 'caelestis-dev'
 const WRANGLER = join(here, 'node_modules', '.bin', 'wrangler')
 const FORCE_KILL_AFTER_MS = 5_000

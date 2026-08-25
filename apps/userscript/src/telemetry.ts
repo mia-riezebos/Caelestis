@@ -13,6 +13,7 @@ import {
 } from '@caelestis/shared'
 import { warn } from './debug.js'
 import type { ServerTemplate } from './server-cache.js'
+import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
   type ConnectedServer,
@@ -116,7 +117,10 @@ const uploadWanted = async (
       .filter((entry) => wanted.has(entry.tile))
       .map(async (entry) => {
         const response = await fetchWithRetry(
-          `${server.url}/telemetry/tiles/${entry.coord.x}/${entry.coord.y}/${entry.sha256}`,
+          serverEndpoint(
+            server.url,
+            `/telemetry/tiles/${entry.coord.x}/${entry.coord.y}/${entry.sha256}`,
+          ),
           {
             method: 'PUT',
             headers: {
@@ -158,7 +162,7 @@ const flushOffers = async (serverUrl: string): Promise<void> => {
   const identity = accountIdentity()
   if (identity === null) return
   const entries = [...pending.entries.values()].slice(0, MAX_TILE_OFFERS)
-  const response = await fetchWithRetry(`${server.url}/telemetry/tiles/offers`, {
+  const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/tiles/offers'), {
     method: 'POST',
     headers: { ...authHeaders(server), 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -312,7 +316,7 @@ const reportPaint = async (observation: ObservedPaint): Promise<void> => {
               ? scopedSubmitted
               : null,
       }
-      const response = await fetchWithRetry(`${server.url}/telemetry/paints`, {
+      const response = await fetchWithRetry(serverEndpoint(server.url, '/telemetry/paints'), {
         method: 'POST',
         headers: { ...authHeaders(server), 'content-type': 'application/json' },
         body: JSON.stringify(event),
@@ -404,9 +408,10 @@ const templateStatusFrom = (value: unknown): TemplateStatus | null => {
 
 const refreshStatus = async (server: ConnectedServer): Promise<void> => {
   if (server.season === null || !isCurrentServerConnection(server)) return
-  const response = await fetchWithRetry(`${server.url}/telemetry/status?season=${server.season}`, {
-    headers: authHeaders(server),
-  })
+  const response = await fetchWithRetry(
+    serverEndpoint(server.url, `/telemetry/status?season=${server.season}`),
+    { headers: authHeaders(server) },
+  )
   if (response === null || !response.ok || !isCurrentServerConnection(server)) return
   const body = (await response.json().catch(() => null)) as Partial<StatusResponse> | null
   if (body === null || !Array.isArray(body.templates)) return

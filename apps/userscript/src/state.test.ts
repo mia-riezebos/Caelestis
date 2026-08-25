@@ -44,13 +44,23 @@ describe('server state boundaries', () => {
   })
 
   it('canonicalises equivalent URLs to one stable connection identity', async () => {
-    const { canonicalServerUrl } = await import('./state.js')
+    const { canonicalServerUrl, serverEndpoint } = await import('./state.js')
 
     expect(canonicalServerUrl(' HTTPS://Example.COM:443/api///?token=leak#fragment ')).toBe(
       'https://example.com/api',
     )
     expect(() => canonicalServerUrl('javascript:alert(1)')).toThrow(/HTTP or HTTPS/)
     expect(() => canonicalServerUrl('https://name:secret@example.com')).toThrow(/credentials/)
+
+    expect(serverEndpoint('https://example.com', '/manifest?season=0')).toBe(
+      'https://example.com/backend/manifest?season=0',
+    )
+    expect(serverEndpoint('https://example.com/backend/', '/server')).toBe(
+      'https://example.com/backend/server',
+    )
+    expect(serverEndpoint('https://example.com/custom/base', '/admin/nodes')).toBe(
+      'https://example.com/custom/base/admin/nodes',
+    )
   })
 
   it('does not trust persisted connectivity or scope but retains cache identity', async () => {
@@ -264,7 +274,7 @@ describe('server state boundaries', () => {
     )
     expect(takeProbedNodes(connected)).toEqual([])
     expect(takeProbedNodes(connected)).toBeUndefined()
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/admin/nodes?season=0')
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('https://example.com/backend/admin/nodes?season=0')
   })
 
   it('accepts chunks on both runs of an antimeridian-wrapped template', async () => {
@@ -578,7 +588,7 @@ describe('server state boundaries', () => {
     })
     await expect(listAccessTokens(server)).resolves.toEqual({ tokens: [], nextCursor: null })
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
-      `https://example.com/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
+      `https://example.com/backend/admin/tokens?cursor=${encodeURIComponent(nextCursor)}`,
     )
   })
 

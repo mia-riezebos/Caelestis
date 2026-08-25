@@ -41,6 +41,9 @@ declare namespace Cloudflare {
 
     /** `'true'` serves the read surface without a token, and makes `/server` advertise `auth: 'none'`. */
     OPEN_ACCESS?: string
+
+    /** Runtime mount stripped before the portable app sees a request. */
+    BASE_PATH?: string
   }
 }
 
@@ -48,4 +51,5 @@ interface Env {
   readonly ADMIN_TOKEN?: string
   readonly SEASON?: string
   readonly OPEN_ACCESS?: string
+  readonly BASE_PATH?: string
 }
