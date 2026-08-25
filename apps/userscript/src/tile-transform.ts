@@ -1006,6 +1006,8 @@ let captureRealm: (Window & typeof globalThis) | null = null
 
 /** Tiles we have already gone and asked for, so a miss is chased once and not every frame. */
 const chased = new Set<string>()
+/** Active chase per tile, separate from the one-shot history so another reader can join it. */
+const activeChases = new Map<string, Promise<void>>()
 let chasing = 0
 
 /**
@@ -1035,7 +1037,9 @@ export const ensureTilePixels = (tile: TileCoord): boolean => {
   chased.add(key)
   chasing++
   const url = tileUrlShape.replace('{x}', String(tile.x)).replace('{y}', String(tile.y))
-  void (async () => {
+  const chase = (async () => {
+    // Publish the promise before a page-provided fetch implementation gets a chance to throw.
+    await Promise.resolve()
     try {
       const realm = captureRealm
       if (realm === null) return
@@ -1059,8 +1063,11 @@ export const ensureTilePixels = (tile: TileCoord): boolean => {
       warn('fetch', `could not chase tile ${tile.x}/${tile.y}`, String(error))
     } finally {
       chasing--
+      activeChases.delete(key)
     }
   })()
+  activeChases.set(key, chase)
+  void chase
   return true
 }
 
@@ -1071,14 +1078,26 @@ export const loadTilePixels = async (
 ): Promise<Uint8Array | null> => {
   const existing = tilePixels(tile)
   if (existing !== null) return existing
-  if (!ensureTilePixels(tile)) return null
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 50))
-    const loaded = tilePixels(tile)
-    if (loaded !== null) return loaded
+  const key = tileKey(tile)
+  let chase = activeChases.get(key)
+  if (chase === undefined) {
+    if (!ensureTilePixels(tile)) return null
+    chase = activeChases.get(key)
   }
-  return null
+  if (chase === undefined) return tilePixels(tile)
+
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      chase,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, Math.max(0, timeoutMs))
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
+  return tilePixels(tile)
 }
 
 /**
