@@ -101,6 +101,11 @@ describe('tree drag and drop', () => {
     const flyTo = row?.querySelector<HTMLButtonElement>('[aria-label="Go to"]')
 
     expect(flyTo).not.toBeNull()
+    expect(
+      [...(row?.children ?? [])].some(
+        (child) => child instanceof HTMLElement && child.style.width === '1rem',
+      ),
+    ).toBe(false)
     expect(flyTo?.parentElement?.classList.contains('caelestis-leading-actions')).toBe(true)
     expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
     expect(row?.querySelector('[aria-label="Expand progress"]')).not.toBeNull()

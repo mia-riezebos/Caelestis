@@ -45,10 +45,11 @@ import { isReorderable } from './sort.js'
 /**
  * The tree: one root per source, plus `Local`.
  *
- * Row anatomy, left to right: **caret, kind icon, persistent navigation, name, meta, row actions,
- * checkbox**. The caret leads because it is what makes a list read as a tree; the checkbox trails
- * because it is what you act on once you have found the row. Secondary actions sit just inside it
- * and appear on hover, while navigation stays visible at the row's leading edge.
+ * Row anatomy, left to right: **optional caret, kind icon, persistent navigation, name, meta, row
+ * actions, checkbox**. Expandable rows earn the caret's space; leaves rely on their depth indent
+ * rather than carrying an empty control slot. The checkbox trails because it is what you act on
+ * once you have found the row. Secondary actions sit just inside it and appear on hover, while
+ * navigation stays visible at the row's leading edge.
  *
  * The whole row is the expand target — a caret is a 24px hit area on a 300px row, and everything
  * between them is dead space otherwise.
@@ -1121,12 +1122,6 @@ const treeRow = (options: RowOptions): HTMLElement => {
     glyph.style.transition = 'transform 120ms ease-out'
     glyph.style.transform = expanded ? 'rotate(90deg)' : 'rotate(0deg)'
     row.appendChild(glyph)
-  } else {
-    // A leaf still needs the caret's width, or its name hangs left of every sibling's.
-    const spacer = document.createElement('span')
-    spacer.style.flex = '0 0 auto'
-    spacer.style.width = '1rem'
-    row.appendChild(spacer)
   }
 
   const kind = icon(options.kind, 'size-4 opacity-60')
