@@ -8,25 +8,30 @@ import type {
   StatusResponse,
   TileHistoryResponse,
 } from '@caelestis/shared'
-import { resolveServerUrl } from './server-url.js'
+import { isServerUrlConfigured, resolveSelectedServerUrl, resolveServerUrl } from './server-url.js'
 
 /**
- * The template server the dashboard reads from.
- *
- * A deployment reads one server. `VITE_CAELESTIS_SERVER` sets its full URL. Production uses the
- * page origin plus `/backend`; development uses Wrangler on port 8787. The access token stays in
- * localStorage.
+ * A configured server is fixed for the deployment. Without one, the selected server and access
+ * token live in localStorage.
  */
+const SERVER_KEY = 'caelestis:server'
 const TOKEN_KEY = 'caelestis:token'
+const configuredServer = import.meta.env.VITE_CAELESTIS_SERVER as string | undefined
 
-export const serverUrl = ((): string => {
-  const configured = import.meta.env.VITE_CAELESTIS_SERVER as string | undefined
-  return resolveServerUrl(configured, import.meta.env.DEV, window.location.origin)
-})()
+export const serverUrlIsConfigured = isServerUrlConfigured(configuredServer)
+
+export const readServerUrl = (): string =>
+  resolveServerUrl(
+    configuredServer,
+    localStorage.getItem(SERVER_KEY),
+    import.meta.env.DEV,
+    window.location.origin,
+  )
 
 export const readToken = (): string | null => localStorage.getItem(TOKEN_KEY)
 
-export const writeToken = (token: string | null): void => {
+export const writeConnection = (url: string, token: string | null): void => {
+  if (!serverUrlIsConfigured) localStorage.setItem(SERVER_KEY, resolveSelectedServerUrl(url))
   if (token === null || token.length === 0) localStorage.removeItem(TOKEN_KEY)
   else localStorage.setItem(TOKEN_KEY, token)
 }
@@ -44,7 +49,7 @@ const request = async (path: string, init?: RequestInit): Promise<Response> => {
   const token = readToken()
   const headers = new Headers(init?.headers)
   if (token !== null) headers.set('authorization', `Bearer ${token}`)
-  const response = await fetch(`${serverUrl}${path}`, { ...init, headers })
+  const response = await fetch(`${readServerUrl()}${path}`, { ...init, headers })
   if (!response.ok) {
     let message = response.statusText
     try {

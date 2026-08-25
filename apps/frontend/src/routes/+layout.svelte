@@ -1,6 +1,7 @@
 <script lang="ts">
 import { Moon, Sun } from '@lucide/svelte'
 import { onMount } from 'svelte'
+import { serverUrlIsConfigured } from '$lib/api/client'
 import ConnectDialog from '$lib/components/ConnectDialog.svelte'
 import { app } from '$lib/state/app.svelte'
 import '../app.css'
@@ -76,7 +77,11 @@ const toggleTheme = (): void => {
         Map tiles © OpenStreetMap contributors
       </a>
       <span class="flex items-center gap-3">
-        {#if app.server?.auth === 'access_token'}
+        {#if !serverUrlIsConfigured}
+          <button class="link link-hover" onclick={() => (connectOpen = true)}>
+            {app.server === null ? 'connect to a server' : `server: ${app.server.name}`}
+          </button>
+        {:else if app.server?.auth === 'access_token'}
           <button class="link link-hover" onclick={() => (connectOpen = true)}>access token</button>
         {/if}
         <a href={REPO_URL} target="_blank" rel="noreferrer" class="link link-hover">source on GitHub</a>
