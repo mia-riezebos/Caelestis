@@ -56,9 +56,9 @@ export type ScanJob = PixelScanJob | MaskScanJob
 
 export interface ScanOutcome {
   /** Pixels with the wrong colour on them, including a pixel drafted Transparent. */
-  readonly wrong: Float32Array
+  readonly wrong: Uint32Array
   /** Pixels with nothing on them at all. */
-  readonly unpainted: Float32Array
+  readonly unpainted: Uint32Array
   /** Pixels this tile asserts a colour for, so a caller can say how much is left. */
   readonly asserted: number
   /** Progress counts ignore display-only colour filters, unlike the marker lists above. */
@@ -84,8 +84,8 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   const bottom = Math.min(job.originY + job.height, tileTop + tileSize, maskBottom)
   if (right <= left || bottom <= top) {
     return {
-      wrong: new Float32Array(0),
-      unpainted: new Float32Array(0),
+      wrong: new Uint32Array(0),
+      unpainted: new Uint32Array(0),
       asserted: 0,
       completed: 0,
       mismatched: 0,
@@ -157,8 +157,9 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
       if (classification === match) continue
       // An empty pixel is only "not done yet" when nobody chose it. One drafted Transparent arrives
       // as a real palette index rather than the sentinel, so it lands with the mistakes.
-      if (classification === blank) unpainted.push(x, y, wanted)
-      else wrong.push(x, y, wanted)
+      const mark = (x - tileLeft) | ((y - tileTop) << 10) | (wanted << 20)
+      if (classification === blank) unpainted.push(mark)
+      else wrong.push(mark)
     }
   }
 
@@ -186,7 +187,7 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
     packedProgress[packedAt++] = colourUnpainted
   }
 
-  const marks = new Float32Array(wrong.length + unpainted.length)
+  const marks = new Uint32Array(wrong.length + unpainted.length)
   marks.set(wrong)
   marks.set(unpainted, wrong.length)
   return {

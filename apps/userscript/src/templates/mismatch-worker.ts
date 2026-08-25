@@ -60,8 +60,8 @@ interface Reply {
   readonly id: number
   readonly missing?: boolean
   readonly durationMs?: number
-  readonly wrong?: Float32Array
-  readonly unpainted?: Float32Array
+  readonly wrong?: Uint32Array
+  readonly unpainted?: Uint32Array
   readonly asserted?: number
   readonly completed?: number
   readonly mismatched?: number
@@ -203,8 +203,8 @@ const runScan = async (job: ScanJob, indices: Uint8Array): Promise<ScanOutcome |
     'worker',
   )
   return {
-    wrong: reply.wrong ?? new Float32Array(0),
-    unpainted: reply.unpainted ?? new Float32Array(0),
+    wrong: reply.wrong ?? new Uint32Array(0),
+    unpainted: reply.unpainted ?? new Uint32Array(0),
     asserted: reply.asserted ?? 0,
     completed: reply.completed ?? 0,
     mismatched: reply.mismatched ?? 0,

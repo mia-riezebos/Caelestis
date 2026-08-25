@@ -131,7 +131,7 @@ describe('visible mismatch answer retention', () => {
     const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
 
     beginMismatchFrame()
-    expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toHaveLength(129 * 3)
+    expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toHaveLength(129)
     endMismatchFrame()
   })
 
@@ -161,8 +161,8 @@ describe('visible mismatch answer retention', () => {
     endMismatchFrame()
 
     finish({
-      wrong: new Float32Array([0, 0, 0]),
-      unpainted: new Float32Array(0),
+      wrong: new Uint32Array([0]),
+      unpainted: new Uint32Array(0),
       asserted: 1,
       completed: 0,
       mismatched: 1,
@@ -172,7 +172,7 @@ describe('visible mismatch answer retention', () => {
     })
     await vi.waitFor(() => {
       beginMismatchFrame()
-      expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toEqual(new Float32Array([0, 0, 0]))
+      expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toEqual(new Uint32Array([0]))
       endMismatchFrame()
     })
   })
@@ -186,7 +186,7 @@ describe('visible mismatch answer retention', () => {
 
     beginMismatchFrame()
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(0)
-    expect(disagreementsIn(selected, { x: 0, y: 0 })).toEqual(new Float32Array([0, 0, 0]))
+    expect(disagreementsIn(selected, { x: 0, y: 0 })).toEqual(new Uint32Array([0]))
     endMismatchFrame()
   })
 
@@ -195,7 +195,7 @@ describe('visible mismatch answer retention', () => {
     harness.templates = [selected]
     const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
     beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(3)
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()
 
     harness.workerAvailable = true
@@ -206,7 +206,7 @@ describe('visible mismatch answer retention', () => {
     listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 1]).flat())
 
     beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(3)
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()
     expect(harness.workerScan).toHaveBeenCalledOnce()
   })

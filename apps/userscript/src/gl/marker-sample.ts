@@ -7,10 +7,10 @@
  */
 interface MarkerSample {
   readonly limit: number
-  readonly marks: Float32Array
+  readonly marks: Uint32Array
 }
 
-const samples = new WeakMap<Float32Array, MarkerSample>()
+const samples = new WeakMap<Uint32Array, MarkerSample>()
 
 /**
  * A stable density ceiling for one tile.
@@ -32,21 +32,17 @@ export const markerSampleLimit = (
   return Math.min(area, lod)
 }
 
-export const sampleMarkers = (marks: Float32Array, maxPoints: number): Float32Array => {
-  const points = Math.floor(marks.length / 3)
+export const sampleMarkers = (marks: Uint32Array, maxPoints: number): Uint32Array => {
+  const points = marks.length
   const limit = Math.max(0, Math.floor(maxPoints))
   if (points <= limit) return marks
-  if (limit === 0) return new Float32Array(0)
+  if (limit === 0) return new Uint32Array(0)
   const held = samples.get(marks)
   if (held?.limit === limit) return held.marks
 
-  const sampled = new Float32Array(limit * 3)
+  const sampled = new Uint32Array(limit)
   for (let point = 0; point < limit; point++) {
-    const source = Math.floor((point * points) / limit) * 3
-    const target = point * 3
-    sampled[target] = marks[source] as number
-    sampled[target + 1] = marks[source + 1] as number
-    sampled[target + 2] = marks[source + 2] as number
+    sampled[point] = marks[Math.floor((point * points) / limit)] as number
   }
   // Zoom can produce a different limit on every frame. The previous sample is no longer useful,
   // and retaining every historical limit makes one dense mismatch list grow without bound.

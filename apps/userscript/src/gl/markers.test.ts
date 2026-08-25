@@ -36,7 +36,7 @@ describe('marker GPU retention', () => {
       COMPILE_STATUS: 3,
       LINK_STATUS: 4,
       ARRAY_BUFFER: 5,
-      FLOAT: 6,
+      UNSIGNED_INT: 6,
       STATIC_DRAW: 7,
       POINTS: 8,
       createShader: vi.fn(() => ({})),
@@ -52,13 +52,13 @@ describe('marker GPU retention', () => {
       getProgramInfoLog: vi.fn(),
       createVertexArray: vi.fn(() => ({})),
       bindVertexArray: vi.fn(),
-      getAttribLocation: vi.fn((_program, name) => (name === 'a_pixel' ? 0 : 1)),
+      getAttribLocation: vi.fn(() => 0),
       enableVertexAttribArray: vi.fn(),
       createBuffer: vi.fn(() => createdBuffer),
       deleteBuffer: vi.fn(),
       bindBuffer: vi.fn(),
       bufferData,
-      vertexAttribPointer: vi.fn(),
+      vertexAttribIPointer: vi.fn(),
       useProgram: vi.fn(),
       getUniformLocation: vi.fn(() => ({})),
       uniform2f: vi.fn(),
@@ -71,7 +71,7 @@ describe('marker GPU retention', () => {
     const { drawMarkers, initMarkers, markerGpuMemoryBytes, releaseMarkers } = await import(
       './markers.js'
     )
-    const marks = new Float32Array([0, 0, 1, 1, 1, 2])
+    const marks = new Uint32Array([1, 2])
     const tile = { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 1_000, height: 1_000 }
     const style = {
       size: 5,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { packMismatchMark } from './mismatch-marks.js'
 import { type MaskScanJob, type PixelScanJob, scanTile } from './mismatch-scan.js'
 
 const job = (overrides: Partial<PixelScanJob> = {}): PixelScanJob => ({
@@ -32,7 +33,7 @@ describe('mismatch scan progress', () => {
       progressAsserted: 3,
     })
     expect([...outcome.wrong]).toEqual([])
-    expect([...outcome.unpainted]).toEqual([2, 0, 3])
+    expect([...outcome.unpainted]).toEqual([packMismatchMark(2, 0, 3)])
     expect([...outcome.progressByColour]).toEqual([1, 1, 0, 0, 2, 0, 1, 0, 3, 0, 0, 1])
   })
 
@@ -70,8 +71,8 @@ describe('mismatch scan progress', () => {
       progressUnpainted: 1,
       progressAsserted: 3,
     })
-    expect([...outcome.wrong]).toEqual([1, 0, 2])
-    expect([...outcome.unpainted]).toEqual([2, 0, 3])
+    expect([...outcome.wrong]).toEqual([packMismatchMark(1, 0, 2)])
+    expect([...outcome.unpainted]).toEqual([packMismatchMark(2, 0, 3)])
     expect(outcome.wrong.buffer).toBe(outcome.unpainted.buffer)
   })
 })

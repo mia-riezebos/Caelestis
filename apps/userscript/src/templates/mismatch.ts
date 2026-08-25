@@ -23,6 +23,7 @@ import {
   UNPAINTED,
 } from '../tile-transform.js'
 import { claimedHiddenFor } from './colour-filter.js'
+import { type MismatchMarks, packMismatchMark } from './mismatch-marks.js'
 import {
   appearanceOf,
   displayTemplates,
@@ -48,8 +49,8 @@ import { horizontalSpans, sourceXAt, wrappedDeltaX } from './placement.js'
  * ruinous to do sixty times a second, hence the cache.
  */
 
-/** x,y,wanted-index triples in canvas pixels. Empty when the tile and template agree. */
-export type Mismatches = Float32Array
+/** Packed tile-local x/y/wanted-index marks. Empty when the tile and template agree. */
+export type Mismatches = MismatchMarks
 
 interface Cached extends ScanOutcome {
   /** Identity, not contents: a new local tile or server mask is the signal to redo the answer. */
@@ -100,13 +101,13 @@ const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
       entry.wrong.buffer === entry.unpainted.buffer &&
       entry.wrong.byteOffset + entry.wrong.byteLength === entry.unpainted.byteOffset
     if (contiguous) {
-      entry.both = new Float32Array(
+      entry.both = new Uint32Array(
         entry.wrong.buffer,
         entry.wrong.byteOffset,
         entry.wrong.length + entry.unpainted.length,
       )
     } else {
-      const both = new Float32Array(entry.wrong.length + entry.unpainted.length)
+      const both = new Uint32Array(entry.wrong.length + entry.unpainted.length)
       both.set(entry.wrong)
       both.set(entry.unpainted, entry.wrong.length)
       entry.both = both
@@ -320,7 +321,7 @@ const rememberCoverage = (cacheKey: string, entry: Cached): void => {
     }
   }
   forgetCoverage(cacheKey)
-  const unpainted = entry.unpainted.length / 3
+  const unpainted = entry.unpainted.length
   coverage.set(cacheKey, {
     asserted: entry.asserted,
     key: entry.key,
@@ -903,8 +904,8 @@ const store = (
   rememberProgress(cacheKey, entry, progressKey)
   remember(cacheKey, entry)
   count('mismatch:tiles scanned')
-  count('mismatch:pixels marked', outcome.wrong.length / 3)
-  count('mismatch:pixels unpainted', outcome.unpainted.length / 3)
+  count('mismatch:pixels marked', outcome.wrong.length)
+  count('mismatch:pixels unpainted', outcome.unpainted.length)
   return entry
 }
 
@@ -1193,12 +1194,8 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     const belongs =
       !asserted || placed === wanted ? null : placed === UNPAINTED ? 'unpainted' : 'wrong'
 
-    const listed = (marks: Mismatches): number => {
-      for (let i = 0; i < marks.length; i += 3) {
-        if (marks[i] === x && marks[i + 1] === y) return i
-      }
-      return -1
-    }
+    const mark = packMismatchMark(x - tile.x * TILE_SIZE, y - tile.y * TILE_SIZE, wanted)
+    const listed = (marks: Mismatches): number => marks.indexOf(mark)
     const inWrong = listed(entry.wrong)
     const inUnpainted = listed(entry.unpainted)
     const already = inWrong >= 0 ? 'wrong' : inUnpainted >= 0 ? 'unpainted' : null
@@ -1215,17 +1212,15 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     if (already === belongs) continue
 
     const minus = (marks: Mismatches, at: number): Mismatches => {
-      const next = new Float32Array(marks.length - 3)
+      const next = new Uint32Array(marks.length - 1)
       next.set(marks.subarray(0, at))
-      next.set(marks.subarray(at + 3), at)
+      next.set(marks.subarray(at + 1), at)
       return next
     }
     const plus = (marks: Mismatches): Mismatches => {
-      const next = new Float32Array(marks.length + 3)
+      const next = new Uint32Array(marks.length + 1)
       next.set(marks)
-      next[marks.length] = x
-      next[marks.length + 1] = y
-      next[marks.length + 2] = wanted
+      next[marks.length] = mark
       return next
     }
 

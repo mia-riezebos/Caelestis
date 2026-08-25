@@ -4,24 +4,22 @@
  * The input contains only wrong or unpainted pixels. Correct template pixels never reach this
  * module, so the selected-colour marker cannot accidentally become a second overlay renderer.
  */
-const cache = new WeakMap<Float32Array, Map<number, Float32Array>>()
+import { markWanted, type MismatchMarks } from './mismatch-marks.js'
 
-export const colourMarksIn = (disagreements: Float32Array, selected: number): Float32Array => {
+const cache = new WeakMap<MismatchMarks, Map<number, MismatchMarks>>()
+
+export const colourMarksIn = (disagreements: MismatchMarks, selected: number): MismatchMarks => {
   const held = cache.get(disagreements)
   const cached = held?.get(selected)
   if (cached !== undefined) return cached
 
   const points: number[] = []
-  for (let at = 0; at < disagreements.length; at += 3) {
-    if (disagreements[at + 2] !== selected) continue
-    points.push(
-      disagreements[at] as number,
-      disagreements[at + 1] as number,
-      disagreements[at + 2] as number,
-    )
+  for (const mark of disagreements) {
+    if (markWanted(mark) !== selected) continue
+    points.push(mark)
   }
-  const marks = new Float32Array(points)
-  const entries = held ?? new Map<number, Float32Array>()
+  const marks = new Uint32Array(points)
+  const entries = held ?? new Map<number, MismatchMarks>()
   entries.set(selected, marks)
   if (held === undefined) cache.set(disagreements, entries)
   return marks

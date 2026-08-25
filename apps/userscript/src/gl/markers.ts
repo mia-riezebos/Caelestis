@@ -18,6 +18,7 @@ import {
   mismatchesIn,
 } from '../templates/mismatch.js'
 import { horizontalSpans } from '../templates/placement.js'
+import type { MismatchMarks } from '../templates/mismatch-marks.js'
 import {
   currentQuads,
   isDrawingTiles,
@@ -46,13 +47,10 @@ import { markerSampleLimit, sampleMarkers } from './marker-sample.js'
  */
 
 const VERTEX = `#version 300 es
-/** A marked pixel, in wplace canvas pixels. */
-in vec2 a_pixel;
-/** The palette index the template wants at that pixel. */
-in float a_wanted;
+/** Tile-local x, y and wanted palette index packed into one uint. */
+in uint a_mark;
 
-/** The tile's top-left in canvas pixels, and where it landed on screen this frame. */
-uniform vec2 u_tileOrigin;
+/** Where this tile landed on screen this frame. */
 uniform vec2 u_tileScreen;
 /** Device pixels per canvas pixel, from the tile's own on-screen size. */
 uniform vec2 u_tileScale;
@@ -62,11 +60,12 @@ uniform float u_size;
 flat out float v_wanted;
 
 void main() {
+  vec2 pixel = vec2(float(a_mark & 1023u), float((a_mark >> 10u) & 1023u));
   // The centre of the pixel, not its corner, so the crosshair sits on the thing it marks.
-  vec2 device = u_tileScreen + (a_pixel - u_tileOrigin + 0.5) * u_tileScale;
+  vec2 device = u_tileScreen + (pixel + 0.5) * u_tileScale;
   gl_Position = vec4((2.0 * device.x) / u_buffer.x - 1.0, 1.0 - (2.0 * device.y) / u_buffer.y, 0.0, 1.0);
   gl_PointSize = u_size;
-  v_wanted = a_wanted;
+  v_wanted = float(a_mark >> 20u);
 }
 `
 
@@ -102,11 +101,10 @@ void main() {
 let owner: WebGL2RenderingContext | null = null
 let program: WebGLProgram | null = null
 let vao: WebGLVertexArrayObject | null = null
-let pixelAttribute = -1
-let wantedAttribute = -1
+let markAttribute = -1
 let markerBufferBytes = 0
-const markerBuffers = new Map<Float32Array, WebGLBuffer>()
-const usedMarkerBuffers = new Set<Float32Array>()
+const markerBuffers = new Map<MismatchMarks, WebGLBuffer>()
+const usedMarkerBuffers = new Set<MismatchMarks>()
 
 export const markerGpuMemoryBytes = (): number => markerBufferBytes
 const uniforms = new Map<string, WebGLUniformLocation | null>()
@@ -142,8 +140,7 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
   markerBuffers.clear()
   usedMarkerBuffers.clear()
   markerBufferBytes = 0
-  pixelAttribute = -1
-  wantedAttribute = -1
+  markAttribute = -1
   vao = null
   uniforms.clear()
   owner = gl
@@ -165,10 +162,8 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
   uniforms.clear()
   vao = gl.createVertexArray()
   gl.bindVertexArray(vao)
-  pixelAttribute = gl.getAttribLocation(program, 'a_pixel')
-  wantedAttribute = gl.getAttribLocation(program, 'a_wanted')
-  gl.enableVertexAttribArray(pixelAttribute)
-  gl.enableVertexAttribArray(wantedAttribute)
+  markAttribute = gl.getAttribLocation(program, 'a_mark')
+  gl.enableVertexAttribArray(markAttribute)
   gl.bindVertexArray(null)
 }
 
@@ -182,8 +177,7 @@ export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
   if (vao !== null) gl.deleteVertexArray(vao)
   if (program !== null) gl.deleteProgram(program)
   markerBufferBytes = 0
-  pixelAttribute = -1
-  wantedAttribute = -1
+  markAttribute = -1
   vao = null
   program = null
   uniforms.clear()
@@ -254,14 +248,14 @@ export const deviceScale = (gl: WebGL2RenderingContext): number => {
 /**
  * Draw one crosshair per marked pixel of one tile.
  *
- * `pixels` is x,y,wanted-index triples in canvas coordinates. Placement comes from the tile's own
+ * `pixels` packs tile-local x/y/wanted-index into one uint. Placement comes from the tile's own
  * on-screen rect, the same rect the overlay itself is drawn on, so markers inherit whatever
  * MapLibre did to place that tile rather than being projected separately.
  */
 export const drawMarkers = (
   gl: WebGL2RenderingContext,
   tile: TileQuad,
-  pixels: Float32Array,
+  pixels: MismatchMarks,
   style: MarkerStyle,
   fade: number,
 ): void => {
@@ -279,17 +273,8 @@ export const drawMarkers = (
     gl.bufferData(gl.ARRAY_BUFFER, pixels, gl.STATIC_DRAW)
   } else gl.bindBuffer(gl.ARRAY_BUFFER, held)
   usedMarkerBuffers.add(pixels)
-  gl.vertexAttribPointer(pixelAttribute, 2, gl.FLOAT, false, 3 * Float32Array.BYTES_PER_ELEMENT, 0)
-  gl.vertexAttribPointer(
-    wantedAttribute,
-    1,
-    gl.FLOAT,
-    false,
-    3 * Float32Array.BYTES_PER_ELEMENT,
-    2 * Float32Array.BYTES_PER_ELEMENT,
-  )
+  gl.vertexAttribIPointer(markAttribute, 1, gl.UNSIGNED_INT, Uint32Array.BYTES_PER_ELEMENT, 0)
 
-  gl.uniform2f(uniform(gl, 'u_tileOrigin'), tile.tile.x * TILE_SIZE, tile.tile.y * TILE_SIZE)
   gl.uniform2f(uniform(gl, 'u_tileScreen'), tile.x, tile.y)
   gl.uniform2f(uniform(gl, 'u_tileScale'), tile.width / TILE_SIZE, tile.height / TILE_SIZE)
   gl.uniform2f(uniform(gl, 'u_buffer'), gl.drawingBufferWidth, gl.drawingBufferHeight)
@@ -304,7 +289,7 @@ export const drawMarkers = (
   gl.uniform1f(uniform(gl, 'u_selected'), style.selected)
   gl.uniform1f(uniform(gl, 'u_fade'), fade)
 
-  gl.drawArrays(gl.POINTS, 0, pixels.length / 3)
+  gl.drawArrays(gl.POINTS, 0, pixels.length)
   gl.bindVertexArray(null)
 }
 
@@ -483,7 +468,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 
   type Work = {
     tile: TileQuad
-    marks: Float32Array
+    marks: MismatchMarks
     style: MarkerStyle
     fade: number
   }
