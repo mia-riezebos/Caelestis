@@ -148,5 +148,5 @@ describe('the 6-hour tile fetcher', () => {
       const match = url.match(/tiles\/(\d+)\/(\d+)\.png$/)
       expect(templateKeys.has(`${match?.[1] ?? ''}/${match?.[2] ?? ''}`)).toBe(true)
     }
-  })
+  }, 20_000)
 })

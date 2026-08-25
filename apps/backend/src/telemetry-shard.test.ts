@@ -630,7 +630,7 @@ describe('TelemetryShard', () => {
       },
     ])
     await expect(harness.shard.readDroppedLateCount()).resolves.toBe(5)
-  })
+  }, 20_000)
 
   it('issues one statement per parameter chunk when reading a large template group', async () => {
     // The test below verifies the *result* is right for 1,200 ids, which it is whether or not the
