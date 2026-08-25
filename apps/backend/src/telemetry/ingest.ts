@@ -203,7 +203,7 @@ export const recordPaint = async (
     return 'duplicate'
   await ports.sql.rememberPainter(event.wplaceUserId, event.displayName, seenAt)
   const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
-  if (event.painted !== submitted) return 'partial'
+  if (event.painted === null || event.painted !== submitted) return 'partial'
 
   const totals = new Map<string, { placed: number; correct: number; repairs: number }>()
   for (const paintedTile of event.tiles) {

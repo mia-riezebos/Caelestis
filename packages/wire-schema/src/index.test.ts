@@ -339,6 +339,11 @@ describe('PaintEvent', () => {
     expectRejected(PaintEvent, { ...validEvent, painted: 2 })
   })
 
+  it('accepts an unknowable server-scoped accepted count', () => {
+    const event = { ...validEvent, painted: null }
+    expect(Schema.decodeUnknownSync(PaintEvent)(event)).toEqual(event)
+  })
+
   it('caps the pixels submitted across the whole event, not merely per tile', () => {
     // The per-tile cap bounds nothing on its own: MAX_PAINT_TILES tiles at the per-tile cap is a
     // ten-billion-pixel payload. `painted` is well within its own bound here, so only the total

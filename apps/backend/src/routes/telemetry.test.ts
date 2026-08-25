@@ -115,7 +115,7 @@ describe('telemetry routes', () => {
         'x-caelestis-season': '1',
         'x-caelestis-observed-at': String(now),
         'x-caelestis-wplace-user-id': '42',
-        'x-caelestis-display-name': 'Mia',
+        'x-caelestis-display-name': encodeURIComponent('Mía 🎨'),
       },
       body: bytes,
     })
@@ -144,6 +144,13 @@ describe('telemetry routes', () => {
       body: JSON.stringify(offer),
     })
     await expect(repeated.json()).resolves.toEqual({ wanted: [] })
+
+    const duplicate = await app.request('/telemetry/tiles/offers', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({ ...offer, offers: [offer.offers[0], offer.offers[0]] }),
+    })
+    expect(duplicate.status).toBe(400)
   })
 
   it('classifies accepted paints once and rejects read-only reporting', async () => {

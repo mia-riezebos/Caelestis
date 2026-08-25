@@ -516,7 +516,7 @@ const PaintEventStruct = Schema.Struct({
   season: Season,
   ts: Seconds,
   tiles: boundedArray(PaintTile, MAX_PAINT_TILES),
-  painted: integerBetween(0, MAX_PAINTED_PIXELS),
+  painted: Schema.NullOr(integerBetween(0, MAX_PAINTED_PIXELS)),
 })
 
 export const PaintEvent = PaintEventStruct.pipe(
@@ -538,7 +538,9 @@ export const PaintEvent = PaintEventStruct.pipe(
     // MAX_PAINT_PIXELS_PER_TILE pixels is a ten-billion-pixel payload the schema would accept.
     booleanFilter((event: Schema.Schema.Type<typeof PaintEventStruct>) => {
       const submitted = event.tiles.reduce((total, tile) => total + tile.pixels.x.length, 0)
-      return submitted <= MAX_PAINTED_PIXELS && event.painted <= submitted
+      return (
+        submitted <= MAX_PAINTED_PIXELS && (event.painted === null || event.painted <= submitted)
+      )
     }, `painted must not exceed the submitted pixels, of which there may be at most ${MAX_PAINTED_PIXELS}`),
   ),
 )

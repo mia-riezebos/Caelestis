@@ -43,8 +43,10 @@ export interface PainterIdentity {
  * - When `painted` equals that server-derived total, classify and credit the accepted pixels
  *   normally.
  * - When `painted` is lower, it is still an exact placed total, but do not credit template-level
- *   `correct` or `repairs`: the response does not reveal which submitted pixels landed. The next
- *   tile-diff anchor re-establishes template correctness from ground truth.
+ *   `correct` or `repairs`: the response does not reveal which submitted pixels landed.
+ * - `painted` is null when one Wplace request crossed server coverage boundaries and was only
+ *   partially accepted. The client cannot derive a scoped accepted count without disclosing the
+ *   out-of-scope pixels. The next tile-diff anchor re-establishes truth instead.
  */
 export interface PaintEvent extends PainterIdentity {
   /** Client-generated, so a retry can never double-count. */
@@ -52,8 +54,8 @@ export interface PaintEvent extends PainterIdentity {
   readonly season: number
   readonly ts: Seconds
   readonly tiles: readonly PaintTile[]
-  /** Number wplace reported accepting. */
-  readonly painted: number
+  /** Number wplace reported accepting in this scope, or null when that count is unknowable. */
+  readonly painted: number | null
 }
 
 export interface PaintTile {

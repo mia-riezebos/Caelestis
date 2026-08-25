@@ -42,6 +42,7 @@ import {
   uploadTemplateVersion,
   upsertServer,
 } from '../state.js'
+import { onServerStatusChange } from '../telemetry.js'
 import { APPEARANCE_CONTROLS, UNPAINTED_LIMIT_CONTROL } from '../templates/appearance.js'
 import { importFile } from '../templates/import.js'
 import {
@@ -3084,6 +3085,9 @@ export const installPanel = (): void => {
       progressRefreshQueued = false
       if (currentView === 'tree') refreshView()
     })
+  })
+  onServerStatusChange(() => {
+    if (currentView === 'tree') refreshView()
   })
   for (const ending of ['dragend', 'focusout'])
     document.addEventListener(ending, repayRefresh, true)

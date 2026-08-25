@@ -17,6 +17,7 @@ import {
   type TreeNode,
   takeProbedNodes,
 } from '../state.js'
+import { serverProgressFor } from '../telemetry.js'
 import {
   isServerTemplate,
   localTemplates,
@@ -2062,6 +2063,8 @@ export const treeContents = (
     server: ConnectedServer,
     template: ServerTemplate,
   ): TemplateProgress => {
+    const serverProgress = serverProgressFor(server, template)
+    if (serverProgress !== null) return serverProgress
     const drawn = drawnByServer.get(server.url)?.get(template.id)
     return drawn === undefined ? emptyProgress(template.totalPixels ?? 0) : progressFor(drawn)
   }

@@ -34,6 +34,15 @@ const decoded = (schema: Schema.ConstraintDecoder<unknown>, value: unknown): unk
   }
 }
 
+const decodedHeader = (value: string | undefined): string | null => {
+  if (value === undefined) return null
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return null
+  }
+}
+
 const readBoundedBody = async (request: Request, limit: number): Promise<Uint8Array | null> => {
   const declared = Number(request.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > limit) return null
@@ -91,6 +100,9 @@ export const createTelemetryRoutes = (
     if (body === null || body.offers.length > MAX_TILE_OFFERS) {
       return c.json({ error: 'invalid tile offer batch' }, 400)
     }
+    if (new Set(body.offers.map((offer) => offer.tile)).size !== body.offers.length) {
+      return c.json({ error: 'tile offer batch contains duplicates' }, 400)
+    }
     const caller = c.get('caller')
     const wanted: string[] = []
     for (const offer of body.offers) {
@@ -118,7 +130,7 @@ export const createTelemetryRoutes = (
     const season = wholeNumber(c.req.header('x-caelestis-season'))
     const observedAt = wholeNumber(c.req.header('x-caelestis-observed-at'))
     const wplaceUserId = wholeNumber(c.req.header('x-caelestis-wplace-user-id'))
-    const displayName = c.req.header('x-caelestis-display-name')
+    const displayName = decodedHeader(c.req.header('x-caelestis-display-name'))
     if (
       x === null ||
       y === null ||
@@ -130,7 +142,7 @@ export const createTelemetryRoutes = (
       observedAt < MIN_EPOCH_SECONDS ||
       observedAt > MAX_EPOCH_SECONDS ||
       wplaceUserId === null ||
-      displayName === undefined ||
+      displayName === null ||
       displayName.length === 0 ||
       displayName.length > 256
     ) {

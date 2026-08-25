@@ -11,6 +11,7 @@ import { keepMarkersAboveDrafts } from './gl/markers.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
 import { shortcutFor } from './shortcuts.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
+import { installTelemetry } from './telemetry.js'
 import {
   appearanceOf,
   isTemplateVisible,
@@ -296,6 +297,7 @@ const main = (): void => {
   // Server templates do not: they are re-fetched, because the server is where they live and a copy
   // kept here would outlive its deletion. Chunks are immutable and cached, so this is cheap.
   step('server templates', installServerSync)
+  step('server telemetry', installTelemetry)
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {
     watchPaintSelection()
