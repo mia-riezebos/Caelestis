@@ -12,6 +12,7 @@ import { isPageInstance, pageWindow } from './page-world.js'
 import { measureProfile } from './profile.js'
 import { buildExactRgbIndex, exactRgbIndex } from './rgb-index.js'
 import { draftedPixelsIn } from './templates/drafted.js'
+import { tilePixelCacheLimit } from './tile-pixel-cache.js'
 
 export type WplaceRasterRole = 'tile' | 'draft' | 'other'
 
@@ -970,7 +971,9 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
  * drawer's source-only colour picker.
  */
 const pixelsOfTile = new Map<string, Uint8Array>()
-const KEEP_TILE_PIXELS = 64
+const KEEP_TILE_PIXELS = tilePixelCacheLimit(
+  (navigator as Navigator & { readonly deviceMemory?: number }).deviceMemory,
+)
 let capturePixels = false
 let captureInterest: ((tile: TileCoord) => boolean) | null = null
 
