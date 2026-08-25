@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.8
+
+### Patch Changes
+
+- bc73eb5: Add opt-in performance profiling for Caelestis CPU, GPU, buffers, frame timing, and long tasks.
+
 ## 0.2.7
 
 ### Patch Changes
