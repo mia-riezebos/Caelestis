@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.2.1
+
+### Patch Changes
+
+- a922236: Exclude unpublished templates from folder and server progress totals while keeping their individual progress visible.
+
 ## 0.2.0
 
 ### Minor Changes
