@@ -1,0 +1,123 @@
+name: Userscript release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - apps/userscript/**
+      - packages/shared/**
+      - .changeset/**
+      - .github/scripts/prepare-userscript-release.mjs
+      - .github/workflows/userscript-release.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+  workflow_dispatch:
+
+concurrency:
+  group: userscript-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Version or release userscript
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.13.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.13.1
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release tooling
+        run: pnpm test:release
+
+      - name: Build userscript and dependencies
+        run: pnpm --filter @caelestis/userscript... build
+
+      - name: Typecheck userscript and dependencies
+        run: pnpm --filter @caelestis/userscript... check
+
+      - name: Test userscript and dependencies
+        run: pnpm --filter @caelestis/userscript... test
+
+      - name: Open or update the userscript release pull request
+        id: changesets
+        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2
+        with:
+          version-script: pnpm release:version
+          commit-message: "chore(userscript): version release"
+          pr-title: "chore(userscript): version release"
+          pr-base-branch: main
+          create-github-releases: false
+          push-git-tags: false
+
+      - name: Prepare release assets
+        if: steps.changesets.outputs.has-changesets == 'false'
+        id: release
+        run: >-
+          node .github/scripts/prepare-userscript-release.mjs
+          --output-dir "${{ runner.temp }}/userscript-release"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Check whether this version already exists
+        if: steps.changesets.outputs.has-changesets == 'false'
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        if: steps.changesets.outputs.has-changesets == 'false' && steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          NOTES: ${{ steps.release.outputs.notesPath }}
+          STABLE: ${{ steps.release.outputs.stablePath }}
+          VERSIONED: ${{ steps.release.outputs.versionedPath }}
+          CHECKSUMS: ${{ steps.release.outputs.checksumPath }}
+        run: |
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Caelestis userscript v$VERSION" \
+            --notes-file "$NOTES" \
+            --latest \
+            "$STABLE" "$VERSIONED" "$CHECKSUMS"
+
+      - name: Verify published installers
+        if: steps.changesets.outputs.has-changesets == 'false' && steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SHA256: ${{ steps.release.outputs.sha256 }}
+        run: |
+          download="$(mktemp -d)"
+          gh release download "$TAG" --dir "$download"
+          test "$(sha256sum "$download/caelestis.user.js" | cut -d ' ' -f 1)" = "$SHA256"
+          test "$(sha256sum "$download/caelestis-v"*.user.js | cut -d ' ' -f 1)" = "$SHA256"
+          (cd "$download" && sha256sum --check SHA256SUMS)
