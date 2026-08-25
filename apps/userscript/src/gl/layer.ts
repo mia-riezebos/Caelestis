@@ -15,6 +15,7 @@ import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
 import { appearanceTransitions } from './appearance-transition.js'
 import { colourFades, templateFades } from './fade.js'
+import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
@@ -70,7 +71,12 @@ interface TemplateGpu {
   paletteKey: string | null
   /** Whether any colour in it is still fading, and so whether it needs re-uploading next frame. */
   paletteMoving: boolean
+  /** Render generation in which this template was most recently visible. */
+  lastUsed: number
 }
+
+const MAX_OVERLAY_GPU_BYTES = 64 * 1024 * 1024
+const UPLOAD_PIXELS_PER_FRAME = 2 * 1024 * 1024
 
 /** Every palette index, for pruning ramps — one per template per colour. */
 const paletteKeys = Array.from({ length: PALETTE_SIZE }, (_, index) => index)
@@ -138,13 +144,14 @@ let quad: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
 const uniforms = new Map<string, WebGLUniformLocation | null>()
 const gpu = new Map<string, TemplateGpu>()
+let renderGeneration = 0
+
+const gpuBytes = (entry: TemplateGpu): number =>
+  PALETTE_SIZE * 4 + entry.indices.reduce((total, tile) => total + tile.width * tile.height, 0)
 
 export const overlayGpuMemoryBytes = (): number => {
   let bytes = quad === null ? 0 : corners.byteLength
-  for (const entry of gpu.values()) {
-    bytes += PALETTE_SIZE * 4
-    for (const tile of entry.indices) bytes += tile.width * tile.height
-  }
+  for (const entry of gpu.values()) bytes += gpuBytes(entry)
   return bytes
 }
 
@@ -311,9 +318,20 @@ const release = (gl: WebGL2RenderingContext, id: string): void => {
   gpu.delete(id)
 }
 
-/** Drop GPU copies of templates that no longer exist, so a deleted overlay frees its memory. */
-const collect = (gl: WebGL2RenderingContext, live: ReadonlySet<string>): void => {
-  for (const id of [...gpu.keys()]) if (!live.has(id)) release(gl, id)
+/** Keep recent offscreen uploads for pan-back, under a soft budget; deleted sources leave at once. */
+const collect = (
+  gl: WebGL2RenderingContext,
+  existing: ReadonlySet<string>,
+  visible: ReadonlySet<string>,
+): void => {
+  const records = [...gpu].map(([id, entry]) => ({
+    id,
+    bytes: gpuBytes(entry),
+    lastUsed: entry.lastUsed,
+    visible: visible.has(id),
+    exists: existing.has(id),
+  }))
+  for (const id of gpuCacheEvictions(records, MAX_OVERLAY_GPU_BYTES)) release(gl, id)
 }
 
 /** Whether any source pixel can reach one of the tile quads wplace is drawing this frame. */
@@ -349,6 +367,7 @@ export const overlayLayer = {
     vao = null
     uniforms.clear()
     gpu.clear()
+    renderGeneration = 0
     owner = gl
     program = link(gl)
     if (program === null) return
@@ -414,6 +433,7 @@ export const overlayLayer = {
     const bufferHeight = gl.drawingBufferHeight
 
     const all = displayTemplates()
+    renderGeneration++
 
     // Switched off is a destination, not an exclusion: a template on its way out is still drawn,
     // at falling opacity, and only leaves once its ramp has run out.
@@ -441,7 +461,8 @@ export const overlayLayer = {
     appearanceTransitions.prune(ids)
     // Offscreen textures can be large. Keep only the templates this frame could actually draw;
     // panning back uploads them lazily again.
-    collect(gl, new Set(visible.map(({ template }) => template.id)))
+    const visibleIds = new Set(visible.map(({ template }) => template.id))
+    collect(gl, ids, visibleIds)
     /**
      * The colour ramps are keyed per template *per palette entry*, so their keep-set is sixty-four
      * strings per template — built only when the set of templates has actually changed, rather than
@@ -493,6 +514,8 @@ export const overlayLayer = {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.disable(gl.DEPTH_TEST)
     gl.bindBuffer(gl.ARRAY_BUFFER, quad)
+    let uploadPixelsLeft = UPLOAD_PIXELS_PER_FRAME
+    let uploadedThisFrame = false
 
     // The restore runs even if the loop throws. `render` catches to keep a bad frame from freezing
     // MapLibre, but catching after the state has been disturbed and before it is put back means
@@ -512,6 +535,11 @@ export const overlayLayer = {
           entry = undefined
         }
         if (entry === undefined) {
+          const uploadPixels = template.width * template.height
+          if (uploadedThisFrame && uploadPixels > uploadPixelsLeft) {
+            animating = true
+            continue
+          }
           const palette = gl.createTexture()
           if (palette === null) continue
           const indices = uploadIndexTiles(gl, template.width, template.height, template.indices)
@@ -527,9 +555,13 @@ export const overlayLayer = {
             source: template.indices,
             paletteKey: null,
             paletteMoving: false,
+            lastUsed: renderGeneration,
           }
           gpu.set(template.id, entry)
+          uploadedThisFrame = true
+          uploadPixelsLeft = Math.max(0, uploadPixelsLeft - uploadPixels)
         }
+        entry.lastUsed = renderGeneration
 
         const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
         const transitioned = appearanceTransitions.advance(

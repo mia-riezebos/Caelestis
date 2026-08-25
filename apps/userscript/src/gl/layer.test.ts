@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   height: 1,
   originX: 0,
   originY: 0,
+  templateCount: 1,
   fade: { value: 0, done: false },
 }))
 
@@ -27,17 +28,16 @@ vi.mock('../templates/local-store.js', () => ({
     hiddenColours: [],
   }),
   isTemplateVisible: () => true,
-  displayTemplates: () => [
-    {
-      id: 'visible-template',
+  displayTemplates: () =>
+    Array.from({ length: harness.templateCount }, (_, index) => ({
+      id: `visible-template-${index}`,
       originX: harness.originX,
       originY: harness.originY,
       width: harness.width,
       height: harness.height,
       indices: harness.indices,
       appearance: null,
-    },
-  ],
+    })),
 }))
 vi.mock('../tile-transform.js', () => ({
   currentQuads: () => [{ tile: { x: 0, y: 0 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
@@ -140,6 +140,7 @@ beforeEach(() => {
   harness.height = 1
   harness.originX = 0
   harness.originY = 0
+  harness.templateCount = 1
 })
 
 describe('overlay layer', () => {
@@ -198,5 +199,22 @@ describe('overlay layer', () => {
 
     expect(context.texImage2D).not.toHaveBeenCalled()
     expect(context.drawArrays).not.toHaveBeenCalled()
+  })
+
+  it('spreads a burst of large visible uploads across frames', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.width = 2_100_000
+    harness.indices = new Uint8Array(harness.width)
+    harness.templateCount = 2
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+
+    overlayLayer.draw(context, null)
+    expect(context.texImage2D).toHaveBeenCalledTimes(2)
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
+
+    overlayLayer.draw(context, null)
+    expect(context.texImage2D).toHaveBeenCalledTimes(4)
   })
 })
