@@ -83,6 +83,7 @@ import { coloursSection } from './colours.js'
 import { confirmDestructive } from './confirm.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
+import { importTemplatesToServer } from './import-to-server.js'
 import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
@@ -2247,12 +2248,6 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
 }
 
 const importTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
-  if (target.server !== null) {
-    // Uploading to a server needs the template to exist and be placed first; that is the local
-    // flow, and copy-to-server is the step after it.
-    toast('Import into Local first, then copy it to a server.', 'warning')
-    return
-  }
   const picker = document.createElement('input')
   picker.type = 'file'
   picker.accept = '.wplace,.json,image/png,image/*'
@@ -2273,6 +2268,17 @@ const importTemplate = async (target: TreeTarget, rerender: () => void): Promise
         const reservation = first.source === 'image' ? reserveMove() : null
         if (first.source === 'image' && reservation === null) {
           toast('Finish the current placement, then import this image again.', 'warning')
+          return
+        }
+        if (target.server !== null) {
+          await importTemplatesToServer(
+            imported,
+            target.server,
+            target.nodeId ?? null,
+            reservation,
+            rerender,
+            (server, render) => refreshCurrentNodes(server, render, true),
+          )
           return
         }
         // Straight into whichever Local folder was clicked. Importing from a folder's own button
