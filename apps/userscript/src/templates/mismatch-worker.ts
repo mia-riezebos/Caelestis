@@ -1,4 +1,5 @@
 import { count, warn } from '../debug.js'
+import { recordProfileDuration } from '../profile.js'
 import { type ScanJob, type ScanOutcome, scanTile } from './mismatch-scan.js'
 
 /**
@@ -42,9 +43,10 @@ self.onmessage = (event) => {
     self.postMessage({ id: job.id, missing: true })
     return
   }
+  const startedAt = performance.now()
   const outcome = scanTile(job, wanted)
   self.postMessage(
-    { id: job.id, ...outcome },
+    { id: job.id, durationMs: performance.now() - startedAt, ...outcome },
     [outcome.wrong.buffer, outcome.unpainted.buffer, outcome.progressByColour.buffer],
   )
 }
@@ -53,6 +55,7 @@ self.onmessage = (event) => {
 interface Reply {
   readonly id: number
   readonly missing?: boolean
+  readonly durationMs?: number
   readonly wrong?: Float32Array
   readonly unpainted?: Float32Array
   readonly asserted?: number
@@ -181,6 +184,7 @@ export const scanInWorker = async (
     count('mismatch:worker had no pixels for that template')
     return null
   }
+  recordProfileDuration('Mismatch scan', reply.durationMs ?? 0, 'worker')
   return {
     wrong: reply.wrong ?? new Float32Array(0),
     unpainted: reply.unpainted ?? new Float32Array(0),
@@ -198,3 +202,6 @@ export const forgetInWorker = (id: string): void => {
   sent.delete(id)
   worker?.postMessage({ forget: true, templateKey: id })
 }
+
+export const mismatchWorkerMemoryBytes = (): number =>
+  [...sent.values()].reduce((total, indices) => total + indices.byteLength, 0)

@@ -1,6 +1,7 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
+import { measureProfile, profileGpu } from '../profile.js'
 import { getState } from '../state.js'
 import { isColourHidden, toRgbUnit } from '../templates/appearance.js'
 import { colourMarksIn } from '../templates/colour-marker.js'
@@ -101,6 +102,9 @@ let owner: WebGL2RenderingContext | null = null
 let program: WebGLProgram | null = null
 let buffer: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
+let markerBufferBytes = 0
+
+export const markerGpuMemoryBytes = (): number => markerBufferBytes
 const uniforms = new Map<string, WebGLUniformLocation | null>()
 
 const compile = (gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null => {
@@ -132,6 +136,7 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
   // could never be freed because the guard in `releaseMarkers` no longer recognised them.
   program = null
   buffer = null
+  markerBufferBytes = 0
   vao = null
   uniforms.clear()
   owner = gl
@@ -179,6 +184,7 @@ export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
   if (vao !== null) gl.deleteVertexArray(vao)
   if (program !== null) gl.deleteProgram(program)
   buffer = null
+  markerBufferBytes = 0
   vao = null
   program = null
   uniforms.clear()
@@ -266,6 +272,7 @@ export const drawMarkers = (
   gl.bindVertexArray(vao)
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
   gl.bufferData(gl.ARRAY_BUFFER, pixels, gl.DYNAMIC_DRAW)
+  markerBufferBytes = pixels.byteLength
 
   gl.uniform2f(uniform(gl, 'u_tileOrigin'), tile.tile.x * TILE_SIZE, tile.tile.y * TILE_SIZE)
   gl.uniform2f(uniform(gl, 'u_tileScreen'), tile.x, tile.y)
@@ -585,7 +592,7 @@ export const markerLayer = {
   render(gl: WebGL2RenderingContext): void {
     // Never let this escape into MapLibre's render loop; a throw here takes the whole frame with it.
     try {
-      drawAll(gl)
+      profileGpu(gl, 'Marker GPU', () => measureProfile('Marker render', () => drawAll(gl)))
     } catch (error) {
       warn('install', 'marker layer render failed; skipping this frame', String(error))
     }

@@ -1,6 +1,7 @@
 import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
+import { clearGpuProfile, measureProfile, profileGpu } from '../profile.js'
 import { isPlain } from '../templates/appearance.js'
 import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
@@ -132,6 +133,15 @@ let quad: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
 const uniforms = new Map<string, WebGLUniformLocation | null>()
 const gpu = new Map<string, TemplateGpu>()
+
+export const overlayGpuMemoryBytes = (): number => {
+  let bytes = quad === null ? 0 : corners.byteLength
+  for (const entry of gpu.values()) {
+    bytes += PALETTE_SIZE * 4
+    for (const tile of entry.indices) bytes += tile.width * tile.height
+  }
+  return bytes
+}
 
 const compile = (gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null => {
   const shader = gl.createShader(type)
@@ -339,6 +349,7 @@ export const overlayLayer = {
     // A later `onAdd` has already taken this state over for its own context. Those handles are not
     // ours to delete, and the context we are being removed from cleans up its own on teardown.
     if (owner !== gl) return
+    clearGpuProfile(gl)
     owner = null
     for (const id of [...gpu.keys()]) release(gl, id)
     if (quad !== null) gl.deleteBuffer(quad)
@@ -358,7 +369,9 @@ export const overlayLayer = {
     // no draw call of any kind is issued. Nothing recovers without a reload, which makes it read as
     // "the overlay is broken" rather than "the map died".
     try {
-      this.draw(gl, args)
+      profileGpu(gl, 'Overlay GPU', () =>
+        measureProfile('Overlay render', () => this.draw(gl, args)),
+      )
     } catch (error) {
       warn('install', 'overlay layer render failed; skipping this frame', String(error))
     }

@@ -23,8 +23,15 @@ vi.mock('./coordinates.js', () => ({
   viewportCentreIn: harness.viewportCentreIn,
 }))
 vi.mock('./debug.js', () => ({ installDebugApi: vi.fn(), warn: vi.fn() }))
-vi.mock('./gl/layer.js', () => ({ installOverlayLayer: vi.fn(() => true), setNudge: vi.fn() }))
-vi.mock('./gl/markers.js', () => ({ keepMarkersAboveDrafts: vi.fn() }))
+vi.mock('./gl/layer.js', () => ({
+  installOverlayLayer: vi.fn(() => true),
+  overlayGpuMemoryBytes: vi.fn(() => 0),
+  setNudge: vi.fn(),
+}))
+vi.mock('./gl/markers.js', () => ({
+  keepMarkersAboveDrafts: vi.fn(),
+  markerGpuMemoryBytes: vi.fn(() => 0),
+}))
 vi.mock('./map-handle.js', () => ({
   getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
   installMapCapture: vi.fn(),
@@ -51,13 +58,16 @@ vi.mock('./templates/local-store.js', () => ({
   setAppearance: vi.fn(),
 }))
 vi.mock('./templates/mismatch.js', () => ({
+  mismatchMemoryBytes: vi.fn(() => 0),
   onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
   wantsTilePixels: vi.fn(() => false),
 }))
+vi.mock('./templates/mismatch-worker.js', () => ({ mismatchWorkerMemoryBytes: vi.fn(() => 0) }))
 vi.mock('./templates/nearest.js', () => ({ templateAtCentre: vi.fn(() => null) }))
 vi.mock('./templates/server-sync.js', () => ({ installServerSync: vi.fn() }))
 vi.mock('./telemetry.js', () => ({ installTelemetry: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
+  capturedPixelMemoryBytes: vi.fn(() => 0),
   captureTilePixels: vi.fn(),
   install: vi.fn(),
   onTileFrame: (listener: (frame: unknown) => void) => {

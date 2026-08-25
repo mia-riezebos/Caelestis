@@ -10,6 +10,7 @@ import {
   WRONG,
 } from '@caelestis/shared'
 import { count } from '../debug.js'
+import { measureProfile } from '../profile.js'
 import {
   beginServerMismatchFrame,
   endServerMismatchFrame,
@@ -169,6 +170,24 @@ const progressTotals = new Map<
   string,
   Omit<ProgressCoverage, 'templateId'> & { readonly byColour: Uint32Array }
 >()
+
+export const mismatchMemoryBytes = (): number => {
+  const buffers = new Set<ArrayBufferLike>()
+  const remember = (value: ArrayBufferView | null): void => {
+    if (value !== null) buffers.add(value.buffer)
+  }
+  for (const entry of cache.values()) {
+    remember(entry.wrong)
+    remember(entry.unpainted)
+    remember(entry.progressByColour)
+    remember(entry.both)
+  }
+  for (const entry of progressCoverage.values()) remember(entry.byColour)
+  for (const entry of progressTotals.values()) remember(entry.byColour)
+  let bytes = 0
+  for (const buffer of buffers) bytes += buffer.byteLength
+  return bytes
+}
 
 /** Add or subtract sparse scan tuples from one template's dense palette counters. */
 const mergeColourProgress = (target: Uint32Array, packed: Uint32Array, direction: 1 | -1): void => {
@@ -1071,7 +1090,9 @@ const mismatchAnswer = (
     template.indices,
     key,
     progressSignature(template),
-    scanTile(buildJob(template, tile, pixels, false), template.indices),
+    measureProfile('Mismatch scan', () =>
+      scanTile(buildJob(template, tile, pixels, false), template.indices),
+    ),
   )
   changed++
   notifyChanged()

@@ -6,10 +6,18 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
-import { installOverlayLayer, setNudge } from './gl/layer.js'
-import { keepMarkersAboveDrafts } from './gl/markers.js'
+import { installOverlayLayer, overlayGpuMemoryBytes, setNudge } from './gl/layer.js'
+import { keepMarkersAboveDrafts, markerGpuMemoryBytes } from './gl/markers.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
 import { installPaintPaletteProgress, paintPaletteProgress } from './paint-palette.js'
+import {
+  installProfile,
+  measureProfile,
+  profileReport,
+  profileSnapshot,
+  registerProfileMemorySource,
+  resetProfile,
+} from './profile.js'
 import { shortcutFor } from './shortcuts.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
 import { installTelemetry } from './telemetry.js'
@@ -23,10 +31,12 @@ import {
   restoreLocalTemplates,
   setAppearance,
 } from './templates/local-store.js'
-import { onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { mismatchMemoryBytes, onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { mismatchWorkerMemoryBytes } from './templates/mismatch-worker.js'
 import { templateAtCentre } from './templates/nearest.js'
 import { installServerSync } from './templates/server-sync.js'
 import {
+  capturedPixelMemoryBytes,
   captureTilePixels,
   install,
   onTileFrame,
@@ -57,11 +67,16 @@ let lastFrame: TileFrame | null = null
 /** Run on every frame that carries tiles, after the frame has been recorded. */
 export type FrameHook = (frame: TileFrame) => void
 
-const hooks: FrameHook[] = []
+interface RegisteredFrameHook {
+  readonly hook: FrameHook
+  readonly name: string
+}
+
+const hooks: RegisteredFrameHook[] = []
 
 /** Register something to run per frame, in registration order. */
-export const onFrame = (hook: FrameHook): void => {
-  hooks.push(hook)
+export const onFrame = (hook: FrameHook, name = 'Frame hook'): void => {
+  hooks.push({ hook, name })
 }
 
 /** Re-run the hooks against the last frame — for when our own state changed, not the map's. */
@@ -123,9 +138,9 @@ const draw = (frame: TileFrame): void => {
 const paintOnce = (frame: TileFrame): void => {
   lastFrame = frame
 
-  for (const hook of hooks) {
+  for (const { hook, name } of hooks) {
     try {
-      hook(frame)
+      measureProfile(name, () => hook(frame))
     } catch (error) {
       warn('install', 'frame hook failed', String(error))
     }
@@ -249,6 +264,15 @@ const installKeys = (): void => {
 }
 
 const main = (): void => {
+  step('performance profile', installProfile)
+  registerProfileMemorySource('Template pixels', () =>
+    localTemplates().reduce((total, template) => total + template.indices.byteLength, 0),
+  )
+  registerProfileMemorySource('Captured tile pixels', capturedPixelMemoryBytes)
+  registerProfileMemorySource('Mismatch cache', mismatchMemoryBytes)
+  registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
+  registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
+  registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
   step('map capture', installMapCapture)
   step('debug API', () => {
@@ -269,6 +293,15 @@ const main = (): void => {
         })),
       /** The exact aggregate currently decorating Wplace's native paint palette. */
       paletteProgress: () => paintPaletteProgress(),
+      /** A live performance snapshot. Enable profiling in Settings first. */
+      profile: () => profileSnapshot(),
+      /** Clear the current sample window without disabling profiling. */
+      profileReset: () => {
+        resetProfile()
+        return profileSnapshot()
+      },
+      /** Copyable JSON for comparing a Caelestis run with a clean Wplace run. */
+      profileReport: () => profileReport(),
       /** The tiles wplace drew on the last frame, and where. How much work a frame actually is. */
       quads: () =>
         lastFrame === null
@@ -317,10 +350,10 @@ const main = (): void => {
   step('mismatch repaint', () => onMismatchesChanged(redraw))
   // wplace add a layer per tile being painted, above anything of ours added earlier, so a placed
   // pixel would otherwise cover the marker it just cleared.
-  step('marker order', () => onFrame(keepMarkersAboveDrafts))
+  step('marker order', () => onFrame(keepMarkersAboveDrafts, 'Keep marker layer above drafts'))
   // Drafting Transparent writes nothing a canvas hook can see, so the only place it shows up is
   // wplace's crosshairs. Throttled inside; with nothing drafted there is nothing to read.
-  step('drafted pixels', () => onFrame(reconcileDrafts))
+  step('drafted pixels', () => onFrame(reconcileDrafts, 'Reconcile drafted pixels'))
   /**
    * Start capturing before the first frame, not on it.
    *
@@ -342,13 +375,13 @@ const main = (): void => {
     // and between them they missed the only one that mattered: at start-up nothing is restored yet,
     // so the first call answers "nothing wants this" and the restore that follows does not
     // necessarily announce itself. Asking again per frame costs a comparison and cannot be wrong.
-    onFrame(sync)
+    onFrame(sync, 'Tile pixel capture state')
   })
   // Templates are drawn by the GL layer inside wplace's own canvas. Nothing of ours rasterises to a
   // canvas of its own any more; the tile frames are kept only as the coordinate reference that the
   // overlay controls and the import placement read.
   step('overlay layer', attachOverlayLayer)
-  onFrame((frame) => renderOverlayControls(repaint, frame.canvas))
+  onFrame((frame) => renderOverlayControls(repaint, frame.canvas), 'Overlay controls')
   onTileFrame(draw)
   onLocalChange(redraw)
   onLocalPreviewChange(redraw)

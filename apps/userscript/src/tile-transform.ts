@@ -9,6 +9,7 @@ import {
 import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
+import { measureProfile } from './profile.js'
 import { draftedPixelsIn } from './templates/drafted.js'
 
 export type WplaceRasterRole = 'tile' | 'draft' | 'other'
@@ -1157,6 +1158,13 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
 const draftOfTile = new Map<string, Uint8Array>()
 const KEEP_DRAFT_TILES = 64
 
+export const capturedPixelMemoryBytes = (): number => {
+  let bytes = rgbToIndex?.byteLength ?? 0
+  for (const pixels of pixelsOfTile.values()) bytes += pixels.byteLength
+  for (const pixels of draftOfTile.values()) bytes += pixels.byteLength
+  return bytes
+}
+
 const rememberDraft = (key: string, draft: Uint8Array): void => {
   draftOfTile.delete(key)
   draftOfTile.set(key, draft)
@@ -1420,91 +1428,92 @@ const capture = (
   tile: TileCoord,
   bitmap: CanvasImageSource & { width: number; height: number },
   from: 'tile' | 'preview' = 'tile',
-): void => {
-  if (!capturePixels) return
-  /**
-   * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
-   *
-   * Their service worker substitutes a 1x1 transparent PNG for an absent tile, and
-   * `normalizeMissingTileResponse` above makes us produce the same thing for a 404. Declining it
-   * left the tile with no entry at all, which is not the same answer: markers over it never
-   * appeared, `markUnpainted` could never mark a fully unpainted tile — the one case it exists for
-   * — and the renderer went on asking for a repaint four times a second forever, waiting for pixels
-   * that were never coming. An empty tile is a real answer and gets recorded as one.
-   */
-  const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
-  if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return
-  try {
-    const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
-    if (empty) {
-      indices.fill(UNPAINTED)
-    } else {
-      const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
-      const context = canvas.getContext('2d', { willReadFrequently: true })
-      if (context === null) return
-      context.drawImage(bitmap, 0, 0)
-      const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
-      const table = indexTable()
-      for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
-        // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
-        // that is not in the table can only be something we do not model — treated as unpainted rather
-        // than guessed at.
-        const index =
-          data[i + 3] === 0
-            ? UNPAINTED
-            : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
-              UNPAINTED)
-        // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
-        if (from === 'preview') {
-          const x = p % TILE_SIZE
-          indices[flipRow((p - x) / TILE_SIZE) * TILE_SIZE + x] = index
-        } else {
-          indices[p] = index
+): void =>
+  measureProfile('Tile pixel capture', () => {
+    if (!capturePixels) return
+    /**
+     * An undersized bitmap from a tile fetch is wplace saying "nothing is painted here".
+     *
+     * Their service worker substitutes a 1x1 transparent PNG for an absent tile, and
+     * `normalizeMissingTileResponse` above makes us produce the same thing for a 404. Declining it
+     * left the tile with no entry at all, which is not the same answer: markers over it never
+     * appeared, `markUnpainted` could never mark a fully unpainted tile — the one case it exists for
+     * — and the renderer went on asking for a repaint four times a second forever, waiting for pixels
+     * that were never coming. An empty tile is a real answer and gets recorded as one.
+     */
+    const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
+    if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return
+    try {
+      const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
+      if (empty) {
+        indices.fill(UNPAINTED)
+      } else {
+        const canvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
+        const context = canvas.getContext('2d', { willReadFrequently: true })
+        if (context === null) return
+        context.drawImage(bitmap, 0, 0)
+        const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
+        const table = indexTable()
+        for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
+          // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
+          // that is not in the table can only be something we do not model — treated as unpainted rather
+          // than guessed at.
+          const index =
+            data[i + 3] === 0
+              ? UNPAINTED
+              : (table[((data[i] ?? 0) << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0)] ??
+                UNPAINTED)
+          // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
+          if (from === 'preview') {
+            const x = p % TILE_SIZE
+            indices[flipRow((p - x) / TILE_SIZE) * TILE_SIZE + x] = index
+          } else {
+            indices[p] = index
+          }
         }
       }
-    }
 
-    const key = tileKey(tile)
+      const key = tileKey(tile)
 
-    if (from === 'preview') {
-      // The draft layer, kept whole and kept apart. It is read as it is — an empty one means nothing
-      // is drafted here, which is true and needs no special case.
-      const existingDraft = draftOfTile.get(key)
-      if (existingDraft === undefined || existingDraft.length !== indices.length) {
-        rememberDraft(key, indices)
-        count('pixels:draft captured')
-      } else {
-        rememberDraft(key, existingDraft)
-        apply(tile, existingDraft, indices)
-        count('pixels:draft re-read')
+      if (from === 'preview') {
+        // The draft layer, kept whole and kept apart. It is read as it is — an empty one means nothing
+        // is drafted here, which is true and needs no special case.
+        const existingDraft = draftOfTile.get(key)
+        if (existingDraft === undefined || existingDraft.length !== indices.length) {
+          rememberDraft(key, indices)
+          count('pixels:draft captured')
+        } else {
+          rememberDraft(key, existingDraft)
+          apply(tile, existingDraft, indices)
+          count('pixels:draft re-read')
+        }
+        // A re-read comes from the canvas, which cannot see a transparent draft, so it has just undone
+        // every one of them. Restoring them in the same tick keeps that invisible rather than a blink.
+        reconcileDraftedTile(tile)
+        return
       }
-      // A re-read comes from the canvas, which cannot see a transparent draft, so it has just undone
-      // every one of them. Restoring them in the same tick keeps that invisible rather than a blink.
-      reconcileDraftedTile(tile)
-      return
-    }
 
-    /**
-     * A re-read of a tile we already hold becomes a diff, not a replacement.
-     *
-     * Replacing the array is what made a whole tile's answers evaporate. Anything holding a result
-     * for this tile keys it on the array's identity — that is how a re-read is meant to invalidate
-     * a stale answer — so handing over a *new* array said "everything about this tile has changed"
-     * when what had actually changed was one pixel someone painted.
-     */
-    const existing = pixelsOfTile.get(key)
-    if (existing === undefined || existing.length !== indices.length) {
-      rememberTilePixels(key, indices)
-      count('pixels:captured')
-      return
+      /**
+       * A re-read of a tile we already hold becomes a diff, not a replacement.
+       *
+       * Replacing the array is what made a whole tile's answers evaporate. Anything holding a result
+       * for this tile keys it on the array's identity — that is how a re-read is meant to invalidate
+       * a stale answer — so handing over a *new* array said "everything about this tile has changed"
+       * when what had actually changed was one pixel someone painted.
+       */
+      const existing = pixelsOfTile.get(key)
+      if (existing === undefined || existing.length !== indices.length) {
+        rememberTilePixels(key, indices)
+        count('pixels:captured')
+        return
+      }
+      rememberTilePixels(key, existing)
+      apply(tile, existing, indices)
+      count('pixels:re-read as a diff')
+    } catch (error) {
+      warn('bitmap', 'could not read tile pixels', String(error))
     }
-    rememberTilePixels(key, existing)
-    apply(tile, existing, indices)
-    count('pixels:re-read as a diff')
-  } catch (error) {
-    warn('bitmap', 'could not read tile pixels', String(error))
-  }
-}
+  })
 
 const installBitmapTap = (realm: Window & typeof globalThis): InstalledValueHook | null => {
   const nativeCreateImageBitmap = realm.createImageBitmap

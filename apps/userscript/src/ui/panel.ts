@@ -1,6 +1,7 @@
 import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { redraw, viewportCentre } from '../main.js'
+import { isProfileEnabled, setProfileEnabled } from '../profile.js'
 import { forgetServer, type ServerTemplate } from '../server-cache.js'
 import {
   admitServerContents,
@@ -87,6 +88,7 @@ import { importTemplatesToServer } from './import-to-server.js'
 import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
+import { profilePanel } from './profile.js'
 import { serverDestinations } from './server-destinations.js'
 import { sortControl } from './sort.js'
 import { installStyles } from './styles.js'
@@ -1166,6 +1168,17 @@ const settingsView = (): HTMLElement => {
       }),
     ),
   )
+  view.appendChild(
+    settingRow(
+      'Performance profiling',
+      'Measures Caelestis CPU, GPU and known buffers. Profiling adds a small overhead.',
+      checkbox(isProfileEnabled(), (next) => {
+        setProfileEnabled(next)
+        showView('settings')
+      }),
+    ),
+  )
+  if (isProfileEnabled()) view.appendChild(profilePanel())
   return view
 }
 
