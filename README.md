@@ -33,6 +33,8 @@ pnpm install
 pnpm build
 ```
 
+Userscript releases use Changesets. See [Userscript releases](docs/userscript-releases.md).
+
 ## Status
 
 Scaffold only. The backend runtime is undecided — see

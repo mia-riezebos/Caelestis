@@ -16,6 +16,10 @@ const metadata = `// ==UserScript==
 // @version      ${pkg.version}
 // @description  Shared pixel-art templates for wplace.live, overlaid from one or more alliance servers
 // @author       mia-riezebos
+// @homepageURL  https://github.com/mia-riezebos/Caelestis
+// @supportURL   https://github.com/mia-riezebos/Caelestis/issues
+// @downloadURL  https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js
+// @updateURL    https://github.com/mia-riezebos/Caelestis/releases/latest/download/caelestis.user.js
 // @match        https://wplace.live/*
 // @run-at       document-start
 // @inject-into  page
