@@ -25,6 +25,7 @@ import {
   forgetServerTemplate,
   isDeletingLocal,
   isServerTemplate,
+  isTemplateVisible,
   localTemplates,
   ownsGroup,
   type PlacedTemplate,
@@ -2034,9 +2035,10 @@ const expireMoveFailure = (id: string): void => {
 
 /** Where the overlay's top-right corner sits on screen, or null when none of it is in view. */
 const cornerOnScreen = (template: PlacedTemplate): { x: number; y: number } | null => {
-  // Hidden templates are managed from the main menu. Keeping a local trigger for something that is
-  // no longer drawn leaves unexplained chrome over unrelated map pixels.
-  if (!template.visible) return null
+  // Hidden templates are managed from the main menu. This must use effective visibility because a
+  // template can keep its own switch on while a server or folder above it hides the whole branch.
+  // Keeping a local trigger for something no longer drawn leaves chrome over unrelated map pixels.
+  if (!isTemplateVisible(template)) return null
   // Follow the placement preview while one is running: the overlay is painted at the preview
   // origin, and a button left at the durable origin points at nothing.
   const preview = previewOriginFor(template.id)
@@ -2093,7 +2095,8 @@ const renderControls = (
   // template's delete question and failures behind, ready to be handed to the next record that
   // takes its durable id.
   sweepControls(live)
-  if (openFor !== null && templateFor(openFor)?.visible === false) closeOverlayMenu()
+  const openTemplate = openFor === null ? undefined : templateFor(openFor)
+  if (openTemplate !== undefined && !isTemplateVisible(openTemplate)) closeOverlayMenu()
   if (mapCanvas.parentElement === null) {
     // No map to anchor to right now. The templates that remain have not gone anywhere, and neither
     // has anything in flight for them.

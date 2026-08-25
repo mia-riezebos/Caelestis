@@ -32,6 +32,7 @@ const harness = vi.hoisted(() => ({
   previewOriginFor: vi.fn(() => null as { x: number; y: number } | null),
   removeTreeStateKeys: vi.fn(),
   isDeletingLocal: vi.fn((_id: string) => false),
+  isTemplateVisible: vi.fn((template: { visible: boolean }) => template.visible),
   removeLocalTemplate: vi.fn(async (_id: string) => true),
   forgetServerTemplate: vi.fn(async (_id: string) => {}),
   deleteServerTemplate: vi.fn(async () => ({ ok: true as const })),
@@ -83,6 +84,7 @@ vi.mock('../templates/local-store.js', () => ({
   forgetServerTemplate: harness.forgetServerTemplate,
   isDeletingLocal: harness.isDeletingLocal,
   isServerTemplate: (template: { serverUrl?: string }) => template.serverUrl !== undefined,
+  isTemplateVisible: harness.isTemplateVisible,
   localTemplates: harness.localTemplates,
   ownsGroup: harness.ownsGroup,
   previewOriginFor: harness.previewOriginFor,
@@ -246,6 +248,7 @@ afterEach(() => {
   harness.movingId.mockReturnValue(null)
   harness.placementSeq.mockReturnValue(null)
   harness.isDeletingLocal.mockReturnValue(false)
+  harness.isTemplateVisible.mockImplementation((template: { visible: boolean }) => template.visible)
   harness.removeLocalTemplate.mockResolvedValue(true)
   harness.setAppearance.mockImplementation(async () => true)
   harness.setLocalVisible.mockResolvedValue(true)
@@ -354,6 +357,27 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
     expect(harness.setLocalVisible).toHaveBeenCalledOnce()
     expect(harness.setLocalVisible).toHaveBeenCalledWith('a', false)
+  })
+
+  it('removes controls when a visible template is inside a hidden ancestor folder', () => {
+    const child = template({
+      serverUrl: 'https://example.test',
+      serverTemplateId: 'remote-a',
+    })
+    harness.localTemplates.mockReturnValue([child])
+
+    rerender()
+    gear('a').click()
+    rerender()
+    expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
+
+    harness.isTemplateVisible.mockReturnValue(false)
+    rerender()
+
+    expect(child.visible).toBe(true)
+    expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
+    expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
+    expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
   })
 
   it('rebuilds for the template whose gear was clicked', () => {
