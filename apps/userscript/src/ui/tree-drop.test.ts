@@ -351,6 +351,7 @@ describe('tree drag and drop', () => {
     expect(
       showColours?.parentElement?.classList.contains('caelestis-progress-detail-actions'),
     ).toBe(true)
+    expect(showColours?.parentElement?.classList.contains('caelestis-actions')).toBe(false)
     expect(collapse?.parentElement).not.toBe(showColours?.parentElement)
     expect(showColours?.closest('.caelestis-progress-disclosure')).not.toBeNull()
     expect(

@@ -1398,7 +1398,7 @@ const treeRow = (options: RowOptions): HTMLElement => {
       const line = document.createElement('span')
       line.className = 'caelestis-progress-disclosure'
       const detailActions = document.createElement('span')
-      detailActions.className = 'caelestis-actions caelestis-progress-detail-actions'
+      detailActions.className = 'caelestis-progress-detail-actions'
       detailActions.appendChild(actionButton(colourProgressAction))
       line.append(progressElement, detailActions)
       expandedDetail = line
