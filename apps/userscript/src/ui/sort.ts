@@ -33,6 +33,9 @@ export const DEFAULT_SORT: SortOrder = { field: 'custom', direction: 'asc' }
  */
 export const isReorderable = (order: SortOrder): boolean => order.field === 'custom'
 
+/** Progress updates can change row order only while progress is the active sort key. */
+export const progressChangesCanReorder = (order: SortOrder): boolean => order.field === 'progress'
+
 /** Label, plus what its two directions actually mean — "ascending" tells nobody anything. */
 const FIELDS: ReadonlyArray<{
   readonly field: SortField
