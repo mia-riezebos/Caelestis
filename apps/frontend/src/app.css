@@ -143,22 +143,22 @@
 [data-theme='caelestis-dark'] {
   --chart-placed: #4a8cd9;
   --chart-correct: #16a566;
-  --heat-1: oklch(32% 0.06 253);
-  --heat-2: oklch(42% 0.09 253);
-  --heat-3: oklch(52% 0.11 253);
-  --heat-4: oklch(62% 0.13 253);
-  --heat-5: oklch(72% 0.13 253);
+  --heat-1: oklch(44% 0.09 253);
+  --heat-2: oklch(53% 0.11 253);
+  --heat-3: oklch(62% 0.13 253);
+  --heat-4: oklch(71% 0.13 253);
+  --heat-5: oklch(80% 0.12 253);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     --chart-placed: #4a8cd9;
     --chart-correct: #16a566;
-    --heat-1: oklch(32% 0.06 253);
-    --heat-2: oklch(42% 0.09 253);
-    --heat-3: oklch(52% 0.11 253);
-    --heat-4: oklch(62% 0.13 253);
-    --heat-5: oklch(72% 0.13 253);
+    --heat-1: oklch(44% 0.09 253);
+    --heat-2: oklch(53% 0.11 253);
+    --heat-3: oklch(62% 0.13 253);
+    --heat-4: oklch(71% 0.13 253);
+    --heat-5: oklch(80% 0.12 253);
   }
 }
 

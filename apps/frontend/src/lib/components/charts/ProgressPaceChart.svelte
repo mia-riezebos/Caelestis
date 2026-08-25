@@ -1,17 +1,28 @@
 <script lang="ts">
   import type { HistoryBucket } from '@caelestis/shared'
+  import { persisted } from '$lib/persisted.svelte'
 
   let {
     buckets,
     resolution,
     from,
     to,
+    anchorCorrect,
+    anchorMismatched,
   }: {
     buckets: readonly HistoryBucket[]
     /** Bucket width in seconds; buckets are summed across templates per bucket start. */
     resolution: number
     from: number
     to: number
+    /**
+     * The template's live status right now, from `/telemetry/status` — canvas truth, not reports.
+     * The progress areas walk backwards from these anchors along the reported deltas, so the
+     * right edge always equals the meter above and the areas read as overall template progress.
+     * The pace lines stay purely report-derived.
+     */
+    anchorCorrect: number
+    anchorMismatched: number
   } = $props()
 
   /**
@@ -28,11 +39,12 @@
     { key: '1d', seconds: 86_400 },
   ] as const
 
-  let enabledWindows = $state<Set<string>>(new Set(['1h', '6h']))
+  const storedWindows = persisted<string[]>('caelestis:pace-windows', ['1h', '6h'])
+  const enabledWindows = $derived(new Set(storedWindows.value))
   const toggleWindow = (key: string): void => {
-    const next = new Set(enabledWindows)
+    const next = new Set(storedWindows.value)
     if (!next.delete(key)) next.add(key)
-    enabledWindows = next
+    storedWindows.value = [...next]
   }
 
   /** Disable a window when its tier provides fewer than two samples. */
@@ -48,34 +60,68 @@
   }
 
   const points = $derived.by<Point[]>(() => {
-    const byStart = new Map<number, { placed: number; correct: number }>()
+    const byStart = new Map<number, { placed: number; correct: number; repairs: number }>()
     for (const bucket of buckets) {
-      const entry = byStart.get(bucket.bucketStart) ?? { placed: 0, correct: 0 }
+      const entry = byStart.get(bucket.bucketStart) ?? { placed: 0, correct: 0, repairs: 0 }
       entry.placed += bucket.placed
       entry.correct += bucket.correct
+      entry.repairs += bucket.repairs
       byStart.set(bucket.bucketStart, entry)
     }
     const filled: Point[] = []
     let cumCorrect = 0
     let cumPlaced = 0
+    let cumMismatched = 0
     const first = Math.ceil(from / resolution) * resolution
     for (let t = first; t < to; t += resolution) {
-      const delta = byStart.get(t) ?? { placed: 0, correct: 0 }
+      const delta = byStart.get(t) ?? { placed: 0, correct: 0, repairs: 0 }
       cumCorrect += delta.correct
       cumPlaced += delta.placed
+      // A mismatch is born by a wrong placement and killed by a repair. `placed - correct` is the
+      // wrong placements; each repair converts one wrong pixel to correct. Without the repairs
+      // term the band could never slope down, which read as "my fixes aren't counting".
+      cumMismatched += delta.placed - delta.correct - delta.repairs
       filled.push({
         t,
         placed: delta.placed,
         correct: delta.correct,
         cumCorrect,
-        cumMismatched: cumPlaced - cumCorrect,
+        cumMismatched,
         cumPlaced,
       })
+    }
+    // Anchor to live state: shift each series so its right edge equals what the canvas says now.
+    // Reported deltas only shape the slope between observations; the level is the server's truth.
+    const last = filled[filled.length - 1]
+    if (last !== undefined) {
+      const correctShift = anchorCorrect - last.cumCorrect
+      const mismatchedShift = anchorMismatched - last.cumMismatched
+      for (const point of filled) {
+        point.cumCorrect = Math.max(0, point.cumCorrect + correctShift)
+        point.cumMismatched = Math.max(0, point.cumMismatched + mismatchedShift)
+      }
     }
     return filled
   })
 
   const hasActivity = $derived(points.some((p) => p.placed > 0))
+
+  // ── Brush ────────────────────────────────────────────────────────────────────────────────────
+  // The strip under the chart holds the full fetched range; the selection windows the chart above.
+  // Pace and cumulatives are still derived from the full data, so a window's left edge shows real
+  // values, not a restart from zero.
+  let selFrom = $state(0)
+  let selTo = $state(0)
+
+  $effect(() => {
+    selFrom = from
+    selTo = to
+  })
+
+  const MIN_SELECTION = $derived(resolution * 6)
+  const zoomed = $derived(selFrom > from || selTo < to)
+
+  const visiblePoints = $derived(points.filter((p) => p.t >= selFrom && p.t <= selTo))
 
   /** px/h at each point for one window, clipped where the window is not fully covered. */
   const paceSeries = (windowSeconds: number): { t: number; v: number }[] => {
@@ -95,16 +141,21 @@
       (w, _, all) => ({
         ...w,
         rank: WINDOWS.findIndex((x) => x.key === w.key) / Math.max(1, WINDOWS.length - 1),
-        series: paceSeries(w.seconds),
+        series: paceSeries(w.seconds).filter((p) => p.t >= selFrom && p.t <= selTo),
         count: all.length,
       }),
     ),
   )
 
-  /** Use lighter blue for short windows and darker blue for long windows. */
+  /**
+   * Ordered ramp anchored at two colours that are legible by construction: the shortest window is
+   * the series blue itself, the longest is mostly foreground ink, and every step lies between
+   * them. Ramping toward a surface or toward "light" always sinks one end into the background in
+   * one theme or the other — that was the unreadable 30m line, twice.
+   */
   const paceColor = (rank: number): string =>
-    `color-mix(in oklab, var(--chart-placed) ${Math.round(35 + rank * 65)}%, var(--color-base-100))`
-  const paceWidth = (rank: number): number => 1 + rank * 1.5
+    `color-mix(in oklab, var(--chart-placed) ${Math.round(100 - rank * 65)}%, var(--color-base-content))`
+  const paceWidth = (rank: number): number => 1.5 + rank * 1.25
 
   let width = $state(640)
   const height = 240
@@ -115,13 +166,15 @@
     const magnitude = 10 ** Math.floor(Math.log10(safe))
     return Math.ceil(safe / magnitude) * magnitude
   }
-  const yMaxLeft = $derived(nice(Math.max(1, ...points.map((p) => p.cumPlaced))))
+  const yMaxLeft = $derived(
+    nice(Math.max(1, ...visiblePoints.map((p) => p.cumCorrect + p.cumMismatched))),
+  )
   const yMaxRight = $derived(
     nice(Math.max(1, ...activePaces.flatMap((p) => p.series.map((s) => s.v)))),
   )
 
   const x = $derived(
-    (t: number) => pad.left + ((t - from) / (to - from)) * (width - pad.left - pad.right),
+    (t: number) => pad.left + ((t - selFrom) / (selTo - selFrom)) * (width - pad.left - pad.right),
   )
   const yLeft = $derived(
     (v: number) => height - pad.bottom - (v / yMaxLeft) * (height - pad.top - pad.bottom),
@@ -137,11 +190,11 @@
 
   /** Stacked band between two cumulative levels, closed into a fillable region. */
   const bandPath = (lower: (p: Point) => number, upper: (p: Point) => number): string => {
-    if (points.length === 0) return ''
-    const top = points
+    if (visiblePoints.length === 0) return ''
+    const top = visiblePoints
       .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${yLeft(upper(p)).toFixed(1)}`)
       .join('')
-    const bottom = [...points]
+    const bottom = [...visiblePoints]
       .reverse()
       .map((p) => `L${x(p.t).toFixed(1)},${yLeft(lower(p)).toFixed(1)}`)
       .join('')
@@ -152,15 +205,16 @@
 
   const xTicks = $derived.by(() => {
     const ticks: number[] = []
-    const span = to - from
-    const step = span > 86_400 * 3 ? 86_400 : span > 86_400 ? 21_600 : 3_600 * 4
-    for (let t = Math.ceil(from / step) * step; t < to; t += step) ticks.push(t)
+    const span = selTo - selFrom
+    const step =
+      span > 86_400 * 3 ? 86_400 : span > 86_400 ? 21_600 : span > 21_600 ? 3_600 * 4 : 3_600
+    for (let t = Math.ceil(selFrom / step) * step; t < selTo; t += step) ticks.push(t)
     return ticks
   })
 
   const formatTick = (t: number): string => {
     const date = new Date(t * 1000)
-    return to - from > 86_400 * 3
+    return selTo - selFrom > 86_400 * 3
       ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
       : date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
   }
@@ -171,16 +225,105 @@
   let hover = $state<Point | null>(null)
 
   const onPointerMove = (event: PointerEvent): void => {
-    if (points.length === 0) return
+    if (visiblePoints.length === 0) return
     const bounds = (event.currentTarget as SVGSVGElement).getBoundingClientRect()
     // Map time through the plot area and exclude the axis gutters.
     const plotX = event.clientX - bounds.left - pad.left
-    const t = from + (plotX / (width - pad.left - pad.right)) * (to - from)
-    let nearest = points[0]
-    for (const point of points) {
+    const t = selFrom + (plotX / (width - pad.left - pad.right)) * (selTo - selFrom)
+    let nearest = visiblePoints[0]
+    for (const point of visiblePoints) {
       if (nearest === undefined || Math.abs(point.t - t) < Math.abs(nearest.t - t)) nearest = point
     }
     hover = nearest ?? null
+  }
+
+  // ── Brush interactions ───────────────────────────────────────────────────────────────────────
+  const BRUSH_HEIGHT = 44
+  const brushPad = { top: 4, bottom: 4 }
+
+  const bx = $derived(
+    (t: number) => pad.left + ((t - from) / (to - from)) * (width - pad.left - pad.right),
+  )
+  const brushT = (clientX: number, bounds: DOMRect): number => {
+    const fraction = (clientX - bounds.left - pad.left) / (width - pad.left - pad.right)
+    const t = from + fraction * (to - from)
+    return Math.round(Math.min(to, Math.max(from, t)) / resolution) * resolution
+  }
+
+  /** The full range's cumulative outline, the brush's little mountain. */
+  const brushOutline = $derived.by(() => {
+    if (points.length === 0) return ''
+    const max = Math.max(1, ...points.map((p) => p.cumPlaced))
+    const y = (v: number) =>
+      BRUSH_HEIGHT - brushPad.bottom - (v / max) * (BRUSH_HEIGHT - brushPad.top - brushPad.bottom)
+    const top = points
+      .map((p, i) => `${i === 0 ? 'M' : 'L'}${bx(p.t).toFixed(1)},${y(p.cumPlaced).toFixed(1)}`)
+      .join('')
+    const first = points[0]
+    const last = points[points.length - 1]
+    if (first === undefined || last === undefined) return ''
+    return `${top}L${bx(last.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}L${bx(first.t).toFixed(1)},${BRUSH_HEIGHT - brushPad.bottom}Z`
+  })
+
+  type BrushDrag =
+    | { kind: 'head' }
+    | { kind: 'tail' }
+    | { kind: 'move'; grabOffset: number }
+    | { kind: 'new'; anchor: number }
+  let brushDrag: BrushDrag | null = null
+
+  const HANDLE_GRAB_PX = 8
+
+  const onBrushDown = (event: PointerEvent): void => {
+    const svg = event.currentTarget as SVGSVGElement
+    svg.setPointerCapture(event.pointerId)
+    const bounds = svg.getBoundingClientRect()
+    const px = event.clientX - bounds.left
+    const t = brushT(event.clientX, bounds)
+    if (Math.abs(px - bx(selFrom)) <= HANDLE_GRAB_PX) brushDrag = { kind: 'head' }
+    else if (Math.abs(px - bx(selTo)) <= HANDLE_GRAB_PX) brushDrag = { kind: 'tail' }
+    else if (t > selFrom && t < selTo) brushDrag = { kind: 'move', grabOffset: t - selFrom }
+    else brushDrag = { kind: 'new', anchor: t }
+  }
+
+  const onBrushMove = (event: PointerEvent): void => {
+    if (brushDrag === null) return
+    const bounds = (event.currentTarget as SVGSVGElement).getBoundingClientRect()
+    const t = brushT(event.clientX, bounds)
+    switch (brushDrag.kind) {
+      case 'head':
+        selFrom = Math.min(t, selTo - MIN_SELECTION)
+        break
+      case 'tail':
+        selTo = Math.max(t, selFrom + MIN_SELECTION)
+        break
+      case 'move': {
+        const span = selTo - selFrom
+        selFrom = Math.min(to - span, Math.max(from, t - brushDrag.grabOffset))
+        selTo = selFrom + span
+        break
+      }
+      case 'new': {
+        const lo = Math.min(brushDrag.anchor, t)
+        const hi = Math.max(brushDrag.anchor, t)
+        if (hi - lo >= MIN_SELECTION) {
+          selFrom = lo
+          selTo = hi
+        }
+        break
+      }
+    }
+    selFrom = Math.max(from, selFrom)
+    selTo = Math.min(to, selTo)
+  }
+
+  const onBrushUp = (): void => {
+    brushDrag = null
+  }
+
+  const resetBrush = (): void => {
+    selFrom = from
+    selTo = to
   }
 
   const hoverPace = (windowSeconds: number, t: number): number | null => {
@@ -278,7 +421,7 @@
         opacity="0.25"
       />
       <path
-        d={points
+        d={visiblePoints
           .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${yLeft(p.cumCorrect).toFixed(1)}`)
           .join('')}
         fill="none"
@@ -306,6 +449,66 @@
         />
       {/if}
     </svg>
+
+    <!-- The brush: the full fetched range in miniature; drag the head or tail grip to window the
+         chart, drag the middle to slide the window, drag empty track to draw a fresh one. -->
+    <div class="mt-1 flex items-center gap-2">
+      <svg
+        {width}
+        height={BRUSH_HEIGHT}
+        class="flex-1 touch-none"
+        role="slider"
+        aria-label="time window — drag the edges to zoom the chart"
+        aria-valuemin={from}
+        aria-valuemax={to}
+        aria-valuenow={selFrom}
+        tabindex="-1"
+        onpointerdown={onBrushDown}
+        onpointermove={onBrushMove}
+        onpointerup={onBrushUp}
+        onpointercancel={onBrushUp}
+        ondblclick={resetBrush}
+      >
+        <rect
+          x={pad.left}
+          y={brushPad.top}
+          width={width - pad.left - pad.right}
+          height={BRUSH_HEIGHT - brushPad.top - brushPad.bottom}
+          rx="4"
+          class="fill-base-200"
+        />
+        <path d={brushOutline} fill="var(--chart-placed)" opacity="0.35" />
+        <rect
+          x={bx(selFrom)}
+          y={brushPad.top}
+          width={Math.max(0, bx(selTo) - bx(selFrom))}
+          height={BRUSH_HEIGHT - brushPad.top - brushPad.bottom}
+          class="cursor-grab fill-primary/20 stroke-primary/60"
+        />
+        {#each [selFrom, selTo] as edge, i (i)}
+          <g class="cursor-ew-resize">
+            <rect
+              x={bx(edge) - HANDLE_GRAB_PX}
+              y={brushPad.top}
+              width={HANDLE_GRAB_PX * 2}
+              height={BRUSH_HEIGHT - brushPad.top - brushPad.bottom}
+              fill="transparent"
+            />
+            <rect
+              x={bx(edge) - 2.5}
+              y={BRUSH_HEIGHT / 2 - 9}
+              width="5"
+              height="18"
+              rx="2.5"
+              class="fill-primary stroke-base-100"
+            />
+          </g>
+        {/each}
+      </svg>
+      {#if zoomed}
+        <button class="btn btn-ghost btn-xs shrink-0" onclick={resetBrush}>reset</button>
+      {/if}
+    </div>
 
     {#if hover !== null}
       <div

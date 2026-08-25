@@ -15,6 +15,7 @@
   import { Slider } from '$lib/components/ui/slider'
   import { tilesInRect, tileUnionRect } from '$lib/render'
   import { app } from '$lib/state/app.svelte'
+  import { persisted } from '$lib/persisted.svelte'
   import { progressFromStatus } from '$lib/tree'
 
   const template = $derived(
@@ -40,7 +41,8 @@
   })
 
   // The canvas as it is comes first; the template art is opt-in via the slider.
-let overlayAlpha = $state(0)
+const storedOverlay = persisted<number>('caelestis:overlay-alpha', 0)
+const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
 
   // ── Timelapse ────────────────────────────────────────────────────────────────────────────────
   // `raw` is resolution 0: every accepted observation. The folded tiers stay empty until the
@@ -52,7 +54,11 @@ let overlayAlpha = $state(0)
     { key: '1d', seconds: 86_400, window: 86_400 * 60 },
   ] as const
 
-  let resolutionKey = $state<(typeof RESOLUTIONS)[number]['key']>('raw')
+  const storedResolution = persisted<(typeof RESOLUTIONS)[number]['key']>(
+    'caelestis:timelapse-resolution',
+    'raw',
+  )
+  const resolutionKey = $derived(storedResolution.value)
   const resolution = $derived(RESOLUTIONS.find((r) => r.key === resolutionKey) ?? RESOLUTIONS[0])
 
   let frames = $state<ReadonlyMap<TileKey, readonly TileHistoryFrame[]> | null>(null)
@@ -204,7 +210,7 @@ let overlayAlpha = $state(0)
           max={1}
           step={0.05}
           value={overlayAlpha}
-          onValueChange={(value: number) => (overlayAlpha = value)}
+          onValueChange={(value: number) => (storedOverlay.value = value)}
           class="max-w-44 flex-1"
           aria-label="template overlay opacity"
         />
@@ -256,7 +262,7 @@ let overlayAlpha = $state(0)
           {#each RESOLUTIONS as option (option.key)}
             <button
               class="btn join-item btn-xs {option.key === resolutionKey ? 'btn-primary' : 'btn-ghost'}"
-              onclick={() => (resolutionKey = option.key)}
+              onclick={() => (storedResolution.value = option.key)}
             >
               {option.key}
             </button>
@@ -265,11 +271,7 @@ let overlayAlpha = $state(0)
       </div>
     </section>
 
-    <StatsPanel
-      templateIds={[template.id]}
-      season={app.manifest.season}
-      remainingPixels={progress.total - progress.completed}
-    />
+    <StatsPanel templateIds={[template.id]} season={app.manifest.season} {progress} />
 
     {#if status?.colours !== undefined && status.colours.length > 0}
       <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">

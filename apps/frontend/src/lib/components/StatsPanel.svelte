@@ -5,17 +5,20 @@
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
   import Leaderboard from '$lib/components/Leaderboard.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'
+  import type { Progress } from '$lib/tree'
 
   let {
     templateIds,
     season,
-    remainingPixels,
+    progress,
   }: {
     templateIds: readonly string[]
     season: number
-    /** Current unpainted and mismatched pixels used for the ETA. */
-    remainingPixels: number
+    /** The scope's live status — the progress chart's anchor and the ETA's numerator. */
+    progress: Progress
   } = $props()
+
+  const remainingPixels = $derived(progress.total - progress.completed)
 
   // One fixed window; every pace horizon is a line in the chart, not a mode of the panel.
   const WINDOW_SECONDS = 604_800
@@ -145,7 +148,14 @@
     {:else if history === null}
       <Skeleton class="h-[240px] w-full" />
     {:else}
-      <ProgressPaceChart buckets={history} resolution={RESOLUTION} {from} {to} />
+      <ProgressPaceChart
+        buckets={history}
+        resolution={RESOLUTION}
+        {from}
+        {to}
+        anchorCorrect={progress.completed}
+        anchorMismatched={progress.mismatched}
+      />
     {/if}
   </section>
 

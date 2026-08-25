@@ -85,11 +85,7 @@ const ancestors = $derived.by(() => {
     {/if}
 
     {#if templateIds.length > 0 && app.manifest !== null}
-      <StatsPanel
-        {templateIds}
-        season={app.manifest.season}
-        remainingPixels={folder.progress.total - folder.progress.completed}
-      />
+      <StatsPanel {templateIds} season={app.manifest.season} progress={folder.progress} />
     {/if}
 
     {#if colours !== null && colours.length > 0}
