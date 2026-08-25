@@ -1698,6 +1698,12 @@ interface TreeItem {
   readonly meta?: string | undefined
   readonly progress?: TemplateProgress
   readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined
+  /**
+   * Kept out of every ancestor rollup while still showing its own meter — an unpublished template
+   * is visible to the admin looking at it, but a draft must not drag a folder's aggregate down
+   * before the template exists for anyone else.
+   */
+  readonly excludeFromRollup?: true
   readonly progressSortable?: true
   readonly muted?: boolean | undefined
   readonly visible: boolean
@@ -1762,6 +1768,7 @@ const groupedSource = (
     visiting.add(parentId)
     const descendants: TemplateProgress[] = []
     for (const item of byParent.get(parentId) ?? []) {
+      if (item.excludeFromRollup === true) continue
       const itemProgress = item.childrenOf === null ? item.progress : progress(item.childrenOf)
       if (itemProgress !== undefined) descendants.push(itemProgress)
     }
@@ -1778,6 +1785,7 @@ const groupedSource = (
     let found = false
     let available = true
     for (const item of byParent.get(parentId) ?? []) {
+      if (item.excludeFromRollup === true) continue
       const overall = item.childrenOf === null ? item.progress : progress(item.childrenOf)
       if (overall === undefined) continue
       found = true
@@ -1804,6 +1812,7 @@ const groupedSource = (
     colourVisiting.add(parentId)
     const descendants: Array<readonly TemplateColourProgress[]> = []
     for (const item of byParent.get(parentId) ?? []) {
+      if (item.excludeFromRollup === true) continue
       const itemProgress =
         item.childrenOf === null ? item.colourProgress?.() : colourProgress(item.childrenOf)
       if (itemProgress !== undefined) descendants.push(itemProgress)
@@ -2130,16 +2139,17 @@ export const treeContents = (
     // Only where the code can actually act. Offering create to someone who will only ever get a
     // 403 is worse than not offering it — Local always can, since nothing gates it.
     const canEdit = isLocal || (server?.isAdmin ?? false)
+    // Published only, same as every folder rollup below: an admin's unpublished drafts are listed
+    // and metered individually, but never counted into the server's aggregate.
+    const serverTemplates =
+      server === undefined
+        ? []
+        : (rowsFor(server)?.templates ?? []).filter((template) => template.published)
     const parentProgress = isLocal
       ? sumProgress(localOnly.map(progressFor))
       : server === undefined
         ? undefined
-        : sumProgress(
-            (rowsFor(server)?.templates ?? []).map((template) =>
-              serverTemplateProgress(server, template),
-            ),
-          )
-    const serverTemplates = server === undefined ? [] : (rowsFor(server)?.templates ?? [])
+        : sumProgress(serverTemplates.map((template) => serverTemplateProgress(server, template)))
     const parentColourProgress: (() => readonly TemplateColourProgress[] | undefined) | undefined =
       isLocal
         ? localOnly.length === 0
@@ -2354,6 +2364,7 @@ export const treeContents = (
               childrenOf: null,
               createdAt: template.updatedAt,
               muted: !template.published,
+              ...(template.published ? {} : { excludeFromRollup: true as const }),
               progress: serverTemplateProgress(server, template),
               ...(colourProgress === undefined ? {} : { colourProgress: () => colourProgress }),
               progressSortable: true,
