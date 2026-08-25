@@ -15,6 +15,8 @@ import type { Millis, Seconds } from './time.js'
  * pixels, so this is an order of magnitude of headroom.
  */
 export const MAX_PAINT_COUNT = 100_000
+/** Bound one hash-first offer request without turning ordinary panning into one request per tile. */
+export const MAX_TILE_OFFERS = 64
 
 export type WplaceUserId = number
 
@@ -88,6 +90,17 @@ export interface TileOffer {
 export interface TileOfferResponse {
   /** Tiles the server does not already have and wants the bytes for. */
   readonly wanted: readonly TileKey[]
+}
+
+/** One reporter offering the template-covered tiles it has just fetched from wplace. */
+export interface TileOfferBatch extends PainterIdentity {
+  readonly season: number
+  readonly offers: readonly TileOffer[]
+}
+
+/** Current server-derived progress for every template the caller may read. */
+export interface StatusResponse {
+  readonly templates: readonly TemplateStatus[]
 }
 
 /**

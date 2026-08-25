@@ -5,6 +5,7 @@ import type { Ports } from './ports/index.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
+import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
 
@@ -68,6 +69,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
             'serverDescription',
           ),
         }
+  const currentSeason = options.currentSeason ?? 0
 
   // The userscript runs on wplace.live and calls this server cross-origin.
   // `ETag` has to be named explicitly. It is not a CORS-safelisted response header, and Hono only
@@ -88,15 +90,13 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.get('/health', (c) => c.json({ ok: true }))
   app.route('/server', createServerRoutes(ports, server))
   app.route('/admin/server', createServerAdminRoutes(ports, auth))
-  app.route(
-    '/manifest',
-    createManifestRoutes(ports, auth, { server, currentSeason: options.currentSeason ?? 0 }),
-  )
+  app.route('/manifest', createManifestRoutes(ports, auth, { server, currentSeason }))
 
   app.route('/admin/tokens', createTokenRoutes(auth))
   app.route('/admin/nodes', createNodeRoutes(ports, auth))
   app.route('/admin/templates', createTemplateRoutes(ports, auth))
   app.route('/chunks', createChunkRoutes(ports, auth))
+  app.route('/telemetry', createTelemetryRoutes(ports, auth, { currentSeason }))
 
   return app
 }

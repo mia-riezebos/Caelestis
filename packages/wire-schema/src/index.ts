@@ -1,5 +1,11 @@
 import type * as Shared from '@caelestis/shared'
-import { MAX_PAINT_COUNT, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
+import {
+  MAX_PAINT_COUNT,
+  MAX_TILE_OFFERS,
+  TILE_SIZE,
+  WORLD_PIXELS,
+  WORLD_TILES,
+} from '@caelestis/shared'
 import { Schema } from 'effect'
 
 const MAX_IDENTIFIER_LENGTH = 64
@@ -547,6 +553,13 @@ export const TileOfferResponse = Schema.Struct({
   wanted: boundedArray(TileKey, MAX_MANIFEST_TILES),
 })
 
+export const TileOfferBatch = Schema.Struct({
+  wplaceUserId: NonNegativeInteger,
+  displayName: Name,
+  season: Season,
+  offers: boundedArray(TileOffer, MAX_TILE_OFFERS),
+})
+
 const TemplateStatusStruct = Schema.Struct({
   templateId: Identifier,
   correct: NonNegativeInteger,
@@ -584,6 +597,10 @@ export const NodeStatus = NodeStatusStruct.pipe(
     ),
   ),
 )
+
+export const StatusResponse = Schema.Struct({
+  templates: boundedArray(TemplateStatus, MAX_MANIFEST_TEMPLATES),
+})
 
 const AlarmStruct = Schema.Struct({
   id: Identifier,
@@ -623,8 +640,10 @@ assertExact<Exact<Schema.Schema.Type<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Schema.Type<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Schema.Type<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Schema.Type<typeof TileOfferBatch>, Shared.TileOfferBatch>>()
 assertExact<Exact<Schema.Schema.Type<typeof TemplateStatus>, Shared.TemplateStatus>>()
 assertExact<Exact<Schema.Schema.Type<typeof NodeStatus>, Shared.NodeStatus>>()
+assertExact<Exact<Schema.Schema.Type<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Schema.Type<typeof Alarm>, Shared.Alarm>>()
 
 assertExact<Exact<Schema.Codec.Encoded<typeof ServerInfo>, Shared.ServerInfo>>()
@@ -638,6 +657,8 @@ assertExact<Exact<Schema.Codec.Encoded<typeof PaintTile>, Shared.PaintTile>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof PaintEvent>, Shared.PaintEvent>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOffer>, Shared.TileOffer>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferResponse>, Shared.TileOfferResponse>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof TileOfferBatch>, Shared.TileOfferBatch>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof TemplateStatus>, Shared.TemplateStatus>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof NodeStatus>, Shared.NodeStatus>>()
+assertExact<Exact<Schema.Codec.Encoded<typeof StatusResponse>, Shared.StatusResponse>>()
 assertExact<Exact<Schema.Codec.Encoded<typeof Alarm>, Shared.Alarm>>()

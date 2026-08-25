@@ -10,6 +10,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   or,
   type SQL,
   sql,
@@ -17,12 +18,17 @@ import {
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1'
 import {
   accessTokens,
+  appliedEvents,
+  canvasTiles,
   contributions,
   nodes,
+  painters,
   serverSettings,
   telemetryBuckets,
   templates,
+  templateTileStatuses,
   templateVersions,
+  tileHistory,
   versionTiles,
 } from '../../db/schema.js'
 import {
@@ -31,6 +37,7 @@ import {
   assertValidBuckets,
   assertValidTemplateVersion,
   type BucketQuery,
+  type ContributionDelta,
   compareBuckets,
   InvalidNodeParentError,
   MAX_NODE_PATH_LENGTH,
@@ -48,11 +55,14 @@ import {
   type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
+  type TelemetryTarget,
   TemplateIdentityError,
   TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
+  type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
 
@@ -911,6 +921,230 @@ export class D1SqlStore implements SqlStore {
           ? eq(templates.season, season)
           : and(eq(templates.season, season), isNotNull(templates.publishedAt)),
       )
+  }
+
+  async listTelemetryTargets(
+    season: number,
+    tile: { readonly x: number; readonly y: number },
+    includeUnpublished: boolean,
+  ): Promise<readonly TelemetryTarget[]> {
+    return this.database
+      .select({
+        templateId: templates.id,
+        versionId: templateVersions.id,
+        tileX: versionTiles.tileX,
+        tileY: versionTiles.tileY,
+        hash: versionTiles.hash,
+        minX: templateVersions.minX,
+        minY: templateVersions.minY,
+        maxX: templateVersions.maxX,
+        maxY: templateVersions.maxY,
+      })
+      .from(versionTiles)
+      .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
+      .innerJoin(
+        templates,
+        and(
+          eq(templates.id, templateVersions.templateId),
+          eq(templates.currentVersionId, templateVersions.id),
+        ),
+      )
+      .where(
+        and(
+          eq(templates.season, season),
+          eq(versionTiles.tileX, tile.x),
+          eq(versionTiles.tileY, tile.y),
+          includeUnpublished ? undefined : isNotNull(templates.publishedAt),
+        ),
+      )
+      .then((rows) =>
+        rows.map((row) => ({
+          templateId: row.templateId,
+          versionId: row.versionId,
+          tileX: row.tileX,
+          tileY: row.tileY,
+          hash: row.hash,
+          bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
+        })),
+      )
+  }
+
+  async readLatestTile(tile: { readonly x: number; readonly y: number }) {
+    const rows = await this.database
+      .select()
+      .from(canvasTiles)
+      .where(and(eq(canvasTiles.tileX, tile.x), eq(canvasTiles.tileY, tile.y)))
+      .limit(1)
+    const row = rows[0]
+    return row === undefined
+      ? null
+      : { tile: { x: row.tileX, y: row.tileY }, hash: row.sha256, observedAt: row.observedAtMs }
+  }
+
+  async recordTileObservation(
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+  ): Promise<void> {
+    const history = this.database
+      .insert(tileHistory)
+      .values({
+        tileX: observation.tile.x,
+        tileY: observation.tile.y,
+        resolutionS: seconds(0),
+        bucketStartS: observation.reportedAt,
+        sha256: observation.hash,
+        reportedWithToken: observation.reportedWithToken,
+        reportedByUserId: observation.reportedByUserId,
+      })
+      .onConflictDoNothing()
+    const current = this.database
+      .insert(canvasTiles)
+      .values({
+        tileX: observation.tile.x,
+        tileY: observation.tile.y,
+        sha256: observation.hash,
+        observedAtMs: observation.observedAt,
+      })
+      .onConflictDoUpdate({
+        target: [canvasTiles.tileX, canvasTiles.tileY],
+        set: { sha256: observation.hash, observedAtMs: observation.observedAt },
+        setWhere: lte(canvasTiles.observedAtMs, observation.observedAt),
+      })
+    await this.database.batch([history, current])
+
+    for (const group of chunkRows(statuses, 50)) {
+      const statements = group.map((status) =>
+        this.database
+          .insert(templateTileStatuses)
+          .values({
+            templateId: status.templateId,
+            versionId: status.versionId,
+            tileX: status.tile.x,
+            tileY: status.tile.y,
+            correct: status.correct,
+            wrong: status.wrong,
+            blank: status.blank,
+            observedAtMs: status.observedAt,
+          })
+          .onConflictDoUpdate({
+            target: [
+              templateTileStatuses.templateId,
+              templateTileStatuses.versionId,
+              templateTileStatuses.tileX,
+              templateTileStatuses.tileY,
+            ],
+            set: {
+              correct: status.correct,
+              wrong: status.wrong,
+              blank: status.blank,
+              observedAtMs: status.observedAt,
+            },
+            setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt),
+          }),
+      )
+      if (statements.length > 0) {
+        await this.database.batch(
+          statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+        )
+      }
+    }
+  }
+
+  async readTemplateStatuses(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly import('@caelestis/shared').TemplateStatus[]> {
+    const rows = await this.database
+      .select({
+        templateId: templates.id,
+        correct: sql<number>`sum(${templateTileStatuses.correct})`,
+        wrong: sql<number>`sum(${templateTileStatuses.wrong})`,
+        blank: sql<number>`sum(${templateTileStatuses.blank})`,
+        total: templateVersions.totalPixels,
+        observedAt: sql<number>`max(${templateTileStatuses.observedAtMs})`,
+      })
+      .from(templates)
+      .innerJoin(templateVersions, eq(templateVersions.id, templates.currentVersionId))
+      .innerJoin(
+        templateTileStatuses,
+        and(
+          eq(templateTileStatuses.templateId, templates.id),
+          eq(templateTileStatuses.versionId, templateVersions.id),
+        ),
+      )
+      .where(
+        and(
+          eq(templates.season, season),
+          includeUnpublished ? undefined : isNotNull(templates.publishedAt),
+        ),
+      )
+      .groupBy(templates.id, templateVersions.totalPixels)
+      .orderBy(asc(templates.id))
+    return rows.map((row) => ({
+      templateId: row.templateId,
+      correct: Number(row.correct),
+      wrong: Number(row.wrong),
+      blank: Number(row.blank),
+      total: row.total,
+      observedAt: Number(row.observedAt) as Millis,
+    }))
+  }
+
+  async claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean> {
+    const result = await this.database
+      .insert(appliedEvents)
+      .values({ eventId, wplaceUserId, seenAtMs: seenAt })
+      .onConflictDoNothing()
+    return Number(result.meta.changes) > 0
+  }
+
+  async rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void> {
+    await this.database
+      .insert(painters)
+      .values({ wplaceUserId, displayName, seenAtMs: seenAt })
+      .onConflictDoUpdate({
+        target: painters.wplaceUserId,
+        set: { displayName, seenAtMs: seenAt },
+        setWhere: lte(painters.seenAtMs, seenAt),
+      })
+  }
+
+  async addContributions(deltas: readonly ContributionDelta[]): Promise<void> {
+    for (const group of chunkRows(deltas, 40)) {
+      const statements = group.map((delta) =>
+        this.database
+          .insert(contributions)
+          .values({
+            wplaceUserId: delta.wplaceUserId,
+            templateId: delta.templateId,
+            dayS: delta.day,
+            reportedWithToken: delta.reportedWithToken,
+            reportedByUserId: delta.reportedByUserId,
+            placed: delta.placed,
+            correct: delta.correct,
+            repairs: delta.repairs,
+          })
+          .onConflictDoUpdate({
+            target: [
+              contributions.wplaceUserId,
+              contributions.templateId,
+              contributions.dayS,
+              contributions.reportedByUserId,
+            ],
+            set: {
+              reportedWithToken: delta.reportedWithToken,
+              placed: sql`${contributions.placed} + excluded.placed`,
+              correct: sql`${contributions.correct} + excluded.correct`,
+              repairs: sql`${contributions.repairs} + excluded.repairs`,
+            },
+          }),
+      )
+      if (statements.length > 0) {
+        await this.database.batch(
+          statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
+        )
+      }
+    }
   }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {

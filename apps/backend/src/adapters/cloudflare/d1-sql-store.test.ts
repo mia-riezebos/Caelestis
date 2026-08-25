@@ -332,6 +332,83 @@ describe('D1SqlStore', () => {
     })
   })
 
+  it('stores current tile anchors and aggregates only the current template version', async () => {
+    await store.insertNode({
+      id: 'node-1',
+      season: 1,
+      parentId: null,
+      path: '/node',
+      name: 'Node',
+      description: null,
+      createdAt: millis(1_000),
+    })
+    await store.insertTemplateVersion(templateVersion())
+    const tokenHash = 'c'.repeat(64)
+    await store.recordTileObservation(
+      {
+        tile: { x: 0, y: 0 },
+        hash: 'd'.repeat(64),
+        observedAt: millis(2_000),
+        reportedAt: seconds(2),
+        reportedWithToken: tokenHash,
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'version-1',
+          tile: { x: 0, y: 0 },
+          correct: 1,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(2_000),
+        },
+      ],
+    )
+    // An older upload may finish later. It belongs in history but cannot replace current truth.
+    await store.recordTileObservation(
+      {
+        tile: { x: 0, y: 0 },
+        hash: 'e'.repeat(64),
+        observedAt: millis(1_000),
+        reportedAt: seconds(1),
+        reportedWithToken: tokenHash,
+        reportedByUserId: 42,
+      },
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'version-1',
+          tile: { x: 0, y: 0 },
+          correct: 0,
+          wrong: 0,
+          blank: 2,
+          observedAt: millis(1_000),
+        },
+      ],
+    )
+
+    await expect(store.readLatestTile({ x: 0, y: 0 })).resolves.toMatchObject({
+      hash: 'd'.repeat(64),
+      observedAt: 2_000,
+    })
+    await expect(store.readTemplateStatuses(1, true)).resolves.toEqual([
+      {
+        templateId: 'template-1',
+        correct: 1,
+        wrong: 1,
+        blank: 0,
+        total: 2,
+        observedAt: 2_000,
+      },
+    ])
+  })
+
+  it('claims paint event ids once', async () => {
+    await expect(store.claimPaintEvent('event-1', 42, millis(1_000))).resolves.toBe(true)
+    await expect(store.claimPaintEvent('event-1', 42, millis(2_000))).resolves.toBe(false)
+  })
+
   it('issues one statement per parameter chunk when reading a large template set', async () => {
     // D1 allows 100 bound parameters per query. The fake is node:sqlite, whose limit is 32_766, so
     // an unchunked read passes here and fails only in production — the statement count is the one

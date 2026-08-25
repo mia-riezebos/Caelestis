@@ -2,6 +2,8 @@ import {
   type Millis,
   type PixelBounds,
   type Seconds,
+  type TemplateStatus,
+  type TileCoord,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -301,6 +303,43 @@ export interface ManifestTileRecord {
   readonly hash: string
 }
 
+/** One current template chunk affected by a canvas tile observation or paint event. */
+export interface TelemetryTarget extends ManifestTileRecord {
+  readonly bbox: PixelBounds
+}
+
+export interface TileObservation {
+  readonly tile: TileCoord
+  readonly hash: string
+  readonly observedAt: Millis
+  readonly reportedAt: Seconds
+  readonly reportedWithToken: string
+  readonly reportedByUserId: number
+}
+
+export type LatestTileObservation = Pick<TileObservation, 'tile' | 'hash' | 'observedAt'>
+
+export interface TemplateTileStatusRecord {
+  readonly templateId: string
+  readonly versionId: string
+  readonly tile: TileCoord
+  readonly correct: number
+  readonly wrong: number
+  readonly blank: number
+  readonly observedAt: Millis
+}
+
+export interface ContributionDelta {
+  readonly templateId: string
+  readonly wplaceUserId: number
+  readonly day: Seconds
+  readonly reportedWithToken: string
+  readonly reportedByUserId: number
+  readonly placed: number
+  readonly correct: number
+  readonly repairs: number
+}
+
 export class NodePathConflictError extends Error {
   override readonly name = 'NodePathConflictError'
 }
@@ -515,6 +554,31 @@ export interface SqlStore {
     season: number,
     includeUnpublished: boolean,
   ): Promise<readonly ManifestTileRecord[]>
+
+  listTelemetryTargets(
+    season: number,
+    tile: TileCoord,
+    includeUnpublished: boolean,
+  ): Promise<readonly TelemetryTarget[]>
+
+  readLatestTile(tile: TileCoord): Promise<LatestTileObservation | null>
+
+  recordTileObservation(
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+  ): Promise<void>
+
+  readTemplateStatuses(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly TemplateStatus[]>
+
+  /** Claims an idempotency key. False means this paint event was already accepted. */
+  claimPaintEvent(eventId: string, wplaceUserId: number, seenAt: Millis): Promise<boolean>
+
+  rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void>
+
+  addContributions(deltas: readonly ContributionDelta[]): Promise<void>
 
   /**
    * Store a freshly minted token.

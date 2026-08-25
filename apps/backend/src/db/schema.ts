@@ -533,3 +533,63 @@ export const tileHistory = sqliteTable(
     ),
   ],
 )
+
+/** Latest accepted canvas observation per tile, used to classify later paint repairs. */
+export const canvasTiles = sqliteTable(
+  'canvas_tiles',
+  {
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    sha256: text('sha256').notNull(),
+    observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tileX, table.tileY] }),
+    check(
+      'canvas_tiles_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+    check(
+      'canvas_tiles_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
+/** Latest classified progress for one current template chunk. */
+export const templateTileStatuses = sqliteTable(
+  'template_tile_statuses',
+  {
+    templateId: text('template_id')
+      .notNull()
+      .references(() => templates.id, { onDelete: 'cascade' }),
+    versionId: text('version_id')
+      .notNull()
+      .references(() => templateVersions.id, { onDelete: 'cascade' }),
+    tileX: integer('tile_x').notNull(),
+    tileY: integer('tile_y').notNull(),
+    correct: integer('correct').notNull(),
+    wrong: integer('wrong').notNull(),
+    blank: integer('blank').notNull(),
+    observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
+    index('template_tile_statuses_version_idx').on(table.versionId),
+    check(
+      'template_tile_statuses_coordinate_check',
+      sql`typeof(${table.tileX}) = 'integer' AND typeof(${table.tileY}) = 'integer'
+        AND ${table.tileX} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}
+        AND ${table.tileY} BETWEEN 0 AND ${sql.raw(String(WORLD_TILES - 1))}`,
+    ),
+    check(
+      'template_tile_statuses_counter_check',
+      sql`typeof(${table.correct}) = 'integer' AND typeof(${table.wrong}) = 'integer'
+        AND typeof(${table.blank}) = 'integer'
+        AND ${table.correct} >= 0 AND ${table.wrong} >= 0 AND ${table.blank} >= 0`,
+    ),
+  ],
+)

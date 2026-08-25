@@ -1,4 +1,4 @@
-import { type Millis, WORLD_PIXELS } from '@caelestis/shared'
+import { type Millis, type TemplateStatus, tileKey, WORLD_PIXELS } from '@caelestis/shared'
 import {
   type AccessToken,
   type AccessTokenQuery,
@@ -6,6 +6,7 @@ import {
   assertValidBuckets,
   assertValidTemplateVersion,
   type BucketQuery,
+  type ContributionDelta,
   compareAccessTokens,
   compareBuckets,
   InvalidNodeParentError,
@@ -23,11 +24,14 @@ import {
   type ServerSettings,
   type SqlStore,
   type TelemetryBucket,
+  type TelemetryTarget,
   TemplateIdentityError,
   TemplateNotFoundError,
   type TemplatePatch,
   type TemplateRecord,
+  type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
 
@@ -58,6 +62,11 @@ export class MemorySqlStore implements SqlStore {
   >()
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
+  private readonly canvasTiles = new Map<string, TileObservation>()
+  private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
+  private readonly appliedEvents = new Set<string>()
+  private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
+  private readonly contributions = new Map<string, ContributionDelta>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -450,6 +459,12 @@ export class MemorySqlStore implements SqlStore {
     for (const [versionId, version] of this.templateVersions) {
       if (version.templateId === templateId) this.templateVersions.delete(versionId)
     }
+    for (const [key, status] of this.templateTileStatuses) {
+      if (status.templateId === templateId) this.templateTileStatuses.delete(key)
+    }
+    for (const [key, contribution] of this.contributions) {
+      if (contribution.templateId === templateId) this.contributions.delete(key)
+    }
     // Chunks are not touched: they are content-addressed and shared. See `deleteTemplate` on the port.
     return true
   }
@@ -506,6 +521,117 @@ export class MemorySqlStore implements SqlStore {
       )
     }
     return records
+  }
+
+  async listTelemetryTargets(
+    season: number,
+    tile: { readonly x: number; readonly y: number },
+    includeUnpublished: boolean,
+  ): Promise<readonly TelemetryTarget[]> {
+    const targets: TelemetryTarget[] = []
+    for (const [templateId, template] of this.templates) {
+      const version = this.templateVersions.get(template.currentVersionId)
+      if (
+        template.season !== season ||
+        version === undefined ||
+        (!includeUnpublished && template.publishedAt === null)
+      )
+        continue
+      const chunk = version.chunks.find((entry) => entry.tileX === tile.x && entry.tileY === tile.y)
+      if (chunk === undefined) continue
+      targets.push({
+        templateId,
+        versionId: version.versionId,
+        tileX: tile.x,
+        tileY: tile.y,
+        hash: chunk.hash,
+        bbox: { ...version.bbox },
+      })
+    }
+    return targets.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async readLatestTile(tile: {
+    readonly x: number
+    readonly y: number
+  }): Promise<TileObservation | null> {
+    const held = this.canvasTiles.get(tileKey(tile))
+    return held === undefined ? null : { ...held, tile: { ...held.tile } }
+  }
+
+  async recordTileObservation(
+    observation: TileObservation,
+    statuses: readonly TemplateTileStatusRecord[],
+  ): Promise<void> {
+    const key = tileKey(observation.tile)
+    const held = this.canvasTiles.get(key)
+    if (held === undefined || held.observedAt <= observation.observedAt) {
+      this.canvasTiles.set(key, { ...observation, tile: { ...observation.tile } })
+    }
+    for (const status of statuses) {
+      const statusKey = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
+      const current = this.templateTileStatuses.get(statusKey)
+      if (current === undefined || current.observedAt <= status.observedAt) {
+        this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
+      }
+    }
+  }
+
+  async readTemplateStatuses(
+    season: number,
+    includeUnpublished: boolean,
+  ): Promise<readonly TemplateStatus[]> {
+    const out: TemplateStatus[] = []
+    for (const [templateId, template] of this.templates) {
+      const version = this.templateVersions.get(template.currentVersionId)
+      if (
+        template.season !== season ||
+        version === undefined ||
+        (!includeUnpublished && template.publishedAt === null)
+      )
+        continue
+      const statuses = [...this.templateTileStatuses.values()].filter(
+        (status) => status.templateId === templateId && status.versionId === version.versionId,
+      )
+      if (statuses.length === 0) continue
+      out.push({
+        templateId,
+        correct: statuses.reduce((total, status) => total + status.correct, 0),
+        wrong: statuses.reduce((total, status) => total + status.wrong, 0),
+        blank: statuses.reduce((total, status) => total + status.blank, 0),
+        total: version.totalPixels,
+        observedAt: statuses.reduce(
+          (latest, status) => Math.max(latest, status.observedAt),
+          statuses[0]?.observedAt ?? 0,
+        ) as Millis,
+      })
+    }
+    return out.sort((left, right) => left.templateId.localeCompare(right.templateId))
+  }
+
+  async claimPaintEvent(eventId: string, _wplaceUserId: number, _seenAt: Millis): Promise<boolean> {
+    if (this.appliedEvents.has(eventId)) return false
+    this.appliedEvents.add(eventId)
+    return true
+  }
+
+  async rememberPainter(wplaceUserId: number, displayName: string, seenAt: Millis): Promise<void> {
+    const held = this.painters.get(wplaceUserId)
+    if (held === undefined || held.seenAt <= seenAt)
+      this.painters.set(wplaceUserId, { displayName, seenAt })
+  }
+
+  async addContributions(deltas: readonly ContributionDelta[]): Promise<void> {
+    for (const delta of deltas) {
+      const key = `${delta.wplaceUserId}\u0000${delta.templateId}\u0000${delta.day}\u0000${delta.reportedByUserId}`
+      const held = this.contributions.get(key)
+      this.contributions.set(key, {
+        ...delta,
+        placed: (held?.placed ?? 0) + delta.placed,
+        correct: (held?.correct ?? 0) + delta.correct,
+        repairs: (held?.repairs ?? 0) + delta.repairs,
+      })
+    }
   }
 
   async appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void> {
