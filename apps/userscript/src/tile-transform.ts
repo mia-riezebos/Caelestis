@@ -971,6 +971,7 @@ const installBlobTap = (realm: Window & typeof globalThis): InstalledValueHook |
  * drawer's source-only colour picker.
  */
 const pixelsOfTile = new Map<string, Uint8Array>()
+const tilePixelAvailabilityListeners = new Set<(tile: TileCoord) => void>()
 const tilePixelEvictionListeners = new Set<(tile: TileCoord) => void>()
 const KEEP_TILE_PIXELS = tilePixelCacheLimit(
   (navigator as Navigator & { readonly deviceMemory?: number }).deviceMemory,
@@ -1016,9 +1017,22 @@ export const onTilePixelsEvicted = (listener: (tile: TileCoord) => void): (() =>
   return () => tilePixelEvictionListeners.delete(listener)
 }
 
+/** Observe the first successful capture after a tile was unavailable. */
+export const onTilePixelsAvailable = (listener: (tile: TileCoord) => void): (() => void) => {
+  tilePixelAvailabilityListeners.add(listener)
+  return () => tilePixelAvailabilityListeners.delete(listener)
+}
+
 const rememberTilePixels = (key: string, pixels: Uint8Array): void => {
+  const becameAvailable = !pixelsOfTile.has(key)
   pixelsOfTile.delete(key)
   pixelsOfTile.set(key, pixels)
+  if (becameAvailable) {
+    const available = parseTileKey(key)
+    if (available !== null) {
+      for (const listener of tilePixelAvailabilityListeners) listener(available)
+    }
+  }
   while (pixelsOfTile.size > KEEP_TILE_PIXELS) {
     const oldest = pixelsOfTile.keys().next()
     if (oldest.done) break
