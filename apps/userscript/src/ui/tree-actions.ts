@@ -43,6 +43,7 @@ import { SURFACE_RADIUS } from './metrics.js'
 import { serverDestinations } from './server-destinations.js'
 import { PANEL_ID, toast } from './toast.js'
 import {
+  copyCurrentLocalTemplateToServer,
   copyLocalTemplateToServer,
   type Destination,
   moveServerTemplateToLocal,
@@ -1149,17 +1150,10 @@ export const copyToServer = async (
     void whileBusy(
       go,
       async () => {
-        // Reacquire inside each executed attempt. The source can change during encoding, and the
-        // retry click must not close over the snapshot that just failed the currentness check.
-        const current = templateById(templateId)
-        if (current === undefined) {
-          toast(`“${template.name}” is no longer here.`, 'error')
-          box.remove()
-          return
-        }
         label.textContent = 'Encoding…'
-        const result = await copyLocalTemplateToServer(
-          current,
+        const result = await copyCurrentLocalTemplateToServer(
+          templateId,
+          template.name,
           server,
           nodeId,
           (connected) => refreshCurrentNodes(connected, rerender, true),
@@ -1176,6 +1170,11 @@ export const copyToServer = async (
           },
         )
         if (!result.ok && result.cancelled === true) return
+        if (!result.ok && result.missing === true) {
+          box.remove()
+          toast(result.message, 'error')
+          return
+        }
         if (!result.ok && result.retryable === true) {
           cancel.disabled = false
           cancel.classList.remove('btn-disabled')
