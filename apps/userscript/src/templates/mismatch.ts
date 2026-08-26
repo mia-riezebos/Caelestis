@@ -514,9 +514,12 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
 const scheduleIdleScan = (): void => {
   if (idleScheduled) return
   const idle = (globalThis as IdleWindow).requestIdleCallback
-  if (idle === undefined) return
   idleScheduled = true
-  idle(runIdleScan)
+  if (idle !== undefined) {
+    idle(runIdleScan)
+    return
+  }
+  setTimeout(() => runIdleScan({ timeRemaining: () => SCAN_BUDGET_MS }), 0)
 }
 
 /**

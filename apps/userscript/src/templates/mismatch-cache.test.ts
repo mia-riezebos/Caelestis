@@ -1,5 +1,5 @@
 import { decodeMismatchMask, encodeMismatchMask, type MismatchMask, WRONG } from '@caelestis/shared'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './local-store.js'
 import { markLocalX } from './mismatch-marks.js'
 import type { ScanOutcome } from './mismatch-scan.js'
@@ -89,6 +89,10 @@ beforeEach(() => {
   )
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('visible mismatch answer retention', () => {
@@ -319,6 +323,21 @@ describe('visible mismatch answer retention', () => {
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()
     expect(harness.workerScan).toHaveBeenCalledOnce()
+  })
+
+  it('drains stale scans without requestIdleCallback', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestIdleCallback', undefined)
+    const selected = template(205)
+    harness.templates = [selected]
+    const { mismatchesIn } = await import('./mismatch.js')
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toBeNull()
+    expect(vi.getTimerCount()).toBe(1)
+
+    await vi.runAllTimersAsync()
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
   })
 
   it('uses newly captured pixels instead of a superseded server mask after a busy tile update', async () => {

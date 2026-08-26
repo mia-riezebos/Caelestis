@@ -46,7 +46,7 @@ import {
   upsertServer,
 } from '../state.js'
 import { onServerStatusChange } from '../telemetry.js'
-import { APPEARANCE_CONTROLS, UNPAINTED_LIMIT_CONTROL } from '../templates/appearance.js'
+import { APPEARANCE_CONTROLS } from '../templates/appearance.js'
 import { importFile } from '../templates/import.js'
 import {
   addLocalTemplate,
@@ -312,30 +312,6 @@ const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
   return row
 }
 
-const _emptyState = (): HTMLElement => {
-  const wrap = document.createElement('div')
-  wrap.className = 'flex flex-col items-center text-center gap-3 py-10 px-4'
-  const art = document.createElement('div')
-  art.className = 'opacity-30'
-  art.appendChild(icon('extension', 'size-10'))
-  const title = document.createElement('p')
-  title.className = 'font-medium'
-  title.textContent = 'No servers connected'
-  const body = document.createElement('p')
-  body.className = 'text-sm opacity-70'
-  body.style.maxWidth = '16rem'
-  // The empty state is the whole onboarding: it has to say what a server is and what to do next,
-  // because there is no other moment where anyone will read that.
-  body.textContent =
-    'Templates come from a server your alliance runs. Add its address to see everything it shares.'
-  const action = document.createElement('button')
-  action.className = 'btn btn-primary btn-sm'
-  action.textContent = 'Add a server'
-  action.addEventListener('click', () => showView('settings'))
-  wrap.append(art, title, body, action)
-  return wrap
-}
-
 const treeView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, {
@@ -383,13 +359,8 @@ const treeView = (): HTMLElement => {
           onCreateFolder: (target) => void createFolder(target, rerenderTree),
           onImportTemplate: (target) => void importTemplate(target, rerenderTree),
           onRename: (target, name) => void applyRename(target, name, rerenderTree),
-          onDelete: (target) => void applyDelete(target, rerenderTree),
           onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
           onGoTo: goTo,
-          onPlace: (id) => {
-            if (!beginMove(id, rerenderTree))
-              toast('Finish the placement already in progress, then move this one.', 'warning')
-          },
           onCopyToServer: (id) => void copyToServer(id, rerenderTree),
           onError: (message) => toast(message, 'error'),
           onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
@@ -584,39 +555,6 @@ const settingRow = (label: string, hint: string | null, control: HTMLElement): H
   }
   row.append(text, control)
   return row
-}
-
-/**
- * A fraction, as a slider reading out in per cent.
- *
- * Sized to sit where a checkbox sits in a `settingRow`, so a switch and a limit line up as the pair
- * they are rather than as two unrelated rows.
- */
-const _percentSlider = (value: number, onChange: (next: number) => void): HTMLElement => {
-  const wrap = document.createElement('div')
-  wrap.className = 'flex items-center gap-2'
-  wrap.style.flex = '0 0 auto'
-  const { min, max, step, format } = UNPAINTED_LIMIT_CONTROL
-  const input = document.createElement('input')
-  input.type = 'range'
-  input.className = 'range range-xs'
-  input.min = String(min)
-  input.max = String(max)
-  input.step = String(step)
-  input.value = String(value)
-  input.style.width = '7rem'
-  const readout = document.createElement('span')
-  readout.className = 'text-xs opacity-60'
-  readout.style.width = '2.5rem'
-  readout.style.textAlign = 'right'
-  readout.textContent = format(value)
-  input.addEventListener('input', () => {
-    const next = Number(input.value)
-    readout.textContent = format(next)
-    onChange(next)
-  })
-  wrap.append(input, readout)
-  return wrap
 }
 
 const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {

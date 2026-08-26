@@ -9,7 +9,6 @@ import {
   MAX_MANIFEST_CHUNKS,
   MAX_MANIFEST_TEMPLATES,
   MAX_TREE_NODES,
-  removeTreeStateKeys,
   type ServerContents,
   setLocalFolderVisible,
   setScopeVisible,
@@ -90,11 +89,9 @@ export interface TreeCallbacks {
   readonly onCreateFolder: (target: TreeTarget) => void
   readonly onImportTemplate: (target: TreeTarget) => void
   readonly onRename: (target: TreeTarget, name: string) => void
-  readonly onDelete: (target: TreeTarget) => void
   readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
   /** Frame a local or not-yet-downloaded server template on the map. */
   readonly onGoTo: (target: TreeNavigationTarget) => void
-  readonly onPlace: (templateId: string) => void
   readonly onCopyToServer: (templateId: string) => void
   readonly onError: (message: string) => void
   /** Move a dragged Local row to a place in the tree: a container, and the key it goes before. */
@@ -253,19 +250,6 @@ export const optimisticallyPlaceServerRow = (
       if (current()) optimisticParents.delete(key)
     },
   }
-}
-
-export const forgetServerTree = (url: string): void => {
-  const prefix = `node:${encodeURIComponent(url)}:`
-  const state = getState()
-  removeTreeStateKeys(
-    new Set([
-      `server:${url}`,
-      ...state.customOrder.filter((key) => key.startsWith(prefix)),
-      ...state.collapsed.filter((key) => key.startsWith(prefix)),
-    ]),
-  )
-  forgetServerRows(url)
 }
 
 interface OrderedItem {
