@@ -17,14 +17,14 @@ import {
   probeServer,
   setState,
 } from '../state.js'
+import { treeContents } from './tree.js'
 import {
   acceptServerSnapshot,
   forgetServerRows,
   nodeTreeKey,
   refreshServerSnapshot,
   serverTemplateAt,
-  treeContents,
-} from './tree.js'
+} from './tree-server-state.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
@@ -278,6 +278,7 @@ describe('tree identity and ordering', () => {
     expect(serverCache.cacheServer).not.toHaveBeenCalled()
     forgetServerRows(connected.url)
   })
+
   it('namespaces node UI state by verified server identity and season', () => {
     const first = nodeTreeKey(server(SERVER_ID, 0), NODE_ID)
     const otherServer = nodeTreeKey(server('019fed50-87a1-7523-a88c-bdeafad49683', 0), NODE_ID)

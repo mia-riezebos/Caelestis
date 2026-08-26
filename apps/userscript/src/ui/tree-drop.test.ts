@@ -2,16 +2,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getState, setState } from '../state.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
+import { startRenaming, type TreeCallbacks, treeContents } from './tree.js'
 import {
   acceptServerSnapshot,
   forgetServerRows,
   nodeTreeKey,
   optimisticallyPlaceServerRow,
   serverTemplateTreeKey,
-  startRenaming,
-  type TreeCallbacks,
-  treeContents,
-} from './tree.js'
+} from './tree-server-state.js'
 
 const localTemplateHarness = vi.hoisted(() => ({
   templates: vi.fn(() => [] as PlacedTemplate[]),
@@ -42,13 +40,14 @@ vi.mock('../telemetry.js', async (importOriginal) => {
     ) => telemetryHarness.progress.get(template.id) ?? original.serverProgressFor(server, template),
   }
 })
-vi.mock('../state.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../state.js')>()
+vi.mock('../local-folders.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../local-folders.js')>()
+  const state = await import('../state.js')
   return {
     ...original,
     moveLocalFolder: (id: string, parentId: string | null) => {
-      const folders = original.getState().localFolders
-      original.setState({
+      const folders = state.getState().localFolders
+      state.setState({
         localFolders: folders.map((folder) =>
           folder.id === id ? { ...folder, parentId } : folder,
         ),
@@ -56,8 +55,8 @@ vi.mock('../state.js', async (importOriginal) => {
       return true
     },
     renameLocalFolder: (id: string, name: string) => {
-      const folders = original.getState().localFolders
-      original.setState({
+      const folders = state.getState().localFolders
+      state.setState({
         localFolders: folders.map((folder) => (folder.id === id ? { ...folder, name } : folder)),
       })
       return true

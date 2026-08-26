@@ -2,16 +2,13 @@ import { decodePng } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { counters } from './debug.js'
 import {
-  captureFetchUrlGetters,
   captureTilePixels,
   consumeBySize,
   currentQuads,
   enqueueBySize,
   ensureTilePixels,
   install,
-  isGetFetch,
   loadTilePixels,
-  normalizeMissingTileResponse,
   onAcceptedPaint,
   onFetchedTile,
   onTileFrame,
@@ -22,10 +19,15 @@ import {
   type TileFrame,
   takeBySize,
   takeBySizeForBitmap,
-  tileFromUrl,
   UNPAINTED,
-  urlForFetchInput,
 } from './tile-transform.js'
+import {
+  captureFetchUrlGetters,
+  isGetFetch,
+  normalizeMissingTileResponse,
+  tileFromUrl,
+  urlForFetchInput,
+} from './wplace-raster.js'
 
 /**
  * The parts of the overlay that are arithmetic rather than browser.

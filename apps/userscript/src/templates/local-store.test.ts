@@ -1711,7 +1711,8 @@ describe('local template lifecycle', () => {
 
   it('keeps the target folder alive until its template assignment commits', async () => {
     const store = await import('./local-store.js')
-    const { removeLocalFolder, setState } = await import('../state.js')
+    const { removeLocalFolder } = await import('../local-folders.js')
+    const { setState } = await import('../state.js')
     setState({
       localFolders: [{ id: 'target', parentId: null, name: 'Target', visible: true }],
     })

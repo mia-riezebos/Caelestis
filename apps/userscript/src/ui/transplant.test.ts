@@ -45,6 +45,12 @@ const store = vi.hoisted(() => ({
 }))
 
 vi.mock('../state.js', () => ({ ...state, MAX_LOCAL_FOLDERS: 32_000 }))
+vi.mock('../local-folders.js', () => ({
+  addLocalFolders: state.addLocalFolders,
+  leaseLocalFolder: state.leaseLocalFolder,
+  nextLocalFolderId: state.nextLocalFolderId,
+  removeLocalFolders: state.removeLocalFolders,
+}))
 vi.mock('../templates/local-store.js', () => store)
 vi.mock('../templates/move.js', () => ({ movingId: vi.fn(() => null) }))
 vi.mock('../templates/server-sync.js', () => ({
