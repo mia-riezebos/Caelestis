@@ -585,20 +585,22 @@ describe('template transfer transactions', () => {
     expect(reconcile).toHaveBeenCalledOnce()
   })
 
-  it('marks a pre-upload currentness failure as retryable', async () => {
-    const local = { ...drawn, id: 'local-template' }
+  it('lets a retry proceed with a fresh snapshot after a pre-upload currentness failure', async () => {
+    const stale = { ...drawn, id: 'local-template' }
+    const fresh = { ...stale }
     store.templateAsPng.mockResolvedValue(new Blob(['png']))
-    store.isCurrentTemplate.mockReturnValue(false)
+    store.isCurrentTemplate.mockReturnValueOnce(false).mockReturnValue(true)
+    state.uploadTemplate.mockResolvedValue({
+      ok: true,
+      id: 'remote-template',
+      version: 'version-2',
+    })
     const { copyLocalTemplateToServer } = await import('./transplant.js')
+    const destination = server('https://destination.test')
+    const reconcile = vi.fn(async () => undefined)
 
     await expect(
-      copyLocalTemplateToServer(
-        local,
-        server('https://destination.test'),
-        null,
-        vi.fn(async () => undefined),
-        {},
-      ),
+      copyLocalTemplateToServer(stale, destination, null, reconcile, {}),
     ).resolves.toEqual(
       expect.objectContaining({
         ok: false,
@@ -607,6 +609,11 @@ describe('template transfer transactions', () => {
       }),
     )
     expect(state.uploadTemplate).not.toHaveBeenCalled()
+
+    await expect(
+      copyLocalTemplateToServer(fresh, destination, null, reconcile, {}),
+    ).resolves.toEqual({ ok: true, id: 'remote-template', version: 'version-2' })
+    expect(state.uploadTemplate).toHaveBeenCalledOnce()
   })
 
   it('keeps a changed server source after creating and leasing its Local copy', async () => {
