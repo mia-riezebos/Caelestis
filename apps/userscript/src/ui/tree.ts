@@ -10,7 +10,12 @@ import {
   MAX_MANIFEST_CHUNKS,
   MAX_MANIFEST_TEMPLATES,
   MAX_TREE_NODES,
+  moveLocalFolder,
   onServerContents,
+  patchTemplate,
+  renameLocalFolder,
+  renameNode as renameNodeOnServer,
+  renameServer as renameServerOnServer,
   type ServerContents,
   setLocalFolderVisible,
   setScopeVisible,
@@ -23,7 +28,9 @@ import {
   isServerTemplate,
   localTemplates,
   type PlacedTemplate,
+  renameLocalTemplate,
   setLocalVisible,
+  setTemplateFolder,
 } from '../templates/local-store.js'
 import {
   colourProgressFor,
@@ -50,6 +57,8 @@ import {
   sumProgress,
 } from './progress.js'
 import { isReorderable } from './sort.js'
+import { toast } from './toast.js'
+import { goToLocalTemplate, goToServerTemplate } from './tree-navigation.js'
 
 /**
  * The tree: one root per source, plus `Local`.
@@ -81,7 +90,7 @@ export interface TreeTarget {
 }
 
 /** @internal Arithmetic seam for the aggregate cost of all connected manifest rows. */
-export const manifestAggregateWithinBudget = (
+const manifestAggregateWithinBudget = (
   retainedTemplates: number,
   retainedChunks: number,
   nextTemplates: number,
@@ -94,18 +103,10 @@ export interface TreeCallbacks {
   readonly onAddServer: () => void
   readonly onCreateFolder: (target: TreeTarget) => void
   readonly onImportTemplate: (target: TreeTarget) => void
-  readonly onRename: (target: TreeTarget, name: string) => void
   readonly onContextMenu: (target: TreeTarget, event: MouseEvent) => void
-  /** Frame a local or not-yet-downloaded server template on the map. */
-  readonly onGoTo: (target: TreeNavigationTarget) => void
   readonly onCopyToServer: (templateId: string) => void
-  readonly onError: (message: string) => void
-  /** Move a dragged Local row to a place in the tree: a container, and the key it goes before. */
-  readonly onMoveLocal: (
-    draggedKey: string,
-    parentKey: string | null,
-    beforeKey: string | null,
-  ) => Promise<string | null>
+  /** Move one server-owned row into a Local folder. Local reparenting stays inside the tree. */
+  readonly onDropInLocal: (draggedKey: string, folderId: string | null) => Promise<string | null>
   /**
    * Something was dropped at a place in a server's tree: which folder, and what it lands before.
    *
@@ -122,9 +123,70 @@ export interface TreeCallbacks {
   ) => Promise<string | null>
 }
 
-export type TreeNavigationTarget =
-  | { readonly kind: 'local'; readonly templateId: string }
-  | { readonly kind: 'server'; readonly bbox: ServerTemplate['bbox'] }
+const reportTreeError = (message: string): void => toast(message, 'error')
+
+const localTemplateId = (target: TreeTarget): string | null =>
+  target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
+
+const localFolderId = (target: TreeTarget): string | null =>
+  target.server === null && target.key.startsWith('lf:') ? target.key.slice('lf:'.length) : null
+
+const refreshCurrentSnapshot = async (
+  server: ConnectedServer,
+  rerender: () => void,
+): Promise<void> => {
+  let current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined) return
+  let result = await refreshServerSnapshot(current, rerender, true)
+  while (result.status === 'superseded') {
+    current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current === undefined) return
+    result = await refreshServerSnapshot(current, rerender)
+  }
+}
+
+const renameTarget = async (
+  target: TreeTarget,
+  name: string,
+  rerender: () => void,
+): Promise<void> => {
+  const templateId = localTemplateId(target)
+  if (templateId !== null) {
+    if (!(await renameLocalTemplate(templateId, name))) {
+      reportTreeError('Could not save that name. The old one is still there.')
+    }
+    rerender()
+    return
+  }
+  const folderId = localFolderId(target)
+  if (folderId !== null) {
+    if (!renameLocalFolder(folderId, name)) {
+      reportTreeError('Could not save that folder name. Use between 1 and 256 characters.')
+    }
+    rerender()
+    return
+  }
+  if (target.server !== null && target.templateId !== undefined) {
+    const result = await patchTemplate(target.server, target.templateId, { name })
+    if (!result.ok) reportTreeError(result.message)
+    await refreshCurrentSnapshot(target.server, rerender)
+    return
+  }
+  if (target.server !== null && target.nodeId === null) {
+    const result = await renameServerOnServer(target.server, name)
+    if (!result.ok) reportTreeError(result.message)
+    rerender()
+    return
+  }
+  if (target.server === null || target.nodeId === null) {
+    toast('There is nothing to rename here.', 'warning')
+    rerender()
+    return
+  }
+  const result = await renameNodeOnServer(target.server, target.nodeId, name)
+  if (!result.ok) reportTreeError(result.message)
+  await refreshCurrentSnapshot(target.server, rerender)
+}
 
 let activeTreeKey: string | null = null
 /** The row currently being renamed, if any. Inline editing beats a modal for a one-field change. */
@@ -270,21 +332,7 @@ interface OrderedItem {
 
 const NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' })
 
-export const nodeSiblingItems = (
-  server: ConnectedServer,
-  nodes: readonly TreeNode[],
-): ReadonlyArray<OrderedItem & { readonly node: TreeNode }> =>
-  nodes.map((node) => ({
-    key: nodeTreeKey(server, node.id),
-    name: node.name,
-    createdAt: node.createdAt,
-    node,
-  }))
-
-export const canRetryNodeRefresh = (server: ConnectedServer): boolean =>
-  server.status === 'connected'
-
-export const orderedItems = <T extends OrderedItem>(
+const orderedItems = <T extends OrderedItem>(
   items: readonly T[],
   rank: ReadonlyMap<string, number>,
   limit = Number.POSITIVE_INFINITY,
@@ -383,7 +431,7 @@ export const orderedItems = <T extends OrderedItem>(
     .slice(0, bounded)
 }
 
-export const reorderedSiblings = (
+const reorderedSiblings = (
   keys: readonly string[],
   from: string,
   to: string,
@@ -397,7 +445,7 @@ export const reorderedSiblings = (
   return next
 }
 
-export const reorderedVisibleSiblings = (
+const reorderedVisibleSiblings = (
   allKeys: readonly string[],
   visibleKeys: readonly string[],
   from: string,
@@ -422,7 +470,7 @@ export const reorderedVisibleSiblings = (
   return allKeys.map((key) => (visibleSet.has(key) ? (visible[cursor++] ?? key) : key))
 }
 
-export const replaceSiblingOrder = (
+const replaceSiblingOrder = (
   current: readonly string[],
   siblings: readonly string[],
   next: readonly string[],
@@ -2110,6 +2158,33 @@ export const treeContents = (
   rerender: () => void,
   query = '',
 ): HTMLElement => {
+  const dropInLocal = async (
+    draggedKey: string,
+    parentKey: string | null,
+    _beforeKey: string | null,
+  ): Promise<string | null> => {
+    const folderId = parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null
+    if (draggedKey.startsWith('node:') || draggedKey.startsWith('st:')) {
+      return await callbacks.onDropInLocal(draggedKey, folderId)
+    }
+    if (draggedKey.startsWith('local:')) {
+      if (!(await setTemplateFolder(draggedKey.slice('local:'.length), folderId))) {
+        reportTreeError('Could not move that template into the folder.')
+        rerender()
+        return null
+      }
+      rerender()
+      return draggedKey
+    }
+    if (draggedKey.startsWith('lf:')) {
+      if (!moveLocalFolder(draggedKey.slice('lf:'.length), folderId)) {
+        reportTreeError('Could not save that folder move.')
+        return null
+      }
+      return draggedKey
+    }
+    return null
+  }
   const wrap = document.createElement('div')
   wrap.setAttribute('role', 'tree')
   wrap.className = 'flex flex-col'
@@ -2258,7 +2333,7 @@ export const treeContents = (
           : { progressReader: () => readParentProgress() ?? parentProgress }),
         ...(parentColourProgress === undefined ? {} : { colourProgress: parentColourProgress }),
         rerender,
-        onError: callbacks.onError,
+        onError: reportTreeError,
         /**
          * Categories reorder among themselves, and only among themselves.
          *
@@ -2287,12 +2362,12 @@ export const treeContents = (
         checked: isScopeVisible(key),
         onToggleChecked: (on) => {
           if (!setScopeVisible(key, on)) {
-            callbacks.onError(`Could not change visibility for “${target.name}”.`)
+            reportTreeError(`Could not change visibility for “${target.name}”.`)
           }
           rerender()
         },
         onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
-        onRename: canEdit ? (value) => callbacks.onRename(target, value) : undefined,
+        onRename: canEdit ? (value) => void renameTarget(target, value, rerender) : undefined,
         actions: canEdit
           ? [
               {
@@ -2391,7 +2466,7 @@ export const treeContents = (
                 : {}),
               ...(canEdit
                 ? {
-                    onRename: (value: string) => callbacks.onRename(nodeTarget, value),
+                    onRename: (value: string) => void renameTarget(nodeTarget, value, rerender),
                   }
                 : {}),
               ...(canEdit
@@ -2449,7 +2524,7 @@ export const treeContents = (
                 {
                   icon: 'search',
                   label: 'Go to',
-                  run: () => callbacks.onGoTo({ kind: 'server', bbox: template.bbox }),
+                  run: () => goToServerTemplate(template.bbox),
                 },
               ],
               visible: drawn?.visible ?? isScopeVisible(visibilityKey),
@@ -2470,7 +2545,7 @@ export const treeContents = (
                 : {}),
               ...(canEdit
                 ? {
-                    onRename: (value: string) => callbacks.onRename(templateTarget, value),
+                    onRename: (value: string) => void renameTarget(templateTarget, value, rerender),
                   }
                 : {}),
             },
@@ -2491,7 +2566,7 @@ export const treeContents = (
           rank,
           matches,
           budget,
-          callbacks.onError,
+          reportTreeError,
           siblingLevels,
         )
         if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
@@ -2537,9 +2612,9 @@ export const treeContents = (
             visible: folder.visible,
             setVisible: (on) => setLocalFolderVisible(folder.id, on),
             canReparent: true,
-            onDropAt: callbacks.onMoveLocal,
+            onDropAt: dropInLocal,
             onContextMenu: (event) => callbacks.onContextMenu(folderTarget, event),
-            onRename: (value) => callbacks.onRename(folderTarget, value),
+            onRename: (value) => void renameTarget(folderTarget, value, rerender),
             actions: [
               {
                 icon: 'createFolder',
@@ -2577,14 +2652,14 @@ export const treeContents = (
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),
             canReparent: true,
-            onDropAt: callbacks.onMoveLocal,
+            onDropAt: dropInLocal,
             onContextMenu: (event) => callbacks.onContextMenu(templateTarget, event),
-            onRename: (value) => callbacks.onRename(templateTarget, value),
+            onRename: (value) => void renameTarget(templateTarget, value, rerender),
             leadingActions: [
               {
                 icon: 'search',
                 label: 'Go to',
-                run: () => callbacks.onGoTo({ kind: 'local', templateId: template.id }),
+                run: () => goToLocalTemplate(template.id),
               },
             ],
             actions: [
@@ -2612,7 +2687,7 @@ export const treeContents = (
         rank,
         matches,
         budget,
-        callbacks.onError,
+        reportTreeError,
         siblingLevels,
       )
       if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))

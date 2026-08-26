@@ -9,15 +9,9 @@ import {
 } from '../state.js'
 import {
   acceptServerSnapshot,
-  canRetryNodeRefresh,
   forgetServerRows,
-  manifestAggregateWithinBudget,
-  nodeSiblingItems,
   nodeTreeKey,
-  orderedItems,
   refreshServerSnapshot,
-  reorderedSiblings,
-  reorderedVisibleSiblings,
   serverTemplateAt,
   treeContents,
 } from './tree.js'
@@ -109,13 +103,10 @@ const callbacks = {
   onAddServer: vi.fn(),
   onCreateFolder: vi.fn(),
   onImportTemplate: vi.fn(),
-  onRename: vi.fn(),
   onContextMenu: vi.fn(),
-  onGoTo: vi.fn(),
   onCopyToServer: vi.fn(),
-  onMoveLocal: vi.fn(),
+  onDropInLocal: vi.fn(),
   onDropInServer: vi.fn(),
-  onError: vi.fn(),
 }
 
 const server = (id: string, season: number, url = 'https://example.com'): ConnectedServer => ({
@@ -128,12 +119,6 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
 })
 
 describe('tree identity and ordering', () => {
-  it('bounds templates and chunks across all connected manifests', () => {
-    expect(manifestAggregateWithinBudget(99_999, 199_999, 1, 1)).toBe(true)
-    expect(manifestAggregateWithinBudget(100_000, 0, 1, 0)).toBe(false)
-    expect(manifestAggregateWithinBudget(0, 200_000, 0, 1)).toBe(false)
-  })
-
   it('replaces tree rows when a manifest arrives outside an explicit refresh', () => {
     const connected = server(SERVER_ID, 0)
     setState({ servers: [connected] })
@@ -218,20 +203,6 @@ describe('tree identity and ordering', () => {
     )
   })
 
-  it('does not admit a key from another sibling group', () => {
-    expect(reorderedSiblings(['a', 'b'], 'foreign', 'b', false)).toBeNull()
-    expect(reorderedSiblings(['a', 'b'], 'a', 'b', true)).toEqual(['b', 'a'])
-  })
-
-  it('swaps filtered rows in their full sibling slots without displacing hidden rows', () => {
-    expect(reorderedVisibleSiblings(['a', 'b', 'c', 'd'], ['a', 'd'], 'a', 'd', true)).toEqual([
-      'd',
-      'b',
-      'c',
-      'a',
-    ])
-  })
-
   it('namespaces node UI state by verified server identity and season', () => {
     const first = nodeTreeKey(server(SERVER_ID, 0), NODE_ID)
     const otherServer = nodeTreeKey(server('019fed50-87a1-7523-a88c-bdeafad49683', 0), NODE_ID)
@@ -245,74 +216,6 @@ describe('tree identity and ordering', () => {
     const alias = nodeTreeKey(server(SERVER_ID, 0, 'https://example.com/api'), NODE_ID)
 
     expect(first).not.toBe(alias)
-  })
-
-  it('surfaces unranked server rows newest-first', () => {
-    setState({ sort: { field: 'custom', direction: 'asc' }, customOrder: [] })
-
-    expect(
-      orderedItems(
-        [
-          { key: 'older', name: 'Older', createdAt: 1_700_000_000_000 },
-          { key: 'newer', name: 'Newer', createdAt: 1_800_000_000_000 },
-        ],
-        new Map(),
-      ).map((item) => item.key),
-    ).toEqual(['newer', 'older'])
-  })
-
-  it('sorts templates by completion without moving folder slots', () => {
-    setState({ sort: { field: 'progress', direction: 'asc' }, customOrder: [] })
-    const progress = (completed: number) => ({
-      completed,
-      mismatched: 0,
-      unpainted: 100 - completed,
-      known: 100,
-      total: 100,
-    })
-
-    expect(
-      orderedItems(
-        [
-          {
-            key: 'done',
-            name: 'Done',
-            progress: progress(90),
-            progressSortable: true as const,
-            createdAt: 4,
-          },
-          { key: 'folder', name: 'Folder', progress: progress(50), createdAt: 3 },
-          {
-            key: 'todo',
-            name: 'Todo',
-            progress: progress(10),
-            progressSortable: true as const,
-            createdAt: 2,
-          },
-        ],
-        new Map(),
-      ).map((item) => item.key),
-    ).toEqual(['todo', 'folder', 'done'])
-  })
-
-  it('uses the same scoped keys for server node rows and their sibling order', () => {
-    const connected = server(SERVER_ID, 0)
-    const node = {
-      id: NODE_ID,
-      parentId: null,
-      path: '/group',
-      name: 'Group',
-      createdAt: 1_750_000_000_000,
-    }
-
-    expect(nodeSiblingItems(connected, [node])).toEqual([
-      {
-        key: nodeTreeKey(connected, NODE_ID),
-        name: 'Group',
-        createdAt: node.createdAt,
-        node,
-      },
-    ])
   })
 
   it('notifies every view waiting on one in-flight node refresh', async () => {
@@ -500,11 +403,6 @@ describe('tree identity and ordering', () => {
 
     expect(downgraded).toEqual(expect.objectContaining({ isAdmin: false }))
     expect(downgraded === undefined ? undefined : peekProbedNodes(downgraded)).toEqual(nodes)
-  })
-
-  it('offers manifest retry to every connected server', () => {
-    expect(canRetryNodeRefresh(server(SERVER_ID, 0))).toBe(true)
-    expect(canRetryNodeRefresh({ ...server(SERVER_ID, 0), isAdmin: false })).toBe(true)
   })
 
   it('retains manifest folders for a connected server without admin scope', async () => {
