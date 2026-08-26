@@ -1,6 +1,7 @@
 import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
 import { redraw, viewportCentre } from '../main.js'
+import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
 import { isProfileEnabled, setProfileEnabled } from '../profile.js'
 import { forgetServer, type ServerTemplate } from '../server-cache.js'
 import {
@@ -1048,6 +1049,28 @@ const appearanceView = (): HTMLElement => {
     ),
   )
   view.appendChild(markers)
+  const markerBudget = document.createElement('select')
+  markerBudget.className = 'select select-bordered select-sm'
+  for (const value of MARKER_BUDGET_OPTIONS) {
+    const option = document.createElement('option')
+    option.value = String(value)
+    option.textContent =
+      value === DEFAULT_MARKER_BUDGET
+        ? `${value.toLocaleString()} (default)`
+        : value.toLocaleString()
+    option.selected = value === state.markerBudget
+    markerBudget.appendChild(option)
+  }
+  markerBudget.addEventListener('change', () => {
+    setState({ markerBudget: Number(markerBudget.value) })
+  })
+  view.appendChild(
+    settingRow(
+      'Visible marker limit',
+      'Maximum markers per kind across the viewport. Higher limits use more GPU time and memory.',
+      markerBudget,
+    ),
+  )
 
   view.appendChild(sectionHeader('Colours', 'palette'))
   view.appendChild(coloursSection(rerender, refreshView))

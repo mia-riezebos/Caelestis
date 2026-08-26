@@ -483,7 +483,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const mismatchWork: Work[] = []
   let deferred = false
   const scale = deviceScale(gl)
-  const mismatchSelection = getState().onlySelectedColour && isPaintOpen() ? selected : -1
+  const { markerBudget, onlySelectedColour } = getState()
+  const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
     const mismatchStyle: MarkerStyle = {
@@ -541,8 +542,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     }
   }
   const viewport = { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }
-  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport)
-  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport)
+  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, markerBudget)
+  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, markerBudget)
   count('marker:selected-colour tiles with marks', visibleSelectedWork.length)
   count('marker:mismatch tiles with marks', visibleMismatchWork.length)
 

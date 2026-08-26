@@ -16,6 +16,7 @@ const fixture = vi.hoisted(() => ({
   marks: new Uint32Array(0),
   mismatchesIn: vi.fn(),
   disagreementsIn: vi.fn(),
+  markerBudget: 16_384,
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
@@ -24,7 +25,9 @@ vi.mock('../profile.js', () => ({
   measureProfile: (_name: string, run: () => unknown) => run(),
   profileGpu: (_gl: unknown, _name: string, run: () => unknown) => run(),
 }))
-vi.mock('../state.js', () => ({ getState: () => ({ onlySelectedColour: false }) }))
+vi.mock('../state.js', () => ({
+  getState: () => ({ markerBudget: fixture.markerBudget, onlySelectedColour: false }),
+}))
 vi.mock('../templates/appearance.js', () => ({
   isColourHidden: () => false,
   toRgbUnit: () => [1, 0, 1],
@@ -139,6 +142,7 @@ describe('marker work selection', () => {
     fixture.marks = new Uint32Array(0)
     fixture.mismatchesIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
+    fixture.markerBudget = 16_384
   })
 
   it('does not calculate mismatch answers for a template whose markers are disabled', async () => {
@@ -160,6 +164,20 @@ describe('marker work selection', () => {
     markerLayer.render(gl)
 
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('uses the configured viewport marker budget', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.markerBudget = 100
+    fixture.marks = new Uint32Array(1_000)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 100)
     markerLayer.onRemove(null, gl)
   })
 })

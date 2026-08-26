@@ -1,8 +1,9 @@
 import { TILE_SIZE } from '@caelestis/shared'
+import { DEFAULT_MARKER_BUDGET } from '../marker-budget.js'
 import { type MismatchMarks, markLocalX } from '../templates/mismatch-marks.js'
 
-/** Maximum points submitted for one marker kind across the whole viewport. */
-export const MARKER_VIEWPORT_BUDGET = 16_384
+/** Default maximum points submitted for one marker kind across the whole viewport. */
+export const MARKER_VIEWPORT_BUDGET = DEFAULT_MARKER_BUDGET
 
 interface ScreenTile {
   readonly x: number
