@@ -4,9 +4,9 @@ import type { ImportedTemplate } from '../templates/import.js'
 import {
   addLocalTemplate,
   isCurrentTemplate,
-  localTemplates,
   removeLocalTemplate,
   templateAsPng,
+  templateById,
 } from '../templates/local-store.js'
 import type { MoveReservation } from '../templates/move.js'
 import { movingId } from '../templates/move.js'
@@ -25,7 +25,7 @@ const uploadAdmitted = async (
   const failures: string[] = []
 
   for (const templateId of templateIds) {
-    const template = localTemplates().find((candidate) => candidate.id === templateId)
+    const template = templateById(templateId)
     if (template === undefined) continue
     if (movingId() === template.id) {
       failures.push(`${template.name}: placement is still open`)

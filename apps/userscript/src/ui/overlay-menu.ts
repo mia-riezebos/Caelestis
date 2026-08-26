@@ -36,6 +36,7 @@ import {
   setLocalVisible,
   setOwnsGroup,
   templateAsPng,
+  templateById,
 } from '../templates/local-store.js'
 import {
   abort as abortMove,
@@ -485,9 +486,8 @@ const isDoomed = (id: string): boolean => deleting.has(id) || isDeletingLocal(id
 /**
  * The frame's own view of the store.
  *
- * `localTemplates()` allocates and sorts the whole store on every call, and the render loop reaches
- * it through `visibleFor` → `templateFor` for every template it walks — up to 64 full sorts a frame,
- * every one of them of the array it was already handed.
+ * The frame snapshot keeps every row in one coherent catalog generation. A write dispatched later
+ * must use `templateById` instead, because it composes against whatever is current at that point.
  */
 let frameTemplates: Map<string, PlacedTemplate> | null = null
 
@@ -520,7 +520,7 @@ const withFrameTemplates = <T>(
 const onPage = (node: Node | null | undefined): boolean => node?.isConnected === true
 
 const templateFor = (id: string): PlacedTemplate | undefined =>
-  frameTemplates?.get(id) ?? localTemplates().find((candidate) => candidate.id === id)
+  frameTemplates?.get(id) ?? templateById(id)
 
 interface ServerActionTarget {
   readonly server: ConnectedServer

@@ -40,6 +40,7 @@ const store = vi.hoisted(() => ({
   localTemplates: vi.fn(),
   removeLocalTemplate: vi.fn(),
   setTemplateFolder: vi.fn(),
+  templateById: vi.fn(),
   templateAsPng: vi.fn(),
 }))
 
@@ -67,6 +68,9 @@ beforeEach(() => {
   })
   state.listServerContents.mockResolvedValue({ nodes: [], templates: [] })
   state.isCurrentServerConnection.mockReturnValue(true)
+  store.templateById.mockImplementation((id: string) =>
+    store.localTemplates().find((template: { id: string }) => template.id === id),
+  )
   state.getState.mockReturnValue({ localFolders: [] })
   state.leaseLocalFolder.mockReturnValue(vi.fn())
   state.addLocalFolders.mockReturnValue(true)
@@ -579,7 +583,7 @@ describe('template transfer transactions', () => {
     const stale = { ...drawn, id: 'local-template' }
     const fresh = { ...stale }
     store.templateAsPng.mockResolvedValue(new Blob(['png']))
-    store.localTemplates.mockReturnValueOnce([stale]).mockReturnValue([fresh])
+    store.templateById.mockReturnValueOnce(stale).mockReturnValue(fresh)
     store.isCurrentTemplate.mockReturnValueOnce(false).mockReturnValue(true)
     state.uploadTemplate.mockResolvedValue({
       ok: true,

@@ -1310,9 +1310,8 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     count('mismatch:progress-only tile invalidated')
   }
   // Read once. This runs per announced pixel, and a tile re-read announces every pixel that moved —
-  // hundreds to thousands in one go. `localTemplates()` copies and sorts the whole list, so asking
-  // it per cache key per pixel was the cost of the whole function, several hundred thousand
-  // copy-and-sorts on the decode path for one busy tile.
+  // hundreds to thousands in one go. Reusing one id index keeps the inner loop independent of the
+  // number of displayed templates.
   const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
   for (const cacheKey of keys) {
     const entry = cache.get(cacheKey)

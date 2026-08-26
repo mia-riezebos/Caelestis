@@ -49,7 +49,6 @@ import {
   canCopyAsLocalTemplate,
   forgetServerTemplates,
   isCurrentTemplate,
-  localTemplates,
   onLocalChange,
   previewOriginFor,
   removeLocalTemplate,
@@ -57,6 +56,8 @@ import {
   setTemplateFolder,
   setTemplatesFolder,
   templateAsPng,
+  templateById,
+  templateIdsInLocalFolder,
 } from '../templates/local-store.js'
 import { onMismatchesChanged } from '../templates/mismatch.js'
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
@@ -1099,7 +1100,7 @@ const goTo = (target: TreeNavigationTarget): void => {
     return
   }
   const { templateId } = target
-  const template = localTemplates().find((candidate) => candidate.id === templateId)
+  const template = templateById(templateId)
   if (template === undefined) return
   const preview = previewOriginFor(templateId)
   if (preview !== null) {
@@ -1246,13 +1247,8 @@ const applyDelete = async (
     // folder id, and the tree renders templates by matching their folder to one that exists, so
     // removing the folder anyway would take the template off screen for good.
     const parentId = getState().localFolders.find((f) => f.id === folderId)?.parentId ?? null
-    const children = localTemplates().filter((template) => template.folderId === folderId)
-    if (
-      !(await setTemplatesFolder(
-        children.map(({ id }) => id),
-        parentId,
-      ))
-    ) {
+    const children = templateIdsInLocalFolder(folderId)
+    if (!(await setTemplatesFolder(children, parentId))) {
       toast(`Could not move everything out of “${target.name}”, so the folder was kept.`, 'error')
       rerender()
       return
@@ -1542,9 +1538,7 @@ const copyServerTemplateToLocal = async (
   const templateId = found.template.id
   const source = getState().servers.find((candidate) => candidate.url === found.serverUrl)
   if (source === undefined) return null
-  const drawn = allLocal().find(
-    (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
-  )
+  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId))
   if (drawn === undefined || drawn.serverVersion !== found.template.version) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
@@ -1593,7 +1587,7 @@ const dropOnServerNode = async (
     return await moveBranch(draggedKey, { kind: 'server', server, nodeId }, rerender)
   }
   if (draggedKey.startsWith('local:')) {
-    const local = allLocal().find((candidate) => candidate.id === draggedKey.slice('local:'.length))
+    const local = templateById(draggedKey.slice('local:'.length))
     if (local === undefined) return null
     // The refusal the Copy dialog makes, for the same reason: while a placement is running the
     // stored origin is the position being dragged away from, so publishing it puts the template on
@@ -1652,9 +1646,7 @@ const dropOnServerNode = async (
 
   // The pixels come from the copy already on the canvas, which is the assembled result of that
   // server's own chunks — so a cross-server move needs no second download.
-  const drawn = allLocal().find(
-    (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
-  )
+  const drawn = templateById(serverTemplateKey(found.serverUrl, templateId))
   if (drawn === undefined) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
@@ -1762,7 +1754,7 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
   go.addEventListener('click', () => {
     // Read fresh rather than using the list captured when the dialog opened: it has been on screen
     // while the map was in use, and the template may have been moved, renamed or redrawn since.
-    const source = allLocal().find((candidate) => candidate.id === chooser.value)
+    const source = templateById(chooser.value)
     if (source === undefined) {
       toast('That template is no longer here.', 'error')
       box.remove()
@@ -2060,7 +2052,7 @@ const copyToServer = async (
   rerender: () => void,
   onlyServerUrl?: string,
 ): Promise<void> => {
-  const template = allLocal().find((candidate) => candidate.id === templateId)
+  const template = templateById(templateId)
   if (template === undefined) return
   if (copySetupRunning) return
   const targets = getState().servers.filter(

@@ -1742,6 +1742,22 @@ describe('local template lifecycle', () => {
     expect(store.localTemplates().map(({ id }) => id)).toEqual(['low', 'high'])
   })
 
+  it('serves identity and repeated ordered reads from the catalog generation', async () => {
+    const store = await import('./local-store.js')
+    await store.addLocalTemplate(template({ id: 'high', sortOrder: 10 }))
+    await store.addLocalTemplate(template({ id: 'low', sortOrder: 0 }))
+
+    const generation = store.localTemplates()
+    expect(store.localTemplates()).toBe(generation)
+    expect(store.templateById('low')).toBe(generation[0])
+    expect(store.templateIndexMemoryBytes()).toBe(2)
+
+    await store.renameLocalTemplate('low', 'Renamed')
+
+    expect(store.localTemplates()).not.toBe(generation)
+    expect(store.templateById('low')).toMatchObject({ name: 'Renamed' })
+  })
+
   it('uses the durable custom tree order for display stacking', async () => {
     const store = await import('./local-store.js')
     const { setState } = await import('../state.js')

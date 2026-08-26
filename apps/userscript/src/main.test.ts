@@ -57,6 +57,7 @@ vi.mock('./templates/local-store.js', () => ({
   ownsGroup: vi.fn(() => false),
   restoreLocalTemplates: vi.fn(),
   setAppearance: vi.fn(),
+  templateIndexMemoryBytes: vi.fn(() => 0),
 }))
 vi.mock('./templates/mismatch.js', () => ({
   mismatchMemoryBytes: vi.fn(() => 0),

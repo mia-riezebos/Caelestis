@@ -28,6 +28,7 @@ import {
   removeLocalTemplate,
   setTemplateFolder,
   templateAsPng,
+  templateById,
 } from '../templates/local-store.js'
 import { movingId } from '../templates/move.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
@@ -181,12 +182,10 @@ const localId = (): string =>
 const drawnFor = (
   serverUrl: string,
   template: { id: string; version: string },
-): PlacedTemplate | undefined =>
-  localTemplates().find(
-    (candidate) =>
-      candidate.id === serverTemplateKey(serverUrl, template.id) &&
-      candidate.serverVersion === template.version,
-  )
+): PlacedTemplate | undefined => {
+  const drawn = templateById(serverTemplateKey(serverUrl, template.id))
+  return drawn?.serverVersion === template.version ? drawn : undefined
+}
 
 export interface TemplateTransferResult {
   readonly ok: boolean
@@ -266,7 +265,7 @@ export const copyCurrentLocalTemplateToServer = async (
     readonly beforeUpload?: (png: Blob) => boolean
   },
 ): Promise<LocalTemplateCopyResult> => {
-  const template = localTemplates().find((candidate) => candidate.id === templateId)
+  const template = templateById(templateId)
   if (template === undefined) {
     return { ok: false, message: `“${templateName}” is no longer here.`, missing: true }
   }
