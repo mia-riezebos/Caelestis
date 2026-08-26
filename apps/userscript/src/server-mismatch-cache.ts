@@ -7,6 +7,31 @@ const MAX_RESPONSE_BYTES = 12 + Math.ceil((TILE_SIZE * TILE_SIZE) / 4)
 const PRUNE_EVERY_WRITES = 16
 
 let writesUntilPrune = PRUNE_EVERY_WRITES
+const tileOperations = new Map<string, Promise<void>>()
+
+const operationKeyFor = (key: string): string => {
+  const first = key.indexOf('\u0000')
+  const last = key.lastIndexOf('\u0000')
+  return first < 0 || last <= first ? key : `${key.slice(0, first)}\u0000${key.slice(last + 1)}`
+}
+
+const tileOperationKeyFor = (serverUrl: string, tile: TileCoord): string =>
+  `${serverUrl}\u0000${tile.x}/${tile.y}`
+
+/** Serialize persisted work for one server tile without blocking unrelated tiles. */
+const serialize = <Result>(key: string, operation: () => Promise<Result>): Promise<Result> => {
+  const previous = tileOperations.get(key) ?? Promise.resolve()
+  const result = previous.then(operation, operation)
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  tileOperations.set(key, settled)
+  void settled.then(() => {
+    if (tileOperations.get(key) === settled) tileOperations.delete(key)
+  })
+  return result
+}
 
 const open = async (): Promise<Cache | null> => {
   try {
@@ -37,6 +62,9 @@ const prune = async (cache: Cache): Promise<void> => {
 
 /** A stale mask is enough to draw immediately; the caller still refreshes it from the server. */
 export const readCachedServerMismatch = async (key: string): Promise<Uint8Array | null> => {
+  // Reads for separate templates on the same tile stay concurrent. They only wait for an older
+  // write or invalidation, so a read started after a paint cannot overtake the deletion barrier.
+  await tileOperations.get(operationKeyFor(key))
   const cache = await open()
   if (cache === null) return null
   try {
@@ -53,49 +81,55 @@ export const readCachedServerMismatch = async (key: string): Promise<Uint8Array 
 
 export const writeCachedServerMismatch = async (key: string, bytes: Uint8Array): Promise<void> => {
   if (bytes.length === 0 || bytes.length > MAX_RESPONSE_BYTES) return
-  const cache = await open()
-  if (cache === null) return
-  try {
-    const request = requestFor(key)
-    // Refresh insertion order so the bounded cache behaves as an LRU across page loads.
-    await cache.delete(request)
-    await cache.put(
-      request,
-      new Response(bytes.slice().buffer as ArrayBuffer, {
-        headers: { 'content-type': 'application/vnd.caelestis.mismatch-mask' },
-      }),
-    )
-    writesUntilPrune--
-    if (writesUntilPrune <= 0) {
-      writesUntilPrune = PRUNE_EVERY_WRITES
-      await prune(cache)
-    }
-  } catch {}
+  await serialize(operationKeyFor(key), async () => {
+    const cache = await open()
+    if (cache === null) return
+    try {
+      const request = requestFor(key)
+      // Refresh insertion order so the bounded cache behaves as an LRU across page loads.
+      await cache.delete(request)
+      await cache.put(
+        request,
+        new Response(bytes.slice().buffer as ArrayBuffer, {
+          headers: { 'content-type': 'application/vnd.caelestis.mismatch-mask' },
+        }),
+      )
+      writesUntilPrune--
+      if (writesUntilPrune <= 0) {
+        writesUntilPrune = PRUNE_EVERY_WRITES
+        await prune(cache)
+      }
+    } catch {}
+  })
 }
 
 export const deleteCachedServerMismatch = async (key: string): Promise<void> => {
-  const cache = await open()
-  if (cache === null) return
-  try {
-    await cache.delete(requestFor(key))
-  } catch {}
+  await serialize(operationKeyFor(key), async () => {
+    const cache = await open()
+    if (cache === null) return
+    try {
+      await cache.delete(requestFor(key))
+    } catch {}
+  })
 }
 
 export const deleteCachedServerMismatchTile = async (
   serverUrl: string,
   tile: TileCoord,
 ): Promise<void> => {
-  const cache = await open()
-  if (cache === null) return
-  const prefix = `${serverUrl}\u0000`
-  const suffix = `\u0000${tile.x}/${tile.y}`
-  try {
-    const requests = await cache.keys()
-    await Promise.all(
-      requests.map((request) => {
-        const key = keyFrom(request)
-        return key?.startsWith(prefix) && key.endsWith(suffix) ? cache.delete(request) : false
-      }),
-    )
-  } catch {}
+  await serialize(tileOperationKeyFor(serverUrl, tile), async () => {
+    const cache = await open()
+    if (cache === null) return
+    const prefix = `${serverUrl}\u0000`
+    const suffix = `\u0000${tile.x}/${tile.y}`
+    try {
+      const requests = await cache.keys()
+      await Promise.all(
+        requests.map((request) => {
+          const key = keyFrom(request)
+          return key?.startsWith(prefix) && key.endsWith(suffix) ? cache.delete(request) : false
+        }),
+      )
+    } catch {}
+  })
 }

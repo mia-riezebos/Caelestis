@@ -96,6 +96,9 @@ const readMask = async (
   const token = activeServerToken(server)
   const invalidationKey = invalidationKeyFor(server.url, tile)
   const invalidation = tileInvalidations.get(invalidationKey) ?? 0
+  const isCurrent = (): boolean =>
+    isCurrentServerConnection(server) &&
+    (tileInvalidations.get(invalidationKey) ?? 0) === invalidation
   const request = fetch(
     serverEndpoint(
       server.url,
@@ -107,11 +110,7 @@ const readMask = async (
     },
   ).catch(() => null)
   const cachedBytes = await readCachedServerMismatch(key)
-  if (
-    cachedBytes !== null &&
-    isCurrentServerConnection(server) &&
-    (tileInvalidations.get(invalidationKey) ?? 0) === invalidation
-  ) {
+  if (cachedBytes !== null && isCurrent()) {
     const cached = decodeMismatchMask(cachedBytes)
     if (cached === null) void deleteCachedServerMismatch(key)
     else {
@@ -122,13 +121,10 @@ const readMask = async (
 
   const response = await request
   if (response === null) {
-    misses.set(key, { server, at: Date.now() })
+    if (isCurrent()) misses.set(key, { server, at: Date.now() })
     return
   }
-  if (
-    !isCurrentServerConnection(server) ||
-    (tileInvalidations.get(invalidationKey) ?? 0) !== invalidation
-  ) {
+  if (!isCurrent()) {
     await response.body?.cancel().catch(() => undefined)
     return
   }
@@ -152,6 +148,9 @@ const readMask = async (
     return
   }
   const bytes = new Uint8Array(await response.arrayBuffer())
+  // A paint can land while a large response body is being consumed. The check above then belongs
+  // to the old world; reject that body before it can repopulate memory or enqueue a persisted write.
+  if (!isCurrent()) return
   if (bytes.length > MAX_RESPONSE_BYTES) {
     misses.set(key, { server, at: Date.now() })
     return

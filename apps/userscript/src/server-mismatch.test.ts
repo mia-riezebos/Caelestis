@@ -143,4 +143,41 @@ describe('server mismatch masks', () => {
 
     expect(harness.cache.deleteTile).toHaveBeenCalledWith(harness.server.url, { x: 3, y: 4 })
   })
+
+  it('rejects a response body that finishes after its tile was invalidated', async () => {
+    const body = encodeMismatchMask(
+      { left: 0, top: 0, width: 1, height: 1 },
+      new Uint8Array([WRONG]),
+    )
+    let finishBody!: (value: ArrayBuffer) => void
+    const response = {
+      status: 200,
+      ok: true,
+      headers: new Headers(),
+      body: null,
+      arrayBuffer: () =>
+        new Promise<ArrayBuffer>((resolve) => {
+          finishBody = resolve
+        }),
+    } as Response
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response)
+      .mockImplementation(() => new Promise(() => {}))
+    vi.stubGlobal('fetch', fetch)
+    const { invalidateServerMismatchTile, serverMismatchMaskFor } = await import(
+      './server-mismatch.js'
+    )
+
+    expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).toBeNull()
+    await vi.waitFor(() => expect(finishBody).toBeTypeOf('function'))
+    invalidateServerMismatchTile(harness.server.url, { x: 3, y: 4 })
+    finishBody(body.slice().buffer as ArrayBuffer)
+    await vi.waitFor(() => {
+      expect(serverMismatchMaskFor(template, { x: 3, y: 4 })).toBeNull()
+      expect(fetch).toHaveBeenCalledTimes(2)
+    })
+
+    expect(harness.cache.write).not.toHaveBeenCalled()
+  })
 })
