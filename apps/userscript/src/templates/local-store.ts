@@ -148,6 +148,9 @@ let pendingIndexPixels = 0
 let restoreInFlight: Promise<void> | null = null
 let scheduledRestoreRecovery: Promise<void> | null = null
 let reconciliationTail: Promise<void> = Promise.resolve()
+let templateRevision = 0
+let orderedCacheRevision = -1
+let orderedCache: readonly PlacedTemplate[] = []
 
 /** @internal Pure arithmetic seam for proving concurrent aggregate-budget reservations. */
 export const indexIncreaseWithinBudget = (
@@ -196,8 +199,12 @@ const noteReconciliation = (id: string): void => {
   }
 }
 
-const orderedTemplates = (): PlacedTemplate[] =>
-  [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+const orderedTemplates = (): readonly PlacedTemplate[] => {
+  if (orderedCacheRevision === templateRevision) return orderedCache
+  orderedCache = [...templates.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+  orderedCacheRevision = templateRevision
+  return orderedCache
+}
 
 const customOrdered = <T extends { readonly key: string }>(
   items: readonly T[],
@@ -366,9 +373,21 @@ const notifyPreview = (): void => notifyListeners(previewListeners, 'local previ
 
 export const localTemplates = (): readonly PlacedTemplate[] => orderedTemplates()
 
+/** Current catalog entry for one template id, without allocating or sorting the collection. */
+export const templateById = (id: string): PlacedTemplate | undefined => templates.get(id)
+
+/** Ordered template ids directly inside one Local folder. */
+export const templateIdsInLocalFolder = (folderId: string): readonly string[] =>
+  orderedTemplates()
+    .filter((template) => !isServerTemplate(template) && template.folderId === folderId)
+    .map((template) => template.id)
+
+/** Indexed template pixels currently owned by the catalog. */
+export const templateIndexMemoryBytes = (): number => retainedIndexPixels
+
 /** Whether this exact snapshot is still the installed version of its template. */
 export const isCurrentTemplate = (template: PlacedTemplate): boolean =>
-  templates.get(template.id) === template
+  templateById(template.id) === template
 
 /** Keep a browser-owned template from being deleted while another copy is still being committed. */
 export const leaseLocalTemplate = (id: string): (() => void) | null => {
@@ -395,8 +414,6 @@ let displayOrderCache:
       readonly templates: readonly PlacedTemplate[]
     }
   | undefined
-let templateRevision = 0
-
 /** Templates as the canvas and its interactions currently present them: custom order plus previews. */
 export const displayTemplates = (): readonly PlacedTemplate[] => {
   const state = getState()

@@ -37,6 +37,8 @@ vi.mock('./local-store.js', () => ({
   placeLocalTemplate: harness.placeLocalTemplate,
   previewLocalTemplate: harness.previewLocalTemplate,
   removeLocalTemplate: harness.removeLocalTemplate,
+  templateById: (id: string) =>
+    harness.localTemplates().find((template: { id: string }) => template.id === id),
 }))
 
 const listeners = new Map<string, EventListener>()

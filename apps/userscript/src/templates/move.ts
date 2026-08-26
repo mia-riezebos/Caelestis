@@ -5,11 +5,11 @@ import {
   clearLocalPreview,
   isDeletingLocal,
   isServerTemplate,
-  localTemplates,
   onLocalReconciliation,
   placeLocalTemplate,
   previewLocalTemplate,
   removeLocalTemplate,
+  templateById,
 } from './local-store.js'
 import { horizontalSpans } from './placement.js'
 
@@ -116,7 +116,7 @@ const isOverTemplate = (clientX: number, clientY: number): boolean => {
   if (session === null) return false
   const point = canvasPixelAt(clientX, clientY)
   if (point === null) return false
-  const template = localTemplates().find((candidate) => candidate.id === session?.id)
+  const template = session === null ? undefined : templateById(session.id)
   if (template === undefined) return false
   return (
     horizontalSpans({ ...template, originX: session.x }).some(
@@ -158,7 +158,7 @@ const onPointerDown = (event: PointerEvent): void => {
   // Middle click: jump, do not drag. A long move should not require dragging the whole way.
   if (event.button === 1) {
     const point = canvasPixelAt(event.clientX, event.clientY)
-    const template = localTemplates().find((candidate) => candidate.id === session?.id)
+    const template = session === null ? undefined : templateById(session.id)
     if (point === null || template === undefined) return
     event.preventDefault()
     suppressMiddleAuxClickFor = event.pointerId
@@ -201,7 +201,7 @@ const onPointerMove = (event: PointerEvent): void => {
   event.preventDefault()
   event.stopPropagation()
   // Screen delta to canvas delta: one canvas pixel is many screen pixels when zoomed in.
-  const template = localTemplates().find((candidate) => candidate.id === session?.id)
+  const template = session === null ? undefined : templateById(session.id)
   if (template === undefined) return
   const next = boundedOrigin(
     template,
@@ -289,7 +289,7 @@ const onKeyDown = (event: KeyboardEvent): void => {
             ? { x: 0, y: 1 }
             : null
   if (delta !== null) {
-    const template = localTemplates().find((candidate) => candidate.id === session?.id)
+    const template = session === null ? undefined : templateById(session.id)
     if (template === undefined) return
     event.preventDefault()
     event.stopPropagation()
@@ -361,7 +361,7 @@ const begin = (
   // has not re-rendered still offers Move for it. Refusing here covers all of them at once, rather
   // than each caller having to remember.
   if (isDeletingLocal(id)) return false
-  const template = localTemplates().find((candidate) => candidate.id === id)
+  const template = templateById(id)
   if (
     template === undefined ||
     (isServerTemplate(template) ? persistRemote === undefined : persistRemote !== undefined)
@@ -485,7 +485,7 @@ export const commit = async (): Promise<void> => {
       }
     }
     if (!(await placeLocalTemplate(current.id, current.x, current.y))) {
-      const durable = localTemplates().find((template) => template.id === current.id)
+      const durable = templateById(current.id)
       // The server already accepted this position. Do not reopen a placement whose next Apply
       // would create another version; discard the stale preview and let the manifest refresh land.
       if (current.persistRemote !== undefined) {
@@ -526,13 +526,13 @@ export const abort = async (): Promise<void> => {
     reconciled = true
   })
   try {
-    const template = localTemplates().find((candidate) => candidate.id === current.id)
+    const template = templateById(current.id)
     const saved =
       template !== undefined && template.source === 'image' && !template.everPlaced
         ? await removeLocalTemplate(current.id)
         : clearLocalPreview(current.id)
     if (!saved) {
-      const durable = localTemplates().find((candidate) => candidate.id === current.id)
+      const durable = templateById(current.id)
       if (durable === undefined || reconciled) {
         finish()
         return
@@ -551,7 +551,7 @@ export const abort = async (): Promise<void> => {
 /** Tile-aligned bounds of the template being moved, for drawing its outline. */
 export const moveOutline = (): { x: number; y: number; w: number; h: number } | null => {
   if (session === null) return null
-  const template = localTemplates().find((candidate) => candidate.id === session?.id)
+  const template = templateById(session.id)
   if (template === undefined) return null
   return { x: session.x, y: session.y, w: template.width, h: template.height }
 }

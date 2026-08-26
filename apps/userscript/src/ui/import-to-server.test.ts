@@ -9,6 +9,7 @@ const store = vi.hoisted(() => ({
   isCurrentTemplate: vi.fn(() => true),
   localTemplates: vi.fn(),
   removeLocalTemplate: vi.fn(async (_id: string) => true),
+  templateById: vi.fn(),
   templateAsPng: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
 }))
 const move = vi.hoisted(() => ({ movingId: vi.fn(() => null) }))
@@ -43,6 +44,9 @@ const imported = (source: 'image' | 'wplace' = 'wplace') => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  store.templateById.mockImplementation((id: string) =>
+    store.localTemplates().find((template: { id: string }) => template.id === id),
+  )
   const records: Array<ReturnType<typeof imported> & { everPlaced: boolean }> = []
   store.localTemplates.mockImplementation(() => records)
   store.addLocalTemplate.mockImplementation(async (template: ReturnType<typeof imported>) => {

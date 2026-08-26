@@ -36,6 +36,7 @@ import {
   ownsGroup,
   restoreLocalTemplates,
   setAppearance,
+  templateIndexMemoryBytes,
 } from './templates/local-store.js'
 import { mismatchMemoryBytes, onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
 import { mismatchWorkerMemoryBytes } from './templates/mismatch-worker.js'
@@ -279,9 +280,7 @@ const installKeys = (): void => {
 
 const main = (): void => {
   step('performance profile', installProfile)
-  registerProfileMemorySource('Template pixels', () =>
-    localTemplates().reduce((total, template) => total + template.indices.byteLength, 0),
-  )
+  registerProfileMemorySource('Template pixels', templateIndexMemoryBytes)
   registerProfileMemorySource('Captured tile pixels', capturedPixelMemoryBytes)
   registerProfileMemorySource('Mismatch cache', mismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)

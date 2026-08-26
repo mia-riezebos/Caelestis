@@ -28,6 +28,7 @@ import {
   removeLocalTemplate,
   setTemplateFolder,
   templateAsPng,
+  templateById,
 } from '../templates/local-store.js'
 import { movingId } from '../templates/move.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
@@ -181,12 +182,10 @@ const localId = (): string =>
 const drawnFor = (
   serverUrl: string,
   template: { id: string; version: string },
-): PlacedTemplate | undefined =>
-  localTemplates().find(
-    (candidate) =>
-      candidate.id === serverTemplateKey(serverUrl, template.id) &&
-      candidate.serverVersion === template.version,
-  )
+): PlacedTemplate | undefined => {
+  const drawn = templateById(serverTemplateKey(serverUrl, template.id))
+  return drawn?.serverVersion === template.version ? drawn : undefined
+}
 
 export interface TemplateTransferResult {
   readonly ok: boolean

@@ -96,6 +96,8 @@ vi.mock('../templates/local-store.js', () => ({
   setAppearance: harness.setAppearance,
   setLocalVisible: harness.setLocalVisible,
   setOwnsGroup: harness.setOwnsGroup,
+  templateById: (id: string) =>
+    (harness.localTemplates() as Array<{ id: string }>).find((template) => template.id === id),
   templateAsPng: harness.templateAsPng,
 }))
 vi.mock('../templates/appearance-preview.js', () => ({
