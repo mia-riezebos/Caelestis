@@ -544,12 +544,12 @@ const scheduleIdleScan = (): void => {
 export const wantsTilePixels = (tile?: TileCoord): boolean => {
   const templates = displayTemplates().filter((template) => {
     if (!isTemplateVisible(template)) return false
-    const appearance = appearanceOf(template)
-    // Server templates receive aggregate progress from telemetry. Local templates have no other
-    // source, so they still need captured pixels even when neither marker list will be generated.
-    return (
-      appearance.markMismatch || appearance.markSelectedColour || template.serverUrl === undefined
-    )
+    // A server template's marker list comes from its server mismatch mask and its progress comes
+    // from telemetry. Capturing the underlying Wplace tile as a fallback makes every newly visible
+    // tile perform a million-pixel canvas read during a pan, precisely when the map needs its frame
+    // budget most. Local templates have neither server source, so they keep exact-pixel capture for
+    // both mismatch markers and progress (including when their marker switches are off).
+    return template.serverUrl === undefined
   })
   if (tile === undefined) return templates.length > 0
   const left = tile.x * TILE_SIZE

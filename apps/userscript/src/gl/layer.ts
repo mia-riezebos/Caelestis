@@ -13,7 +13,7 @@ import {
 } from '../templates/local-store.js'
 import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
-import { appearanceTransitions } from './appearance-transition.js'
+import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
 import { colourFades, templateFades } from './fade.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
@@ -447,6 +447,9 @@ export const overlayLayer = {
     // Switched off is a destination, not an exclusion: a template on its way out is still drawn,
     // at falling opacity, and only leaves once its ramp has run out.
     const now = performance.now()
+    // This is a browser preference, not a template property. Reading matchMedia for every visible
+    // template made a dense viewport repeat the same native query dozens of times per frame.
+    const reducedMotion = prefersReducedMotion()
     let animating = false
     const visible: {
       template: (typeof all)[number]
@@ -513,6 +516,11 @@ export const overlayLayer = {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.disable(gl.DEPTH_TEST)
     gl.bindBuffer(gl.ARRAY_BUFFER, quad)
+    // At far zoom the settled renderer samples a 4x4 grid for each output fragment. During a drag,
+    // nine distributed samples retain the anti-moire coverage while leaving enough GPU budget for
+    // Wplace to move its own raster tiles. The first settled frame returns to the exact full grid.
+    const moving = (getMap() as { isMoving?: () => boolean } | null)?.isMoving?.() === true
+    gl.uniform1i(uniform(gl, 'u_maxMinifyTaps'), moving ? 3 : 4)
     let uploadPixelsLeft = UPLOAD_PIXELS_PER_FRAME
     let uploadedThisFrame = false
 
@@ -562,7 +570,7 @@ export const overlayLayer = {
           template.id,
           targetAppearance,
           now,
-          undefined,
+          reducedMotion,
           hasAppearancePreview(template.id),
         )
         const appearance = transitioned.appearance

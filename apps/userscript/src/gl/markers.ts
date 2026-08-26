@@ -29,13 +29,19 @@ import {
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { markerFades, templateFades } from './fade.js'
 import {
+  batchMarkerWork,
+  beginMarkerBatchFrame,
+  endMarkerBatchFrame,
+  markerBatchMemoryBytes,
+} from './marker-batching.js'
+import {
   beginMarkerDensityFrame,
   endMarkerDensityFrame,
   markerDensityMemoryBytes,
   viewportMarkerBatches,
 } from './marker-density.js'
 
-export { markerDensityMemoryBytes }
+export { markerBatchMemoryBytes, markerDensityMemoryBytes }
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -392,6 +398,8 @@ export const keepMarkersAboveDrafts = (): void => {
  * render loop at full rate that looks exactly like a hang. This makes the retry a heartbeat instead.
  */
 const RETRY_MS = 250
+/** Dense points retained while moving; isolated points remain exempt in marker-density. */
+const MOVING_MARKER_BUDGET = 8_192
 let nextRetry = 0
 
 /** Every marked pixel of every template that asks for it, over every tile on screen. */
@@ -496,6 +504,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }
   const scale = deviceScale(gl)
   const { markerBudget, onlySelectedColour } = getState()
+  const moving = (getMap() as { isMoving?: () => boolean } | null)?.isMoving?.() === true
+  const renderBudget = moving ? Math.min(markerBudget, MOVING_MARKER_BUDGET) : markerBudget
   const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
@@ -554,8 +564,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     }
   }
   const viewport = { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }
-  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, markerBudget)
-  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, markerBudget)
+  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, renderBudget)
+  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, renderBudget)
   count('marker:selected-colour tiles with marks', visibleSelectedWork.length)
   count('marker:mismatch tiles with marks', visibleMismatchWork.length)
 
@@ -576,8 +586,15 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   gl.disable(gl.DEPTH_TEST)
 
   // The selected colour is a guide; a real mismatch is the error signal and wins where they meet.
-  for (const one of visibleSelectedWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
-  for (const one of visibleMismatchWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+  const selectedDraws = batchMarkerWork(visibleSelectedWork)
+  const mismatchDraws = batchMarkerWork(visibleMismatchWork)
+  count(
+    'marker:draw batches before batching',
+    visibleSelectedWork.length + visibleMismatchWork.length,
+  )
+  count('marker:draw batches after batching', selectedDraws.length + mismatchDraws.length)
+  for (const one of selectedDraws) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+  for (const one of mismatchDraws) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
 
   if (deferred && now >= nextRetry) {
     nextRetry = now + RETRY_MS
@@ -590,11 +607,13 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 const drawAll = (gl: WebGL2RenderingContext): void => {
   usedMarkerBuffers.clear()
   beginMarkerDensityFrame()
+  beginMarkerBatchFrame()
   beginMismatchFrame()
   try {
     drawVisible(gl)
   } finally {
     endMismatchFrame()
+    endMarkerBatchFrame()
     endMarkerDensityFrame()
     for (const [pixels, held] of markerBuffers) {
       if (usedMarkerBuffers.has(pixels)) continue

@@ -126,6 +126,14 @@ describe('visible mismatch answer retention', () => {
     expect(wantsTilePixels({ x: 0, y: 0 })).toBe(false)
   })
 
+  it('uses server masks instead of capturing server template pixels when markers are enabled', async () => {
+    harness.templates = [{ ...template(200), serverUrl: 'https://templates.example' }]
+    const { wantsTilePixels } = await import('./mismatch.js')
+
+    expect(wantsTilePixels()).toBe(false)
+    expect(wantsTilePixels({ x: 0, y: 0 })).toBe(false)
+  })
+
   it('keeps local progress current without retaining marker answers', async () => {
     harness.markersEnabled = false
     const selected = template(201)

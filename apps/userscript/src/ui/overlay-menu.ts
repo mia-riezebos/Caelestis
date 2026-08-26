@@ -170,6 +170,15 @@ let measuredFor: { width: number; height: number } = { width: 0, height: 0 }
 const invalidateMenuMeasurement = (): void => {
   measuredFor = { width: 0, height: 0 }
 }
+
+/** Move map-following controls without making every frame a document-layout operation. */
+const positionFloatingControl = (control: HTMLElement, x: number, y: number): void => {
+  if (control.style.left !== '0px') control.style.left = '0px'
+  if (control.style.top !== '0px') control.style.top = '0px'
+  if (control.style.willChange !== 'transform') control.style.willChange = 'transform'
+  const transform = `translate3d(${x}px, ${y}px, 0px)`
+  if (control.style.transform !== transform) control.style.transform = transform
+}
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
 let railActions: HTMLElement[] = []
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
@@ -1982,10 +1991,8 @@ const renderControls = (
     expireMoveFailure(template.id)
     expireFailures(template.id)
   }
-  // Every projection bottoms out in `getBoundingClientRect`, and the loop below writes `style.left`
-  // and `style.top`. Interleaving them makes each template's reads force a layout recalc that the
-  // previous template's writes invalidated — two synchronous reflows per template per frame, inside
-  // a painter. Read everything first, then write.
+  // Project every control from one frame snapshot, then move it with compositor transforms below.
+  // Mixing geometry reads with per-template position writes turns a pan into synchronous layout.
   const projection = screenProjection()
   const placements = templates.map((template) => ({
     template,
@@ -2013,11 +2020,11 @@ const renderControls = (
       )
       const finishing = isFinishing()
       for (const control of [rail.apply, rail.cancel]) {
-        control.style.left = `${railLeft}px`
-        control.setAttribute('aria-disabled', String(finishing))
+        if (control.getAttribute('aria-disabled') !== String(finishing))
+          control.setAttribute('aria-disabled', String(finishing))
       }
-      rail.apply.style.top = `${railTop}px`
-      rail.cancel.style.top = `${railTop + MENU_BUTTON_SIZE + RAIL_GAP}px`
+      positionFloatingControl(rail.apply, railLeft, railTop)
+      positionFloatingControl(rail.cancel, railLeft, railTop + MENU_BUTTON_SIZE + RAIL_GAP)
       continue
     }
     removePlacementRail(template.id)
@@ -2074,9 +2081,13 @@ const renderControls = (
       buttons.set(template.id, button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
-    button.title = `${template.name} — display options`
-    button.setAttribute('aria-label', `${template.name} display options`)
-    button.setAttribute('aria-expanded', String(openFor === template.id))
+    const title = `${template.name} — display options`
+    if (button.title !== title) button.title = title
+    const label = `${template.name} display options`
+    if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label)
+    const expanded = String(openFor === template.id)
+    if (button.getAttribute('aria-expanded') !== expanded)
+      button.setAttribute('aria-expanded', expanded)
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
     const actionCount =
@@ -2094,8 +2105,7 @@ const renderControls = (
       Math.max(corner.x + 6, 4),
       localControlsRightEdge() - MENU_BUTTON_SIZE,
     )
-    button.style.left = `${buttonLeft}px`
-    button.style.top = `${buttonTop}px`
+    positionFloatingControl(button, buttonLeft, buttonTop)
 
     if (openFor !== template.id) continue
     const signature = menuSignature(template)
@@ -2170,8 +2180,11 @@ const renderControls = (
     }
     if (menuNode === null) continue
     for (const [index, action] of railActions.entries()) {
-      action.style.left = `${buttonLeft}px`
-      action.style.top = `${buttonTop + (index + 1) * (MENU_BUTTON_SIZE + RAIL_GAP)}px`
+      positionFloatingControl(
+        action,
+        buttonLeft,
+        buttonTop + (index + 1) * (MENU_BUTTON_SIZE + RAIL_GAP),
+      )
     }
     // Measured when it is built, when its content expands, and when the viewport changes under it.
     //

@@ -18,6 +18,11 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('./coordinates.js', () => ({
   canvasPixelAtIn: harness.canvasPixelAtIn,
+  createScreenProjectionCache: () => ({
+    project: () => null,
+    invalidate: vi.fn(),
+    dispose: vi.fn(),
+  }),
   cssPixelsPerCanvasPixelIn: harness.cssPixelsPerCanvasPixelIn,
   screenPointForIn: harness.screenPointForIn,
   viewportCentreIn: harness.viewportCentreIn,
@@ -30,6 +35,7 @@ vi.mock('./gl/layer.js', () => ({
 }))
 vi.mock('./gl/markers.js', () => ({
   keepMarkersAboveDrafts: vi.fn(),
+  markerBatchMemoryBytes: vi.fn(() => 0),
   markerDensityMemoryBytes: vi.fn(() => 0),
   markerGpuMemoryBytes: vi.fn(() => 0),
 }))
