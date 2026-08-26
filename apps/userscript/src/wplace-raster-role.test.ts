@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { wplaceRasterRole } from './tile-transform.js'
+import { wplaceRasterRole } from './wplace-raster.js'
 
 describe('wplaceRasterRole', () => {
   it('separates the real pixel tiles from named draft and picker layers', () => {
