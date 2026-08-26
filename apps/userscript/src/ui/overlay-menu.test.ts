@@ -849,6 +849,24 @@ describe('placement and geometry', () => {
     }
   })
 
+  it('samples an open panel boundary once before positioning multiple template controls', () => {
+    const panel = document.createElement('aside')
+    panel.id = PANEL_ID
+    const measure = vi.fn(
+      () => ({ left: 500, right: 800, top: 8, bottom: 760, width: 300, height: 752 }) as DOMRect,
+    )
+    panel.getBoundingClientRect = measure
+    document.body.appendChild(panel)
+    harness.localTemplates.mockReturnValue([
+      template(),
+      template({ id: 'b', name: 'beta.png', originX: 100 }),
+    ])
+
+    rerender()
+
+    expect(measure).toHaveBeenCalledOnce()
+  })
+
   it('opens the menu to the right when that side has space', () => {
     menuMeasures(200, 240)
     harness.localTemplates.mockReturnValue([template()])

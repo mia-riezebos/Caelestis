@@ -1990,9 +1990,11 @@ const renderControls = (
     expireMoveFailure(template.id)
     expireFailures(template.id)
   }
-  // Project every control from one frame snapshot, then move it with compositor transforms below.
-  // Mixing geometry reads with per-template position writes turns a pan into synchronous layout.
+  // Sample every frame-wide geometry input before writing any control positions. Interleaving the
+  // panel rectangle read with each template's left/top writes forces one layout per visible
+  // template while the main panel is open.
   const projection = screenProjection()
+  const controlsRightEdge = localControlsRightEdge()
   const placements = templates.map((template) => ({
     template,
     corner: cornerOnScreen(template, projection),
@@ -2013,10 +2015,7 @@ const renderControls = (
         Math.max(corner.y, VIEWPORT_EDGE),
         Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
       )
-      const railLeft = Math.min(
-        Math.max(corner.x + 6, 4),
-        localControlsRightEdge() - MENU_BUTTON_SIZE,
-      )
+      const railLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
       const finishing = isFinishing()
       for (const control of [rail.apply, rail.cancel]) {
         if (control.getAttribute('aria-disabled') !== String(finishing))
@@ -2100,10 +2099,7 @@ const renderControls = (
       Math.max(corner.y, VIEWPORT_EDGE),
       Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
     )
-    const buttonLeft = Math.min(
-      Math.max(corner.x + 6, 4),
-      localControlsRightEdge() - MENU_BUTTON_SIZE,
-    )
+    const buttonLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
     positionFloatingControl(button, buttonLeft, buttonTop)
 
     if (openFor !== template.id) continue
@@ -2201,8 +2197,7 @@ const renderControls = (
       menuBox = { width: box.width, height: box.height }
       measuredFor = { width: window.innerWidth, height: window.innerHeight }
     }
-    const contentRight = localControlsRightEdge()
-    const rightSpace = contentRight - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
+    const rightSpace = controlsRightEdge - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
     const leftSpace = buttonLeft - RAIL_GAP - VIEWPORT_EDGE
     const openRight = menuBox.width <= rightSpace || rightSpace >= leftSpace
     const sideRoom = Math.max(0, openRight ? rightSpace : leftSpace)
