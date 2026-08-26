@@ -1,4 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+const serverCache = vi.hoisted(() => ({ cacheServer: vi.fn(async () => undefined) }))
+
+vi.mock('../server-cache.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../server-cache.js')>()),
+  cacheServer: serverCache.cacheServer,
+}))
+
 import {
   admittedServerContentsFor,
   type ConnectedServer,
@@ -44,6 +52,7 @@ afterEach(() => {
   forgetServerRows('https://cached.example.com')
   forgetServerRows('https://loading.example.com')
   setState({ servers: [], customOrder: [], collapsed: [] })
+  serverCache.cacheServer.mockClear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -256,6 +265,8 @@ describe('tree identity and ordering', () => {
     const newest = await second
     expect(newest).not.toBeNull()
     expect(admittedServerContentsFor(connected)).toBe(newest)
+    expect(serverCache.cacheServer).toHaveBeenCalledOnce()
+    serverCache.cacheServer.mockClear()
 
     releases[0]?.(
       manifest(
@@ -279,6 +290,7 @@ describe('tree identity and ordering', () => {
     )
     expect(serverTemplateAt(connected.url, TEMPLATE_A)?.name).toBe('Newer')
     expect(admittedServerContentsFor(connected)).toBe(newest)
+    expect(serverCache.cacheServer).not.toHaveBeenCalled()
     forgetServerRows(connected.url)
   })
 
