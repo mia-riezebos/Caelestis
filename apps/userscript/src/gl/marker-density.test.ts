@@ -167,6 +167,19 @@ describe('viewport marker density', () => {
       { width: 4_000, height: TILE_SIZE },
       14,
     )
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const next = viewportMarkerBatches(
+      [
+        placed(source, 0),
+        placed(source, 1_500),
+        ...Array.from({ length: 5 }, () => placed(one, 400)),
+        ...Array.from({ length: 5 }, () => placed(one, 2_300)),
+      ],
+      { width: 4_000, height: TILE_SIZE },
+      14,
+    )
+    endMarkerDensityFrame()
 
     const first = [...(visible[0]?.marks ?? [])].map(markLocalX)
     const second = [...(visible[1]?.marks ?? [])].map(markLocalX)
@@ -174,6 +187,8 @@ describe('viewport marker density', () => {
     expect(first).not.toContain(400)
     expect(second).toContain(400)
     expect(second).not.toContain(800)
+    expect(next[0]?.marks).toBe(visible[0]?.marks)
+    expect(next[1]?.marks).toBe(visible[1]?.marks)
   })
 
   it('reuses stable samples so WebGL buffers are not uploaded again every frame', () => {

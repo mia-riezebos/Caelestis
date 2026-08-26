@@ -66,10 +66,7 @@ interface ViewportDensityAnalysis {
 let densityAnalyses: ViewportDensityAnalysis[] = []
 const usedDensityAnalyses = new Set<ViewportDensityAnalysis>()
 let densityAnalysisRevision = 0
-const combinations = new Map<
-  MismatchMarks,
-  { readonly key: string; readonly marks: MismatchMarks }
->()
+const combinations = new Map<MismatchMarks, Map<string, MismatchMarks>>()
 const usedCombinations = new Set<MismatchMarks>()
 
 export const beginMarkerDensityFrame = (): void => {
@@ -86,8 +83,9 @@ export const endMarkerDensityFrame = (): void => {
     if (byLimit.size === 0) samples.delete(source)
   }
   densityAnalyses = densityAnalyses.filter((analysis) => usedDensityAnalyses.has(analysis))
-  for (const source of combinations.keys()) {
-    if (!usedCombinations.has(source)) combinations.delete(source)
+  for (const [source, byKey] of combinations) {
+    for (const [key, marks] of byKey) if (!usedCombinations.has(marks)) byKey.delete(key)
+    if (byKey.size === 0) combinations.delete(source)
   }
 }
 
@@ -103,7 +101,9 @@ export const markerDensityMemoryBytes = (): number => {
       buffers.add(analysis.dense.buffer)
     }
   }
-  for (const combination of combinations.values()) buffers.add(combination.marks.buffer)
+  for (const byKey of combinations.values()) {
+    for (const marks of byKey.values()) buffers.add(marks.buffer)
+  }
   let bytes = 0
   for (const buffer of buffers) bytes += buffer.byteLength
   return bytes
@@ -332,9 +332,12 @@ const mergeMarks = (
   if (sampledDense.length === 0) return analysis.sparse
   if (sampledDense === analysis.dense) return source
   const key = `${analysis.key}/${sampledDense.length}`
-  usedCombinations.add(source)
-  const held = combinations.get(source)
-  if (held?.key === key) return held.marks
+  let byKey = combinations.get(source)
+  const held = byKey?.get(key)
+  if (held !== undefined) {
+    usedCombinations.add(held)
+    return held
+  }
 
   const merged = new Uint32Array(analysis.sparse.length + sampledDense.length)
   let sparseAt = 0
@@ -354,7 +357,10 @@ const mergeMarks = (
       denseAt++
     }
   }
-  combinations.set(source, { key, marks: merged })
+  byKey ??= new Map()
+  byKey.set(key, merged)
+  combinations.set(source, byKey)
+  usedCombinations.add(merged)
   return merged
 }
 
