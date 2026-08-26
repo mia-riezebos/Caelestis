@@ -175,10 +175,11 @@
       if (hash !== undefined && loaded !== null) {
         presentedTiles.set(placement.key, loaded)
       }
-      // A frame becomes visible one tile at a time, only after that tile decoded. Pending, missing,
-      // failed, and absent history entries keep the last valid observation instead of exposing the
-      // basemap as a false blank. A decoded transparent tile still replaces the previous image.
-      const image = loaded ?? presentedTiles.get(placement.key) ?? null
+      // A requested frame becomes visible only after it decoded. Pending, missing, and failed blobs
+      // keep the last valid observation instead of exposing the basemap as a false blank. An
+      // undefined hash means the selected time predates this tile's first observation, so a live or
+      // later image must not leak backwards into that historical frame.
+      const image = hash === undefined ? null : (loaded ?? presentedTiles.get(placement.key) ?? null)
       if (image !== null) ctx.drawImage(image, drawX, drawY)
     }
 

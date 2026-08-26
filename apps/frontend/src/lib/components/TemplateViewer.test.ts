@@ -150,7 +150,7 @@ describe('timelapse tile presentation', () => {
     expect(canvas.draws).not.toContain('old')
   })
 
-  it('keeps the previous decoded tile when its replacement fails or is absent', async () => {
+  it('keeps the previous decoded tile when its requested replacement fails', async () => {
     const oldFrame = deferred<HTMLImageElement>()
     const failedFrame = deferred<HTMLImageElement>()
     imageLoads.tile.mockImplementation((hash) =>
@@ -169,11 +169,21 @@ describe('timelapse tile presentation', () => {
     resize?.()
     await settle()
     expect(canvas.draws).toContain('old')
+  })
+
+  it('does not leak a later tile into a time before its first observation', async () => {
+    const liveFrame = deferred<HTMLImageElement>()
+    imageLoads.tile.mockImplementation(() => liveFrame.promise)
+    let selected: string | undefined = 'live'
+    show((key) => (key === TEMPLATE_TILE ? selected : undefined))
+    liveFrame.resolve(image('live'))
+    await settle()
+    expect(canvas.draws).toContain('live')
 
     selected = undefined
     resize?.()
     await settle()
-    expect(canvas.draws).toContain('old')
+    expect(canvas.draws).not.toContain('live')
   })
 
   it('replaces the previous tile with a successfully decoded blank observation', async () => {
