@@ -13,15 +13,14 @@ import { measureProfile } from './profile.js'
 import { buildExactRgbIndex, exactRgbIndex } from './rgb-index.js'
 import { draftedPixelsIn } from './templates/drafted.js'
 import { tilePixelCacheLimit } from './tile-pixel-cache.js'
-
-export type WplaceRasterRole = 'tile' | 'draft' | 'other'
-
-/** Wplace names the raster layers; use that identity instead of reverse-engineering their quads. */
-export const wplaceRasterRole = (layerId: string | null): WplaceRasterRole => {
-  if (layerId === 'pixel-art-layer') return 'tile'
-  if (layerId?.startsWith('paint-preview-')) return 'draft'
-  return 'other'
-}
+import {
+  captureFetchUrlGetters,
+  isGetFetch,
+  normalizeMissingTileResponse,
+  tileFromUrl,
+  urlForFetchInput,
+  wplaceRasterRole,
+} from './wplace-raster.js'
 
 /**
  * Which wplace tile is on screen, where, right now?
@@ -90,158 +89,6 @@ const MAX_TILE_SCREEN_WIDTH = 1e9
  * a visible absence rather than a silent misplacement.
  */
 const ROTATION_TOLERANCE = 1e-6
-
-const TILE_PATH = /^\/files\/s\d+\/tiles\/(\d+)\/(\d+)\.png$/
-const TILE_ORIGIN = 'https://backend.wplace.live'
-
-/** The same transparent pixel shape wplace's service worker substitutes for an absent tile. */
-const TRANSPARENT_PNG = new Uint8Array([
-  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0,
-  0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 96, 96, 0, 0, 0, 3, 0, 1, 43, 9, 77,
-  132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
-])
-
-/**
- * The tile this URL names, or null.
- *
- * Anchored, and matched against a parsed origin and pathname rather than anywhere in the string. The
- * unanchored version matched a query parameter that merely contained the shape — so an API call to
- * `?u=/files/s0/tiles/9999/9999.png` had its whole body buffered and put tile 9999/9999 into the
- * attribution queue, where a later same-sized bitmap picked it up and drew a template in the wrong
- * place. It also matched any other origin's URL, meaning this tap read bodies that were none of its
- * business.
- */
-export const tileFromUrl = (url: string): TileCoord | null => {
-  let parsed: URL
-  try {
-    parsed = new URL(url, typeof location === 'undefined' ? TILE_ORIGIN : location.href)
-  } catch {
-    return null
-  }
-  if (parsed.origin !== TILE_ORIGIN) return null
-  const match = TILE_PATH.exec(parsed.pathname)
-  if (match === null) return null
-  return parseTileKey(`${match[1]}/${match[2]}`)
-}
-
-interface FetchUrlGetters {
-  readonly requestUrl: ((this: Request) => string) | undefined
-  readonly requestMethod: ((this: Request) => string) | undefined
-  readonly urlHref: ((this: URL) => string) | undefined
-  readonly urlPrototype: object | undefined
-  readonly urlToString: ((this: URL) => string) | undefined
-}
-
-/** Snapshot native URL readers before page code or another userscript can replace them. */
-export const captureFetchUrlGetters = (realm: Window & typeof globalThis): FetchUrlGetters => {
-  try {
-    return {
-      requestUrl: realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'url')?.get,
-      requestMethod: realm.Object.getOwnPropertyDescriptor(realm.Request.prototype, 'method')?.get,
-      urlHref: realm.Object.getOwnPropertyDescriptor(realm.URL.prototype, 'href')?.get,
-      urlPrototype: realm.URL.prototype,
-      urlToString: realm.Object.getOwnPropertyDescriptor(realm.URL.prototype, 'toString')?.value,
-    }
-  } catch {
-    return {
-      requestUrl: undefined,
-      requestMethod: undefined,
-      urlHref: undefined,
-      urlPrototype: undefined,
-      urlToString: undefined,
-    }
-  }
-}
-
-/** Observe a fetch input without repeating its generic string conversion. */
-export const urlForFetchInput = (
-  input: unknown,
-  realm: Window & typeof globalThis,
-  getters: FetchUrlGetters,
-): string | null => {
-  if (typeof input === 'string') return input
-  try {
-    if (isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)) {
-      return getters.requestUrl?.call(input as Request) ?? null
-    }
-    if (isPageInstance(input, 'URL', realm as unknown as Record<string, unknown>)) {
-      // Fetch converts URL objects through their stringifier. Reading `href` is equivalent only
-      // while neither the instance nor its prototype has replaced that coercion path.
-      if (getters.urlPrototype === undefined || getters.urlToString === undefined) return null
-      if (realm.Object.getPrototypeOf(input) !== getters.urlPrototype) return null
-      if (realm.Object.getOwnPropertyDescriptor(input, 'toString') !== undefined) return null
-      if (realm.Object.getOwnPropertyDescriptor(input, Symbol.toPrimitive) !== undefined)
-        return null
-      if (
-        realm.Object.getOwnPropertyDescriptor(getters.urlPrototype, Symbol.toPrimitive) !==
-        undefined
-      )
-        return null
-      if (
-        realm.Object.getOwnPropertyDescriptor(getters.urlPrototype, 'toString')?.value !==
-        getters.urlToString
-      )
-        return null
-      return getters.urlHref?.call(input as URL) ?? null
-    }
-  } catch {
-    // A proxy or a replaced constructor can refuse its native slot. Attribution is optional.
-  }
-  return null
-}
-
-/** Whether fetch used GET, observed without repeating an accessor or generic string conversion. */
-export const isGetFetch = (
-  input: unknown,
-  init: RequestInit | null | undefined,
-  realm: Window & typeof globalThis,
-  getters: FetchUrlGetters,
-): boolean => {
-  let method: string | null = null
-  try {
-    if (typeof input === 'string') method = 'GET'
-    else if (isPageInstance(input, 'URL', realm as unknown as Record<string, unknown>))
-      method = 'GET'
-    else if (isPageInstance(input, 'Request', realm as unknown as Record<string, unknown>)) {
-      method = getters.requestMethod?.call(input as Request) ?? null
-    }
-    if (method === null || init === undefined || init === null) return method === 'GET'
-
-    let descriptor = realm.Object.getOwnPropertyDescriptor(init, 'method')
-    if (descriptor === undefined) {
-      const prototype = realm.Object.getPrototypeOf(init)
-      if (prototype === null) return method === 'GET'
-      // WebIDL reads inherited dictionary members too. Inspect a plain Object prototype's data
-      // property without invoking it again; an accessor or exotic prototype is not safely known.
-      if (prototype !== realm.Object.prototype) return false
-      descriptor = realm.Object.getOwnPropertyDescriptor(prototype, 'method')
-      if (descriptor === undefined) return method === 'GET'
-    }
-    if (!('value' in descriptor)) return false
-    if (descriptor.value === undefined) return method === 'GET'
-    return typeof descriptor.value === 'string' && descriptor.value.toUpperCase() === 'GET'
-  } catch {
-    return false
-  }
-}
-
-/** Make an origin 404 decodable, matching the service worker's transparent-tile behavior. */
-export const normalizeMissingTileResponse = (
-  response: Response,
-  realm: Window & typeof globalThis,
-): Response => {
-  if (response.status !== 404) return response
-  const substitute = new realm.Response(TRANSPARENT_PNG, {
-    status: 200,
-    headers: { 'content-type': 'image/png' },
-  })
-  try {
-    void response.body?.cancel().catch(() => undefined)
-  } catch {
-    // The substitute is independent; a hostile or locked original stream is disposable.
-  }
-  return substitute
-}
 
 export interface TileQuad {
   readonly tile: TileCoord

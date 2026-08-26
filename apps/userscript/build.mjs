@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { build, context } from 'esbuild'
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+const development = process.argv.includes('--watch') || process.argv.includes('--development')
 
 /**
  * The Violentmonkey metadata block. It must be the first thing in the output file, so it rides in
@@ -38,6 +39,9 @@ const options = {
   target: 'es2022',
   banner: { js: metadata },
   legalComments: 'none',
+  // Keep watch output readable for browser debugging. Release builds should not make every user
+  // download and parse the development representation of the same program.
+  minify: !development,
   logLevel: 'info',
 }
 

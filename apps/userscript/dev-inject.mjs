@@ -57,7 +57,10 @@ const settleMs = Number(flag('--settle', shotPath ? 12_000 : 4_000))
 
 const build = () =>
   new Promise((resolve, reject) => {
-    const child = spawn('node', [join(here, 'build.mjs')], { cwd: here, stdio: 'inherit' })
+    const child = spawn('node', [join(here, 'build.mjs'), '--development'], {
+      cwd: here,
+      stdio: 'inherit',
+    })
     child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`build exited ${code}`))))
   })
 
