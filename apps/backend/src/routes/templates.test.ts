@@ -371,7 +371,7 @@ describe('editing a template', () => {
     expect(after.templates).toHaveLength(0)
   })
 
-  it('keeps released clients working while guarded deletes roll out', async () => {
+  it('keeps the source when a released client cannot identify its revision', async () => {
     const { app } = await harness()
     const created = await create(app)
 
@@ -380,9 +380,12 @@ describe('editing a template', () => {
       ...bearer(BOOTSTRAP),
     })
 
-    expect(response.status).toBe(204)
+    expect(response.status).toBe(428)
+    await expect(response.json()).resolves.toEqual({
+      error: 'expectedVersion and expectedUpdatedAt are required for template deletion',
+    })
     const after = await manifestFor(app)
-    expect(after.templates).toHaveLength(0)
+    expect(after.templates).toHaveLength(1)
   })
 
   it('refuses a partially guarded template delete', async () => {

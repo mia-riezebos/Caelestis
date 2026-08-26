@@ -232,24 +232,25 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     const expectedVersionQuery = c.req.query('expectedVersion')
     const expectedUpdatedAtQuery = c.req.query('expectedUpdatedAt')
     const parsedUpdatedAt = parseWholeNumber(expectedUpdatedAtQuery)
-    let expected: { versionId: string; updatedAt: Millis }
     if (expectedVersionQuery === undefined && expectedUpdatedAtQuery === undefined) {
-      // Compatibility phase for released userscripts that predate revision-aware deletes. Snapshot
-      // the current revision and still execute an atomic conditional delete. New clients send the
-      // revision they copied, which is the only way to protect a move from deleting a later edit.
-      const current = await ports.sql.readTemplate(templateId)
-      if (current === null) return c.json({ error: 'not found' }, 404)
-      if (current.currentVersionId === null) {
-        return c.json({ error: 'template changed concurrently' }, 409)
-      }
-      expected = { versionId: current.currentVersionId, updatedAt: current.updatedAt }
-    } else if (!UUID_V7.test(expectedVersionQuery ?? '') || parsedUpdatedAt === null) {
+      // Released movers cannot identify the revision they copied. Accepting their unguarded cleanup
+      // would let a replacement published during that copy be deleted, so fail safely and retain the
+      // source until the revision-aware userscript is installed.
+      return c.json(
+        { error: 'expectedVersion and expectedUpdatedAt are required for template deletion' },
+        428,
+      )
+    }
+    if (!UUID_V7.test(expectedVersionQuery ?? '') || parsedUpdatedAt === null) {
       return c.json(
         { error: 'expectedVersion and expectedUpdatedAt must identify the confirmed revision' },
         400,
       )
-    } else
-      expected = { versionId: expectedVersionQuery as string, updatedAt: millis(parsedUpdatedAt) }
+    }
+    const expected: { versionId: string; updatedAt: Millis } = {
+      versionId: expectedVersionQuery as string,
+      updatedAt: millis(parsedUpdatedAt),
+    }
     if (!(await ports.sql.deleteTemplate(templateId, expected))) {
       if ((await ports.sql.readTemplate(templateId)) === null) {
         return c.json({ error: 'not found' }, 404)
