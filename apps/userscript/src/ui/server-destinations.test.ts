@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { TreeNode } from '../state.js'
+import type { TreeNode } from '../server-manifest.js'
 import { serverDestinations } from './server-destinations.js'
 
 const folder = (id: string, path: string): TreeNode => ({

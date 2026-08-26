@@ -1,12 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  type ConnectedServer,
-  getState,
-  MAX_TREE_NODES,
-  peekProbedNodes,
-  probeServer,
-  setState,
-} from '../state.js'
+import { MAX_TREE_NODES } from '../server-manifest.js'
+import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState } from '../state.js'
 import {
   acceptServerSnapshot,
   forgetServerRows,

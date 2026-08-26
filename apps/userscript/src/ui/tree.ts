@@ -1,5 +1,11 @@
 import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cache.js'
 import {
+  MAX_MANIFEST_CHUNKS,
+  MAX_MANIFEST_TEMPLATES,
+  MAX_TREE_NODES,
+  type TreeNode,
+} from '../server-manifest.js'
+import {
   admitServerContents,
   admittedServerContentsFor,
   type ConnectedServer,
@@ -7,9 +13,6 @@ import {
   isCurrentServerConnection,
   isScopeVisible,
   listServerContents,
-  MAX_MANIFEST_CHUNKS,
-  MAX_MANIFEST_TEMPLATES,
-  MAX_TREE_NODES,
   moveLocalFolder,
   onServerContents,
   patchTemplate,
@@ -20,7 +23,6 @@ import {
   setLocalFolderVisible,
   setScopeVisible,
   setState,
-  type TreeNode,
   takeProbedNodes,
 } from '../state.js'
 import { serverColourProgressFor, serverProgressFor } from '../telemetry.js'

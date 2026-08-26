@@ -3,9 +3,9 @@ import {
   MAX_MANIFEST_CHUNKS,
   MAX_MANIFEST_TEMPLATES,
   MAX_TREE_NODES,
+  parseTreeNodes,
   type TreeNode,
-  validateTreeNodes,
-} from './state.js'
+} from './server-manifest.js'
 import { migrateTemplateStorePalette } from './templates/palette-migration.js'
 
 /**
@@ -169,7 +169,7 @@ const cachedServerFrom = (
   const candidate = raw as Partial<CachedServer>
   // Check the cheap aggregate boundary before walking and copying a large untrusted node array.
   if (!Array.isArray(candidate.nodes) || candidate.nodes.length > remaining.nodes) return null
-  const nodes = validateTreeNodes(candidate.nodes)
+  const nodes = parseTreeNodes(candidate.nodes)
   const templates = cachedTemplatesFrom(candidate.templates)
   const templateCount = templates?.length ?? 0
   const chunkCount = templates?.reduce((total, template) => total + template.chunks.length, 0) ?? 0
