@@ -4,6 +4,7 @@ import {
   profileGpu,
   profileSnapshot,
   recordProfileDuration,
+  recordProfileWorkload,
   registerProfileMemorySource,
   resetProfile,
   setProfileEnabled,
@@ -51,6 +52,29 @@ describe('performance profile', () => {
       'main:work',
       'gpu:work',
     ])
+  })
+
+  it('summarises render workload without recording while disabled', () => {
+    recordProfileWorkload('Overlay visible templates', 99)
+    expect(profileSnapshot().workload).toEqual([])
+
+    setProfileEnabled(true)
+    recordProfileWorkload('Overlay visible templates', 4)
+    recordProfileWorkload('Overlay visible templates', 8)
+
+    expect(profileSnapshot().workload).toEqual([
+      {
+        name: 'Overlay visible templates',
+        count: 2,
+        current: 8,
+        average: 6,
+        max: 8,
+        p95: 8,
+      },
+    ])
+
+    resetProfile()
+    expect(profileSnapshot().workload).toEqual([])
   })
 
   it('reports registered Caelestis buffers without calling them while disabled', () => {

@@ -28,8 +28,10 @@ const fixture = vi.hoisted(() => ({
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
 vi.mock('../map-handle.js', () => ({ getMap: () => ({ isMoving: () => fixture.moving }) }))
 vi.mock('../profile.js', () => ({
+  isProfileEnabled: () => false,
   measureProfile: (_name: string, run: () => unknown) => run(),
   profileGpu: (_gl: unknown, _name: string, run: () => unknown) => run(),
+  recordProfileWorkload: vi.fn(),
 }))
 vi.mock('../state.js', () => ({
   getState: () => ({ markerBudget: fixture.markerBudget, onlySelectedColour: false }),
@@ -197,7 +199,7 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
-  it('caps only dense marker work while the map is moving', async () => {
+  it('keeps the configured marker budget while the map is moving', async () => {
     fixture.appearance.markMismatch = true
     fixture.moving = true
     fixture.marks = new Uint32Array(16_384)
@@ -207,7 +209,9 @@ describe('marker work selection', () => {
 
     markerLayer.render(gl)
 
-    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 8_192)
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 16_384)
+    const uploaded = vi.mocked(gl.bufferData).mock.calls.at(-1)?.[1]
+    expect(uploaded).toBeInstanceOf(Uint32Array)
     markerLayer.onRemove(null, gl)
   })
 

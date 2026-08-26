@@ -1,7 +1,13 @@
 import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
-import { clearGpuProfile, measureProfile, profileGpu } from '../profile.js'
+import {
+  clearGpuProfile,
+  isProfileEnabled,
+  measureProfile,
+  profileGpu,
+  recordProfileWorkload,
+} from '../profile.js'
 import { isPlain } from '../templates/appearance.js'
 import { appearanceWithPreview, hasAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
@@ -17,6 +23,7 @@ import { appearanceTransitions, prefersReducedMotion } from './appearance-transi
 import { colourFades, templateFades } from './fade.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
+import { movingOverlayTapCap } from './minify-quality.js'
 import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
 /**
@@ -450,7 +457,9 @@ export const overlayLayer = {
     // This is a browser preference, not a template property. Reading matchMedia for every visible
     // template made a dense viewport repeat the same native query dozens of times per frame.
     const reducedMotion = prefersReducedMotion()
+    const profiling = isProfileEnabled()
     let animating = false
+    let visibleSourcePixels = 0
     const visible: {
       template: (typeof all)[number]
       fade: number
@@ -465,7 +474,10 @@ export const overlayLayer = {
       if (!done) animating = true
       if (value > 0) {
         const spans = horizontalSpans(template)
-        if (intersectsTiles(template, spans, tiles)) visible.push({ template, fade: value, spans })
+        if (intersectsTiles(template, spans, tiles)) {
+          visible.push({ template, fade: value, spans })
+          if (profiling) visibleSourcePixels += template.width * template.height
+        }
       }
     }
     const ids = new Set(all.map((template) => template.id))
@@ -502,6 +514,13 @@ export const overlayLayer = {
     // A newly visible template begins at zero. It therefore has no drawable entry on its first
     // frame, but the unfinished fade still needs another frame or it remains transparent forever.
     if (visible.length === 0) {
+      if (profiling) {
+        recordProfileWorkload('Overlay host tiles', tiles.length)
+        recordProfileWorkload('Overlay visible source pixels', 0)
+        recordProfileWorkload('Overlay visible templates', 0)
+        recordProfileWorkload('Overlay draw intersections', 0)
+        recordProfileWorkload('Overlay minify tap cap', 0)
+      }
       askForAnotherFrame()
       return
     }
@@ -517,12 +536,15 @@ export const overlayLayer = {
     gl.disable(gl.DEPTH_TEST)
     gl.bindBuffer(gl.ARRAY_BUFFER, quad)
     // At far zoom the settled renderer samples a 4x4 grid for each output fragment. During a drag,
-    // nine distributed samples retain the anti-moire coverage while leaving enough GPU budget for
-    // Wplace to move its own raster tiles. The first settled frame returns to the exact full grid.
+    // distributed samples retain anti-moire coverage while leaving enough GPU budget for Wplace to
+    // move its own raster tiles; template-dense views use a smaller cap. The first settled frame
+    // returns to the exact full grid.
     const moving = (getMap() as { isMoving?: () => boolean } | null)?.isMoving?.() === true
-    gl.uniform1i(uniform(gl, 'u_maxMinifyTaps'), moving ? 3 : 4)
+    const minifyTapCap = moving ? movingOverlayTapCap(visible.length) : 4
+    gl.uniform1i(uniform(gl, 'u_maxMinifyTaps'), minifyTapCap)
     let uploadPixelsLeft = UPLOAD_PIXELS_PER_FRAME
     let uploadedThisFrame = false
+    let drawIntersections = 0
 
     try {
       for (const { template, fade, spans } of visible) {
@@ -646,11 +668,24 @@ export const overlayLayer = {
               corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
               gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+              drawIntersections++
             }
           }
         }
       }
     } finally {
+      if (profiling) {
+        recordProfileWorkload('Overlay host tiles', tiles.length)
+        recordProfileWorkload('Overlay visible source pixels', visibleSourcePixels)
+        recordProfileWorkload('Overlay visible templates', visible.length)
+        recordProfileWorkload('Overlay draw intersections', drawIntersections)
+        recordProfileWorkload('Overlay minify tap cap', minifyTapCap)
+        recordProfileWorkload('Overlay moving', moving ? 1 : 0)
+        if (moving) {
+          recordProfileWorkload('Overlay moving draw intersections', drawIntersections)
+          recordProfileWorkload('Overlay moving minify tap cap', minifyTapCap)
+        }
+      }
       // A fade in progress still needs its next frame if one template failed to draw.
       askForAnotherFrame()
     }

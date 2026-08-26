@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { minifyTapGrid, movingMinifyTapGrid } from './minify-quality.js'
+import { minifyTapGrid, movingMinifyTapGrid, movingOverlayTapCap } from './minify-quality.js'
 
 describe('overlay minification quality', () => {
   it('uses fewer samples for modest footprints and preserves the full grid when far out', () => {
@@ -13,6 +13,9 @@ describe('overlay minification quality', () => {
     expect(movingMinifyTapGrid(1)).toBe(1)
     expect(movingMinifyTapGrid(2.5)).toBe(3)
     expect(movingMinifyTapGrid(4)).toBe(3)
+    expect(movingOverlayTapCap(23)).toBe(3)
+    expect(movingOverlayTapCap(24)).toBe(2)
+    expect(movingMinifyTapGrid(4, 24)).toBe(2)
     expect(minifyTapGrid(4)).toBe(4)
   })
 })

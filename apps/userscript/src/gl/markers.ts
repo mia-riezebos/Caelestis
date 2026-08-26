@@ -1,7 +1,7 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
-import { measureProfile, profileGpu } from '../profile.js'
+import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
 import { getState } from '../state.js'
 import { isColourHidden, toRgbUnit } from '../templates/appearance.js'
 import { colourMarksIn } from '../templates/colour-marker.js'
@@ -217,6 +217,17 @@ export interface MarkerStyle {
   readonly selected: number
 }
 
+const applyMarkerStyle = (gl: WebGL2RenderingContext, style: MarkerStyle, fade: number): void => {
+  const scale = deviceScale(gl)
+  gl.uniform1f(uniform(gl, 'u_size'), style.size * scale)
+  gl.uniform1f(uniform(gl, 'u_thickness'), Math.max(1, Math.round(style.thickness * scale)))
+  gl.uniform3f(uniform(gl, 'u_colour'), ...style.colour)
+  gl.uniform3f(uniform(gl, 'u_otherColour'), ...(style.otherColour ?? style.colour))
+  gl.uniform1f(uniform(gl, 'u_otherOpacity'), style.otherOpacity)
+  gl.uniform1f(uniform(gl, 'u_selected'), style.selected)
+  gl.uniform1f(uniform(gl, 'u_fade'), fade)
+}
+
 /**
  * How many device pixels one CSS pixel is, right now.
  *
@@ -294,14 +305,7 @@ export const drawMarkers = (
   gl.uniform2f(uniform(gl, 'u_buffer'), gl.drawingBufferWidth, gl.drawingBufferHeight)
   // `gl_PointSize` is in device pixels, so a size fixed there is half as big on a 2x display and a
   // quarter on 3x — the markers shrank exactly where the screen has more room to show them.
-  const scale = deviceScale(gl)
-  gl.uniform1f(uniform(gl, 'u_size'), style.size * scale)
-  gl.uniform1f(uniform(gl, 'u_thickness'), Math.max(1, Math.round(style.thickness * scale)))
-  gl.uniform3f(uniform(gl, 'u_colour'), ...style.colour)
-  gl.uniform3f(uniform(gl, 'u_otherColour'), ...(style.otherColour ?? style.colour))
-  gl.uniform1f(uniform(gl, 'u_otherOpacity'), style.otherOpacity)
-  gl.uniform1f(uniform(gl, 'u_selected'), style.selected)
-  gl.uniform1f(uniform(gl, 'u_fade'), fade)
+  applyMarkerStyle(gl, style, fade)
 
   gl.drawArrays(gl.POINTS, 0, pixels.length)
   gl.bindVertexArray(null)
@@ -398,8 +402,6 @@ export const keepMarkersAboveDrafts = (): void => {
  * render loop at full rate that looks exactly like a hang. This makes the retry a heartbeat instead.
  */
 const RETRY_MS = 250
-/** Dense points retained while moving; isolated points remain exempt in marker-density. */
-const MOVING_MARKER_BUDGET = 8_192
 let nextRetry = 0
 
 /** Every marked pixel of every template that asks for it, over every tile on screen. */
@@ -505,7 +507,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const scale = deviceScale(gl)
   const { markerBudget, onlySelectedColour } = getState()
   const moving = (getMap() as { isMoving?: () => boolean } | null)?.isMoving?.() === true
-  const renderBudget = moving ? Math.min(markerBudget, MOVING_MARKER_BUDGET) : markerBudget
+  const renderBudget = markerBudget
+  const profiling = isProfileEnabled()
   const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
@@ -566,10 +569,37 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const viewport = { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }
   const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, renderBudget)
   const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, renderBudget)
+  const reportWorkload = (drawBatches: number, drawnPoints: number): void => {
+    if (!profiling) return
+    const points = (work: readonly { readonly marks: { readonly length: number } }[]): number =>
+      work.reduce((total, one) => total + one.marks.length, 0)
+    const sourcePoints = points(selectedWork) + points(mismatchWork)
+    const retainedPoints = points(visibleSelectedWork) + points(visibleMismatchWork)
+    recordProfileWorkload('Marker eligible templates', wanted.length)
+    recordProfileWorkload('Marker host tiles', tiles.length)
+    recordProfileWorkload('Marker effective budget', renderBudget)
+    recordProfileWorkload('Marker moving', moving ? 1 : 0)
+    recordProfileWorkload('Marker source batches', selectedWork.length + mismatchWork.length)
+    recordProfileWorkload('Marker source points', sourcePoints)
+    recordProfileWorkload(
+      'Marker retained batches',
+      visibleSelectedWork.length + visibleMismatchWork.length,
+    )
+    recordProfileWorkload('Marker retained points', retainedPoints)
+    recordProfileWorkload('Marker draw batches', drawBatches)
+    recordProfileWorkload('Marker drawn points', drawnPoints)
+    if (moving) {
+      recordProfileWorkload('Marker moving effective budget', renderBudget)
+      recordProfileWorkload('Marker moving retained points', retainedPoints)
+      recordProfileWorkload('Marker moving draw batches', drawBatches)
+      recordProfileWorkload('Marker moving drawn points', drawnPoints)
+    }
+  }
   count('marker:selected-colour tiles with marks', visibleSelectedWork.length)
   count('marker:mismatch tiles with marks', visibleMismatchWork.length)
 
   if (visibleSelectedWork.length === 0 && visibleMismatchWork.length === 0) {
+    reportWorkload(0, 0)
     if (deferred && now >= nextRetry) {
       nextRetry = now + RETRY_MS
       const map = getMap() as { triggerRepaint?: () => void } | null
@@ -588,11 +618,17 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   // The selected colour is a guide; a real mismatch is the error signal and wins where they meet.
   const selectedDraws = batchMarkerWork(visibleSelectedWork)
   const mismatchDraws = batchMarkerWork(visibleMismatchWork)
+  const drawBatches = selectedDraws.length + mismatchDraws.length
+  const drawnPoints = profiling
+    ? visibleSelectedWork.reduce((total, one) => total + one.marks.length, 0) +
+      visibleMismatchWork.reduce((total, one) => total + one.marks.length, 0)
+    : 0
+  reportWorkload(drawBatches, drawnPoints)
   count(
     'marker:draw batches before batching',
     visibleSelectedWork.length + visibleMismatchWork.length,
   )
-  count('marker:draw batches after batching', selectedDraws.length + mismatchDraws.length)
+  count('marker:draw batches after batching', drawBatches)
   for (const one of selectedDraws) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
   for (const one of mismatchDraws) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
 
