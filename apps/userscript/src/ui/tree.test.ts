@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState } from '../state.js'
 import {
   canRetryNodeRefresh,
-  forgetServerTree,
+  forgetServerRows,
   manifestAggregateWithinBudget,
   nodeSiblingItems,
   nodeTreeKey,
@@ -29,9 +29,9 @@ const manifest = (
   )
 
 afterEach(() => {
-  forgetServerTree('https://public.example.com')
-  forgetServerTree('https://cached.example.com')
-  forgetServerTree('https://loading.example.com')
+  forgetServerRows('https://public.example.com')
+  forgetServerRows('https://cached.example.com')
+  forgetServerRows('https://loading.example.com')
   setState({ servers: [], customOrder: [], collapsed: [] })
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -103,10 +103,8 @@ const callbacks = {
   onCreateFolder: vi.fn(),
   onImportTemplate: vi.fn(),
   onRename: vi.fn(),
-  onDelete: vi.fn(),
   onContextMenu: vi.fn(),
   onGoTo: vi.fn(),
-  onPlace: vi.fn(),
   onCopyToServer: vi.fn(),
   onMoveLocal: vi.fn(),
   onDropInServer: vi.fn(),
@@ -240,19 +238,6 @@ describe('tree identity and ordering', () => {
         new Map(),
       ).map((item) => item.key),
     ).toEqual(['todo', 'folder', 'done'])
-  })
-
-  it('forgets URL-scoped node state even when no server tree is loaded', () => {
-    const prefix = `node:${encodeURIComponent('https://offline.example.com')}:`
-    setState({
-      customOrder: [`${prefix}${SERVER_ID}:0:${NODE_ID}`, 'local:kept'],
-      collapsed: [`${prefix}${SERVER_ID}:0:${NODE_ID}`, 'local'],
-    })
-
-    forgetServerTree('https://offline.example.com')
-
-    expect(getState().customOrder).toEqual(['local:kept'])
-    expect(getState().collapsed).toEqual(['local'])
   })
 
   it('uses the same scoped keys for server node rows and their sibling order', () => {

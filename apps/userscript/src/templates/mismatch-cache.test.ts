@@ -1,5 +1,5 @@
 import { decodeMismatchMask, encodeMismatchMask, type MismatchMask, WRONG } from '@caelestis/shared'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './local-store.js'
 import { markLocalX } from './mismatch-marks.js'
 import type { ScanOutcome } from './mismatch-scan.js'
@@ -10,8 +10,10 @@ const harness = vi.hoisted(() => ({
   serverMask: null as MismatchMask | null,
   workerAvailable: false,
   markersEnabled: true,
+  pixelsAvailable: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   idleCallbacks: [] as Array<(deadline: { timeRemaining: () => number }) => void>,
+  onTilePixelsAvailable: vi.fn(),
   onTilePixels: vi.fn(),
   onTilePixelsEvicted: vi.fn(),
 }))
@@ -22,9 +24,10 @@ vi.mock('../tile-transform.js', () => ({
   ensureTilePixels: vi.fn(),
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
+  onTilePixelsAvailable: harness.onTilePixelsAvailable,
   onTilePixels: harness.onTilePixels,
   onTilePixelsEvicted: harness.onTilePixelsEvicted,
-  tilePixels: () => harness.pixels,
+  tilePixels: () => (harness.pixelsAvailable ? harness.pixels : null),
   UNPAINTED: 255,
 }))
 vi.mock('../server-mismatch.js', () => ({
@@ -79,6 +82,7 @@ beforeEach(() => {
   harness.serverMask = null
   harness.workerAvailable = false
   harness.markersEnabled = true
+  harness.pixelsAvailable = true
   harness.workerScan.mockReset()
   harness.idleCallbacks = []
   vi.stubGlobal(
@@ -87,8 +91,13 @@ beforeEach(() => {
       harness.idleCallbacks.push(callback)
     },
   )
+  harness.onTilePixelsAvailable.mockReset()
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('visible mismatch answer retention', () => {
@@ -319,6 +328,44 @@ describe('visible mismatch answer retention', () => {
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()
     expect(harness.workerScan).toHaveBeenCalledOnce()
+  })
+
+  it('drains stale scans without requestIdleCallback', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestIdleCallback', undefined)
+    const selected = template(205)
+    harness.templates = [selected]
+    const { mismatchesIn } = await import('./mismatch.js')
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toBeNull()
+    expect(vi.getTimerCount()).toBe(1)
+
+    await vi.runAllTimersAsync()
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+  })
+
+  it('waits for unavailable tile pixels instead of spinning the timer fallback', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestIdleCallback', undefined)
+    const selected = template(206)
+    harness.templates = [selected]
+    const { mismatchesIn } = await import('./mismatch.js')
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toBeNull()
+    harness.pixelsAvailable = false
+    await vi.runOnlyPendingTimersAsync()
+    expect(vi.getTimerCount()).toBe(0)
+
+    harness.pixelsAvailable = true
+    const listener = harness.onTilePixelsAvailable.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }) => void)
+      | undefined
+    listener?.({ x: 0, y: 0 })
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.runAllTimersAsync()
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
   })
 
   it('uses newly captured pixels instead of a superseded server mask after a busy tile update', async () => {

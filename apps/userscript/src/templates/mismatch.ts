@@ -19,6 +19,7 @@ import {
   ensureTilePixels,
   loadTilePixels,
   onTilePixels,
+  onTilePixelsAvailable,
   onTilePixelsEvicted,
   tilePixels,
   UNPAINTED,
@@ -481,9 +482,13 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
   idleScheduled = false
   // Borrow the frame budget: the same guard, spending idle time instead of a frame's.
   scanDeadline = performance.now() + Math.max(deadline.timeRemaining(), 1)
+  let ranOutOfTime = false
   const templatesById = new Map(displayTemplates().map((template) => [template.id, template]))
   for (const cacheKey of [...stale]) {
-    if (performance.now() >= scanDeadline) break
+    if (performance.now() >= scanDeadline) {
+      ranOutOfTime = true
+      break
+    }
     const id = templateIdOf(cacheKey)
     const tile = tileOf(cacheKey, id)
     const template = templatesById.get(id)
@@ -495,7 +500,10 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
     count('mismatch:rescanned while idle')
   }
   for (const cacheKey of [...staleProgress]) {
-    if (performance.now() >= scanDeadline) break
+    if (performance.now() >= scanDeadline) {
+      ranOutOfTime = true
+      break
+    }
     const id = templateIdOf(cacheKey)
     const tile = tileOf(cacheKey, id)
     const template = templatesById.get(id)
@@ -507,16 +515,22 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
     count('mismatch:progress-only rescanned while idle')
   }
   scanDeadline = 0
-  if (stale.size > 0 || staleProgress.size > 0) scheduleIdleScan()
+  // A key can remain stale because its canvas pixels have not arrived yet. Retrying that key on a
+  // zero-delay timer spins forever when the fetch fails. Pixel capture wakes the queue below; only
+  // a scan that actually exhausted its time slice needs another immediate idle turn.
+  if (ranOutOfTime && (stale.size > 0 || staleProgress.size > 0)) scheduleIdleScan()
   notifyChanged()
 }
 
 const scheduleIdleScan = (): void => {
   if (idleScheduled) return
   const idle = (globalThis as IdleWindow).requestIdleCallback
-  if (idle === undefined) return
   idleScheduled = true
-  idle(runIdleScan)
+  if (idle !== undefined) {
+    idle(runIdleScan)
+    return
+  }
+  setTimeout(() => runIdleScan({ timeRemaining: () => SCAN_BUDGET_MS }), 0)
 }
 
 /**
@@ -1474,7 +1488,6 @@ onTilePixels((tile, triples) => {
       invalidated = true
     }
     if (invalidated) {
-      if (stale.size > 0) scheduleIdleScan()
       changed++
     }
   } else {
@@ -1489,8 +1502,25 @@ onTilePixels((tile, triples) => {
       )
     }
   }
+  const suffix = `|${tile.x}/${tile.y}`
+  if (
+    [...stale].some((cacheKey) => cacheKey.endsWith(suffix)) ||
+    [...staleProgress].some((cacheKey) => cacheKey.endsWith(suffix))
+  ) {
+    scheduleIdleScan()
+  }
   if (changed === before) return
   notifyChanged()
+})
+
+onTilePixelsAvailable((tile) => {
+  const suffix = `|${tile.x}/${tile.y}`
+  if (
+    [...stale].some((cacheKey) => cacheKey.endsWith(suffix)) ||
+    [...staleProgress].some((cacheKey) => cacheKey.endsWith(suffix))
+  ) {
+    scheduleIdleScan()
+  }
 })
 
 onServerMismatchesChanged(() => {
