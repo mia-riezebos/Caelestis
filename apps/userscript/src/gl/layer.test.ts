@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   triggerRepaint: vi.fn(),
+  map: {} as Record<string, unknown>,
   indices: new Uint8Array([0]),
   width: 1,
   height: 1,
@@ -13,7 +14,7 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../map-handle.js', () => ({
-  getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
+  getMap: () => harness.map,
 }))
 vi.mock('../templates/appearance.js', () => ({ isPlain: () => true }))
 vi.mock('../templates/colour-filter.js', () => ({ hiddenColoursFor: () => [] }))
@@ -134,6 +135,7 @@ const gl = () =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  harness.map = { triggerRepaint: harness.triggerRepaint }
   harness.fade = { value: 0, done: false }
   harness.indices = new Uint8Array([0])
   harness.width = 1
@@ -142,6 +144,24 @@ beforeEach(() => {
   harness.originY = 0
   harness.templateCount = 1
 })
+
+const orderedMap = (order: string[]) => {
+  const moveLayer = vi.fn((id: string, before?: string) => {
+    const from = order.indexOf(id)
+    if (from >= 0) order.splice(from, 1)
+    const target = before === undefined ? order.length : order.indexOf(before)
+    order.splice(target < 0 ? order.length : target, 0, id)
+  })
+  return {
+    moveLayer,
+    map: {
+      style: { _order: order },
+      addLayer: vi.fn(),
+      getLayer: (id: string) => (order.includes(id) ? { id } : undefined),
+      moveLayer,
+    },
+  }
+}
 
 describe('overlay layer', () => {
   it('requests the next frame when a visible template begins at zero fade', async () => {
@@ -216,5 +236,71 @@ describe('overlay layer', () => {
 
     overlayLayer.draw(context, null)
     expect(context.texImage2D).toHaveBeenCalledTimes(4)
+  })
+
+  it('restores custom layers above pixel art after a basemap style change', async () => {
+    const order = [
+      'background',
+      'caelestis-overlay',
+      'caelestis-markers',
+      'pixel-art-layer',
+      'paint-preview-1-2',
+      'pixel-hover',
+    ]
+    const { map, moveLayer } = orderedMap(order)
+    harness.map = map
+    const { installOverlayLayer } = await import('./layer.js')
+
+    expect(installOverlayLayer()).toBe(true)
+    expect(order).toEqual([
+      'background',
+      'pixel-art-layer',
+      'caelestis-overlay',
+      'paint-preview-1-2',
+      'caelestis-markers',
+      'pixel-hover',
+    ])
+    expect(moveLayer).toHaveBeenNthCalledWith(1, 'caelestis-overlay', 'paint-preview-1-2')
+    expect(moveLayer).toHaveBeenNthCalledWith(2, 'caelestis-markers', 'pixel-hover')
+  })
+
+  it('uses the crosshair as the recovery anchor when no draft layer exists', async () => {
+    const order = [
+      'background',
+      'caelestis-overlay',
+      'caelestis-markers',
+      'pixel-art-layer',
+      'pixel-hover',
+    ]
+    const { map, moveLayer } = orderedMap(order)
+    harness.map = map
+    const { installOverlayLayer } = await import('./layer.js')
+
+    expect(installOverlayLayer()).toBe(true)
+    expect(order).toEqual([
+      'background',
+      'pixel-art-layer',
+      'caelestis-overlay',
+      'caelestis-markers',
+      'pixel-hover',
+    ])
+    expect(moveLayer).toHaveBeenNthCalledWith(1, 'caelestis-overlay', 'pixel-hover')
+    expect(moveLayer).toHaveBeenNthCalledWith(2, 'caelestis-markers', 'pixel-hover')
+  })
+
+  it('does not move layers that are already in render order', async () => {
+    const order = [
+      'pixel-art-layer',
+      'caelestis-overlay',
+      'paint-preview-1-2',
+      'caelestis-markers',
+      'pixel-hover',
+    ]
+    const { map, moveLayer } = orderedMap(order)
+    harness.map = map
+    const { installOverlayLayer } = await import('./layer.js')
+
+    expect(installOverlayLayer()).toBe(true)
+    expect(moveLayer).not.toHaveBeenCalled()
   })
 })
