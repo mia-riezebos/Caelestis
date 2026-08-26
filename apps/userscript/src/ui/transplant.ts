@@ -202,6 +202,7 @@ export type LocalTemplateCopyResult =
       readonly message: string
       readonly ambiguous?: true
       readonly cancelled?: true
+      readonly missing?: true
       readonly retryable?: true
     }
 
@@ -251,6 +252,24 @@ export const copyLocalTemplateToServer = async (
   // a slow manifest must not keep a completed upload looking stuck behind its 120-second timeout.
   void reconcileServer(destination)
   return uploaded
+}
+
+/** Resolve the installed Local snapshot at the start of each user-visible copy attempt. */
+export const copyCurrentLocalTemplateToServer = async (
+  templateId: string,
+  templateName: string,
+  destination: ConnectedServer,
+  nodeId: string | null,
+  reconcileServer: ReconcileServer,
+  options: {
+    readonly beforeUpload?: (png: Blob) => boolean
+  },
+): Promise<LocalTemplateCopyResult> => {
+  const template = templateById(templateId)
+  if (template === undefined) {
+    return { ok: false, message: `“${templateName}” is no longer here.`, missing: true }
+  }
+  return copyLocalTemplateToServer(template, destination, nodeId, reconcileServer, options)
 }
 
 const sameServerTemplateRevision = (
