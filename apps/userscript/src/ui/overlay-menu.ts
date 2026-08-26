@@ -55,7 +55,13 @@ import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
+import {
+  overlayAppearanceState,
+  type AppearanceUpdater as Updater,
+} from './overlay-appearance-state.js'
+import { type OverlayFailureKey as FailureKey, overlayFailures } from './overlay-failures.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
+import { createRangeGestures } from './range-gestures.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID } from './toast.js'
 
@@ -145,15 +151,6 @@ const localControlsRightEdge = (): number => {
  * `move` is the only key `expireMoveFailure` clears, and it clears it whenever no placement is
  * running — so any message *about* there being no placement needs a key of its own.
  */
-type FailureKey =
-  | 'delete'
-  | 'visible'
-  | 'move'
-  | 'server-move'
-  | 'move-ready'
-  | 'move-stopped'
-  | `appearance:${string}`
-
 let openFor: string | null = null
 /** The menu we built, held by reference — identity is ours to keep, not to look up by id. */
 let menuNode: HTMLElement | null = null
@@ -184,101 +181,6 @@ let focusRequest: string | null = null
  * module knows lives in this module, and the DOM is what it draws.
  */
 /**
- * Active pointer gestures on a range, by `pointerId`.
- *
- * Keyed by pointer rather than by element because two pointers can be down on the *same* slider,
- * and a set of elements makes the first release look like the end of both — taking the second
- * pointer's live control away mid-gesture.
- */
-const heldPointers = new Map<number, HTMLInputElement>()
-/** The keyboard's gesture, which has no pointer id. */
-let heldByKey: HTMLInputElement | null = null
-
-const heldWithin = (root: HTMLElement | null): boolean =>
-  root !== null &&
-  (heldByKey !== null && root.contains(heldByKey)
-    ? true
-    : [...heldPointers.values()].some((slider) => root.contains(slider)))
-
-/** Window-level releases installed when pointer capture was unavailable, by pointer. */
-const captureFallbacks = new Map<number, () => void>()
-
-const MOVES_RANGE = new Set([
-  'ArrowLeft',
-  'ArrowRight',
-  'ArrowUp',
-  'ArrowDown',
-  'Home',
-  'End',
-  'PageUp',
-  'PageDown',
-])
-
-const finishPointerHold = (
-  input: HTMLInputElement,
-  pointerId: number,
-  settleGesture: () => void,
-): void => {
-  captureFallbacks.get(pointerId)?.()
-  heldPointers.delete(pointerId)
-  if (![...heldPointers.values()].includes(input)) settleGesture()
-}
-
-/** Register one range in the same held-control registry that suppresses menu rebuilds. */
-const beginPointerHold = (
-  input: HTMLInputElement,
-  event: PointerEvent,
-  settleGesture: () => void,
-): void => {
-  heldPointers.set(event.pointerId, input)
-  try {
-    input.setPointerCapture(event.pointerId)
-  } catch {
-    const drop = (): void => {
-      window.removeEventListener('pointerup', ended, true)
-      window.removeEventListener('pointercancel', ended, true)
-      captureFallbacks.delete(event.pointerId)
-    }
-    const ended = (release: Event): void => {
-      if ((release as PointerEvent).pointerId !== event.pointerId) return
-      drop()
-      finishPointerHold(input, event.pointerId, settleGesture)
-    }
-    window.addEventListener('pointerup', ended, true)
-    window.addEventListener('pointercancel', ended, true)
-    captureFallbacks.set(event.pointerId, drop)
-  }
-}
-
-/** Let a shared range tell this menu when its live DOM must stay under the user's gesture. */
-const protectRange = (input: HTMLInputElement, commit: () => void): void => {
-  const finish = (): void => {
-    commit()
-    setTimeout(() => lastRerender?.(), 0)
-  }
-  input.addEventListener('pointerdown', (event) => beginPointerHold(input, event, finish))
-  for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-    input.addEventListener(ending, (event) =>
-      finishPointerHold(input, (event as PointerEvent).pointerId, finish),
-    )
-  }
-  input.addEventListener('keydown', (event) => {
-    if (MOVES_RANGE.has(event.key)) heldByKey = input
-  })
-  input.addEventListener('keyup', (event) => {
-    if (!MOVES_RANGE.has(event.key) || heldByKey !== input) return
-    heldByKey = null
-    finish()
-  })
-}
-
-const releaseAllHolds = (): void => {
-  for (const drop of [...captureFallbacks.values()]) drop()
-  captureFallbacks.clear()
-  heldPointers.clear()
-  heldByKey = null
-}
-/**
  * An appearance value the user has previewed but not committed, by template then property.
  *
  * Ranges and colour swatches cannot keep in-progress state only in the DOM: every teardown path —
@@ -288,24 +190,16 @@ const releaseAllHolds = (): void => {
  */
 type SliderKey = (typeof APPEARANCE_CONTROLS)[number]['key']
 type DraftKey = keyof Appearance
-type DraftValue = Appearance[DraftKey]
-const drafts = new Map<string, Map<DraftKey, DraftValue>>()
 
 const draftFor = <K extends DraftKey>(id: string, property: K): Appearance[K] | undefined =>
-  drafts.get(id)?.get(property) as Appearance[K] | undefined
+  overlayAppearanceState.draftFor(id, property)
 
 const setDraft = <K extends DraftKey>(id: string, property: K, value: Appearance[K]): void => {
-  const forTemplate = drafts.get(id) ?? new Map<DraftKey, DraftValue>()
-  forTemplate.set(property, value)
-  drafts.set(id, forTemplate)
+  overlayAppearanceState.setDraft(id, property, value)
 }
 
-const clearDraft = (id: string, property: DraftKey): boolean => {
-  const forTemplate = drafts.get(id)
-  if (forTemplate === undefined || !forTemplate.delete(property)) return false
-  if (forTemplate.size === 0) drafts.delete(id)
-  return true
-}
+const clearDraft = (id: string, property: DraftKey): boolean =>
+  overlayAppearanceState.clearDraft(id, property)
 
 /**
  * What the user has asked for but IndexedDB has not acknowledged yet.
@@ -334,8 +228,6 @@ interface Intent<T> {
  * The value is the *updater*, not a resolved object, so two pending colour toggles compose instead
  * of the second discarding the first.
  */
-type Updater = (base: Appearance) => Partial<Appearance>
-const appearanceIntents = new Map<string, Map<string, Map<number, Updater>>>()
 const visibleIntents = new Map<string, Intent<boolean>>()
 let sequence = 0
 
@@ -346,22 +238,6 @@ let sequence = 0
  * names the template as it was then, and a rename landing before the refusal puts the old name in a
  * banner under the new heading.
  */
-const failures = new Map<string, Map<FailureKey, (name: string) => string>>()
-/** Which failures a screen reader has already been told about, so a rebuild does not repeat them. */
-const announced = new Map<string, Set<FailureKey>>()
-/**
- * Per refusal: the test that says its subject has since become what was asked for, and how many
- * times it has been raised (a repeat is a render input of its own).
- *
- * Nested by template rather than keyed `${id}|${key}`. Persisted ids are validated only as non-empty
- * strings, so `a` and `a|b` are both legal — and a flat keyspace sharing its separator with the id
- * domain lets `a`'s expiry pass claim and delete `a|b`'s entries.
- */
-interface Refusal {
-  readonly satisfied: () => boolean
-  attempts: number
-}
-const refusals = new Map<string, Map<FailureKey, Refusal>>()
 /** Templates whose delete question is up, and those whose delete is actually running. */
 const confirming = new Set<string>()
 /** Templates being made visible so they can be placed — one such request at a time each. */
@@ -437,6 +313,12 @@ const removePlacementRails = (): void => {
  * old behaviour: the menu showed 85% while the overlay stayed at 40%, indefinitely.
  */
 let lastRerender: (() => void) | null = null
+const rangeGestures = createRangeGestures()
+const protectRange = (input: HTMLInputElement, commit: () => void): void => {
+  rangeGestures.bind(input, commit, {
+    afterSettle: () => setTimeout(() => lastRerender?.(), 0),
+  })
+}
 
 /**
  * Write out every draft for `id`, because the gesture that would have committed them is over.
@@ -445,14 +327,12 @@ let lastRerender: (() => void) | null = null
  * an element it is about to remove.
  */
 const flushDrafts = (id: string): void => {
-  const forTemplate = drafts.get(id)
   const rerender = lastRerender
-  if (forTemplate === undefined || rerender === null) return
+  if (rerender === null) return
   // Taken and cleared *before* any dispatch. `settle` repaints synchronously, and that repaint can
   // come straight back through a teardown into here — iterating a snapshot while entries are still
   // in the map means the re-entrant call commits one and the outer loop commits it again.
-  const pending = [...forTemplate]
-  drafts.delete(id)
+  const pending = overlayAppearanceState.takeDrafts(id)
   for (const [property, value] of pending) {
     const patch = (): Partial<Appearance> => ({ [property]: value }) as Partial<Appearance>
     const seq = intendAppearance(id, [property], patch)
@@ -573,26 +453,12 @@ const groupForProperty = (property: string): AppearanceGroup =>
       : 'pixels'
 
 const appearanceFor = (id: string): Appearance => {
-  const pending = appearanceIntents.get(id)
-  let composed = storedAppearance(id)
-  if (pending === undefined) return composed
-  // In the order they were asked for, across properties *and* within one. Latest-wins is right for
-  // a setter; the colour updaters are toggles, so replacing red's first click with its second makes
-  // the pair read as one — the menu says hidden while the writes compose back to visible.
-  const ordered = [...pending.values()].flatMap((bySeq) => [...bySeq])
-  ordered.sort(([a], [b]) => a - b)
-  for (const [, updater] of ordered) composed = { ...composed, ...updater(composed) }
-  return composed
+  return overlayAppearanceState.current(id, storedAppearance(id))
 }
 
 /** The latest visible edit, including one whose gesture has not reached durable storage yet. */
-const draftedAppearanceFor = (id: string): Appearance => {
-  let appearance = appearanceFor(id)
-  for (const [property, value] of drafts.get(id) ?? []) {
-    appearance = { ...appearance, [property]: value }
-  }
-  return appearance
-}
+const draftedAppearanceFor = (id: string): Appearance =>
+  overlayAppearanceState.drafted(id, storedAppearance(id))
 
 const visibleFor = (id: string): boolean =>
   visibleIntents.get(id)?.value ?? templateFor(id)?.visible ?? false
@@ -610,27 +476,11 @@ const releaseIntent = <T>(store: Map<string, Intent<T>>, id: string, seq: number
 }
 
 const intendAppearance = (id: string, properties: readonly string[], value: Updater): number => {
-  const seq = ++sequence
-  const pending = appearanceIntents.get(id) ?? new Map<string, Map<number, Updater>>()
-  for (const property of properties) {
-    const bySeq = pending.get(property) ?? new Map<number, Updater>()
-    bySeq.set(seq, value)
-    pending.set(property, bySeq)
-  }
-  appearanceIntents.set(id, pending)
-  return seq
+  return overlayAppearanceState.intend(id, properties, value)
 }
 
 const releaseAppearance = (id: string, properties: readonly string[], seq: number): void => {
-  const pending = appearanceIntents.get(id)
-  if (pending === undefined) return
-  for (const property of properties) {
-    const bySeq = pending.get(property)
-    if (bySeq === undefined) continue
-    bySeq.delete(seq)
-    if (bySeq.size === 0) pending.delete(property)
-  }
-  if (pending.size === 0) appearanceIntents.delete(id)
+  overlayAppearanceState.release(id, properties, seq)
 }
 
 const recordFailure = (
@@ -639,18 +489,7 @@ const recordFailure = (
   message: (name: string) => string,
   satisfied: () => boolean = () => false,
 ): void => {
-  const forTemplate = failures.get(id) ?? new Map<FailureKey, (name: string) => string>()
-  forTemplate.set(key, message)
-  failures.set(id, forTemplate)
-  // Counted here rather than at the one call site that went through `settle`, so a refusal raised
-  // directly — Move's, which never touches the store — is a distinct event too. Identical text with
-  // an unchanged count leaves the signature still, so nothing rebuilds and nothing is announced.
-  const forRefusals = refusals.get(id) ?? new Map<FailureKey, Refusal>()
-  forRefusals.set(key, { satisfied, attempts: (forRefusals.get(key)?.attempts ?? 0) + 1 })
-  refusals.set(id, forRefusals)
-  // Every raise is a distinct event, so it is announced again — a second deliberate attempt that
-  // also fails deserves an answer, and only Move used to get one.
-  announced.get(id)?.delete(key)
+  overlayFailures.record(id, key, message, satisfied)
 }
 
 /**
@@ -662,28 +501,12 @@ const recordFailure = (
  * the tree's checkbox and another tab's reconciliation both write here without passing through us.
  */
 const expireFailures = (id: string): void => {
-  const forTemplate = failures.get(id)
-  const forRefusals = refusals.get(id)
-  if (forTemplate === undefined || forRefusals === undefined) return
-  for (const [key, refusal] of [...forRefusals]) {
-    if (!forTemplate.has(key)) {
-      forRefusals.delete(key)
-      continue
-    }
-    if (refusal.satisfied()) clearFailure(id, key)
-  }
+  overlayFailures.expire(id)
 }
 
 /** Clear only these keys: a successful colour change says nothing about a refused hide or shape. */
 const clearFailure = (id: string, ...keys: readonly FailureKey[]): void => {
-  const forTemplate = failures.get(id)
-  if (forTemplate === undefined) return
-  for (const key of keys) {
-    forTemplate.delete(key)
-    announced.get(id)?.delete(key)
-    refusals.get(id)?.delete(key)
-  }
-  if (forTemplate.size === 0) failures.delete(id)
+  overlayFailures.clear(id, ...keys)
 }
 
 const forget = (id: string): void => {
@@ -693,14 +516,11 @@ const forget = (id: string): void => {
   // its template would fire on a later placement of the same id.
   aborting.delete(id)
   abortAttempts.delete(id)
-  drafts.delete(id)
+  overlayAppearanceState.forget(id)
   clearAppearancePreview(id)
-  refusals.delete(id)
-  appearanceIntents.delete(id)
   visibleIntents.delete(id)
   queues.delete(id)
-  failures.delete(id)
-  announced.delete(id)
+  overlayFailures.forget(id)
   confirming.delete(id)
   deleting.delete(id)
 }
@@ -710,13 +530,10 @@ const remembered = (): Set<string> =>
   new Set([
     ...buttons.keys(),
     ...placementRails.keys(),
-    ...appearanceIntents.keys(),
+    ...overlayAppearanceState.ids(),
     ...visibleIntents.keys(),
     ...queues.keys(),
-    ...failures.keys(),
-    ...announced.keys(),
-    ...refusals.keys(),
-    ...drafts.keys(),
+    ...overlayFailures.ids(),
     ...confirming,
     ...deleting,
   ])
@@ -843,12 +660,7 @@ const menuSignature = (template: PlacedTemplate): string => {
     // opposite of what it will do.
     movingId() === id,
     serverTarget === null ? null : [serverTarget.server.url, serverTarget.published],
-    [...(failures.get(id) ?? [])]
-      .map(
-        ([key, text]) =>
-          `${key}#${refusals.get(id)?.get(key)?.attempts ?? 0}=${text(template.name)}`,
-      )
-      .join(','),
+    overlayFailures.signature(id, template.name),
   ])
 }
 
@@ -957,12 +769,8 @@ const slider = (
     return wrap
   }
 
-  let keyHeld = false
-
   /** End the gesture: commit the draft if there is one, and let the map catch up either way. */
   const settleGesture = (): void => {
-    heldByKey = heldByKey === input ? null : heldByKey
-    keyHeld = false
     const draft = draftFor(id, property)
     if (draft === undefined) {
       // Nothing pending — including a draft just abandoned — so the element goes back to what the
@@ -976,14 +784,6 @@ const slider = (
     onCommit(draft, () => clearAppearancePreview(id, property, draft))
   }
 
-  input.addEventListener('pointerdown', (event) => beginPointerHold(input, event, settleGesture))
-  input.addEventListener('keydown', (event) => {
-    // Tab does not move the thumb, and its `keyup` lands on whatever it moved focus *to*, so
-    // treating every key as held waits for a keyup that never arrives.
-    if (!MOVES_RANGE.has(event.key)) return
-    keyHeld = true
-    heldByKey = input
-  })
   // Every `input` is a live render preview, never a durable write. Persistence still happens once
   // when the gesture ends.
   input.addEventListener('input', () => {
@@ -993,28 +793,7 @@ const slider = (
     readout.textContent = format(next)
     rerender()
   })
-  // The pointer release always ends the gesture, and a `change` after it finds no draft left and
-  // just repaints. Waiting for `change` instead loses a drag that returns to its starting value,
-  // which Chromium fires no `change` for at all.
-  for (const ending of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-    input.addEventListener(ending, (event) => {
-      finishPointerHold(input, (event as PointerEvent).pointerId, settleGesture)
-    })
-  }
-  // Under a held key `change` fires once per repeat, so that path waits for the key to come up.
-  input.addEventListener('change', () => {
-    if (keyHeld) return
-    settleGesture()
-  })
-  input.addEventListener('keyup', (event) => {
-    if (!MOVES_RANGE.has(event.key)) return
-    settleGesture()
-  })
-  input.addEventListener('blur', () => {
-    // Deferred out of the blur. Committing synchronously rebuilds the menu, which removes the very
-    // element the user is mid-click on — the edit lands and the button they pressed never fires.
-    setTimeout(() => settleGesture(), 0)
-  })
+  rangeGestures.bind(input, settleGesture)
 
   return wrap
 }
@@ -1029,23 +808,16 @@ const section = (title: string): HTMLElement => {
 
 /** The refused writes for this template, oldest first, rebuilt from state on every render. */
 const failureBanners = (id: string): HTMLElement[] => {
-  const forTemplate = failures.get(id)
-  if (forTemplate === undefined) return []
   const name = nameFor(id)
-  const seen = announced.get(id) ?? new Set<FailureKey>()
-  announced.set(id, seen)
-  return [...forTemplate].map(([key, message]) => {
+  return overlayFailures.render(id, name).map((failure) => {
     const el = document.createElement('div')
     el.setAttribute('data-caelestis-error', '')
     // A rebuild reconstructs an identical node, and a fresh `role="alert"` is read out again — so
     // an unrelated colour click would re-announce a visibility failure from minutes ago.
-    if (!seen.has(key)) {
-      el.setAttribute('role', 'alert')
-      seen.add(key)
-    }
+    if (failure.announce) el.setAttribute('role', 'alert')
     el.className = 'alert alert-error text-xs'
     Object.assign(el.style, { padding: '0.375rem 0.5rem', marginTop: '0.25rem' })
-    el.textContent = message(name)
+    el.textContent = failure.message
     return el
   })
 }
@@ -1374,7 +1146,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
       // Its own key, so a later visibility change cannot clear this and a visibility failure
       // cannot be overwritten by it. Un-announced first: pressing Move again is a deliberate action
       // and deserves an answer, even though the banner text has not changed.
-      announced.get(id)?.delete('move')
+      overlayFailures.unannounce(id, 'move')
       recordFailure(id, 'move', () => 'Finish the placement already in progress first.')
       rerender()
       return
@@ -1943,7 +1715,7 @@ const closeOverlayMenu = (): void => {
     window.removeEventListener('keydown', escapeListener)
     escapeListener = null
   }
-  releaseAllHolds()
+  rangeGestures.releaseAll()
   // Closed before anything is flushed: settling a draft repaints synchronously, and
   // a menu still claiming to be open is rebuilt by that repaint for an appearance it is about to
   // lose — built, then removed a moment later by the rest of this teardown.
@@ -1974,7 +1746,7 @@ const closeOverlayMenu = (): void => {
  * does own is that the gesture is over — the thing that would have delivered its release is going.
  */
 const endGestures = (): void => {
-  releaseAllHolds()
+  rangeGestures.releaseAll()
   if (openFor !== null) {
     flushDrafts(openFor)
   }
@@ -2031,7 +1803,7 @@ const builtControl = (menu: HTMLElement, key: string): HTMLElement | null => {
 
 /** Retire a Move refusal once the placement it was about has finished. */
 const expireMoveFailure = (id: string): void => {
-  if (!isMoving() && failures.get(id)?.has('move') === true) clearFailure(id, 'move')
+  if (!isMoving() && overlayFailures.has(id, 'move')) clearFailure(id, 'move')
 }
 
 /** Where the overlay's top-right corner sits on screen, or null when none of it is in view. */
@@ -2108,18 +1880,16 @@ const renderControls = (
     return
   }
 
-  // A held control that has left the page will never deliver its release, and
-  // neither teardown path notices, because the menu around it is untouched.
-  for (const [pointerId, slider] of [...heldPointers]) {
-    if (onPage(slider)) continue
-    heldPointers.delete(pointerId)
-    // Only this pointer's own fallback: dropping them all takes the listeners belonging to sliders
-    // that are still connected and still being dragged, so their release would never arrive.
-    captureFallbacks.get(pointerId)?.()
-  }
-  if (heldByKey !== null && !onPage(heldByKey)) heldByKey = null
+  // A held control that left the page cannot deliver its release. Retire only disconnected
+  // controls, so another active pointer keeps its own capture and fallback.
+  rangeGestures.releaseDisconnected(onPage)
   // Only when a gesture's own control has gone.
-  if (openFor !== null && menuNode !== null && !heldWithin(menuNode) && !isColourPickerOpen())
+  if (
+    openFor !== null &&
+    menuNode !== null &&
+    !rangeGestures.isHeldWithin(menuNode) &&
+    !isColourPickerOpen()
+  )
     flushDrafts(openFor)
   // A hide that was already queued elsewhere lands after the placement has started, leaving the
   // user positioning something invisible. The later action wins: the placement is abandoned.
@@ -2255,7 +2025,7 @@ const renderControls = (
       // ordinary way to look at the map while its menu is open, so it must not cost a drag its
       // value — and a rebuild is still refused under a held slider.
       if (openFor === template.id && menuNode !== null) {
-        if (heldWithin(menuNode)) continue
+        if (rangeGestures.isHeldWithin(menuNode)) continue
         endGestures()
         menuNode.remove()
         menuNode = null
@@ -2337,10 +2107,10 @@ const renderControls = (
     // The owner changing settles the previous owner's gestures whether or not a slider was held: a
     // touch browser need not focus a button, so switching menus can produce no blur at all.
     if (previousOwner !== null && previousOwner !== template.id) {
-      releaseAllHolds()
+      rangeGestures.releaseAll()
       flushDrafts(previousOwner)
-    } else if (stale && heldWithin(menuNode)) {
-      releaseAllHolds()
+    } else if (stale && rangeGestures.isHeldWithin(menuNode)) {
+      rangeGestures.releaseAll()
       flushDrafts(template.id)
     }
     const dragging =
@@ -2349,7 +2119,7 @@ const renderControls = (
       // *Any* of them: two pointers can be down at once on a touch device, and rebuilding when the
       // first is released takes the second one's element away mid-gesture. The picker lives outside
       // the menu, but its anchor is inside it and must remain attached for the same duration.
-      (heldWithin(menuNode) || isColourPickerOpen())
+      (rangeGestures.isHeldWithin(menuNode) || isColourPickerOpen())
     if (!dragging && (stale || menuNode?.dataset.caelestisSignature !== signature)) {
       // Rebuilt from state, never patched, and never carrying a node over: the menu's structure
       // depends on what it draws, and anything kept in the old element is either lost or — worse —

@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_TREE_NODES } from '../server-manifest.js'
 import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState } from '../state.js'
+import { treeContents } from './tree.js'
 import {
   acceptServerSnapshot,
   forgetServerRows,
   nodeTreeKey,
   refreshServerSnapshot,
   serverTemplateAt,
-  treeContents,
-} from './tree.js'
+} from './tree-server-state.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
