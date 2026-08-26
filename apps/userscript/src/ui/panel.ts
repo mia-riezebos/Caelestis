@@ -3,9 +3,8 @@ import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn }
 import { redraw, viewportCentre } from '../main.js'
 import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
 import { isProfileEnabled, setProfileEnabled } from '../profile.js'
-import { forgetServer, type ServerTemplate } from '../server-cache.js'
+import { forgetServer } from '../server-cache.js'
 import {
-  admittedServerContentsFor,
   type ConnectedServer,
   cancelServerProbe,
   canonicalServerUrl,
@@ -19,7 +18,6 @@ import {
   getState,
   installServerConnectionRetry,
   isCurrentServerConnection,
-  listServerContents,
   listServerNodes,
   loadState,
   MAX_CONNECTED_SERVERS,
@@ -39,7 +37,6 @@ import {
   renameServer as renameServerOnServer,
   type ServerNodesResult,
   setState,
-  uploadTemplate,
   uploadTemplateVersion,
   upsertServer,
 } from '../state.js'
@@ -50,13 +47,10 @@ import {
   addLocalTemplate,
   localTemplates as allLocal,
   canCopyAsLocalTemplate,
-  copyAsLocalTemplate,
   forgetServerTemplates,
   isCurrentTemplate,
-  leaseLocalTemplate,
   localTemplates,
   onLocalChange,
-  type PlacedTemplate,
   previewOriginFor,
   removeLocalTemplate,
   renameLocalTemplate,
@@ -89,8 +83,11 @@ import { progressChangesCanReorder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID, toast } from './toast.js'
 import {
+  cancelDestinationAdmissions,
+  copyLocalTemplateToServer,
   type Destination,
-  type DestinationAdmission,
+  moveServerTemplateToLocal,
+  moveServerTemplateToServer,
   type Source,
   transplant,
 } from './transplant.js'
@@ -548,61 +545,6 @@ const expandedServers = new Set<string>()
  */
 const autoExpanded = new Set<string>()
 const disconnectingServerUrls = new Set<string>()
-
-const destinationAdmissionControllers = new Map<string, Set<AbortController>>()
-
-const cancelDestinationAdmissions = (serverUrl: string): void => {
-  const controllers = destinationAdmissionControllers.get(serverUrl)
-  if (controllers === undefined) return
-  for (const controller of controllers) controller.abort(new Error('destination disconnected'))
-  destinationAdmissionControllers.delete(serverUrl)
-}
-
-const destinationIsAdmitted = async (
-  server: ConnectedServer,
-  expected: DestinationAdmission,
-): Promise<boolean> => {
-  const controller = new AbortController()
-  const controllers = destinationAdmissionControllers.get(server.url) ?? new Set<AbortController>()
-  controllers.add(controller)
-  destinationAdmissionControllers.set(server.url, controllers)
-  try {
-    if ((await listServerContents(server, controller.signal)) === null) return false
-    const admitted = admittedServerContentsFor(server)
-    if (admitted === null) return false
-    const nodes = new Map(admitted.nodes.map((node) => [node.id, node]))
-    for (const expectedNode of expected.nodes) {
-      const node = nodes.get(expectedNode.id)
-      if (
-        node === undefined ||
-        node.parentId !== expectedNode.parentId ||
-        node.path !== expectedNode.path ||
-        node.name !== expectedNode.name ||
-        node.description !== expectedNode.description ||
-        node.createdAt !== expectedNode.createdAt
-      )
-        return false
-    }
-    const templates = new Map(admitted.templates.map((template) => [template.id, template]))
-    for (const expectedTemplate of expected.templates) {
-      const template = templates.get(expectedTemplate.id)
-      if (
-        template === undefined ||
-        template.nodeId !== expectedTemplate.nodeId ||
-        template.name !== expectedTemplate.name ||
-        template.version !== expectedTemplate.version ||
-        template.published !== expectedTemplate.published
-      )
-        return false
-    }
-    return true
-  } finally {
-    controllers.delete(controller)
-    if (controllers.size === 0 && destinationAdmissionControllers.get(server.url) === controllers) {
-      destinationAdmissionControllers.delete(server.url)
-    }
-  }
-}
 
 const hasSingleKeySegmentAfter = (key: string, prefix: string): boolean => {
   if (!key.startsWith(prefix)) return false
@@ -1572,16 +1514,10 @@ const moveBranch = async (
     destination,
     (server, nodeId) => templatesOfNode(server.url, nodeId),
     (server) => templatesForServer(server.url),
-    destinationIsAdmitted,
+    (server) => refreshCurrentNodes(server, rerender, true),
   )
   if (result.ok) toast(result.message)
   else toast(result.message, 'error')
-  await Promise.all([
-    sourceServer === null ? undefined : refreshCurrentNodes(sourceServer, rerender, true),
-    destination.kind === 'local'
-      ? undefined
-      : refreshCurrentNodes(destination.server, rerender, true),
-  ])
   rerender()
   if (!result.ok || result.destinationRootId === undefined) return null
   return destination.kind === 'server'
@@ -1595,14 +1531,6 @@ const moveBranch = async (
  * The pixels come from the copy already drawn, so nothing is downloaded twice — and if it has not
  * finished arriving there is nothing to move yet, which is worth saying rather than half-doing.
  */
-const sameServerTemplateRevision = (left: ServerTemplate, right: ServerTemplate): boolean =>
-  left.id === right.id &&
-  left.nodeId === right.nodeId &&
-  left.name === right.name &&
-  left.version === right.version &&
-  left.published === right.published &&
-  left.updatedAt === right.updatedAt
-
 const copyServerTemplateToLocal = async (
   templateKey: string,
   folderId: string | null,
@@ -1634,63 +1562,17 @@ const copyServerTemplateToLocal = async (
   })
   if (!confirmed) return null
 
-  if (!stillConnected(source)) {
-    toast('That server connection changed before the move began.', 'warning')
-    return null
-  }
-  const currentSourceTemplate = serverTemplateAt(source.url, templateId)
-  if (currentSourceTemplate === null || drawn.serverVersion !== currentSourceTemplate.version) {
-    toast('That template has not finished loading its current version yet.', 'warning')
-    return null
-  }
-
-  let copied: PlacedTemplate
-  try {
-    copied = await copyAsLocalTemplate(
-      drawn,
-      `local-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
-    )
-  } catch (error) {
-    toast(
-      `Could not copy “${currentSourceTemplate.name}” into Local: ${error instanceof Error ? error.message : String(error)}`,
-      'error',
-    )
-    rerender()
-    return null
-  }
-  if (!(await setTemplateFolder(copied.id, folderId))) {
-    toast('Copied into Local, but could not put it in that folder.', 'error')
-    rerender()
-    return null
-  }
-  const releaseCopied = leaseLocalTemplate(copied.id)
-  if (releaseCopied === null) {
-    toast('Copied into Local, but could not keep the new copy for the move.', 'error')
-    rerender()
-    return null
-  }
-  const latestSourceTemplate = serverTemplateAt(source.url, templateId)
-  if (
-    latestSourceTemplate === null ||
-    !sameServerTemplateRevision(currentSourceTemplate, latestSourceTemplate)
-  ) {
-    releaseCopied()
-    toast('Copied into Local, but the source changed and was kept.', 'warning')
-    rerender()
-    return `local:${copied.id}`
-  }
-  if (!stillConnected(source)) {
-    releaseCopied()
-    toast('Copied into Local, but the source connection changed and was kept.', 'warning')
-    rerender()
-    return `local:${copied.id}`
-  }
-  const removed = await deleteTemplateOnServer(source, templateId).finally(releaseCopied)
-  if (!removed.ok) toast(`Copied into Local, but ${removed.message}`, 'error')
-  else toast(`Moved “${found.template.name}” into Local.`)
-  await refreshCurrentNodes(source, rerender, true)
+  const result = await moveServerTemplateToLocal(
+    source,
+    found.template,
+    drawn,
+    folderId,
+    (server, id) => serverTemplateAt(server.url, id),
+    (server) => refreshCurrentNodes(server, rerender, true),
+  )
+  toast(result.message, result.tone === 'success' ? undefined : result.tone)
   rerender()
-  return `local:${copied.id}`
+  return result.destinationId === undefined ? null : `local:${result.destinationId}`
 }
 
 const dropOnServerNode = async (
@@ -1720,29 +1602,15 @@ const dropOnServerNode = async (
       toast(`Finish placing “${local.name}” before copying it.`, 'warning')
       return null
     }
-    const png = await templateAsPng(local)
-    if (png === null) {
-      toast('Could not encode that template.', 'error')
-      return null
-    }
-    if (!isCurrentTemplate(local) || movingId() === local.id) {
-      toast(`“${local.name}” changed while it was being encoded — try again.`, 'warning')
-      return null
-    }
-    if (!stillConnected(server)) {
-      toast('That destination server was disconnected or replaced.', 'warning')
-      return null
-    }
-    const result = await uploadTemplate(server, {
+    const result = await copyLocalTemplateToServer(
+      local,
+      server,
       nodeId,
-      name: local.name,
-      originX: local.originX,
-      originY: local.originY,
-      png,
-    })
+      (connected) => refreshCurrentNodes(connected, rerender, true),
+      { reconcile: 'always' },
+    )
     if (result.ok) toast(`Uploaded “${local.name}” to ${server.info?.name ?? server.url}.`)
     else toast(result.message, 'error')
-    await refreshCurrentNodes(server, rerender, true)
     return result.ok ? serverTemplateTreeKey(server, result.id) : null
   }
 
@@ -1781,145 +1649,28 @@ const dropOnServerNode = async (
   })
   if (!confirmed) return null
 
-  if (!stillConnected(source) || !stillConnected(server)) {
-    toast('A server connection changed before the move began.', 'warning')
-    return null
-  }
-
   // The pixels come from the copy already on the canvas, which is the assembled result of that
   // server's own chunks — so a cross-server move needs no second download.
-  const currentSourceTemplate = serverTemplateAt(source.url, templateId)
   const drawn = allLocal().find(
     (candidate) => candidate.id === serverTemplateKey(found.serverUrl, templateId),
   )
-  if (
-    currentSourceTemplate === null ||
-    drawn === undefined ||
-    drawn.serverVersion !== currentSourceTemplate.version
-  ) {
+  if (drawn === undefined) {
     toast('That template has not finished loading yet — try again in a moment.', 'warning')
     return null
   }
-  const png = await templateAsPng(drawn)
-  if (png === null) {
-    toast('Could not encode that template.', 'error')
-    return null
-  }
-
-  const readySourceTemplate = serverTemplateAt(source.url, templateId)
-  if (
-    readySourceTemplate === null ||
-    !sameServerTemplateRevision(currentSourceTemplate, readySourceTemplate)
-  ) {
-    toast('That template changed while it was being prepared.', 'warning')
-    return null
-  }
-  if (!stillConnected(source) || !stillConnected(server)) {
-    toast('A server connection changed while the template was being prepared.', 'warning')
-    return null
-  }
-
-  const uploaded = await uploadTemplate(server, {
+  const result = await moveServerTemplateToServer(
+    source,
+    server,
     nodeId,
-    name: readySourceTemplate.name,
-    originX: drawn.originX,
-    originY: drawn.originY,
-    png,
-  })
-  if (!uploaded.ok) {
-    toast(uploaded.message, 'error')
-    await refreshCurrentNodes(server, rerender, true)
-    return null
-  }
-  if (!stillConnected(source) || !stillConnected(server)) {
-    toast(
-      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
-      'warning',
-    )
-    await refreshCurrentNodes(server, rerender, true)
-    return serverTemplateTreeKey(server, uploaded.id)
-  }
-  const sourceBeforePublish = serverTemplateAt(source.url, templateId)
-  if (
-    sourceBeforePublish === null ||
-    !sameServerTemplateRevision(readySourceTemplate, sourceBeforePublish)
-  ) {
-    toast(
-      `Copied to ${destinationName} as a draft, but the source changed and was kept.`,
-      'warning',
-    )
-    await refreshCurrentNodes(server, rerender, true)
-    return serverTemplateTreeKey(server, uploaded.id)
-  }
-  if (sourceBeforePublish.published) {
-    const published = await patchTemplate(server, uploaded.id, {
-      published: true,
-    })
-    if (!published.ok) {
-      toast(
-        `Copied to ${destinationName} as a draft, but could not publish it; the source was kept.`,
-        'error',
-      )
-      await refreshCurrentNodes(server, rerender, true)
-      return serverTemplateTreeKey(server, uploaded.id)
-    }
-  }
-  if (!stillConnected(source) || !stillConnected(server)) {
-    toast(
-      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
-      'warning',
-    )
-    await refreshCurrentNodes(server, rerender, true)
-    return serverTemplateTreeKey(server, uploaded.id)
-  }
-  if (
-    !(await destinationIsAdmitted(server, {
-      nodes: [],
-      templates: [
-        {
-          id: uploaded.id,
-          nodeId,
-          name: readySourceTemplate.name,
-          version: uploaded.version,
-          published: sourceBeforePublish.published,
-        },
-      ],
-    }))
-  ) {
-    toast(
-      `Copied to ${destinationName}, but its destination could not be admitted; the source was kept.`,
-      'warning',
-    )
-    await refreshCurrentNodes(server, rerender, true)
-    return serverTemplateTreeKey(server, uploaded.id)
-  }
-  if (!stillConnected(source) || !stillConnected(server)) {
-    toast(
-      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
-      'warning',
-    )
-    return serverTemplateTreeKey(server, uploaded.id)
-  }
-  const latestSourceTemplate = serverTemplateAt(source.url, templateId)
-  if (
-    latestSourceTemplate === null ||
-    !sameServerTemplateRevision(sourceBeforePublish, latestSourceTemplate)
-  ) {
-    toast(`Copied to ${destinationName}, but the source changed and was kept.`, 'warning')
-    await refreshCurrentNodes(server, rerender, true)
-    return serverTemplateTreeKey(server, uploaded.id)
-  }
-  const removed = await deleteTemplateOnServer(source, templateId)
-  if (!removed.ok) {
-    toast(`Copied to ${destinationName}, but could not remove it from ${sourceName}.`, 'error')
-  } else {
-    toast(`Moved “${found.template.name}” to ${destinationName}.`)
-  }
-  await Promise.all([
-    refreshCurrentNodes(source, rerender, true),
-    refreshCurrentNodes(server, rerender, true),
-  ])
-  return serverTemplateTreeKey(server, uploaded.id)
+    found.template,
+    drawn,
+    (connected, id) => serverTemplateAt(connected.url, id),
+    (connected) => refreshCurrentNodes(connected, rerender, true),
+  )
+  toast(result.message, result.tone === 'success' ? undefined : result.tone)
+  return result.destinationId === undefined
+    ? null
+    : serverTemplateTreeKey(server, result.destinationId)
 }
 
 /** Whether the row's template is published, read from the copy the row itself was drawn from. */
@@ -2465,39 +2216,28 @@ const copyToServer = async (
       go,
       async () => {
         label.textContent = 'Encoding…'
-        const png = await templateAsPng(current)
-        if (png === null) {
-          toast('Could not encode that template.', 'error')
-          box.remove()
-          return
-        }
-        if (!isCurrentTemplate(current) || movingId() === current.id) {
-          toast(`“${current.name}” changed while it was being encoded — try again.`, 'warning')
-          return
-        }
-        // The dialog may have been replaced or its panel closed while encoding. Only the exact
-        // still-visible operation is allowed to cross the upload boundary.
-        if (cancelled || !box.isConnected) return
-        if (!stillConnected(server)) {
-          toast('That destination server was disconnected or replaced.', 'warning')
-          return
-        }
-        cancel.disabled = true
-        cancel.classList.add('btn-disabled')
-        label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-        const result = await uploadTemplate(server, {
+        const result = await copyLocalTemplateToServer(
+          current,
+          server,
           nodeId,
-          name: current.name,
-          originX: current.originX,
-          originY: current.originY,
-          png,
-        })
+          (connected) => refreshCurrentNodes(connected, rerender, true),
+          {
+            reconcile: 'ambiguous',
+            beforeUpload: (png) => {
+              // The dialog may have been replaced or its panel closed while encoding. Only the
+              // exact still-visible operation is allowed to cross the upload boundary.
+              if (cancelled || !box.isConnected) return false
+              cancel.disabled = true
+              cancel.classList.add('btn-disabled')
+              label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
+              return true
+            },
+          },
+        )
+        if (!result.ok && result.cancelled === true) return
         box.remove()
         if (result.ok) toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
         else toast(result.message, 'error')
-        const reconciliation = refreshCurrentNodes(server, rerender, true)
-        if (!result.ok && result.ambiguous === true) await reconciliation
-        else void reconciliation
       },
       `template:copy:${templateId}`,
     )

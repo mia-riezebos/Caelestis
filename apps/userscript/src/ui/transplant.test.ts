@@ -1,7 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PlacedTemplate } from '../templates/local-store.js'
 
 const state = vi.hoisted(() => ({
   addLocalFolders: vi.fn(() => true),
+  admittedServerContentsFor: vi.fn(() => ({
+    nodes: [{ id: 'remote-root' }],
+    templates: [
+      {
+        id: 'remote-template',
+        nodeId: 'remote-root',
+        name: 'Template',
+        version: '',
+        published: false,
+      },
+    ],
+  })),
   createNode: vi.fn(),
   deleteNode: vi.fn(),
   deleteTemplate: vi.fn(),
@@ -12,6 +25,7 @@ const state = vi.hoisted(() => ({
   ),
   isCurrentServerConnection: vi.fn(() => true),
   leaseLocalFolder: vi.fn(() => vi.fn()),
+  listServerContents: vi.fn(async () => ({ nodes: [], templates: [] })),
   listServerNodes: vi.fn(),
   nextLocalFolderId: vi.fn(() => 'local-folder'),
   patchTemplate: vi.fn(),
@@ -39,6 +53,20 @@ vi.mock('../debug.js', () => ({ warn: vi.fn() }))
 
 beforeEach(() => {
   vi.clearAllMocks()
+  state.admittedServerContentsFor.mockReturnValue({
+    nodes: [{ id: 'remote-root' }],
+    templates: [
+      {
+        id: 'remote-template',
+        nodeId: 'remote-root',
+        name: 'Template',
+        version: '',
+        published: false,
+      },
+    ],
+  })
+  state.listServerContents.mockResolvedValue({ nodes: [], templates: [] })
+  state.isCurrentServerConnection.mockReturnValue(true)
   state.getState.mockReturnValue({ localFolders: [] })
   state.leaseLocalFolder.mockReturnValue(vi.fn())
   state.addLocalFolders.mockReturnValue(true)
@@ -390,7 +418,7 @@ describe('branch transplant', () => {
     store.localTemplates.mockReturnValue([source])
     store.templateAsPng.mockResolvedValue(new Blob(['png']))
     state.createNode.mockResolvedValue({ ok: true, node: { id: 'remote-root' } })
-    state.uploadTemplate.mockResolvedValue({ ok: true, id: 'remote-template' })
+    state.uploadTemplate.mockResolvedValue({ ok: true, id: 'remote-template', version: '' })
     store.isCurrentTemplate.mockReturnValueOnce(true).mockReturnValueOnce(false)
     const { transplant } = await import('./transplant.js')
 
@@ -427,7 +455,7 @@ describe('branch transplant', () => {
     store.localTemplates.mockReturnValueOnce([source]).mockReturnValueOnce([late])
     store.templateAsPng.mockResolvedValue(new Blob(['png']))
     state.createNode.mockResolvedValue({ ok: true, node: { id: 'remote-root' } })
-    state.uploadTemplate.mockResolvedValue({ ok: true, id: 'remote-template' })
+    state.uploadTemplate.mockResolvedValue({ ok: true, id: 'remote-template', version: '' })
     store.removeLocalTemplate.mockResolvedValue(true)
     const { transplant } = await import('./transplant.js')
 
@@ -468,7 +496,7 @@ describe('branch transplant', () => {
           finishEncoding = resolve
         }),
     )
-    state.uploadTemplate.mockResolvedValue({ ok: true, id: 'remote-template' })
+    state.uploadTemplate.mockResolvedValue({ ok: true, id: 'remote-template', version: '' })
     store.removeLocalTemplate.mockResolvedValue(true)
     const { transplant } = await import('./transplant.js')
     const input = { kind: 'local' as const, folderId: 'root' }
@@ -484,5 +512,133 @@ describe('branch transplant', () => {
     )
     finishEncoding(new Blob(['png']))
     await expect(first).resolves.toEqual(expect.objectContaining({ ok: true }))
+  })
+})
+
+describe('template transfer transactions', () => {
+  const server = (url: string) => ({
+    url,
+    info: { id: url, name: url, auth: 'none' as const },
+    token: null,
+    status: 'connected' as const,
+    isAdmin: true,
+    season: 0,
+  })
+  const published = {
+    id: 'source-template',
+    nodeId: 'source-folder',
+    name: 'Template',
+    version: 'version-1',
+    published: true,
+    updatedAt: 1,
+  }
+  const drawn = {
+    id: 'drawn-template',
+    name: 'Template',
+    originX: 10,
+    originY: 20,
+    serverVersion: 'version-1',
+  } as unknown as PlacedTemplate
+
+  it('owns Local encoding, currentness, upload, and reconciliation', async () => {
+    const local = { ...drawn, id: 'local-template' }
+    store.templateAsPng.mockResolvedValue(new Blob(['png']))
+    state.uploadTemplate.mockResolvedValue({
+      ok: true,
+      id: 'remote-template',
+      version: 'version-2',
+    })
+    const reconcile = vi.fn(async () => undefined)
+    const { copyLocalTemplateToServer } = await import('./transplant.js')
+
+    await expect(
+      copyLocalTemplateToServer(local, server('https://destination.test'), null, reconcile, {
+        reconcile: 'always',
+      }),
+    ).resolves.toEqual({ ok: true, id: 'remote-template', version: 'version-2' })
+    expect(state.uploadTemplate).toHaveBeenCalledOnce()
+    expect(reconcile).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a changed server source after creating and leasing its Local copy', async () => {
+    const release = vi.fn()
+    const copied = { id: 'local-copy', name: 'Template' }
+    store.copyAsLocalTemplate.mockResolvedValue(copied)
+    store.setTemplateFolder.mockResolvedValue(true)
+    store.leaseLocalTemplate.mockReturnValue(release)
+    const current = vi
+      .fn()
+      .mockReturnValueOnce(published)
+      .mockReturnValueOnce({ ...published, updatedAt: 2 })
+    const { moveServerTemplateToLocal } = await import('./transplant.js')
+
+    await expect(
+      moveServerTemplateToLocal(
+        server('https://source.test'),
+        published,
+        drawn,
+        null,
+        current,
+        vi.fn(async () => undefined),
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        destinationId: 'local-copy',
+        message: expect.stringContaining('source changed and was kept'),
+      }),
+    )
+    expect(state.deleteTemplate).not.toHaveBeenCalled()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('verifies the destination admission before deleting a cross-server source', async () => {
+    const source = server('https://source.test')
+    const destination = server('https://destination.test')
+    store.templateAsPng.mockResolvedValue(new Blob(['png']))
+    state.uploadTemplate.mockResolvedValue({
+      ok: true,
+      id: 'remote-template',
+      version: 'version-2',
+    })
+    state.patchTemplate.mockResolvedValue({ ok: true })
+    state.deleteTemplate.mockResolvedValue({ ok: true })
+    state.admittedServerContentsFor.mockReturnValue({
+      nodes: [],
+      templates: [
+        {
+          id: 'remote-template',
+          nodeId: 'destination-folder',
+          name: 'Template',
+          version: 'version-2',
+          published: true,
+        },
+      ],
+    })
+    const reconcile = vi.fn(async () => undefined)
+    const { moveServerTemplateToServer } = await import('./transplant.js')
+
+    await expect(
+      moveServerTemplateToServer(
+        source,
+        destination,
+        'destination-folder',
+        published,
+        drawn,
+        () => published,
+        reconcile,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: true,
+        destinationId: 'remote-template',
+        message: expect.stringContaining('Moved'),
+      }),
+    )
+    expect(state.admittedServerContentsFor.mock.invocationCallOrder[0]).toBeLessThan(
+      state.deleteTemplate.mock.invocationCallOrder[0] as number,
+    )
+    expect(reconcile).toHaveBeenCalledWith(source)
+    expect(reconcile).toHaveBeenCalledWith(destination)
   })
 })
