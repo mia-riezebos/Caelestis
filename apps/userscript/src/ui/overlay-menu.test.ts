@@ -79,6 +79,7 @@ vi.mock('../state.js', () => ({
   admittedServerContentsFor: () => ({ nodes: [], templates: harness.serverTemplates }),
   deleteTemplate: harness.deleteServerTemplate,
   getState: () => ({
+    appearance: DEFAULT_APPEARANCE,
     hiddenColours: [],
     onlySelectedColour: false,
     servers: harness.servers,
@@ -1290,6 +1291,27 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     rerender()
 
     expect(Number((byKey('size') as HTMLInputElement).value)).toBe(DEFAULT_APPEARANCE.size)
+  })
+
+  it('resets one owned slider to the value inherited from settings', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { size: 0.8 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const input = byKey('size') as HTMLInputElement
+    const reset = input
+      .closest('label')
+      ?.querySelector<HTMLButtonElement>('.caelestis-slider-reset')
+    expect(reset?.hidden).toBe(false)
+    reset?.click()
+
+    await vi.waitFor(() =>
+      expect(harness.setAppearance).toHaveBeenCalledWith(
+        'a',
+        expect.objectContaining({ size: DEFAULT_APPEARANCE.size }),
+      ),
+    )
   })
 })
 

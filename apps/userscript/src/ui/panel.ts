@@ -23,7 +23,7 @@ import {
   upsertServer,
 } from '../state.js'
 import { onServerStatusChange } from '../telemetry.js'
-import { APPEARANCE_CONTROLS } from '../templates/appearance.js'
+import { APPEARANCE_CONTROLS, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
 import { onMismatchesChanged } from '../templates/mismatch.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
@@ -42,6 +42,7 @@ import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
 import { refreshProgressIndicators } from './progress.js'
 import { createRangeGestures } from './range-gestures.js'
+import { sliderRow } from './slider.js'
 import { progressChangesCanReorder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID, toast } from './toast.js'
@@ -711,52 +712,44 @@ const appearanceView = (): HTMLElement => {
   const sliders = document.createElement('div')
   sliders.className = 'px-3 pb-2'
   for (const control of APPEARANCE_CONTROLS) {
-    const row = document.createElement('label')
-    row.className = 'flex items-center gap-3 py-1'
-    const name = document.createElement('span')
-    name.className = 'text-sm'
-    name.style.width = '5rem'
-    name.style.flex = '0 0 auto'
-    name.textContent = control.label
-    const input = document.createElement('input')
-    input.type = 'range'
-    input.className = 'range range-xs'
-    input.min = String(control.min)
-    input.max = String(control.max)
-    input.step = String(control.step)
-    input.value = String(state.appearance[control.key])
-    input.style.flex = '1'
-    input.style.minWidth = '0'
-    const readout = document.createElement('span')
-    readout.className = 'text-xs opacity-60'
-    readout.style.width = '2.75rem'
-    readout.style.flex = '0 0 auto'
-    readout.style.textAlign = 'right'
-    readout.textContent = control.format(state.appearance[control.key])
     let dirty = false
+    let row: ReturnType<typeof sliderRow>
     const commit = (): void => {
       if (!dirty) return
       dirty = false
-      const next = Number(input.value)
+      const next = Number(row.input.value)
       // Read the live value rather than the one captured when this row was built, so dragging one
       // slider cannot revert another.
       setState({
         appearance: { ...getState().appearance, [control.key]: next },
       })
     }
-    input.addEventListener('input', () => {
-      dirty = true
-      const next = Number(input.value)
-      readout.textContent = control.format(next)
-      previewGlobalAppearance({
-        ...getState().appearance,
-        [control.key]: next,
-      })
-      redraw()
+    row = sliderRow({
+      label: control.label,
+      value: state.appearance[control.key],
+      defaultValue: DEFAULT_APPEARANCE[control.key],
+      min: control.min,
+      max: control.max,
+      step: control.step,
+      format: control.format,
+      onInput: (next) => {
+        dirty = true
+        previewGlobalAppearance({
+          ...getState().appearance,
+          [control.key]: next,
+        })
+        redraw()
+      },
+      onReset: (next) => {
+        dirty = false
+        setState({ appearance: { ...getState().appearance, [control.key]: next } })
+        previewGlobalAppearance(getState().appearance)
+        redraw()
+        rerender()
+      },
     })
-    rangeGestures.bind(input, commit)
-    row.append(name, input, readout)
-    sliders.appendChild(row)
+    rangeGestures.bind(row.input, commit)
+    sliders.appendChild(row.element)
   }
   view.appendChild(sliders)
 
