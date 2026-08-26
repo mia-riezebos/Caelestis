@@ -2085,16 +2085,17 @@ const copyToServer = async (
       toast(`Finish placing “${template.name}” before copying it.`, 'warning')
       return
     }
-    // Read fresh: this dialog has been open while the map was in use.
-    const current = templateById(templateId)
-    if (current === undefined) {
-      toast(`“${template.name}” is no longer here.`, 'error')
-      box.remove()
-      return
-    }
     void whileBusy(
       go,
       async () => {
+        // Reacquire inside each executed attempt. The source can change during encoding, and the
+        // retry click must not close over the snapshot that just failed the currentness check.
+        const current = templateById(templateId)
+        if (current === undefined) {
+          toast(`“${template.name}” is no longer here.`, 'error')
+          box.remove()
+          return
+        }
         label.textContent = 'Encoding…'
         const result = await copyLocalTemplateToServer(
           current,
