@@ -1,5 +1,6 @@
 import {
   addLocalFolders,
+  admittedServerContentsFor,
   type ConnectedServer,
   createNode,
   deleteNode as deleteNodeOnServer,
@@ -8,6 +9,7 @@ import {
   isCurrentServerConnection,
   type LocalFolder,
   leaseLocalFolder,
+  listServerContents,
   listServerNodes,
   MAX_LOCAL_FOLDERS,
   nextLocalFolderId,
@@ -54,7 +56,7 @@ export type Source =
   | { readonly kind: 'server'; readonly server: ConnectedServer; readonly nodeId: string }
   | { readonly kind: 'local'; readonly folderId: string }
 
-export interface DestinationAdmission {
+interface DestinationAdmission {
   readonly nodes: readonly TreeNode[]
   readonly templates: ReadonlyArray<{
     readonly id: string
@@ -63,6 +65,61 @@ export interface DestinationAdmission {
     readonly version: string
     readonly published: boolean
   }>
+}
+
+const destinationAdmissionControllers = new Map<string, Set<AbortController>>()
+
+export const cancelDestinationAdmissions = (serverUrl: string): void => {
+  const controllers = destinationAdmissionControllers.get(serverUrl)
+  if (controllers === undefined) return
+  for (const controller of controllers) controller.abort(new Error('destination disconnected'))
+  destinationAdmissionControllers.delete(serverUrl)
+}
+
+const destinationIsAdmitted = async (
+  server: ConnectedServer,
+  expected: DestinationAdmission,
+): Promise<boolean> => {
+  const controller = new AbortController()
+  const controllers = destinationAdmissionControllers.get(server.url) ?? new Set<AbortController>()
+  controllers.add(controller)
+  destinationAdmissionControllers.set(server.url, controllers)
+  try {
+    if ((await listServerContents(server, controller.signal)) === null) return false
+    const admitted = admittedServerContentsFor(server)
+    if (admitted === null) return false
+    const nodes = new Map(admitted.nodes.map((node) => [node.id, node]))
+    for (const expectedNode of expected.nodes) {
+      const node = nodes.get(expectedNode.id)
+      if (
+        node === undefined ||
+        node.parentId !== expectedNode.parentId ||
+        node.path !== expectedNode.path ||
+        node.name !== expectedNode.name ||
+        node.description !== expectedNode.description ||
+        node.createdAt !== expectedNode.createdAt
+      )
+        return false
+    }
+    const templates = new Map(admitted.templates.map((template) => [template.id, template]))
+    for (const expectedTemplate of expected.templates) {
+      const template = templates.get(expectedTemplate.id)
+      if (
+        template === undefined ||
+        template.nodeId !== expectedTemplate.nodeId ||
+        template.name !== expectedTemplate.name ||
+        template.version !== expectedTemplate.version ||
+        template.published !== expectedTemplate.published
+      )
+        return false
+    }
+    return true
+  } finally {
+    controllers.delete(controller)
+    if (controllers.size === 0 && destinationAdmissionControllers.get(server.url) === controllers) {
+      destinationAdmissionControllers.delete(server.url)
+    }
+  }
 }
 
 export interface TransplantResult {
@@ -130,6 +187,339 @@ const drawnFor = (
       candidate.id === serverTemplateKey(serverUrl, template.id) &&
       candidate.serverVersion === template.version,
   )
+
+export interface TemplateTransferResult {
+  readonly ok: boolean
+  readonly message: string
+  readonly tone: 'success' | 'warning' | 'error'
+  /** Present once a destination copy exists, even if source cleanup was refused. */
+  readonly destinationId?: string
+}
+
+export type LocalTemplateCopyResult =
+  | { readonly ok: true; readonly id: string; readonly version: string }
+  | {
+      readonly ok: false
+      readonly message: string
+      readonly ambiguous?: true
+      readonly cancelled?: true
+      readonly missing?: true
+      readonly retryable?: true
+    }
+
+type CurrentServerTemplate = (
+  server: ConnectedServer,
+  templateId: string,
+) => LocatedPublishedTemplate | null
+
+type ReconcileServer = (server: ConnectedServer) => Promise<void>
+
+/** Encode and upload one Local template while its placement and destination stay current. */
+export const copyLocalTemplateToServer = async (
+  template: PlacedTemplate,
+  destination: ConnectedServer,
+  nodeId: string | null,
+  reconcileServer: ReconcileServer,
+  options: {
+    readonly beforeUpload?: (png: Blob) => boolean
+  },
+): Promise<LocalTemplateCopyResult> => {
+  const png = await templateAsPng(template)
+  if (png === null) return { ok: false, message: 'Could not encode that template.' }
+  if (!isCurrentTemplate(template) || movingId() === template.id) {
+    return {
+      ok: false,
+      message: `“${template.name}” changed while it was being encoded — try again.`,
+      retryable: true,
+    }
+  }
+  if (options.beforeUpload?.(png) === false) {
+    return { ok: false, message: '', cancelled: true }
+  }
+  if (!isCurrentServerConnection(destination)) {
+    return {
+      ok: false,
+      message: 'That destination server was disconnected or replaced.',
+    }
+  }
+  const uploaded = await uploadTemplate(destination, {
+    nodeId,
+    name: template.name,
+    originX: template.originX,
+    originY: template.originY,
+    png,
+  })
+  // The write result is useful immediately. Reconciliation still belongs to this transaction, but
+  // a slow manifest must not keep a completed upload looking stuck behind its 120-second timeout.
+  void reconcileServer(destination)
+  return uploaded
+}
+
+/** Resolve the installed Local snapshot at the start of each user-visible copy attempt. */
+export const copyCurrentLocalTemplateToServer = async (
+  templateId: string,
+  templateName: string,
+  destination: ConnectedServer,
+  nodeId: string | null,
+  reconcileServer: ReconcileServer,
+  options: {
+    readonly beforeUpload?: (png: Blob) => boolean
+  },
+): Promise<LocalTemplateCopyResult> => {
+  const template = localTemplates().find((candidate) => candidate.id === templateId)
+  if (template === undefined) {
+    return { ok: false, message: `“${templateName}” is no longer here.`, missing: true }
+  }
+  return copyLocalTemplateToServer(template, destination, nodeId, reconcileServer, options)
+}
+
+const sameServerTemplateRevision = (
+  left: LocatedPublishedTemplate,
+  right: LocatedPublishedTemplate,
+): boolean =>
+  left.id === right.id &&
+  left.nodeId === right.nodeId &&
+  left.name === right.name &&
+  left.version === right.version &&
+  left.published === right.published &&
+  left.updatedAt === right.updatedAt
+
+/** Copy one server template into Local, verify its source revision, then remove the source. */
+export const moveServerTemplateToLocal = async (
+  source: ConnectedServer,
+  published: LocatedPublishedTemplate,
+  drawn: PlacedTemplate,
+  folderId: string | null,
+  currentServerTemplate: CurrentServerTemplate,
+  reconcileServer: ReconcileServer,
+): Promise<TemplateTransferResult> => {
+  if (!isCurrentServerConnection(source)) {
+    return {
+      ok: false,
+      tone: 'warning',
+      message: 'That server connection changed before the move began.',
+    }
+  }
+  const current = currentServerTemplate(source, published.id)
+  if (current === null || drawn.serverVersion !== current.version) {
+    return {
+      ok: false,
+      tone: 'warning',
+      message: 'That template has not finished loading its current version yet.',
+    }
+  }
+  let copied: PlacedTemplate
+  try {
+    copied = await copyAsLocalTemplate(drawn, localId())
+  } catch (error) {
+    return {
+      ok: false,
+      tone: 'error',
+      message: `Could not copy “${current.name}” into Local: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+  if (!(await setTemplateFolder(copied.id, folderId))) {
+    return {
+      ok: false,
+      tone: 'error',
+      message: 'Copied into Local, but could not put it in that folder.',
+    }
+  }
+  const releaseCopied = leaseLocalTemplate(copied.id)
+  if (releaseCopied === null) {
+    return {
+      ok: false,
+      tone: 'error',
+      message: 'Copied into Local, but could not keep the new copy for the move.',
+    }
+  }
+  try {
+    const latest = currentServerTemplate(source, published.id)
+    if (latest === null || !sameServerTemplateRevision(current, latest)) {
+      return {
+        ok: false,
+        tone: 'warning',
+        destinationId: copied.id,
+        message: 'Copied into Local, but the source changed and was kept.',
+      }
+    }
+    if (!isCurrentServerConnection(source)) {
+      return {
+        ok: false,
+        tone: 'warning',
+        destinationId: copied.id,
+        message: 'Copied into Local, but the source connection changed and was kept.',
+      }
+    }
+    const removed = await deleteTemplateOnServer(source, published.id)
+    void reconcileServer(source)
+    return removed.ok
+      ? {
+          ok: true,
+          tone: 'success',
+          destinationId: copied.id,
+          message: `Moved “${published.name}” into Local.`,
+        }
+      : {
+          ok: false,
+          tone: 'error',
+          destinationId: copied.id,
+          message: `Copied into Local, but ${removed.message}`,
+        }
+  } finally {
+    releaseCopied()
+  }
+}
+
+/** Copy one server template across servers, verify admission, then remove its source revision. */
+export const moveServerTemplateToServer = async (
+  source: ConnectedServer,
+  destination: ConnectedServer,
+  nodeId: string | null,
+  published: LocatedPublishedTemplate,
+  drawn: PlacedTemplate,
+  currentServerTemplate: CurrentServerTemplate,
+  reconcileServer: ReconcileServer,
+): Promise<TemplateTransferResult> => {
+  const sourceName = source.info?.name ?? source.url
+  const destinationName = destination.info?.name ?? destination.url
+  const partial = (
+    message: string,
+    tone: TemplateTransferResult['tone'],
+    destinationId: string,
+  ): TemplateTransferResult => ({ ok: false, tone, destinationId, message })
+  if (!isCurrentServerConnection(source) || !isCurrentServerConnection(destination)) {
+    return {
+      ok: false,
+      tone: 'warning',
+      message: 'A server connection changed before the move began.',
+    }
+  }
+  const current = currentServerTemplate(source, published.id)
+  if (current === null || drawn.serverVersion !== current.version) {
+    return {
+      ok: false,
+      tone: 'warning',
+      message: 'That template has not finished loading yet — try again in a moment.',
+    }
+  }
+  const png = await templateAsPng(drawn)
+  if (png === null) return { ok: false, tone: 'error', message: 'Could not encode that template.' }
+  const ready = currentServerTemplate(source, published.id)
+  if (ready === null || !sameServerTemplateRevision(current, ready)) {
+    return {
+      ok: false,
+      tone: 'warning',
+      message: 'That template changed while it was being prepared.',
+    }
+  }
+  if (!isCurrentServerConnection(source) || !isCurrentServerConnection(destination)) {
+    return {
+      ok: false,
+      tone: 'warning',
+      message: 'A server connection changed while the template was being prepared.',
+    }
+  }
+  const uploaded = await uploadTemplate(destination, {
+    nodeId,
+    name: ready.name,
+    originX: drawn.originX,
+    originY: drawn.originY,
+    png,
+  })
+  if (!uploaded.ok) {
+    void reconcileServer(destination)
+    return { ok: false, tone: 'error', message: uploaded.message }
+  }
+  const copied = uploaded.id
+  if (!isCurrentServerConnection(source) || !isCurrentServerConnection(destination)) {
+    void reconcileServer(destination)
+    return partial(
+      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
+      'warning',
+      copied,
+    )
+  }
+  const beforePublish = currentServerTemplate(source, published.id)
+  if (beforePublish === null || !sameServerTemplateRevision(ready, beforePublish)) {
+    void reconcileServer(destination)
+    return partial(
+      `Copied to ${destinationName} as a draft, but the source changed and was kept.`,
+      'warning',
+      copied,
+    )
+  }
+  if (beforePublish.published) {
+    const publishedAtDestination = await patchTemplate(destination, copied, { published: true })
+    if (!publishedAtDestination.ok) {
+      void reconcileServer(destination)
+      return partial(
+        `Copied to ${destinationName} as a draft, but could not publish it; the source was kept.`,
+        'error',
+        copied,
+      )
+    }
+  }
+  if (!isCurrentServerConnection(source) || !isCurrentServerConnection(destination)) {
+    void reconcileServer(destination)
+    return partial(
+      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
+      'warning',
+      copied,
+    )
+  }
+  if (
+    !(await destinationIsAdmitted(destination, {
+      nodes: [],
+      templates: [
+        {
+          id: copied,
+          nodeId,
+          name: ready.name,
+          version: uploaded.version,
+          published: beforePublish.published,
+        },
+      ],
+    }))
+  ) {
+    void reconcileServer(destination)
+    return partial(
+      `Copied to ${destinationName}, but its destination could not be admitted; the source was kept.`,
+      'warning',
+      copied,
+    )
+  }
+  if (!isCurrentServerConnection(source) || !isCurrentServerConnection(destination)) {
+    return partial(
+      `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
+      'warning',
+      copied,
+    )
+  }
+  const latest = currentServerTemplate(source, published.id)
+  if (latest === null || !sameServerTemplateRevision(beforePublish, latest)) {
+    void reconcileServer(destination)
+    return partial(
+      `Copied to ${destinationName}, but the source changed and was kept.`,
+      'warning',
+      copied,
+    )
+  }
+  const removed = await deleteTemplateOnServer(source, published.id)
+  void Promise.all([reconcileServer(source), reconcileServer(destination)])
+  return removed.ok
+    ? {
+        ok: true,
+        tone: 'success',
+        destinationId: copied,
+        message: `Moved “${published.name}” to ${destinationName}.`,
+      }
+    : partial(
+        `Copied to ${destinationName}, but could not remove it from ${sourceName}.`,
+        'error',
+        copied,
+      )
+}
 
 interface BranchReadFailure {
   readonly error: string
@@ -296,9 +686,6 @@ const transplantWhileDestinationHeld = async (
   templatesOf: (server: ConnectedServer, nodeId: string) => readonly PublishedTemplate[],
   templatesForServer:
     | ((server: ConnectedServer) => readonly LocatedPublishedTemplate[])
-    | undefined,
-  destinationIsAdmitted:
-    | ((server: ConnectedServer, expected: DestinationAdmission) => Promise<boolean>)
     | undefined,
   destinationLeases: Array<() => void>,
   destinationTemplateLeases: Array<() => void>,
@@ -594,7 +981,7 @@ const transplantWhileDestinationHeld = async (
     templates++
   }
 
-  if (destination.kind === 'server' && destinationIsAdmitted !== undefined) {
+  if (destination.kind === 'server') {
     if (!connectionsAreCurrent()) return connectionChanged()
     const admitted = await destinationIsAdmitted(destination.server, {
       nodes: createdNodes,
@@ -718,10 +1105,7 @@ export const transplant = async (
   destination: Destination,
   templatesOf: (server: ConnectedServer, nodeId: string) => readonly PublishedTemplate[],
   templatesForServer?: (server: ConnectedServer) => readonly LocatedPublishedTemplate[],
-  destinationIsAdmitted?: (
-    server: ConnectedServer,
-    expected: DestinationAdmission,
-  ) => Promise<boolean>,
+  reconcileServer?: ReconcileServer,
 ): Promise<TransplantResult> => {
   const activeSource = sourceKey(source)
   if (activeSources.has(activeSource)) {
@@ -753,15 +1137,21 @@ export const transplant = async (
   const destinationLeases = releaseDestination === null ? [] : [releaseDestination]
   const destinationTemplateLeases: Array<() => void> = []
   try {
-    return await transplantWhileDestinationHeld(
+    const result = await transplantWhileDestinationHeld(
       source,
       destination,
       templatesOf,
       templatesForServer,
-      destinationIsAdmitted,
       destinationLeases,
       destinationTemplateLeases,
     )
+    if (reconcileServer !== undefined) {
+      const servers = new Map<string, ConnectedServer>()
+      if (source.kind === 'server') servers.set(source.server.url, source.server)
+      if (destination.kind === 'server') servers.set(destination.server.url, destination.server)
+      void Promise.all([...servers.values()].map(reconcileServer))
+    }
+    return result
   } finally {
     for (const release of destinationTemplateLeases.reverse()) release()
     for (const release of destinationLeases.reverse()) release()
