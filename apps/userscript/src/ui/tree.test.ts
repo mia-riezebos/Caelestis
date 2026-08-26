@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_TREE_NODES } from '../server-manifest.js'
-import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState } from '../state.js'
+import {
+  admittedServerContentsFor,
+  type ConnectedServer,
+  getState,
+  listServerContents,
+  peekProbedNodes,
+  probeServer,
+  setState,
+} from '../state.js'
 import {
   acceptServerSnapshot,
   forgetServerRows,
@@ -17,9 +25,11 @@ const TEMPLATE_A = '019fed50-87a1-7523-a88c-bdeafad49683'
 const manifest = (
   info: { readonly id: string; readonly name: string; readonly auth: 'none' },
   nodes: readonly unknown[] = [],
+  templates: readonly unknown[] = [],
+  tiles: readonly string[] = [],
 ): Response =>
   new Response(
-    JSON.stringify({ version: 'v1', season: 0, server: info, nodes, templates: [], tiles: [] }),
+    JSON.stringify({ version: 'v1', season: 0, server: info, nodes, templates, tiles }),
     { status: 200 },
   )
 
@@ -197,6 +207,65 @@ describe('tree identity and ordering', () => {
     )
   })
 
+  it('rejects an older response before it can publish over the newest snapshot', async () => {
+    const releases: Array<(response: Response) => void> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            releases.push(resolve)
+          }),
+      ),
+    )
+    const info = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
+    const connected = server(SERVER_ID, 0, 'https://ordered.example.com')
+    setState({ servers: [connected] })
+    const template = {
+      id: TEMPLATE_A,
+      nodeId: null,
+      name: 'Newer',
+      version: '019fed50-87a1-7523-a88c-bdeafad49684',
+      published: true,
+      createdAt: 1_750_000_000_000,
+      updatedAt: 1_750_000_000_002,
+      totalPixels: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [{ tile: '0/0', hash: 'a'.repeat(64) }],
+    }
+
+    const first = listServerContents(connected)
+    const second = listServerContents(connected)
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+    releases[1]?.(manifest(info, [], [template], ['0/0']))
+    const newest = await second
+    expect(newest).not.toBeNull()
+    expect(admittedServerContentsFor(connected)).toBe(newest)
+
+    releases[0]?.(
+      manifest(
+        info,
+        [],
+        [
+          {
+            ...template,
+            name: 'Older',
+            version: '019fed50-87a1-7523-a88c-bdeafad49685',
+            updatedAt: 1_750_000_000_001,
+          },
+        ],
+        ['0/0'],
+      ),
+    )
+    const older = await first
+    if (older === null) throw new Error('the older manifest did not decode')
+    expect(acceptServerSnapshot(connected, older)).toEqual(
+      expect.objectContaining({ status: 'superseded' }),
+    )
+    expect(serverTemplateAt(connected.url, TEMPLATE_A)?.name).toBe('Newer')
+    expect(admittedServerContentsFor(connected)).toBe(newest)
+    forgetServerRows(connected.url)
+  })
   it('namespaces node UI state by verified server identity and season', () => {
     const first = nodeTreeKey(server(SERVER_ID, 0), NODE_ID)
     const otherServer = nodeTreeKey(server('019fed50-87a1-7523-a88c-bdeafad49683', 0), NODE_ID)
