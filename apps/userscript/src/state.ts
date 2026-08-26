@@ -1456,6 +1456,7 @@ export const listServerContents = async (
             : { authorization: `Bearer ${activeServerToken(server)}` },
         ...(signal === undefined ? {} : { signal }),
       },
+      () => isCurrentServerConnection(server),
     )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null

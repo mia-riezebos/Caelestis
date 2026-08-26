@@ -136,11 +136,15 @@ export const requestServerUpload = (
 export const requestServerManifest = async (
   input: string,
   init: RequestInit = {},
+  canStart?: () => boolean,
 ): Promise<{ response: Response; body: unknown; sequence: number }> => {
   const signal = init.signal ?? undefined
   const admission = acquireManifestRead(signal)
   if (admission !== true && !(await admission)) throw new Error('manifest read cancelled')
   try {
+    // Admission may wait behind four slow servers. The caller's connection and credentials can be
+    // replaced during that wait, so validate their lifetime again before sending captured headers.
+    if (canStart?.() === false) throw new Error('manifest read superseded before it started')
     const sequence = ++manifestSequence
     return { ...(await requestServerTree(input, init)), sequence }
   } finally {

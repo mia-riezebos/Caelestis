@@ -1219,6 +1219,43 @@ describe('server state boundaries', () => {
     expect(peak).toBe(4)
   })
 
+  it('does not send a queued manifest after its connection is replaced', async () => {
+    const pending: Array<(response: Response) => void> = []
+    const fetchMock = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          pending.push(resolve)
+        }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { listServerContents, setState } = await import('./state.js')
+    const servers = Array.from({ length: 5 }, (_, index) => ({
+      url: `https://manifest-${index}.example.com`,
+      info: serverInfo,
+      token: index === 4 ? 'old-token' : null,
+      status: 'connected' as const,
+      isAdmin: false,
+      season: 0,
+    }))
+    setState({ servers })
+
+    const reads = servers.map((server) => listServerContents(server))
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+    setState({
+      servers: servers.map((server, index) =>
+        index === 4 ? { ...server, token: 'replacement-token' } : server,
+      ),
+    })
+    pending.shift()?.(new Response(JSON.stringify(manifest), { status: 200 }))
+
+    await expect(reads[4]).resolves.toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    for (const resolve of pending) {
+      resolve(new Response(JSON.stringify(manifest), { status: 200 }))
+    }
+    await Promise.all(reads)
+  })
+
   it('retains a valid read token when an admin operation returns forbidden', async () => {
     vi.stubGlobal(
       'fetch',
