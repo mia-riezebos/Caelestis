@@ -1,4 +1,4 @@
-import { millis, PngError, SliceError } from '@caelestis/shared'
+import { type Millis, millis, PngError, SliceError } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
@@ -229,20 +229,28 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (!UUID_V7.test(templateId)) {
       return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
     }
-    const expectedVersion = c.req.query('expectedVersion')
-    const expectedUpdatedAt = parseWholeNumber(c.req.query('expectedUpdatedAt'))
-    if (!UUID_V7.test(expectedVersion ?? '') || expectedUpdatedAt === null) {
+    const expectedVersionQuery = c.req.query('expectedVersion')
+    const expectedUpdatedAtQuery = c.req.query('expectedUpdatedAt')
+    const parsedUpdatedAt = parseWholeNumber(expectedUpdatedAtQuery)
+    let expected: { versionId: string; updatedAt: Millis }
+    if (expectedVersionQuery === undefined && expectedUpdatedAtQuery === undefined) {
+      // Compatibility phase for released userscripts that predate revision-aware deletes. Snapshot
+      // the current revision and still execute an atomic conditional delete. New clients send the
+      // revision they copied, which is the only way to protect a move from deleting a later edit.
+      const current = await ports.sql.readTemplate(templateId)
+      if (current === null) return c.json({ error: 'not found' }, 404)
+      if (current.currentVersionId === null) {
+        return c.json({ error: 'template changed concurrently' }, 409)
+      }
+      expected = { versionId: current.currentVersionId, updatedAt: current.updatedAt }
+    } else if (!UUID_V7.test(expectedVersionQuery ?? '') || parsedUpdatedAt === null) {
       return c.json(
         { error: 'expectedVersion and expectedUpdatedAt must identify the confirmed revision' },
         400,
       )
-    }
-    if (
-      !(await ports.sql.deleteTemplate(templateId, {
-        versionId: expectedVersion as string,
-        updatedAt: millis(expectedUpdatedAt),
-      }))
-    ) {
+    } else
+      expected = { versionId: expectedVersionQuery as string, updatedAt: millis(parsedUpdatedAt) }
+    if (!(await ports.sql.deleteTemplate(templateId, expected))) {
       if ((await ports.sql.readTemplate(templateId)) === null) {
         return c.json({ error: 'not found' }, 404)
       }

@@ -371,7 +371,7 @@ describe('editing a template', () => {
     expect(after.templates).toHaveLength(0)
   })
 
-  it('refuses an unguarded template delete', async () => {
+  it('keeps released clients working while guarded deletes roll out', async () => {
     const { app } = await harness()
     const created = await create(app)
 
@@ -379,6 +379,23 @@ describe('editing a template', () => {
       method: 'DELETE',
       ...bearer(BOOTSTRAP),
     })
+
+    expect(response.status).toBe(204)
+    const after = await manifestFor(app)
+    expect(after.templates).toHaveLength(0)
+  })
+
+  it('refuses a partially guarded template delete', async () => {
+    const { app } = await harness()
+    const created = await create(app)
+
+    const response = await app.request(
+      `/admin/templates/${created.templateId}?expectedUpdatedAt=1000`,
+      {
+        method: 'DELETE',
+        ...bearer(BOOTSTRAP),
+      },
+    )
 
     expect(response.status).toBe(400)
     const after = await manifestFor(app)
