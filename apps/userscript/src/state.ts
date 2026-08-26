@@ -1,7 +1,6 @@
 import { PALETTE_SIZE } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
-import { discardResponseBody } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
 import {
   parseServerInfo,
@@ -11,6 +10,15 @@ import {
   type ServerInfo,
   type TreeNode,
 } from './server-manifest.js'
+import {
+  requestServerManifest,
+  requestServerMetadata,
+  requestServerMutation,
+  requestServerStatus,
+  requestServerTree,
+  requestServerUpload,
+  serverManifestSequence,
+} from './server-transport.js'
 import { canonicalServerUrl, serverEndpoint } from './server-url.js'
 import {
   APPEARANCE_GROUPS,
@@ -172,139 +180,9 @@ export const MAX_SERVER_TEMPLATE_PREFERENCES = MAX_CONNECTED_SERVERS * 64
 export const MAX_LOCAL_FOLDERS = 32_000
 const SERVER_REFRESH_CONCURRENCY = 4
 const SERVER_RETRY_MS = 5_000
-const REMOTE_TIMEOUT_MS = 10_000
-const LARGE_TRANSFER_TIMEOUT_MS = 120_000
-const SERVER_JSON_BYTES = 16 * 1024
-const TREE_JSON_BYTES = 64 * 1024 * 1024
-const MUTATION_JSON_BYTES = 64 * 1024
-const MANIFEST_READ_CONCURRENCY = 4
-
-interface ManifestReadWaiter {
-  readonly grant: () => void
-  readonly cancel: () => void
-}
-
-let activeManifestReads = 0
-const manifestReadWaiters: ManifestReadWaiter[] = []
-
-const acquireManifestRead = (signal?: AbortSignal): true | Promise<boolean> => {
-  if (signal?.aborted) return Promise.resolve(false)
-  if (activeManifestReads < MANIFEST_READ_CONCURRENCY) {
-    activeManifestReads++
-    return true
-  }
-  return new Promise<boolean>((resolve) => {
-    const waiter: ManifestReadWaiter = {
-      grant: () => {
-        signal?.removeEventListener('abort', waiter.cancel)
-        resolve(true)
-      },
-      cancel: () => {
-        const index = manifestReadWaiters.indexOf(waiter)
-        if (index !== -1) manifestReadWaiters.splice(index, 1)
-        resolve(false)
-      },
-    }
-    signal?.addEventListener('abort', waiter.cancel, { once: true })
-    manifestReadWaiters.push(waiter)
-  })
-}
-
-const releaseManifestRead = (): void => {
-  const next = manifestReadWaiters.shift()
-  if (next === undefined) activeManifestReads--
-  else next.grant()
-}
-
-const gatedManifestJson = async (
-  input: string,
-  init: RequestInit,
-): Promise<{ response: Response; body: unknown }> => {
-  const signal = init.signal ?? undefined
-  const admission = acquireManifestRead(signal)
-  if (admission !== true && !(await admission)) throw new Error('manifest read cancelled')
-  try {
-    return await remoteJson(input, init, TREE_JSON_BYTES, LARGE_TRANSFER_TIMEOUT_MS)
-  } finally {
-    releaseManifestRead()
-  }
-}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
-
-const readBoundedJson = async (response: Response, maxBytes: number): Promise<unknown> => {
-  const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await discardResponseBody(response)
-    throw new RangeError(`response exceeds ${maxBytes} bytes`)
-  }
-  if (response.body === null) return null
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let bytes = 0
-  let text = ''
-  try {
-    while (true) {
-      const part = await reader.read()
-      if (part.done) break
-      bytes += part.value.byteLength
-      if (bytes > maxBytes) {
-        await reader.cancel()
-        throw new RangeError(`response exceeds ${maxBytes} bytes`)
-      }
-      text += decoder.decode(part.value, { stream: true })
-    }
-    text += decoder.decode()
-  } finally {
-    reader.releaseLock()
-  }
-  // A body that is not JSON is a body we have nothing to read, not a failure of the call: an error
-  // page still carries its status, and that is what the caller reports. Only the cap throws.
-  try {
-    return text === '' ? null : JSON.parse(text)
-  } catch {
-    return null
-  }
-}
-
-/**
- * Every call to a configured server, with the one timeout they all share.
- *
- * `read` runs inside the timeout on purpose. Headers arriving is not the exchange finishing, and a
- * server that answers promptly and then dribbles its body forever is the shape this is here to
- * bound; clearing the timer when `fetch` resolves would leave exactly that case unguarded.
- */
-const remoteCall = async <T>(
-  input: string,
-  init: RequestInit,
-  timeoutMs: number,
-  read: (response: Response) => Promise<T>,
-): Promise<T> => {
-  const controller = new AbortController()
-  const upstream = init.signal
-  const abortFromUpstream = (): void => controller.abort(upstream?.reason)
-  if (upstream?.aborted) abortFromUpstream()
-  else upstream?.addEventListener('abort', abortFromUpstream, { once: true })
-  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs)
-  try {
-    return await read(await fetch(input, { ...init, signal: controller.signal }))
-  } finally {
-    clearTimeout(timeout)
-    upstream?.removeEventListener('abort', abortFromUpstream)
-  }
-}
-
-const remoteJson = async (
-  input: string,
-  init: RequestInit = {},
-  maxBytes = MUTATION_JSON_BYTES,
-  timeoutMs = REMOTE_TIMEOUT_MS,
-): Promise<{ response: Response; body: unknown }> =>
-  await remoteCall(input, init, timeoutMs, async (response) => ({
-    response,
-    body: await readBoundedJson(response, maxBytes),
-  }))
 
 export { canonicalServerUrl, serverEndpoint } from './server-url.js'
 
@@ -864,13 +742,11 @@ const fetchNodes = async (
   season: number,
 ): Promise<NodeListResult> => {
   try {
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerTree(
       serverEndpoint(base, `/admin/nodes?season=${season}`),
       {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
       },
-      TREE_JSON_BYTES,
-      LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (!response.ok)
       return {
@@ -898,18 +774,12 @@ const probeAdminScope = async (
     // The status is the whole answer, so the body is thrown away unread. Parsing it measured the
     // full folder tree against the 64 KB cap meant for a one-line mutation reply, and any server
     // with a real tree therefore reported that our token could only read it.
-    return await remoteCall(
-      serverEndpoint(base, `/admin/nodes?season=${season}`),
-      {
+    return (
+      await requestServerStatus(serverEndpoint(base, `/admin/nodes?season=${season}`), {
         headers: token === null ? {} : { authorization: `Bearer ${token}` },
         ...(signal === undefined ? {} : { signal }),
-      },
-      LARGE_TRANSFER_TIMEOUT_MS,
-      async (response) => {
-        await discardResponseBody(response)
-        return response.ok
-      },
-    )
+      })
+    ).ok
   } catch {
     return false
   }
@@ -978,14 +848,10 @@ export const probeServer = async (
   activeServerProbes.set(base, probeController)
   let observedInfo: ServerInfo | null = null
   try {
-    const { response, body } = await remoteJson(
-      serverEndpoint(base, '/server'),
-      {
-        headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        signal: probeController.signal,
-      },
-      SERVER_JSON_BYTES,
-    )
+    const { response, body } = await requestServerMetadata(serverEndpoint(base, '/server'), {
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+      signal: probeController.signal,
+    })
     if (!response.ok) {
       return {
         url: base,
@@ -1017,7 +883,7 @@ export const probeServer = async (
     // nothing about a code. Without this second call any non-empty string read as "connected" and
     // every later request failed with 401 — caught by typing a deliberately wrong code.
     const fetchManifest = (credential: string | null) =>
-      gatedManifestJson(serverEndpoint(base, '/manifest'), {
+      requestServerManifest(serverEndpoint(base, '/manifest'), {
         headers: credential === null ? {} : { authorization: `Bearer ${credential}` },
         signal: probeController.signal,
       })
@@ -1158,21 +1024,24 @@ export const createNode = async (
   if (server.season === null)
     return { ok: false, message: 'Refresh this server before editing it.' }
   try {
-    const { response, body } = await remoteJson(serverEndpoint(server.url, '/admin/nodes'), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(activeServerToken(server) === null
-          ? {}
-          : { authorization: `Bearer ${activeServerToken(server)}` }),
+    const { response, body } = await requestServerMutation(
+      serverEndpoint(server.url, '/admin/nodes'),
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(activeServerToken(server) === null
+            ? {}
+            : { authorization: `Bearer ${activeServerToken(server)}` }),
+        },
+        body: JSON.stringify({
+          season: server.season,
+          parentId,
+          name,
+          ...(description === undefined ? {} : { description }),
+        }),
       },
-      body: JSON.stringify({
-        season: server.season,
-        parentId,
-        name,
-        ...(description === undefined ? {} : { description }),
-      }),
-    })
+    )
     if (response.ok) {
       const node = parseTreeNode(body)
       if (node === null || node.parentId !== parentId) {
@@ -1254,7 +1123,7 @@ const pendingUploadFailure = (server: ConnectedServer): UploadFailure | null => 
 const markUploadAmbiguous = (server: ConnectedServer, message: string): UploadFailure => {
   const existing = pendingUploadAmbiguities.get(server.url)
   pendingUploadAmbiguities.set(server.url, {
-    afterManifestRequest: Math.max(existing?.afterManifestRequest ?? 0, manifestRequestSequence),
+    afterManifestRequest: Math.max(existing?.afterManifestRequest ?? 0, serverManifestSequence()),
   })
   return { ok: false, message, ambiguous: true }
 }
@@ -1303,7 +1172,7 @@ export const renameNode = async (
   name: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/nodes/${nodeId}`),
       {
         method: 'PATCH',
@@ -1335,7 +1204,7 @@ export const deleteNode = async (
       expected === null
         ? ''
         : `?cascade=true&expectedNodes=${expected.nodes}&expectedTemplates=${expected.templates}`
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/nodes/${nodeId}${cascade}`),
       {
         method: 'DELETE',
@@ -1391,7 +1260,7 @@ export const uploadTemplate = async (
     form.set('name', input.name)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerUpload(
       serverEndpoint(server.url, '/admin/templates'),
       {
         method: 'POST',
@@ -1401,8 +1270,6 @@ export const uploadTemplate = async (
             : { authorization: `Bearer ${activeServerToken(server)}` },
         body: form,
       },
-      MUTATION_JSON_BYTES,
-      LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (response.ok) {
       const id = isRecord(body) ? body.templateId : undefined
@@ -1441,7 +1308,7 @@ export const moveNode = async (
   parentId: string | null,
 ): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
   try {
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/nodes/${nodeId}`),
       {
         method: 'PATCH',
@@ -1468,7 +1335,7 @@ export const countNodeSubtree = async (
   nodeId: string,
 ): Promise<{ nodes: number; templates: number } | null> => {
   try {
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/nodes/${nodeId}/subtree`),
       {
         headers: adminHeaders(server),
@@ -1510,7 +1377,6 @@ export interface ServerContents {
   readonly templates: readonly ServerTemplate[]
 }
 
-let manifestRequestSequence = 0
 const latestManifestResponse = new Map<string, number>()
 const manifestResponseOf = new WeakMap<ServerContents, number>()
 const admittedServerContents = new Map<
@@ -1575,15 +1441,13 @@ export const listServerContents = async (
   signal?: AbortSignal,
 ): Promise<ServerContents | null> => {
   if (server.info === null || server.season === null) return null
-  const admission = acquireManifestRead(signal)
-  if (admission !== true && !(await admission)) return null
-  if (!isCurrentServerConnection(server)) {
-    releaseManifestRead()
-    return null
-  }
-  const request = ++manifestRequestSequence
+  if (!isCurrentServerConnection(server)) return null
   try {
-    const { response, body } = await remoteJson(
+    const {
+      response,
+      body,
+      sequence: request,
+    } = await requestServerManifest(
       serverEndpoint(server.url, `/manifest?season=${server.season}`),
       {
         headers:
@@ -1592,8 +1456,6 @@ export const listServerContents = async (
             : { authorization: `Bearer ${activeServerToken(server)}` },
         ...(signal === undefined ? {} : { signal }),
       },
-      TREE_JSON_BYTES,
-      LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
@@ -1622,8 +1484,6 @@ export const listServerContents = async (
     return contents
   } catch {
     return null
-  } finally {
-    releaseManifestRead()
   }
 }
 
@@ -1674,7 +1534,7 @@ export const patchTemplate = async (
   patch: { name?: string; nodeId?: string | null; published?: boolean },
 ): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
   try {
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/templates/${templateId}`),
       {
         method: 'PATCH',
@@ -1723,11 +1583,14 @@ export const renameServer = async (
   }
   activeServerRenames.add(server.url)
   try {
-    const { response, body } = await remoteJson(serverEndpoint(server.url, '/admin/server'), {
-      method: 'PATCH',
-      headers: adminHeaders(server),
-      body: JSON.stringify({ name: trimmed }),
-    })
+    const { response, body } = await requestServerMutation(
+      serverEndpoint(server.url, '/admin/server'),
+      {
+        method: 'PATCH',
+        headers: adminHeaders(server),
+        body: JSON.stringify({ name: trimmed }),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) {
       return {
@@ -1739,11 +1602,7 @@ export const renameServer = async (
     if (current !== undefined && current.info !== null && server.info !== null) {
       let refreshed: ServerInfo | null = null
       try {
-        const metadata = await remoteJson(
-          serverEndpoint(current.url, '/server'),
-          {},
-          SERVER_JSON_BYTES,
-        )
+        const metadata = await requestServerMetadata(serverEndpoint(current.url, '/server'))
         if (metadata.response.ok) refreshed = parseServerInfo(metadata.body)
       } catch {
         // The PATCH already committed. A failed cosmetic refresh must not turn success into failure.
@@ -1785,7 +1644,7 @@ export const deleteTemplate = async (
   templateId: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/templates/${templateId}`),
       {
         method: 'DELETE',
@@ -1821,7 +1680,7 @@ export const uploadTemplateVersion = async (
     form.set('png', input.png, `${input.name}.png`)
     form.set('originX', String(input.originX))
     form.set('originY', String(input.originY))
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerUpload(
       serverEndpoint(server.url, `/admin/templates/${templateId}/versions`),
       {
         method: 'POST',
@@ -1831,10 +1690,6 @@ export const uploadTemplateVersion = async (
             : { authorization: `Bearer ${activeServerToken(server)}` },
         body: form,
       },
-      MUTATION_JSON_BYTES,
-      // A PNG upload, like the one that creates a template: the ten-second budget is for a request
-      // that carries a sentence, not a megabyte.
-      LARGE_TRANSFER_TIMEOUT_MS,
     )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (response.ok) {
@@ -1919,7 +1774,7 @@ export const listAccessTokens = async (
 ): Promise<AccessTokenPage | null> => {
   try {
     const suffix = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/tokens${suffix}`),
       {
         headers: adminHeaders(server),
@@ -1953,11 +1808,14 @@ export const createAccessToken = async (
   scope: AccessToken['scope'],
 ): Promise<{ ok: true; token: string } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(serverEndpoint(server.url, '/admin/tokens'), {
-      method: 'POST',
-      headers: adminHeaders(server),
-      body: JSON.stringify({ label, scope }),
-    })
+    const { response, body } = await requestServerMutation(
+      serverEndpoint(server.url, '/admin/tokens'),
+      {
+        method: 'POST',
+        headers: adminHeaders(server),
+        body: JSON.stringify({ label, scope }),
+      },
+    )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     const token = isRecord(body) ? body.token : undefined
     if (response.ok && typeof token === 'string') return { ok: true, token }
@@ -1978,7 +1836,7 @@ export const revokeAccessToken = async (
   tokenHash: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
-    const { response, body } = await remoteJson(
+    const { response, body } = await requestServerMutation(
       serverEndpoint(server.url, `/admin/tokens/${encodeURIComponent(tokenHash)}`),
       {
         method: 'DELETE',
