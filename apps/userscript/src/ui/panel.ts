@@ -41,6 +41,7 @@ import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
 import { refreshProgressIndicators } from './progress.js'
+import { mismatchModeButton, RAIL_BUTTON_CLASS, syncMismatchModeState } from './rail-controls.js'
 import { createRangeGestures } from './range-gestures.js'
 import { sliderRow } from './slider.js'
 import { progressChangesCanReorder, sortControl } from './sort.js'
@@ -153,8 +154,6 @@ const rangeGestures = createRangeGestures()
  * the class list. Using the same class rather than a colour of our own means our button lights up
  * in whatever their theme calls primary, now and after any theme change.
  */
-export const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
-
 const syncRailButtonState = (): void => {
   const button = document.getElementById(BUTTON_ID)
   if (button === null) return
@@ -1323,15 +1322,18 @@ export const installPanel = (): void => {
   installServerConnectionRetry(refreshView)
   installStyles()
   const rail = railContainer()
-  rail.append(railButton(), colourModeButton())
+  rail.append(railButton(), colourModeButton(), mismatchModeButton())
   syncRailButtonState()
   syncColourModeState()
+  syncMismatchModeState()
   positionRail()
   log('install', 'rail installed beside wplace’s')
 
   const sync = (): void => {
     // Their re-render may have taken our buttons if anything ever moves them; put them back cheaply.
-    if (!rail.contains(railButton())) rail.append(railButton(), colourModeButton())
+    for (const button of [railButton(), colourModeButton(), mismatchModeButton()]) {
+      if (!rail.contains(button)) rail.appendChild(button)
+    }
     positionRail()
   }
   // Once per frame, not once per mutation. `sync` walks every button in the document looking for
@@ -1361,6 +1363,7 @@ export const installPanel = (): void => {
     redraw()
   })
   onStateChange(syncColourModeState)
+  onStateChange(syncMismatchModeState)
   // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a
   // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per
   // change.
