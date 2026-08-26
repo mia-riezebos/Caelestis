@@ -1,5 +1,6 @@
 import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { log, warn } from './debug.js'
+import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
 import { discardResponseBody } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
 import { canonicalServerUrl, serverEndpoint } from './server-url.js'
@@ -145,6 +146,8 @@ export interface State {
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
   readonly onlySelectedColour: boolean
+  /** Target mismatch or selected-colour markers submitted across one viewport. */
+  readonly markerBudget: number
   readonly localFolders: readonly LocalFolder[]
   readonly hiddenScopes: readonly string[]
   readonly serverTemplatePreferences: readonly ServerTemplatePreference[]
@@ -161,6 +164,7 @@ const DEFAULT_STATE: State = {
   sort: DEFAULT_SORT,
   hiddenColours: [],
   onlySelectedColour: false,
+  markerBudget: DEFAULT_MARKER_BUDGET,
   localFolders: [],
   hiddenScopes: [],
   serverTemplatePreferences: [],
@@ -852,6 +856,7 @@ export const loadState = (): State => {
       sort,
       hiddenColours,
       onlySelectedColour: stored.onlySelectedColour === true,
+      markerBudget: normaliseMarkerBudget(stored.markerBudget),
       localFolders,
       hiddenScopes,
       serverTemplatePreferences,

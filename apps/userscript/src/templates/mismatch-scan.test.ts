@@ -51,6 +51,20 @@ describe('mismatch scan progress', () => {
     expect(outcome.wrong).toHaveLength(0)
   })
 
+  it('counts progress without allocating marker coordinates when markers are disabled', () => {
+    const outcome = scanTile(job({ collectMarkers: false }), new Uint8Array([1, 2, 3, 254]))
+
+    expect(outcome).toMatchObject({
+      completed: 1,
+      mismatched: 1,
+      progressUnpainted: 1,
+      progressAsserted: 3,
+      asserted: 0,
+    })
+    expect(outcome.wrong).toHaveLength(0)
+    expect(outcome.unpainted).toHaveLength(0)
+  })
+
   it('classifies a packed server mask through the same scan interface', () => {
     const maskJob: MaskScanJob = {
       ...job(),

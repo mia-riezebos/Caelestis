@@ -30,7 +30,25 @@ describe('server state boundaries', () => {
     )
     const { loadState } = await import('./state.js')
 
-    expect(loadState()).toMatchObject({ reportPaints: true, shareTiles: true })
+    expect(loadState()).toMatchObject({
+      markerBudget: 16_384,
+      reportPaints: true,
+      shareTiles: true,
+    })
+  })
+
+  it.each([
+    [65_536, 65_536],
+    [1_000_000, 16_384],
+    [-1, 16_384],
+  ])('normalises the stored marker budget %s to %s', async (stored, expected) => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({ markerBudget: stored })),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState().markerBudget).toBe(expected)
   })
 
   it('preserves explicit contribution-sharing opt-outs', async () => {

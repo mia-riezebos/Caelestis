@@ -44,6 +44,7 @@ import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 const LAYER_ID = 'caelestis-overlay'
 /** Their marker layer. Ours goes immediately before it. */
 const BEFORE_LAYER = 'pixel-hover'
+const DRAFT_LAYER_ID = /^paint-preview-/
 
 interface IndexGpuTile {
   readonly texture: WebGLTexture
@@ -679,6 +680,8 @@ export const installOverlayLayer = (): boolean => {
   const map = getMap() as {
     addLayer?: (layer: unknown, before?: string) => void
     getLayer?: (id: string) => unknown
+    moveLayer?: (id: string, before?: string) => void
+    style?: { _order?: string[] }
   } | null
   if (map?.addLayer === undefined) return false
 
@@ -706,5 +709,44 @@ export const installOverlayLayer = (): boolean => {
   // The markers go in second so they land above the overlay: same anchor, later insertion.
   const overlay = add(overlayLayer, 'overlay layer')
   const markers = add(markerLayer, 'marker layer')
+  /**
+   * A Wplace theme change swaps the basemap style. MapLibre preserves custom layers across that
+   * diff, but preserves their old numeric position too. The two basemaps have different layer
+   * counts, so ours can land below `pixel-art-layer`: callbacks still run, but before the tile quads
+   * they need have been recorded. Existing is therefore not enough; the order is part of attachment.
+   */
+  const order = map.style?._order
+  if (overlay && markers && order !== undefined && map.moveLayer !== undefined) {
+    const tile = order.indexOf('pixel-art-layer')
+    const overlayAt = order.indexOf(overlayLayer.id)
+    const markersAt = order.indexOf(markerLayer.id)
+    const crosshair = order.indexOf(BEFORE_LAYER)
+    const afterTiles = tile < 0 || tile < overlayAt
+    const correctlyOrdered =
+      overlayAt >= 0 &&
+      markersAt > overlayAt &&
+      (crosshair < 0 || markersAt < crosshair) &&
+      afterTiles
+    if (!correctlyOrdered) {
+      try {
+        const firstDraft = order.find(
+          (id, index) =>
+            DRAFT_LAYER_ID.test(id) &&
+            (tile < 0 || index > tile) &&
+            (crosshair < 0 || index < crosshair),
+        )
+        const markersFollowTiles = tile < 0 || markersAt > tile
+        const overlayAnchor =
+          firstDraft ??
+          (markersFollowTiles ? markerLayer.id : crosshair < 0 ? undefined : BEFORE_LAYER)
+        map.moveLayer(overlayLayer.id, overlayAnchor)
+        map.moveLayer(markerLayer.id, crosshair < 0 ? undefined : BEFORE_LAYER)
+        log('install', 'restored overlay order after a style change')
+      } catch (error) {
+        warn('install', 'could not restore the overlay layer order', String(error))
+        return false
+      }
+    }
+  }
   return overlay && markers
 }

@@ -35,6 +35,8 @@ interface CommonScanJob {
   readonly transparent: number
   /** The value meaning "nothing placed here", which is a state rather than a colour. */
   readonly unpainted: number
+  /** False for progress-only work, which must not allocate coordinate lists nobody will draw. */
+  readonly collectMarkers?: boolean
 }
 
 export interface PixelScanJob extends CommonScanJob {
@@ -118,6 +120,7 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   // `scanTile` is stringified into a worker, so this deliberately uses the byte-sized palette
   // domain rather than importing the application's current palette length.
   const progressByColour = new Uint32Array(256 * 3)
+  const collectMarkers = job.collectMarkers !== false
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - job.originY) * job.width + (left - job.originX)
     let tileAt = (y - tileTop) * tileSize + (left - tileLeft) - bandOffset
@@ -152,7 +155,7 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
         }
       }
 
-      if (asserted[wanted] === 0) continue
+      if (!collectMarkers || asserted[wanted] === 0) continue
       assertedHere++
       if (classification === match) continue
       // An empty pixel is only "not done yet" when nobody chose it. One drafted Transparent arrives

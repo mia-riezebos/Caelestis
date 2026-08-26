@@ -94,26 +94,35 @@ export interface ColourNavigationTarget {
   readonly kind: ColourTargetKind
 }
 
+const markCoordinate = (mark: number): number => mark & 0xfffff
+
+/** Merge two row-major classifications without losing the renderer's spatial-order invariant. */
+const mergeMarks = (left: Mismatches, right: Mismatches): Mismatches => {
+  const merged = new Uint32Array(left.length + right.length)
+  let leftAt = 0
+  let rightAt = 0
+  let write = 0
+  while (leftAt < left.length && rightAt < right.length) {
+    const leftMark = left[leftAt] as number
+    const rightMark = right[rightAt] as number
+    if (markCoordinate(leftMark) <= markCoordinate(rightMark)) {
+      merged[write++] = leftMark
+      leftAt++
+    } else {
+      merged[write++] = rightMark
+      rightAt++
+    }
+  }
+  merged.set(left.subarray(leftAt), write)
+  write += left.length - leftAt
+  merged.set(right.subarray(rightAt), write)
+  return merged
+}
+
 const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
   if (!includeUnpainted || entry.unpainted.length === 0) return entry.wrong
   if (entry.wrong.length === 0) return entry.unpainted
-  if (entry.both === null) {
-    const contiguous =
-      entry.wrong.buffer === entry.unpainted.buffer &&
-      entry.wrong.byteOffset + entry.wrong.byteLength === entry.unpainted.byteOffset
-    if (contiguous) {
-      entry.both = new Uint32Array(
-        entry.wrong.buffer,
-        entry.wrong.byteOffset,
-        entry.wrong.length + entry.unpainted.length,
-      )
-    } else {
-      const both = new Uint32Array(entry.wrong.length + entry.unpainted.length)
-      both.set(entry.wrong)
-      both.set(entry.unpainted, entry.wrong.length)
-      entry.both = both
-    }
-  }
+  if (entry.both === null) entry.both = mergeMarks(entry.wrong, entry.unpainted)
   return entry.both
 }
 
@@ -165,6 +174,16 @@ interface ProgressCoverage {
   readonly asserted: number
   readonly byColour: Uint32Array
 }
+
+type ProgressAnswer = Pick<
+  Cached,
+  | 'templateSource'
+  | 'completed'
+  | 'mismatched'
+  | 'progressUnpainted'
+  | 'progressAsserted'
+  | 'progressByColour'
+>
 
 /**
  * Count-only answers survive the marker LRU, so panning does not erase progress behind you.
@@ -221,6 +240,14 @@ const mergeColourProgress = (target: Uint32Array, packed: Uint32Array, direction
  */
 const templateIdOf = (cacheKey: string): string => cacheKey.slice(0, cacheKey.lastIndexOf('|'))
 
+const tileOf = (cacheKey: string, templateId: string): TileCoord | null => {
+  const separator = cacheKey.indexOf('/', templateId.length + 1)
+  if (separator < 0) return null
+  const x = Number(cacheKey.slice(templateId.length + 1, separator))
+  const y = Number(cacheKey.slice(separator + 1))
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+}
+
 const forgetProgress = (cacheKey: string): void => {
   const entry = progressCoverage.get(cacheKey)
   if (entry === undefined) return
@@ -251,7 +278,7 @@ const forgetProgress = (cacheKey: string): void => {
   })
 }
 
-const rememberProgress = (cacheKey: string, entry: Cached, key: string): void => {
+const rememberProgress = (cacheKey: string, entry: ProgressAnswer, key: string): void => {
   const templateId = templateIdOf(cacheKey)
   const heldKeys = progressKeys.get(templateId)
   if (heldKeys !== undefined) {
@@ -442,6 +469,8 @@ export const endMismatchFrame = (): void => {
  * is still on screen.
  */
 const stale = new Set<string>()
+/** Progress-only tiles invalidated by paint; their previous aggregate remains visible until replaced. */
+const staleProgress = new Set<string>()
 let idleScheduled = false
 
 type IdleWindow = typeof globalThis & {
@@ -456,20 +485,29 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
   for (const cacheKey of [...stale]) {
     if (performance.now() >= scanDeadline) break
     const id = templateIdOf(cacheKey)
-    const [x, y] = cacheKey
-      .slice(id.length + 1)
-      .split('/')
-      .map(Number)
+    const tile = tileOf(cacheKey, id)
     const template = templatesById.get(id)
-    if (template === undefined || x === undefined || y === undefined) {
+    if (template === undefined || tile === null) {
       stale.delete(cacheKey)
       continue
     }
-    mismatchesIn(template, { x, y })
+    mismatchesIn(template, tile)
     count('mismatch:rescanned while idle')
   }
+  for (const cacheKey of [...staleProgress]) {
+    if (performance.now() >= scanDeadline) break
+    const id = templateIdOf(cacheKey)
+    const tile = tileOf(cacheKey, id)
+    const template = templatesById.get(id)
+    if (template === undefined || tile === null) {
+      staleProgress.delete(cacheKey)
+      continue
+    }
+    progressIn(template, tile)
+    count('mismatch:progress-only rescanned while idle')
+  }
   scanDeadline = 0
-  if (stale.size > 0) scheduleIdleScan()
+  if (stale.size > 0 || staleProgress.size > 0) scheduleIdleScan()
   notifyChanged()
 }
 
@@ -490,7 +528,15 @@ const scheduleIdleScan = (): void => {
  * past us while we were not looking.
  */
 export const wantsTilePixels = (tile?: TileCoord): boolean => {
-  const templates = displayTemplates().filter(isTemplateVisible)
+  const templates = displayTemplates().filter((template) => {
+    if (!isTemplateVisible(template)) return false
+    const appearance = appearanceOf(template)
+    // Server templates receive aggregate progress from telemetry. Local templates have no other
+    // source, so they still need captured pixels even when neither marker list will be generated.
+    return (
+      appearance.markMismatch || appearance.markSelectedColour || template.serverUrl === undefined
+    )
+  })
   if (tile === undefined) return templates.length > 0
   const left = tile.x * TILE_SIZE
   const top = tile.y * TILE_SIZE
@@ -803,6 +849,7 @@ const buildJob = (
   tile: TileCoord,
   pixels: Uint8Array,
   forWorker: boolean,
+  collectMarkers = true,
 ): ScanJob => {
   const tileLeft = tile.x * TILE_SIZE
   const tileTop = tile.y * TILE_SIZE
@@ -841,6 +888,7 @@ const buildJob = (
     ignored: [TRANSPARENT_INDEX, UNPAINTED, ...assertedHidden(template)],
     transparent: TRANSPARENT_INDEX,
     unpainted: UNPAINTED,
+    collectMarkers,
   }
 }
 
@@ -850,6 +898,7 @@ const buildMaskJob = (
   tile: TileCoord,
   mask: MismatchMask,
   forWorker: boolean,
+  collectMarkers = true,
 ): ScanJob => {
   const tileLeft = tile.x * TILE_SIZE
   const tileTop = tile.y * TILE_SIZE
@@ -884,6 +933,7 @@ const buildMaskJob = (
     ignored: [TRANSPARENT_INDEX, UNPAINTED, ...assertedHidden(template)],
     transparent: TRANSPARENT_INDEX,
     unpainted: UNPAINTED,
+    collectMarkers,
     maskLeft: mask.left,
     maskTop: mask.top,
     maskWidth: mask.width,
@@ -901,6 +951,7 @@ const store = (
   outcome: ScanOutcome,
 ): Cached => {
   const entry: Cached = { source, templateSource, key, ...outcome, both: null }
+  staleProgress.delete(cacheKey)
   rememberCoverage(cacheKey, entry)
   rememberProgress(cacheKey, entry, progressKey)
   remember(cacheKey, entry)
@@ -936,6 +987,8 @@ interface PendingScan {
    * draft — matching on every other term, so nothing ever rescanned it.
    */
   readonly patches: number
+  /** A full answer may satisfy progress-only work, but not the other way around. */
+  readonly markers: boolean
 }
 
 /** Patches applied per cache key, so a scan can tell whether the ground moved under it. */
@@ -952,6 +1005,7 @@ const requestScan = (
   cacheKey: string,
   key: string,
   job: ScanJob,
+  markers = true,
 ): void => {
   const templateSource = template.indices
   const asked = signature(template)
@@ -961,9 +1015,11 @@ const requestScan = (
     pending?.source === source &&
     pending.templateSource === templateSource &&
     pending.signature === asked &&
-    pending.patches === patchesAtStart
+    pending.patches === patchesAtStart &&
+    (pending.markers || !markers)
   ) {
-    stale.delete(cacheKey)
+    if (pending.markers) stale.delete(cacheKey)
+    staleProgress.delete(cacheKey)
     return
   }
   // Identity by object, so the reply can tell "the entry is still mine" from "the answer is still
@@ -975,9 +1031,11 @@ const requestScan = (
     templateSource,
     signature: asked,
     patches: patchesAtStart,
+    markers,
   }
   inFlight.set(cacheKey, mine)
-  stale.delete(cacheKey)
+  if (markers) stale.delete(cacheKey)
+  staleProgress.delete(cacheKey)
   void scanInWorker(job, template.indices).then((outcome) => {
     // A later request replaced the entry, so it owns this key now and this reply is nobody's.
     if (inFlight.get(cacheKey) !== mine) return
@@ -985,12 +1043,20 @@ const requestScan = (
     if (outcome === null || (patchCount.get(cacheKey) ?? 0) !== patchesAtStart) {
       // Either no worker to be had, or the ground moved under this scan while it ran. Both mean the
       // answer is not usable and the tile still needs one, so ask again rather than dropping it.
-      stale.add(cacheKey)
+      if (markers) stale.add(cacheKey)
+      staleProgress.add(cacheKey)
       scheduleIdleScan()
       return
     }
-    stale.delete(cacheKey)
-    store(cacheKey, source, templateSource, key, progressSignature(template), outcome)
+    if (markers) {
+      stale.delete(cacheKey)
+      staleProgress.delete(cacheKey)
+      store(cacheKey, source, templateSource, key, progressSignature(template), outcome)
+    } else {
+      rememberProgress(cacheKey, { templateSource, ...outcome }, progressSignature(template))
+      staleProgress.delete(cacheKey)
+      count('mismatch:progress-only tiles scanned')
+    }
     changed++
     notifyChanged()
   })
@@ -1126,6 +1192,56 @@ export const disagreementsIn = (template: PlacedTemplate, tile: TileCoord): Mism
   mismatchAnswer(template, tile, true)
 
 /**
+ * Refresh local progress without producing marker coordinates.
+ *
+ * Marker visibility must not be a hidden prerequisite for the tree and paint-palette totals. This
+ * uses the same comparison and worker, but asks it for aggregate counts only; no mismatch list enters
+ * the marker cache or the GPU path.
+ */
+export const progressIn = (template: PlacedTemplate, tile: TileCoord): boolean => {
+  const cacheKey = `${template.id}|${tile.x}/${tile.y}`
+  requestedThisFrame?.add(cacheKey)
+  const progressKey = progressSignature(template)
+  const held = progressCoverage.get(cacheKey)
+  if (
+    held !== undefined &&
+    held.templateSource === template.indices &&
+    held.key === progressKey &&
+    !staleProgress.has(cacheKey)
+  )
+    return true
+
+  const pixels = tilePixels(tile)
+  if (pixels === null) {
+    ensureTilePixels(tile)
+    return false
+  }
+  const key = signature(template)
+  if (hasWorker()) {
+    requestScan(
+      template,
+      pixels,
+      cacheKey,
+      key,
+      buildJob(template, tile, pixels, true, false),
+      false,
+    )
+    return true
+  }
+  if (performance.now() >= scanDeadline) return false
+
+  const outcome = measureProfile('Mismatch progress scan', () =>
+    scanTile(buildJob(template, tile, pixels, false, false), template.indices),
+  )
+  rememberProgress(cacheKey, { templateSource: template.indices, ...outcome }, progressKey)
+  staleProgress.delete(cacheKey)
+  changed++
+  count('mismatch:progress-only tiles scanned')
+  notifyChanged()
+  return true
+}
+
+/**
  * Update one cached answer for one changed pixel, instead of asking the tile again.
  *
  * Painting is the moment this matters. A placed pixel changes exactly one cell, and the write that
@@ -1168,6 +1284,16 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
   for (const key of keys) patchCount.set(key, (patchCount.get(key) ?? 0) + 1)
   for (const key of inFlight.keys()) {
     if (key.endsWith(suffix) && !cache.has(key)) patchCount.set(key, (patchCount.get(key) ?? 0) + 1)
+  }
+  let invalidatedProgressOnly = false
+  for (const key of progressCoverage.keys()) {
+    if (!key.endsWith(suffix) || cache.has(key)) continue
+    staleProgress.add(key)
+    invalidatedProgressOnly = true
+  }
+  if (invalidatedProgressOnly) {
+    changed++
+    count('mismatch:progress-only tile invalidated')
   }
   // Read once. This runs per announced pixel, and a tile re-read announces every pixel that moved —
   // hundreds to thousands in one go. `localTemplates()` copies and sorts the whole list, so asking
@@ -1227,8 +1353,17 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     }
     const plus = (marks: Mismatches): Mismatches => {
       const next = new Uint32Array(marks.length + 1)
-      next.set(marks)
-      next[marks.length] = mark
+      const coordinate = markCoordinate(mark)
+      let low = 0
+      let high = marks.length
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2)
+        if (markCoordinate(marks[middle] as number) < coordinate) low = middle + 1
+        else high = middle
+      }
+      next.set(marks.subarray(0, low))
+      next[low] = mark
+      next.set(marks.subarray(low), low + 1)
       return next
     }
 
@@ -1333,8 +1468,13 @@ onTilePixels((tile, triples) => {
       }
       patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)
     }
+    for (const cacheKey of progressCoverage.keys()) {
+      if (!cacheKey.endsWith(suffix) || cache.has(cacheKey)) continue
+      staleProgress.add(cacheKey)
+      invalidated = true
+    }
     if (invalidated) {
-      scheduleIdleScan()
+      if (stale.size > 0) scheduleIdleScan()
       changed++
     }
   } else {
@@ -1384,6 +1524,9 @@ export const forgetMismatches = (id: string): void => {
   }
   for (const key of [...stale]) {
     if (key.startsWith(`${id}|`)) stale.delete(key)
+  }
+  for (const key of [...staleProgress]) {
+    if (key.startsWith(`${id}|`)) staleProgress.delete(key)
   }
   for (const key of [...supersededServerSource.keys()]) {
     if (key.startsWith(`${id}|`)) supersededServerSource.delete(key)

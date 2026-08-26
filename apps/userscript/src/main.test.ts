@@ -30,6 +30,7 @@ vi.mock('./gl/layer.js', () => ({
 }))
 vi.mock('./gl/markers.js', () => ({
   keepMarkersAboveDrafts: vi.fn(),
+  markerDensityMemoryBytes: vi.fn(() => 0),
   markerGpuMemoryBytes: vi.fn(() => 0),
 }))
 vi.mock('./map-handle.js', () => ({

@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   localListeners: [] as Array<() => void>,
   mismatchListeners: [] as Array<() => void>,
   statusListeners: [] as Array<() => void>,
+  paintListeners: [] as Array<() => void>,
   navigateTo: vi.fn(),
   nearestColourTarget: vi.fn(async (_index: number, kind: 'unpainted' | 'mismatched') => ({
     templateId: 'local',
@@ -57,7 +58,9 @@ vi.mock('./templates/mismatch.js', () => ({
   onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
 }))
 vi.mock('./templates/navigate.js', () => ({ navigateTo: harness.navigateTo }))
-vi.mock('./wplace-paint.js', () => ({ onPaintSelectionChange: vi.fn() }))
+vi.mock('./wplace-paint.js', () => ({
+  onPaintSelectionChange: (listener: () => void) => harness.paintListeners.push(listener),
+}))
 
 beforeEach(() => {
   document.body.replaceChildren()
@@ -116,5 +119,15 @@ describe('Wplace paint palette progress', () => {
       width: 1,
       height: 1,
     })
+
+    swatch.remove()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    const remounted = document.createElement('button')
+    remounted.id = 'color-1'
+    remounted.setAttribute('aria-label', 'Black')
+    document.body.appendChild(remounted)
+    harness.paintListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(remounted.querySelector('.caelestis-palette-progress')?.textContent).toBe('80%')
   })
 })

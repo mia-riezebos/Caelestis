@@ -1,6 +1,7 @@
 import { decodeMismatchMask, encodeMismatchMask, type MismatchMask, WRONG } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './local-store.js'
+import { markLocalX } from './mismatch-marks.js'
 import type { ScanOutcome } from './mismatch-scan.js'
 
 const harness = vi.hoisted(() => ({
@@ -8,7 +9,9 @@ const harness = vi.hoisted(() => ({
   templates: [] as PlacedTemplate[],
   serverMask: null as MismatchMask | null,
   workerAvailable: false,
+  markersEnabled: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
+  idleCallbacks: [] as Array<(deadline: { timeRemaining: () => number }) => void>,
   onTilePixels: vi.fn(),
   onTilePixelsEvicted: vi.fn(),
 }))
@@ -32,7 +35,11 @@ vi.mock('../server-mismatch.js', () => ({
 }))
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
 vi.mock('./local-store.js', () => ({
-  appearanceOf: () => ({ markUnpainted: false }),
+  appearanceOf: () => ({
+    markMismatch: harness.markersEnabled,
+    markSelectedColour: false,
+    markUnpainted: false,
+  }),
   displayTemplates: () => harness.templates,
   isTemplateVisible: () => true,
   onLocalChange: vi.fn(),
@@ -71,7 +78,15 @@ beforeEach(() => {
   harness.pixels.fill(1)
   harness.serverMask = null
   harness.workerAvailable = false
+  harness.markersEnabled = true
   harness.workerScan.mockReset()
+  harness.idleCallbacks = []
+  vi.stubGlobal(
+    'requestIdleCallback',
+    (callback: (deadline: { timeRemaining: () => number }) => void) => {
+      harness.idleCallbacks.push(callback)
+    },
+  )
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
 })
@@ -83,6 +98,79 @@ describe('visible mismatch answer retention', () => {
     expect(wantsTilePixels()).toBe(true)
     expect(wantsTilePixels({ x: 0, y: 0 })).toBe(true)
     expect(wantsTilePixels({ x: 1, y: 0 })).toBe(false)
+  })
+
+  it('keeps pixel capture for local progress when every marker is disabled', async () => {
+    harness.markersEnabled = false
+    const { wantsTilePixels } = await import('./mismatch.js')
+
+    expect(wantsTilePixels()).toBe(true)
+    expect(wantsTilePixels({ x: 0, y: 0 })).toBe(true)
+  })
+
+  it('does not capture server template pixels when its markers are disabled', async () => {
+    harness.markersEnabled = false
+    harness.templates = [{ ...template(200), serverUrl: 'https://templates.example' }]
+    const { wantsTilePixels } = await import('./mismatch.js')
+
+    expect(wantsTilePixels()).toBe(false)
+    expect(wantsTilePixels({ x: 0, y: 0 })).toBe(false)
+  })
+
+  it('keeps local progress current without retaining marker answers', async () => {
+    harness.markersEnabled = false
+    const selected = template(201)
+    harness.templates = [selected]
+    const { beginMismatchFrame, endMismatchFrame, progressFor, progressIn } = await import(
+      './mismatch.js'
+    )
+
+    beginMismatchFrame()
+    expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
+    endMismatchFrame()
+    expect(progressFor(selected)).toMatchObject({ completed: 0, mismatched: 1, known: 1 })
+
+    harness.pixels[0] = 0
+    const listener = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+    listener?.({ x: 0, y: 0 }, [0, 0, 0])
+    beginMismatchFrame()
+    expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
+    endMismatchFrame()
+    expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 })
+  })
+
+  it('retries a rejected progress-only worker scan while idle', async () => {
+    harness.markersEnabled = false
+    harness.workerAvailable = true
+    const selected = template(202)
+    harness.templates = [selected]
+    const outcome: ScanOutcome = {
+      wrong: new Uint32Array(0),
+      unpainted: new Uint32Array(0),
+      asserted: 1,
+      completed: 1,
+      mismatched: 0,
+      progressUnpainted: 0,
+      progressAsserted: 1,
+      progressByColour: new Uint32Array([0, 1, 0, 0]),
+    }
+    harness.workerScan.mockResolvedValueOnce(null).mockResolvedValueOnce(outcome)
+    const { beginMismatchFrame, endMismatchFrame, progressFor, progressIn } = await import(
+      './mismatch.js'
+    )
+
+    beginMismatchFrame()
+    expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
+    endMismatchFrame()
+    await vi.waitFor(() => expect(harness.idleCallbacks).toHaveLength(1))
+
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 10 })
+    await vi.waitFor(() => expect(harness.workerScan).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() =>
+      expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 }),
+    )
   })
 
   it('keeps every answer requested by one visible frame', async () => {
@@ -136,6 +224,25 @@ describe('visible mismatch answer retention', () => {
     beginMismatchFrame()
     expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toHaveLength(129)
     endMismatchFrame()
+  })
+
+  it('keeps merged wrong and unpainted marks in row-major order', async () => {
+    const mixed = {
+      ...template(201),
+      width: 3,
+      indices: new Uint8Array([0, 0, 0]),
+      opaque: 3,
+    }
+    harness.pixels[0] = 1
+    harness.pixels[1] = 255
+    harness.pixels[2] = 1
+    const { beginMismatchFrame, disagreementsIn, endMismatchFrame } = await import('./mismatch.js')
+
+    beginMismatchFrame()
+    const marks = disagreementsIn(mixed, { x: 0, y: 0 })
+    endMismatchFrame()
+
+    expect(marks && [...marks].map(markLocalX)).toEqual([0, 1, 2])
   })
 
   it('expands a server mask asynchronously when the worker is available', async () => {

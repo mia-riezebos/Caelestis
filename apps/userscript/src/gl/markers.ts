@@ -16,6 +16,7 @@ import {
   disagreementsIn,
   endMismatchFrame,
   mismatchesIn,
+  progressIn,
 } from '../templates/mismatch.js'
 import type { MismatchMarks } from '../templates/mismatch-marks.js'
 import { horizontalSpans } from '../templates/placement.js'
@@ -27,7 +28,14 @@ import {
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { markerFades, templateFades } from './fade.js'
-import { markerSampleLimit, sampleMarkers } from './marker-sample.js'
+import {
+  beginMarkerDensityFrame,
+  endMarkerDensityFrame,
+  markerDensityMemoryBytes,
+  viewportMarkerBatches,
+} from './marker-density.js'
+
+export { markerDensityMemoryBytes }
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -409,8 +417,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     mismatchFade: number
     selectedFade: number
   }[] = []
+  const progressOnly: PlacedTemplate[] = []
   const markerKeys = new Set<string>()
-  const trackProgress = true
   for (const template of displayTemplates()) {
     const appearance = appearanceOf(template)
     const mismatchKey = `mismatch:${template.id}`
@@ -438,7 +446,14 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     if (!templateFade.done) animating = true
     const mismatchFade = mismatch.value * templateFade.value
     const selectedFade = selectedMarker.value * templateFade.value
-    if (mismatchFade > 0 || selectedFade > 0 || (trackProgress && isTemplateVisible(template))) {
+    if (
+      template.serverUrl === undefined &&
+      isTemplateVisible(template) &&
+      mismatchFade === 0 &&
+      selectedFade === 0
+    )
+      progressOnly.push(template)
+    if (mismatchFade > 0 || selectedFade > 0) {
       wanted.push({ template, mismatchFade, selectedFade })
     }
   }
@@ -447,9 +462,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     const map = getMap() as { triggerRepaint?: () => void } | null
     map?.triggerRepaint?.()
   }
-  if (wanted.length === 0) return
-
-  count('marker:layer rendered')
+  if (wanted.length > 0) count('marker:layer rendered')
   // Only the tiles a template covers. Asking about a tile is not free — one whose pixels have not
   // been captured triggers a fetch and a 1000x1000 `getImageData`.
   const covers = (template: PlacedTemplate, tile: TileQuad): boolean => {
@@ -471,12 +484,19 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     marks: MismatchMarks
     style: MarkerStyle
     fade: number
+    padding: number
   }
   const selectedWork: Work[] = []
   const mismatchWork: Work[] = []
   let deferred = false
+  for (const template of progressOnly) {
+    for (const tile of tiles) {
+      if (covers(template, tile) && !progressIn(template, tile.tile)) deferred = true
+    }
+  }
   const scale = deviceScale(gl)
-  const mismatchSelection = getState().onlySelectedColour && isPaintOpen() ? selected : -1
+  const { markerBudget, onlySelectedColour } = getState()
+  const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
     const mismatchStyle: MarkerStyle = {
@@ -506,32 +526,48 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
         const disagreements = disagreementsIn(template, tile.tile)
         if (disagreements === null) deferred = true
         else {
-          const marks = sampleMarkers(
-            colourMarksIn(disagreements, selected),
-            markerSampleLimit(tile.width, tile.height, appearance.selectedMarkerSize * scale),
-          )
+          const marks = colourMarksIn(disagreements, selected)
           if (marks.length > 0) {
-            selectedWork.push({ tile, marks, style: selectedStyle, fade: selectedFade })
+            selectedWork.push({
+              tile,
+              marks,
+              style: selectedStyle,
+              fade: selectedFade,
+              padding: (selectedStyle.size * scale) / 2,
+            })
           }
         }
       }
-      const mismatches = mismatchesIn(template, tile.tile)
-      if (mismatches === null) deferred = true
-      else if (mismatchFade > 0 && mismatches.length > 0) {
-        mismatchWork.push({
-          tile,
-          marks: sampleMarkers(
-            mismatches,
-            markerSampleLimit(tile.width, tile.height, appearance.markerSize * scale),
-          ),
-          style: mismatchStyle,
-          fade: mismatchFade,
-        })
+      if (mismatchFade > 0) {
+        const mismatches = mismatchesIn(template, tile.tile)
+        if (mismatches === null) deferred = true
+        else if (mismatches.length > 0) {
+          mismatchWork.push({
+            tile,
+            marks: mismatches,
+            style: mismatchStyle,
+            fade: mismatchFade,
+            padding: (mismatchStyle.size * scale) / 2,
+          })
+        }
       }
     }
   }
-  count('marker:selected-colour tiles with marks', selectedWork.length)
-  count('marker:mismatch tiles with marks', mismatchWork.length)
+  const viewport = { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }
+  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, markerBudget)
+  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, markerBudget)
+  count('marker:selected-colour tiles with marks', visibleSelectedWork.length)
+  count('marker:mismatch tiles with marks', visibleMismatchWork.length)
+
+  if (visibleSelectedWork.length === 0 && visibleMismatchWork.length === 0) {
+    if (deferred && now >= nextRetry) {
+      nextRetry = now + RETRY_MS
+      const map = getMap() as { triggerRepaint?: () => void } | null
+      map?.triggerRepaint?.()
+      count('marker:asked for another frame')
+    }
+    return
+  }
 
   const hadBlend = gl.isEnabled(gl.BLEND)
   const hadDepth = gl.isEnabled(gl.DEPTH_TEST)
@@ -552,8 +588,8 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   // has to mean skipping it cleanly, in both files.
   try {
     // The selected colour is a guide; a real mismatch is the error signal and wins where they meet.
-    for (const one of selectedWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
-    for (const one of mismatchWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+    for (const one of visibleSelectedWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+    for (const one of visibleMismatchWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
   } finally {
     gl.bindVertexArray(previousVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
@@ -573,11 +609,13 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 
 const drawAll = (gl: WebGL2RenderingContext): void => {
   usedMarkerBuffers.clear()
+  beginMarkerDensityFrame()
   beginMismatchFrame()
   try {
     drawVisible(gl)
   } finally {
     endMismatchFrame()
+    endMarkerDensityFrame()
     for (const [pixels, held] of markerBuffers) {
       if (usedMarkerBuffers.has(pixels)) continue
       gl.deleteBuffer(held)
