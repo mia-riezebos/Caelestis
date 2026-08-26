@@ -4,6 +4,6 @@
 
 Keep dense mismatch and selected-colour markers useful without overwhelming slower clients.
 
-- Share a configurable marker budget evenly across the visible viewport instead of dropping whole regions at fixed zoom levels.
-- Avoid mismatch work for templates whose markers are disabled while keeping local paint updates immediate.
+- Protect isolated markers while sharing a configurable dense-marker target evenly across crowded parts of the visible viewport.
+- Avoid mismatch-list and GPU work for templates whose markers are disabled, using count-only scans where local progress still needs them.
 - Restore template overlays and markers after Wplace replaces its basemap style during light or dark theme changes.

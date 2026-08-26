@@ -198,7 +198,11 @@ const runScan = async (job: ScanJob, indices: Uint8Array): Promise<ScanOutcome |
     return null
   }
   recordProfileDuration(
-    job.kind === 'mask' ? 'Server mismatch scan' : 'Mismatch scan',
+    job.collectMarkers === false
+      ? 'Mismatch progress scan'
+      : job.kind === 'mask'
+        ? 'Server mismatch scan'
+        : 'Mismatch scan',
     reply.durationMs ?? 0,
     'worker',
   )

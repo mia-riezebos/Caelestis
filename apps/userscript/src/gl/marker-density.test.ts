@@ -1,6 +1,6 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { afterEach, describe, expect, it } from 'vitest'
-import { markLocalY, packMismatchMark } from '../templates/mismatch-marks.js'
+import { markLocalX, markLocalY, packMismatchMark } from '../templates/mismatch-marks.js'
 import {
   beginMarkerDensityFrame,
   endMarkerDensityFrame,
@@ -86,6 +86,50 @@ describe('viewport marker density', () => {
     expect(visible[1]?.marks.length).toBeGreaterThan(0)
     expect(markLocalY(visible[0]?.marks[0] as number)).toBe(0)
     expect(markLocalY(visible[1]?.marks.at(-1) as number)).toBe(99)
+  })
+
+  it('protects an isolated marker while sampling a dense cluster', () => {
+    const dense = grid(200, 100)
+    const marks = new Uint32Array(dense.length + 1)
+    marks.set(dense)
+    marks[dense.length] = packMismatchMark(900, 900, 1)
+
+    const [visible] = viewportMarkerBatches(
+      [
+        {
+          ...batch(marks),
+          tile: { tile: { x: 0, y: 0 }, x: 0, y: 0, width: TILE_SIZE, height: TILE_SIZE },
+        },
+      ],
+      { width: TILE_SIZE, height: TILE_SIZE },
+      100,
+    )
+
+    expect(visible?.marks).toHaveLength(100)
+    expect(
+      visible?.marks.some((mark) => markLocalX(mark) === 900 && markLocalY(mark) === 900),
+    ).toBe(true)
+  })
+
+  it('keeps sparse markers even when they exceed the soft target', () => {
+    const marks = new Uint32Array([
+      packMismatchMark(10, 10, 1),
+      packMismatchMark(500, 500, 1),
+      packMismatchMark(900, 900, 1),
+    ])
+
+    const [visible] = viewportMarkerBatches(
+      [
+        {
+          ...batch(marks),
+          tile: { tile: { x: 0, y: 0 }, x: 0, y: 0, width: TILE_SIZE, height: TILE_SIZE },
+        },
+      ],
+      { width: TILE_SIZE, height: TILE_SIZE },
+      1,
+    )
+
+    expect(visible?.marks).toEqual(marks)
   })
 
   it('reuses stable samples so WebGL buffers are not uploaded again every frame', () => {

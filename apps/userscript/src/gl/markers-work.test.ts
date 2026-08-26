@@ -16,7 +16,10 @@ const fixture = vi.hoisted(() => ({
   marks: new Uint32Array(0),
   mismatchesIn: vi.fn(),
   disagreementsIn: vi.fn(),
+  progressIn: vi.fn(() => true),
   markerBudget: 16_384,
+  paintOpen: false,
+  selected: null as number | null,
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
@@ -52,6 +55,7 @@ vi.mock('../templates/mismatch.js', () => ({
   disagreementsIn: fixture.disagreementsIn,
   endMismatchFrame: vi.fn(),
   mismatchesIn: fixture.mismatchesIn,
+  progressIn: fixture.progressIn,
 }))
 vi.mock('../templates/placement.js', () => ({
   horizontalSpans: () => [{ worldStart: 0, worldEnd: 1_000 }],
@@ -61,7 +65,10 @@ vi.mock('../tile-transform.js', () => ({
   isDrawingTiles: () => true,
   registerDraftCanvas: vi.fn(),
 }))
-vi.mock('../wplace-paint.js', () => ({ isPaintOpen: () => false, selectedColour: () => null }))
+vi.mock('../wplace-paint.js', () => ({
+  isPaintOpen: () => fixture.paintOpen,
+  selectedColour: () => fixture.selected,
+}))
 vi.mock('./fade.js', () => ({
   markerFades: {
     advance: (_id: string, target: number) => ({ value: target, done: true }),
@@ -142,7 +149,10 @@ describe('marker work selection', () => {
     fixture.marks = new Uint32Array(0)
     fixture.mismatchesIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
+    fixture.progressIn.mockReset().mockReturnValue(true)
     fixture.markerBudget = 16_384
+    fixture.paintOpen = false
+    fixture.selected = null
   })
 
   it('does not calculate mismatch answers for a template whose markers are disabled', async () => {
@@ -152,6 +162,7 @@ describe('marker work selection', () => {
 
     expect(fixture.mismatchesIn).not.toHaveBeenCalled()
     expect(fixture.disagreementsIn).not.toHaveBeenCalled()
+    expect(fixture.progressIn).toHaveBeenCalledOnce()
   })
 
   it('draws every known mismatch without density sampling', async () => {
@@ -177,6 +188,23 @@ describe('marker work selection', () => {
 
     markerLayer.render(gl)
 
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 100)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('applies the same viewport budget to selected-colour markers', async () => {
+    fixture.appearance.markSelectedColour = true
+    fixture.markerBudget = 100
+    fixture.paintOpen = true
+    fixture.selected = 1
+    fixture.marks = new Uint32Array(1_000)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(fixture.disagreementsIn).toHaveBeenCalledOnce()
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 100)
     markerLayer.onRemove(null, gl)
   })

@@ -16,6 +16,7 @@ import {
   disagreementsIn,
   endMismatchFrame,
   mismatchesIn,
+  progressIn,
 } from '../templates/mismatch.js'
 import type { MismatchMarks } from '../templates/mismatch-marks.js'
 import { horizontalSpans } from '../templates/placement.js'
@@ -416,6 +417,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     mismatchFade: number
     selectedFade: number
   }[] = []
+  const progressOnly: PlacedTemplate[] = []
   const markerKeys = new Set<string>()
   for (const template of displayTemplates()) {
     const appearance = appearanceOf(template)
@@ -444,6 +446,13 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     if (!templateFade.done) animating = true
     const mismatchFade = mismatch.value * templateFade.value
     const selectedFade = selectedMarker.value * templateFade.value
+    if (
+      template.serverUrl === undefined &&
+      isTemplateVisible(template) &&
+      mismatchFade === 0 &&
+      selectedFade === 0
+    )
+      progressOnly.push(template)
     if (mismatchFade > 0 || selectedFade > 0) {
       wanted.push({ template, mismatchFade, selectedFade })
     }
@@ -453,9 +462,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     const map = getMap() as { triggerRepaint?: () => void } | null
     map?.triggerRepaint?.()
   }
-  if (wanted.length === 0) return
-
-  count('marker:layer rendered')
+  if (wanted.length > 0) count('marker:layer rendered')
   // Only the tiles a template covers. Asking about a tile is not free — one whose pixels have not
   // been captured triggers a fetch and a 1000x1000 `getImageData`.
   const covers = (template: PlacedTemplate, tile: TileQuad): boolean => {
@@ -482,6 +489,11 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const selectedWork: Work[] = []
   const mismatchWork: Work[] = []
   let deferred = false
+  for (const template of progressOnly) {
+    for (const tile of tiles) {
+      if (covers(template, tile) && !progressIn(template, tile.tile)) deferred = true
+    }
+  }
   const scale = deviceScale(gl)
   const { markerBudget, onlySelectedColour } = getState()
   const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
@@ -546,6 +558,16 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, markerBudget)
   count('marker:selected-colour tiles with marks', visibleSelectedWork.length)
   count('marker:mismatch tiles with marks', visibleMismatchWork.length)
+
+  if (visibleSelectedWork.length === 0 && visibleMismatchWork.length === 0) {
+    if (deferred && now >= nextRetry) {
+      nextRetry = now + RETRY_MS
+      const map = getMap() as { triggerRepaint?: () => void } | null
+      map?.triggerRepaint?.()
+      count('marker:asked for another frame')
+    }
+    return
+  }
 
   const hadBlend = gl.isEnabled(gl.BLEND)
   const hadDepth = gl.isEnabled(gl.DEPTH_TEST)

@@ -1067,7 +1067,7 @@ const appearanceView = (): HTMLElement => {
   view.appendChild(
     settingRow(
       'Visible marker limit',
-      'Maximum markers per kind across the viewport. Higher limits use more GPU time and memory.',
+      'Dense-marker target per kind across the viewport. Isolated markers stay visible; higher targets use more GPU time and memory.',
       markerBudget,
     ),
   )

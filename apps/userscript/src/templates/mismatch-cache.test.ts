@@ -92,12 +92,45 @@ describe('visible mismatch answer retention', () => {
     expect(wantsTilePixels({ x: 1, y: 0 })).toBe(false)
   })
 
-  it('does not request pixel capture when every template has markers disabled', async () => {
+  it('keeps pixel capture for local progress when every marker is disabled', async () => {
     harness.markersEnabled = false
+    const { wantsTilePixels } = await import('./mismatch.js')
+
+    expect(wantsTilePixels()).toBe(true)
+    expect(wantsTilePixels({ x: 0, y: 0 })).toBe(true)
+  })
+
+  it('does not capture server template pixels when its markers are disabled', async () => {
+    harness.markersEnabled = false
+    harness.templates = [{ ...template(200), serverUrl: 'https://templates.example' }]
     const { wantsTilePixels } = await import('./mismatch.js')
 
     expect(wantsTilePixels()).toBe(false)
     expect(wantsTilePixels({ x: 0, y: 0 })).toBe(false)
+  })
+
+  it('keeps local progress current without retaining marker answers', async () => {
+    harness.markersEnabled = false
+    const selected = template(201)
+    harness.templates = [selected]
+    const { beginMismatchFrame, endMismatchFrame, progressFor, progressIn } = await import(
+      './mismatch.js'
+    )
+
+    beginMismatchFrame()
+    expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
+    endMismatchFrame()
+    expect(progressFor(selected)).toMatchObject({ completed: 0, mismatched: 1, known: 1 })
+
+    harness.pixels[0] = 0
+    const listener = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+    listener?.({ x: 0, y: 0 }, [0, 0, 0])
+    beginMismatchFrame()
+    expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
+    endMismatchFrame()
+    expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 })
   })
 
   it('keeps every answer requested by one visible frame', async () => {

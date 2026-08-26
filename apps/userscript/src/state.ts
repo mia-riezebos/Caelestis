@@ -146,7 +146,7 @@ export interface State {
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
   readonly onlySelectedColour: boolean
-  /** Maximum mismatch or selected-colour markers submitted across one viewport. */
+  /** Target mismatch or selected-colour markers submitted across one viewport. */
   readonly markerBudget: number
   readonly localFolders: readonly LocalFolder[]
   readonly hiddenScopes: readonly string[]
