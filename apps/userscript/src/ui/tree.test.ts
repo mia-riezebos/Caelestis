@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MAX_TREE_NODES } from '../server-manifest.js'
 
 const serverCache = vi.hoisted(() => ({ cacheServer: vi.fn(async () => undefined) }))
 
@@ -12,7 +13,6 @@ import {
   type ConnectedServer,
   getState,
   listServerContents,
-  MAX_TREE_NODES,
   peekProbedNodes,
   probeServer,
   setState,

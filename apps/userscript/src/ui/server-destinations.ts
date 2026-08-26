@@ -1,4 +1,4 @@
-import type { TreeNode } from '../state.js'
+import type { TreeNode } from '../server-manifest.js'
 
 export interface ServerDestinationChoice {
   readonly nodeId: string | null

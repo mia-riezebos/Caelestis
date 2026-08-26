@@ -118,11 +118,11 @@ describe('server cache persistence', () => {
   })
 
   it('stops reading before later records can exceed the aggregate node budget', async () => {
-    vi.doMock('./state.js', () => ({
+    vi.doMock('./server-manifest.js', () => ({
       MAX_MANIFEST_CHUNKS: 2,
       MAX_MANIFEST_TEMPLATES: 2,
       MAX_TREE_NODES: 2,
-      validateTreeNodes: vi.fn((value: unknown) => (Array.isArray(value) ? value : null)),
+      parseTreeNodes: vi.fn((value: unknown) => (Array.isArray(value) ? value : null)),
     }))
     const first = {
       url: 'https://first.example.com',
@@ -161,11 +161,11 @@ describe('server cache persistence', () => {
   })
 
   it('stops before cached servers exceed aggregate template and chunk budgets', async () => {
-    vi.doMock('./state.js', () => ({
+    vi.doMock('./server-manifest.js', () => ({
       MAX_MANIFEST_CHUNKS: 1,
       MAX_MANIFEST_TEMPLATES: 1,
       MAX_TREE_NODES: 2,
-      validateTreeNodes: vi.fn((value: unknown) => (Array.isArray(value) ? value : null)),
+      parseTreeNodes: vi.fn((value: unknown) => (Array.isArray(value) ? value : null)),
     }))
     const first = {
       url: 'https://first.example.com',

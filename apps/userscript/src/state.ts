@@ -1,8 +1,16 @@
-import { PALETTE_SIZE, TILE_SIZE, WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
+import { PALETTE_SIZE } from '@caelestis/shared'
 import { log, warn } from './debug.js'
 import { DEFAULT_MARKER_BUDGET, normaliseMarkerBudget } from './marker-budget.js'
 import { discardResponseBody } from './response.js'
 import type { ServerTemplate } from './server-cache.js'
+import {
+  parseServerInfo,
+  parseServerManifest,
+  parseTreeNode,
+  parseTreeNodes,
+  type ServerInfo,
+  type TreeNode,
+} from './server-manifest.js'
 import { canonicalServerUrl, serverEndpoint } from './server-url.js'
 import {
   APPEARANCE_GROUPS,
@@ -28,15 +36,6 @@ import { DEFAULT_SORT, type SortOrder } from './ui/sort.js'
 
 const STORAGE_KEY = 'caelestis.state.v2'
 const LEGACY_STORAGE_KEY = 'caelestis.state.v1'
-
-export type ServerAuthMode = 'none' | 'access_token'
-
-export interface ServerInfo {
-  readonly id: string
-  readonly name: string
-  readonly description?: string
-  readonly auth: ServerAuthMode
-}
 
 export interface ConnectedServer {
   /** Host and optional base path as the user typed them, normalised — the connection identity. */
@@ -116,15 +115,6 @@ export interface LocalFolder {
   readonly visible: boolean
 }
 
-export interface TreeNode {
-  readonly id: string
-  readonly parentId: string | null
-  readonly path: string
-  readonly name: string
-  readonly description?: string
-  readonly createdAt: number
-}
-
 /** Browser-owned drawing preferences for an overlay whose pixels remain server-owned. */
 export interface ServerTemplatePreference {
   readonly id: string
@@ -174,15 +164,7 @@ const DEFAULT_STATE: State = {
 }
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const SHA256_HEX = /^[0-9a-f]{64}$/
-const NODE_PATH = /^(\/[\p{L}\p{N}][\p{L}\p{N}\p{M}. -]*)+$/u
-export const MAX_TREE_NODES = 100_000
-export const MAX_MANIFEST_TEMPLATES = 100_000
-export const MAX_MANIFEST_CHUNKS = 200_000
-const MAX_MANIFEST_TILES = WORLD_TILES * WORLD_TILES
 const MAX_CUSTOM_ORDER = 200_000
-const MIN_EPOCH_MILLISECONDS = 1_577_836_800_000 // 2020-01-01
-const MAX_EPOCH_MILLISECONDS = 4_102_444_800_000 // 2100-01-01
 export const MAX_CONNECTED_SERVERS = 32
 /** At most every admitted overlay for every configured server may retain a local preference. */
 export const MAX_SERVER_TEMPLATE_PREFERENCES = MAX_CONNECTED_SERVERS * 64
@@ -250,12 +232,6 @@ const gatedManifestJson = async (
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
-
-const plausibleMillis = (value: unknown): value is number =>
-  typeof value === 'number' &&
-  Number.isSafeInteger(value) &&
-  value >= MIN_EPOCH_MILLISECONDS &&
-  value < MAX_EPOCH_MILLISECONDS
 
 const readBoundedJson = async (response: Response, maxBytes: number): Promise<unknown> => {
   const declared = Number(response.headers.get('content-length'))
@@ -330,288 +306,7 @@ const remoteJson = async (
     body: await readBoundedJson(response, maxBytes),
   }))
 
-const serverInfoFrom = (value: unknown): ServerInfo | null => {
-  if (!isRecord(value)) return null
-  if (typeof value.id !== 'string' || !UUID_V7.test(value.id)) return null
-  if (typeof value.name !== 'string' || value.name.length < 1 || value.name.length > 256)
-    return null
-  if (value.auth !== 'none' && value.auth !== 'access_token') return null
-  if (
-    value.description !== undefined &&
-    (typeof value.description !== 'string' ||
-      value.description.length < 1 ||
-      value.description.length > 4_096)
-  )
-    return null
-  return {
-    id: value.id,
-    name: value.name,
-    ...(typeof value.description === 'string' ? { description: value.description } : {}),
-    auth: value.auth,
-  }
-}
-
 export { canonicalServerUrl, serverEndpoint } from './server-url.js'
-
-const treeNodeFrom = (raw: unknown): TreeNode | null => {
-  if (!isRecord(raw)) return null
-  if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id)) return null
-  if (raw.parentId !== null && (typeof raw.parentId !== 'string' || !UUID_V7.test(raw.parentId))) {
-    return null
-  }
-  if (
-    typeof raw.path !== 'string' ||
-    raw.path.length < 1 ||
-    raw.path.length > 256 ||
-    !NODE_PATH.test(raw.path)
-  )
-    return null
-  if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return null
-  if (
-    raw.description !== undefined &&
-    (typeof raw.description !== 'string' ||
-      raw.description.length < 1 ||
-      raw.description.length > 4_096)
-  )
-    return null
-  if (!plausibleMillis(raw.createdAt)) return null
-  return {
-    id: raw.id,
-    parentId: raw.parentId,
-    path: raw.path,
-    name: raw.name,
-    ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
-    createdAt: raw.createdAt,
-  }
-}
-
-const treeNodesFrom = (value: unknown): readonly TreeNode[] | null => {
-  if (!Array.isArray(value) || value.length > MAX_TREE_NODES) return null
-  const nodes: TreeNode[] = []
-  const ids = new Set<string>()
-  for (const raw of value) {
-    const node = treeNodeFrom(raw)
-    if (node === null || ids.has(node.id)) return null
-    ids.add(node.id)
-    nodes.push(node)
-  }
-  const byId = new Map(nodes.map((node) => [node.id, node]))
-  const foldPath = (path: string): string =>
-    path.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
-  const foldedPaths = nodes.map((node) => foldPath(node.path))
-  if (new Set(foldedPaths).size !== foldedPaths.length) return null
-  const validated = new Set<string>()
-  for (const node of nodes) {
-    if (node.parentId === null) {
-      if (node.path.indexOf('/', 1) !== -1) return null
-    } else {
-      const parent = byId.get(node.parentId)
-      if (parent === undefined) return null
-      const path = foldPath(node.path)
-      const parentPath = foldPath(parent.path)
-      if (!path.startsWith(parentPath)) return null
-      const suffix = path.slice(parentPath.length)
-      if (!suffix.startsWith('/') || suffix.indexOf('/', 1) !== -1) return null
-    }
-    if (validated.has(node.id)) continue
-    const path = new Set<string>()
-    let cursor: TreeNode | undefined = node
-    while (cursor !== undefined && !validated.has(cursor.id)) {
-      if (path.has(cursor.id)) return null
-      path.add(cursor.id)
-      if (cursor.parentId !== null && !byId.has(cursor.parentId)) return null
-      cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId)
-    }
-    for (const id of path) validated.add(id)
-  }
-  return nodes
-}
-
-export const validateTreeNodes = (value: unknown): readonly TreeNode[] | null =>
-  treeNodesFrom(value)
-
-const manifestTileKey = (value: unknown): value is string => {
-  if (typeof value !== 'string') return false
-  const match = /^(0|[1-9]\d*)\/(0|[1-9]\d*)$/.exec(value)
-  if (match === null) return false
-  return Number(match[1]) < WORLD_TILES && Number(match[2]) < WORLD_TILES
-}
-
-type ManifestBbox = {
-  readonly minX: number
-  readonly minY: number
-  readonly maxX: number
-  readonly maxY: number
-}
-
-const manifestXSpans = (bbox: ManifestBbox): ReadonlyArray<{ start: number; end: number }> =>
-  bbox.minX < bbox.maxX
-    ? [{ start: bbox.minX, end: bbox.maxX }]
-    : [
-        { start: bbox.minX, end: WORLD_PIXELS },
-        { start: 0, end: bbox.maxX },
-      ]
-
-const tileCoordinates = (tile: string): { x: number; y: number } => {
-  const separator = tile.indexOf('/')
-  return {
-    x: Number(tile.slice(0, separator)),
-    y: Number(tile.slice(separator + 1)),
-  }
-}
-
-const chunkIntersectionArea = (tile: string, bbox: ManifestBbox): number => {
-  const { x, y } = tileCoordinates(tile)
-  const tileMinX = x * TILE_SIZE
-  const tileMinY = y * TILE_SIZE
-  const height = Math.min(tileMinY + TILE_SIZE, bbox.maxY) - Math.max(tileMinY, bbox.minY)
-  if (height <= 0) return 0
-  const width = manifestXSpans(bbox).reduce(
-    (total, span) =>
-      total +
-      Math.max(0, Math.min(tileMinX + TILE_SIZE, span.end) - Math.max(tileMinX, span.start)),
-    0,
-  )
-  return width * height
-}
-
-/**
- * Validate the manifest payload before calling a connection verified.
- *
- * The userscript deliberately keeps Effect out of its browser bundle, so this mirrors the wire
- * boundary with the limits and relationships that protect its later tree/render consumers.
- */
-const manifestContentsValid = (
-  value: Record<string, unknown>,
-  nodes: readonly TreeNode[],
-): boolean => {
-  const rawNodes = value.nodes as readonly unknown[]
-  if (
-    rawNodes.some(
-      (raw) =>
-        !isRecord(raw) ||
-        !plausibleMillis(raw.createdAt) ||
-        (raw.description !== undefined &&
-          (typeof raw.description !== 'string' ||
-            raw.description.length < 1 ||
-            raw.description.length > 4_096)),
-    )
-  ) {
-    return false
-  }
-
-  if (
-    !Array.isArray(value.tiles) ||
-    value.tiles.length > MAX_MANIFEST_TILES ||
-    value.tiles.length > MAX_MANIFEST_CHUNKS
-  )
-    return false
-  const declaredTiles = new Set<string>()
-  for (const tile of value.tiles) {
-    if (!manifestTileKey(tile) || declaredTiles.has(tile)) return false
-    declaredTiles.add(tile)
-  }
-
-  if (!Array.isArray(value.templates) || value.templates.length > MAX_MANIFEST_TEMPLATES) {
-    return false
-  }
-  const nodeIds = new Set(nodes.map((node) => node.id))
-  const templateIds = new Set<string>()
-  const referencedTiles = new Set<string>()
-  let chunks = 0
-  for (const raw of value.templates) {
-    if (!isRecord(raw)) return false
-    if (typeof raw.id !== 'string' || !UUID_V7.test(raw.id) || templateIds.has(raw.id)) return false
-    templateIds.add(raw.id)
-    if (raw.nodeId !== null && (typeof raw.nodeId !== 'string' || !nodeIds.has(raw.nodeId))) {
-      return false
-    }
-    if (typeof raw.name !== 'string' || raw.name.length < 1 || raw.name.length > 256) return false
-    if (typeof raw.version !== 'string' || !UUID_V7.test(raw.version)) return false
-    if (!Number.isSafeInteger(raw.totalPixels) || Number(raw.totalPixels) <= 0) return false
-    if (
-      typeof raw.published !== 'boolean' ||
-      !plausibleMillis(raw.createdAt) ||
-      (raw.updatedAt !== undefined && !plausibleMillis(raw.updatedAt))
-    )
-      return false
-    if (!isRecord(raw.bbox)) return false
-    const { minX, minY, maxX, maxY } = raw.bbox
-    if (
-      ![minX, minY, maxX, maxY].every(Number.isSafeInteger) ||
-      Number(minX) < 0 ||
-      Number(minX) >= WORLD_PIXELS ||
-      Number(maxX) < 1 ||
-      Number(maxX) > WORLD_PIXELS ||
-      // `minX > maxX` is the wire's way of saying the box wraps through zero, and the assembler
-      // already reads it as two spans. Requiring low-to-high in x rejected every conforming server
-      // that publishes a template across the antimeridian, and took the whole manifest with it.
-      Number(minX) === Number(maxX) ||
-      Number(minY) < 0 ||
-      Number(minY) >= WORLD_PIXELS ||
-      Number(maxY) < 1 ||
-      Number(maxY) > WORLD_PIXELS ||
-      Number(minY) >= Number(maxY)
-    ) {
-      return false
-    }
-    if (!Array.isArray(raw.chunks) || raw.chunks.length === 0) return false
-    chunks += raw.chunks.length
-    if (chunks > MAX_MANIFEST_CHUNKS) return false
-    const ownTiles = new Set<string>()
-    let capacity = 0
-    const bbox = {
-      minX: Number(minX),
-      minY: Number(minY),
-      maxX: Number(maxX),
-      maxY: Number(maxY),
-    }
-    for (const chunk of raw.chunks) {
-      if (
-        !isRecord(chunk) ||
-        !manifestTileKey(chunk.tile) ||
-        typeof chunk.hash !== 'string' ||
-        !SHA256_HEX.test(chunk.hash) ||
-        ownTiles.has(chunk.tile)
-      ) {
-        return false
-      }
-      const intersection = chunkIntersectionArea(chunk.tile, bbox)
-      if (intersection === 0) return false
-      capacity += intersection
-      ownTiles.add(chunk.tile)
-      referencedTiles.add(chunk.tile)
-    }
-    if (Number(raw.totalPixels) > capacity) return false
-  }
-  return (
-    referencedTiles.size === declaredTiles.size &&
-    [...referencedTiles].every((tile) => declaredTiles.has(tile))
-  )
-}
-
-const manifestProbeFrom = (
-  value: unknown,
-  expected: ServerInfo,
-): {
-  season: number
-  server: ServerInfo
-  nodes: readonly TreeNode[]
-} | null => {
-  if (
-    !isRecord(value) ||
-    typeof value.version !== 'string' ||
-    value.version.length < 1 ||
-    value.version.length > 64
-  )
-    return null
-  if (!Number.isSafeInteger(value.season) || Number(value.season) < 0) return null
-  const server = serverInfoFrom(value.server)
-  if (server === null || server.id !== expected.id) return null
-  const nodes = treeNodesFrom(value.nodes)
-  if (nodes === null || !manifestContentsValid(value, nodes)) return null
-  return { season: Number(value.season), server, nodes }
-}
 
 // biome-ignore lint/suspicious/noExplicitAny: the GM_* API only exists under a userscript manager
 const gm = globalThis as any
@@ -683,7 +378,7 @@ export const loadState = (): State => {
         }
         if (seenServers.has(url)) continue
         seenServers.add(url)
-        const info = serverInfoFrom(candidate.info)
+        const info = parseServerInfo(candidate.info)
         const storedSeason =
           Number.isSafeInteger(candidate.season) && Number(candidate.season) >= 0
             ? Number(candidate.season)
@@ -1160,7 +855,7 @@ export type NodeListResult =
 
 const nodeListFrom = (body: unknown): readonly TreeNode[] | null => {
   const raw = isRecord(body) && 'nodes' in body ? body.nodes : body
-  return treeNodesFrom(raw)
+  return parseTreeNodes(raw)
 }
 
 const fetchNodes = async (
@@ -1302,7 +997,7 @@ export const probeServer = async (
         season: null,
       }
     }
-    const info = serverInfoFrom(body)
+    const info = parseServerInfo(body)
     if (info === null) throw new TypeError('server returned invalid metadata')
     observedInfo = info
     log('install', `probed ${base}`, { name: info.name, auth: info.auth })
@@ -1362,7 +1057,7 @@ export const probeServer = async (
         season: null,
       }
     }
-    const manifest = manifestProbeFrom(manifestBody, info)
+    const manifest = parseServerManifest(manifestBody, info)
     if (manifest === null) throw new TypeError('server returned an invalid manifest')
     const isAdmin = await probeAdminScope(
       base,
@@ -1479,7 +1174,7 @@ export const createNode = async (
       }),
     })
     if (response.ok) {
-      const node = treeNodeFrom(body)
+      const node = parseTreeNode(body)
       if (node === null || node.parentId !== parentId) {
         return { ok: false, message: 'Server returned an invalid folder.' }
       }
@@ -1902,27 +1597,12 @@ export const listServerContents = async (
     )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null
-    const manifest = manifestProbeFrom(body, server.info)
-    if (manifest === null || manifest.season !== server.season || !isRecord(body)) return null
-    const templates = (body.templates as readonly Record<string, unknown>[]).map(
-      (template): ServerTemplate => ({
-        id: String(template.id),
-        nodeId: template.nodeId === null ? null : String(template.nodeId),
-        name: String(template.name),
-        version: String(template.version),
-        totalPixels: Number(template.totalPixels),
-        published: template.published === true,
-        updatedAt:
-          typeof template.updatedAt === 'number'
-            ? template.updatedAt
-            : typeof template.createdAt === 'number'
-              ? template.createdAt
-              : 0,
-        bbox: template.bbox as ServerTemplate['bbox'],
-        chunks: template.chunks as ServerTemplate['chunks'],
-      }),
-    )
-    const contents: ServerContents = { nodes: manifest.nodes, templates }
+    const manifest = parseServerManifest(body, server.info)
+    if (manifest === null || manifest.season !== server.season) return null
+    const contents: ServerContents = {
+      nodes: manifest.nodes,
+      templates: manifest.templates,
+    }
     manifestResponseOf.set(contents, request)
     const current = getState().servers.find((candidate) => candidate.url === server.url)
     if (
@@ -2064,7 +1744,7 @@ export const renameServer = async (
           {},
           SERVER_JSON_BYTES,
         )
-        if (metadata.response.ok) refreshed = serverInfoFrom(metadata.body)
+        if (metadata.response.ok) refreshed = parseServerInfo(metadata.body)
       } catch {
         // The PATCH already committed. A failed cosmetic refresh must not turn success into failure.
       }

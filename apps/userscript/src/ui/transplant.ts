@@ -1,3 +1,4 @@
+import type { TreeNode } from '../server-manifest.js'
 import {
   addLocalFolders,
   admittedServerContentsFor,
@@ -15,7 +16,6 @@ import {
   nextLocalFolderId,
   patchTemplate,
   removeLocalFolders,
-  type TreeNode,
   uploadTemplate,
 } from '../state.js'
 import {
