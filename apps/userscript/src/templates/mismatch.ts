@@ -240,6 +240,14 @@ const mergeColourProgress = (target: Uint32Array, packed: Uint32Array, direction
  */
 const templateIdOf = (cacheKey: string): string => cacheKey.slice(0, cacheKey.lastIndexOf('|'))
 
+const tileOf = (cacheKey: string, templateId: string): TileCoord | null => {
+  const separator = cacheKey.indexOf('/', templateId.length + 1)
+  if (separator < 0) return null
+  const x = Number(cacheKey.slice(templateId.length + 1, separator))
+  const y = Number(cacheKey.slice(separator + 1))
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+}
+
 const forgetProgress = (cacheKey: string): void => {
   const entry = progressCoverage.get(cacheKey)
   if (entry === undefined) return
@@ -477,20 +485,29 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
   for (const cacheKey of [...stale]) {
     if (performance.now() >= scanDeadline) break
     const id = templateIdOf(cacheKey)
-    const [x, y] = cacheKey
-      .slice(id.length + 1)
-      .split('/')
-      .map(Number)
+    const tile = tileOf(cacheKey, id)
     const template = templatesById.get(id)
-    if (template === undefined || x === undefined || y === undefined) {
+    if (template === undefined || tile === null) {
       stale.delete(cacheKey)
       continue
     }
-    mismatchesIn(template, { x, y })
+    mismatchesIn(template, tile)
     count('mismatch:rescanned while idle')
   }
+  for (const cacheKey of [...staleProgress]) {
+    if (performance.now() >= scanDeadline) break
+    const id = templateIdOf(cacheKey)
+    const tile = tileOf(cacheKey, id)
+    const template = templatesById.get(id)
+    if (template === undefined || tile === null) {
+      staleProgress.delete(cacheKey)
+      continue
+    }
+    progressIn(template, tile)
+    count('mismatch:progress-only rescanned while idle')
+  }
   scanDeadline = 0
-  if (stale.size > 0) scheduleIdleScan()
+  if (stale.size > 0 || staleProgress.size > 0) scheduleIdleScan()
   notifyChanged()
 }
 
@@ -1002,6 +1019,7 @@ const requestScan = (
     (pending.markers || !markers)
   ) {
     if (pending.markers) stale.delete(cacheKey)
+    staleProgress.delete(cacheKey)
     return
   }
   // Identity by object, so the reply can tell "the entry is still mine" from "the answer is still
@@ -1017,6 +1035,7 @@ const requestScan = (
   }
   inFlight.set(cacheKey, mine)
   if (markers) stale.delete(cacheKey)
+  staleProgress.delete(cacheKey)
   void scanInWorker(job, template.indices).then((outcome) => {
     // A later request replaced the entry, so it owns this key now and this reply is nobody's.
     if (inFlight.get(cacheKey) !== mine) return
@@ -1024,10 +1043,9 @@ const requestScan = (
     if (outcome === null || (patchCount.get(cacheKey) ?? 0) !== patchesAtStart) {
       // Either no worker to be had, or the ground moved under this scan while it ran. Both mean the
       // answer is not usable and the tile still needs one, so ask again rather than dropping it.
-      if (markers) {
-        stale.add(cacheKey)
-        scheduleIdleScan()
-      } else staleProgress.add(cacheKey)
+      if (markers) stale.add(cacheKey)
+      staleProgress.add(cacheKey)
+      scheduleIdleScan()
       return
     }
     if (markers) {

@@ -46,8 +46,26 @@ interface DensityAnalysis {
   readonly dense: MismatchMarks
 }
 
-const densityAnalyses = new Map<MismatchMarks, DensityAnalysis>()
-const usedDensityAnalyses = new Set<MismatchMarks>()
+interface DensityBatchSnapshot {
+  readonly marks: MismatchMarks
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+  readonly padding: number
+}
+
+interface ViewportDensityAnalysis {
+  readonly viewportWidth: number
+  readonly viewportHeight: number
+  readonly cellSize: number
+  readonly batches: readonly DensityBatchSnapshot[]
+  readonly analyses: readonly DensityAnalysis[]
+}
+
+let densityAnalyses: ViewportDensityAnalysis[] = []
+const usedDensityAnalyses = new Set<ViewportDensityAnalysis>()
+let densityAnalysisRevision = 0
 const combinations = new Map<
   MismatchMarks,
   { readonly key: string; readonly marks: MismatchMarks }
@@ -67,9 +85,7 @@ export const endMarkerDensityFrame = (): void => {
     for (const [limit, marks] of byLimit) if (!usedSamples.has(marks)) byLimit.delete(limit)
     if (byLimit.size === 0) samples.delete(source)
   }
-  for (const source of densityAnalyses.keys()) {
-    if (!usedDensityAnalyses.has(source)) densityAnalyses.delete(source)
-  }
+  densityAnalyses = densityAnalyses.filter((analysis) => usedDensityAnalyses.has(analysis))
   for (const source of combinations.keys()) {
     if (!usedCombinations.has(source)) combinations.delete(source)
   }
@@ -81,9 +97,11 @@ export const markerDensityMemoryBytes = (): number => {
   for (const byLimit of samples.values()) {
     for (const marks of byLimit.values()) buffers.add(marks.buffer)
   }
-  for (const analysis of densityAnalyses.values()) {
-    buffers.add(analysis.sparse.buffer)
-    buffers.add(analysis.dense.buffer)
+  for (const viewportAnalysis of densityAnalyses) {
+    for (const analysis of viewportAnalysis.analyses) {
+      buffers.add(analysis.sparse.buffer)
+      buffers.add(analysis.dense.buffer)
+    }
   }
   for (const combination of combinations.values()) buffers.add(combination.marks.buffer)
   let bytes = 0
@@ -190,35 +208,73 @@ const evenlySample = (marks: MismatchMarks, limit: number): MismatchMarks => {
 }
 
 /**
- * Split a batch by local screen-space density.
+ * Split every batch by aggregate screen-space density.
  *
- * A marker is sparse while at most four points occupy its cell and the eight cells around it. The
- * grid is anchored to the tile rather than the viewport, so panning cannot make a lone point blink
- * merely because it crossed an arbitrary screen boundary. Zooming can change the answer, which is
- * exactly when points genuinely become crowded or separate on screen.
+ * A marker is sparse while at most four points across all templates occupy its cell and the eight
+ * cells around it. Neighbouring cells keep isolated points stable across grid boundaries, while a
+ * common viewport grid prevents coincident templates from each claiming their own sparse exemption.
  */
-const analyseDensity = (marks: MismatchMarks, batch: ViewportMarkerBatch): DensityAnalysis => {
-  const cellSize = Math.max(DENSITY_CELL_DEVICE_PX, batch.padding * 2)
-  const cellsAcross = Math.max(1, Math.ceil(batch.tile.width / cellSize))
-  const cellsDown = Math.max(1, Math.ceil(batch.tile.height / cellSize))
-  const key = `${cellsAcross}/${cellsDown}`
-  usedDensityAnalyses.add(marks)
-  const held = densityAnalyses.get(marks)
-  if (held?.key === key) return held
+const analyseDensity = (
+  batches: readonly ViewportMarkerBatch[],
+  viewport: Viewport,
+): readonly DensityAnalysis[] => {
+  const padding = batches.reduce((largest, batch) => Math.max(largest, batch.padding), 0)
+  const cellSize = Math.max(DENSITY_CELL_DEVICE_PX, padding * 2)
+  const snapshots = batches.map((batch) => ({
+    marks: batch.marks,
+    x: batch.tile.x,
+    y: batch.tile.y,
+    width: batch.tile.width,
+    height: batch.tile.height,
+    padding: batch.padding,
+  }))
+  const held = densityAnalyses.find(
+    (analysis) =>
+      analysis.viewportWidth === viewport.width &&
+      analysis.viewportHeight === viewport.height &&
+      analysis.cellSize === cellSize &&
+      analysis.batches.length === snapshots.length &&
+      analysis.batches.every((batch, at) => {
+        const current = snapshots[at]
+        return (
+          current !== undefined &&
+          batch.marks === current.marks &&
+          batch.x === current.x &&
+          batch.y === current.y &&
+          batch.width === current.width &&
+          batch.height === current.height &&
+          batch.padding === current.padding
+        )
+      }),
+  )
+  if (held !== undefined) {
+    usedDensityAnalyses.add(held)
+    return held.analyses
+  }
 
-  const cellOf = (mark: number): number => {
-    const x = Math.min(cellsAcross - 1, Math.floor((markLocalX(mark) * cellsAcross) / TILE_SIZE))
-    const y = Math.min(cellsDown - 1, Math.floor((markLocalY(mark) * cellsDown) / TILE_SIZE))
+  const minCellX = Math.floor(-padding / cellSize)
+  const minCellY = Math.floor(-padding / cellSize)
+  const maxCellX = Math.floor((viewport.width + padding) / cellSize)
+  const maxCellY = Math.floor((viewport.height + padding) / cellSize)
+  const cellsAcross = Math.max(1, maxCellX - minCellX + 1)
+  const cellsDown = Math.max(1, maxCellY - minCellY + 1)
+  const cellOf = (mark: number, batch: ViewportMarkerBatch): number => {
+    const screenX = batch.tile.x + ((markLocalX(mark) + 0.5) * batch.tile.width) / TILE_SIZE
+    const screenY = batch.tile.y + ((markLocalY(mark) + 0.5) * batch.tile.height) / TILE_SIZE
+    const x = Math.max(0, Math.min(cellsAcross - 1, Math.floor(screenX / cellSize) - minCellX))
+    const y = Math.max(0, Math.min(cellsDown - 1, Math.floor(screenY / cellSize) - minCellY))
     return y * cellsAcross + x
   }
   const counts = new Map<number, number>()
-  const markCells = new Uint32Array(marks.length)
-  for (let at = 0; at < marks.length; at++) {
-    const mark = marks[at] as number
-    const cell = cellOf(mark)
-    markCells[at] = cell
-    counts.set(cell, (counts.get(cell) ?? 0) + 1)
-  }
+  const markCells = batches.map((batch) => {
+    const cells = new Uint32Array(batch.marks.length)
+    for (let at = 0; at < batch.marks.length; at++) {
+      const cell = cellOf(batch.marks[at] as number, batch)
+      cells[at] = cell
+      counts.set(cell, (counts.get(cell) ?? 0) + 1)
+    }
+    return cells
+  })
 
   // Neighbourhood density belongs to a screen cell, not to an individual marker. Computing the
   // same nine Map lookups once for every marker was especially expensive for the dense regions this
@@ -238,20 +294,32 @@ const analyseDensity = (marks: MismatchMarks, batch: ViewportMarkerBatch): Densi
     if (neighbours <= SPARSE_NEIGHBOUR_LIMIT) sparseCells.add(cell)
   }
 
-  let sparseLength = 0
-  for (const cell of markCells) if (sparseCells.has(cell)) sparseLength++
-  const sparse = new Uint32Array(sparseLength)
-  const dense = new Uint32Array(marks.length - sparseLength)
-  let sparseAt = 0
-  let denseAt = 0
-  for (let at = 0; at < marks.length; at++) {
-    const mark = marks[at] as number
-    if (sparseCells.has(markCells[at] as number)) sparse[sparseAt++] = mark
-    else dense[denseAt++] = mark
+  const revision = String(++densityAnalysisRevision)
+  const analyses = batches.map((batch, batchAt): DensityAnalysis => {
+    const cells = markCells[batchAt] as Uint32Array
+    let sparseLength = 0
+    for (const cell of cells) if (sparseCells.has(cell)) sparseLength++
+    const sparse = new Uint32Array(sparseLength)
+    const dense = new Uint32Array(batch.marks.length - sparseLength)
+    let sparseAt = 0
+    let denseAt = 0
+    for (let at = 0; at < batch.marks.length; at++) {
+      const mark = batch.marks[at] as number
+      if (sparseCells.has(cells[at] as number)) sparse[sparseAt++] = mark
+      else dense[denseAt++] = mark
+    }
+    return { key: revision, sparse, dense }
+  })
+  const analysis = {
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+    cellSize,
+    batches: snapshots,
+    analyses,
   }
-  const analysis = { key, sparse, dense }
-  densityAnalyses.set(marks, analysis)
-  return analysis
+  densityAnalyses.push(analysis)
+  usedDensityAnalyses.add(analysis)
+  return analyses
 }
 
 /** Merge two row-major lists while retaining packed colour data. */
@@ -312,7 +380,11 @@ export const viewportMarkerBatches = <Batch extends ViewportMarkerBatch>(
   const total = visible.reduce((sum, batch) => sum + batch.marks.length, 0)
   const limit = Math.max(0, Math.floor(budget))
   if (total <= limit) return visible
-  const analysed = visible.map((batch) => ({ batch, analysis: analyseDensity(batch.marks, batch) }))
+  const density = analyseDensity(visible, viewport)
+  const analysed = visible.map((batch, at) => ({
+    batch,
+    analysis: density[at] as DensityAnalysis,
+  }))
   const sparseTotal = analysed.reduce((sum, item) => sum + item.analysis.sparse.length, 0)
   const denseLimit = Math.max(0, limit - sparseTotal)
 

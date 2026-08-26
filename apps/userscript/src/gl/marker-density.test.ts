@@ -132,6 +132,20 @@ describe('viewport marker density', () => {
     expect(visible?.marks).toEqual(marks)
   })
 
+  it('treats coincident markers from overlapping batches as dense', () => {
+    const coincident = new Uint32Array([packMismatchMark(500, 500, 1)])
+    const visible = viewportMarkerBatches(
+      Array.from({ length: 8 }, () => ({
+        ...batch(coincident),
+        tile: { tile: { x: 0, y: 0 }, x: 0, y: 0, width: TILE_SIZE, height: TILE_SIZE },
+      })),
+      { width: TILE_SIZE, height: TILE_SIZE },
+      1,
+    )
+
+    expect(visible.reduce((total, item) => total + item.marks.length, 0)).toBe(1)
+  })
+
   it('reuses stable samples so WebGL buffers are not uploaded again every frame', () => {
     const marks = grid(200, 100)
     const work = [batch(marks)]

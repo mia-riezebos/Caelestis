@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
   workerAvailable: false,
   markersEnabled: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
+  idleCallbacks: [] as Array<(deadline: { timeRemaining: () => number }) => void>,
   onTilePixels: vi.fn(),
   onTilePixelsEvicted: vi.fn(),
 }))
@@ -79,6 +80,13 @@ beforeEach(() => {
   harness.workerAvailable = false
   harness.markersEnabled = true
   harness.workerScan.mockReset()
+  harness.idleCallbacks = []
+  vi.stubGlobal(
+    'requestIdleCallback',
+    (callback: (deadline: { timeRemaining: () => number }) => void) => {
+      harness.idleCallbacks.push(callback)
+    },
+  )
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
 })
@@ -131,6 +139,38 @@ describe('visible mismatch answer retention', () => {
     expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
     endMismatchFrame()
     expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 })
+  })
+
+  it('retries a rejected progress-only worker scan while idle', async () => {
+    harness.markersEnabled = false
+    harness.workerAvailable = true
+    const selected = template(202)
+    harness.templates = [selected]
+    const outcome: ScanOutcome = {
+      wrong: new Uint32Array(0),
+      unpainted: new Uint32Array(0),
+      asserted: 1,
+      completed: 1,
+      mismatched: 0,
+      progressUnpainted: 0,
+      progressAsserted: 1,
+      progressByColour: new Uint32Array([0, 1, 0, 0]),
+    }
+    harness.workerScan.mockResolvedValueOnce(null).mockResolvedValueOnce(outcome)
+    const { beginMismatchFrame, endMismatchFrame, progressFor, progressIn } = await import(
+      './mismatch.js'
+    )
+
+    beginMismatchFrame()
+    expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
+    endMismatchFrame()
+    await vi.waitFor(() => expect(harness.idleCallbacks).toHaveLength(1))
+
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 10 })
+    await vi.waitFor(() => expect(harness.workerScan).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() =>
+      expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 }),
+    )
   })
 
   it('keeps every answer requested by one visible frame', async () => {
