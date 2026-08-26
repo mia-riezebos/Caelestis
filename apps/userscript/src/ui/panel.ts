@@ -5,7 +5,6 @@ import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.j
 import { isProfileEnabled, setProfileEnabled } from '../profile.js'
 import { forgetServer, type ServerTemplate } from '../server-cache.js'
 import {
-  admitServerContents,
   admittedServerContentsFor,
   type ConnectedServer,
   cancelServerProbe,
@@ -27,7 +26,6 @@ import {
   MAX_LOCAL_FOLDERS,
   moveLocalFolder,
   moveNode as moveNodeOnServer,
-  onServerContents,
   onStateChange,
   patchTemplate,
   previewGlobalAppearance,
@@ -70,13 +68,7 @@ import { onMismatchesChanged } from '../templates/mismatch.js'
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, centreOfBounds, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
-import {
-  endServerGeneration,
-  forgetChunks,
-  rejectServerContentsForSync,
-  serverTemplateKey,
-  syncServerTemplates,
-} from '../templates/server-sync.js'
+import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
 import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
 import { whileBusy } from './button.js'
@@ -108,10 +100,10 @@ import {
   forgetServerRows,
   isTreeDragActive,
   nodeTreeKey,
+  onServerSnapshot,
   optimisticallyPlaceServerRow,
   primeFromCache,
-  refreshNodes,
-  rememberServerContents,
+  refreshServerSnapshot,
   serverTemplateAt,
   serverTemplateTreeKey,
   startRenaming,
@@ -499,29 +491,8 @@ const queueManifestTreeRefresh = (): void => {
   })
 }
 
-// Every newest manifest belongs to both consumers, irrespective of whether a poll, tree refresh, or
-// admin helper requested it. Keeping this outside a view builder installs exactly one coordinator.
-onServerContents((server, contents) => {
-  const remembered = rememberServerContents(server, contents)
-  if (remembered.ok) {
-    admitServerContents(server, contents)
-    void syncServerTemplates(
-      server,
-      contents.templates,
-      () => admittedServerContentsFor(server) === contents,
-    )
-    if (remembered.changed === true) queueManifestTreeRefresh()
-    return
-  }
-  rejectServerContentsForSync(contents)
-  const accepted = admittedServerContentsFor(server)
-  if (accepted !== null) {
-    void syncServerTemplates(
-      server,
-      accepted.templates,
-      () => admittedServerContentsFor(server) === accepted,
-    )
-  }
+onServerSnapshot((_server, result) => {
+  if (result.status === 'admitted' && result.changed) queueManifestTreeRefresh()
 })
 
 /**
@@ -2818,11 +2789,11 @@ const refreshCurrentNodes = async (
 ): Promise<void> => {
   let current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined) return
-  let result = await refreshNodes(current, rerender, force)
-  while (!result.ok && result.superseded === true) {
+  let result = await refreshServerSnapshot(current, rerender, force)
+  while (result.status === 'superseded') {
     current = getState().servers.find((candidate) => candidate.url === server.url)
     if (current === undefined) return
-    result = await refreshNodes(current, rerender)
+    result = await refreshServerSnapshot(current, rerender)
   }
 }
 
