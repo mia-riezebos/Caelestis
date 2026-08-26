@@ -2,6 +2,7 @@ const COORDINATE_MASK = 0x3ff
 const Y_SHIFT = 10
 const WANTED_SHIFT = 20
 
+/** Packed marks ordered by tile-local y, then x. */
 export type MismatchMarks = Uint32Array
 
 export const packMismatchMark = (localX: number, localY: number, wanted: number): number =>

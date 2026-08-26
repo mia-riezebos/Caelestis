@@ -94,26 +94,35 @@ export interface ColourNavigationTarget {
   readonly kind: ColourTargetKind
 }
 
+const markCoordinate = (mark: number): number => mark & 0xfffff
+
+/** Merge two row-major classifications without losing the renderer's spatial-order invariant. */
+const mergeMarks = (left: Mismatches, right: Mismatches): Mismatches => {
+  const merged = new Uint32Array(left.length + right.length)
+  let leftAt = 0
+  let rightAt = 0
+  let write = 0
+  while (leftAt < left.length && rightAt < right.length) {
+    const leftMark = left[leftAt] as number
+    const rightMark = right[rightAt] as number
+    if (markCoordinate(leftMark) <= markCoordinate(rightMark)) {
+      merged[write++] = leftMark
+      leftAt++
+    } else {
+      merged[write++] = rightMark
+      rightAt++
+    }
+  }
+  merged.set(left.subarray(leftAt), write)
+  write += left.length - leftAt
+  merged.set(right.subarray(rightAt), write)
+  return merged
+}
+
 const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
   if (!includeUnpainted || entry.unpainted.length === 0) return entry.wrong
   if (entry.wrong.length === 0) return entry.unpainted
-  if (entry.both === null) {
-    const contiguous =
-      entry.wrong.buffer === entry.unpainted.buffer &&
-      entry.wrong.byteOffset + entry.wrong.byteLength === entry.unpainted.byteOffset
-    if (contiguous) {
-      entry.both = new Uint32Array(
-        entry.wrong.buffer,
-        entry.wrong.byteOffset,
-        entry.wrong.length + entry.unpainted.length,
-      )
-    } else {
-      const both = new Uint32Array(entry.wrong.length + entry.unpainted.length)
-      both.set(entry.wrong)
-      both.set(entry.unpainted, entry.wrong.length)
-      entry.both = both
-    }
-  }
+  if (entry.both === null) entry.both = mergeMarks(entry.wrong, entry.unpainted)
   return entry.both
 }
 
@@ -1231,8 +1240,17 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     }
     const plus = (marks: Mismatches): Mismatches => {
       const next = new Uint32Array(marks.length + 1)
-      next.set(marks)
-      next[marks.length] = mark
+      const coordinate = markCoordinate(mark)
+      let low = 0
+      let high = marks.length
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2)
+        if (markCoordinate(marks[middle] as number) < coordinate) low = middle + 1
+        else high = middle
+      }
+      next.set(marks.subarray(0, low))
+      next[low] = mark
+      next.set(marks.subarray(low), low + 1)
       return next
     }
 

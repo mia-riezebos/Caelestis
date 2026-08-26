@@ -9,7 +9,11 @@ import {
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, overlayGpuMemoryBytes, setNudge } from './gl/layer.js'
-import { keepMarkersAboveDrafts, markerGpuMemoryBytes } from './gl/markers.js'
+import {
+  keepMarkersAboveDrafts,
+  markerDensityMemoryBytes,
+  markerGpuMemoryBytes,
+} from './gl/markers.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
 import { installPaintPaletteProgress, paintPaletteProgress } from './paint-palette.js'
 import {
@@ -282,6 +286,7 @@ const main = (): void => {
   registerProfileMemorySource('Mismatch cache', mismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
   registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
+  registerProfileMemorySource('Marker density buffers', markerDensityMemoryBytes)
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
   step('map capture', installMapCapture)

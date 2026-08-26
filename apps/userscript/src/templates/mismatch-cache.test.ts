@@ -1,6 +1,7 @@
 import { decodeMismatchMask, encodeMismatchMask, type MismatchMask, WRONG } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './local-store.js'
+import { markLocalX } from './mismatch-marks.js'
 import type { ScanOutcome } from './mismatch-scan.js'
 
 const harness = vi.hoisted(() => ({
@@ -150,6 +151,25 @@ describe('visible mismatch answer retention', () => {
     beginMismatchFrame()
     expect(mismatchesIn(serverTemplate, { x: 0, y: 0 })).toHaveLength(129)
     endMismatchFrame()
+  })
+
+  it('keeps merged wrong and unpainted marks in row-major order', async () => {
+    const mixed = {
+      ...template(201),
+      width: 3,
+      indices: new Uint8Array([0, 0, 0]),
+      opaque: 3,
+    }
+    harness.pixels[0] = 1
+    harness.pixels[1] = 255
+    harness.pixels[2] = 1
+    const { beginMismatchFrame, disagreementsIn, endMismatchFrame } = await import('./mismatch.js')
+
+    beginMismatchFrame()
+    const marks = disagreementsIn(mixed, { x: 0, y: 0 })
+    endMismatchFrame()
+
+    expect(marks && [...marks].map(markLocalX)).toEqual([0, 1, 2])
   })
 
   it('expands a server mask asynchronously when the worker is available', async () => {
