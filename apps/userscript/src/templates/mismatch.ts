@@ -19,6 +19,7 @@ import {
   ensureTilePixels,
   loadTilePixels,
   onTilePixels,
+  onTilePixelsAvailable,
   onTilePixelsEvicted,
   tilePixels,
   UNPAINTED,
@@ -1509,6 +1510,16 @@ onTilePixels((tile, triples) => {
   }
   if (changed === before) return
   notifyChanged()
+})
+
+onTilePixelsAvailable((tile) => {
+  const suffix = `|${tile.x}/${tile.y}`
+  if (
+    [...stale].some((cacheKey) => cacheKey.endsWith(suffix)) ||
+    [...staleProgress].some((cacheKey) => cacheKey.endsWith(suffix))
+  ) {
+    scheduleIdleScan()
+  }
 })
 
 onServerMismatchesChanged(() => {
