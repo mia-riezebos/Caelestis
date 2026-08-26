@@ -308,7 +308,7 @@ const analyseDensity = (
       if (sparseCells.has(cells[at] as number)) sparse[sparseAt++] = mark
       else dense[denseAt++] = mark
     }
-    return { key: revision, sparse, dense }
+    return { key: `${revision}/${batchAt}`, sparse, dense }
   })
   const analysis = {
     viewportWidth: viewport.width,

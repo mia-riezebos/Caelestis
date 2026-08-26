@@ -146,6 +146,36 @@ describe('viewport marker density', () => {
     expect(visible.reduce((total, item) => total + item.marks.length, 0)).toBe(1)
   })
 
+  it('keeps distinct sparse splits for batches that share one source array', () => {
+    const source = new Uint32Array([
+      ...Array.from({ length: 10 }, (_, x) => packMismatchMark(x, 0, 1)),
+      packMismatchMark(400, 0, 1),
+      packMismatchMark(800, 0, 1),
+    ])
+    const one = new Uint32Array([packMismatchMark(0, 0, 1)])
+    const placed = (marks: Uint32Array, x: number) => ({
+      ...batch(marks),
+      tile: { tile: { x: 0, y: 0 }, x, y: 0, width: TILE_SIZE, height: TILE_SIZE },
+    })
+    const visible = viewportMarkerBatches(
+      [
+        placed(source, 0),
+        placed(source, 1_500),
+        ...Array.from({ length: 5 }, () => placed(one, 400)),
+        ...Array.from({ length: 5 }, () => placed(one, 2_300)),
+      ],
+      { width: 4_000, height: TILE_SIZE },
+      14,
+    )
+
+    const first = [...(visible[0]?.marks ?? [])].map(markLocalX)
+    const second = [...(visible[1]?.marks ?? [])].map(markLocalX)
+    expect(first).toContain(800)
+    expect(first).not.toContain(400)
+    expect(second).toContain(400)
+    expect(second).not.toContain(800)
+  })
+
   it('reuses stable samples so WebGL buffers are not uploaded again every frame', () => {
     const marks = grid(200, 100)
     const work = [batch(marks)]
