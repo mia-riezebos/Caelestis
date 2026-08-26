@@ -91,6 +91,9 @@ export interface TreeTarget {
    * what stopped that being true.
    */
   readonly templateId?: string
+  /** Revision shown when this destructive action became available. */
+  readonly templateVersion?: string
+  readonly templateUpdatedAt?: number
 }
 
 export interface TreeCallbacks {
@@ -687,6 +690,8 @@ export const treeContents = (
             key: templateKey,
             name: template.name,
             templateId: template.id,
+            templateVersion: template.version,
+            templateUpdatedAt: template.updatedAt,
           }
           entries.push({
             parentId: renderedParent(templateKey, template.nodeId),

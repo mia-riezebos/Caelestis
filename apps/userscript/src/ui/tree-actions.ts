@@ -208,6 +208,10 @@ const applyDelete = async (
     return
   }
   if (target.server !== null && target.templateId !== undefined) {
+    if (target.templateVersion === undefined || target.templateUpdatedAt === undefined) {
+      toast('That template revision is no longer available. Refresh and try again.', 'warning')
+      return
+    }
     const confirmed = await askToDelete(
       'published template',
       target.name,
@@ -217,7 +221,10 @@ const applyDelete = async (
       restoreFocusTo,
     )
     if (!confirmed) return
-    const result = await deleteTemplateOnServer(target.server, target.templateId)
+    const result = await deleteTemplateOnServer(target.server, target.templateId, {
+      version: target.templateVersion,
+      updatedAt: target.templateUpdatedAt,
+    })
     if (!result.ok) toast(result.message, 'error')
     await refreshCurrentNodes(target.server, rerender, true)
     return

@@ -406,6 +406,8 @@ interface ServerActionTarget {
   readonly server: ConnectedServer
   readonly templateId: string
   readonly published: boolean
+  readonly version: string
+  readonly updatedAt: number
 }
 
 /** The current admin-owned manifest row behind one rendered server overlay. */
@@ -420,7 +422,13 @@ const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | n
   )
   return remote === undefined
     ? null
-    : { server, templateId: template.serverTemplateId, published: remote.published }
+    : {
+        server,
+        templateId: template.serverTemplateId,
+        published: remote.published,
+        version: remote.version,
+        updatedAt: remote.updatedAt,
+      }
 }
 
 const currentServerActionTargetFor = (id: string): ServerActionTarget | null => {
@@ -920,19 +928,20 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
     const removal =
       serverTarget === null
         ? removeLocalTemplate(id)
-        : deleteTemplateOnServer(serverTarget.server, serverTarget.templateId).then(
-            async (result) => {
-              if (!result.ok) {
-                serverRemovalFailure = result.message
-                return false
-              }
-              // Remove the rendered copy immediately; the manifest read reconciles the tree and
-              // confirms the server no longer advertises it.
-              await forgetServerTemplate(id)
-              void listServerContents(serverTarget.server)
-              return true
-            },
-          )
+        : deleteTemplateOnServer(serverTarget.server, serverTarget.templateId, {
+            version: serverTarget.version,
+            updatedAt: serverTarget.updatedAt,
+          }).then(async (result) => {
+            if (!result.ok) {
+              serverRemovalFailure = result.message
+              return false
+            }
+            // Remove the rendered copy immediately; the manifest read reconciles the tree and
+            // confirms the server no longer advertises it.
+            await forgetServerTemplate(id)
+            void listServerContents(serverTarget.server)
+            return true
+          })
     void removal.then(
       (removed) => {
         deleting.delete(id)

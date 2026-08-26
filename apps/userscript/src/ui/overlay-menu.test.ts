@@ -47,7 +47,12 @@ const harness = vi.hoisted(() => ({
     season: number
     info: { id: string; name: string; auth: 'access_token' }
   }>,
-  serverTemplates: [] as Array<{ id: string; published: boolean }>,
+  serverTemplates: [] as Array<{
+    id: string
+    published: boolean
+    version: string
+    updatedAt: number
+  }>,
   // A projection, not a constant: the module derives the overlay's on-screen box from one
   // projected corner plus the scale, and a constant would make every template a zero-size point.
   screenPointFor: vi.fn((x: number, y: number) => ({ x, y }) as { x: number; y: number } | null),
@@ -163,7 +168,12 @@ const connectServerTemplate = (published: boolean, isAdmin = true): void => {
     season: 1,
     info: { id: 'server-1', name: 'Example', auth: 'access_token' },
   })
-  harness.serverTemplates.push({ id: 'remote-a', published })
+  harness.serverTemplates.push({
+    id: 'remote-a',
+    published,
+    version: 'version-1',
+    updatedAt: 1,
+  })
 }
 
 /** Flush the microtask queue, however many turns the store's continuation chain actually takes. */
@@ -1339,7 +1349,10 @@ describe('the menu is ours and has a keyboard exit', () => {
     byKey('confirm-delete').click()
     await settle()
 
-    expect(harness.deleteServerTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a')
+    expect(harness.deleteServerTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a', {
+      version: 'version-1',
+      updatedAt: 1,
+    })
     expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
     expect(harness.forgetServerTemplate).toHaveBeenCalledWith('a')
     expect(harness.listServerContents).toHaveBeenCalledWith(harness.servers[0])

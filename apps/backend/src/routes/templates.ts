@@ -229,7 +229,25 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (!UUID_V7.test(templateId)) {
       return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
     }
-    if (!(await ports.sql.deleteTemplate(templateId))) return c.json({ error: 'not found' }, 404)
+    const expectedVersion = c.req.query('expectedVersion')
+    const expectedUpdatedAt = parseWholeNumber(c.req.query('expectedUpdatedAt'))
+    if (!UUID_V7.test(expectedVersion ?? '') || expectedUpdatedAt === null) {
+      return c.json(
+        { error: 'expectedVersion and expectedUpdatedAt must identify the confirmed revision' },
+        400,
+      )
+    }
+    if (
+      !(await ports.sql.deleteTemplate(templateId, {
+        versionId: expectedVersion as string,
+        updatedAt: millis(expectedUpdatedAt),
+      }))
+    ) {
+      if ((await ports.sql.readTemplate(templateId)) === null) {
+        return c.json({ error: 'not found' }, 404)
+      }
+      return c.json({ error: 'template changed concurrently' }, 409)
+    }
     return c.body(null, 204)
   })
 

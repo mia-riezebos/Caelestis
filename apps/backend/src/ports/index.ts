@@ -52,6 +52,7 @@ export {
   type SqlStore,
   type TelemetryBucket,
   type TelemetryTarget,
+  type TemplateDeletePrecondition,
   TemplateIdentityError,
   TemplateNotFoundError,
   type TemplatePatch,

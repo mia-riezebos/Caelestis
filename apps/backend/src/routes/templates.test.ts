@@ -225,6 +225,14 @@ describe('editing a template', () => {
     }
   }
 
+  const deleteUrl = (template: { id: string; version: string; updatedAt: number }): string => {
+    const query = new URLSearchParams({
+      expectedVersion: template.version,
+      expectedUpdatedAt: String(template.updatedAt),
+    })
+    return `/admin/templates/${template.id}?${query}`
+  }
+
   it('renames a template without touching its pixels', async () => {
     const { app } = await harness()
     const template = await create(app)
@@ -343,13 +351,16 @@ describe('editing a template', () => {
 
   it('deletes a template, and says so only once', async () => {
     const { app } = await harness()
-    const template = await create(app)
+    await create(app)
+    const template = (await manifestFor(app)).templates[0]
+    if (template === undefined) throw new Error('expected a created template')
+    const url = deleteUrl(template)
 
-    const first = await app.request(`/admin/templates/${template.templateId}`, {
+    const first = await app.request(url, {
       method: 'DELETE',
       ...bearer(BOOTSTRAP),
     })
-    const second = await app.request(`/admin/templates/${template.templateId}`, {
+    const second = await app.request(url, {
       method: 'DELETE',
       ...bearer(BOOTSTRAP),
     })
@@ -358,6 +369,50 @@ describe('editing a template', () => {
     expect(second.status).toBe(404)
     const after = await manifestFor(app)
     expect(after.templates).toHaveLength(0)
+  })
+
+  it('refuses an unguarded template delete', async () => {
+    const { app } = await harness()
+    const created = await create(app)
+
+    const response = await app.request(`/admin/templates/${created.templateId}`, {
+      method: 'DELETE',
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(response.status).toBe(400)
+    const after = await manifestFor(app)
+    expect(after.templates).toHaveLength(1)
+  })
+
+  it('keeps a newer template version when a stale mover tries to delete its source', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+    const before = (await manifestFor(app)).templates[0]
+    if (before === undefined) throw new Error('expected a created template')
+    const form = new FormData()
+    const png = await encodeIndexedPng(1, 1, new Uint8Array([1]))
+    form.set('png', new File([png.slice()], 'v2.png', { type: 'image/png' }))
+    form.set('originX', '0')
+    form.set('originY', '0')
+    const replacement = await app.request(`/admin/templates/${template.templateId}/versions`, {
+      method: 'POST',
+      body: form,
+      ...bearer(BOOTSTRAP),
+    })
+    expect(replacement.status).toBe(201)
+    const newer = (await replacement.json()) as { versionId: string }
+
+    const staleDelete = await app.request(deleteUrl(before), {
+      method: 'DELETE',
+      ...bearer(BOOTSTRAP),
+    })
+
+    expect(staleDelete.status).toBe(409)
+    await expect(staleDelete.json()).resolves.toEqual({ error: 'template changed concurrently' })
+    const after = await manifestFor(app)
+    expect(after.templates).toHaveLength(1)
+    expect(after.templates[0]?.version).toBe(newer.versionId)
   })
 
   it('keeps chunks after a delete, because they are shared', async () => {
@@ -373,8 +428,12 @@ describe('editing a template', () => {
       chunks: Array<{ hash: string }>
     }
     const hash = chunks[0]?.hash ?? ''
+    const template = (await manifestFor(app)).templates.find(
+      (candidate) => candidate.id === templateId,
+    )
+    if (template === undefined) throw new Error('expected a created template')
 
-    await app.request(`/admin/templates/${templateId}`, {
+    await app.request(deleteUrl(template), {
       method: 'DELETE',
       ...bearer(BOOTSTRAP),
     })

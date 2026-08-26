@@ -69,6 +69,7 @@ import {
   type SqlStore,
   type TelemetryBucket,
   type TelemetryTarget,
+  type TemplateDeletePrecondition,
   TemplateIdentityError,
   TemplateNotFoundError,
   type TemplatePatch,
@@ -866,29 +867,41 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
-  async deleteTemplate(templateId: string): Promise<boolean> {
+  async deleteTemplate(templateId: string, expected: TemplateDeletePrecondition): Promise<boolean> {
     // Order matters and the batch is what makes it safe. `templates.current_version_id` points at a
     // version and every version points back at the template, so the pointer has to be dropped before
     // the rows it refers to. Tiles go first because they reference a version.
+    const claimedTemplate = and(eq(templates.id, templateId), isNull(templates.currentVersionId))
+    const claimedTemplateIds = this.database
+      .select({ id: templates.id })
+      .from(templates)
+      .where(claimedTemplate)
+    const claimedVersionIds = this.database
+      .select({ id: templateVersions.id })
+      .from(templateVersions)
+      .where(
+        and(
+          eq(templateVersions.templateId, templateId),
+          inArray(templateVersions.templateId, claimedTemplateIds),
+        ),
+      )
     const statements = [
       this.database
         .update(templates)
         .set({ currentVersionId: null })
-        .where(eq(templates.id, templateId)),
-      this.database
-        .delete(versionTiles)
         .where(
-          inArray(
-            versionTiles.versionId,
-            this.database
-              .select({ id: templateVersions.id })
-              .from(templateVersions)
-              .where(eq(templateVersions.templateId, templateId)),
+          and(
+            eq(templates.id, templateId),
+            eq(templates.currentVersionId, expected.versionId),
+            eq(templates.updatedAtMs, expected.updatedAt),
           ),
         ),
-      this.database.delete(templateVersions).where(eq(templateVersions.templateId, templateId)),
-      this.database.delete(contributions).where(eq(contributions.templateId, templateId)),
-      this.database.delete(templates).where(eq(templates.id, templateId)),
+      this.database.delete(versionTiles).where(inArray(versionTiles.versionId, claimedVersionIds)),
+      this.database.delete(templateVersions).where(inArray(templateVersions.id, claimedVersionIds)),
+      this.database
+        .delete(contributions)
+        .where(inArray(contributions.templateId, claimedTemplateIds)),
+      this.database.delete(templates).where(claimedTemplate),
     ]
     const results = await this.database.batch(
       statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
