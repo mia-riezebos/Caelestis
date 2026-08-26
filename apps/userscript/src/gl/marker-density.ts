@@ -206,36 +206,47 @@ const analyseDensity = (marks: MismatchMarks, batch: ViewportMarkerBatch): Densi
   const held = densityAnalyses.get(marks)
   if (held?.key === key) return held
 
-  const cellOf = (mark: number): readonly [number, number] => [
-    Math.min(cellsAcross - 1, Math.floor((markLocalX(mark) * cellsAcross) / TILE_SIZE)),
-    Math.min(cellsDown - 1, Math.floor((markLocalY(mark) * cellsDown) / TILE_SIZE)),
-  ]
+  const cellOf = (mark: number): number => {
+    const x = Math.min(cellsAcross - 1, Math.floor((markLocalX(mark) * cellsAcross) / TILE_SIZE))
+    const y = Math.min(cellsDown - 1, Math.floor((markLocalY(mark) * cellsDown) / TILE_SIZE))
+    return y * cellsAcross + x
+  }
   const counts = new Map<number, number>()
-  for (const mark of marks) {
-    const [x, y] = cellOf(mark)
-    const cell = y * cellsAcross + x
+  const markCells = new Uint32Array(marks.length)
+  for (let at = 0; at < marks.length; at++) {
+    const mark = marks[at] as number
+    const cell = cellOf(mark)
+    markCells[at] = cell
     counts.set(cell, (counts.get(cell) ?? 0) + 1)
   }
-  const isSparse = (mark: number): boolean => {
-    const [x, y] = cellOf(mark)
+
+  // Neighbourhood density belongs to a screen cell, not to an individual marker. Computing the
+  // same nine Map lookups once for every marker was especially expensive for the dense regions this
+  // sampler exists to reduce. Classify each occupied cell once, then markers only need one Set lookup.
+  const sparseCells = new Set<number>()
+  for (const cell of counts.keys()) {
+    const x = cell % cellsAcross
+    const y = Math.floor(cell / cellsAcross)
     let neighbours = 0
     for (let cellY = Math.max(0, y - 1); cellY <= Math.min(cellsDown - 1, y + 1); cellY++) {
       for (let cellX = Math.max(0, x - 1); cellX <= Math.min(cellsAcross - 1, x + 1); cellX++) {
         neighbours += counts.get(cellY * cellsAcross + cellX) ?? 0
-        if (neighbours > SPARSE_NEIGHBOUR_LIMIT) return false
+        if (neighbours > SPARSE_NEIGHBOUR_LIMIT) break
       }
+      if (neighbours > SPARSE_NEIGHBOUR_LIMIT) break
     }
-    return true
+    if (neighbours <= SPARSE_NEIGHBOUR_LIMIT) sparseCells.add(cell)
   }
 
   let sparseLength = 0
-  for (const mark of marks) if (isSparse(mark)) sparseLength++
+  for (const cell of markCells) if (sparseCells.has(cell)) sparseLength++
   const sparse = new Uint32Array(sparseLength)
   const dense = new Uint32Array(marks.length - sparseLength)
   let sparseAt = 0
   let denseAt = 0
-  for (const mark of marks) {
-    if (isSparse(mark)) sparse[sparseAt++] = mark
+  for (let at = 0; at < marks.length; at++) {
+    const mark = marks[at] as number
+    if (sparseCells.has(markCells[at] as number)) sparse[sparseAt++] = mark
     else dense[denseAt++] = mark
   }
   const analysis = { key, sparse, dense }
