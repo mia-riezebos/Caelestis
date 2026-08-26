@@ -35,6 +35,7 @@ import {
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { templateAsWplace, wplaceFilename } from '../templates/wplace-export.js'
 import { whileBusy } from './button.js'
 import { confirmDestructive } from './confirm.js'
 import { type IconName, icon } from './icons.js'
@@ -107,6 +108,46 @@ const freeFolderName = (
 /** `local:<id>` is a template; `local`, `server:<url>` and `node:<id>` are containers. */
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
+
+const exportTemplate = async (target: TreeTarget): Promise<void> => {
+  const localId = localTemplateId(target)
+  const id =
+    localId ??
+    (target.server !== null && target.templateId !== undefined
+      ? serverTemplateKey(target.server.url, target.templateId)
+      : null)
+  const template = id === null ? undefined : templateById(id)
+  if (template === undefined) {
+    toast('That template has not finished loading yet.', 'warning')
+    return
+  }
+  if (movingId() === template.id || !template.everPlaced) {
+    toast(`Finish placing “${template.name}” before exporting it.`, 'warning')
+    return
+  }
+
+  toast(`Preparing “${template.name}”…`)
+  try {
+    const file = await templateAsWplace(template)
+    if (file === null) {
+      toast(`“${template.name}” changed while it was being exported. Try again.`, 'warning')
+      return
+    }
+    const url = URL.createObjectURL(file)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = wplaceFilename(template.name)
+    link.hidden = true
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+    toast(`Exported “${template.name}”.`)
+  } catch (error) {
+    warn('install', `could not export ${template.name}`, String(error))
+    toast(`Could not export “${template.name}”.`, 'error')
+  }
+}
 
 /**
  * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
@@ -825,6 +866,7 @@ export const openContextMenu = (
     target.templateId !== undefined
       ? [
           ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
+          ['download', 'Export .wplace', () => void exportTemplate(target)],
           published
             ? [
                 'eyeOff',
@@ -845,6 +887,7 @@ export const openContextMenu = (
           ]
         : [
             ['search', 'Go to', () => goToLocalTemplate(templateId)],
+            ['download', 'Export .wplace', () => void exportTemplate(target)],
             [
               'move',
               'Move',
