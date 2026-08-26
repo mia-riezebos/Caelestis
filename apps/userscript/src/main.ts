@@ -25,6 +25,7 @@ import {
   registerProfileMemorySource,
   resetProfile,
 } from './profile.js'
+import { serverMismatchMemoryBytes } from './server-mismatch.js'
 import { shortcutFor } from './shortcuts.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
 import { installTelemetry } from './telemetry.js'
@@ -285,6 +286,7 @@ const main = (): void => {
   registerProfileMemorySource('Template pixels', templateIndexMemoryBytes)
   registerProfileMemorySource('Captured tile pixels', capturedPixelMemoryBytes)
   registerProfileMemorySource('Mismatch cache', mismatchMemoryBytes)
+  registerProfileMemorySource('Server mismatch masks', serverMismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
   registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
   registerProfileMemorySource('Marker density buffers', markerDensityMemoryBytes)

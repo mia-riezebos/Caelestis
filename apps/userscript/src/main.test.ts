@@ -48,6 +48,7 @@ vi.mock('./paint-palette.js', () => ({
   paintPaletteProgress: vi.fn(() => []),
 }))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
+vi.mock('./server-mismatch.js', () => ({ serverMismatchMemoryBytes: vi.fn(() => 0) }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: { markMismatch: false }, onlySelectedColour: false }),
   loadState: vi.fn(),

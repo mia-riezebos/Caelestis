@@ -202,7 +202,7 @@ describe('visible mismatch answer retention', () => {
     endMismatchFrame()
   })
 
-  it('drops answers that the next viewport frame does not request', async () => {
+  it('retains recently offscreen answers for pan-back', async () => {
     const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
     const firstTemplate = harness.templates[0] as PlacedTemplate
     const offscreenTemplate = harness.templates[1] as PlacedTemplate
@@ -216,7 +216,25 @@ describe('visible mismatch answer retention', () => {
     endMismatchFrame()
 
     beginMismatchFrame()
-    expect(mismatchesIn(offscreenTemplate, { x: 0, y: 0 })).not.toBe(offscreen)
+    expect(mismatchesIn(offscreenTemplate, { x: 0, y: 0 })).toBe(offscreen)
+    endMismatchFrame()
+  })
+
+  it('evicts old offscreen answers without evicting a dense visible frame', async () => {
+    harness.templates = Array.from({ length: 513 }, (_, index) => template(index))
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
+    const firstTemplate = harness.templates[0] as PlacedTemplate
+    beginMismatchFrame()
+    const first = mismatchesIn(firstTemplate, { x: 0, y: 0 })
+    for (const candidate of harness.templates.slice(1)) mismatchesIn(candidate, { x: 0, y: 0 })
+    endMismatchFrame()
+
+    beginMismatchFrame()
+    mismatchesIn(harness.templates[512] as PlacedTemplate, { x: 0, y: 0 })
+    endMismatchFrame()
+
+    beginMismatchFrame()
+    expect(mismatchesIn(firstTemplate, { x: 0, y: 0 })).not.toBe(first)
     endMismatchFrame()
   })
 

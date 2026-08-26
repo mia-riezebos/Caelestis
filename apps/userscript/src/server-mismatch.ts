@@ -1,4 +1,10 @@
 import { decodeMismatchMask, type MismatchMask, TILE_SIZE, type TileCoord } from '@caelestis/shared'
+import {
+  deleteCachedServerMismatch,
+  deleteCachedServerMismatchTile,
+  readCachedServerMismatch,
+  writeCachedServerMismatch,
+} from './server-mismatch-cache.js'
 import { serverEndpoint } from './server-url.js'
 import {
   activeServerToken,
@@ -20,6 +26,7 @@ interface ServerTemplateRef {
 interface HeldMask {
   readonly server: ConnectedServer
   readonly mask: MismatchMask
+  lastUsed: number
 }
 
 interface HeldMiss {
@@ -32,13 +39,37 @@ const misses = new Map<string, HeldMiss>()
 const pending = new Map<string, Promise<void>>()
 const listeners = new Set<() => void>()
 let requestedThisFrame: Set<string> | null = null
+let useGeneration = 0
+const tileInvalidations = new Map<string, number>()
+
+const MAX_HELD_MASKS = 512
+const MAX_HELD_MASK_BYTES = 16 * 1024 * 1024
+const MAX_TILE_INVALIDATIONS = 512
+
+export const serverMismatchMemoryBytes = (): number => {
+  let bytes = 0
+  for (const held of masks.values()) bytes += held.mask.packed.byteLength + 12
+  return bytes
+}
 
 const keyFor = (
   server: ConnectedServer,
   templateId: string,
   version: string,
   tile: TileCoord,
-): string => `${server.url}\u0000${templateId}\u0000${version}\u0000${tile.x}/${tile.y}`
+): string =>
+  `${server.url}\u0000${server.info?.id ?? ''}\u0000${server.season}\u0000${templateId}\u0000${version}\u0000${tile.x}/${tile.y}`
+
+const invalidationKeyFor = (serverUrl: string, tile: TileCoord): string =>
+  `${serverUrl}\u0000${tile.x}/${tile.y}`
+
+const equalBytes = (left: Uint8Array, right: Uint8Array): boolean => {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return false
+  }
+  return true
+}
 
 const serverFor = (template: ServerTemplateRef): ConnectedServer | null => {
   if (
@@ -63,23 +94,51 @@ const readMask = async (
   key: string,
 ): Promise<void> => {
   const token = activeServerToken(server)
-  let response: Response
-  try {
-    response = await fetch(
-      serverEndpoint(
-        server.url,
-        `/telemetry/templates/${templateId}/versions/${version}/tiles/${tile.x}/${tile.y}/mismatches?season=${server.season}`,
-      ),
-      {
-        headers: token === null ? {} : { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      },
-    )
-  } catch {
+  const invalidationKey = invalidationKeyFor(server.url, tile)
+  const invalidation = tileInvalidations.get(invalidationKey) ?? 0
+  const request = fetch(
+    serverEndpoint(
+      server.url,
+      `/telemetry/templates/${templateId}/versions/${version}/tiles/${tile.x}/${tile.y}/mismatches?season=${server.season}`,
+    ),
+    {
+      headers: token === null ? {} : { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    },
+  ).catch(() => null)
+  const cachedBytes = await readCachedServerMismatch(key)
+  if (
+    cachedBytes !== null &&
+    isCurrentServerConnection(server) &&
+    (tileInvalidations.get(invalidationKey) ?? 0) === invalidation
+  ) {
+    const cached = decodeMismatchMask(cachedBytes)
+    if (cached === null) void deleteCachedServerMismatch(key)
+    else {
+      masks.set(key, { server, mask: cached, lastUsed: ++useGeneration })
+      notify()
+    }
+  }
+
+  const response = await request
+  if (response === null) {
     misses.set(key, { server, at: Date.now() })
     return
   }
-  if (!isCurrentServerConnection(server)) return
+  if (
+    !isCurrentServerConnection(server) ||
+    (tileInvalidations.get(invalidationKey) ?? 0) !== invalidation
+  ) {
+    await response.body?.cancel().catch(() => undefined)
+    return
+  }
+  if (response.status === 204 || response.status === 404) {
+    const changed = masks.delete(key)
+    void deleteCachedServerMismatch(key)
+    misses.set(key, { server, at: Date.now() })
+    if (changed) notify()
+    return
+  }
   const declaredHeader = response.headers.get('content-length')
   const declared = declaredHeader === null ? null : Number(declaredHeader)
   if (
@@ -103,11 +162,13 @@ const readMask = async (
     return
   }
   misses.delete(key)
-  masks.set(key, { server, mask })
+  if (cachedBytes !== null && equalBytes(cachedBytes, bytes)) return
+  void writeCachedServerMismatch(key, bytes)
+  masks.set(key, { server, mask, lastUsed: ++useGeneration })
   notify()
 }
 
-/** Called around one marker frame so offscreen server masks do not accumulate. */
+/** Called around one marker frame so the memory cache can retain a bounded offscreen working set. */
 export const beginServerMismatchFrame = (): void => {
   requestedThisFrame = new Set()
 }
@@ -116,7 +177,15 @@ export const endServerMismatchFrame = (): void => {
   const requested = requestedThisFrame
   requestedThisFrame = null
   if (requested === null) return
-  for (const key of [...masks.keys()]) if (!requested.has(key)) masks.delete(key)
+  let bytes = serverMismatchMemoryBytes()
+  const offscreen = [...masks]
+    .filter(([key]) => !requested.has(key))
+    .sort((left, right) => left[1].lastUsed - right[1].lastUsed)
+  for (const [key, held] of offscreen) {
+    if (masks.size <= MAX_HELD_MASKS && bytes <= MAX_HELD_MASK_BYTES) break
+    masks.delete(key)
+    bytes -= held.mask.packed.byteLength + 12
+  }
   for (const key of [...misses.keys()]) if (!requested.has(key)) misses.delete(key)
 }
 
@@ -135,7 +204,10 @@ export const serverMismatchMaskFor = (
   const key = keyFor(server, template.serverTemplateId, template.serverVersion, tile)
   requestedThisFrame?.add(key)
   const held = masks.get(key)
-  if (held !== undefined && isCurrentServerConnection(held.server)) return held.mask
+  if (held !== undefined && isCurrentServerConnection(held.server)) {
+    held.lastUsed = ++useGeneration
+    return held.mask
+  }
   const miss = misses.get(key)
   if (
     pending.has(key) ||
@@ -159,6 +231,29 @@ export const serverMismatchMaskFor = (
 
 /** A successful tile upload makes every mask for that server tile stale. */
 export const invalidateServerMismatchTile = (serverUrl: string, tile: TileCoord): void => {
+  const invalidationKey = invalidationKeyFor(serverUrl, tile)
+  const generation = (tileInvalidations.get(invalidationKey) ?? 0) + 1
+  tileInvalidations.delete(invalidationKey)
+  tileInvalidations.set(invalidationKey, generation)
+  while (tileInvalidations.size > MAX_TILE_INVALIDATIONS) {
+    let removed = false
+    for (const candidate of tileInvalidations.keys()) {
+      const separator = candidate.lastIndexOf('\u0000')
+      const pendingPrefix = `${candidate.slice(0, separator)}\u0000`
+      const pendingSuffix = `\u0000${candidate.slice(separator + 1)}`
+      let hasPending = false
+      for (const key of pending.keys()) {
+        if (!key.startsWith(pendingPrefix) || !key.endsWith(pendingSuffix)) continue
+        hasPending = true
+        break
+      }
+      if (hasPending) continue
+      tileInvalidations.delete(candidate)
+      removed = true
+      break
+    }
+    if (!removed) break
+  }
   const prefix = `${serverUrl}\u0000`
   const suffix = `\u0000${tile.x}/${tile.y}`
   let changed = false
@@ -170,6 +265,7 @@ export const invalidateServerMismatchTile = (serverUrl: string, tile: TileCoord)
   for (const key of [...misses.keys()]) {
     if (key.startsWith(prefix) && key.endsWith(suffix)) misses.delete(key)
   }
+  void deleteCachedServerMismatchTile(serverUrl, tile)
   if (changed) notify()
 }
 
