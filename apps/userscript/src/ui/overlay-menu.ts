@@ -171,13 +171,12 @@ const invalidateMenuMeasurement = (): void => {
   measuredFor = { width: 0, height: 0 }
 }
 
-/** Move map-following controls without making every frame a document-layout operation. */
+/** Position map-following controls without creating one compositor layer per visible template. */
 const positionFloatingControl = (control: HTMLElement, x: number, y: number): void => {
-  if (control.style.left !== '0px') control.style.left = '0px'
-  if (control.style.top !== '0px') control.style.top = '0px'
-  if (control.style.willChange !== 'transform') control.style.willChange = 'transform'
-  const transform = `translate3d(${x}px, ${y}px, 0px)`
-  if (control.style.transform !== transform) control.style.transform = transform
+  const left = `${x}px`
+  const top = `${y}px`
+  if (control.style.left !== left) control.style.left = left
+  if (control.style.top !== top) control.style.top = top
 }
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
 let railActions: HTMLElement[] = []

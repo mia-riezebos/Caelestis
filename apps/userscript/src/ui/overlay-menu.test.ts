@@ -186,10 +186,7 @@ const gear = (id: string): HTMLButtonElement => {
 }
 
 const floatingPosition = (element: HTMLElement): { x: number; y: number } => {
-  const match = /^translate3d\(([-\d.]+)px,\s*([-\d.]+)px,\s*0px\)$/.exec(element.style.transform)
-  if (match === null)
-    throw new Error(`control has no floating position: ${element.style.transform}`)
-  return { x: Number(match[1]), y: Number(match[2]) }
+  return { x: Number.parseFloat(element.style.left), y: Number.parseFloat(element.style.top) }
 }
 
 const menu = (): HTMLElement => {
@@ -622,6 +619,8 @@ describe('the menu controls announce their state', () => {
     expect(button.classList.contains('btn-xs')).toBe(false)
     expect(button.style.width).toBe(`${RAIL_BUTTON}px`)
     expect(button.style.height).toBe(`${RAIL_BUTTON}px`)
+    expect(button.style.transform).toBe('')
+    expect(button.style.willChange).toBe('')
     expect(button.querySelector('path')?.getAttribute('d')).toBe(
       icon('kebab').querySelector('path')?.getAttribute('d'),
     )
