@@ -38,6 +38,18 @@ const CSS = `
 .caelestis-row:hover {
   background-color: var(--color-base-200, rgba(0, 0, 0, 0.06));
 }
+.caelestis-muted {
+  color: color-mix(in srgb, var(--color-base-content, currentColor) 55%, transparent);
+}
+.caelestis-muted .caelestis-meta {
+  opacity: 1;
+}
+.caelestis-row-action {
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+}
 /* A plain pointer, not grab. The rows are clickable as well as draggable, and a grab cursor
    promises dragging is the primary action when it is the secondary one. */
 .caelestis-row[draggable='true'] {
@@ -190,8 +202,27 @@ const CSS = `
 .caelestis-swatch[data-on='false'] {
   opacity: 0.7;
 }
+.caelestis-swatch[data-on='false']::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 15%;
+  inset-block-start: calc(50% - 1px);
+  width: 70%;
+  height: 2px;
+  border-radius: 999px;
+  background-color: currentColor;
+  box-shadow: 0 0 0 1px var(--color-base-100, #fff);
+  transform: rotate(-45deg);
+  pointer-events: none;
+}
 .caelestis-swatch[data-on='true'] {
   outline-color: var(--color-base-content, currentColor);
+}
+@media (forced-colors: active) {
+  .caelestis-swatch[data-on='false']::after {
+    background-color: CanvasText;
+    box-shadow: 0 0 0 1px Canvas;
+  }
 }
 /* Hovering says what the swatch *is*, not what a click would do — a filled box with the eye knocked
    out for on, an empty box with a struck eye for off. Nothing decorates the grid at rest, because

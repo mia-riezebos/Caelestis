@@ -210,7 +210,8 @@ describe('tree drag and drop', () => {
     expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
     expect(row?.querySelector('[aria-label="Expand progress"]')).not.toBeNull()
     expect(row?.textContent).not.toContain('unpublished')
-    expect(row?.style.opacity).toBe('0.55')
+    expect(row?.classList.contains('caelestis-muted')).toBe(true)
+    expect(flyTo?.classList.contains('caelestis-row-action')).toBe(true)
     flyTo?.click()
     expect(navigationHarness.navigateTo).toHaveBeenCalledWith({
       x: 0.5,
@@ -358,6 +359,10 @@ describe('tree drag and drop', () => {
     expect(templateRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
     expect(serverRow?.style.marginInline).toBe('0.25rem 0.5rem')
     expect(folderRow?.style.marginInline).toBe(serverRow?.style.marginInline)
+    expect(folderRow?.getAttribute('aria-setsize')).toBe('1')
+    expect(folderRow?.getAttribute('aria-posinset')).toBe('1')
+    expect(templateRow?.getAttribute('aria-setsize')).toBe('2')
+    expect(templateRow?.getAttribute('aria-posinset')).toBe('2')
     expect(templateRow?.style.marginInline).toBe(serverRow?.style.marginInline)
     for (const row of [serverRow, folderRow]) {
       const tail = row?.querySelector('.caelestis-row-tail')
