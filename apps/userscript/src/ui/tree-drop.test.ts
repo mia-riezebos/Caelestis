@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getState, moveLocalFolder, setState } from '../state.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
 import {
+  acceptServerSnapshot,
   forgetServerRows,
   nodeTreeKey,
   optimisticallyPlaceServerRow,
-  rememberServerContents,
   serverTemplateTreeKey,
   type TreeCallbacks,
   treeContents,
@@ -105,7 +105,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [],
       templates: [{ ...serverTemplate(TEMPLATE_A_ID, null, 'Template', 1), published: false }],
     })
@@ -161,7 +161,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [folder],
       templates: [
         serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'A', 1),
@@ -276,7 +276,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [emptyFolder, populatedFolder],
       templates: [serverTemplate(TEMPLATE_A_ID, DESTINATION_NODE_ID, 'Template', 1)],
     })
@@ -376,7 +376,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [source, destination],
       templates: [serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'Template', 1)],
     })
@@ -424,7 +424,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [node],
       templates: [
         serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'First', 2),
@@ -472,7 +472,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local', nodeTreeKey(server, DESTINATION_NODE_ID)],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [source, destination],
       templates: [serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'Template', 1)],
     })
@@ -531,7 +531,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local', nodeTreeKey(server, DESTINATION_NODE_ID)],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [source, destination],
       templates: [serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'Template', 1)],
     })
@@ -590,7 +590,7 @@ describe('tree drag and drop', () => {
       collapsed: ['local'],
       sort: { field: 'custom', direction: 'asc' },
     })
-    rememberServerContents(server, {
+    acceptServerSnapshot(server, {
       nodes: [source],
       templates: [serverTemplate(TEMPLATE_A_ID, SOURCE_NODE_ID, 'Template', 1)],
     })

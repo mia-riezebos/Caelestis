@@ -1,5 +1,7 @@
 import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cache.js'
 import {
+  admitServerContents,
+  admittedServerContentsFor,
   type ConnectedServer,
   getState,
   isCurrentServerConnection,
@@ -9,6 +11,7 @@ import {
   MAX_MANIFEST_CHUNKS,
   MAX_MANIFEST_TEMPLATES,
   MAX_TREE_NODES,
+  onServerContents,
   type ServerContents,
   setLocalFolderVisible,
   setScopeVisible,
@@ -31,7 +34,11 @@ import {
   type TemplateProgress,
 } from '../templates/mismatch.js'
 import { nodeScopeKey, rememberNodes } from '../templates/server-nodes.js'
-import { serverTemplateKey } from '../templates/server-sync.js'
+import {
+  rejectServerContentsForSync,
+  serverTemplateKey,
+  syncServerTemplates,
+} from '../templates/server-sync.js'
 import { type IconName, icon } from './icons.js'
 import {
   colourProgressDetails,
@@ -514,29 +521,39 @@ export const templatesOfNode = (
  * token got a fresh manifest request on *every* re-render, because a failure leaves the map empty
  * and the next pass sees the same gap. Sharing the in-flight promise makes that one request.
  */
-export type NodeRefreshResult =
-  | { readonly ok: true; readonly changed?: boolean }
-  | {
-      readonly ok: false
-      readonly message: string
-      readonly superseded?: true
-    }
-const refreshing = new WeakMap<ConnectedServer, Promise<NodeRefreshResult>>()
+export type ServerSnapshotResult =
+  | { readonly status: 'admitted'; readonly changed: boolean }
+  | { readonly status: 'refused' | 'failed' | 'superseded'; readonly message: string }
+
+const snapshotResults = new WeakMap<ServerContents, ServerSnapshotResult>()
+const snapshotListeners = new Set<(server: ConnectedServer, result: ServerSnapshotResult) => void>()
+
+export const onServerSnapshot = (
+  listener: (server: ConnectedServer, result: ServerSnapshotResult) => void,
+): (() => void) => {
+  snapshotListeners.add(listener)
+  return () => snapshotListeners.delete(listener)
+}
+
+type RememberResult =
+  | { readonly ok: true; readonly changed: boolean }
+  | { readonly ok: false; readonly message: string; readonly superseded?: true }
+
+const refreshing = new WeakMap<ConnectedServer, Promise<ServerSnapshotResult>>()
 const refreshControllers = new Map<string, AbortController>()
 const refreshedConnections = new WeakSet<ConnectedServer>()
 const nodeErrors = new WeakMap<ConnectedServer, string>()
 const refreshGeneration = new Map<string, number>()
 
-export const refreshNodes = async (
+export const refreshServerSnapshot = async (
   server: ConnectedServer,
   rerender: () => void,
   force = false,
-): Promise<NodeRefreshResult> => {
+): Promise<ServerSnapshotResult> => {
   if (!isCurrentServerConnection(server)) {
     return {
-      ok: false,
+      status: 'superseded',
       message: 'The server connection changed before refresh.',
-      superseded: true,
     }
   }
   const pending = refreshing.get(server)
@@ -556,8 +573,8 @@ export const refreshNodes = async (
   const result = await run
   if (refreshing.get(server) === run) refreshing.delete(server)
   if (refreshControllers.get(server.url) === controller) refreshControllers.delete(server.url)
-  if (result.ok) nodeErrors.delete(server)
-  else if (result.superseded !== true) nodeErrors.set(server, result.message)
+  if (result.status === 'admitted') nodeErrors.delete(server)
+  else if (result.status !== 'superseded') nodeErrors.set(server, result.message)
   queueMicrotask(rerender)
   return result
 }
@@ -566,36 +583,25 @@ const refreshOnce = async (
   server: ConnectedServer,
   generation: number,
   signal: AbortSignal,
-): Promise<NodeRefreshResult> => {
+): Promise<ServerSnapshotResult> => {
   const contents = await listServerContents(server, signal)
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(server)) {
     return {
-      ok: false,
+      status: 'superseded',
       message: 'The server connection changed during refresh.',
-      superseded: true,
     }
   }
   if (refreshGeneration.get(server.url) !== generation) {
     return {
-      ok: false,
+      status: 'superseded',
       message: 'A newer refresh replaced this one.',
-      superseded: true,
     }
   }
   // Unreachable, so nothing is known. The tree keeps drawing what the cache says rather than
   // emptying itself — a server that blinks should not take its folders off your screen.
-  if (contents === null) return { ok: false, message: 'Could not refresh this server.' }
-  if (!isLatestServerContents(server.url, contents)) {
-    return {
-      ok: false,
-      message: 'A newer manifest replaced this one.',
-      superseded: true,
-    }
-  }
-  const remembered = rememberServerContents(server, contents)
-  if (!remembered.ok) return remembered
-  return { ok: true }
+  if (contents === null) return { status: 'failed', message: 'Could not refresh this server.' }
+  return acceptServerSnapshot(server, contents)
 }
 
 const sameNode = (left: TreeNode, right: TreeNode): boolean =>
@@ -631,10 +637,10 @@ const sameRows = <T>(
   left.length === right.length && left.every((entry, index) => same(entry, right[index] as T))
 
 /** Retain one live manifest for the tree, irrespective of which consumer requested it. */
-export const rememberServerContents = (
+const rememberServerContents = (
   server: ConnectedServer,
   contents: ServerContents,
-): NodeRefreshResult => {
+): RememberResult => {
   const current = getState().servers.find((candidate) => candidate.url === server.url)
   if (current === undefined || !isCurrentServerConnection(server)) {
     return {
@@ -772,6 +778,72 @@ export const forgetServerRows = (serverUrl: string): readonly string[] => {
   refreshGeneration.delete(serverUrl)
   return hashes
 }
+
+/**
+ * Admit one fetched manifest as the shared tree and canvas authority.
+ *
+ * Refused snapshots never displace the last admitted rows. If admission becomes stale after row
+ * publication, the previous snapshot is restored before its canvas reconciliation is queued.
+ */
+export const acceptServerSnapshot = (
+  server: ConnectedServer,
+  contents: ServerContents,
+): ServerSnapshotResult => {
+  const cached = snapshotResults.get(contents)
+  if (cached !== undefined) return cached
+  if (!isLatestServerContents(server.url, contents)) {
+    rejectServerContentsForSync(contents)
+    const result: ServerSnapshotResult = {
+      status: 'superseded',
+      message: 'A newer manifest replaced this one.',
+    }
+    snapshotResults.set(contents, result)
+    for (const listener of snapshotListeners) listener(server, result)
+    return result
+  }
+  const accepted = admittedServerContentsFor(server)
+  const remembered = rememberServerContents(server, contents)
+  let result: ServerSnapshotResult
+  if (!remembered.ok) {
+    rejectServerContentsForSync(contents)
+    if (accepted !== null) {
+      void syncServerTemplates(
+        server,
+        accepted.templates,
+        () => admittedServerContentsFor(server) === accepted,
+      )
+    }
+    result = remembered.superseded
+      ? { status: 'superseded', message: remembered.message }
+      : { status: 'refused', message: remembered.message }
+  } else if (!admitServerContents(server, contents)) {
+    rejectServerContentsForSync(contents)
+    if (accepted === null) forgetServerRows(server.url)
+    else {
+      rememberServerContents(server, accepted)
+      void syncServerTemplates(
+        server,
+        accepted.templates,
+        () => admittedServerContentsFor(server) === accepted,
+      )
+    }
+    result = { status: 'superseded', message: 'A newer manifest replaced this one.' }
+  } else {
+    void syncServerTemplates(
+      server,
+      contents.templates,
+      () => admittedServerContentsFor(server) === contents,
+    )
+    result = { status: 'admitted', changed: remembered.changed }
+  }
+  snapshotResults.set(contents, result)
+  for (const listener of snapshotListeners) listener(server, result)
+  return result
+}
+
+// Every successful manifest crosses the same authority, irrespective of which poll or UI action
+// requested it. The listener runs before listServerContents resolves to its caller.
+onServerContents(acceptServerSnapshot)
 
 export const startRenaming = (key: string): void => {
   renaming = key
@@ -2256,7 +2328,7 @@ export const treeContents = (
         if (!refreshedConnections.has(server)) {
           // Exactly one automatic attempt per verified connection. A failed request records an
           // error and waits for the explicit Retry button instead of scheduling itself forever.
-          void refreshNodes(server, rerender)
+          void refreshServerSnapshot(server, rerender)
         }
         if (refreshing.has(server)) {
           wrap.appendChild(childText('Loading folders…', 0))
@@ -2264,7 +2336,7 @@ export const treeContents = (
           const message = nodeErrors.get(server) ?? 'Could not load this server.'
           wrap.appendChild(
             childRetry(message, 0, () => {
-              void refreshNodes(server, rerender, true)
+              void refreshServerSnapshot(server, rerender, true)
             }),
           )
         }
@@ -2440,7 +2512,7 @@ export const treeContents = (
         if (server.status === 'connected' && refreshError !== undefined) {
           wrap.appendChild(
             childRetry(refreshError, 0, () => {
-              void refreshNodes(server, rerender, true)
+              void refreshServerSnapshot(server, rerender, true)
             }),
           )
         }

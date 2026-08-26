@@ -1,14 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { type ConnectedServer, getState, peekProbedNodes, probeServer, setState } from '../state.js'
+
+const serverCache = vi.hoisted(() => ({ cacheServer: vi.fn(async () => undefined) }))
+
+vi.mock('../server-cache.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../server-cache.js')>()),
+  cacheServer: serverCache.cacheServer,
+}))
+
 import {
+  admittedServerContentsFor,
+  type ConnectedServer,
+  getState,
+  listServerContents,
+  MAX_TREE_NODES,
+  peekProbedNodes,
+  probeServer,
+  setState,
+} from '../state.js'
+import {
+  acceptServerSnapshot,
   canRetryNodeRefresh,
   forgetServerRows,
   manifestAggregateWithinBudget,
   nodeSiblingItems,
   nodeTreeKey,
   orderedItems,
-  refreshNodes,
-  rememberServerContents,
+  refreshServerSnapshot,
   reorderedSiblings,
   reorderedVisibleSiblings,
   serverTemplateAt,
@@ -22,9 +39,11 @@ const TEMPLATE_A = '019fed50-87a1-7523-a88c-bdeafad49683'
 const manifest = (
   info: { readonly id: string; readonly name: string; readonly auth: 'none' },
   nodes: readonly unknown[] = [],
+  templates: readonly unknown[] = [],
+  tiles: readonly string[] = [],
 ): Response =>
   new Response(
-    JSON.stringify({ version: 'v1', season: 0, server: info, nodes, templates: [], tiles: [] }),
+    JSON.stringify({ version: 'v1', season: 0, server: info, nodes, templates, tiles }),
     { status: 200 },
   )
 
@@ -33,6 +52,7 @@ afterEach(() => {
   forgetServerRows('https://cached.example.com')
   forgetServerRows('https://loading.example.com')
   setState({ servers: [], customOrder: [], collapsed: [] })
+  serverCache.cacheServer.mockClear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -127,7 +147,7 @@ describe('tree identity and ordering', () => {
     expect(manifestAggregateWithinBudget(0, 200_000, 0, 1)).toBe(false)
   })
 
-  it('replaces tree rows when a manifest was fetched outside refreshNodes', () => {
+  it('replaces tree rows when a manifest arrives outside an explicit refresh', () => {
     const connected = server(SERVER_ID, 0)
     setState({ servers: [connected] })
     const template = {
@@ -141,26 +161,137 @@ describe('tree identity and ordering', () => {
       chunks: [],
     }
 
-    expect(rememberServerContents(connected, { nodes: [], templates: [template] })).toEqual({
-      ok: true,
+    expect(acceptServerSnapshot(connected, { nodes: [], templates: [template] })).toEqual({
+      status: 'admitted',
       changed: true,
     })
     expect(serverTemplateAt(connected.url, TEMPLATE_A)?.nodeId).toBe('folder-a')
 
     expect(
-      rememberServerContents(connected, {
+      acceptServerSnapshot(connected, {
         nodes: [],
         templates: [{ ...template, nodeId: 'folder-b' }],
       }),
-    ).toEqual({ ok: true, changed: true })
+    ).toEqual({ status: 'admitted', changed: true })
     expect(serverTemplateAt(connected.url, TEMPLATE_A)?.nodeId).toBe('folder-b')
 
     expect(
-      rememberServerContents(connected, {
+      acceptServerSnapshot(connected, {
         nodes: [],
         templates: [{ ...template, nodeId: 'folder-b', bbox: { ...template.bbox }, chunks: [] }],
       }),
-    ).toEqual({ ok: true, changed: false })
+    ).toEqual({ status: 'admitted', changed: false })
+  })
+
+  it('keeps the last admitted rows when a newer snapshot exceeds client limits', () => {
+    const connected = server(SERVER_ID, 0, 'https://limited.example.com')
+    setState({ servers: [connected] })
+    const template = {
+      id: TEMPLATE_A,
+      nodeId: null,
+      name: 'Kept',
+      version: 'v1',
+      published: true,
+      updatedAt: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [],
+    }
+    expect(acceptServerSnapshot(connected, { nodes: [], templates: [template] }).status).toBe(
+      'admitted',
+    )
+
+    const node = {
+      id: NODE_ID,
+      parentId: null,
+      path: '/too-many',
+      name: 'Too many',
+      createdAt: 1,
+    }
+    expect(
+      acceptServerSnapshot(connected, {
+        nodes: new Array(MAX_TREE_NODES + 1).fill(node),
+        templates: [],
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        status: 'refused',
+        message: expect.stringContaining('client limit'),
+      }),
+    )
+    expect(serverTemplateAt(connected.url, TEMPLATE_A)?.name).toBe('Kept')
+    forgetServerRows(connected.url)
+  })
+
+  it('reports a snapshot from a replaced connection as superseded', () => {
+    const original = server(SERVER_ID, 0, 'https://superseded.example.com')
+    setState({ servers: [{ ...original, token: 'replacement' }] })
+
+    expect(acceptServerSnapshot(original, { nodes: [], templates: [] })).toEqual(
+      expect.objectContaining({ status: 'superseded' }),
+    )
+  })
+
+  it('rejects an older response before it can publish over the newest snapshot', async () => {
+    const releases: Array<(response: Response) => void> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            releases.push(resolve)
+          }),
+      ),
+    )
+    const info = { id: SERVER_ID, name: 'Example', auth: 'none' as const }
+    const connected = server(SERVER_ID, 0, 'https://ordered.example.com')
+    setState({ servers: [connected] })
+    const template = {
+      id: TEMPLATE_A,
+      nodeId: null,
+      name: 'Newer',
+      version: '019fed50-87a1-7523-a88c-bdeafad49684',
+      published: true,
+      createdAt: 1_750_000_000_000,
+      updatedAt: 1_750_000_000_002,
+      totalPixels: 1,
+      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      chunks: [{ tile: '0/0', hash: 'a'.repeat(64) }],
+    }
+
+    const first = listServerContents(connected)
+    const second = listServerContents(connected)
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+    releases[1]?.(manifest(info, [], [template], ['0/0']))
+    const newest = await second
+    expect(newest).not.toBeNull()
+    expect(admittedServerContentsFor(connected)).toBe(newest)
+    expect(serverCache.cacheServer).toHaveBeenCalledOnce()
+    serverCache.cacheServer.mockClear()
+
+    releases[0]?.(
+      manifest(
+        info,
+        [],
+        [
+          {
+            ...template,
+            name: 'Older',
+            version: '019fed50-87a1-7523-a88c-bdeafad49685',
+            updatedAt: 1_750_000_000_001,
+          },
+        ],
+        ['0/0'],
+      ),
+    )
+    const older = await first
+    if (older === null) throw new Error('the older manifest did not decode')
+    expect(acceptServerSnapshot(connected, older)).toEqual(
+      expect.objectContaining({ status: 'superseded' }),
+    )
+    expect(serverTemplateAt(connected.url, TEMPLATE_A)?.name).toBe('Newer')
+    expect(admittedServerContentsFor(connected)).toBe(newest)
+    expect(serverCache.cacheServer).not.toHaveBeenCalled()
+    forgetServerRows(connected.url)
   })
 
   it('does not admit a key from another sibling group', () => {
@@ -276,8 +407,8 @@ describe('tree identity and ordering', () => {
     const firstView = vi.fn()
     const rebuiltView = vi.fn()
 
-    const first = refreshNodes(connected, firstView)
-    const rebuilt = refreshNodes(connected, rebuiltView)
+    const first = refreshServerSnapshot(connected, firstView)
+    const rebuilt = refreshServerSnapshot(connected, rebuiltView)
     await Promise.resolve()
     expect(fetch).toHaveBeenCalledOnce()
     release?.(manifest({ id: SERVER_ID, name: 'Example', auth: 'none' }))
@@ -315,7 +446,7 @@ describe('tree identity and ordering', () => {
     setState({ servers: [connected] })
     const rerender = vi.fn()
 
-    const refreshing = refreshNodes(connected, rerender)
+    const refreshing = refreshServerSnapshot(connected, rerender)
     expect(rerender).not.toHaveBeenCalled()
     await refreshing
     await Promise.resolve()
@@ -350,7 +481,9 @@ describe('tree identity and ordering', () => {
     const connected = await probeServer('https://example.com', null)
     setState({ servers: [connected] })
 
-    await expect(refreshNodes(connected, vi.fn(), true)).resolves.toEqual({ ok: true })
+    await expect(refreshServerSnapshot(connected, vi.fn(), true)).resolves.toEqual(
+      expect.objectContaining({ status: 'admitted' }),
+    )
 
     expect(fetch).toHaveBeenCalledTimes(4)
     expect(fetch).toHaveBeenLastCalledWith(
@@ -395,8 +528,8 @@ describe('tree identity and ordering', () => {
     const connected = await probeServer('https://example.com', null)
     setState({ servers: [connected] })
 
-    await expect(refreshNodes(connected, vi.fn(), true)).resolves.toEqual(
-      expect.objectContaining({ ok: false }),
+    await expect(refreshServerSnapshot(connected, vi.fn(), true)).resolves.toEqual(
+      expect.objectContaining({ status: 'failed' }),
     )
 
     expect(peekProbedNodes(connected)).toEqual(nodes)
@@ -438,7 +571,7 @@ describe('tree identity and ordering', () => {
     const connected = await probeServer('https://example.com', null)
     setState({ servers: [connected] })
 
-    await refreshNodes(connected, vi.fn(), true)
+    await refreshServerSnapshot(connected, vi.fn(), true)
     const downgraded = getState().servers[0]
 
     expect(downgraded).toEqual(expect.objectContaining({ isAdmin: false }))
@@ -485,7 +618,9 @@ describe('tree identity and ordering', () => {
     const connected = await probeServer('https://public.example.com', null)
     setState({ servers: [connected] })
 
-    await expect(refreshNodes(connected, vi.fn())).resolves.toEqual({ ok: true })
+    await expect(refreshServerSnapshot(connected, vi.fn())).resolves.toEqual(
+      expect.objectContaining({ status: 'admitted' }),
+    )
     expect(fetch).toHaveBeenCalledTimes(4)
   })
 
@@ -509,7 +644,7 @@ describe('tree identity and ordering', () => {
         ),
       ),
     )
-    await refreshNodes(connected, vi.fn())
+    await refreshServerSnapshot(connected, vi.fn())
     const stale: ConnectedServer = {
       ...connected,
       info: null,
