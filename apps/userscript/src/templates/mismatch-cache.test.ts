@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   templates: [] as PlacedTemplate[],
   serverMask: null as MismatchMask | null,
   workerAvailable: false,
+  markersEnabled: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   onTilePixels: vi.fn(),
   onTilePixelsEvicted: vi.fn(),
@@ -32,7 +33,11 @@ vi.mock('../server-mismatch.js', () => ({
 }))
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
 vi.mock('./local-store.js', () => ({
-  appearanceOf: () => ({ markUnpainted: false }),
+  appearanceOf: () => ({
+    markMismatch: harness.markersEnabled,
+    markSelectedColour: false,
+    markUnpainted: false,
+  }),
   displayTemplates: () => harness.templates,
   isTemplateVisible: () => true,
   onLocalChange: vi.fn(),
@@ -71,6 +76,7 @@ beforeEach(() => {
   harness.pixels.fill(1)
   harness.serverMask = null
   harness.workerAvailable = false
+  harness.markersEnabled = true
   harness.workerScan.mockReset()
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
@@ -83,6 +89,14 @@ describe('visible mismatch answer retention', () => {
     expect(wantsTilePixels()).toBe(true)
     expect(wantsTilePixels({ x: 0, y: 0 })).toBe(true)
     expect(wantsTilePixels({ x: 1, y: 0 })).toBe(false)
+  })
+
+  it('does not request pixel capture when every template has markers disabled', async () => {
+    harness.markersEnabled = false
+    const { wantsTilePixels } = await import('./mismatch.js')
+
+    expect(wantsTilePixels()).toBe(false)
+    expect(wantsTilePixels({ x: 0, y: 0 })).toBe(false)
   })
 
   it('keeps every answer requested by one visible frame', async () => {

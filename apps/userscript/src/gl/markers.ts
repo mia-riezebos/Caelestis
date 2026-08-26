@@ -27,7 +27,6 @@ import {
 } from '../tile-transform.js'
 import { isPaintOpen, selectedColour } from '../wplace-paint.js'
 import { markerFades, templateFades } from './fade.js'
-import { markerSampleLimit, sampleMarkers } from './marker-sample.js'
 
 /**
  * Mismatch markers, drawn one point per marked pixel.
@@ -410,7 +409,6 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     selectedFade: number
   }[] = []
   const markerKeys = new Set<string>()
-  const trackProgress = true
   for (const template of displayTemplates()) {
     const appearance = appearanceOf(template)
     const mismatchKey = `mismatch:${template.id}`
@@ -438,7 +436,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     if (!templateFade.done) animating = true
     const mismatchFade = mismatch.value * templateFade.value
     const selectedFade = selectedMarker.value * templateFade.value
-    if (mismatchFade > 0 || selectedFade > 0 || (trackProgress && isTemplateVisible(template))) {
+    if (mismatchFade > 0 || selectedFade > 0) {
       wanted.push({ template, mismatchFade, selectedFade })
     }
   }
@@ -475,7 +473,6 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const selectedWork: Work[] = []
   const mismatchWork: Work[] = []
   let deferred = false
-  const scale = deviceScale(gl)
   const mismatchSelection = getState().onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
     const appearance = appearanceOf(template)
@@ -506,27 +503,23 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
         const disagreements = disagreementsIn(template, tile.tile)
         if (disagreements === null) deferred = true
         else {
-          const marks = sampleMarkers(
-            colourMarksIn(disagreements, selected),
-            markerSampleLimit(tile.width, tile.height, appearance.selectedMarkerSize * scale),
-          )
+          const marks = colourMarksIn(disagreements, selected)
           if (marks.length > 0) {
             selectedWork.push({ tile, marks, style: selectedStyle, fade: selectedFade })
           }
         }
       }
-      const mismatches = mismatchesIn(template, tile.tile)
-      if (mismatches === null) deferred = true
-      else if (mismatchFade > 0 && mismatches.length > 0) {
-        mismatchWork.push({
-          tile,
-          marks: sampleMarkers(
-            mismatches,
-            markerSampleLimit(tile.width, tile.height, appearance.markerSize * scale),
-          ),
-          style: mismatchStyle,
-          fade: mismatchFade,
-        })
+      if (mismatchFade > 0) {
+        const mismatches = mismatchesIn(template, tile.tile)
+        if (mismatches === null) deferred = true
+        else if (mismatches.length > 0) {
+          mismatchWork.push({
+            tile,
+            marks: mismatches,
+            style: mismatchStyle,
+            fade: mismatchFade,
+          })
+        }
       }
     }
   }

@@ -490,7 +490,11 @@ const scheduleIdleScan = (): void => {
  * past us while we were not looking.
  */
 export const wantsTilePixels = (tile?: TileCoord): boolean => {
-  const templates = displayTemplates().filter(isTemplateVisible)
+  const templates = displayTemplates().filter((template) => {
+    if (!isTemplateVisible(template)) return false
+    const appearance = appearanceOf(template)
+    return appearance.markMismatch || appearance.markSelectedColour
+  })
   if (tile === undefined) return templates.length > 0
   const left = tile.x * TILE_SIZE
   const top = tile.y * TILE_SIZE
