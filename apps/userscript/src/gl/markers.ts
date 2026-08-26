@@ -32,7 +32,8 @@ import {
   beginMarkerDensityFrame,
   endMarkerDensityFrame,
   markerDensityMemoryBytes,
-  viewportMarkerBatches,
+  stableViewportMarkerSelection,
+  type ViewportMarkerSelection,
 } from './marker-density.js'
 
 export { markerDensityMemoryBytes }
@@ -113,6 +114,8 @@ let markAttribute = -1
 let markerBufferBytes = 0
 const markerBuffers = new Map<MismatchMarks, WebGLBuffer>()
 const usedMarkerBuffers = new Set<MismatchMarks>()
+let selectedViewportSelection: ViewportMarkerSelection | null = null
+let mismatchViewportSelection: ViewportMarkerSelection | null = null
 
 export const markerGpuMemoryBytes = (): number => markerBufferBytes
 const uniforms = new Map<string, WebGLUniformLocation | null>()
@@ -147,6 +150,8 @@ export const initMarkers = (gl: WebGL2RenderingContext): void => {
   program = null
   markerBuffers.clear()
   usedMarkerBuffers.clear()
+  selectedViewportSelection = null
+  mismatchViewportSelection = null
   markerBufferBytes = 0
   markAttribute = -1
   vao = null
@@ -182,6 +187,8 @@ export const releaseMarkers = (gl: WebGL2RenderingContext): void => {
   for (const held of markerBuffers.values()) gl.deleteBuffer(held)
   markerBuffers.clear()
   usedMarkerBuffers.clear()
+  selectedViewportSelection = null
+  mismatchViewportSelection = null
   if (vao !== null) gl.deleteVertexArray(vao)
   if (program !== null) gl.deleteProgram(program)
   markerBufferBytes = 0
@@ -555,16 +562,34 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }
   const viewport = { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }
   const map = getMap()
-  // Density selection is CPU-heavy precisely when every fractional pan/zoom frame invalidates its
-  // screen-space inputs. Stable source buffers are cheaper during movement; the configured target
-  // is applied once MapLibre settles and emits its final frame.
-  const frameBudget = map?.isMoving?.() ? Number.POSITIVE_INFINITY : markerBudget
-  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, frameBudget)
-  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, frameBudget)
-  count('marker:selected-colour tiles with marks', visibleSelectedWork.length)
-  count('marker:mismatch tiles with marks', visibleMismatchWork.length)
+  const moving = map?.isMoving?.() ?? false
+  // Density selection is CPU-heavy precisely when fractional pan/zoom frames invalidate its
+  // screen-space inputs. Seed a bounded selection while settled, then keep those GPU buffers stable
+  // during movement until the source list changes. The final settled frame recalculates density.
+  selectedViewportSelection = stableViewportMarkerSelection(
+    selectedWork,
+    viewport,
+    markerBudget,
+    moving ? selectedViewportSelection : null,
+  )
+  mismatchViewportSelection = stableViewportMarkerSelection(
+    mismatchWork,
+    viewport,
+    markerBudget,
+    moving ? mismatchViewportSelection : null,
+  )
+  const selectedCount = selectedViewportSelection.marks.reduce(
+    (count, marks) => count + (marks === null || marks.length === 0 ? 0 : 1),
+    0,
+  )
+  const mismatchCount = mismatchViewportSelection.marks.reduce(
+    (count, marks) => count + (marks === null || marks.length === 0 ? 0 : 1),
+    0,
+  )
+  count('marker:selected-colour tiles with marks', selectedCount)
+  count('marker:mismatch tiles with marks', mismatchCount)
 
-  if (visibleSelectedWork.length === 0 && visibleMismatchWork.length === 0) {
+  if (selectedCount === 0 && mismatchCount === 0) {
     if (deferred && now >= nextRetry) {
       nextRetry = now + RETRY_MS
       const map = getMap() as { triggerRepaint?: () => void } | null
@@ -593,8 +618,18 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   // has to mean skipping it cleanly, in both files.
   try {
     // The selected colour is a guide; a real mismatch is the error signal and wins where they meet.
-    for (const one of visibleSelectedWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
-    for (const one of visibleMismatchWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+    for (let at = 0; at < selectedWork.length; at++) {
+      const one = selectedWork[at]
+      const marks = selectedViewportSelection.marks[at]
+      if (one !== undefined && marks !== null && marks !== undefined)
+        drawMarkers(gl, one.tile, marks, one.style, one.fade)
+    }
+    for (let at = 0; at < mismatchWork.length; at++) {
+      const one = mismatchWork[at]
+      const marks = mismatchViewportSelection.marks[at]
+      if (one !== undefined && marks !== null && marks !== undefined)
+        drawMarkers(gl, one.tile, marks, one.style, one.fade)
+    }
   } finally {
     gl.bindVertexArray(previousVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)

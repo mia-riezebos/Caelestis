@@ -196,7 +196,26 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
-  it('draws stable source buffers instead of recalculating density while the map moves', async () => {
+  it('reuses a bounded marker buffer instead of recalculating density while the map moves', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.markerBudget = 100
+    fixture.marks = new Uint32Array(1_000)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+    vi.mocked(gl.drawArrays).mockClear()
+    vi.mocked(gl.bufferData).mockClear()
+    fixture.mapMoving = true
+    markerLayer.render(gl)
+
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.markerBudget)
+    expect(gl.bufferData).not.toHaveBeenCalled()
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('keeps the first moving frame bounded without a settled selection', async () => {
     fixture.appearance.markMismatch = true
     fixture.markerBudget = 100
     fixture.mapMoving = true
@@ -207,7 +226,7 @@ describe('marker work selection', () => {
 
     markerLayer.render(gl)
 
-    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.markerBudget)
     markerLayer.onRemove(null, gl)
   })
 

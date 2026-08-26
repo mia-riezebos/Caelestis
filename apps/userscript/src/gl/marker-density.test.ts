@@ -6,6 +6,7 @@ import {
   endMarkerDensityFrame,
   MARKER_VIEWPORT_BUDGET,
   markerDensityMemoryBytes,
+  stableViewportMarkerSelection,
   viewportMarkerBatches,
 } from './marker-density.js'
 
@@ -297,6 +298,31 @@ describe('viewport marker density', () => {
     endMarkerDensityFrame()
 
     expect(zoomed?.marks).toBe(first?.marks)
+  })
+
+  it('reuses one bounded selection across arbitrary movement transforms', () => {
+    const marks = grid(200, 100)
+    const viewport = { width: TILE_SIZE * 2, height: TILE_SIZE * 2 }
+    const placed = (x: number, size: number) => ({
+      ...batch(marks),
+      tile: { tile: { x: 0, y: 0 }, x, y: x, width: size, height: size },
+    })
+
+    beginMarkerDensityFrame()
+    const first = stableViewportMarkerSelection([placed(0, TILE_SIZE)], viewport, 1_000, null)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const moved = stableViewportMarkerSelection(
+      [placed(500, TILE_SIZE * 1.5)],
+      viewport,
+      1_000,
+      first,
+    )
+    endMarkerDensityFrame()
+
+    expect(moved).toBe(first)
+    expect(moved.marks[0]).toHaveLength(1_000)
+    expect(markerDensityMemoryBytes()).toBeGreaterThan(0)
   })
 
   it('releases clipping buffers when the whole source becomes visible', () => {
