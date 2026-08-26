@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { markLocalX, packMismatchMark } from '../templates/mismatch-marks.js'
 
 const fixture = vi.hoisted(() => ({
   appearance: {
@@ -18,6 +19,7 @@ const fixture = vi.hoisted(() => ({
   disagreementsIn: vi.fn(),
   progressIn: vi.fn(() => true),
   markerBudget: 16_384,
+  quad: { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 },
   paintOpen: false,
   selected: null as number | null,
 }))
@@ -61,7 +63,7 @@ vi.mock('../templates/placement.js', () => ({
   horizontalSpans: () => [{ worldStart: 0, worldEnd: 1_000 }],
 }))
 vi.mock('../tile-transform.js', () => ({
-  currentQuads: () => [{ tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 }],
+  currentQuads: () => [fixture.quad],
   isDrawingTiles: () => true,
   registerDraftCanvas: vi.fn(),
 }))
@@ -151,6 +153,7 @@ describe('marker work selection', () => {
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.progressIn.mockReset().mockReturnValue(true)
     fixture.markerBudget = 16_384
+    fixture.quad = { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 }
     fixture.paintOpen = false
     fixture.selected = null
   })
@@ -189,6 +192,49 @@ describe('marker work selection', () => {
     markerLayer.render(gl)
 
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 100)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('reuses a bounded marker buffer across unchanged render transforms', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.markerBudget = 100
+    fixture.marks = new Uint32Array(1_000)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+    vi.mocked(gl.drawArrays).mockClear()
+    vi.mocked(gl.bufferData).mockClear()
+    markerLayer.render(gl)
+
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.markerBudget)
+    expect(gl.bufferData).not.toHaveBeenCalled()
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('refreshes the drawn selection when a hidden source region enters the viewport', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.markerBudget = 1_000
+    fixture.quad = { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 512, height: 512 }
+    fixture.marks = new Uint32Array(
+      Array.from({ length: 100 }, (_, y) =>
+        Array.from({ length: 400 }, (_, x) => packMismatchMark(x, y, 1)),
+      ).flat(),
+    )
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+    const first = vi.mocked(gl.bufferData).mock.calls.at(-1)?.[1] as Uint32Array
+    fixture.quad = { ...fixture.quad, x: -120 }
+    markerLayer.render(gl)
+    const moved = vi.mocked(gl.bufferData).mock.calls.at(-1)?.[1] as Uint32Array
+
+    expect(Math.max(...Array.from(moved, markLocalX))).toBeGreaterThan(
+      Math.max(...Array.from(first, markLocalX)),
+    )
     markerLayer.onRemove(null, gl)
   })
 
