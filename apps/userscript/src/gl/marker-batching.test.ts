@@ -70,6 +70,25 @@ describe('marker draw batching', () => {
     expect(batchMarkerWork([first, second])).toEqual([first, second])
   })
 
+  it('preserves interleaved tile order when one style can emit two colours', () => {
+    const firstTile = tile(1)
+    const secondTile = tile(2)
+    const selectionStyle = {
+      ...style,
+      selected: 3,
+      otherColour: [0, 0, 1] as const,
+      otherOpacity: 0.5,
+    }
+    const interleaved = [
+      work(firstTile, new Uint32Array([1]), { style: selectionStyle }),
+      work(secondTile, new Uint32Array([2]), { style: selectionStyle }),
+      work(firstTile, new Uint32Array([3]), { style: selectionStyle }),
+      work(secondTile, new Uint32Array([4]), { style: selectionStyle }),
+    ]
+
+    expect(batchMarkerWork(interleaved)).toEqual(interleaved)
+  })
+
   it('releases merged CPU buffers that are no longer drawn', () => {
     const at = tile(1)
     batchMarkerWork([work(at, new Uint32Array([1])), work(at, new Uint32Array([2]))])

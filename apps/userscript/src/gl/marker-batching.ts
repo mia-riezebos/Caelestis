@@ -50,6 +50,10 @@ const sameDrawState = (left: BatchableMarkerWork, right: BatchableMarkerWork): b
   left.style.otherOpacity === right.style.otherOpacity &&
   left.style.selected === right.style.selected
 
+/** Whether every point in this work necessarily emits the same RGB colour. */
+const hasOrderIndependentColour = ({ style }: BatchableMarkerWork): boolean =>
+  style.selected < 0 || style.otherColour === null || sameColour(style.colour, style.otherColour)
+
 const merge = (sources: readonly MismatchMarks[]): MismatchMarks => {
   if (sources.length === 1) return sources[0] as MismatchMarks
   const key = sources.map(sourceId).join(',')
@@ -95,6 +99,10 @@ export const batchMarkerWork = <Work extends BatchableMarkerWork>(
   const first = work[0]
   if (first === undefined || work.length === 1) return [...work]
   if (!work.every((candidate) => sameDrawState(first, candidate))) return [...work]
+  // Tile grouping changes template-major primitive order. That is blend-equivalent when every
+  // point uses one RGB colour, but not while selected-colour dimming can emit two different colours
+  // from the same work item at an overlapping tile boundary.
+  if (!work.every(hasOrderIndependentColour)) return [...work]
 
   const byTile = new Map<TileQuad, Work[]>()
   for (const candidate of work) {
