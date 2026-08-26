@@ -13,6 +13,7 @@ const harness = vi.hoisted(() => ({
   pixelsAvailable: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   idleCallbacks: [] as Array<(deadline: { timeRemaining: () => number }) => void>,
+  onTilePixelsAvailable: vi.fn(),
   onTilePixels: vi.fn(),
   onTilePixelsEvicted: vi.fn(),
 }))
@@ -23,6 +24,7 @@ vi.mock('../tile-transform.js', () => ({
   ensureTilePixels: vi.fn(),
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
+  onTilePixelsAvailable: harness.onTilePixelsAvailable,
   onTilePixels: harness.onTilePixels,
   onTilePixelsEvicted: harness.onTilePixelsEvicted,
   tilePixels: () => (harness.pixelsAvailable ? harness.pixels : null),
@@ -89,6 +91,7 @@ beforeEach(() => {
       harness.idleCallbacks.push(callback)
     },
   )
+  harness.onTilePixelsAvailable.mockReset()
   harness.onTilePixels.mockReset()
   harness.onTilePixelsEvicted.mockReset()
 })
@@ -355,10 +358,10 @@ describe('visible mismatch answer retention', () => {
     expect(vi.getTimerCount()).toBe(0)
 
     harness.pixelsAvailable = true
-    const listener = harness.onTilePixels.mock.calls[0]?.[0] as
-      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+    const listener = harness.onTilePixelsAvailable.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }) => void)
       | undefined
-    listener?.({ x: 0, y: 0 }, [])
+    listener?.({ x: 0, y: 0 })
     expect(vi.getTimerCount()).toBe(1)
     await vi.runAllTimersAsync()
 
