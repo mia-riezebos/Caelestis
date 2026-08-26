@@ -11,6 +11,7 @@ import {
   type ConnectedServer,
   getState,
   isCurrentServerConnection,
+  isLatestServerContents,
   listServerContents,
   onServerContents,
   type ServerContents,
@@ -511,6 +512,16 @@ export const acceptServerSnapshot = (
 ): ServerSnapshotResult => {
   const cached = snapshotResults.get(contents)
   if (cached !== undefined) return cached
+  if (!isLatestServerContents(server.url, contents)) {
+    rejectServerContentsForSync(contents)
+    const result: ServerSnapshotResult = {
+      status: 'superseded',
+      message: 'A newer manifest replaced this one.',
+    }
+    snapshotResults.set(contents, result)
+    for (const listener of snapshotListeners) listener(server, result)
+    return result
+  }
   const accepted = admittedServerContentsFor(server)
   const remembered = rememberServerContents(server, contents)
   let result: ServerSnapshotResult

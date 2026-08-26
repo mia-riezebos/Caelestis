@@ -1269,7 +1269,7 @@ export const isLatestServerContents = (serverUrl: string, contents: ServerConten
 /**
  * Mark the newest manifest as safe for every consumer to use.
  *
- * Aggregate admission belongs to the panel coordinator because it spans all configured servers.
+ * Aggregate admission belongs to the tree snapshot authority because it spans all configured servers.
  * Keeping the winning snapshot here gives admin helpers and the canvas repair path the same answer,
  * while retaining the connection that earned it prevents a same-URL reconnect from inheriting it.
  */
@@ -1321,6 +1321,7 @@ export const listServerContents = async (
             : { authorization: `Bearer ${activeServerToken(server)}` },
         ...(signal === undefined ? {} : { signal }),
       },
+      () => isCurrentServerConnection(server),
     )
     if (response.status === 401 || response.status === 403) noteAuthFailure(server, response.status)
     if (!response.ok) return null

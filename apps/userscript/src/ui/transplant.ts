@@ -204,6 +204,7 @@ export type LocalTemplateCopyResult =
       readonly message: string
       readonly ambiguous?: true
       readonly cancelled?: true
+      readonly retryable?: true
     }
 
 type CurrentServerTemplate = (
@@ -220,7 +221,6 @@ export const copyLocalTemplateToServer = async (
   nodeId: string | null,
   reconcileServer: ReconcileServer,
   options: {
-    readonly reconcile: 'always' | 'ambiguous'
     readonly beforeUpload?: (png: Blob) => boolean
   },
 ): Promise<LocalTemplateCopyResult> => {
@@ -230,6 +230,7 @@ export const copyLocalTemplateToServer = async (
     return {
       ok: false,
       message: `“${template.name}” changed while it was being encoded — try again.`,
+      retryable: true,
     }
   }
   if (options.beforeUpload?.(png) === false) {
@@ -248,12 +249,9 @@ export const copyLocalTemplateToServer = async (
     originY: template.originY,
     png,
   })
-  const reconciliation = reconcileServer(destination)
-  if (options.reconcile === 'always' || (!uploaded.ok && uploaded.ambiguous === true)) {
-    await reconciliation
-  } else {
-    void reconciliation
-  }
+  // The write result is useful immediately. Reconciliation still belongs to this transaction, but
+  // a slow manifest must not keep a completed upload looking stuck behind its 120-second timeout.
+  void reconcileServer(destination)
   return uploaded
 }
 
@@ -336,7 +334,7 @@ export const moveServerTemplateToLocal = async (
       }
     }
     const removed = await deleteTemplateOnServer(source, published.id)
-    await reconcileServer(source)
+    void reconcileServer(source)
     return removed.ok
       ? {
           ok: true,
@@ -412,12 +410,12 @@ export const moveServerTemplateToServer = async (
     png,
   })
   if (!uploaded.ok) {
-    await reconcileServer(destination)
+    void reconcileServer(destination)
     return { ok: false, tone: 'error', message: uploaded.message }
   }
   const copied = uploaded.id
   if (!isCurrentServerConnection(source) || !isCurrentServerConnection(destination)) {
-    await reconcileServer(destination)
+    void reconcileServer(destination)
     return partial(
       `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
       'warning',
@@ -426,7 +424,7 @@ export const moveServerTemplateToServer = async (
   }
   const beforePublish = currentServerTemplate(source, published.id)
   if (beforePublish === null || !sameServerTemplateRevision(ready, beforePublish)) {
-    await reconcileServer(destination)
+    void reconcileServer(destination)
     return partial(
       `Copied to ${destinationName} as a draft, but the source changed and was kept.`,
       'warning',
@@ -436,7 +434,7 @@ export const moveServerTemplateToServer = async (
   if (beforePublish.published) {
     const publishedAtDestination = await patchTemplate(destination, copied, { published: true })
     if (!publishedAtDestination.ok) {
-      await reconcileServer(destination)
+      void reconcileServer(destination)
       return partial(
         `Copied to ${destinationName} as a draft, but could not publish it; the source was kept.`,
         'error',
@@ -445,7 +443,7 @@ export const moveServerTemplateToServer = async (
     }
   }
   if (!isCurrentServerConnection(source) || !isCurrentServerConnection(destination)) {
-    await reconcileServer(destination)
+    void reconcileServer(destination)
     return partial(
       `Copied to ${destinationName}, but a server connection changed and the source was kept.`,
       'warning',
@@ -466,7 +464,7 @@ export const moveServerTemplateToServer = async (
       ],
     }))
   ) {
-    await reconcileServer(destination)
+    void reconcileServer(destination)
     return partial(
       `Copied to ${destinationName}, but its destination could not be admitted; the source was kept.`,
       'warning',
@@ -482,7 +480,7 @@ export const moveServerTemplateToServer = async (
   }
   const latest = currentServerTemplate(source, published.id)
   if (latest === null || !sameServerTemplateRevision(beforePublish, latest)) {
-    await reconcileServer(destination)
+    void reconcileServer(destination)
     return partial(
       `Copied to ${destinationName}, but the source changed and was kept.`,
       'warning',
@@ -490,7 +488,7 @@ export const moveServerTemplateToServer = async (
     )
   }
   const removed = await deleteTemplateOnServer(source, published.id)
-  await Promise.all([reconcileServer(source), reconcileServer(destination)])
+  void Promise.all([reconcileServer(source), reconcileServer(destination)])
   return removed.ok
     ? {
         ok: true,
@@ -1133,7 +1131,7 @@ export const transplant = async (
       const servers = new Map<string, ConnectedServer>()
       if (source.kind === 'server') servers.set(source.server.url, source.server)
       if (destination.kind === 'server') servers.set(destination.server.url, destination.server)
-      await Promise.all([...servers.values()].map(reconcileServer))
+      void Promise.all([...servers.values()].map(reconcileServer))
     }
     return result
   } finally {
