@@ -18,15 +18,12 @@ const fixture = vi.hoisted(() => ({
   disagreementsIn: vi.fn(),
   progressIn: vi.fn(() => true),
   markerBudget: 16_384,
-  mapMoving: false,
   paintOpen: false,
   selected: null as number | null,
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
-vi.mock('../map-handle.js', () => ({
-  getMap: () => ({ isMoving: () => fixture.mapMoving }),
-}))
+vi.mock('../map-handle.js', () => ({ getMap: () => null }))
 vi.mock('../profile.js', () => ({
   measureProfile: (_name: string, run: () => unknown) => run(),
   profileGpu: (_gl: unknown, _name: string, run: () => unknown) => run(),
@@ -154,7 +151,6 @@ describe('marker work selection', () => {
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.progressIn.mockReset().mockReturnValue(true)
     fixture.markerBudget = 16_384
-    fixture.mapMoving = false
     fixture.paintOpen = false
     fixture.selected = null
   })
@@ -196,7 +192,7 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
-  it('reuses a bounded marker buffer instead of recalculating density while the map moves', async () => {
+  it('reuses a bounded marker buffer across unchanged render transforms', async () => {
     fixture.appearance.markMismatch = true
     fixture.markerBudget = 100
     fixture.marks = new Uint32Array(1_000)
@@ -207,26 +203,10 @@ describe('marker work selection', () => {
     markerLayer.render(gl)
     vi.mocked(gl.drawArrays).mockClear()
     vi.mocked(gl.bufferData).mockClear()
-    fixture.mapMoving = true
     markerLayer.render(gl)
 
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.markerBudget)
     expect(gl.bufferData).not.toHaveBeenCalled()
-    markerLayer.onRemove(null, gl)
-  })
-
-  it('keeps the first moving frame bounded without a settled selection', async () => {
-    fixture.appearance.markMismatch = true
-    fixture.markerBudget = 100
-    fixture.mapMoving = true
-    fixture.marks = new Uint32Array(1_000)
-    const gl = context()
-    const { markerLayer } = await import('./markers.js')
-    markerLayer.onAdd(null, gl)
-
-    markerLayer.render(gl)
-
-    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.markerBudget)
     markerLayer.onRemove(null, gl)
   })
 

@@ -39,15 +39,6 @@ const DENSITY_ANALYSIS_VARIANTS = 8
 const clipped = new Map<MismatchMarks, Map<string, Clipped>>()
 const usedClips = new Set<MismatchMarks>()
 
-export interface ViewportMarkerSelection {
-  readonly budget: number
-  readonly sources: readonly MismatchMarks[]
-  readonly marks: readonly (MismatchMarks | null)[]
-}
-
-const stableSelections = new Set<ViewportMarkerSelection>()
-const usedStableSelections = new Set<ViewportMarkerSelection>()
-
 interface DensityAnalysis {
   readonly sparse: MismatchMarks
   readonly dense: MismatchMarks
@@ -88,15 +79,11 @@ const stableRatio = (distance: number, size: number): number =>
 export const beginMarkerDensityFrame = (): void => {
   usedClips.clear()
   usedDensityAnalyses.clear()
-  usedStableSelections.clear()
 }
 
 export const endMarkerDensityFrame = (): void => {
   for (const source of clipped.keys()) if (!usedClips.has(source)) clipped.delete(source)
   if (usedDensityAnalyses.size === 0) densityAnalyses = []
-  for (const selection of stableSelections) {
-    if (!usedStableSelections.has(selection)) stableSelections.delete(selection)
-  }
 }
 
 export const markerDensityMemoryBytes = (): number => {
@@ -113,11 +100,6 @@ export const markerDensityMemoryBytes = (): number => {
     }
     for (const selection of viewportAnalysis.selections.values()) {
       for (const marks of selection) buffers.add(marks.buffer)
-    }
-  }
-  for (const selection of stableSelections) {
-    for (const marks of selection.marks) {
-      if (marks !== null) buffers.add(marks.buffer)
     }
   }
   let bytes = 0
@@ -471,42 +453,4 @@ export const viewportMarkerBatches = <Batch extends ViewportMarkerBatch>(
     const marks = selection[at] as MismatchMarks
     return marks.length === 0 ? [] : [{ ...batch, marks }]
   }) as Batch[]
-}
-
-const sameSources = (
-  selection: ViewportMarkerSelection,
-  batches: readonly ViewportMarkerBatch[],
-  budget: number,
-): boolean =>
-  selection.budget === budget &&
-  selection.sources.length === batches.length &&
-  selection.sources.every((source, at) => source === batches[at]?.marks)
-
-/**
- * Reuse one bounded selection while only tile transforms change.
- *
- * The first frame for a source set performs the full viewport-density selection. Following movement
- * frames only pair those stable marker buffers with the current tile transforms. A source change
- * invalidates the snapshot and takes the normal bounded path again.
- */
-export const stableViewportMarkerSelection = <Batch extends ViewportMarkerBatch>(
-  batches: readonly Batch[],
-  viewport: Viewport,
-  budget: number,
-  previous: ViewportMarkerSelection | null,
-): ViewportMarkerSelection => {
-  if (previous !== null && sameSources(previous, batches, budget)) {
-    stableSelections.add(previous)
-    usedStableSelections.add(previous)
-    return previous
-  }
-
-  const indexed = batches.map((batch, sourceAt) => ({ ...batch, sourceAt }))
-  const selected = viewportMarkerBatches(indexed, viewport, budget)
-  const marks = Array<MismatchMarks | null>(batches.length).fill(null)
-  for (const { sourceAt, marks: selectedMarks } of selected) marks[sourceAt] = selectedMarks
-  const selection = { budget, sources: batches.map((batch) => batch.marks), marks }
-  stableSelections.add(selection)
-  usedStableSelections.add(selection)
-  return selection
 }

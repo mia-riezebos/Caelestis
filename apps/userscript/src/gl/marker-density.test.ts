@@ -6,7 +6,6 @@ import {
   endMarkerDensityFrame,
   MARKER_VIEWPORT_BUDGET,
   markerDensityMemoryBytes,
-  stableViewportMarkerSelection,
   viewportMarkerBatches,
 } from './marker-density.js'
 
@@ -261,6 +260,26 @@ describe('viewport marker density', () => {
     expect(panned?.marks).toBe(first?.marks)
   })
 
+  it('refreshes clipping as a previously hidden source region enters the viewport', () => {
+    const marks = grid(400, 100)
+    const viewport = { width: 200, height: 200 }
+    const placed = (x: number) => ({
+      ...batch(marks),
+      tile: { tile: { x: 0, y: 0 }, x, y: 0, width: TILE_SIZE, height: TILE_SIZE },
+    })
+
+    beginMarkerDensityFrame()
+    const [first] = viewportMarkerBatches([placed(0)], viewport, 1_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const [moved] = viewportMarkerBatches([placed(-120)], viewport, 1_000)
+    endMarkerDensityFrame()
+
+    const firstRight = Math.max(...Array.from(first?.marks ?? [], markLocalX))
+    const movedRight = Math.max(...Array.from(moved?.marks ?? [], markLocalX))
+    expect(movedRight).toBeGreaterThan(firstRight)
+  })
+
   it('reuses a prior clipped selection after panning across a cell boundary and back', () => {
     const marks = grid(TILE_SIZE, TILE_SIZE)
     const viewport = { width: TILE_SIZE / 2, height: TILE_SIZE / 2 }
@@ -298,31 +317,6 @@ describe('viewport marker density', () => {
     endMarkerDensityFrame()
 
     expect(zoomed?.marks).toBe(first?.marks)
-  })
-
-  it('reuses one bounded selection across arbitrary movement transforms', () => {
-    const marks = grid(200, 100)
-    const viewport = { width: TILE_SIZE * 2, height: TILE_SIZE * 2 }
-    const placed = (x: number, size: number) => ({
-      ...batch(marks),
-      tile: { tile: { x: 0, y: 0 }, x, y: x, width: size, height: size },
-    })
-
-    beginMarkerDensityFrame()
-    const first = stableViewportMarkerSelection([placed(0, TILE_SIZE)], viewport, 1_000, null)
-    endMarkerDensityFrame()
-    beginMarkerDensityFrame()
-    const moved = stableViewportMarkerSelection(
-      [placed(500, TILE_SIZE * 1.5)],
-      viewport,
-      1_000,
-      first,
-    )
-    endMarkerDensityFrame()
-
-    expect(moved).toBe(first)
-    expect(moved.marks[0]).toHaveLength(1_000)
-    expect(markerDensityMemoryBytes()).toBeGreaterThan(0)
   })
 
   it('releases clipping buffers when the whole source becomes visible', () => {
