@@ -1,3 +1,4 @@
+import { moveLocalFolder, renameLocalFolder, setLocalFolderVisible } from '../local-folders.js'
 import { cacheServer, loadServerCache, type ServerTemplate } from '../server-cache.js'
 import {
   MAX_MANIFEST_CHUNKS,
@@ -13,14 +14,11 @@ import {
   isCurrentServerConnection,
   isScopeVisible,
   listServerContents,
-  moveLocalFolder,
   onServerContents,
   patchTemplate,
-  renameLocalFolder,
   renameNode as renameNodeOnServer,
   renameServer as renameServerOnServer,
   type ServerContents,
-  setLocalFolderVisible,
   setScopeVisible,
   setState,
   takeProbedNodes,

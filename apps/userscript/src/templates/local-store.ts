@@ -6,6 +6,7 @@ import {
   WPLACE_PALETTE,
 } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
+import { leaseLocalFolder, localFolderChainVisible } from '../local-folders.js'
 import { isUint8Array, pageWindow } from '../page-world.js'
 import {
   type ConnectedServer,
@@ -13,8 +14,6 @@ import {
   getState,
   isScopeVisible,
   type LocalFolder,
-  leaseLocalFolder,
-  localFolderChainVisible,
   serverTemplatePreference,
   setScopeVisible,
   setServerTemplatePreference,

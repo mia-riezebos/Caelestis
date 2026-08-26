@@ -1,5 +1,6 @@
 import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled, warn } from '../debug.js'
+import { createLocalFolder, removeLocalFolder } from '../local-folders.js'
 import { redraw, viewportCentre } from '../main.js'
 import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
 import { isProfileEnabled, setProfileEnabled } from '../profile.js'
@@ -9,7 +10,6 @@ import {
   cancelServerProbe,
   canonicalServerUrl,
   countNodeSubtree,
-  createLocalFolder,
   createNode,
   deleteNode as deleteNodeOnServer,
   deleteTemplate as deleteTemplateOnServer,
@@ -28,7 +28,6 @@ import {
   previewGlobalAppearance,
   probeServer,
   refreshStoredServers,
-  removeLocalFolder,
   removeServer,
   removeTreeStateKeys,
   type ServerNodesResult,

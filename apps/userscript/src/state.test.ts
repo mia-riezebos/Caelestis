@@ -876,9 +876,8 @@ describe('server state boundaries', () => {
 
   it('refuses local folder writes that the next load would discard', async () => {
     vi.stubGlobal('GM_setValue', vi.fn())
-    const { createLocalFolder, MAX_LOCAL_FOLDERS, renameLocalFolder, setState } = await import(
-      './state.js'
-    )
+    const { createLocalFolder, renameLocalFolder } = await import('./local-folders.js')
+    const { MAX_LOCAL_FOLDERS, setState } = await import('./state.js')
     setState({
       localFolders: Array.from({ length: MAX_LOCAL_FOLDERS }, (_, index) => ({
         id: `folder-${index}`,
@@ -898,13 +897,12 @@ describe('server state boundaries', () => {
     const {
       addLocalFolders,
       createLocalFolder,
-      getState,
       moveLocalFolder,
       removeLocalFolder,
       renameLocalFolder,
       setLocalFolderVisible,
-      setState,
-    } = await import('./state.js')
+    } = await import('./local-folders.js')
+    const { getState, setState } = await import('./state.js')
     const folders = [
       { id: 'root', parentId: null, name: 'Root', visible: true },
       { id: 'child', parentId: 'root', name: 'Child', visible: true },
@@ -927,7 +925,8 @@ describe('server state boundaries', () => {
 
   it('keeps a Local folder alive while a template assignment holds a lease', async () => {
     vi.stubGlobal('GM_setValue', vi.fn())
-    const { getState, leaseLocalFolder, removeLocalFolder, setState } = await import('./state.js')
+    const { leaseLocalFolder, removeLocalFolder } = await import('./local-folders.js')
+    const { getState, setState } = await import('./state.js')
     setState({
       localFolders: [{ id: 'target', parentId: null, name: 'Target', visible: true }],
     })

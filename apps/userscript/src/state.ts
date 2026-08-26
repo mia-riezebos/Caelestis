@@ -474,7 +474,7 @@ export const setState = (patch: Partial<State>): State => {
 }
 
 /** Commit only if the browser accepts the durable copy; used where the caller reports save status. */
-const setStateDurably = (patch: Partial<State>): boolean => {
+export const commitState = (patch: Partial<State>): boolean => {
   const next = { ...state, ...patch }
   if (!writeRaw(JSON.stringify(next))) return false
   state = next
@@ -486,62 +486,12 @@ export const onStateChange = (listener: (next: State) => void): void => {
   listeners.push(listener)
 }
 
-const localFolderId = (): string =>
-  `lf-${Math.random().toString(36).slice(2, 10)}-${getState().localFolders.length}`
-
-export const createLocalFolder = (parentId: string | null, name: string): LocalFolder | null => {
-  if (getState().localFolders.length >= MAX_LOCAL_FOLDERS) return null
-  const folder: LocalFolder = {
-    id: localFolderId(),
-    parentId,
-    name,
-    visible: true,
-  }
-  return setStateDurably({ localFolders: [...getState().localFolders, folder] }) ? folder : null
-}
-
-/** An id for a folder that has not been added yet, so a batch can wire up its own parents. */
-export const nextLocalFolderId = (): string => localFolderId()
-
-const localFolderLeases = new Map<string, number>()
-
-/** Keep a folder alive while an asynchronous template assignment commits to it. */
-export const leaseLocalFolder = (id: string): (() => void) | null => {
-  if (!getState().localFolders.some((folder) => folder.id === id)) return null
-  localFolderLeases.set(id, (localFolderLeases.get(id) ?? 0) + 1)
-  let active = true
-  return () => {
-    if (!active) return
-    active = false
-    const remaining = (localFolderLeases.get(id) ?? 1) - 1
-    if (remaining === 0) localFolderLeases.delete(id)
-    else localFolderLeases.set(id, remaining)
-  }
-}
-
-/**
- * Add many folders in one write.
- *
- * `setState` serialises the whole state, so adding a folder at a time costs the square of the
- * number of folders. Moving a server branch of any real size into Local did exactly that and locked
- * the tab up for the duration.
- *
- * Refused rather than truncated past the limit, because the limit is what a reload will restore: a
- * write that goes over it looks like it worked until the next session, which quietly loses the rest.
- */
-export const addLocalFolders = (folders: readonly LocalFolder[]): boolean => {
-  if (folders.length === 0) return true
-  const existing = getState().localFolders
-  if (existing.length + folders.length > MAX_LOCAL_FOLDERS) return false
-  return setStateDurably({ localFolders: [...existing, ...folders] })
-}
-
 export const isScopeVisible = (key: string): boolean => !getState().hiddenScopes.includes(key)
 
 export const setScopeVisible = (key: string, visible: boolean): boolean => {
   const hidden = getState().hiddenScopes
   if (visible === !hidden.includes(key)) return true
-  return setStateDurably({
+  return commitState({
     hiddenScopes: visible ? hidden.filter((candidate) => candidate !== key) : [...hidden, key],
   })
 }
@@ -560,7 +510,7 @@ export const setServerTemplatePreference = (
   const index = preferences.findIndex((preference) => preference.id === id)
   if (appearance === null && owns.length === 0) {
     if (index !== -1) {
-      return setStateDurably({
+      return commitState({
         serverTemplatePreferences: preferences.filter((_, at) => at !== index),
       })
     }
@@ -572,96 +522,11 @@ export const setServerTemplatePreference = (
     appearance,
     owns: [...new Set(owns)].filter((group) => APPEARANCE_GROUPS.includes(group)),
   }
-  return setStateDurably({
+  return commitState({
     serverTemplatePreferences:
       index === -1
         ? [...preferences, preference]
         : preferences.map((current, at) => (at === index ? preference : current)),
-  })
-}
-
-export const setLocalFolderVisible = (id: string, visible: boolean): boolean =>
-  setStateDurably({
-    localFolders: getState().localFolders.map((folder) =>
-      folder.id === id ? { ...folder, visible } : folder,
-    ),
-  })
-
-export const localFolderChainVisible = (folderId: string | null): boolean => {
-  if (!isScopeVisible('local')) return false
-  const folders = getState().localFolders
-  let walk = folderId
-  const seen = new Set<string>()
-  while (walk !== null) {
-    if (seen.has(walk)) return true
-    seen.add(walk)
-    const folder = folders.find((candidate) => candidate.id === walk)
-    if (folder === undefined) return true
-    if (folder.visible === false) return false
-    walk = folder.parentId
-  }
-  return true
-}
-
-export const renameLocalFolder = (id: string, name: string): boolean => {
-  const trimmed = name.trim()
-  if (trimmed === '' || trimmed.length > 256) return false
-  return setStateDurably({
-    localFolders: getState().localFolders.map((folder) =>
-      folder.id === id ? { ...folder, name: trimmed } : folder,
-    ),
-  })
-}
-
-export const removeLocalFolder = (id: string): boolean => {
-  const folders = getState().localFolders
-  const folder = folders.find((candidate) => candidate.id === id)
-  if (folder === undefined) return true
-  if ((localFolderLeases.get(id) ?? 0) > 0) return false
-  return setStateDurably({
-    localFolders: folders
-      .filter((candidate) => candidate.id !== id)
-      .map((candidate) =>
-        candidate.parentId === id ? { ...candidate, parentId: folder.parentId } : candidate,
-      ),
-  })
-}
-
-/** Remove a fully validated folder set in one durable write. */
-export const removeLocalFolders = (ids: ReadonlySet<string>): boolean => {
-  if (ids.size === 0) return true
-  const folders = getState().localFolders
-  const existing = new Set(folders.map((folder) => folder.id))
-  for (const id of ids) {
-    if (!existing.has(id) || (localFolderLeases.get(id) ?? 0) > 0) return false
-  }
-  // A child outside the set would be silently detached by a bulk delete. The transplant caller
-  // checks this just before the call, and this refusal keeps the helper safe at the commit boundary.
-  if (
-    folders.some(
-      (folder) => !ids.has(folder.id) && folder.parentId !== null && ids.has(folder.parentId),
-    )
-  )
-    return false
-  return setStateDurably({
-    localFolders: folders.filter((folder) => !ids.has(folder.id)),
-  })
-}
-
-export const moveLocalFolder = (id: string, parentId: string | null): boolean => {
-  if (id === parentId) return false
-  const folders = getState().localFolders
-  if (!folders.some((folder) => folder.id === id)) return false
-  let walk = parentId
-  // Bounded by the number of folders, because the list comes back from storage and every other
-  // reader in this file treats that as something to check rather than trust. A chain longer than
-  // the list is a cycle, and an unbounded walk up one hangs the tab instead of refusing the move.
-  for (let step = 0; walk !== null; step++) {
-    if (walk === id || step > folders.length) return false
-    walk = folders.find((candidate) => candidate.id === walk)?.parentId ?? null
-  }
-  return setStateDurably({
-    localFolders: folders.map((folder) => (folder.id === id ? { ...folder, parentId } : folder)),
   })
 }
 

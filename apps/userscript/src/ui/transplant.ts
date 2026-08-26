@@ -1,6 +1,11 @@
-import type { TreeNode } from '../server-manifest.js'
 import {
   addLocalFolders,
+  leaseLocalFolder,
+  nextLocalFolderId,
+  removeLocalFolders,
+} from '../local-folders.js'
+import type { TreeNode } from '../server-manifest.js'
+import {
   admittedServerContentsFor,
   type ConnectedServer,
   createNode,
@@ -9,13 +14,10 @@ import {
   getState,
   isCurrentServerConnection,
   type LocalFolder,
-  leaseLocalFolder,
   listServerContents,
   listServerNodes,
   MAX_LOCAL_FOLDERS,
-  nextLocalFolderId,
   patchTemplate,
-  removeLocalFolders,
   uploadTemplate,
 } from '../state.js'
 import {
