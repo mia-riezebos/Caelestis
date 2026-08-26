@@ -1607,10 +1607,10 @@ const dropOnServerNode = async (
       server,
       nodeId,
       (connected) => refreshCurrentNodes(connected, rerender, true),
-      { reconcile: 'always' },
+      {},
     )
     if (result.ok) toast(`Uploaded “${local.name}” to ${server.info?.name ?? server.url}.`)
-    else toast(result.message, 'error')
+    else toast(result.message, result.retryable === true ? 'warning' : 'error')
     return result.ok ? serverTemplateTreeKey(server, result.id) : null
   }
 
@@ -2222,7 +2222,6 @@ const copyToServer = async (
           nodeId,
           (connected) => refreshCurrentNodes(connected, rerender, true),
           {
-            reconcile: 'ambiguous',
             beforeUpload: (png) => {
               // The dialog may have been replaced or its panel closed while encoding. Only the
               // exact still-visible operation is allowed to cross the upload boundary.
@@ -2235,6 +2234,11 @@ const copyToServer = async (
           },
         )
         if (!result.ok && result.cancelled === true) return
+        if (!result.ok && result.retryable === true) {
+          label.textContent = `Copy “${template.name}” to:`
+          toast(result.message, 'warning')
+          return
+        }
         box.remove()
         if (result.ok) toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
         else toast(result.message, 'error')

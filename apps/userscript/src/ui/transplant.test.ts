@@ -552,12 +552,51 @@ describe('template transfer transactions', () => {
     const { copyLocalTemplateToServer } = await import('./transplant.js')
 
     await expect(
-      copyLocalTemplateToServer(local, server('https://destination.test'), null, reconcile, {
-        reconcile: 'always',
-      }),
+      copyLocalTemplateToServer(local, server('https://destination.test'), null, reconcile, {}),
     ).resolves.toEqual({ ok: true, id: 'remote-template', version: 'version-2' })
     expect(state.uploadTemplate).toHaveBeenCalledOnce()
     expect(reconcile).toHaveBeenCalledOnce()
+  })
+
+  it('reports a completed Local copy without waiting for reconciliation', async () => {
+    const local = { ...drawn, id: 'local-template' }
+    store.templateAsPng.mockResolvedValue(new Blob(['png']))
+    state.uploadTemplate.mockResolvedValue({
+      ok: true,
+      id: 'remote-template',
+      version: 'version-2',
+    })
+    const reconcile = vi.fn(() => new Promise<void>(() => undefined))
+    const { copyLocalTemplateToServer } = await import('./transplant.js')
+
+    await expect(
+      copyLocalTemplateToServer(local, server('https://destination.test'), null, reconcile, {}),
+    ).resolves.toEqual({ ok: true, id: 'remote-template', version: 'version-2' })
+    expect(reconcile).toHaveBeenCalledOnce()
+  })
+
+  it('marks a pre-upload currentness failure as retryable', async () => {
+    const local = { ...drawn, id: 'local-template' }
+    store.templateAsPng.mockResolvedValue(new Blob(['png']))
+    store.isCurrentTemplate.mockReturnValue(false)
+    const { copyLocalTemplateToServer } = await import('./transplant.js')
+
+    await expect(
+      copyLocalTemplateToServer(
+        local,
+        server('https://destination.test'),
+        null,
+        vi.fn(async () => undefined),
+        {},
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        retryable: true,
+        message: expect.stringContaining('changed'),
+      }),
+    )
+    expect(state.uploadTemplate).not.toHaveBeenCalled()
   })
 
   it('keeps a changed server source after creating and leasing its Local copy', async () => {
