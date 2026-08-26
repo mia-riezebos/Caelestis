@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   serverMask: null as MismatchMask | null,
   workerAvailable: false,
   markersEnabled: true,
+  pixelsAvailable: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   idleCallbacks: [] as Array<(deadline: { timeRemaining: () => number }) => void>,
   onTilePixels: vi.fn(),
@@ -24,7 +25,7 @@ vi.mock('../tile-transform.js', () => ({
   onTilePixel: vi.fn(),
   onTilePixels: harness.onTilePixels,
   onTilePixelsEvicted: harness.onTilePixelsEvicted,
-  tilePixels: () => harness.pixels,
+  tilePixels: () => (harness.pixelsAvailable ? harness.pixels : null),
   UNPAINTED: 255,
 }))
 vi.mock('../server-mismatch.js', () => ({
@@ -79,6 +80,7 @@ beforeEach(() => {
   harness.serverMask = null
   harness.workerAvailable = false
   harness.markersEnabled = true
+  harness.pixelsAvailable = true
   harness.workerScan.mockReset()
   harness.idleCallbacks = []
   vi.stubGlobal(
@@ -335,6 +337,29 @@ describe('visible mismatch answer retention', () => {
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toBeNull()
     expect(vi.getTimerCount()).toBe(1)
 
+    await vi.runAllTimersAsync()
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+  })
+
+  it('waits for unavailable tile pixels instead of spinning the timer fallback', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestIdleCallback', undefined)
+    const selected = template(206)
+    harness.templates = [selected]
+    const { mismatchesIn } = await import('./mismatch.js')
+
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toBeNull()
+    harness.pixelsAvailable = false
+    await vi.runOnlyPendingTimersAsync()
+    expect(vi.getTimerCount()).toBe(0)
+
+    harness.pixelsAvailable = true
+    const listener = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+    listener?.({ x: 0, y: 0 }, [])
+    expect(vi.getTimerCount()).toBe(1)
     await vi.runAllTimersAsync()
 
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
