@@ -206,6 +206,99 @@ describe('viewport marker density', () => {
     expect(second?.marks).toBe(first?.marks)
   })
 
+  it('retains completed selections when the configured budget changes and returns', () => {
+    const marks = grid(200, 100)
+    const work = [batch(marks)]
+    const viewport = { width: TILE_SIZE, height: TILE_SIZE }
+
+    beginMarkerDensityFrame()
+    const [first] = viewportMarkerBatches(work, viewport, 1_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    viewportMarkerBatches(work, viewport, 2_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const [restored] = viewportMarkerBatches(work, viewport, 1_000)
+    endMarkerDensityFrame()
+
+    expect(restored?.marks).toBe(first?.marks)
+  })
+
+  it('reuses density selections while every tile pans by the same amount', () => {
+    const marks = grid(200, 100)
+    const viewport = { width: TILE_SIZE * 2, height: TILE_SIZE * 2 }
+    const placed = (x: number, y: number) => ({
+      ...batch(marks),
+      tile: { tile: { x: 0, y: 0 }, x, y, width: TILE_SIZE, height: TILE_SIZE },
+    })
+
+    beginMarkerDensityFrame()
+    const [first] = viewportMarkerBatches([placed(100, 100)], viewport, 1_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const [panned] = viewportMarkerBatches([placed(104, 96)], viewport, 1_000)
+    endMarkerDensityFrame()
+
+    expect(panned?.marks).toBe(first?.marks)
+  })
+
+  it('reuses outward-rounded clipping buffers during a sub-cell pan', () => {
+    const marks = grid(TILE_SIZE, TILE_SIZE)
+    const viewport = { width: TILE_SIZE / 2, height: TILE_SIZE / 2 }
+    const placed = (x: number, y: number) => ({
+      ...batch(marks),
+      tile: { tile: { x: 0, y: 0 }, x, y, width: TILE_SIZE, height: TILE_SIZE },
+    })
+
+    beginMarkerDensityFrame()
+    const [first] = viewportMarkerBatches([placed(-101, -101)], viewport, 1_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const [panned] = viewportMarkerBatches([placed(-103, -103)], viewport, 1_000)
+    endMarkerDensityFrame()
+
+    expect(panned?.marks).toBe(first?.marks)
+  })
+
+  it('reuses a prior clipped selection after panning across a cell boundary and back', () => {
+    const marks = grid(TILE_SIZE, TILE_SIZE)
+    const viewport = { width: TILE_SIZE / 2, height: TILE_SIZE / 2 }
+    const placed = (x: number) => ({
+      ...batch(marks),
+      tile: { tile: { x: 0, y: 0 }, x, y: -101, width: TILE_SIZE, height: TILE_SIZE },
+    })
+
+    beginMarkerDensityFrame()
+    const [first] = viewportMarkerBatches([placed(-101)], viewport, 1_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    viewportMarkerBatches([placed(-119)], viewport, 1_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const [restored] = viewportMarkerBatches([placed(-101)], viewport, 1_000)
+    endMarkerDensityFrame()
+
+    expect(restored?.marks).toBe(first?.marks)
+  })
+
+  it('reuses density selections across immaterial fractional zoom steps', () => {
+    const marks = grid(200, 100)
+    const viewport = { width: TILE_SIZE * 3, height: TILE_SIZE * 3 }
+    const placed = (size: number) => ({
+      ...batch(marks),
+      tile: { tile: { x: 0, y: 0 }, x: 100, y: 100, width: size, height: size },
+    })
+
+    beginMarkerDensityFrame()
+    const [first] = viewportMarkerBatches([placed(TILE_SIZE)], viewport, 1_000)
+    endMarkerDensityFrame()
+    beginMarkerDensityFrame()
+    const [zoomed] = viewportMarkerBatches([placed(TILE_SIZE * 1.01)], viewport, 1_000)
+    endMarkerDensityFrame()
+
+    expect(zoomed?.marks).toBe(first?.marks)
+  })
+
   it('releases clipping buffers when the whole source becomes visible', () => {
     const marks = grid(TILE_SIZE, TILE_SIZE)
     beginMarkerDensityFrame()

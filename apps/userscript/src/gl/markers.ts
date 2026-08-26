@@ -554,8 +554,13 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     }
   }
   const viewport = { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }
-  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, markerBudget)
-  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, markerBudget)
+  const map = getMap()
+  // Density selection is CPU-heavy precisely when every fractional pan/zoom frame invalidates its
+  // screen-space inputs. Stable source buffers are cheaper during movement; the configured target
+  // is applied once MapLibre settles and emits its final frame.
+  const frameBudget = map?.isMoving?.() ? Number.POSITIVE_INFINITY : markerBudget
+  const visibleSelectedWork = viewportMarkerBatches(selectedWork, viewport, frameBudget)
+  const visibleMismatchWork = viewportMarkerBatches(mismatchWork, viewport, frameBudget)
   count('marker:selected-colour tiles with marks', visibleSelectedWork.length)
   count('marker:mismatch tiles with marks', visibleMismatchWork.length)
 

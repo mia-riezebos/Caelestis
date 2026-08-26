@@ -18,12 +18,15 @@ const fixture = vi.hoisted(() => ({
   disagreementsIn: vi.fn(),
   progressIn: vi.fn(() => true),
   markerBudget: 16_384,
+  mapMoving: false,
   paintOpen: false,
   selected: null as number | null,
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
-vi.mock('../map-handle.js', () => ({ getMap: () => null }))
+vi.mock('../map-handle.js', () => ({
+  getMap: () => ({ isMoving: () => fixture.mapMoving }),
+}))
 vi.mock('../profile.js', () => ({
   measureProfile: (_name: string, run: () => unknown) => run(),
   profileGpu: (_gl: unknown, _name: string, run: () => unknown) => run(),
@@ -151,6 +154,7 @@ describe('marker work selection', () => {
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.progressIn.mockReset().mockReturnValue(true)
     fixture.markerBudget = 16_384
+    fixture.mapMoving = false
     fixture.paintOpen = false
     fixture.selected = null
   })
@@ -189,6 +193,21 @@ describe('marker work selection', () => {
     markerLayer.render(gl)
 
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 100)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('draws stable source buffers instead of recalculating density while the map moves', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.markerBudget = 100
+    fixture.mapMoving = true
+    fixture.marks = new Uint32Array(1_000)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
     markerLayer.onRemove(null, gl)
   })
 
