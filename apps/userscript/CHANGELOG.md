@@ -1,5 +1,18 @@
 # @caelestis/userscript
 
+## 0.3.1
+
+### Patch Changes
+
+- b0984e5: Keep dense mismatch and selected-colour markers useful without overwhelming slower clients.
+  
+  - Protect isolated markers while sharing a configurable dense-marker target evenly across crowded parts of the visible viewport.
+  - Avoid mismatch-list and GPU work for templates whose markers are disabled, using count-only scans where local progress still needs them.
+  - Restore template overlays and markers after Wplace replaces its basemap style during light or dark theme changes.
+- dca1e86: Minify release installers to cut their download and parse size by more than half while keeping local development builds readable.
+- 26f38c5: Keep dense mismatch markers responsive while panning and zooming by reusing density and clipping
+  work across incremental camera transforms without bypassing the configured viewport limit.
+
 ## 0.3.0
 
 ### Minor Changes
