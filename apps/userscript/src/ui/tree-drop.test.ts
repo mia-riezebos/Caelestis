@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getState, moveLocalFolder, setState } from '../state.js'
+import { getState, setState } from '../state.js'
 import type { PlacedTemplate } from '../templates/local-store.js'
 import {
   acceptServerSnapshot,
@@ -8,6 +8,7 @@ import {
   nodeTreeKey,
   optimisticallyPlaceServerRow,
   serverTemplateTreeKey,
+  startRenaming,
   type TreeCallbacks,
   treeContents,
 } from './tree.js'
@@ -15,11 +16,55 @@ import {
 const localTemplateHarness = vi.hoisted(() => ({
   templates: vi.fn(() => [] as PlacedTemplate[]),
 }))
+const navigationHarness = vi.hoisted(() => ({ navigateTo: vi.fn() }))
+const telemetryHarness = vi.hoisted(() => ({
+  progress: new Map<
+    string,
+    { completed: number; mismatched: number; unpainted: number; known: number; total: number }
+  >(),
+}))
 
 vi.mock('../templates/local-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../templates/local-store.js')>()),
   localTemplates: localTemplateHarness.templates,
 }))
+vi.mock('../templates/navigate.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../templates/navigate.js')>()),
+  navigateTo: navigationHarness.navigateTo,
+}))
+vi.mock('../telemetry.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../telemetry.js')>()
+  return {
+    ...original,
+    serverProgressFor: (
+      server: Parameters<typeof original.serverProgressFor>[0],
+      template: Parameters<typeof original.serverProgressFor>[1],
+    ) => telemetryHarness.progress.get(template.id) ?? original.serverProgressFor(server, template),
+  }
+})
+vi.mock('../state.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../state.js')>()
+  return {
+    ...original,
+    moveLocalFolder: (id: string, parentId: string | null) => {
+      const folders = original.getState().localFolders
+      original.setState({
+        localFolders: folders.map((folder) =>
+          folder.id === id ? { ...folder, parentId } : folder,
+        ),
+      })
+      return true
+    },
+    renameLocalFolder: (id: string, name: string) => {
+      const folders = original.getState().localFolders
+      original.setState({
+        localFolders: folders.map((folder) => (folder.id === id ? { ...folder, name } : folder)),
+      })
+      return true
+    },
+  }
+})
+vi.mock('./toast.js', () => ({ toast: vi.fn() }))
 
 const SERVER_URL = 'https://server.example.com'
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
@@ -36,6 +81,7 @@ const eventWithTransfer = (type: string, dataTransfer: DataTransfer, clientY = 0
 
 afterEach(() => {
   localTemplateHarness.templates.mockReturnValue([])
+  telemetryHarness.progress.clear()
   forgetServerRows(SERVER_URL)
   setState({
     servers: [],
@@ -96,6 +142,32 @@ const placedTemplate = (): PlacedTemplate => ({
 })
 
 describe('tree drag and drop', () => {
+  it('commits a Local folder rename through the tree interface', async () => {
+    setState({
+      localFolders: [{ id: 'folder', parentId: null, name: 'Before', visible: true }],
+    })
+    startRenaming('lf:folder')
+    const callbacks: TreeCallbacks = {
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onContextMenu: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onDropInLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    }
+
+    const tree = treeContents(callbacks, vi.fn())
+    const input = tree.querySelector<HTMLInputElement>('[data-caelestis-rename]')
+    const save = tree.querySelector<HTMLButtonElement>('[aria-label="Save"]')
+    if (input === null || save === null) throw new Error('expected the inline rename controls')
+    input.value = 'After'
+    save.click()
+    await Promise.resolve()
+
+    expect(getState().localFolders.find(({ id }) => id === 'folder')?.name).toBe('After')
+  })
+
   it('keeps a fly-to action on server template rows', () => {
     const server = connectedServer()
     setState({
@@ -109,17 +181,13 @@ describe('tree drag and drop', () => {
       nodes: [],
       templates: [{ ...serverTemplate(TEMPLATE_A_ID, null, 'Template', 1), published: false }],
     })
-    const onGoTo = vi.fn()
     const callbacks: TreeCallbacks = {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo,
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
 
@@ -145,10 +213,102 @@ describe('tree drag and drop', () => {
     expect(row?.textContent).not.toContain('unpublished')
     expect(row?.style.opacity).toBe('0.55')
     flyTo?.click()
-    expect(onGoTo).toHaveBeenCalledWith({
-      kind: 'server',
-      bbox: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+    expect(navigationHarness.navigateTo).toHaveBeenCalledWith({
+      x: 0.5,
+      y: 0.5,
+      width: 1,
+      height: 1,
     })
+  })
+
+  it('renders newly discovered server templates newest-first', () => {
+    const server = connectedServer()
+    setState({
+      servers: [server],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    acceptServerSnapshot(server, {
+      nodes: [],
+      templates: [
+        serverTemplate(TEMPLATE_A_ID, null, 'Older', 1),
+        serverTemplate(TEMPLATE_B_ID, null, 'Newer', 2),
+      ],
+    })
+
+    const keys = [
+      ...treeContents(
+        {
+          onAddServer: vi.fn(),
+          onCreateFolder: vi.fn(),
+          onImportTemplate: vi.fn(),
+          onContextMenu: vi.fn(),
+          onCopyToServer: vi.fn(),
+          onDropInLocal: vi.fn(),
+          onDropInServer: vi.fn(),
+        },
+        vi.fn(),
+      ).querySelectorAll<HTMLElement>('[data-caelestis-key^="st:"]'),
+    ].map((row) => row.dataset.caelestisKey)
+
+    expect(keys).toEqual([
+      serverTemplateTreeKey(server, TEMPLATE_B_ID),
+      serverTemplateTreeKey(server, TEMPLATE_A_ID),
+    ])
+  })
+
+  it('sorts template progress without moving a folder slot', () => {
+    const server = connectedServer()
+    const folder = serverNode(SOURCE_NODE_ID, 'Folder')
+    const done = serverTemplateTreeKey(server, TEMPLATE_A_ID)
+    const todo = serverTemplateTreeKey(server, TEMPLATE_B_ID)
+    const folderKey = nodeTreeKey(server, SOURCE_NODE_ID)
+    telemetryHarness.progress.set(TEMPLATE_A_ID, {
+      completed: 90,
+      mismatched: 0,
+      unpainted: 10,
+      known: 100,
+      total: 100,
+    })
+    telemetryHarness.progress.set(TEMPLATE_B_ID, {
+      completed: 10,
+      mismatched: 0,
+      unpainted: 90,
+      known: 100,
+      total: 100,
+    })
+    setState({
+      servers: [server],
+      collapsed: ['local'],
+      customOrder: [done, folderKey, todo],
+      sort: { field: 'progress', direction: 'asc' },
+    })
+    acceptServerSnapshot(server, {
+      nodes: [folder],
+      templates: [
+        serverTemplate(TEMPLATE_A_ID, null, 'Done', 1),
+        serverTemplate(TEMPLATE_B_ID, null, 'Todo', 2),
+      ],
+    })
+
+    const keys = [
+      ...treeContents(
+        {
+          onAddServer: vi.fn(),
+          onCreateFolder: vi.fn(),
+          onImportTemplate: vi.fn(),
+          onContextMenu: vi.fn(),
+          onCopyToServer: vi.fn(),
+          onDropInLocal: vi.fn(),
+          onDropInServer: vi.fn(),
+        },
+        vi.fn(),
+      ).querySelectorAll<HTMLElement>('[role="treeitem"]'),
+    ]
+      .map((row) => row.dataset.caelestisKey)
+      .filter((key): key is string => key === done || key === todo || key === folderKey)
+
+    expect(keys).toEqual([todo, folderKey, done])
   })
 
   it('shows descendant progress on folder and server parent rows', () => {
@@ -173,12 +333,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const render = () => treeContents(callbacks, vi.fn())
@@ -284,12 +441,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
 
@@ -319,12 +473,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const render = () => treeContents(callbacks, vi.fn())
@@ -384,12 +535,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const rowOrder = (): string[] =>
@@ -436,12 +584,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer,
     }
     const tree = treeContents(callbacks, vi.fn())
@@ -481,12 +626,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer,
     }
     const tree = treeContents(callbacks, vi.fn())
@@ -540,12 +682,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer,
     }
     const tree = treeContents(callbacks, vi.fn())
@@ -599,12 +738,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer,
     }
     const tree = treeContents(callbacks, vi.fn())
@@ -645,17 +781,13 @@ describe('tree drag and drop', () => {
       collapsed: [],
       sort: { field: 'custom', direction: 'asc' },
     })
-    const onMoveLocal = vi.fn(async (draggedKey: string) => draggedKey)
     const callbacks: TreeCallbacks = {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal,
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const tree = treeContents(callbacks, vi.fn())
@@ -670,7 +802,7 @@ describe('tree drag and drop', () => {
     parent.dispatchEvent(eventWithTransfer('drop', transfer, 1))
     await Promise.resolve()
 
-    expect(onMoveLocal).toHaveBeenCalledWith('lf:moving', 'lf:parent', 'lf:first')
+    expect(getState().localFolders.find(({ id }) => id === 'moving')?.parentId).toBe('parent')
     expect(getState().customOrder).toEqual(['lf:parent', 'lf:moving', 'lf:first'])
   })
 
@@ -696,12 +828,9 @@ describe('tree drag and drop', () => {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal: vi.fn(),
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const tree = treeContents(callbacks, vi.fn())
@@ -732,25 +861,13 @@ describe('tree drag and drop', () => {
       collapsed: [],
       sort: { field: 'custom', direction: 'asc' },
     })
-    const onMoveLocal = vi.fn(
-      async (draggedKey: string, parentKey: string | null, _beforeKey: string | null) => {
-        moveLocalFolder(
-          draggedKey.slice('lf:'.length),
-          parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null,
-        )
-        return draggedKey
-      },
-    )
     const callbacks: TreeCallbacks = {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal,
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const tree = treeContents(callbacks, vi.fn())
@@ -766,7 +883,7 @@ describe('tree drag and drop', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(onMoveLocal).toHaveBeenCalledWith('lf:moving', 'lf:destination', 'lf:first-child')
+    expect(getState().localFolders.find(({ id }) => id === 'moving')?.parentId).toBe('destination')
     expect(getState().customOrder.indexOf('lf:moving')).toBeLessThan(
       getState().customOrder.indexOf('lf:first-child'),
     )
@@ -786,25 +903,13 @@ describe('tree drag and drop', () => {
       collapsed: ['lf:b'],
       sort: { field: 'custom', direction: 'asc' },
     })
-    const onMoveLocal = vi.fn(
-      async (draggedKey: string, parentKey: string | null, _beforeKey: string | null) => {
-        moveLocalFolder(
-          draggedKey.slice('lf:'.length),
-          parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null,
-        )
-        return draggedKey
-      },
-    )
     const callbacks: TreeCallbacks = {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal,
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const tree = treeContents(callbacks, vi.fn(), 'match')
@@ -820,7 +925,7 @@ describe('tree drag and drop', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(onMoveLocal).toHaveBeenCalledWith('lf:moving', 'lf:destination', null)
+    expect(getState().localFolders.find(({ id }) => id === 'moving')?.parentId).toBe('destination')
     expect(
       getState().customOrder.filter((key) =>
         ['lf:a', 'lf:hidden', 'lf:b', 'lf:moving'].includes(key),
@@ -840,25 +945,13 @@ describe('tree drag and drop', () => {
       collapsed: [],
       sort: { field: 'custom', direction: 'asc' },
     })
-    const onMoveLocal = vi.fn(
-      async (draggedKey: string, parentKey: string | null, _beforeKey: string | null) => {
-        moveLocalFolder(
-          draggedKey.slice('lf:'.length),
-          parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null,
-        )
-        return draggedKey
-      },
-    )
     const callbacks: TreeCallbacks = {
       onAddServer: vi.fn(),
       onCreateFolder: vi.fn(),
       onImportTemplate: vi.fn(),
-      onRename: vi.fn(),
       onContextMenu: vi.fn(),
-      onGoTo: vi.fn(),
       onCopyToServer: vi.fn(),
-      onError: vi.fn(),
-      onMoveLocal,
+      onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
     const tree = treeContents(callbacks, vi.fn(), 'match')
@@ -874,7 +967,7 @@ describe('tree drag and drop', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(onMoveLocal).toHaveBeenCalledWith('lf:moving', 'lf:destination', null)
+    expect(getState().localFolders.find(({ id }) => id === 'moving')?.parentId).toBe('destination')
     expect(
       getState().customOrder.filter((key) => ['lf:moving', 'lf:hidden-child'].includes(key)),
     ).toEqual(['lf:moving', 'lf:hidden-child'])

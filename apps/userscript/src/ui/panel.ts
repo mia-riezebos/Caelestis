@@ -22,7 +22,6 @@ import {
   loadState,
   MAX_CONNECTED_SERVERS,
   MAX_LOCAL_FOLDERS,
-  moveLocalFolder,
   moveNode as moveNodeOnServer,
   onStateChange,
   patchTemplate,
@@ -32,9 +31,6 @@ import {
   removeLocalFolder,
   removeServer,
   removeTreeStateKeys,
-  renameLocalFolder,
-  renameNode as renameNodeOnServer,
-  renameServer as renameServerOnServer,
   type ServerNodesResult,
   setState,
   uploadTemplateVersion,
@@ -50,9 +46,7 @@ import {
   forgetServerTemplates,
   isCurrentTemplate,
   onLocalChange,
-  previewOriginFor,
   removeLocalTemplate,
-  renameLocalTemplate,
   setTemplateFolder,
   setTemplatesFolder,
   templateAsPng,
@@ -61,7 +55,7 @@ import {
 } from '../templates/local-store.js'
 import { onMismatchesChanged } from '../templates/mismatch.js'
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
-import { centreOf, centreOfBounds, navigateTo } from '../templates/navigate.js'
+import { centreOf, navigateTo } from '../templates/navigate.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
@@ -106,12 +100,12 @@ import {
   serverTemplateAt,
   serverTemplateTreeKey,
   startRenaming,
-  type TreeNavigationTarget,
   type TreeTarget,
   templatesForServer,
   templatesOfNode,
   treeContents,
 } from './tree.js'
+import { goToLocalTemplate } from './tree-navigation.js'
 
 type RetriableMutationResult =
   | { readonly ok: true }
@@ -349,46 +343,16 @@ const treeView = (): HTMLElement => {
           onAddServer: () => showView('settings'),
           onCreateFolder: (target) => void createFolder(target, rerenderTree),
           onImportTemplate: (target) => void importTemplate(target, rerenderTree),
-          onRename: (target, name) => void applyRename(target, name, rerenderTree),
           onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
-          onGoTo: goTo,
           onCopyToServer: (id) => void copyToServer(id, rerenderTree),
-          onError: (message) => toast(message, 'error'),
           onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
             dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
-          onMoveLocal: async (draggedKey, parentKey, _beforeKey) => {
-            // `local` is the root of the category; `lf:<id>` is a folder within it.
-            const parentFolderId =
-              parentKey?.startsWith('lf:') === true ? parentKey.slice('lf:'.length) : null
-            // Something from a server, dropped into Local. It is a move rather than a reorder, and
-            // it lands here because Local's rows are the ones that own dropping *between* rows.
+          onDropInLocal: async (draggedKey, folderId) => {
             if (draggedKey.startsWith('node:')) {
-              return await moveBranch(
-                draggedKey,
-                { kind: 'local', folderId: parentFolderId },
-                rerenderTree,
-              )
+              return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree)
             }
             if (draggedKey.startsWith('st:')) {
-              return await copyServerTemplateToLocal(draggedKey, parentFolderId, rerenderTree)
-            }
-            // Reparent first, then place. One drop target, two kinds of passenger — which it is
-            // comes from the dragged row's own key, so nothing else has to care.
-            if (draggedKey.startsWith('local:')) {
-              if (!(await setTemplateFolder(draggedKey.slice('local:'.length), parentFolderId))) {
-                toast('Could not move that template into the folder.', 'error')
-                rerenderTree()
-                return null
-              }
-              rerenderTree()
-              return draggedKey
-            } else if (draggedKey.startsWith('lf:')) {
-              const folderId = draggedKey.slice('lf:'.length)
-              if (!moveLocalFolder(folderId, parentFolderId)) {
-                toast('Could not save that folder move.', 'error')
-                return null
-              }
-              return draggedKey
+              return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree)
             }
             return null
           },
@@ -1086,82 +1050,6 @@ const freeFolderName = (
 /** `local:<id>` is a template; `local`, `server:<url>` and `node:<id>` are containers. */
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
-
-/**
- * Show me where this is.
- *
- * An import that has never been placed has a stored origin, but it is the map centre it was dropped
- * at rather than anywhere the user chose, and while it is being positioned the origin that matters
- * is the live preview. Going to the stored one flew away from the thing being placed.
- */
-const goTo = (target: TreeNavigationTarget): void => {
-  if (target.kind === 'server') {
-    navigateTo(centreOfBounds(target.bbox))
-    return
-  }
-  const { templateId } = target
-  const template = templateById(templateId)
-  if (template === undefined) return
-  const preview = previewOriginFor(templateId)
-  if (preview !== null) {
-    navigateTo(centreOf({ ...template, originX: preview.x, originY: preview.y }))
-    return
-  }
-  if (template.source === 'image' && !template.everPlaced) {
-    toast(`“${template.name}” has not been placed yet.`, 'warning')
-    return
-  }
-  navigateTo(centreOf(template))
-}
-
-const applyRename = async (
-  target: TreeTarget,
-  name: string,
-  rerender: () => void,
-): Promise<void> => {
-  const templateId = localTemplateId(target)
-  if (templateId !== null) {
-    // Reported, like the two server paths below it. A storage refusal used to just put the old name
-    // back with no explanation, which reads as the rename never having been typed.
-    if (!(await renameLocalTemplate(templateId, name)))
-      toast('Could not save that name. The old one is still there.', 'error')
-    rerender()
-    return
-  }
-  const folderId = localFolderIdOf(target)
-  if (folderId !== null) {
-    if (!renameLocalFolder(folderId, name))
-      toast('Could not save that folder name. Use between 1 and 256 characters.', 'error')
-    rerender()
-    return
-  }
-  if (target.server !== null && target.templateId !== undefined) {
-    // One column on the server, and deliberately not a new version: the pixels have not moved, so
-    // nothing that caches chunks should be told to re-download them.
-    const result = await patchTemplate(target.server, target.templateId, {
-      name,
-    })
-    if (!result.ok) toast(result.message, 'error')
-    await refreshCurrentNodes(target.server, rerender, true)
-    return
-  }
-  if (target.server !== null && target.nodeId === null) {
-    // The server's own row. Renaming it is a write everyone sees, unlike the Local row directly
-    // above it in the tree, which is this browser's alone.
-    const result = await renameServerOnServer(target.server, name)
-    if (!result.ok) toast(result.message, 'error')
-    rerender()
-    return
-  }
-  if (target.server === null || target.nodeId === null) {
-    toast('There is nothing to rename here.', 'warning')
-    rerender()
-    return
-  }
-  const result = await renameNodeOnServer(target.server, target.nodeId, name)
-  if (!result.ok) toast(result.message, 'error')
-  await refreshCurrentNodes(target.server, rerender, true)
-}
 
 /**
  * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
@@ -1888,7 +1776,7 @@ const openContextMenu = (target: TreeTarget, event: MouseEvent, rerender: () => 
             remove,
           ]
         : [
-            ['search', 'Go to', () => void goTo({ kind: 'local', templateId })],
+            ['search', 'Go to', () => goToLocalTemplate(templateId)],
             [
               'move',
               'Move',
