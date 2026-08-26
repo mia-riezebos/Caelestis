@@ -579,18 +579,19 @@ describe('template transfer transactions', () => {
     const stale = { ...drawn, id: 'local-template' }
     const fresh = { ...stale }
     store.templateAsPng.mockResolvedValue(new Blob(['png']))
+    store.localTemplates.mockReturnValueOnce([stale]).mockReturnValue([fresh])
     store.isCurrentTemplate.mockReturnValueOnce(false).mockReturnValue(true)
     state.uploadTemplate.mockResolvedValue({
       ok: true,
       id: 'remote-template',
       version: 'version-2',
     })
-    const { copyLocalTemplateToServer } = await import('./transplant.js')
+    const { copyCurrentLocalTemplateToServer } = await import('./transplant.js')
     const destination = server('https://destination.test')
     const reconcile = vi.fn(async () => undefined)
 
     await expect(
-      copyLocalTemplateToServer(stale, destination, null, reconcile, {}),
+      copyCurrentLocalTemplateToServer(stale.id, stale.name, destination, null, reconcile, {}),
     ).resolves.toEqual(
       expect.objectContaining({
         ok: false,
@@ -601,7 +602,7 @@ describe('template transfer transactions', () => {
     expect(state.uploadTemplate).not.toHaveBeenCalled()
 
     await expect(
-      copyLocalTemplateToServer(fresh, destination, null, reconcile, {}),
+      copyCurrentLocalTemplateToServer(fresh.id, fresh.name, destination, null, reconcile, {}),
     ).resolves.toEqual({ ok: true, id: 'remote-template', version: 'version-2' })
     expect(state.uploadTemplate).toHaveBeenCalledOnce()
   })
