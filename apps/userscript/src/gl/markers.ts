@@ -569,35 +569,15 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     return
   }
 
-  const hadBlend = gl.isEnabled(gl.BLEND)
-  const hadDepth = gl.isEnabled(gl.DEPTH_TEST)
-  const blendSrcRgb = gl.getParameter(gl.BLEND_SRC_RGB) as GLenum
-  const blendDstRgb = gl.getParameter(gl.BLEND_DST_RGB) as GLenum
-  const blendSrcAlpha = gl.getParameter(gl.BLEND_SRC_ALPHA) as GLenum
-  const blendDstAlpha = gl.getParameter(gl.BLEND_DST_ALPHA) as GLenum
-  const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
-  const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
-  const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
+  // MapLibre resets custom-layer defaults before calling us and invalidates its state cache after.
+  // Synchronous state reads here would merely move the overlay's drag-time GPU stall to this layer.
   gl.enable(gl.BLEND)
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
   gl.disable(gl.DEPTH_TEST)
 
-  // The same rule as `layer.ts`: `render` catches so a bad frame cannot freeze MapLibre, and
-  // catching after the state is disturbed but before it is put back leaves MapLibre drawing the
-  // rest of that frame with our program bound, blending forced and depth test off. Skipping a frame
-  // has to mean skipping it cleanly, in both files.
-  try {
-    // The selected colour is a guide; a real mismatch is the error signal and wins where they meet.
-    for (const one of visibleSelectedWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
-    for (const one of visibleMismatchWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
-  } finally {
-    gl.bindVertexArray(previousVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-    gl.useProgram(previousProgram)
-    gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
-    if (!hadBlend) gl.disable(gl.BLEND)
-    if (hadDepth) gl.enable(gl.DEPTH_TEST)
-  }
+  // The selected colour is a guide; a real mismatch is the error signal and wins where they meet.
+  for (const one of visibleSelectedWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
+  for (const one of visibleMismatchWork) drawMarkers(gl, one.tile, one.marks, one.style, one.fade)
 
   if (deferred && now >= nextRetry) {
     nextRetry = now + RETRY_MS

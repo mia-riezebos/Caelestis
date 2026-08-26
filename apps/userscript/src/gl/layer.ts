@@ -143,6 +143,7 @@ let owner: WebGL2RenderingContext | null = null
 let program: WebGLProgram | null = null
 let quad: WebGLBuffer | null = null
 let vao: WebGLVertexArrayObject | null = null
+let maximumTextureSize: number | null = null
 const uniforms = new Map<string, WebGLUniformLocation | null>()
 const gpu = new Map<string, TemplateGpu>()
 let renderGeneration = 0
@@ -241,12 +242,11 @@ const uploadPalette = (
 }
 
 /** Maximum side this context accepts, falling back to one whole-template upload in test shims. */
-const textureLimit = (gl: WebGL2RenderingContext, width: number, height: number): number => {
-  const limit = gl.getParameter(gl.MAX_TEXTURE_SIZE) as unknown
-  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
+const textureLimit = (width: number, height: number): number => {
+  if (maximumTextureSize === null) {
     return Math.max(width, height)
   }
-  return Math.max(1, Math.floor(limit))
+  return maximumTextureSize
 }
 
 /** Upload a template's indices once, as one byte per pixel. */
@@ -285,7 +285,7 @@ const uploadIndexTiles = (
   height: number,
   indices: Uint8Array,
 ): readonly IndexGpuTile[] | null => {
-  const limit = textureLimit(gl, width, height)
+  const limit = textureLimit(width, height)
   const uploaded: IndexGpuTile[] = []
   for (let y = 0; y < height; y += limit) {
     const tileHeight = Math.min(limit, height - y)
@@ -366,10 +366,17 @@ export const overlayLayer = {
     program = null
     quad = null
     vao = null
+    maximumTextureSize = null
     uniforms.clear()
     gpu.clear()
     renderGeneration = 0
     owner = gl
+    try {
+      const measured = gl.getParameter(gl.MAX_TEXTURE_SIZE) as unknown
+      if (typeof measured === 'number' && Number.isFinite(measured) && measured > 0) {
+        maximumTextureSize = Math.max(1, Math.floor(measured))
+      }
+    } catch {}
     program = link(gl)
     if (program === null) return
     quad = gl.createBuffer()
@@ -402,6 +409,7 @@ export const overlayLayer = {
     program = null
     quad = null
     vao = null
+    maximumTextureSize = null
     uniforms.clear()
   },
 
@@ -495,19 +503,9 @@ export const overlayLayer = {
       return
     }
 
-    // Everything we are about to disturb, so it can go back exactly as found. MapLibre assumes it
-    // owns this context and does not re-set what it believes it already knows — leaving the active
-    // unit on 1, or depth test off, quietly corrupts whatever it draws next.
-    const hadBlend = gl.isEnabled(gl.BLEND)
-    const hadDepth = gl.isEnabled(gl.DEPTH_TEST)
-    const blendSrcRgb = gl.getParameter(gl.BLEND_SRC_RGB) as GLenum
-    const blendDstRgb = gl.getParameter(gl.BLEND_DST_RGB) as GLenum
-    const blendSrcAlpha = gl.getParameter(gl.BLEND_SRC_ALPHA) as GLenum
-    const blendDstAlpha = gl.getParameter(gl.BLEND_DST_ALPHA) as GLenum
-    const previousProgram = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null
-    const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null
-    const previousVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null
-
+    // MapLibre applies custom-layer defaults before this callback and marks its state cache dirty
+    // afterwards. Reading state back here is both redundant and expensive: getParameter serialises
+    // the CPU behind Wplace's raster GPU work, which consumed a full frame during click-drag pans.
     gl.useProgram(program)
     gl.bindVertexArray(vao)
     gl.enable(gl.BLEND)
@@ -518,11 +516,6 @@ export const overlayLayer = {
     let uploadPixelsLeft = UPLOAD_PIXELS_PER_FRAME
     let uploadedThisFrame = false
 
-    // The restore runs even if the loop throws. `render` catches to keep a bad frame from freezing
-    // MapLibre, but catching after the state has been disturbed and before it is put back means
-    // MapLibre draws the rest of that frame with our program bound, blending forced, depth test off
-    // and the active unit on 1 — which its own state cache believes is 0. Skipping a frame has to
-    // mean skipping it cleanly.
     try {
       for (const { template, fade, spans } of visible) {
         let entry = gpu.get(template.id)
@@ -650,20 +643,7 @@ export const overlayLayer = {
         }
       }
     } finally {
-      // Put it all back. The active texture unit especially: we leave it on 1 while binding the
-      // palette, and MapLibre binds its own textures expecting to still be on 0.
-      gl.activeTexture(gl.TEXTURE1)
-      gl.bindTexture(gl.TEXTURE_2D, null)
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, null)
-      gl.bindVertexArray(previousVao)
-      gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer)
-      gl.useProgram(previousProgram)
-      gl.blendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
-      if (!hadBlend) gl.disable(gl.BLEND)
-      if (hadDepth) gl.enable(gl.DEPTH_TEST)
-      // Inside the restore, because a fade in progress asks for the frame that continues it. Left
-      // outside, a throw mid-loop skipped the request and the fade stalled until the map next moved.
+      // A fade in progress still needs its next frame if one template failed to draw.
       askForAnotherFrame()
     }
   },

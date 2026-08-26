@@ -213,6 +213,20 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
+  it('does not synchronously read WebGL state while drawing', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.marks = new Uint32Array([packMismatchMark(1, 1, 1)])
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.getParameter).not.toHaveBeenCalled()
+    expect(gl.isEnabled).not.toHaveBeenCalled()
+    markerLayer.onRemove(null, gl)
+  })
+
   it('refreshes the drawn selection when a hidden source region enters the viewport', async () => {
     fixture.appearance.markMismatch = true
     fixture.markerBudget = 1_000
