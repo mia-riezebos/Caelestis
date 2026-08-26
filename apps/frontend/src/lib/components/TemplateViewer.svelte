@@ -92,6 +92,8 @@
    */
   const ready = new Map<string, HTMLImageElement>()
   const pending = new Set<string>()
+  /** Last successfully decoded canvas observation per tile, independent of the selected frame. */
+  const presentedTiles = new Map<TileKey, HTMLImageElement>()
 
   const ensure = (key: string, load: () => Promise<HTMLImageElement>): HTMLImageElement | null => {
     const held = ready.get(key)
@@ -169,8 +171,14 @@
       )
         continue
       const hash = hashFor(placement.key)
-      if (hash === undefined) continue
-      const image = ensure(`tile:${hash}`, () => tileImage(hash))
+      const loaded = hash === undefined ? null : ensure(`tile:${hash}`, () => tileImage(hash))
+      if (hash !== undefined && loaded !== null) {
+        presentedTiles.set(placement.key, loaded)
+      }
+      // A frame becomes visible one tile at a time, only after that tile decoded. Pending, missing,
+      // failed, and absent history entries keep the last valid observation instead of exposing the
+      // basemap as a false blank. A decoded transparent tile still replaces the previous image.
+      const image = loaded ?? presentedTiles.get(placement.key) ?? null
       if (image !== null) ctx.drawImage(image, drawX, drawY)
     }
 
