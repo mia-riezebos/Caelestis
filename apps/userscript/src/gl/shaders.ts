@@ -60,6 +60,8 @@ uniform vec2 u_stampOffset;
 uniform float u_stampRotation;
 /** Set when the stamp is a plain full cell, so the whole distance field can be skipped. */
 uniform bool u_plain;
+/** Full quality at rest; capped while the map moves, when throughput is the visible quality. */
+uniform int u_maxMinifyTaps;
 /** Ramps 0 to 1 once the overlay has something to show, so templates arrive instead of appearing. */
 uniform float u_fade;
 
@@ -107,9 +109,10 @@ void main() {
   // to say about what the fragment should look like.
   if (max(footprint.x, footprint.y) > 1.0) {
     float maximumFootprint = max(footprint.x, footprint.y);
-    int tapsPerAxis = maximumFootprint <= ${MEDIUM_MINIFY_FOOTPRINT.toFixed(1)}
+    int qualityTaps = maximumFootprint <= ${MEDIUM_MINIFY_FOOTPRINT.toFixed(1)}
       ? 2
       : (maximumFootprint <= ${FULL_MINIFY_FOOTPRINT.toFixed(1)} ? 3 : MAX_MINIFY_TAPS);
+    int tapsPerAxis = min(qualityTaps, u_maxMinifyTaps);
     vec3 sum = vec3(0.0);
     float drawn = 0.0;
     for (int j = 0; j < MAX_MINIFY_TAPS; j++) {

@@ -1508,10 +1508,15 @@ export const renameServer = async (
 export const deleteTemplate = async (
   server: ConnectedServer,
   templateId: string,
+  expected: { readonly version: string; readonly updatedAt: number },
 ): Promise<{ ok: true } | { ok: false; message: string }> => {
   try {
+    const query = new URLSearchParams({
+      expectedVersion: expected.version,
+      expectedUpdatedAt: String(expected.updatedAt),
+    })
     const { response, body } = await requestServerMutation(
-      serverEndpoint(server.url, `/admin/templates/${templateId}`),
+      serverEndpoint(server.url, `/admin/templates/${templateId}?${query}`),
       {
         method: 'DELETE',
         headers: adminHeaders(server),

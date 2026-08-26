@@ -1,16 +1,17 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import {
   canvasPixelAtIn,
+  createScreenProjectionCache,
   cssPixelsPerCanvasPixelIn,
   type ScreenProjection,
   screenPointForIn,
-  screenProjectionIn,
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
 import { installOverlayLayer, overlayGpuMemoryBytes, setNudge } from './gl/layer.js'
 import {
   keepMarkersAboveDrafts,
+  markerBatchMemoryBytes,
   markerDensityMemoryBytes,
   markerGpuMemoryBytes,
 } from './gl/markers.js'
@@ -24,6 +25,7 @@ import {
   registerProfileMemorySource,
   resetProfile,
 } from './profile.js'
+import { serverMismatchMemoryBytes } from './server-mismatch.js'
 import { shortcutFor } from './shortcuts.js'
 import { getState, loadState, onStateChange, setState } from './state.js'
 import { installTelemetry } from './telemetry.js'
@@ -196,8 +198,9 @@ export const cssPixelsPerCanvasPixel = (): { x: number; y: number } => {
   return cssPixelsPerCanvasPixelIn(lastFrame)
 }
 
-/** One canvas-layout read shared by callers that project many points in the current frame. */
-export const screenProjection = (): ScreenProjection | null => screenProjectionIn(lastFrame)
+/** One cached canvas-layout measurement shared by every map-following control. */
+const overlayProjection = createScreenProjectionCache()
+export const screenProjection = (): ScreenProjection | null => overlayProjection.project(lastFrame)
 
 /** Run one independent piece of start-up without letting its failure cancel the rest. */
 const step = (what: string, run: () => void): void => {
@@ -283,9 +286,11 @@ const main = (): void => {
   registerProfileMemorySource('Template pixels', templateIndexMemoryBytes)
   registerProfileMemorySource('Captured tile pixels', capturedPixelMemoryBytes)
   registerProfileMemorySource('Mismatch cache', mismatchMemoryBytes)
+  registerProfileMemorySource('Server mismatch masks', serverMismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
   registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
   registerProfileMemorySource('Marker density buffers', markerDensityMemoryBytes)
+  registerProfileMemorySource('Marker draw batches', markerBatchMemoryBytes)
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
   // Before anything else: the trap has to be in place before MapLibre constructs its Map.
   step('map capture', installMapCapture)

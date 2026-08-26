@@ -4,6 +4,11 @@ import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  resolve: {
+    // Component tests run in happy-dom and need Svelte's client entry point rather than its SSR
+    // default. Production browser builds already select this condition themselves.
+    conditions: process.env.VITEST === 'true' ? ['browser'] : undefined,
+  },
   plugins: [
     tailwindcss(),
     sveltekit({

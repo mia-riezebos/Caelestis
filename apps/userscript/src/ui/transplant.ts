@@ -150,6 +150,7 @@ interface Branch {
     template: PlacedTemplate
     sourceId: string
     sourceRevision: {
+      readonly version: string
       readonly name: string
       readonly published: boolean
       readonly updatedAt: number
@@ -352,7 +353,10 @@ export const moveServerTemplateToLocal = async (
         message: 'Copied into Local, but the source connection changed and was kept.',
       }
     }
-    const removed = await deleteTemplateOnServer(source, published.id)
+    const removed = await deleteTemplateOnServer(source, published.id, {
+      version: current.version,
+      updatedAt: current.updatedAt,
+    })
     void reconcileServer(source)
     return removed.ok
       ? {
@@ -506,7 +510,10 @@ export const moveServerTemplateToServer = async (
       copied,
     )
   }
-  const removed = await deleteTemplateOnServer(source, published.id)
+  const removed = await deleteTemplateOnServer(source, published.id, {
+    version: beforePublish.version,
+    updatedAt: beforePublish.updatedAt,
+  })
   void Promise.all([reconcileServer(source), reconcileServer(destination)])
   return removed.ok
     ? {
@@ -598,6 +605,7 @@ const serverBranch = async (
         sourceRevision:
           typeof published.published === 'boolean' && typeof published.updatedAt === 'number'
             ? {
+                version: published.version,
                 name: published.name,
                 published: published.published,
                 updatedAt: published.updatedAt,
@@ -1006,7 +1014,12 @@ const transplantWhileDestinationHeld = async (
     for (const carried of branch.templates) {
       if (!connectionsAreCurrent()) return connectionChanged()
       if (!sourceTemplateIsCurrent(carried)) return sourceTemplateChanged(carried)
-      const removed = await deleteTemplateOnServer(source.server, carried.sourceId)
+      const revision = carried.sourceRevision
+      if (revision === null) return sourceTemplateChanged(carried)
+      const removed = await deleteTemplateOnServer(source.server, carried.sourceId, {
+        version: revision.version,
+        updatedAt: revision.updatedAt,
+      })
       if (!removed.ok) {
         return {
           ok: false,

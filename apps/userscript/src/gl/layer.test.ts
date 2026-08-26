@@ -221,6 +221,19 @@ describe('overlay layer', () => {
     expect(context.drawArrays).not.toHaveBeenCalled()
   })
 
+  it('does not synchronously read WebGL state on a warm render', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    vi.mocked(context.getParameter).mockClear()
+
+    overlayLayer.draw(context, null)
+
+    expect(context.getParameter).not.toHaveBeenCalled()
+  })
+
   it('spreads a burst of large visible uploads across frames', async () => {
     const { overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }

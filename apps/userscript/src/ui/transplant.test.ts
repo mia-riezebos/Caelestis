@@ -314,7 +314,15 @@ describe('branch transplant', () => {
     const moving = transplant(
       { kind: 'server', server, nodeId: 'root' },
       { kind: 'local', folderId: 'destination' },
-      () => [{ id: 'template', name: 'Template', version: 'version' }],
+      () => [
+        {
+          id: 'template',
+          name: 'Template',
+          version: 'version',
+          published: false,
+          updatedAt: 1,
+        },
+      ],
     )
 
     expect(state.leaseLocalFolder).toHaveBeenCalledWith('destination')
@@ -325,7 +333,10 @@ describe('branch transplant', () => {
     })
     await expect(moving).resolves.toEqual(expect.objectContaining({ ok: true }))
     expect(state.leaseLocalFolder).toHaveBeenCalledWith('local-folder')
-    expect(state.deleteTemplate).toHaveBeenCalled()
+    expect(state.deleteTemplate).toHaveBeenCalledWith(server, 'template', {
+      version: 'version',
+      updatedAt: 1,
+    })
     expect(state.deleteNode).toHaveBeenCalled()
     expect(releaseCreated).toHaveBeenCalledOnce()
     expect(releaseDestination).toHaveBeenCalledOnce()
@@ -401,7 +412,15 @@ describe('branch transplant', () => {
     const moving = transplant(
       { kind: 'server', server, nodeId: 'root' },
       { kind: 'local', folderId: null },
-      () => [{ id: 'template', name: 'Template', version: 'version' }],
+      () => [
+        {
+          id: 'template',
+          name: 'Template',
+          version: 'version',
+          published: false,
+          updatedAt: 1,
+        },
+      ],
     )
     await vi.waitFor(() => expect(state.deleteTemplate).toHaveBeenCalledOnce())
     expect(store.leaseLocalTemplate).toHaveBeenCalledWith('copied')
@@ -695,6 +714,10 @@ describe('template transfer transactions', () => {
     expect(state.admittedServerContentsFor.mock.invocationCallOrder[0]).toBeLessThan(
       state.deleteTemplate.mock.invocationCallOrder[0] as number,
     )
+    expect(state.deleteTemplate).toHaveBeenCalledWith(source, published.id, {
+      version: published.version,
+      updatedAt: published.updatedAt,
+    })
     expect(reconcile).toHaveBeenCalledWith(source)
     expect(reconcile).toHaveBeenCalledWith(destination)
   })

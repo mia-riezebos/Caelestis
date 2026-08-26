@@ -1,4 +1,4 @@
-import { millis, PngError, SliceError } from '@caelestis/shared'
+import { type Millis, millis, PngError, SliceError } from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
@@ -229,7 +229,34 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (!UUID_V7.test(templateId)) {
       return c.json({ error: 'id must be a canonical lowercase UUIDv7' }, 400)
     }
-    if (!(await ports.sql.deleteTemplate(templateId))) return c.json({ error: 'not found' }, 404)
+    const expectedVersionQuery = c.req.query('expectedVersion')
+    const expectedUpdatedAtQuery = c.req.query('expectedUpdatedAt')
+    const parsedUpdatedAt = parseWholeNumber(expectedUpdatedAtQuery)
+    if (expectedVersionQuery === undefined && expectedUpdatedAtQuery === undefined) {
+      // Released movers cannot identify the revision they copied. Accepting their unguarded cleanup
+      // would let a replacement published during that copy be deleted, so fail safely and retain the
+      // source until the revision-aware userscript is installed.
+      return c.json(
+        { error: 'expectedVersion and expectedUpdatedAt are required for template deletion' },
+        428,
+      )
+    }
+    if (!UUID_V7.test(expectedVersionQuery ?? '') || parsedUpdatedAt === null) {
+      return c.json(
+        { error: 'expectedVersion and expectedUpdatedAt must identify the confirmed revision' },
+        400,
+      )
+    }
+    const expected: { versionId: string; updatedAt: Millis } = {
+      versionId: expectedVersionQuery as string,
+      updatedAt: millis(parsedUpdatedAt),
+    }
+    if (!(await ports.sql.deleteTemplate(templateId, expected))) {
+      if ((await ports.sql.readTemplate(templateId)) === null) {
+        return c.json({ error: 'not found' }, 404)
+      }
+      return c.json({ error: 'template changed concurrently' }, 409)
+    }
     return c.body(null, 204)
   })
 

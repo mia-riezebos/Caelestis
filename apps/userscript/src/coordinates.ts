@@ -16,16 +16,26 @@ export interface ScreenProjection {
   readonly pixelsPerCanvasPixel: { x: number; y: number }
 }
 
+interface CanvasBox {
+  readonly left: number
+  readonly top: number
+  readonly width: number
+  readonly height: number
+}
+
 /**
  * Snapshot the frame-to-screen transform once for callers that project many points.
  *
  * Reading the canvas rectangle can force layout. Keeping it behind this small value object lets a
  * whole overlay-control frame share one read instead of repeating it for every visible template.
  */
-export const screenProjectionIn = (frame: TileFrame | null): ScreenProjection | null => {
+export const screenProjectionIn = (
+  frame: TileFrame | null,
+  knownBox?: CanvasBox,
+): ScreenProjection | null => {
   const reference = frame?.quads[0]
   if (reference === undefined || frame === null) return null
-  const box = frame.canvas.getBoundingClientRect()
+  const box = knownBox ?? frame.canvas.getBoundingClientRect()
   if (box.width <= 0 || box.height <= 0 || frame.canvas.width <= 0 || frame.canvas.height <= 0) {
     return null
   }
@@ -43,6 +53,83 @@ export const screenProjectionIn = (frame: TileFrame | null): ScreenProjection | 
     pixelsPerCanvasPixel: {
       x: scaleX / ratioX,
       y: scaleY / ratioY,
+    },
+  }
+}
+
+export interface ScreenProjectionCache {
+  project(frame: TileFrame | null): ScreenProjection | null
+  invalidate(): void
+  dispose(): void
+}
+
+/**
+ * Reuse the map canvas bounds while only its pixels are moving.
+ *
+ * Overlay controls write dozens of positions during a pan. Reading the canvas rectangle on the
+ * next frame then forces the browser to lay all of them out before it can answer, even though the
+ * canvas itself did not move. ResizeObserver invalidates the cached box when its layout really does
+ * change; a scroll listener invalidates movement and cheap scalar keys cover browser zoom and
+ * backing-store replacement.
+ */
+export const createScreenProjectionCache = (): ScreenProjectionCache => {
+  let canvas: HTMLCanvasElement | null = null
+  let box: CanvasBox | null = null
+  let canvasWidth = 0
+  let canvasHeight = 0
+  let viewportWidth = 0
+  let viewportHeight = 0
+  let devicePixelRatio = 0
+  const onScroll = (): void => {
+    box = null
+  }
+  const observer =
+    typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => {
+          box = null
+        })
+      : null
+  if (typeof window !== 'undefined') window.addEventListener('scroll', onScroll, true)
+
+  const invalidate = (): void => {
+    box = null
+  }
+
+  return {
+    project(frame) {
+      if (frame === null) return null
+      if (canvas !== frame.canvas) {
+        observer?.disconnect()
+        canvas = frame.canvas
+        observer?.observe(canvas)
+        box = null
+      }
+      const nextViewportWidth = typeof window === 'undefined' ? 0 : window.innerWidth
+      const nextViewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight
+      const nextDevicePixelRatio = typeof window === 'undefined' ? 1 : window.devicePixelRatio
+      if (
+        canvasWidth !== frame.canvas.width ||
+        canvasHeight !== frame.canvas.height ||
+        viewportWidth !== nextViewportWidth ||
+        viewportHeight !== nextViewportHeight ||
+        devicePixelRatio !== nextDevicePixelRatio
+      ) {
+        box = null
+        canvasWidth = frame.canvas.width
+        canvasHeight = frame.canvas.height
+        viewportWidth = nextViewportWidth
+        viewportHeight = nextViewportHeight
+        devicePixelRatio = nextDevicePixelRatio
+      }
+      box ??= frame.canvas.getBoundingClientRect()
+      return screenProjectionIn(frame, box)
+    },
+    invalidate,
+    dispose() {
+      observer?.disconnect()
+      if (typeof window !== 'undefined') window.removeEventListener('scroll', onScroll, true)
+      canvas = null
+      box = null
     },
   }
 }

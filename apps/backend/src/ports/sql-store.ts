@@ -412,6 +412,12 @@ export interface TemplateRecord {
   readonly updatedAt: Millis
 }
 
+/** The exact source revision an administrator confirmed before a destructive delete. */
+export interface TemplateDeletePrecondition {
+  readonly versionId: string
+  readonly updatedAt: Millis
+}
+
 export interface NodeRecord {
   readonly id: string
   readonly season: number
@@ -689,14 +695,15 @@ export interface SqlStore {
   updateTemplate(templateId: string, patch: TemplatePatch, updatedAt: Millis): Promise<boolean>
 
   /**
-   * Delete a template with every version and tile index it owns. Returns false if it was not there.
+   * Delete a template with every version and tile index it owns. Returns false if it is absent or
+   * no longer matches the revision the caller confirmed.
    *
    * **Chunks are deliberately left behind.** They are content-addressed and shared: two templates
    * with the same region, or two versions of one template that differ elsewhere, refer to the same
    * blob. Deleting by hash here would corrupt whatever else pointed at it, so reclaiming storage is
    * a sweep over hashes no version references — a separate job, and a safe one to never run.
    */
-  deleteTemplate(templateId: string): Promise<boolean>
+  deleteTemplate(templateId: string, expected: TemplateDeletePrecondition): Promise<boolean>
 
   listManifestTemplates(
     season: number,

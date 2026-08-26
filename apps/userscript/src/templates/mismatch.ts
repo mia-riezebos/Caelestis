@@ -123,7 +123,10 @@ const mergeMarks = (left: Mismatches, right: Mismatches): Mismatches => {
 const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
   if (!includeUnpainted || entry.unpainted.length === 0) return entry.wrong
   if (entry.wrong.length === 0) return entry.unpainted
-  if (entry.both === null) entry.both = mergeMarks(entry.wrong, entry.unpainted)
+  if (entry.both === null) {
+    entry.both = mergeMarks(entry.wrong, entry.unpainted)
+    cacheBytes += entry.both.byteLength
+  }
   return entry.both
 }
 
@@ -151,6 +154,9 @@ const countsUnpainted = (template: PlacedTemplate): boolean => {
 }
 
 const cache = new Map<string, Cached>()
+const MAX_CACHED_ANSWERS = 512
+const MAX_CACHED_ANSWER_BYTES = 32 * 1024 * 1024
+let cacheBytes = 0
 const coverage = new Map<
   string,
   Pick<Cached, 'asserted' | 'key' | 'templateSource'> & {
@@ -367,9 +373,27 @@ const rememberCoverage = (cacheKey: string, entry: Cached): void => {
   })
 }
 
+const cachedAnswerBytes = (entry: Cached): number =>
+  entry.wrong.byteLength + entry.unpainted.byteLength + (entry.both?.byteLength ?? 0)
+
+const deleteCachedAnswer = (cacheKey: string): void => {
+  const existing = cache.get(cacheKey)
+  if (existing === undefined) return
+  cache.delete(cacheKey)
+  cacheBytes -= cachedAnswerBytes(existing)
+}
+
 const remember = (cacheKey: string, entry: Cached): void => {
+  const existing = cache.get(cacheKey)
+  if (existing === entry) {
+    cache.delete(cacheKey)
+    cache.set(cacheKey, entry)
+    return
+  }
+  if (existing !== undefined) cacheBytes -= cachedAnswerBytes(existing)
   cache.delete(cacheKey)
   cache.set(cacheKey, entry)
+  cacheBytes += cachedAnswerBytes(entry)
 }
 
 /** Bumped whenever a cached answer is patched, so a listener can tell that anything happened. */
@@ -430,11 +454,12 @@ export const beginMismatchFrame = (): void => {
 }
 
 /**
- * Keep every answer the current viewport requested and drop everything outside it.
+ * Keep every answer the current viewport requested plus a bounded offscreen working set.
  *
  * A fixed-size LRU made marker count depend on how many template/tile intersections happened to be
- * visible: the 129th answer evicted the first while the same frame still needed both. The viewport is
- * already the renderer's natural bound, so it is also the cache bound.
+ * visible: the 129th answer evicted the first while the same frame still needed both. Eviction only
+ * considers offscreen answers after the frame has assembled, so a dense viewport remains complete
+ * while nearby pan-back can reuse work it already paid for.
  */
 export const endMismatchFrame = (): void => {
   const requested = requestedThisFrame
@@ -444,16 +469,12 @@ export const endMismatchFrame = (): void => {
     endServerMismatchFrame()
     return
   }
-  for (const cacheKey of [...cache.keys()]) {
+  for (const cacheKey of cache.keys()) {
+    if (cache.size <= MAX_CACHED_ANSWERS && cacheBytes <= MAX_CACHED_ANSWER_BYTES) break
     if (requested.has(cacheKey)) continue
-    cache.delete(cacheKey)
+    deleteCachedAnswer(cacheKey)
     forgetCoverage(cacheKey)
-  }
-  for (const cacheKey of [...inFlight.keys()]) {
-    if (!requested.has(cacheKey)) inFlight.delete(cacheKey)
-  }
-  for (const cacheKey of [...stale]) {
-    if (!requested.has(cacheKey)) stale.delete(cacheKey)
+    stale.delete(cacheKey)
   }
   for (const cacheKey of [...patchCount.keys()]) {
     if (!cache.has(cacheKey) && !inFlight.has(cacheKey)) patchCount.delete(cacheKey)
@@ -544,12 +565,12 @@ const scheduleIdleScan = (): void => {
 export const wantsTilePixels = (tile?: TileCoord): boolean => {
   const templates = displayTemplates().filter((template) => {
     if (!isTemplateVisible(template)) return false
-    const appearance = appearanceOf(template)
-    // Server templates receive aggregate progress from telemetry. Local templates have no other
-    // source, so they still need captured pixels even when neither marker list will be generated.
-    return (
-      appearance.markMismatch || appearance.markSelectedColour || template.serverUrl === undefined
-    )
+    // A server template's marker list comes from its server mismatch mask and its progress comes
+    // from telemetry. Capturing the underlying Wplace tile as a fallback makes every newly visible
+    // tile perform a million-pixel canvas read during a pan, precisely when the map needs its frame
+    // budget most. Local templates have neither server source, so they keep exact-pixel capture for
+    // both mismatch markers and progress (including when their marker switches are off).
+    return template.serverUrl === undefined
   })
   if (tile === undefined) return templates.length > 0
   const left = tile.x * TILE_SIZE
@@ -1537,7 +1558,7 @@ onTilePixelsEvicted((tile) => {
 /** Forget everything for a template that has gone, so its tiles are not held alive by the cache. */
 export const forgetMismatches = (id: string): void => {
   for (const key of [...cache.keys()]) {
-    if (key.startsWith(`${id}|`)) cache.delete(key)
+    if (key.startsWith(`${id}|`)) deleteCachedAnswer(key)
   }
   for (const key of [...coverage.keys()]) {
     if (key.startsWith(`${id}|`)) forgetCoverage(key)

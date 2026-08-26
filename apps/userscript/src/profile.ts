@@ -20,6 +20,23 @@ export interface ProfileTask extends ProfileStat {
   readonly kind: ProfileKind
 }
 
+interface MutableWorkload {
+  count: number
+  total: number
+  current: number
+  max: number
+  recent: number[]
+}
+
+export interface ProfileWorkload {
+  readonly name: string
+  readonly count: number
+  readonly current: number
+  readonly average: number
+  readonly max: number
+  readonly p95: number
+}
+
 export interface ProfileSnapshot {
   readonly enabled: boolean
   readonly elapsedMs: number
@@ -44,11 +61,13 @@ export interface ProfileSnapshot {
     readonly known: readonly { readonly name: string; readonly bytes: number }[]
   }
   readonly tasks: readonly ProfileTask[]
+  readonly workload: readonly ProfileWorkload[]
   readonly scope: {
     readonly cpu: string
     readonly gpu: string
     readonly memory: string
     readonly pageSignals: string
+    readonly workload: string
   }
 }
 
@@ -64,6 +83,7 @@ const tasks = new Map<
   string,
   { readonly name: string; readonly kind: ProfileKind; readonly stat: MutableStat }
 >()
+const workload = new Map<string, MutableWorkload>()
 const memorySources = new Map<string, () => number>()
 
 let frameRequest: number | null = null
@@ -199,6 +219,7 @@ export const installProfile = (): void => {
 export const resetProfile = (): void => {
   startedAt = performance.now()
   tasks.clear()
+  workload.clear()
   frameCount = 0
   frameTotalMs = 0
   frameMaxMs = 0
@@ -225,6 +246,22 @@ export const recordProfileDuration = (
   stat.maxMs = Math.max(stat.maxMs, durationMs)
   stat.recent.push(durationMs)
   if (stat.recent.length > RECENT_SAMPLES) stat.recent.shift()
+}
+
+/** Record one per-frame workload gauge without paying for it while profiling is disabled. */
+export const recordProfileWorkload = (name: string, value: number): void => {
+  if (!enabled || !Number.isFinite(value) || value < 0) return
+  let metric = workload.get(name)
+  if (metric === undefined) {
+    metric = { count: 0, total: 0, current: 0, max: 0, recent: [] }
+    workload.set(name, metric)
+  }
+  metric.count++
+  metric.total += value
+  metric.current = value
+  metric.max = Math.max(metric.max, value)
+  metric.recent.push(value)
+  if (metric.recent.length > RECENT_SAMPLES) metric.recent.shift()
 }
 
 export const measureProfile = <T>(name: string, run: () => T): T => {
@@ -381,11 +418,13 @@ export const profileSnapshot = (): ProfileSnapshot => {
         known: [],
       },
       tasks: [],
+      workload: [],
       scope: {
         cpu: 'Instrumented Caelestis work only.',
         gpu: 'Caelestis WebGL layers only, when timer queries are available.',
         memory: 'Known Caelestis pixel and GPU buffers. Object overhead is not included.',
         pageSignals: 'Frame cadence, long tasks and page heap cover the whole tab.',
+        workload: 'Per-frame Caelestis render inputs and retained work while profiling is enabled.',
       },
     }
   }
@@ -409,6 +448,16 @@ export const profileSnapshot = (): ProfileSnapshot => {
   const taskRows = [...tasks.values()]
     .map((task) => ({ name: task.name, kind: task.kind, ...summary(task.stat) }))
     .sort((a, b) => b.totalMs - a.totalMs)
+  const workloadRows = [...workload.entries()]
+    .map(([name, metric]) => ({
+      name,
+      count: metric.count,
+      current: metric.current,
+      average: metric.count > 0 ? metric.total / metric.count : 0,
+      max: metric.max,
+      p95: percentile95(metric.recent),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 
   return {
     enabled,
@@ -434,11 +483,13 @@ export const profileSnapshot = (): ProfileSnapshot => {
       known,
     },
     tasks: taskRows,
+    workload: workloadRows,
     scope: {
       cpu: 'Instrumented Caelestis work only.',
       gpu: 'Caelestis WebGL layers only, when timer queries are available.',
       memory: 'Known Caelestis pixel and GPU buffers. Object overhead is not included.',
       pageSignals: 'Frame cadence, long tasks and page heap cover the whole tab.',
+      workload: 'Per-frame Caelestis render inputs and retained work while profiling is enabled.',
     },
   }
 }

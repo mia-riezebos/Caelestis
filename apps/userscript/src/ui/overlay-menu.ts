@@ -170,6 +170,14 @@ let measuredFor: { width: number; height: number } = { width: 0, height: 0 }
 const invalidateMenuMeasurement = (): void => {
   measuredFor = { width: 0, height: 0 }
 }
+
+/** Position map-following controls without creating one compositor layer per visible template. */
+const positionFloatingControl = (control: HTMLElement, x: number, y: number): void => {
+  const left = `${x}px`
+  const top = `${y}px`
+  if (control.style.left !== left) control.style.left = left
+  if (control.style.top !== top) control.style.top = top
+}
 /** The controls the last build produced, so a host swapping or removing one is a rebuild. */
 let railActions: HTMLElement[] = []
 /** A control an action in this turn has asked for — always honoured once the build produces it. */
@@ -406,6 +414,8 @@ interface ServerActionTarget {
   readonly server: ConnectedServer
   readonly templateId: string
   readonly published: boolean
+  readonly version: string
+  readonly updatedAt: number
 }
 
 /** The current admin-owned manifest row behind one rendered server overlay. */
@@ -420,7 +430,13 @@ const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | n
   )
   return remote === undefined
     ? null
-    : { server, templateId: template.serverTemplateId, published: remote.published }
+    : {
+        server,
+        templateId: template.serverTemplateId,
+        published: remote.published,
+        version: remote.version,
+        updatedAt: remote.updatedAt,
+      }
 }
 
 const currentServerActionTargetFor = (id: string): ServerActionTarget | null => {
@@ -920,19 +936,20 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
     const removal =
       serverTarget === null
         ? removeLocalTemplate(id)
-        : deleteTemplateOnServer(serverTarget.server, serverTarget.templateId).then(
-            async (result) => {
-              if (!result.ok) {
-                serverRemovalFailure = result.message
-                return false
-              }
-              // Remove the rendered copy immediately; the manifest read reconciles the tree and
-              // confirms the server no longer advertises it.
-              await forgetServerTemplate(id)
-              void listServerContents(serverTarget.server)
-              return true
-            },
-          )
+        : deleteTemplateOnServer(serverTarget.server, serverTarget.templateId, {
+            version: serverTarget.version,
+            updatedAt: serverTarget.updatedAt,
+          }).then(async (result) => {
+            if (!result.ok) {
+              serverRemovalFailure = result.message
+              return false
+            }
+            // Remove the rendered copy immediately; the manifest read reconciles the tree and
+            // confirms the server no longer advertises it.
+            await forgetServerTemplate(id)
+            void listServerContents(serverTarget.server)
+            return true
+          })
     void removal.then(
       (removed) => {
         deleting.delete(id)
@@ -1973,11 +1990,11 @@ const renderControls = (
     expireMoveFailure(template.id)
     expireFailures(template.id)
   }
-  // Every projection bottoms out in `getBoundingClientRect`, and the loop below writes `style.left`
-  // and `style.top`. Interleaving them makes each template's reads force a layout recalc that the
-  // previous template's writes invalidated — two synchronous reflows per template per frame, inside
-  // a painter. Read everything first, then write.
+  // Sample every frame-wide geometry input before writing any control positions. Interleaving the
+  // panel rectangle read with each template's left/top writes forces one layout per visible
+  // template while the main panel is open.
   const projection = screenProjection()
+  const controlsRightEdge = localControlsRightEdge()
   const placements = templates.map((template) => ({
     template,
     corner: cornerOnScreen(template, projection),
@@ -1998,17 +2015,14 @@ const renderControls = (
         Math.max(corner.y, VIEWPORT_EDGE),
         Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
       )
-      const railLeft = Math.min(
-        Math.max(corner.x + 6, 4),
-        localControlsRightEdge() - MENU_BUTTON_SIZE,
-      )
+      const railLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
       const finishing = isFinishing()
       for (const control of [rail.apply, rail.cancel]) {
-        control.style.left = `${railLeft}px`
-        control.setAttribute('aria-disabled', String(finishing))
+        if (control.getAttribute('aria-disabled') !== String(finishing))
+          control.setAttribute('aria-disabled', String(finishing))
       }
-      rail.apply.style.top = `${railTop}px`
-      rail.cancel.style.top = `${railTop + MENU_BUTTON_SIZE + RAIL_GAP}px`
+      positionFloatingControl(rail.apply, railLeft, railTop)
+      positionFloatingControl(rail.cancel, railLeft, railTop + MENU_BUTTON_SIZE + RAIL_GAP)
       continue
     }
     removePlacementRail(template.id)
@@ -2065,9 +2079,13 @@ const renderControls = (
       buttons.set(template.id, button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
-    button.title = `${template.name} — display options`
-    button.setAttribute('aria-label', `${template.name} display options`)
-    button.setAttribute('aria-expanded', String(openFor === template.id))
+    const title = `${template.name} — display options`
+    if (button.title !== title) button.title = title
+    const label = `${template.name} display options`
+    if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label)
+    const expanded = String(openFor === template.id)
+    if (button.getAttribute('aria-expanded') !== expanded)
+      button.setAttribute('aria-expanded', expanded)
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
     const actionCount =
@@ -2081,12 +2099,8 @@ const renderControls = (
       Math.max(corner.y, VIEWPORT_EDGE),
       Math.max(VIEWPORT_EDGE, window.innerHeight - railHeight - VIEWPORT_EDGE),
     )
-    const buttonLeft = Math.min(
-      Math.max(corner.x + 6, 4),
-      localControlsRightEdge() - MENU_BUTTON_SIZE,
-    )
-    button.style.left = `${buttonLeft}px`
-    button.style.top = `${buttonTop}px`
+    const buttonLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
+    positionFloatingControl(button, buttonLeft, buttonTop)
 
     if (openFor !== template.id) continue
     const signature = menuSignature(template)
@@ -2161,8 +2175,11 @@ const renderControls = (
     }
     if (menuNode === null) continue
     for (const [index, action] of railActions.entries()) {
-      action.style.left = `${buttonLeft}px`
-      action.style.top = `${buttonTop + (index + 1) * (MENU_BUTTON_SIZE + RAIL_GAP)}px`
+      positionFloatingControl(
+        action,
+        buttonLeft,
+        buttonTop + (index + 1) * (MENU_BUTTON_SIZE + RAIL_GAP),
+      )
     }
     // Measured when it is built, when its content expands, and when the viewport changes under it.
     //
@@ -2180,8 +2197,7 @@ const renderControls = (
       menuBox = { width: box.width, height: box.height }
       measuredFor = { width: window.innerWidth, height: window.innerHeight }
     }
-    const contentRight = localControlsRightEdge()
-    const rightSpace = contentRight - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
+    const rightSpace = controlsRightEdge - (buttonLeft + MENU_BUTTON_SIZE + RAIL_GAP)
     const leftSpace = buttonLeft - RAIL_GAP - VIEWPORT_EDGE
     const openRight = menuBox.width <= rightSpace || rightSpace >= leftSpace
     const sideRoom = Math.max(0, openRight ? rightSpace : leftSpace)

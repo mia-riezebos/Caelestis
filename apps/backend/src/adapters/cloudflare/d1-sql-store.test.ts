@@ -690,9 +690,37 @@ describe('D1SqlStore', () => {
       .prepare('INSERT INTO contributions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(1, 'template-1', 0, 'c'.repeat(64), 1, 1, 1, 0)
 
-    await expect(store.deleteTemplate('template-1')).resolves.toBe(true)
+    await expect(
+      store.deleteTemplate('template-1', {
+        versionId: 'version-1',
+        updatedAt: millis(1_000),
+      }),
+    ).resolves.toBe(true)
     expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM contributions').get()).toEqual({
       count: 0,
+    })
+  })
+
+  it('keeps a newer template revision when deletion presents a stale precondition', async () => {
+    d1.sqlite.exec("INSERT INTO nodes VALUES ('node-1', 1, NULL, '/node-1', 'Node', NULL, NULL, 1)")
+    await store.insertTemplateVersion(templateVersion())
+    await store.insertTemplateVersion(
+      templateVersion({ versionId: 'version-2', createdAt: millis(2_000) }),
+      { requireExisting: true },
+    )
+
+    await expect(
+      store.deleteTemplate('template-1', {
+        versionId: 'version-1',
+        updatedAt: millis(1_000),
+      }),
+    ).resolves.toBe(false)
+    await expect(store.readTemplate('template-1')).resolves.toMatchObject({
+      currentVersionId: 'version-2',
+      updatedAt: millis(2_000),
+    })
+    expect(d1.sqlite.prepare('SELECT COUNT(*) AS count FROM template_versions').get()).toEqual({
+      count: 2,
     })
   })
 

@@ -47,7 +47,12 @@ const harness = vi.hoisted(() => ({
     season: number
     info: { id: string; name: string; auth: 'access_token' }
   }>,
-  serverTemplates: [] as Array<{ id: string; published: boolean }>,
+  serverTemplates: [] as Array<{
+    id: string
+    published: boolean
+    version: string
+    updatedAt: number
+  }>,
   // A projection, not a constant: the module derives the overlay's on-screen box from one
   // projected corner plus the scale, and a constant would make every template a zero-size point.
   screenPointFor: vi.fn((x: number, y: number) => ({ x, y }) as { x: number; y: number } | null),
@@ -163,7 +168,12 @@ const connectServerTemplate = (published: boolean, isAdmin = true): void => {
     season: 1,
     info: { id: 'server-1', name: 'Example', auth: 'access_token' },
   })
-  harness.serverTemplates.push({ id: 'remote-a', published })
+  harness.serverTemplates.push({
+    id: 'remote-a',
+    published,
+    version: 'version-1',
+    updatedAt: 1,
+  })
 }
 
 /** Flush the microtask queue, however many turns the store's continuation chain actually takes. */
@@ -173,6 +183,10 @@ const gear = (id: string): HTMLButtonElement => {
   const button = document.getElementById(`caelestis-overlay-button-${id}`)
   if (button === null) throw new Error(`no gear button for ${id}`)
   return button as HTMLButtonElement
+}
+
+const floatingPosition = (element: HTMLElement): { x: number; y: number } => {
+  return { x: Number.parseFloat(element.style.left), y: Number.parseFloat(element.style.top) }
 }
 
 const menu = (): HTMLElement => {
@@ -605,6 +619,8 @@ describe('the menu controls announce their state', () => {
     expect(button.classList.contains('btn-xs')).toBe(false)
     expect(button.style.width).toBe(`${RAIL_BUTTON}px`)
     expect(button.style.height).toBe(`${RAIL_BUTTON}px`)
+    expect(button.style.transform).toBe('')
+    expect(button.style.willChange).toBe('')
     expect(button.querySelector('path')?.getAttribute('d')).toBe(
       icon('kebab').querySelector('path')?.getAttribute('d'),
     )
@@ -651,10 +667,10 @@ describe('the menu controls announce their state', () => {
       expect((action as HTMLElement).classList.contains('btn-outline')).toBe(false)
       expect((action as HTMLElement).style.width).toBe(`${RAIL_BUTTON}px`)
       expect((action as HTMLElement).style.height).toBe(`${RAIL_BUTTON}px`)
-      expect((action as HTMLElement).style.left).toBe(gear('a').style.left)
+      expect(floatingPosition(action as HTMLElement).x).toBe(floatingPosition(gear('a')).x)
     }
-    expect(Number.parseFloat((actions[0] as HTMLElement).style.top)).toBe(
-      Number.parseFloat(gear('a').style.top) + RAIL_BUTTON + GAP,
+    expect(floatingPosition(actions[0] as HTMLElement).y).toBe(
+      floatingPosition(gear('a')).y + RAIL_BUTTON + GAP,
     )
 
     gear('a').click()
@@ -664,8 +680,7 @@ describe('the menu controls announce their state', () => {
   it('replaces the local menu rail with apply and cancel during its move', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
-    const left = gear('a').style.left
-    const top = gear('a').style.top
+    const { x: left, y: top } = floatingPosition(gear('a'))
     gear('a').click()
     rerender()
 
@@ -677,10 +692,8 @@ describe('the menu controls announce their state', () => {
     expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
     const apply = byKey('apply-move')
     const cancel = byKey('cancel-move')
-    expect(apply.style.left).toBe(left)
-    expect(apply.style.top).toBe(top)
-    expect(cancel.style.left).toBe(left)
-    expect(Number.parseFloat(cancel.style.top)).toBe(Number.parseFloat(top) + RAIL_BUTTON + GAP)
+    expect(floatingPosition(apply)).toEqual({ x: left, y: top })
+    expect(floatingPosition(cancel)).toEqual({ x: left, y: top + RAIL_BUTTON + GAP })
 
     apply.click()
     expect(harness.commitMove).toHaveBeenCalledOnce()
@@ -778,11 +791,9 @@ describe('placement and geometry', () => {
     rerender()
 
     const railBoundary = window.innerWidth - CLEAR_OF_RAIL
-    expect(Number.parseFloat(gear('a').style.left) + RAIL_BUTTON).toBeLessThanOrEqual(railBoundary)
+    expect(floatingPosition(gear('a')).x + RAIL_BUTTON).toBeLessThanOrEqual(railBoundary)
     expect(Number.parseFloat(menu().style.left) + 240).toBeLessThanOrEqual(railBoundary)
-    expect(Number.parseFloat(menu().style.left) + 240).toBeLessThan(
-      Number.parseFloat(gear('a').style.left),
-    )
+    expect(Number.parseFloat(menu().style.left) + 240).toBeLessThan(floatingPosition(gear('a')).x)
   })
 
   it('remeasures the menu when an appearance group expands', () => {
@@ -823,10 +834,10 @@ describe('placement and geometry', () => {
     rerender()
 
     const usableRight = 500 - GAP
-    expect(Number.parseFloat(gear('a').style.left) + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+    expect(floatingPosition(gear('a')).x + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
     expect(Number.parseFloat(menu().style.left) + 240).toBeLessThanOrEqual(usableRight)
     for (const action of document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')) {
-      expect(Number.parseFloat(action.style.left) + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+      expect(floatingPosition(action).x + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
     }
 
     byKey('move').click()
@@ -834,8 +845,26 @@ describe('placement and geometry', () => {
     for (const action of document.querySelectorAll<HTMLElement>(
       '[data-caelestis-placement-action]',
     )) {
-      expect(Number.parseFloat(action.style.left) + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+      expect(floatingPosition(action).x + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
     }
+  })
+
+  it('samples an open panel boundary once before positioning multiple template controls', () => {
+    const panel = document.createElement('aside')
+    panel.id = PANEL_ID
+    const measure = vi.fn(
+      () => ({ left: 500, right: 800, top: 8, bottom: 760, width: 300, height: 752 }) as DOMRect,
+    )
+    panel.getBoundingClientRect = measure
+    document.body.appendChild(panel)
+    harness.localTemplates.mockReturnValue([
+      template(),
+      template({ id: 'b', name: 'beta.png', originX: 100 }),
+    ])
+
+    rerender()
+
+    expect(measure).toHaveBeenCalledOnce()
   })
 
   it('opens the menu to the right when that side has space', () => {
@@ -846,7 +875,7 @@ describe('placement and geometry', () => {
     rerender()
 
     expect(Number.parseFloat(menu().style.left)).toBeGreaterThan(
-      Number.parseFloat(gear('a').style.left) + RAIL_BUTTON,
+      floatingPosition(gear('a')).x + RAIL_BUTTON,
     )
   })
 
@@ -864,9 +893,7 @@ describe('placement and geometry', () => {
     const actions = [...document.querySelectorAll<HTMLElement>('[data-caelestis-rail-action]')]
     const last = actions.at(-1)
     if (last === undefined) throw new Error('no rail action')
-    expect(Number.parseFloat(last.style.top) + RAIL_BUTTON).toBeLessThanOrEqual(
-      window.innerHeight - 8,
-    )
+    expect(floatingPosition(last).y + RAIL_BUTTON).toBeLessThanOrEqual(window.innerHeight - 8)
   })
 
   it.each([
@@ -889,7 +916,7 @@ describe('placement and geometry', () => {
     gear('a').click()
     rerender()
 
-    const gearLeft = Number.parseFloat(gear('a').style.left)
+    const gearLeft = floatingPosition(gear('a')).x
     const left = Number.parseFloat(menu().style.left)
     const width = menu().getBoundingClientRect().width
     expect(left + width <= gearLeft || left >= gearLeft + RAIL_BUTTON).toBe(true)
@@ -1339,7 +1366,10 @@ describe('the menu is ours and has a keyboard exit', () => {
     byKey('confirm-delete').click()
     await settle()
 
-    expect(harness.deleteServerTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a')
+    expect(harness.deleteServerTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a', {
+      version: 'version-1',
+      updatedAt: 1,
+    })
     expect(harness.removeLocalTemplate).not.toHaveBeenCalled()
     expect(harness.forgetServerTemplate).toHaveBeenCalledWith('a')
     expect(harness.listServerContents).toHaveBeenCalledWith(harness.servers[0])

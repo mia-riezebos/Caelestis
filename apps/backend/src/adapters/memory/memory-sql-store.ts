@@ -41,6 +41,7 @@ import {
   type SqlStore,
   type TelemetryBucket,
   type TelemetryTarget,
+  type TemplateDeletePrecondition,
   TemplateIdentityError,
   TemplateNotFoundError,
   type TemplatePatch,
@@ -493,8 +494,16 @@ export class MemorySqlStore implements SqlStore {
     return true
   }
 
-  async deleteTemplate(templateId: string): Promise<boolean> {
-    if (!this.templates.delete(templateId)) return false
+  async deleteTemplate(templateId: string, expected: TemplateDeletePrecondition): Promise<boolean> {
+    const template = this.templates.get(templateId)
+    if (
+      template === undefined ||
+      template.currentVersionId !== expected.versionId ||
+      template.updatedAt !== expected.updatedAt
+    ) {
+      return false
+    }
+    this.templates.delete(templateId)
     for (const [versionId, version] of this.templateVersions) {
       if (version.templateId === templateId) this.templateVersions.delete(versionId)
     }

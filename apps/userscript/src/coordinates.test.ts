@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   canvasPixelAtIn,
+  createScreenProjectionCache,
   cssPixelsPerCanvasPixelIn,
   screenPointForIn,
   screenProjectionIn,
@@ -100,5 +101,36 @@ describe('overlay coordinates', () => {
     void projection?.pixelsPerCanvasPixel
 
     expect(current.canvas.getBoundingClientRect).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not force canvas layout again while only map pixels move', () => {
+    const current = frame()
+    const readRect = current.canvas.getBoundingClientRect
+    current.canvas.getBoundingClientRect = vi.fn(readRect)
+    const cache = createScreenProjectionCache()
+
+    cache.project(current)?.pointFor(2_250, 3_250)
+    const moved: TileFrame = {
+      ...current,
+      quads: current.quads.map((quad) => ({ ...quad, x: quad.x + 50 })),
+    }
+    cache.project(moved)?.pointFor(2_250, 3_250)
+
+    expect(current.canvas.getBoundingClientRect).toHaveBeenCalledTimes(1)
+    cache.dispose()
+  })
+
+  it('remeasures canvas layout when its backing size changes', () => {
+    const current = frame()
+    const readRect = current.canvas.getBoundingClientRect
+    current.canvas.getBoundingClientRect = vi.fn(readRect)
+    const cache = createScreenProjectionCache()
+
+    cache.project(current)
+    current.canvas.width = 2_000
+    cache.project(current)
+
+    expect(current.canvas.getBoundingClientRect).toHaveBeenCalledTimes(2)
+    cache.dispose()
   })
 })

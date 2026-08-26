@@ -19,16 +19,19 @@ const fixture = vi.hoisted(() => ({
   disagreementsIn: vi.fn(),
   progressIn: vi.fn(() => true),
   markerBudget: 16_384,
+  moving: false,
   quad: { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 },
   paintOpen: false,
   selected: null as number | null,
 }))
 
 vi.mock('../debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
-vi.mock('../map-handle.js', () => ({ getMap: () => null }))
+vi.mock('../map-handle.js', () => ({ getMap: () => ({ isMoving: () => fixture.moving }) }))
 vi.mock('../profile.js', () => ({
+  isProfileEnabled: () => false,
   measureProfile: (_name: string, run: () => unknown) => run(),
   profileGpu: (_gl: unknown, _name: string, run: () => unknown) => run(),
+  recordProfileWorkload: vi.fn(),
 }))
 vi.mock('../state.js', () => ({
   getState: () => ({ markerBudget: fixture.markerBudget, onlySelectedColour: false }),
@@ -153,6 +156,7 @@ describe('marker work selection', () => {
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.progressIn.mockReset().mockReturnValue(true)
     fixture.markerBudget = 16_384
+    fixture.moving = false
     fixture.quad = { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 100, height: 100 }
     fixture.paintOpen = false
     fixture.selected = null
@@ -195,6 +199,22 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
+  it('keeps the configured marker budget while the map is moving', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.moving = true
+    fixture.marks = new Uint32Array(16_384)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 16_384)
+    const uploaded = vi.mocked(gl.bufferData).mock.calls.at(-1)?.[1]
+    expect(uploaded).toBeInstanceOf(Uint32Array)
+    markerLayer.onRemove(null, gl)
+  })
+
   it('reuses a bounded marker buffer across unchanged render transforms', async () => {
     fixture.appearance.markMismatch = true
     fixture.markerBudget = 100
@@ -210,6 +230,20 @@ describe('marker work selection', () => {
 
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.markerBudget)
     expect(gl.bufferData).not.toHaveBeenCalled()
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('does not synchronously read WebGL state while drawing', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.marks = new Uint32Array([packMismatchMark(1, 1, 1)])
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.getParameter).not.toHaveBeenCalled()
+    expect(gl.isEnabled).not.toHaveBeenCalled()
     markerLayer.onRemove(null, gl)
   })
 

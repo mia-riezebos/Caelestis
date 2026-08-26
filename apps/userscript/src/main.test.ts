@@ -18,6 +18,11 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('./coordinates.js', () => ({
   canvasPixelAtIn: harness.canvasPixelAtIn,
+  createScreenProjectionCache: () => ({
+    project: () => null,
+    invalidate: vi.fn(),
+    dispose: vi.fn(),
+  }),
   cssPixelsPerCanvasPixelIn: harness.cssPixelsPerCanvasPixelIn,
   screenPointForIn: harness.screenPointForIn,
   viewportCentreIn: harness.viewportCentreIn,
@@ -30,6 +35,7 @@ vi.mock('./gl/layer.js', () => ({
 }))
 vi.mock('./gl/markers.js', () => ({
   keepMarkersAboveDrafts: vi.fn(),
+  markerBatchMemoryBytes: vi.fn(() => 0),
   markerDensityMemoryBytes: vi.fn(() => 0),
   markerGpuMemoryBytes: vi.fn(() => 0),
 }))
@@ -42,6 +48,7 @@ vi.mock('./paint-palette.js', () => ({
   paintPaletteProgress: vi.fn(() => []),
 }))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
+vi.mock('./server-mismatch.js', () => ({ serverMismatchMemoryBytes: vi.fn(() => 0) }))
 vi.mock('./state.js', () => ({
   getState: () => ({ appearance: { markMismatch: false }, onlySelectedColour: false }),
   loadState: vi.fn(),
