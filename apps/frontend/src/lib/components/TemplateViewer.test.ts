@@ -46,6 +46,9 @@ const template: Template = {
   totalPixels: 1,
   chunks: [{ tile: TEMPLATE_TILE, hash: 'chunk' }],
   published: true,
+  finished: false,
+  finishedAt: null,
+  timelapseFrozen: false,
   createdAt: millis(0),
   updatedAt: millis(0),
 }

@@ -599,7 +599,7 @@ describe('D1SqlStore', () => {
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700, NULL);
+      INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700, NULL, NULL);
       INSERT INTO template_versions (
         id, template_id, created_at_ms, created_with_token, created_by_user_id,
         min_x, min_y, max_x, max_y, total_pixels

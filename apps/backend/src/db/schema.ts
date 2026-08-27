@@ -165,6 +165,8 @@ export const templates = sqliteTable(
      * instant.
      */
     timelapseFrozenAt: integer('timelapse_frozen_at_ms').$type<Millis>(),
+    /** When an administrator marked this artwork complete, or null while work is live. */
+    finishedAt: integer('finished_at_ms').$type<Millis>(),
     /**
      * Who created this template.
      *

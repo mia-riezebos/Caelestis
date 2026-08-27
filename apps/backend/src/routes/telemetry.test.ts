@@ -84,6 +84,45 @@ const canvasTile = async (): Promise<Uint8Array> => {
   return encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
 }
 
+const changedCanvasTile = async (index: number): Promise<Uint8Array> => {
+  const indices = new Uint8Array(TILE_SIZE * TILE_SIZE).fill(TRANSPARENT_INDEX)
+  indices[0] = index
+  return encodeIndexedPng(TILE_SIZE, TILE_SIZE, indices)
+}
+
+const setFinished = (
+  app: Awaited<ReturnType<typeof harness>>['app'],
+  templateId: string,
+  finished: boolean,
+) =>
+  app.request(`/admin/templates/${templateId}`, {
+    method: 'PATCH',
+    headers: { ...bearer(BOOTSTRAP), 'content-type': 'application/json' },
+    body: JSON.stringify({ finished }),
+  })
+
+const uploadCanvas = async (
+  app: Awaited<ReturnType<typeof harness>>['app'],
+  token: string,
+  bytes: Uint8Array,
+  at: number,
+): Promise<string> => {
+  const hash = await sha256Hex(bytes)
+  const response = await app.request(`/telemetry/tiles/0/0/${hash}`, {
+    method: 'PUT',
+    headers: {
+      ...bearer(token),
+      'x-caelestis-season': '0',
+      'x-caelestis-observed-at': String(at),
+      'x-caelestis-wplace-user-id': '42',
+      'x-caelestis-display-name': 'Mia',
+    },
+    body: bytes,
+  })
+  expect(response.status).toBe(204)
+  return hash
+}
+
 describe('telemetry routes', () => {
   it('requests missing template-covered tiles and serves server-backed progress after upload', async () => {
     const { app } = await harness()
@@ -209,5 +248,105 @@ describe('telemetry routes', () => {
       body: JSON.stringify({ ...event, eventId: '01890f3e-7b2c-7abc-8def-0123456789ad' }),
     })
     expect(forbidden.status).toBe(403)
+  })
+
+  it('stops history for a finished template, keeps grief status live, and resumes after reopen', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const now = Math.floor(Date.now() / 1_000)
+    const firstHash = await uploadCanvas(app, reportToken, await canvasTile(), now)
+
+    expect((await setFinished(app, templateId, true)).status).toBe(200)
+    const griefHash = await uploadCanvas(app, reportToken, await changedCanvasTile(3), now + 60)
+
+    await expect(
+      sql.readTileHistory({
+        season: 0,
+        tile: { x: 0, y: 0 },
+        resolution: 0,
+        fromSeconds: seconds(now - 1),
+        toSeconds: seconds(now + 180),
+      }),
+    ).resolves.toEqual([{ bucketStart: now, hash: firstHash, reporters: 1 }])
+    await expect(sql.readLatestTile(0, { x: 0, y: 0 })).resolves.toMatchObject({
+      hash: griefHash,
+      observedAt: (now + 60) * 1_000,
+    })
+    await expect(sql.readTemplateStatuses(0, true)).resolves.toEqual([
+      expect.objectContaining({ templateId, wrong: 1, observedAt: (now + 60) * 1_000 }),
+    ])
+
+    expect((await setFinished(app, templateId, false)).status).toBe(200)
+    const resumedHash = await uploadCanvas(app, reportToken, await changedCanvasTile(2), now + 120)
+    await expect(
+      sql.readTileHistory({
+        season: 0,
+        tile: { x: 0, y: 0 },
+        resolution: 0,
+        fromSeconds: seconds(now - 1),
+        toSeconds: seconds(now + 180),
+      }),
+    ).resolves.toEqual([
+      { bucketStart: now, hash: firstHash, reporters: 1 },
+      { bucketStart: now + 120, hash: resumedHash, reporters: 1 },
+    ])
+  })
+
+  it('keeps shared-tile history while any covering template remains live', async () => {
+    const { app, sql } = await harness()
+    const finishedId = await createPublishedTemplate(app)
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const now = Math.floor(Date.now() / 1_000)
+
+    expect((await setFinished(app, finishedId, true)).status).toBe(200)
+    const hash = await uploadCanvas(app, reportToken, await canvasTile(), now)
+
+    await expect(
+      sql.readTileHistory({
+        season: 0,
+        tile: { x: 0, y: 0 },
+        resolution: 0,
+        fromSeconds: seconds(now - 1),
+        toSeconds: seconds(now + 1),
+      }),
+    ).resolves.toEqual([{ bucketStart: now, hash, reporters: 1 }])
+  })
+
+  it('does not credit paints against finished templates', async () => {
+    const { app, sql, counters } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const now = seconds(Math.floor(Date.now() / 1_000))
+    await uploadCanvas(app, reportToken, await canvasTile(), now)
+    expect((await setFinished(app, templateId, true)).status).toBe(200)
+
+    const response = await app.request('/telemetry/paints', {
+      method: 'POST',
+      headers: { ...bearer(reportToken), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        eventId: '01890f3e-7b2c-7abc-8def-0123456789ae',
+        wplaceUserId: 42,
+        displayName: 'Mia',
+        season: 0,
+        ts: now,
+        tiles: [{ x: 0, y: 0, pixels: { x: [2], y: [0], colors: [3] } }],
+        painted: 1,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(counters.readPending([templateId])).resolves.toEqual([
+      expect.objectContaining({ templateId, placed: 0, correct: 0, repairs: 0 }),
+    ])
+    await expect(
+      sql.readContributions({
+        templateIds: [templateId],
+        fromSeconds: seconds(now - 86_400),
+        toSeconds: seconds(now + 86_400),
+        includeUnpublished: true,
+      }),
+    ).resolves.toEqual([])
   })
 })

@@ -203,6 +203,24 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     ])
   })
 
+  it('updates the latest tile and status without appending history when asked', async () => {
+    const tile = { x: 3, y: 4 }
+    const latest = observation({ tile, hash: 'e'.repeat(64) })
+
+    await store.recordTileObservation(latest, [], false)
+
+    await expect(store.readLatestTile(1, tile)).resolves.toMatchObject({ hash: latest.hash })
+    await expect(
+      store.readTileHistory({
+        season: 1,
+        tile,
+        resolution: 0,
+        fromSeconds: seconds(1_750_031_000),
+        toSeconds: seconds(1_750_033_000),
+      }),
+    ).resolves.toEqual([])
+  })
+
   it('keeps the hash with the most distinct reporters per bucket, ties to the smaller hash', async () => {
     const tile = { x: 3, y: 4 }
     // Bucket one: two reporters agree on one hash, a third dissents — quorum wins.

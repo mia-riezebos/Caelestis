@@ -791,6 +791,7 @@ export class D1SqlStore implements SqlStore {
         currentVersionId: templates.currentVersionId,
         publishedAt: templates.publishedAt,
         timelapseFrozenAt: templates.timelapseFrozenAt,
+        finishedAt: templates.finishedAt,
         createdAt: templates.createdAtMs,
         updatedAt: templates.updatedAtMs,
       })
@@ -807,6 +808,8 @@ export class D1SqlStore implements SqlStore {
       currentVersionId: row.currentVersionId,
       published: row.publishedAt !== null,
       timelapseFrozen: row.timelapseFrozenAt !== null,
+      finished: row.finishedAt !== null,
+      finishedAt: row.finishedAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }
@@ -857,6 +860,7 @@ export class D1SqlStore implements SqlStore {
           ...(patch.timelapseFrozenAt === undefined
             ? {}
             : { timelapseFrozenAt: patch.timelapseFrozenAt }),
+          ...(patch.finishedAt === undefined ? {} : { finishedAt: patch.finishedAt }),
           updatedAtMs: updatedAt,
         })
         .where(predicate)
@@ -931,6 +935,8 @@ export class D1SqlStore implements SqlStore {
         maxY: templateVersions.maxY,
         totalPixels: templateVersions.totalPixels,
         publishedAt: templates.publishedAt,
+        finishedAt: templates.finishedAt,
+        timelapseFrozenAt: templates.timelapseFrozenAt,
         createdAt: templates.createdAtMs,
         updatedAt: templates.updatedAtMs,
       })
@@ -950,6 +956,9 @@ export class D1SqlStore implements SqlStore {
       bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
       totalPixels: row.totalPixels,
       published: row.publishedAt !== null,
+      finished: row.finishedAt !== null,
+      finishedAt: row.finishedAt,
+      timelapseFrozen: row.timelapseFrozenAt !== null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }))
@@ -999,6 +1008,7 @@ export class D1SqlStore implements SqlStore {
         minY: templateVersions.minY,
         maxX: templateVersions.maxX,
         maxY: templateVersions.maxY,
+        finishedAt: templates.finishedAt,
       })
       .from(versionTiles)
       .innerJoin(templateVersions, eq(templateVersions.id, versionTiles.versionId))
@@ -1025,6 +1035,7 @@ export class D1SqlStore implements SqlStore {
           tileY: row.tileY,
           hash: row.hash,
           bbox: { minX: row.minX, minY: row.minY, maxX: row.maxX, maxY: row.maxY },
+          finished: row.finishedAt !== null,
         })),
       )
   }
@@ -1055,6 +1066,7 @@ export class D1SqlStore implements SqlStore {
   async recordTileObservation(
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
+    recordHistory = true,
   ): Promise<void> {
     const history = this.database
       .insert(tileHistory)
@@ -1083,7 +1095,8 @@ export class D1SqlStore implements SqlStore {
         set: { sha256: observation.hash, observedAtMs: observation.observedAt },
         setWhere: lte(canvasTiles.observedAtMs, observation.observedAt),
       })
-    await this.database.batch([history, current])
+    if (recordHistory) await this.database.batch([history, current])
+    else await current
 
     for (const group of chunkRows(statuses, 50)) {
       const statements = group.map((status) =>

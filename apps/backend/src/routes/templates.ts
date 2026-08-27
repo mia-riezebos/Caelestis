@@ -172,11 +172,12 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     }
     const body: unknown = await c.req.json().catch(() => null)
     if (typeof body !== 'object' || body === null) return c.json({ error: 'invalid body' }, 400)
-    const { name, nodeId, published, timelapseFrozen } = body as {
+    const { name, nodeId, published, timelapseFrozen, finished } = body as {
       name?: unknown
       nodeId?: unknown
       published?: unknown
       timelapseFrozen?: unknown
+      finished?: unknown
     }
 
     if (name !== undefined && (typeof name !== 'string' || !isValidName(name))) {
@@ -195,14 +196,24 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (timelapseFrozen !== undefined && typeof timelapseFrozen !== 'boolean') {
       return c.json({ error: 'timelapseFrozen must be a boolean' }, 400)
     }
+    if (finished !== undefined && typeof finished !== 'boolean') {
+      return c.json({ error: 'finished must be a boolean' }, 400)
+    }
+    if (finished === true && timelapseFrozen === false) {
+      return c.json({ error: 'a finished template must keep its timelapse frozen' }, 400)
+    }
     if (
       name === undefined &&
       nodeId === undefined &&
       published === undefined &&
-      timelapseFrozen === undefined
+      timelapseFrozen === undefined &&
+      finished === undefined
     ) {
       return c.json(
-        { error: 'patch must set at least one of name, nodeId, published, timelapseFrozen' },
+        {
+          error:
+            'patch must set at least one of name, nodeId, published, timelapseFrozen, finished',
+        },
         400,
       )
     }
@@ -212,7 +223,14 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       ...(name === undefined ? {} : { name: name as string }),
       ...(nodeId === undefined ? {} : { nodeId: nodeId as string | null }),
       ...(published === undefined ? {} : { publishedAt: published ? now : null }),
-      ...(timelapseFrozen === undefined ? {} : { timelapseFrozenAt: timelapseFrozen ? now : null }),
+      ...(finished === true
+        ? { finishedAt: now, timelapseFrozenAt: now }
+        : {
+            ...(finished === false ? { finishedAt: null } : {}),
+            ...(timelapseFrozen === undefined
+              ? {}
+              : { timelapseFrozenAt: timelapseFrozen ? now : null }),
+          }),
     }
     try {
       if (!(await ports.sql.updateTemplate(templateId, patch, now))) {
@@ -233,7 +251,12 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       ...(name === undefined ? {} : { name }),
       ...(nodeId === undefined ? {} : { nodeId }),
       ...(published === undefined ? {} : { published }),
-      ...(timelapseFrozen === undefined ? {} : { timelapseFrozen }),
+      ...(finished === undefined ? {} : { finished, finishedAt: finished ? now : null }),
+      ...(finished === true
+        ? { timelapseFrozen: true }
+        : timelapseFrozen === undefined
+          ? {}
+          : { timelapseFrozen }),
       updatedAt: now,
     })
   })

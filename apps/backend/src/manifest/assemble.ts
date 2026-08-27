@@ -72,6 +72,9 @@ export const assembleManifest = async (
         (left, right) => left.tile.localeCompare(right.tile),
       ),
       published: template.published,
+      finished: template.finished,
+      finishedAt: template.finishedAt,
+      timelapseFrozen: template.timelapseFrozen,
       createdAt: template.createdAt,
       updatedAt: template.updatedAt,
     }))

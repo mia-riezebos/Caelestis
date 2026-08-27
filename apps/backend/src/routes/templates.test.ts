@@ -324,6 +324,49 @@ describe('editing a template', () => {
     expect((await patch(app, template.templateId, { timelapseFrozen: 'yes' })).status).toBe(400)
   })
 
+  it('finishes with a frozen archive and reopens without thawing it', async () => {
+    const { app, sql } = await harness()
+    const template = await create(app)
+
+    const finished = await patch(app, template.templateId, { finished: true })
+    expect(finished.status).toBe(200)
+    await expect(finished.json()).resolves.toEqual({
+      id: template.templateId,
+      finished: true,
+      finishedAt: expect.any(Number),
+      timelapseFrozen: true,
+      updatedAt: expect.any(Number),
+    })
+    await expect(sql.readTemplate(template.templateId)).resolves.toMatchObject({
+      finished: true,
+      finishedAt: expect.any(Number),
+      timelapseFrozen: true,
+    })
+
+    const reopened = await patch(app, template.templateId, { finished: false })
+    expect(reopened.status).toBe(200)
+    await expect(sql.readTemplate(template.templateId)).resolves.toMatchObject({
+      finished: false,
+      finishedAt: null,
+      timelapseFrozen: true,
+    })
+  })
+
+  it('refuses a finished template with a thawed timelapse', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+
+    expect(
+      (
+        await patch(app, template.templateId, {
+          finished: true,
+          timelapseFrozen: false,
+        })
+      ).status,
+    ).toBe(400)
+    expect((await patch(app, template.templateId, { finished: 'yes' })).status).toBe(400)
+  })
+
   it('replaces the pixels with a new version, keeping the template', async () => {
     const { app } = await harness()
     const template = await create(app)

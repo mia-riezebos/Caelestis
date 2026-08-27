@@ -97,6 +97,7 @@ export class MemorySqlStore implements SqlStore {
       currentVersionId: string
       publishedAt: Millis | null
       timelapseFrozenAt: Millis | null
+      finishedAt: Millis | null
       updatedAt: Millis
     }
   >()
@@ -416,6 +417,7 @@ export class MemorySqlStore implements SqlStore {
       currentVersionId: version.versionId,
       publishedAt: null,
       timelapseFrozenAt: null,
+      finishedAt: null,
       updatedAt: version.createdAt,
     }
     this.templateVersions.set(version.versionId, {
@@ -458,6 +460,8 @@ export class MemorySqlStore implements SqlStore {
       currentVersionId: template.currentVersionId,
       published: template.publishedAt !== null,
       timelapseFrozen: template.timelapseFrozenAt !== null,
+      finished: template.finishedAt !== null,
+      finishedAt: template.finishedAt,
       createdAt: template.createdAt,
       updatedAt: template.updatedAt,
     }
@@ -496,6 +500,7 @@ export class MemorySqlStore implements SqlStore {
         patch.timelapseFrozenAt === undefined
           ? template.timelapseFrozenAt
           : patch.timelapseFrozenAt,
+      finishedAt: patch.finishedAt === undefined ? template.finishedAt : patch.finishedAt,
       updatedAt,
     })
     return true
@@ -546,6 +551,9 @@ export class MemorySqlStore implements SqlStore {
         bbox: { ...version.bbox },
         totalPixels: version.totalPixels,
         published: template.publishedAt !== null,
+        finished: template.finishedAt !== null,
+        finishedAt: template.finishedAt,
+        timelapseFrozen: template.timelapseFrozenAt !== null,
         createdAt: template.createdAt,
         updatedAt: template.updatedAt,
       })
@@ -601,6 +609,7 @@ export class MemorySqlStore implements SqlStore {
         tileY: tile.y,
         hash: chunk.hash,
         bbox: { ...version.bbox },
+        finished: template.finishedAt !== null,
       })
     }
     return targets.sort((left, right) => left.templateId.localeCompare(right.templateId))
@@ -620,6 +629,7 @@ export class MemorySqlStore implements SqlStore {
   async recordTileObservation(
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
+    recordHistory = true,
   ): Promise<void> {
     // The raw tile-history tier, mirroring D1's insert-or-ignore: resolution 0, bucketed at the
     // report time itself. Without this row the memory oracle had no timelapse at all, so a
@@ -632,8 +642,10 @@ export class MemorySqlStore implements SqlStore {
       hash: observation.hash,
       reportedByUserId: observation.reportedByUserId,
     }
-    const historyKey = tileHistoryRowKey(row)
-    if (!this.tileHistory.has(historyKey)) this.tileHistory.set(historyKey, row)
+    if (recordHistory) {
+      const historyKey = tileHistoryRowKey(row)
+      if (!this.tileHistory.has(historyKey)) this.tileHistory.set(historyKey, row)
+    }
     const key = `${observation.season}\u0000${tileKey(observation.tile)}`
     const held = this.canvasTiles.get(key)
     if (held === undefined || held.observedAt <= observation.observedAt) {

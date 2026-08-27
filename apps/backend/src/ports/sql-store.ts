@@ -410,6 +410,8 @@ export interface TemplateRecord {
   readonly published: boolean
   /** Frozen timelapses are exempt from decay through their freeze instant. */
   readonly timelapseFrozen: boolean
+  readonly finished: boolean
+  readonly finishedAt: Millis | null
   readonly createdAt: Millis
   readonly updatedAt: Millis
 }
@@ -444,6 +446,9 @@ export interface ManifestTemplateRecord {
   readonly bbox: PixelBounds
   readonly totalPixels: number
   readonly published: boolean
+  readonly finished: boolean
+  readonly finishedAt: Millis | null
+  readonly timelapseFrozen: boolean
   readonly createdAt: Millis
   readonly updatedAt: Millis
 }
@@ -459,6 +464,7 @@ export interface ManifestTileRecord {
 /** One current template chunk affected by a canvas tile observation or paint event. */
 export interface TelemetryTarget extends ManifestTileRecord {
   readonly bbox: PixelBounds
+  readonly finished: boolean
 }
 
 export interface TileObservation {
@@ -580,6 +586,8 @@ export interface TemplatePatch {
   readonly publishedAt?: Millis | null
   /** Null thaws; absent leaves the freeze alone. */
   readonly timelapseFrozenAt?: Millis | null
+  /** Null reopens; a timestamp finishes; absent leaves the lifecycle alone. */
+  readonly finishedAt?: Millis | null
 }
 
 /**
@@ -730,6 +738,7 @@ export interface SqlStore {
   recordTileObservation(
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
+    recordHistory?: boolean,
   ): Promise<void>
 
   readTemplateStatuses(

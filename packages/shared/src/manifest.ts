@@ -51,6 +51,12 @@ export interface Template {
   readonly totalPixels: number
   readonly chunks: readonly Chunk[]
   readonly published: boolean
+  /** Finished templates keep live status but stop accumulating history and contribution data. */
+  readonly finished: boolean
+  /** The instant the historical timeline stops, or null while the template is live. */
+  readonly finishedAt: Millis | null
+  /** Whether decay must preserve the archived portion of this timelapse. */
+  readonly timelapseFrozen: boolean
   readonly createdAt: Millis
   /**
    * When anything about this template last changed — pixels, name, parent, or published state.

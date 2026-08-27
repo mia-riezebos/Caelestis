@@ -29,6 +29,13 @@
       "when": 1787848179652,
       "tag": "0003_timelapse-freeze",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787848408612,
+      "tag": "0004_finished-templates",
+      "breakpoints": true
     }
   ]
 }
