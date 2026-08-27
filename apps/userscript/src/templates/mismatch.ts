@@ -555,7 +555,8 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
       stale.delete(cacheKey)
       continue
     }
-    mismatchesIn(template, tile)
+    if (retainedForOutlines.has(cacheKey)) unpaintedIn(template, tile)
+    else mismatchesIn(template, tile)
     count('mismatch:rescanned while idle')
   }
   for (const cacheKey of [...staleProgress]) {
@@ -1273,6 +1274,7 @@ const mismatchAnswer = (
   const pixels = tilePixels(tile)
   if (pixels === null) {
     // Never decoded while we were watching. Go and get it rather than wait for wplace to.
+    stale.add(cacheKey)
     ensureTilePixels(tile)
     return null
   }
@@ -1350,9 +1352,14 @@ export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatc
 export const disagreementsIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null =>
   mismatchAnswer(template, tile, 'all')
 
+/** Keep a visible outline answer eligible for reuse without reading or rescanning it. */
+export const retainUnpainted = (template: PlacedTemplate, tile: TileCoord): void => {
+  requestedForOutlines?.add(`${template.id}|${tile.x}/${tile.y}`)
+}
+
 /** Every unpainted pixel, independently of whether mismatch markers include that class. */
 export const unpaintedIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null => {
-  requestedForOutlines?.add(`${template.id}|${tile.x}/${tile.y}`)
+  retainUnpainted(template, tile)
   return mismatchAnswer(template, tile, 'unpainted')
 }
 

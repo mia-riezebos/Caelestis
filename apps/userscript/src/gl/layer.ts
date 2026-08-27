@@ -22,6 +22,7 @@ import {
   beginUnpaintedFrame,
   endUnpaintedFrame,
   mismatchRevision,
+  retainUnpainted,
   unpaintedIn,
 } from '../templates/mismatch.js'
 import { type MismatchMarks, markLocalX, markLocalY } from '../templates/mismatch-marks.js'
@@ -69,10 +70,14 @@ const DRAFT_LAYER_ID = /^paint-preview-/
 
 interface IndexGpuTile {
   readonly texture: WebGLTexture
+  /** Top-left and size of the non-halo source cells in template coordinates. */
   readonly x: number
   readonly y: number
   readonly width: number
   readonly height: number
+  readonly textureWidth: number
+  readonly textureHeight: number
+  readonly inset: number
   /** Mutable upload copy. Bit 7 marks cells whose required pixel is still unpainted. */
   readonly pixels: Uint8Array
 }
@@ -187,7 +192,7 @@ const gpu = new Map<string, TemplateGpu>()
 let renderGeneration = 0
 
 const gpuBytes = (entry: TemplateGpu): number =>
-  PALETTE_SIZE * 4 + entry.indices.reduce((total, tile) => total + tile.width * tile.height, 0)
+  PALETTE_SIZE * 4 + entry.indices.reduce((total, tile) => total + tile.pixels.byteLength, 0)
 
 export const overlayGpuMemoryBytes = (): number => {
   let bytes = quad === null ? 0 : corners.byteLength
@@ -333,23 +338,44 @@ const uploadIndexTiles = (
   indices: Uint8Array,
 ): readonly IndexGpuTile[] | null => {
   const limit = textureLimit(width, height)
+  // A one-cell halo lets the shader inspect the real neighbour across a texture split. WebGL 2
+  // guarantees a far larger limit, but tiny test shims keep the old unpadded fallback valid.
+  const inset = (width > limit || height > limit) && limit >= 3 ? 1 : 0
+  const contentLimit = Math.max(1, limit - inset * 2)
   const uploaded: IndexGpuTile[] = []
-  for (let y = 0; y < height; y += limit) {
-    const tileHeight = Math.min(limit, height - y)
-    for (let x = 0; x < width; x += limit) {
-      const tileWidth = Math.min(limit, width - x)
+  for (let y = 0; y < height; y += contentLimit) {
+    const tileHeight = Math.min(contentLimit, height - y)
+    for (let x = 0; x < width; x += contentLimit) {
+      const tileWidth = Math.min(contentLimit, width - x)
       const texture = gl.createTexture()
       if (texture === null) {
         for (const tile of uploaded) gl.deleteTexture(tile.texture)
         return null
       }
-      const pixels = new Uint8Array(tileWidth * tileHeight)
-      for (let row = 0; row < tileHeight; row++) {
-        const start = (y + row) * width + x
-        pixels.set(indices.subarray(start, start + tileWidth), row * tileWidth)
+      const textureWidth = tileWidth + inset * 2
+      const textureHeight = tileHeight + inset * 2
+      const pixels = new Uint8Array(textureWidth * textureHeight).fill(TRANSPARENT_INDEX)
+      const sourceLeft = Math.max(0, x - inset)
+      const sourceRight = Math.min(width, x + tileWidth + inset)
+      for (let row = -inset; row < tileHeight + inset; row++) {
+        const sourceY = y + row
+        if (sourceY < 0 || sourceY >= height) continue
+        const start = sourceY * width + sourceLeft
+        const destination = (row + inset) * textureWidth + sourceLeft - (x - inset)
+        pixels.set(indices.subarray(start, start + sourceRight - sourceLeft), destination)
       }
-      uploadIndices(gl, texture, tileWidth, tileHeight, pixels)
-      uploaded.push({ texture, x, y, width: tileWidth, height: tileHeight, pixels })
+      uploadIndices(gl, texture, textureWidth, textureHeight, pixels)
+      uploaded.push({
+        texture,
+        x,
+        y,
+        width: tileWidth,
+        height: tileHeight,
+        textureWidth,
+        textureHeight,
+        inset,
+        pixels,
+      })
     }
   }
   return uploaded
@@ -362,11 +388,15 @@ interface DirtyRect {
   bottom: number
 }
 
-/** Locate one template cell in the device-sized index texture that owns it. */
-const indexTileAt = (entry: TemplateGpu, x: number, y: number): IndexGpuTile | null =>
-  entry.indices.find(
-    (tile) => x >= tile.x && x < tile.x + tile.width && y >= tile.y && y < tile.y + tile.height,
-  ) ?? null
+/** Locate every texture that contains one template cell, including duplicate halo copies. */
+const indexTilesAt = (entry: TemplateGpu, x: number, y: number): readonly IndexGpuTile[] =>
+  entry.indices.filter(
+    (tile) =>
+      x >= tile.x - tile.inset &&
+      x < tile.x + tile.width + tile.inset &&
+      y >= tile.y - tile.inset &&
+      y < tile.y + tile.height + tile.inset,
+  )
 
 /** Change one spare-bit flag and grow the one upload rectangle for its texture. */
 const setUnpaintedBit = (
@@ -380,25 +410,25 @@ const setUnpaintedBit = (
   const x = sourceXAt(placement, hostTile.x * TILE_SIZE + markLocalX(mark))
   const y = hostTile.y * TILE_SIZE + markLocalY(mark) - placement.originY
   if (x === null) return
-  const tile = indexTileAt(entry, x, y)
-  if (tile === null) return
-  const localX = x - tile.x
-  const localY = y - tile.y
-  const at = localY * tile.width + localX
-  const before = tile.pixels[at]
-  if (before === undefined) return
-  const after = enabled ? before | UNPAINTED_BIT : before & ~UNPAINTED_BIT
-  if (after === before) return
-  tile.pixels[at] = after
-  const held = dirty.get(tile)
-  if (held === undefined) {
-    dirty.set(tile, { left: localX, top: localY, right: localX + 1, bottom: localY + 1 })
-    return
+  for (const tile of indexTilesAt(entry, x, y)) {
+    const localX = x - tile.x + tile.inset
+    const localY = y - tile.y + tile.inset
+    const at = localY * tile.textureWidth + localX
+    const before = tile.pixels[at]
+    if (before === undefined) continue
+    const after = enabled ? before | UNPAINTED_BIT : before & ~UNPAINTED_BIT
+    if (after === before) continue
+    tile.pixels[at] = after
+    const held = dirty.get(tile)
+    if (held === undefined) {
+      dirty.set(tile, { left: localX, top: localY, right: localX + 1, bottom: localY + 1 })
+      continue
+    }
+    held.left = Math.min(held.left, localX)
+    held.top = Math.min(held.top, localY)
+    held.right = Math.max(held.right, localX + 1)
+    held.bottom = Math.max(held.bottom, localY + 1)
   }
-  held.left = Math.min(held.left, localX)
-  held.top = Math.min(held.top, localY)
-  held.right = Math.max(held.right, localX + 1)
-  held.bottom = Math.max(held.bottom, localY + 1)
 }
 
 /** Upload only the rectangle whose unpainted flags changed, never the whole template again. */
@@ -412,7 +442,7 @@ const uploadOutlineChanges = (
     const height = rect.bottom - rect.top
     const pixels = new Uint8Array(width * height)
     for (let row = 0; row < height; row++) {
-      const start = (rect.top + row) * tile.width + rect.left
+      const start = (rect.top + row) * tile.textureWidth + rect.left
       pixels.set(tile.pixels.subarray(start, start + width), row * width)
     }
     gl.bindTexture(gl.TEXTURE_2D, tile.texture)
@@ -455,15 +485,23 @@ const syncOutlineState = (
   const placementKey = `${template.originX}/${template.originY}/${template.wrapX === true ? 1 : 0}`
   const outlineKey = `${appearanceKey}|${placementKey}|${relevant.map((tile) => `${tile.tile.x}/${tile.tile.y}`).join(' ')}`
   const revision = mismatchRevision()
-  if (entry.outlineRevision === revision && entry.outlineKey === outlineKey) return
+  if (entry.outlineRevision === revision && entry.outlineKey === outlineKey) {
+    for (const tile of relevant) retainUnpainted(template, tile.tile)
+    return
+  }
 
   const requested = new Set<string>()
+  let complete = true
   for (const tile of relevant) {
     const key = `${tile.tile.x}/${tile.tile.y}`
     requested.add(key)
     const marks = unpaintedIn(template, tile.tile)
     const held = entry.outlineAnswers.get(key)
-    if (marks === null || held?.marks === marks) continue
+    if (marks === null) {
+      complete = false
+      continue
+    }
+    if (held?.marks === marks) continue
     // One host tile per upload rectangle. Combining a tile leaving on the left with one entering on
     // the right can otherwise turn two small changes into a template-wide upload during a pan.
     const dirty = new Map<IndexGpuTile, DirtyRect>()
@@ -490,8 +528,10 @@ const syncOutlineState = (
     entry.outlineAnswers.delete(key)
     uploadOutlineChanges(gl, dirty)
   }
-  entry.outlineRevision = mismatchRevision()
-  entry.outlineKey = outlineKey
+  if (complete) {
+    entry.outlineRevision = revision
+    entry.outlineKey = outlineKey
+  }
 }
 
 const release = (gl: WebGL2RenderingContext, id: string): void => {
@@ -813,7 +853,7 @@ export const overlayLayer = {
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, source.texture)
           gl.uniform1i(uniform(gl, 'u_indices'), 0)
-          gl.uniform2f(uniform(gl, 'u_size'), source.width, source.height)
+          gl.uniform2f(uniform(gl, 'u_size'), source.textureWidth, source.textureHeight)
           const top = templateTop + source.y
           const bottom = top + source.height
           for (const span of spans) {
@@ -842,10 +882,12 @@ export const overlayLayer = {
               const screenTop = tile.y + (cutTop - tileTop) * scaleY
               const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
 
-              const u0 = (sourceStart - source.x + cutLeft - left) / source.width
-              const u1 = (sourceStart - source.x + cutRight - left) / source.width
-              const v0 = (cutTop - top) / source.height
-              const v1 = (cutBottom - top) / source.height
+              const u0 =
+                (source.inset + sourceStart - source.x + cutLeft - left) / source.textureWidth
+              const u1 =
+                (source.inset + sourceStart - source.x + cutRight - left) / source.textureWidth
+              const v0 = (source.inset + cutTop - top) / source.textureHeight
+              const v1 = (source.inset + cutBottom - top) / source.textureHeight
 
               // Strip order: top-left, top-right, bottom-left, bottom-right.
               corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)

@@ -50,7 +50,7 @@ in vec2 v_uv;
 uniform usampler2D u_indices;
 /** 64x1 RGBA. Alpha 0 means this colour is filtered out. */
 uniform sampler2D u_palette;
-/** Template size in template pixels, so v_uv can be turned into a cell. */
+/** Current index-texture size, including a neighbour halo when the template was split. */
 uniform vec2 u_size;
 uniform float u_opacity;
 /** Wplace's active basemap theme. Low-contrast pixels receive the opposite-colour outline. */

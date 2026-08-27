@@ -206,6 +206,30 @@ describe('visible mismatch answer retention', () => {
     )
   })
 
+  it('resumes an unavailable outline scan when captured tile pixels arrive', async () => {
+    const selected = template(206)
+    harness.templates = [selected]
+    harness.pixels[0] = 255
+    harness.pixelsAvailable = false
+    const { beginUnpaintedFrame, endUnpaintedFrame, unpaintedIn } = await import('./mismatch.js')
+
+    beginUnpaintedFrame()
+    expect(unpaintedIn(selected, { x: 0, y: 0 })).toBeNull()
+    endUnpaintedFrame()
+
+    harness.pixelsAvailable = true
+    const available = harness.onTilePixelsAvailable.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }) => void)
+      | undefined
+    available?.({ x: 0, y: 0 })
+    expect(harness.idleCallbacks).toHaveLength(1)
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 50 })
+
+    beginUnpaintedFrame()
+    expect(unpaintedIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endUnpaintedFrame()
+  })
+
   it('retries a rejected progress-only worker scan while idle', async () => {
     harness.markersEnabled = false
     harness.workerAvailable = true

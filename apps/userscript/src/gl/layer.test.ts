@@ -12,8 +12,9 @@ const harness = vi.hoisted(() => ({
   darkTheme: false,
   contrastOutline: true,
   contrastOutlineSize: 0.85,
-  unpainted: new Uint32Array(0),
-  unpaintedIn: vi.fn<() => Uint32Array>(),
+  unpainted: new Uint32Array(0) as Uint32Array | null,
+  unpaintedIn: vi.fn<() => Uint32Array | null>(),
+  retainUnpainted: vi.fn(),
   mismatchRevision: 0,
   fade: { value: 0, done: false },
 }))
@@ -52,6 +53,7 @@ vi.mock('../templates/mismatch.js', () => ({
   beginUnpaintedFrame: vi.fn(),
   endUnpaintedFrame: vi.fn(),
   mismatchRevision: () => harness.mismatchRevision,
+  retainUnpainted: harness.retainUnpainted,
   unpaintedIn: harness.unpaintedIn,
 }))
 vi.mock('../tile-transform.js', () => ({
@@ -164,6 +166,7 @@ beforeEach(() => {
   harness.contrastOutlineSize = 0.85
   harness.unpainted = new Uint32Array(0)
   harness.unpaintedIn.mockImplementation(() => harness.unpainted)
+  harness.retainUnpainted.mockClear()
   harness.mismatchRevision = 0
 })
 
@@ -229,6 +232,50 @@ describe('overlay layer', () => {
     expect(context.drawArrays).toHaveBeenCalledTimes(2)
   })
 
+  it('uploads one-pixel neighbour halos across device texture splits', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.indices = new Uint8Array([0, 1, 2, 3, 4])
+    harness.width = 5
+    const context = gl()
+    vi.mocked(context.getParameter).mockImplementation((parameter) =>
+      parameter === context.MAX_TEXTURE_SIZE ? 4 : null,
+    )
+    overlayLayer.onAdd(null, context)
+
+    overlayLayer.draw(context, null)
+
+    const uploads = vi
+      .mocked(context.texImage2D)
+      .mock.calls.filter((call) => call[2] === context.R8UI)
+    expect(uploads).toHaveLength(3)
+    expect(uploads[0]?.[8]).toEqual(new Uint8Array([63, 63, 63, 63, 63, 0, 1, 2, 63, 63, 63, 63]))
+    expect(uploads[1]?.[8]).toEqual(new Uint8Array([63, 63, 63, 63, 1, 2, 3, 4, 63, 63, 63, 63]))
+  })
+
+  it('updates duplicate halo cells when an outline bit changes at a texture split', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.indices = new Uint8Array([0, 0, 0, 0, 0])
+    harness.width = 5
+    harness.unpainted = new Uint32Array([1])
+    const context = gl()
+    vi.mocked(context.getParameter).mockImplementation((parameter) =>
+      parameter === context.MAX_TEXTURE_SIZE ? 4 : null,
+    )
+    overlayLayer.onAdd(null, context)
+
+    overlayLayer.draw(context, null)
+
+    expect(context.texSubImage2D).toHaveBeenCalledTimes(2)
+    expect(
+      vi
+        .mocked(context.texSubImage2D)
+        .mock.calls.map((call) => call[8])
+        .every((pixels) => pixels instanceof Uint8Array && pixels.includes(0x80)),
+    ).toBe(true)
+  })
+
   it('does not upload or draw a template outside the current tile frame', async () => {
     const { overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }
@@ -263,9 +310,11 @@ describe('overlay layer', () => {
     overlayLayer.onAdd(null, context)
     overlayLayer.draw(context, null)
     harness.unpaintedIn.mockClear()
+    harness.retainUnpainted.mockClear()
 
     overlayLayer.draw(context, null)
     expect(harness.unpaintedIn).not.toHaveBeenCalled()
+    expect(harness.retainUnpainted).toHaveBeenCalledOnce()
 
     harness.mismatchRevision++
     overlayLayer.draw(context, null)
@@ -335,6 +384,29 @@ describe('overlay layer', () => {
     harness.unpainted = new Uint32Array(0)
     harness.unpaintedIn.mockClear()
     vi.mocked(context.texSubImage2D).mockClear()
+    overlayLayer.draw(context, null)
+
+    expect(harness.unpaintedIn).toHaveBeenCalledOnce()
+    expect(vi.mocked(context.texSubImage2D).mock.calls.at(-1)?.at(-1)).toEqual(new Uint8Array([0]))
+  })
+
+  it('retries moved outline state that was unavailable on the first synchronization', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.unpainted = new Uint32Array([0])
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+
+    harness.originX = 1
+    harness.unpainted = null
+    harness.unpaintedIn.mockClear()
+    vi.mocked(context.texSubImage2D).mockClear()
+    overlayLayer.draw(context, null)
+    expect(harness.unpaintedIn).toHaveBeenCalledOnce()
+
+    harness.unpainted = new Uint32Array(0)
+    harness.unpaintedIn.mockClear()
     overlayLayer.draw(context, null)
 
     expect(harness.unpaintedIn).toHaveBeenCalledOnce()
