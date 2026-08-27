@@ -74,7 +74,7 @@ beforeEach(() => {
 })
 
 describe('Wplace paint palette progress', () => {
-  it('renders an aggregate counter and middle-clicks blank work before mismatches', async () => {
+  it('renders an aggregate counter and middle-clicks only blank work', async () => {
     const swatch = document.createElement('button')
     swatch.id = 'color-1'
     swatch.setAttribute('aria-label', 'Black')
@@ -106,19 +106,12 @@ describe('Wplace paint palette progress', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('80%')
+    harness.nearestColourTarget.mockClear()
+    harness.navigateTo.mockClear()
     swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(
-      0,
-      'mismatched',
-      expect.any(Object),
-    )
-    expect(harness.navigateTo).toHaveBeenLastCalledWith({
-      x: 34.5,
-      y: 78.5,
-      width: 1,
-      height: 1,
-    })
+    expect(harness.nearestColourTarget).not.toHaveBeenCalled()
+    expect(harness.navigateTo).not.toHaveBeenCalled()
 
     swatch.remove()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))

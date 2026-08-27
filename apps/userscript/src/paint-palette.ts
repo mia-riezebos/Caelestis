@@ -5,7 +5,6 @@ import { type ConnectedServer, getState, onStateChange } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
 import { displayTemplates, isTemplateVisible, onLocalChange } from './templates/local-store.js'
 import {
-  type ColourTargetKind,
   colourProgressFor,
   nearestColourTarget,
   onMismatchesChanged,
@@ -66,15 +65,13 @@ const PALETTE_SWATCH = '[id^="color-"]'
 
 const goToColour = async (index: number): Promise<void> => {
   const progress = paintPaletteProgress().find((entry) => entry.index === index)
-  if (progress === undefined) return
-  const kind: ColourTargetKind = progress.unpainted > 0 ? 'unpainted' : 'mismatched'
-  if (kind === 'mismatched' && progress.mismatched === 0) return
+  if (progress === undefined || progress.unpainted === 0) return
   const map = getMap()
   if (map === null) return
   const reference = latLngToCanvasPixel(map.getCenter())
-  const target = await nearestColourTarget(index, kind, reference)
+  const target = await nearestColourTarget(index, 'unpainted', reference)
   if (target === null) {
-    warn('install', `no loaded ${kind} pixel for palette colour ${index}`)
+    warn('install', `no loaded unpainted pixel for palette colour ${index}`)
     return
   }
   navigateTo({ x: target.x + 0.5, y: target.y + 0.5, width: 1, height: 1 })
@@ -120,7 +117,7 @@ const render = (): void => {
     originalLabels.set(element, label)
     element.setAttribute(
       'aria-label',
-      `${label}. ${progressLabel(entry)} Middle-click to go to the nearest next pixel.`,
+      `${label}. ${progressLabel(entry)} Middle-click to go to the nearest unpainted pixel.`,
     )
     const badge = existing ?? document.createElement('span')
     badge.className = 'caelestis-palette-progress'

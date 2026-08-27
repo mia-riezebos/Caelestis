@@ -5,6 +5,7 @@ const harness = vi.hoisted(() => {
   pixels[1] = 7
   return {
     cached: true,
+    draft: null as Uint8Array | null,
     pixels,
     template: {
       id: 'template',
@@ -27,7 +28,7 @@ const harness = vi.hoisted(() => {
 
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
 vi.mock('../tile-transform.js', () => ({
-  draftPixels: () => null,
+  draftPixels: () => harness.draft,
   ensureTilePixels: vi.fn(),
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('./mismatch-worker.js', () => ({
 
 beforeEach(() => {
   harness.cached = true
+  harness.draft = null
   harness.pixels.fill(255)
   harness.pixels[1] = 7
 })
@@ -79,6 +81,20 @@ describe('per-colour navigation', () => {
     await expect(nearestColourTarget(4, 'unpainted', { x: 10, y: 0 })).resolves.toEqual({
       templateId: 'template',
       x: 0,
+      y: 0,
+      kind: 'unpainted',
+    })
+  })
+
+  it('does not navigate to a blank canvas pixel already covered by the correct draft', async () => {
+    harness.pixels.fill(255)
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.draft[0] = 4
+    const { nearestLoadedColourTarget } = await import('./mismatch.js')
+
+    expect(nearestLoadedColourTarget(4, 'unpainted', { x: 0, y: 0 })).toEqual({
+      templateId: 'template',
+      x: 1,
       y: 0,
       kind: 'unpainted',
     })
