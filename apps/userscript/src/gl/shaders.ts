@@ -91,12 +91,10 @@ bool needsContrastOutline(vec3 colour) {
     : brightness >= ${LIGHT_THEME_LUMA_MIN.toFixed(2)};
 }
 
-/** Whether the neighbouring full-size cell continues the same visible colour. */
-bool sameVisibleCell(ivec2 cell, uint index) {
+/** Whether the neighbouring full-size cell continues the same colour. */
+bool sameCellColour(ivec2 cell, uint index) {
   if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) return false;
-  uint neighbour = texelFetch(u_indices, cell, 0).r;
-  if (neighbour != index) return false;
-  return texelFetch(u_palette, ivec2(int(neighbour), 0), 0).a > 0.0;
+  return texelFetch(u_indices, cell, 0).r == index;
 }
 
 /** One cell's colour, with w = 1 when it should be drawn at all and 0 when it is filtered or blank. */
@@ -217,8 +215,11 @@ void main() {
         float yEdge = 1.0 - smoothstep(width - antialias, width + antialias, fromY);
         ivec2 xNeighbour = cell + ivec2(local.x < 0.0 ? -1 : 1, 0);
         ivec2 yNeighbour = cell + ivec2(0, local.y < 0.0 ? -1 : 1);
-        if (sameVisibleCell(xNeighbour, index)) xEdge = 0.0;
-        if (sameVisibleCell(yNeighbour, index)) yEdge = 0.0;
+        // Interior fragments do no neighbour reads. Only the thin candidate ring checks whether a
+        // same-colour cell continues through that edge, which keeps solid regions from becoming a
+        // grid without adding two texture fetches to every full-pixel fragment.
+        if (xEdge > 0.0 && sameCellColour(xNeighbour, index)) xEdge = 0.0;
+        if (yEdge > 0.0 && sameCellColour(yNeighbour, index)) yEdge = 0.0;
         outline = max(xEdge, yEdge);
       } else {
         outline = coverage * smoothstep(-width - antialias, -width + antialias, edgeDistance);
