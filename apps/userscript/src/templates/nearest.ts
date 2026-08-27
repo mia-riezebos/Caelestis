@@ -1,6 +1,12 @@
 import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { viewportCentre } from '../main.js'
-import { displayTemplates, isTemplateVisible, type PlacedTemplate } from './local-store.js'
+import { claimedHiddenFor } from './colour-filter.js'
+import {
+  appearanceOf,
+  displayTemplates,
+  isTemplateVisible,
+  type PlacedTemplate,
+} from './local-store.js'
 import { horizontalCentre, sourceXAt, wrappedDeltaX } from './placement.js'
 
 /**
@@ -45,12 +51,15 @@ export const focusedTemplate = (options: FocusedTemplateOptions = {}): PlacedTem
     const sourceY = centre.y - template.originY
     const cellX = sourceX === null ? -1 : Math.floor(sourceX)
     const cellY = Math.floor(sourceY)
-    const containsOpaquePixel =
-      sourceX !== null &&
-      sourceY >= 0 &&
-      sourceY < template.height &&
-      template.indices[cellY * template.width + cellX] !== TRANSPARENT_INDEX
-    if (containsOpaquePixel) {
+    const centreIndex =
+      sourceX !== null && sourceY >= 0 && sourceY < template.height
+        ? template.indices[cellY * template.width + cellX]
+        : undefined
+    const containsClaimedPixel =
+      centreIndex !== undefined &&
+      centreIndex !== TRANSPARENT_INDEX &&
+      !claimedHiddenFor(appearanceOf(template)).includes(centreIndex)
+    if (containsClaimedPixel) {
       if (visible) containingVisible = template
       else if (!template.visible) containingHidden = template
     }

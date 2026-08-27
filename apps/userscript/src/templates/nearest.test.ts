@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
   centre: { x: 10, y: 10 } as { x: number; y: number } | null,
+  hiddenColours: {} as Record<string, readonly number[]>,
   templates: [] as Array<{
     id: string
     originX: number
@@ -15,7 +16,12 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('../main.js', () => ({ viewportCentre: () => harness.centre }))
+vi.mock('./colour-filter.js', () => ({
+  claimedHiddenFor: (appearance: { templateId: string }) =>
+    harness.hiddenColours[appearance.templateId] ?? [],
+}))
 vi.mock('./local-store.js', () => ({
+  appearanceOf: (candidate: { id: string }) => ({ templateId: candidate.id }),
   displayTemplates: () => harness.templates,
   isTemplateVisible: vi.fn((template: { visible: boolean }) => template.visible),
 }))
@@ -32,6 +38,7 @@ const template = (id: string, originX: number, originY: number, width: number, h
 
 beforeEach(() => {
   harness.centre = { x: 10, y: 10 }
+  harness.hiddenColours = {}
   harness.templates = []
   return import('./local-store.js').then(({ isTemplateVisible }) => {
     vi.mocked(isTemplateVisible).mockImplementation((candidate) => candidate.visible)
@@ -60,6 +67,16 @@ describe('template focus at the viewport centre', () => {
     const underneath = template('underneath', 0, 0, 20, 20)
     const onTop = template('transparent-on-top', 5, 5, 20, 20)
     onTop.indices[5 * onTop.width + 5] = TRANSPARENT_INDEX
+    harness.templates = [underneath, onTop]
+    const { focusedTemplate } = await import('./nearest.js')
+
+    expect(focusedTemplate()?.id).toBe('underneath')
+  })
+
+  it('lets a lower template show through a manually hidden top-template colour', async () => {
+    const underneath = template('underneath', 0, 0, 20, 20)
+    const onTop = template('hidden-colour-on-top', 5, 5, 20, 20)
+    harness.hiddenColours[onTop.id] = [0]
     harness.templates = [underneath, onTop]
     const { focusedTemplate } = await import('./nearest.js')
 
