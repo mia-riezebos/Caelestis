@@ -20,6 +20,7 @@ import {
 import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
 import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
+import { isDarkMapTheme } from './contrast-outline.js'
 import { colourFades, templateFades } from './fade.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
@@ -542,6 +543,7 @@ export const overlayLayer = {
     const moving = (getMap() as { isMoving?: () => boolean } | null)?.isMoving?.() === true
     const minifyTapCap = moving ? movingOverlayTapCap(visible.length) : 4
     gl.uniform1i(uniform(gl, 'u_maxMinifyTaps'), minifyTapCap)
+    gl.uniform1i(uniform(gl, 'u_darkTheme'), isDarkMapTheme() ? 1 : 0)
     let uploadPixelsLeft = UPLOAD_PIXELS_PER_FRAME
     let uploadedThisFrame = false
     let drawIntersections = 0

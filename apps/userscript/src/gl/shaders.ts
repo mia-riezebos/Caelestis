@@ -1,3 +1,4 @@
+import { DARK_THEME_LUMA_MAX, LIGHT_THEME_LUMA_MIN } from './contrast-outline.js'
 import { FULL_MINIFY_FOOTPRINT, MEDIUM_MINIFY_FOOTPRINT } from './minify-quality.js'
 
 /**
@@ -52,6 +53,8 @@ uniform sampler2D u_palette;
 /** Template size in template pixels, so v_uv can be turned into a cell. */
 uniform vec2 u_size;
 uniform float u_opacity;
+/** Wplace's active basemap theme. Low-contrast pixels receive the opposite-colour outline. */
+uniform bool u_darkTheme;
 
 /** Stamp geometry, all in cell fractions except rotation, which is radians. */
 uniform float u_stampSize;
@@ -74,6 +77,26 @@ const int MAX_MINIFY_TAPS = 4;
 float roundedBox(vec2 point, vec2 half_, float radius) {
   vec2 q = abs(point) - half_ + radius;
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
+}
+
+/** Cheap perceptual brightness, matching the CPU-side policy without linearising every fragment. */
+float luma(vec3 colour) {
+  return dot(colour, vec3(0.299, 0.587, 0.114));
+}
+
+bool needsContrastOutline(vec3 colour) {
+  float brightness = luma(colour);
+  return u_darkTheme
+    ? brightness <= ${DARK_THEME_LUMA_MAX.toFixed(2)}
+    : brightness >= ${LIGHT_THEME_LUMA_MIN.toFixed(2)};
+}
+
+/** Whether the neighbouring full-size cell continues the same visible colour. */
+bool sameVisibleCell(ivec2 cell, uint index) {
+  if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) return false;
+  uint neighbour = texelFetch(u_indices, cell, 0).r;
+  if (neighbour != index) return false;
+  return texelFetch(u_palette, ivec2(int(neighbour), 0), 0).a > 0.0;
 }
 
 /** One cell's colour, with w = 1 when it should be drawn at all and 0 when it is filtered or blank. */
@@ -142,10 +165,11 @@ void main() {
   // Nothing at all to draw: the wildcard index, or a colour whose fade has finished leaving.
   if (entry.a <= 0.0) discard;
 
+  // Position within this cell, centred, so the stamp transform is about the cell's middle.
+  vec2 local = fract(texel) - 0.5;
   float coverage = 1.0;
+  float edgeDistance = 0.0;
   if (!u_plain) {
-    // Position within this cell, centred, so the stamp transform is about the cell's middle.
-    vec2 local = fract(texel) - 0.5;
     // Undo the stamp's own transform rather than transforming the stamp: rotate the sample point
     // backwards, then remove the offset, and the box stays axis-aligned at the origin.
     float c = cos(-u_stampRotation);
@@ -171,12 +195,41 @@ void main() {
     float half_ = u_stampSize * 0.5 + outset;
     float radius = u_stampRadius * (u_stampSize * 0.5);
     float distance = roundedBox(point, vec2(half_), radius);
+    edgeDistance = roundedBox(point, vec2(u_stampSize * 0.5), radius);
     coverage = 1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance);
     if (coverage <= 0.0) discard;
   }
 
+  vec3 colour = entry.rgb;
+  if (needsContrastOutline(colour)) {
+    // At distant zoom there is no room for an outline. The minification path above already turns a
+    // whole group of source pixels into one antialiased fragment, so the treatment begins only once
+    // individual pixels have enough screen space to keep their colour visible inside the ring.
+    float pixel = max(footprint.x, footprint.y);
+    if (pixel < 0.75) {
+      float width = min(pixel * 0.85, u_stampSize * 0.2);
+      float antialias = pixel * 0.5;
+      float outline = 0.0;
+      if (u_plain) {
+        float fromX = 0.5 - abs(local.x);
+        float fromY = 0.5 - abs(local.y);
+        float xEdge = 1.0 - smoothstep(width - antialias, width + antialias, fromX);
+        float yEdge = 1.0 - smoothstep(width - antialias, width + antialias, fromY);
+        ivec2 xNeighbour = cell + ivec2(local.x < 0.0 ? -1 : 1, 0);
+        ivec2 yNeighbour = cell + ivec2(0, local.y < 0.0 ? -1 : 1);
+        if (sameVisibleCell(xNeighbour, index)) xEdge = 0.0;
+        if (sameVisibleCell(yNeighbour, index)) yEdge = 0.0;
+        outline = max(xEdge, yEdge);
+      } else {
+        outline = coverage * smoothstep(-width - antialias, -width + antialias, edgeDistance);
+      }
+      vec3 outlineColour = u_darkTheme ? vec3(1.0) : vec3(0.0);
+      colour = mix(colour, outlineColour, outline * 0.82);
+    }
+  }
+
   float alpha = coverage * u_opacity * u_fade * entry.a;
   // Premultiplied, to match the blend mode MapLibre leaves set.
-  fragColor = vec4(entry.rgb * alpha, alpha);
+  fragColor = vec4(colour * alpha, alpha);
 }
 `

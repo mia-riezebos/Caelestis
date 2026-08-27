@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
   originX: 0,
   originY: 0,
   templateCount: 1,
+  darkTheme: false,
   fade: { value: 0, done: false },
 }))
 
@@ -51,6 +52,7 @@ vi.mock('./fade.js', () => ({
     prune: vi.fn(),
   },
 }))
+vi.mock('./contrast-outline.js', () => ({ isDarkMapTheme: () => harness.darkTheme }))
 vi.mock('./markers.js', () => ({ markerLayer: { id: 'caelestis-markers' } }))
 vi.mock('./shaders.js', () => ({ FRAGMENT_SOURCE: '', VERTEX_SOURCE: '' }))
 
@@ -124,7 +126,7 @@ const gl = () =>
     blendFunc: vi.fn(),
     disable: vi.fn(),
     activeTexture: vi.fn(),
-    getUniformLocation: vi.fn(() => ({})),
+    getUniformLocation: vi.fn((_program: WebGLProgram, name: string) => name),
     uniform1i: vi.fn(),
     uniform1f: vi.fn(),
     uniform2f: vi.fn(),
@@ -143,6 +145,7 @@ beforeEach(() => {
   harness.originX = 0
   harness.originY = 0
   harness.templateCount = 1
+  harness.darkTheme = false
 })
 
 const orderedMap = (order: string[]) => {
@@ -232,6 +235,22 @@ describe('overlay layer', () => {
     overlayLayer.draw(context, null)
 
     expect(context.getParameter).not.toHaveBeenCalled()
+  })
+
+  it('updates the contrast-outline theme uniform without rebuilding the layer', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+
+    harness.darkTheme = true
+    overlayLayer.draw(context, null)
+    expect(context.uniform1i).toHaveBeenCalledWith('u_darkTheme', 1)
+
+    vi.mocked(context.uniform1i).mockClear()
+    harness.darkTheme = false
+    overlayLayer.draw(context, null)
+    expect(context.uniform1i).toHaveBeenCalledWith('u_darkTheme', 0)
   })
 
   it('spreads a burst of large visible uploads across frames', async () => {
