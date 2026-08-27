@@ -61,7 +61,7 @@ export const shortcutFor = (
       return 'fly-to-colour'
     case 'g':
       return 'peek-overlays'
-    case 'q':
+    case 'a':
       return 'cycle-colour-previous'
     case 's':
       return 'toggle-colour'

@@ -124,7 +124,7 @@ describe('keyboard shortcut actions', () => {
   })
 
   it('cycles remaining colours and delegates paint mode to Wplace', () => {
-    press('q')
+    press('a')
     press('d')
     press('b')
 
