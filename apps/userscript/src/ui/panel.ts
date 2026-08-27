@@ -4,6 +4,7 @@ import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.j
 import { isProfileEnabled, setProfileEnabled } from '../profile.js'
 import { forgetServer } from '../server-cache.js'
 import {
+  type ColourNavigationOrder,
   type ConnectedServer,
   cancelServerProbe,
   canonicalServerUrl,
@@ -908,6 +909,31 @@ const settingsView = (): HTMLElement => {
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
   const state = getState()
+
+  view.appendChild(sectionHeader('Painting', 'palette'))
+  const navigationOrder = document.createElement('select')
+  navigationOrder.className = 'select select-bordered select-sm'
+  navigationOrder.setAttribute('aria-label', 'Middle-click colour order')
+  for (const [value, label] of [
+    ['unpainted-first', 'Unpainted, then mismatched'],
+    ['mismatched-first', 'Mismatched, then unpainted'],
+  ] satisfies ReadonlyArray<readonly [ColourNavigationOrder, string]>) {
+    const option = document.createElement('option')
+    option.value = value
+    option.textContent = label
+    option.selected = value === state.colourNavigationOrder
+    navigationOrder.appendChild(option)
+  }
+  navigationOrder.addEventListener('change', () => {
+    setState({ colourNavigationOrder: navigationOrder.value as ColourNavigationOrder })
+  })
+  view.appendChild(
+    settingRow(
+      'Middle-click colour order',
+      'Visits remaining pixels only inside the template nearest the viewport centre.',
+      navigationOrder,
+    ),
+  )
 
   view.appendChild(sectionHeader('Contribution', 'share'))
   view.appendChild(

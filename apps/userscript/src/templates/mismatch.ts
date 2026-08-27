@@ -731,13 +731,17 @@ const minimumDistanceTo = (
   return dx * dx + dy * dy
 }
 
-const navigationCandidates = (reference: {
-  readonly x: number
-  readonly y: number
-}): NavigationCandidate[] => {
+const navigationCandidates = (
+  reference: {
+    readonly x: number
+    readonly y: number
+  },
+  templateId?: string,
+): NavigationCandidate[] => {
   const candidates: NavigationCandidate[] = []
   for (const template of displayTemplates()) {
     if (!isTemplateVisible(template)) continue
+    if (templateId !== undefined && template.id !== templateId) continue
     const templateTop = template.originY
     const templateBottom = template.originY + template.height
     for (const key of templateTileKeys(template)) {
@@ -842,9 +846,10 @@ export const nearestLoadedColourTarget = (
   index: number,
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
+  templateId?: string,
 ): ColourNavigationTarget | null => {
   if (!Number.isInteger(index) || index < 0 || index >= PALETTE_SIZE) return null
-  const candidates = navigationCandidates(reference)
+  const candidates = navigationCandidates(reference, templateId)
 
   let best: ColourNavigationTarget | null = null
   let bestDistance = Number.POSITIVE_INFINITY
@@ -877,9 +882,10 @@ export const nearestColourTarget = async (
   index: number,
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
+  templateId?: string,
 ): Promise<ColourNavigationTarget | null> => {
   if (!Number.isInteger(index) || index < 0 || index >= PALETTE_SIZE) return null
-  const candidates = navigationCandidates(reference)
+  const candidates = navigationCandidates(reference, templateId)
   let best: ColourNavigationTarget | null = null
   let bestDistance = Number.POSITIVE_INFINITY
   let desiredPixels = 0

@@ -3,13 +3,9 @@ import { count, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { type ConnectedServer, getState, onStateChange } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
+import { onLocalChange, type PlacedTemplate } from './templates/local-store.js'
 import {
-  displayTemplates,
-  isTemplateVisible,
-  onLocalChange,
-  type PlacedTemplate,
-} from './templates/local-store.js'
-import {
+  type ColourTargetKind,
   colourProgressFor,
   nearestColourTarget,
   onMismatchesChanged,
@@ -17,7 +13,7 @@ import {
 } from './templates/mismatch.js'
 import { navigateTo } from './templates/navigate.js'
 import { templateAtCentre } from './templates/nearest.js'
-import { freshestColourProgress, sumColourProgress } from './ui/progress.js'
+import { freshestColourProgress } from './ui/progress.js'
 import { onPaintSelectionChange } from './wplace-paint.js'
 
 /**
@@ -53,18 +49,6 @@ const progressForTemplate = (
 export const paintPaletteProgress = (): readonly TemplateColourProgress[] =>
   progressForTemplate(templateAtCentre())
 
-/** Navigation still ranges over every visible template; focusing the badge must not narrow the tool. */
-const navigationProgress = (): readonly TemplateColourProgress[] => {
-  const servers = connectedServers()
-  const groups: Array<readonly TemplateColourProgress[]> = []
-  for (const template of displayTemplates()) {
-    if (!isTemplateVisible(template)) continue
-    const progress = progressForTemplate(template, servers)
-    if (progress.length > 0) groups.push(progress)
-  }
-  return sumColourProgress(groups) ?? []
-}
-
 const paletteIndexOf = (element: Element): number | null => {
   const raw = Number(element.id.slice('color-'.length))
   const index = raw - 1
@@ -76,17 +60,22 @@ const wired = new WeakSet<HTMLElement>()
 const PALETTE_SWATCH = '[id^="color-"]'
 
 const goToColour = async (index: number): Promise<void> => {
-  const progress = navigationProgress().find((entry) => entry.index === index)
-  if (progress === undefined || progress.unpainted === 0) return
+  const template = templateAtCentre()
+  if (template === null) return
   const map = getMap()
   if (map === null) return
   const reference = latLngToCanvasPixel(map.getCenter())
-  const target = await nearestColourTarget(index, 'unpainted', reference)
-  if (target === null) {
-    warn('install', `no loaded unpainted pixel for palette colour ${index}`)
+  const order: readonly ColourTargetKind[] =
+    getState().colourNavigationOrder === 'mismatched-first'
+      ? ['mismatched', 'unpainted']
+      : ['unpainted', 'mismatched']
+  for (const kind of order) {
+    const target = await nearestColourTarget(index, kind, reference, template.id)
+    if (target === null) continue
+    navigateTo({ x: target.x + 0.5, y: target.y + 0.5, width: 1, height: 1 })
     return
   }
-  navigateTo({ x: target.x + 0.5, y: target.y + 0.5, width: 1, height: 1 })
+  warn('install', `no remaining pixel for palette colour ${index} in template ${template.id}`)
 }
 
 const wire = (swatch: HTMLElement, index: number): void => {
@@ -111,6 +100,10 @@ const render = (): void => {
   // every visible template and aggregate its colour totals for a UI that has no mounted consumer.
   if (swatches.length === 0) return
   const progress = new Map(paintPaletteProgress().map((entry) => [entry.index, entry]))
+  const navigationLabel =
+    getState().colourNavigationOrder === 'mismatched-first'
+      ? 'mismatched, then unpainted'
+      : 'unpainted, then mismatched'
   count('paint:palette progress colours', progress.size)
   for (const element of swatches) {
     const index = paletteIndexOf(element)
@@ -130,7 +123,7 @@ const render = (): void => {
     originalLabels.set(element, label)
     element.setAttribute(
       'aria-label',
-      `${label}. ${remaining.toLocaleString()} ${remaining === 1 ? 'pixel' : 'pixels'} left in the focused template. Middle-click to go to the nearest unpainted pixel.`,
+      `${label}. ${remaining.toLocaleString()} ${remaining === 1 ? 'pixel' : 'pixels'} left in the focused template. Middle-click to go to its nearest ${navigationLabel} pixel.`,
     )
     const badge = existing ?? document.createElement('span')
     badge.className = 'caelestis-palette-progress'

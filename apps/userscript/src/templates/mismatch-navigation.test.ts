@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => {
     cached: true,
     draft: null as Uint8Array | null,
     pixels,
+    templates: [] as Array<Record<string, unknown>>,
     template: {
       id: 'template',
       name: 'Template',
@@ -41,7 +42,7 @@ vi.mock('../tile-transform.js', () => ({
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
 vi.mock('./local-store.js', () => ({
   appearanceOf: () => ({ markUnpainted: false }),
-  displayTemplates: () => [harness.template],
+  displayTemplates: () => harness.templates,
   isTemplateVisible: () => true,
   onLocalChange: vi.fn(),
   templateTileKeys: (template: typeof harness.template) => template.tiles.keys(),
@@ -57,6 +58,7 @@ beforeEach(() => {
   harness.draft = null
   harness.pixels.fill(255)
   harness.pixels[1] = 7
+  harness.templates = [harness.template]
 })
 
 describe('per-colour navigation', () => {
@@ -98,5 +100,23 @@ describe('per-colour navigation', () => {
       y: 0,
       kind: 'unpainted',
     })
+  })
+
+  it('never crosses into a nearer template when navigation is scoped to the focused one', async () => {
+    harness.templates.push({
+      ...harness.template,
+      id: 'nearer-template',
+      originX: 10,
+      width: 1,
+      indices: new Uint8Array([4]),
+    })
+    const { nearestLoadedColourTarget } = await import('./mismatch.js')
+
+    expect(nearestLoadedColourTarget(4, 'unpainted', { x: 10, y: 0 })?.templateId).toBe(
+      'nearer-template',
+    )
+    expect(nearestLoadedColourTarget(4, 'unpainted', { x: 10, y: 0 }, 'template')?.templateId).toBe(
+      'template',
+    )
   })
 })

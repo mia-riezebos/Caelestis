@@ -15,13 +15,25 @@ const harness = vi.hoisted(() => ({
     serverTemplateId?: string
     opaque?: number
   } | null,
+  colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
+  navigationTargets: {
+    unpainted: {
+      templateId: 'local',
+      x: 12,
+      y: 56,
+      kind: 'unpainted' as const,
+    } as { templateId: string; x: number; y: number; kind: 'unpainted' } | null,
+    mismatched: null as { templateId: string; x: number; y: number; kind: 'mismatched' } | null,
+  },
   navigateTo: vi.fn(),
-  nearestColourTarget: vi.fn(async (_index: number, kind: 'unpainted' | 'mismatched') => ({
-    templateId: 'local',
-    x: kind === 'unpainted' ? 12 : 34,
-    y: kind === 'unpainted' ? 56 : 78,
-    kind,
-  })),
+  nearestColourTarget: vi.fn(
+    async (
+      _index: number,
+      kind: 'unpainted' | 'mismatched',
+      _reference: { x: number; y: number },
+      _templateId?: string,
+    ) => harness.navigationTargets[kind],
+  ),
 }))
 
 const server = {
@@ -44,7 +56,10 @@ vi.mock('./map-handle.js', () => ({
   getMap: () => ({ getCenter: () => ({ lat: 0, lng: 0 }) }),
 }))
 vi.mock('./state.js', () => ({
-  getState: () => ({ servers: [server] }),
+  getState: () => ({
+    servers: [server],
+    colourNavigationOrder: harness.colourNavigationOrder,
+  }),
   onStateChange: (listener: () => void) => harness.stateListeners.push(listener),
 }))
 vi.mock('./telemetry.js', () => ({
@@ -80,6 +95,14 @@ beforeEach(() => {
     { index: 0, completed: 2, mismatched: 1, unpainted: 0, known: 3, total: 3 },
   ]
   harness.focused = local
+  harness.colourNavigationOrder = 'unpainted-first'
+  harness.navigationTargets.unpainted = {
+    templateId: 'local',
+    x: 12,
+    y: 56,
+    kind: 'unpainted',
+  }
+  harness.navigationTargets.mismatched = null
 })
 
 describe('Wplace paint palette progress', () => {
@@ -102,13 +125,29 @@ describe('Wplace paint palette progress', () => {
 
     swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(0, 'unpainted', expect.any(Object))
+    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(
+      0,
+      'unpainted',
+      expect.any(Object),
+      'local',
+    )
     expect(harness.navigateTo).toHaveBeenLastCalledWith({
       x: 12.5,
       y: 56.5,
       width: 1,
       height: 1,
     })
+
+    harness.colourNavigationOrder = 'mismatched-first'
+    harness.nearestColourTarget.mockClear()
+    harness.navigateTo.mockClear()
+    swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(harness.nearestColourTarget.mock.calls.map((call) => [call[1], call[3]])).toEqual([
+      ['mismatched', 'local'],
+      ['unpainted', 'local'],
+    ])
+    expect(harness.navigateTo).toHaveBeenCalledOnce()
 
     harness.focused = remote
     refreshPaintPaletteFocus()
@@ -124,16 +163,6 @@ describe('Wplace paint palette progress', () => {
 
     expect(swatch.querySelector('.caelestis-palette-progress')).toBeNull()
     expect(swatch.getAttribute('aria-label')).toBe('Black')
-
-    harness.localProgress = [
-      { index: 0, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
-    ]
-    harness.nearestColourTarget.mockClear()
-    harness.navigateTo.mockClear()
-    swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(harness.nearestColourTarget).not.toHaveBeenCalled()
-    expect(harness.navigateTo).not.toHaveBeenCalled()
 
     swatch.remove()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
