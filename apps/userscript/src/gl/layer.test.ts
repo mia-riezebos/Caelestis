@@ -318,6 +318,29 @@ describe('overlay layer', () => {
     expect(vi.mocked(context.texSubImage2D).mock.calls.at(-1)?.at(-1)).toEqual(new Uint8Array([0]))
   })
 
+  it('drops outline bits from the old placement when a template moves within one host tile', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.unpainted = new Uint32Array([0])
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    expect(vi.mocked(context.texSubImage2D).mock.calls.at(-1)?.at(-1)).toEqual(
+      new Uint8Array([0x80]),
+    )
+
+    // Placement finalisation can move a freshly imported template without crossing a 1000px tile
+    // boundary. Its mismatch signature changes, but the old outline key used only that host tile.
+    harness.originX = 1
+    harness.unpainted = new Uint32Array(0)
+    harness.unpaintedIn.mockClear()
+    vi.mocked(context.texSubImage2D).mockClear()
+    overlayLayer.draw(context, null)
+
+    expect(harness.unpaintedIn).toHaveBeenCalledOnce()
+    expect(vi.mocked(context.texSubImage2D).mock.calls.at(-1)?.at(-1)).toEqual(new Uint8Array([0]))
+  })
+
   it('spreads a burst of large visible uploads across frames', async () => {
     const { overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }

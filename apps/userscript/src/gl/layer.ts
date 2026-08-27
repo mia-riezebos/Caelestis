@@ -25,7 +25,12 @@ import {
   unpaintedIn,
 } from '../templates/mismatch.js'
 import { type MismatchMarks, markLocalX, markLocalY } from '../templates/mismatch-marks.js'
-import { type HorizontalSpan, horizontalSpans, sourceXAt } from '../templates/placement.js'
+import {
+  type HorizontalPlacement,
+  type HorizontalSpan,
+  horizontalSpans,
+  sourceXAt,
+} from '../templates/placement.js'
 import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
 import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
@@ -103,7 +108,11 @@ const MAX_OVERLAY_GPU_BYTES = 64 * 1024 * 1024
 const UPLOAD_PIXELS_PER_FRAME = 2 * 1024 * 1024
 const UNPAINTED_BIT = 0x80
 
-interface OutlineAnswer {
+interface OutlinePlacement extends HorizontalPlacement {
+  readonly originY: number
+}
+
+interface OutlineAnswer extends OutlinePlacement {
   readonly tile: TileQuad['tile']
   readonly marks: MismatchMarks
 }
@@ -362,14 +371,14 @@ const indexTileAt = (entry: TemplateGpu, x: number, y: number): IndexGpuTile | n
 /** Change one spare-bit flag and grow the one upload rectangle for its texture. */
 const setUnpaintedBit = (
   entry: TemplateGpu,
-  template: PlacedTemplate,
+  placement: OutlinePlacement,
   hostTile: TileQuad['tile'],
   mark: number,
   enabled: boolean,
   dirty: Map<IndexGpuTile, DirtyRect>,
 ): void => {
-  const x = sourceXAt(template, hostTile.x * TILE_SIZE + markLocalX(mark))
-  const y = hostTile.y * TILE_SIZE + markLocalY(mark) - template.originY
+  const x = sourceXAt(placement, hostTile.x * TILE_SIZE + markLocalX(mark))
+  const y = hostTile.y * TILE_SIZE + markLocalY(mark) - placement.originY
   if (x === null) return
   const tile = indexTileAt(entry, x, y)
   if (tile === null) return
@@ -441,7 +450,10 @@ const syncOutlineState = (
       spans.some((span) => span.worldEnd > tileLeft && span.worldStart < tileLeft + TILE_SIZE)
     )
   })
-  const outlineKey = `${appearanceKey}|${relevant.map((tile) => `${tile.tile.x}/${tile.tile.y}`).join(' ')}`
+  // A placement may move within one host tile. Tile identity alone then stays unchanged even though
+  // every retained world-space mark maps to a different source cell.
+  const placementKey = `${template.originX}/${template.originY}/${template.wrapX === true ? 1 : 0}`
+  const outlineKey = `${appearanceKey}|${placementKey}|${relevant.map((tile) => `${tile.tile.x}/${tile.tile.y}`).join(' ')}`
   const revision = mismatchRevision()
   if (entry.outlineRevision === revision && entry.outlineKey === outlineKey) return
 
@@ -458,17 +470,23 @@ const syncOutlineState = (
     const previous = entry.outlineAnswers.get(key)
     if (previous !== undefined)
       for (const mark of previous.marks)
-        setUnpaintedBit(entry, template, previous.tile, mark, false, dirty)
+        setUnpaintedBit(entry, previous, previous.tile, mark, false, dirty)
     for (const mark of marks) setUnpaintedBit(entry, template, tile.tile, mark, true, dirty)
-    entry.outlineAnswers.set(key, { tile: tile.tile, marks })
+    entry.outlineAnswers.set(key, {
+      tile: tile.tile,
+      marks,
+      originX: template.originX,
+      originY: template.originY,
+      width: template.width,
+      ...(template.wrapX === undefined ? {} : { wrapX: template.wrapX }),
+    })
     uploadOutlineChanges(gl, dirty)
   }
   // Keep the texture truthful without retaining one sparse answer for every tile ever panned past.
   for (const [key, answer] of [...entry.outlineAnswers]) {
     if (requested.has(key)) continue
     const dirty = new Map<IndexGpuTile, DirtyRect>()
-    for (const mark of answer.marks)
-      setUnpaintedBit(entry, template, answer.tile, mark, false, dirty)
+    for (const mark of answer.marks) setUnpaintedBit(entry, answer, answer.tile, mark, false, dirty)
     entry.outlineAnswers.delete(key)
     uploadOutlineChanges(gl, dirty)
   }
