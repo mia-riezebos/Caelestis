@@ -1,3 +1,4 @@
+import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
@@ -9,6 +10,7 @@ const harness = vi.hoisted(() => ({
     width: number
     height: number
     visible: boolean
+    indices: Uint8Array
   }>,
 }))
 
@@ -25,6 +27,7 @@ const template = (id: string, originX: number, originY: number, width: number, h
   width,
   height,
   visible: true,
+  indices: new Uint8Array(width * height),
 })
 
 beforeEach(() => {
@@ -51,6 +54,16 @@ describe('template focus at the viewport centre', () => {
     const { focusedTemplate } = await import('./nearest.js')
 
     expect(focusedTemplate()?.id).toBe('on-top')
+  })
+
+  it('lets an opaque lower template show through a transparent top template cell', async () => {
+    const underneath = template('underneath', 0, 0, 20, 20)
+    const onTop = template('transparent-on-top', 5, 5, 20, 20)
+    onTop.indices[5 * onTop.width + 5] = TRANSPARENT_INDEX
+    harness.templates = [underneath, onTop]
+    const { focusedTemplate } = await import('./nearest.js')
+
+    expect(focusedTemplate()?.id).toBe('underneath')
   })
 
   it('falls back to nearest-centre distance when the viewport centre is in empty space', async () => {

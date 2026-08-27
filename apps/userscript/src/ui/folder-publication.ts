@@ -38,7 +38,23 @@ export interface FolderPublicationResult {
   readonly failures: readonly FolderPublicationFailure[]
 }
 
-type PatchResult = { readonly ok: true } | { readonly ok: false; readonly message: string }
+type PatchResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string; readonly stop?: true }
+
+const publishingServers = new Set<string>()
+
+/** One recursive batch per server, so ancestor and descendant operations cannot overlap. */
+export const claimFolderPublication = (serverUrl: string): (() => void) | null => {
+  if (publishingServers.has(serverUrl)) return null
+  publishingServers.add(serverUrl)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    publishingServers.delete(serverUrl)
+  }
+}
 
 /** Apply one publication state without opening an unbounded burst of template PATCH requests. */
 export const setFolderTemplatesPublished = async (
@@ -51,18 +67,22 @@ export const setFolderTemplatesPublished = async (
 
   const results = new Array<PatchResult>(wanted.length)
   let cursor = 0
+  let stopped: Extract<PatchResult, { ok: false }> | null = null
   const worker = async (): Promise<void> => {
-    while (cursor < wanted.length) {
+    while (cursor < wanted.length && stopped === null) {
       const index = cursor++
       const template = wanted[index]
-      if (template !== undefined) results[index] = await patch(template)
+      if (template === undefined) continue
+      const result = await patch(template)
+      results[index] = result
+      if (!result.ok && result.stop === true) stopped = result
     }
   }
   await Promise.all(Array.from({ length: Math.min(4, wanted.length) }, worker))
 
   const failures: FolderPublicationFailure[] = []
   for (let index = 0; index < wanted.length; index++) {
-    const result = results[index]
+    const result = results[index] ?? stopped
     const template = wanted[index]
     if (template !== undefined && result?.ok === false)
       failures.push({ template, message: result.message })

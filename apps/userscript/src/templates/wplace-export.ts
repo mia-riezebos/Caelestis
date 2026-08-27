@@ -5,6 +5,7 @@ import {
   type PlacedTemplate,
   templateAsPng,
 } from './local-store.js'
+import { movingId } from './move.js'
 
 export interface WplaceFile {
   readonly id: string
@@ -80,11 +81,12 @@ export const wplaceFile = (
 
 /** Encode a current placed template as the JSON file wplace's own editor imports. */
 export const templateAsWplace = async (template: PlacedTemplate): Promise<Blob | null> => {
-  if (!isCurrentTemplate(template) || !template.everPlaced) return null
+  if (!isCurrentTemplate(template) || !template.everPlaced || movingId() === template.id)
+    return null
   const png = await templateAsPng(template)
-  if (png === null || !isCurrentTemplate(template)) return null
+  if (png === null || !isCurrentTemplate(template) || movingId() === template.id) return null
   const dataUrl = await blobAsDataUrl(png)
-  if (!isCurrentTemplate(template)) return null
+  if (!isCurrentTemplate(template) || movingId() === template.id) return null
   const record = wplaceFile(template, dataUrl, appearanceOf(template).opacity)
   return new Blob([`${JSON.stringify(record, null, 2)}\n`], { type: 'application/json' })
 }

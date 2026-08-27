@@ -1,3 +1,4 @@
+import { TRANSPARENT_INDEX } from '@caelestis/shared'
 import { viewportCentre } from '../main.js'
 import { displayTemplates, isTemplateVisible, type PlacedTemplate } from './local-store.js'
 import { horizontalCentre, sourceXAt, wrappedDeltaX } from './placement.js'
@@ -40,11 +41,16 @@ export const focusedTemplate = (options: FocusedTemplateOptions = {}): PlacedTem
   let nearestVisible: { template: PlacedTemplate; distance: number } | null = null
   for (const template of displayTemplates()) {
     const visible = isTemplateVisible(template)
-    if (
-      sourceXAt(template, centre.x) !== null &&
-      centre.y >= template.originY &&
-      centre.y < template.originY + template.height
-    ) {
+    const sourceX = sourceXAt(template, centre.x)
+    const sourceY = centre.y - template.originY
+    const cellX = sourceX === null ? -1 : Math.floor(sourceX)
+    const cellY = Math.floor(sourceY)
+    const containsOpaquePixel =
+      sourceX !== null &&
+      sourceY >= 0 &&
+      sourceY < template.height &&
+      template.indices[cellY * template.width + cellX] !== TRANSPARENT_INDEX
+    if (containsOpaquePixel) {
       if (visible) containingVisible = template
       else if (!template.visible) containingHidden = template
     }

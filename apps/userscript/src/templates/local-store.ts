@@ -2176,29 +2176,14 @@ export const levelFor = (tile: TileLevels, targetWidth: number): ImageBitmap => 
   return tile.levels[0] as ImageBitmap
 }
 
-/** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
-/** Pass null to put the overlay back on the global defaults. */
-export const setAppearance = async (
+const mutateAppearance = async (
   id: string,
-  appearance: Readonly<Partial<Appearance>> | null,
-): Promise<boolean> => {
-  // Own the request before the ordered write yields, then complete legacy/partial callers from the
-  // appearance the template is currently showing. The completed value still goes through the full
-  // validator before it can reach IndexedDB.
-  const requested: Readonly<Partial<Appearance>> | null =
-    appearance === null
-      ? null
-      : {
-          ...appearance,
-          ...(appearance.hiddenColours === undefined
-            ? {}
-            : { hiddenColours: [...appearance.hiddenColours] }),
-        }
-  return await writeInOrder(id, async () => {
+  mutate: (current: Appearance) => Appearance | null,
+): Promise<boolean> =>
+  await writeInOrder(id, async () => {
     const existing = templates.get(id)
     if (existing === undefined || deleting.has(id)) return false
-    const ownedAppearance: Appearance | null =
-      requested === null ? null : { ...appearanceOf(existing), ...requested }
+    const ownedAppearance = mutate(appearanceOf(existing))
     if (ownedAppearance !== null && !isAppearance(ownedAppearance)) return false
     const next = { ...existing, appearance: ownedAppearance }
     let revision = existing.revision
@@ -2219,7 +2204,35 @@ export const setAppearance = async (
     notify()
     return true
   })
+
+/** Change how one overlay draws. Appearance never affects slicing, so no re-slice is needed. */
+/** Pass null to put the overlay back on the global defaults. */
+export const setAppearance = async (
+  id: string,
+  appearance: Readonly<Partial<Appearance>> | null,
+): Promise<boolean> => {
+  // Own arrays before the ordered write yields. Scalar partial fields are merged with the appearance
+  // current when the write executes, so independent queued controls cannot restore stale fields.
+  const requested: Readonly<Partial<Appearance>> | null =
+    appearance === null
+      ? null
+      : {
+          ...appearance,
+          ...(appearance.hiddenColours === undefined
+            ? {}
+            : { hiddenColours: [...appearance.hiddenColours] }),
+        }
+  return await mutateAppearance(id, (current) =>
+    requested === null ? null : { ...current, ...requested },
+  )
 }
+
+/** Toggle one marker switch against the appearance current when its ordered write executes. */
+export const toggleAppearanceBoolean = async (
+  id: string,
+  property: 'markMismatch' | 'markSelectedColour',
+): Promise<boolean> =>
+  await mutateAppearance(id, (current) => ({ ...current, [property]: !current[property] }))
 
 /**
  * Take one group over, or hand it back to the defaults.

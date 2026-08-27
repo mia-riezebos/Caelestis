@@ -221,6 +221,42 @@ describe('tree drag and drop', () => {
     })
   })
 
+  it('opens the export menu for server members without edit permission', () => {
+    const server = { ...connectedServer(), isAdmin: false }
+    setState({
+      servers: [server],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    acceptServerSnapshot(server, {
+      nodes: [],
+      templates: [serverTemplate(TEMPLATE_A_ID, null, 'Template', 1)],
+    })
+    const onContextMenu = vi.fn()
+    const tree = treeContents(
+      {
+        onAddServer: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onImportTemplate: vi.fn(),
+        onContextMenu,
+        onCopyToServer: vi.fn(),
+        onDropInLocal: vi.fn(),
+        onDropInServer: vi.fn(),
+      },
+      vi.fn(),
+    )
+    const row = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+    )
+
+    row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+
+    expect(onContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: TEMPLATE_A_ID }),
+      expect.any(MouseEvent),
+    )
+  })
+
   it('renders newly discovered server templates newest-first', () => {
     const server = connectedServer()
     setState({

@@ -33,9 +33,9 @@ export const toast = (message: string, kind: 'info' | 'warning' | 'error' = 'inf
   if (panel === null) return
   const selector =
     kind === 'error'
-      ? '[data-caelestis-toast="error"]'
+      ? '[data-caelestis-toast]'
       : '[data-caelestis-toast]:not([data-caelestis-toast="error"])'
-  panel.querySelector(selector)?.remove()
+  for (const previous of panel.querySelectorAll(selector)) previous.remove()
   const el = document.createElement('div')
   el.dataset.caelestisToast = kind
   el.className =

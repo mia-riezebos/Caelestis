@@ -30,6 +30,21 @@ describe('toast', () => {
     expect(document.querySelector('[data-caelestis-toast="error"]')).toBeNull()
   })
 
+  it('replaces stale progress with an error without letting later progress erase it', () => {
+    toast('Preparing…')
+    toast('Export failed', 'error')
+
+    expect(document.querySelector('[data-caelestis-toast="info"]')).toBeNull()
+    expect(document.querySelector('[data-caelestis-toast="error"]')?.textContent).toContain(
+      'Export failed',
+    )
+
+    toast('Trying something else…')
+    expect(document.querySelector('[data-caelestis-toast="error"]')?.textContent).toContain(
+      'Export failed',
+    )
+  })
+
   it('removes non-errors after six seconds without removing the live region', () => {
     toast('Done')
     vi.advanceTimersByTime(6000)

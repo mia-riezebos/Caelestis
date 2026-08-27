@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ServerTemplate } from '../server-cache.js'
 import type { TreeNode } from '../server-manifest.js'
-import { setFolderTemplatesPublished, templatesInFolderSubtree } from './folder-publication.js'
+import {
+  claimFolderPublication,
+  setFolderTemplatesPublished,
+  templatesInFolderSubtree,
+} from './folder-publication.js'
 
 const node = (id: string, parentId: string | null): TreeNode => ({
   id,
@@ -23,6 +27,21 @@ const template = (id: string, nodeId: string | null, published = false): ServerT
 })
 
 describe('folder publication', () => {
+  it('serializes every recursive publication operation on one server', () => {
+    const release = claimFolderPublication('https://templates.example')
+
+    expect(release).not.toBeNull()
+    expect(claimFolderPublication('https://templates.example')).toBeNull()
+    const releaseOther = claimFolderPublication('https://other.example')
+    expect(releaseOther).not.toBeNull()
+
+    release?.()
+    const releaseAgain = claimFolderPublication('https://templates.example')
+    expect(releaseAgain).not.toBeNull()
+    releaseAgain?.()
+    releaseOther?.()
+  })
+
   it('selects templates in the folder and all descendants without crossing into siblings', () => {
     const nodes = [
       node('root', null),
@@ -83,6 +102,32 @@ describe('folder publication', () => {
     expect(result).toMatchObject({ requested: 6, succeeded: 5 })
     expect(result.failures).toEqual([
       { template: expect.objectContaining({ id: 'failed' }), message: 'refused' },
+    ])
+  })
+
+  it('stops taking queued work after the connection becomes invalid', async () => {
+    const patch = vi.fn(async (entry: ServerTemplate) =>
+      entry.id === 'one'
+        ? ({ ok: false, message: 'connection replaced', stop: true as const } as const)
+        : ({ ok: true as const } as const),
+    )
+    const entries = [
+      template('one', 'root'),
+      template('two', 'root'),
+      template('three', 'root'),
+      template('four', 'root'),
+      template('five', 'root'),
+      template('six', 'root'),
+    ]
+
+    const result = await setFolderTemplatesPublished(entries, true, patch)
+
+    expect(patch.mock.calls.length).toBeLessThanOrEqual(4)
+    expect(result).toMatchObject({ requested: 6, succeeded: 3 })
+    expect(result.failures.map(({ message }) => message)).toEqual([
+      'connection replaced',
+      'connection replaced',
+      'connection replaced',
     ])
   })
 })

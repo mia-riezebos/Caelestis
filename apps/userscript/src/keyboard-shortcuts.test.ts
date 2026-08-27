@@ -23,6 +23,7 @@ const harness = vi.hoisted(() => ({
   }),
   triggerRepaint: vi.fn(),
   setAppearance: vi.fn(async () => true),
+  toggleAppearanceBoolean: vi.fn(async () => true),
   setLocalVisible: vi.fn(async () => true),
   setOwnsGroup: vi.fn(async () => true),
   setState: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock('./templates/local-store.js', () => ({
   appearanceOf: () => harness.appearance,
   ownsGroup: (template: { owns: string[] }, group: string) => template.owns.includes(group),
   setAppearance: harness.setAppearance,
+  toggleAppearanceBoolean: harness.toggleAppearanceBoolean,
   setLocalVisible: harness.setLocalVisible,
   setOwnsGroup: harness.setOwnsGroup,
 }))
@@ -108,19 +110,10 @@ describe('keyboard shortcut actions', () => {
     expect(harness.focus).toHaveBeenCalledWith({ restoreHiddenAtCentre: true })
     expect(harness.toggleMenu).toHaveBeenCalledWith('focused', expect.any(Function))
     expect(harness.setLocalVisible).toHaveBeenCalledWith('focused', false)
-    expect(harness.setAppearance).toHaveBeenCalledWith(
-      'focused',
-      expect.objectContaining({ markMismatch: true }),
-    )
-    expect(harness.setAppearance).toHaveBeenCalledWith(
-      'focused',
-      expect.objectContaining({ markSelectedColour: true }),
-    )
+    expect(harness.toggleAppearanceBoolean).toHaveBeenCalledWith('focused', 'markMismatch')
+    expect(harness.toggleAppearanceBoolean).toHaveBeenCalledWith('focused', 'markSelectedColour')
     expect(harness.setOwnsGroup).toHaveBeenCalledWith('focused', 'pixels', true)
-    expect(harness.setAppearance).toHaveBeenCalledWith(
-      'focused',
-      expect.objectContaining({ opacity: 0.6 }),
-    )
+    expect(harness.setAppearance).toHaveBeenCalledWith('focused', { opacity: 0.6 })
   })
 
   it('cycles remaining colours and delegates paint mode to Wplace', () => {

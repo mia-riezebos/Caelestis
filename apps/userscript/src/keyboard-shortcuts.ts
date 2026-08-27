@@ -4,11 +4,11 @@ import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palet
 import { shortcutFor } from './shortcuts.js'
 import { getState, setState } from './state.js'
 import {
-  appearanceOf,
   ownsGroup,
   setAppearance,
   setLocalVisible,
   setOwnsGroup,
+  toggleAppearanceBoolean,
 } from './templates/local-store.js'
 import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
@@ -23,8 +23,7 @@ const triggerMapRepaint = (): void => {
 const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void => {
   const focused = focusedTemplate()
   if (focused !== null && ownsGroup(focused, 'markers')) {
-    const appearance = appearanceOf(focused)
-    void setAppearance(focused.id, { ...appearance, [property]: !appearance[property] })
+    void toggleAppearanceBoolean(focused.id, property)
     // Its menu may be open on the switch this moved, and it does not rebuild on a redraw.
     refreshOverlayMenu()
     return
@@ -141,9 +140,8 @@ export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
     const focused = focusedTemplate()
     if (focused === null) return
     event.preventDefault()
-    const appearance = appearanceOf(focused)
     void setOwnsGroup(focused.id, 'pixels', true).then((owned) => {
-      if (owned) void setAppearance(focused.id, { ...appearance, opacity })
+      if (owned) void setAppearance(focused.id, { opacity })
     })
   }
 

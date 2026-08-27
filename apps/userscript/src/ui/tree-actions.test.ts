@@ -56,3 +56,19 @@ describe('server folder context menu', () => {
     )
   })
 })
+
+describe('server template context menu', () => {
+  it('offers only read-only export to an ordinary server member', () => {
+    const memberTarget: TreeTarget = {
+      server: { ...server, isAdmin: false },
+      nodeId: 'root',
+      key: 'st:template',
+      name: 'Template',
+      templateId: 'template',
+    }
+
+    openContextMenu(memberTarget, new MouseEvent('contextmenu'), vi.fn())
+
+    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toBe('Export .wplace')
+  })
+})

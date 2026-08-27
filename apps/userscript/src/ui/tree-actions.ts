@@ -39,7 +39,11 @@ import { serverTemplateKey } from '../templates/server-sync.js'
 import { templateAsWplace, wplaceFilename } from '../templates/wplace-export.js'
 import { whileBusy } from './button.js'
 import { confirmDestructive } from './confirm.js'
-import { setFolderTemplatesPublished, templatesInFolderSubtree } from './folder-publication.js'
+import {
+  claimFolderPublication,
+  setFolderTemplatesPublished,
+  templatesInFolderSubtree,
+} from './folder-publication.js'
 import { type IconName, icon } from './icons.js'
 import { importTemplatesToServer } from './import-to-server.js'
 import { SURFACE_RADIUS } from './metrics.js'
@@ -73,7 +77,12 @@ import {
 
 type RetriableMutationResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly message: string; readonly retryable?: true }
+  | {
+      readonly ok: false
+      readonly message: string
+      readonly retryable?: true
+      readonly stop?: true
+    }
 
 const retryOptimisticMutation = async (
   mutate: () => Promise<RetriableMutationResult>,
@@ -819,8 +828,6 @@ const setServerTemplatePublished = async (
   await refreshCurrentNodes(server, rerender, true)
 }
 
-const publishingFolders = new Set<string>()
-
 const folderTemplatesFor = (target: TreeTarget): readonly ServerTemplate[] | null => {
   if (target.server === null || target.nodeId === null || target.templateId !== undefined)
     return null
@@ -838,15 +845,11 @@ const setServerFolderPublished = async (
 ): Promise<void> => {
   const { server, nodeId } = target
   if (server === null || nodeId === null || target.templateId !== undefined) return
-  const busyKey = `${server.url}:${nodeId}`
-  if (publishingFolders.has(busyKey)) {
-    toast(
-      `“${target.name}” is already being ${published ? 'published' : 'unpublished'}.`,
-      'warning',
-    )
+  const releasePublication = claimFolderPublication(server.url)
+  if (releasePublication === null) {
+    toast('Another folder on that server is already changing publication state.', 'warning')
     return
   }
-  publishingFolders.add(busyKey)
   try {
     const refreshed = await refreshCurrentNodesResult(server, rerender, true)
     if (refreshed?.status !== 'admitted') {
@@ -882,9 +885,18 @@ const setServerFolderPublished = async (
       `${published ? 'Publishing' : 'Unpublishing'} ${wanted} template${wanted === 1 ? '' : 's'}…`,
     )
     const result = await setFolderTemplatesPublished(templates, published, (template) =>
-      retryOptimisticMutation(() => patchTemplate(current, template.id, { published })),
+      retryOptimisticMutation(async () => {
+        if (!stillConnected(current))
+          return {
+            ok: false,
+            message: 'That server was disconnected or replaced.',
+            stop: true,
+          }
+        return await patchTemplate(current, template.id, { published })
+      }),
     )
-    await refreshCurrentNodes(current, rerender, true)
+    if (stillConnected(current)) await refreshCurrentNodes(current, rerender, true)
+    else rerender()
     if (result.failures.length === 0) {
       toast(
         `${published ? 'Published' : 'Unpublished'} ${result.succeeded} template${result.succeeded === 1 ? '' : 's'} in “${target.name}”.`,
@@ -896,7 +908,7 @@ const setServerFolderPublished = async (
       'error',
     )
   } finally {
-    publishingFolders.delete(busyKey)
+    releasePublication()
   }
 }
 
@@ -964,20 +976,22 @@ export const openContextMenu = (
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
-      ? [
-          ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
-          ['download', 'Export .wplace', () => void exportTemplate(target)],
-          published
-            ? [
-                'eyeOff',
-                'Unpublish',
-                () => void setServerTemplatePublished(target, false, rerender),
-              ]
-            : ['eye', 'Publish', () => void setServerTemplatePublished(target, true, rerender)],
-          ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
-          rename,
-          remove,
-        ]
+      ? target.server?.isAdmin === false
+        ? [['download', 'Export .wplace', () => void exportTemplate(target)]]
+        : [
+            ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
+            ['download', 'Export .wplace', () => void exportTemplate(target)],
+            published
+              ? [
+                  'eyeOff',
+                  'Unpublish',
+                  () => void setServerTemplatePublished(target, false, rerender),
+                ]
+              : ['eye', 'Publish', () => void setServerTemplatePublished(target, true, rerender)],
+            ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
+            rename,
+            remove,
+          ]
       : templateId === null
         ? [
             ['createFolder', 'New folder', () => void createFolder(target, rerender)],

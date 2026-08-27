@@ -5,6 +5,8 @@ import type { PlacedTemplate } from './local-store.js'
 
 const harness = vi.hoisted(() => ({
   current: true,
+  movingId: null as string | null,
+  afterPng: null as (() => void) | null,
   png: new Blob(['png'], { type: 'image/png' }) as Blob | null,
   opacity: 0.42,
 }))
@@ -12,8 +14,12 @@ const harness = vi.hoisted(() => ({
 vi.mock('./local-store.js', () => ({
   appearanceOf: () => ({ opacity: harness.opacity }),
   isCurrentTemplate: () => harness.current,
-  templateAsPng: async () => harness.png,
+  templateAsPng: async () => {
+    harness.afterPng?.()
+    return harness.png
+  },
 }))
+vi.mock('./move.js', () => ({ movingId: () => harness.movingId }))
 
 import { templateAsWplace, wplaceFile, wplaceFilename } from './wplace-export.js'
 
@@ -42,6 +48,8 @@ const template = (overrides: Partial<PlacedTemplate> = {}): PlacedTemplate =>
 
 beforeEach(() => {
   harness.current = true
+  harness.movingId = null
+  harness.afterPng = null
   harness.png = new Blob(['png'], { type: 'image/png' })
   harness.opacity = 0.42
 })
@@ -87,6 +95,14 @@ describe('native wplace export', () => {
   it('refuses an unplaced or stale template', async () => {
     await expect(templateAsWplace(template({ everPlaced: false }))).resolves.toBeNull()
     harness.current = false
+    await expect(templateAsWplace(template())).resolves.toBeNull()
+  })
+
+  it('refuses to finalize an export if placement starts while encoding', async () => {
+    harness.afterPng = () => {
+      harness.movingId = 'local-template'
+    }
+
     await expect(templateAsWplace(template())).resolves.toBeNull()
   })
 
