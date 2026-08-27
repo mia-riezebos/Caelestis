@@ -2,6 +2,7 @@ import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
 import { warn } from '../debug.js'
 import { createLocalFolder, removeLocalFolder } from '../local-folders.js'
 import { viewportCentre } from '../main.js'
+import type { ServerTemplate } from '../server-cache.js'
 import {
   type ConnectedServer,
   countNodeSubtree,
@@ -38,6 +39,7 @@ import { serverTemplateKey } from '../templates/server-sync.js'
 import { templateAsWplace, wplaceFilename } from '../templates/wplace-export.js'
 import { whileBusy } from './button.js'
 import { confirmDestructive } from './confirm.js'
+import { setFolderTemplatesPublished, templatesInFolderSubtree } from './folder-publication.js'
 import { type IconName, icon } from './icons.js'
 import { importTemplatesToServer } from './import-to-server.js'
 import { SURFACE_RADIUS } from './metrics.js'
@@ -61,6 +63,8 @@ import {
   nodeTreeKey,
   optimisticallyPlaceServerRow,
   refreshServerSnapshot,
+  rowsFor,
+  type ServerSnapshotResult,
   serverTemplateAt,
   serverTemplateTreeKey,
   templatesForServer,
@@ -815,6 +819,87 @@ const setServerTemplatePublished = async (
   await refreshCurrentNodes(server, rerender, true)
 }
 
+const publishingFolders = new Set<string>()
+
+const folderTemplatesFor = (target: TreeTarget): readonly ServerTemplate[] | null => {
+  if (target.server === null || target.nodeId === null || target.templateId !== undefined)
+    return null
+  const rows = rowsFor(target.server)
+  return rows === undefined
+    ? null
+    : templatesInFolderSubtree(rows.nodes, rows.templates, target.nodeId)
+}
+
+/** Publish or unpublish every template hanging anywhere below one server folder. */
+const setServerFolderPublished = async (
+  target: TreeTarget,
+  published: boolean,
+  rerender: () => void,
+): Promise<void> => {
+  const { server, nodeId } = target
+  if (server === null || nodeId === null || target.templateId !== undefined) return
+  const busyKey = `${server.url}:${nodeId}`
+  if (publishingFolders.has(busyKey)) {
+    toast(
+      `“${target.name}” is already being ${published ? 'published' : 'unpublished'}.`,
+      'warning',
+    )
+    return
+  }
+  publishingFolders.add(busyKey)
+  try {
+    const refreshed = await refreshCurrentNodesResult(server, rerender, true)
+    if (refreshed?.status !== 'admitted') {
+      toast(
+        refreshed?.message ?? 'That server was disconnected before the folder could change.',
+        'error',
+      )
+      return
+    }
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current === undefined) {
+      toast('That server was disconnected before the folder could change.', 'error')
+      return
+    }
+    const rows = rowsFor(current)
+    const templates =
+      rows === undefined ? null : templatesInFolderSubtree(rows.nodes, rows.templates, nodeId)
+    if (templates === null) {
+      toast(`Could not read what is inside “${target.name}”.`, 'error')
+      return
+    }
+    const wanted = templates.filter((template) => template.published !== published).length
+    if (wanted === 0) {
+      toast(
+        templates.length === 0
+          ? `There are no templates in “${target.name}”.`
+          : `Everything in “${target.name}” is already ${published ? 'published' : 'unpublished'}.`,
+      )
+      return
+    }
+
+    toast(
+      `${published ? 'Publishing' : 'Unpublishing'} ${wanted} template${wanted === 1 ? '' : 's'}…`,
+    )
+    const result = await setFolderTemplatesPublished(templates, published, (template) =>
+      retryOptimisticMutation(() => patchTemplate(current, template.id, { published })),
+    )
+    await refreshCurrentNodes(current, rerender, true)
+    if (result.failures.length === 0) {
+      toast(
+        `${published ? 'Published' : 'Unpublished'} ${result.succeeded} template${result.succeeded === 1 ? '' : 's'} in “${target.name}”.`,
+      )
+      return
+    }
+    toast(
+      `${result.succeeded} of ${result.requested} templates changed; ${result.failures.length} could not be ${published ? 'published' : 'unpublished'}.`,
+      'error',
+    )
+  } finally {
+    publishingFolders.delete(busyKey)
+  }
+}
+
 /**
  * A right-click menu carrying the row's actions plus the ones deliberately kept off it.
  *
@@ -860,6 +945,21 @@ export const openContextMenu = (
     () => void applyDelete(target, rerender, invoker),
   ]
   const published = publishedStateOf(target)
+  const folderTemplates = folderTemplatesFor(target)
+  const folderPublished =
+    folderTemplates !== null &&
+    folderTemplates.length > 0 &&
+    folderTemplates.every((template) => template.published)
+  const folderPublication: readonly [IconName, string, () => void] | null =
+    folderTemplates === null
+      ? null
+      : folderPublished
+        ? [
+            'eyeOff',
+            'Unpublish folder',
+            () => void setServerFolderPublished(target, false, rerender),
+          ]
+        : ['eye', 'Publish folder', () => void setServerFolderPublished(target, true, rerender)]
   const entries: ReadonlyArray<readonly [IconName, string, () => void]> =
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
@@ -882,6 +982,7 @@ export const openContextMenu = (
         ? [
             ['createFolder', 'New folder', () => void createFolder(target, rerender)],
             ['uploadFile', 'Import template', () => void importTemplate(target, rerender)],
+            ...(folderPublication === null ? [] : [folderPublication]),
             rename,
             remove,
           ]
@@ -1326,19 +1427,28 @@ const serverNodesFailure = (result: Exclude<ServerNodesResult, { status: 'ok' }>
 const stillConnected = (server: ConnectedServer): boolean => isCurrentServerConnection(server)
 
 /** Refresh with the connection that is configured now, never credentials captured before an await. */
+const refreshCurrentNodesResult = async (
+  server: ConnectedServer,
+  rerender: () => void,
+  force = false,
+): Promise<ServerSnapshotResult | null> => {
+  let current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined) return null
+  let result = await refreshServerSnapshot(current, rerender, force)
+  while (result.status === 'superseded') {
+    current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current === undefined) return null
+    result = await refreshServerSnapshot(current, rerender)
+  }
+  return result
+}
+
 const refreshCurrentNodes = async (
   server: ConnectedServer,
   rerender: () => void,
   force = false,
 ): Promise<void> => {
-  let current = getState().servers.find((candidate) => candidate.url === server.url)
-  if (current === undefined) return
-  let result = await refreshServerSnapshot(current, rerender, force)
-  while (result.status === 'superseded') {
-    current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (current === undefined) return
-    result = await refreshServerSnapshot(current, rerender)
-  }
+  await refreshCurrentNodesResult(server, rerender, force)
 }
 
 export const cancelTreeActionSetup = (reason: Error): void => {
