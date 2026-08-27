@@ -47,6 +47,7 @@ vi.mock('./map-handle.js', () => ({
 vi.mock('./paint-palette.js', () => ({
   installPaintPaletteProgress: vi.fn(),
   paintPaletteProgress: vi.fn(() => []),
+  refreshPaintPaletteFocus: vi.fn(),
 }))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
 vi.mock('./server-mismatch.js', () => ({ serverMismatchMemoryBytes: vi.fn(() => 0) }))

@@ -3,7 +3,12 @@ import { count, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { type ConnectedServer, getState, onStateChange } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
-import { displayTemplates, isTemplateVisible, onLocalChange } from './templates/local-store.js'
+import {
+  displayTemplates,
+  isTemplateVisible,
+  onLocalChange,
+  type PlacedTemplate,
+} from './templates/local-store.js'
 import {
   colourProgressFor,
   nearestColourTarget,
@@ -11,44 +16,51 @@ import {
   type TemplateColourProgress,
 } from './templates/mismatch.js'
 import { navigateTo } from './templates/navigate.js'
-import {
-  completionPercent,
-  freshestColourProgress,
-  progressLabel,
-  sumColourProgress,
-} from './ui/progress.js'
+import { templateAtCentre } from './templates/nearest.js'
+import { freshestColourProgress, sumColourProgress } from './ui/progress.js'
 import { onPaintSelectionChange } from './wplace-paint.js'
 
 /**
- * Per-colour progress where Wplace's own paint controls are used.
+ * Per-colour progress for one template where Wplace's own paint controls are used.
  *
  * Local overlays have no server and therefore use their retained client scan. Server overlays use
  * the server as their complete baseline, then replace any colour this browser has fully classified
  * so a fresh local paint does not wait for the telemetry round trip.
  */
-export const paintPaletteProgress = (): readonly TemplateColourProgress[] => {
-  const state = getState()
-  const servers = new Map<string, ConnectedServer>(
-    state.servers.map((server) => [server.url, server]),
-  )
+const connectedServers = (): ReadonlyMap<string, ConnectedServer> =>
+  new Map(getState().servers.map((server) => [server.url, server]))
+
+const progressForTemplate = (
+  template: PlacedTemplate | null,
+  servers: ReadonlyMap<string, ConnectedServer> = connectedServers(),
+): readonly TemplateColourProgress[] => {
+  if (template === null) return []
+  if (template.serverUrl === undefined || template.serverTemplateId === undefined)
+    return colourProgressFor(template)
+  const server = servers.get(template.serverUrl)
+  if (server === undefined) return []
+  // The drawn template already proves the manifest identity and exact pixel total. Depending on the
+  // panel's admitted manifest here made palette counters disappear whenever Paint opened before the
+  // main menu had rendered its tree.
+  const progress = serverColourProgressFor(server, {
+    id: template.serverTemplateId,
+    totalPixels: template.opaque,
+  })
+  return progress === null ? [] : freshestColourProgress(progress, colourProgressFor(template))
+}
+
+/** The colour counts decorating Wplace's palette belong only to what the viewport is focused on. */
+export const paintPaletteProgress = (): readonly TemplateColourProgress[] =>
+  progressForTemplate(templateAtCentre())
+
+/** Navigation still ranges over every visible template; focusing the badge must not narrow the tool. */
+const navigationProgress = (): readonly TemplateColourProgress[] => {
+  const servers = connectedServers()
   const groups: Array<readonly TemplateColourProgress[]> = []
   for (const template of displayTemplates()) {
     if (!isTemplateVisible(template)) continue
-    if (template.serverUrl === undefined || template.serverTemplateId === undefined) {
-      groups.push(colourProgressFor(template))
-      continue
-    }
-    const server = servers.get(template.serverUrl)
-    if (server === undefined) continue
-    // The drawn template already proves the manifest identity and exact pixel total. Depending on
-    // the panel's admitted manifest here made palette counters disappear whenever Paint opened
-    // before the main menu had rendered its tree.
-    const progress = serverColourProgressFor(server, {
-      id: template.serverTemplateId,
-      totalPixels: template.opaque,
-    })
-    if (progress !== null)
-      groups.push(freshestColourProgress(progress, colourProgressFor(template)))
+    const progress = progressForTemplate(template, servers)
+    if (progress.length > 0) groups.push(progress)
   }
   return sumColourProgress(groups) ?? []
 }
@@ -64,7 +76,7 @@ const wired = new WeakSet<HTMLElement>()
 const PALETTE_SWATCH = '[id^="color-"]'
 
 const goToColour = async (index: number): Promise<void> => {
-  const progress = paintPaletteProgress().find((entry) => entry.index === index)
+  const progress = navigationProgress().find((entry) => entry.index === index)
   if (progress === undefined || progress.unpainted === 0) return
   const map = getMap()
   if (map === null) return
@@ -106,7 +118,8 @@ const render = (): void => {
     wire(element, index)
     const entry = progress.get(index)
     const existing = element.querySelector<HTMLElement>(':scope > .caelestis-palette-progress')
-    if (entry === undefined || entry.total <= 0) {
+    const remaining = entry === undefined ? 0 : Math.max(0, entry.total - entry.completed)
+    if (remaining === 0) {
       existing?.remove()
       const original = originalLabels.get(element)
       if (original !== undefined) element.setAttribute('aria-label', original)
@@ -117,12 +130,12 @@ const render = (): void => {
     originalLabels.set(element, label)
     element.setAttribute(
       'aria-label',
-      `${label}. ${progressLabel(entry)} Middle-click to go to the nearest unpainted pixel.`,
+      `${label}. ${remaining.toLocaleString()} ${remaining === 1 ? 'pixel' : 'pixels'} left in the focused template. Middle-click to go to the nearest unpainted pixel.`,
     )
     const badge = existing ?? document.createElement('span')
     badge.className = 'caelestis-palette-progress'
     badge.setAttribute('aria-hidden', 'true')
-    const text = `${completionPercent(entry)}%`
+    const text = remaining.toLocaleString()
     if (badge.textContent !== text) badge.textContent = text
     if (existing === null) element.appendChild(badge)
   }
@@ -130,6 +143,7 @@ const render = (): void => {
 
 let queued = false
 let paletteMounted = false
+let focusedTemplateId: string | null = null
 
 const queueRender = (): void => {
   if (!paletteMounted || queued) return
@@ -159,6 +173,15 @@ const touchesPalette = (records: readonly MutationRecord[]): boolean => {
 
 const discoverPalette = (): void => {
   paletteMounted = document.querySelector(PALETTE_SWATCH) !== null
+  queueRender()
+}
+
+/** Refresh the counters only when panning or zooming changes which template owns them. */
+export const refreshPaintPaletteFocus = (): void => {
+  if (!paletteMounted) return
+  const next = templateAtCentre()?.id ?? null
+  if (next === focusedTemplateId) return
+  focusedTemplateId = next
   queueRender()
 }
 

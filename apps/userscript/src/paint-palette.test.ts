@@ -9,6 +9,12 @@ const harness = vi.hoisted(() => ({
   mismatchListeners: [] as Array<() => void>,
   statusListeners: [] as Array<() => void>,
   paintListeners: [] as Array<() => void>,
+  focused: null as {
+    id: string
+    serverUrl?: string
+    serverTemplateId?: string
+    opaque?: number
+  } | null,
   navigateTo: vi.fn(),
   nearestColourTarget: vi.fn(async (_index: number, kind: 'unpainted' | 'mismatched') => ({
     templateId: 'local',
@@ -31,6 +37,7 @@ const remote = {
   id: 'remote-drawn',
   serverUrl: server.url,
   serverTemplateId: 'remote',
+  opaque: 3,
 }
 vi.mock('./debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
 vi.mock('./map-handle.js', () => ({
@@ -58,6 +65,7 @@ vi.mock('./templates/mismatch.js', () => ({
   onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
 }))
 vi.mock('./templates/navigate.js', () => ({ navigateTo: harness.navigateTo }))
+vi.mock('./templates/nearest.js', () => ({ templateAtCentre: () => harness.focused }))
 vi.mock('./wplace-paint.js', () => ({
   onPaintSelectionChange: (listener: () => void) => harness.paintListeners.push(listener),
 }))
@@ -71,23 +79,26 @@ beforeEach(() => {
   harness.serverProgress = [
     { index: 0, completed: 2, mismatched: 1, unpainted: 0, known: 3, total: 3 },
   ]
+  harness.focused = local
 })
 
 describe('Wplace paint palette progress', () => {
-  it('renders an aggregate counter and middle-clicks only blank work', async () => {
+  it('shows pixels left for only the focused template and hides a completed colour', async () => {
     const swatch = document.createElement('button')
     swatch.id = 'color-1'
     swatch.setAttribute('aria-label', 'Black')
     document.body.appendChild(swatch)
-    const { installPaintPaletteProgress, paintPaletteProgress } = await import('./paint-palette.js')
+    const { installPaintPaletteProgress, paintPaletteProgress, refreshPaintPaletteFocus } =
+      await import('./paint-palette.js')
 
     installPaintPaletteProgress()
 
     expect(paintPaletteProgress()).toEqual([
-      { index: 0, completed: 3, mismatched: 1, unpainted: 1, known: 5, total: 5 },
+      { index: 0, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
     ])
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('60%')
-    expect(swatch.getAttribute('aria-label')).toContain('60% complete')
+    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('1')
+    expect(swatch.getAttribute('aria-label')).toContain('1 pixel left in the focused template')
+    expect(swatch.getAttribute('aria-label')).not.toContain('%')
 
     swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -99,13 +110,24 @@ describe('Wplace paint palette progress', () => {
       height: 1,
     })
 
-    harness.localProgress = [
-      { index: 0, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
+    harness.focused = remote
+    refreshPaintPaletteFocus()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(paintPaletteProgress()).toEqual(harness.serverProgress)
+    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('1')
+
+    harness.serverProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
     ]
     harness.statusListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('80%')
+    expect(swatch.querySelector('.caelestis-palette-progress')).toBeNull()
+    expect(swatch.getAttribute('aria-label')).toBe('Black')
+
+    harness.localProgress = [
+      { index: 0, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
+    ]
     harness.nearestColourTarget.mockClear()
     harness.navigateTo.mockClear()
     swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
@@ -121,6 +143,6 @@ describe('Wplace paint palette progress', () => {
     document.body.appendChild(remounted)
     harness.paintListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(remounted.querySelector('.caelestis-palette-progress')?.textContent).toBe('80%')
+    expect(remounted.querySelector('.caelestis-palette-progress')).toBeNull()
   })
 })

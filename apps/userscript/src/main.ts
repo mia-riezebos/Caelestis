@@ -21,7 +21,11 @@ import {
   markerGpuMemoryBytes,
 } from './gl/markers.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
-import { installPaintPaletteProgress, paintPaletteProgress } from './paint-palette.js'
+import {
+  installPaintPaletteProgress,
+  paintPaletteProgress,
+  refreshPaintPaletteFocus,
+} from './paint-palette.js'
 import {
   installProfile,
   measureProfile,
@@ -316,7 +320,7 @@ const main = (): void => {
           serverTemplateId: template.serverTemplateId ?? null,
           opaque: template.opaque,
         })),
-      /** The exact aggregate currently decorating Wplace's native paint palette. */
+      /** The exact focused-template counts currently decorating Wplace's native paint palette. */
       paletteProgress: () => paintPaletteProgress(),
       /** A live performance snapshot. Enable profiling in Settings first. */
       profile: () => profileSnapshot(),
@@ -367,6 +371,7 @@ const main = (): void => {
     onPaintSelectionChange(repaint)
   })
   step('paint palette progress', installPaintPaletteProgress)
+  onFrame(refreshPaintPaletteFocus, 'Paint palette focus')
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
   step('keyboard shortcuts', installKeys)
