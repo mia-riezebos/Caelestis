@@ -667,7 +667,17 @@ const isTemplateLoadFailure = (value: unknown): value is TemplateLoadFailure =>
 
 const isAppearance = (value: unknown): value is Appearance => {
   if (!isRecord(value)) return false
-  const { size, radius, translateX, translateY, rotation, opacity, hiddenColours } = value
+  const {
+    size,
+    radius,
+    translateX,
+    translateY,
+    rotation,
+    opacity,
+    contrastOutline,
+    contrastOutlineSize,
+    hiddenColours,
+  } = value
   return (
     typeof size === 'number' &&
     Number.isFinite(size) &&
@@ -693,6 +703,11 @@ const isAppearance = (value: unknown): value is Appearance => {
     Number.isFinite(opacity) &&
     opacity >= 0.05 &&
     opacity <= 1 &&
+    typeof contrastOutline === 'boolean' &&
+    typeof contrastOutlineSize === 'number' &&
+    Number.isFinite(contrastOutlineSize) &&
+    contrastOutlineSize >= 0.25 &&
+    contrastOutlineSize <= 2 &&
     Array.isArray(hiddenColours) &&
     hiddenColours.length <= WPLACE_PALETTE.length &&
     hiddenColours.every(

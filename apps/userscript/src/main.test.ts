@@ -31,6 +31,7 @@ vi.mock('./debug.js', () => ({ installDebugApi: vi.fn(), warn: vi.fn() }))
 vi.mock('./gl/layer.js', () => ({
   installOverlayLayer: vi.fn(() => true),
   overlayGpuMemoryBytes: vi.fn(() => 0),
+  overlayStagingMemoryBytes: vi.fn(() => 0),
   setNudge: vi.fn(),
 }))
 vi.mock('./gl/markers.js', () => ({

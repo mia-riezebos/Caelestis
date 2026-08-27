@@ -10,6 +10,8 @@ export interface SliderRowOptions {
   readonly format: (value: number) => string
   readonly compact?: boolean
   readonly locked?: boolean
+  /** A qualifying switch is off; unlike a write lock, this is native form inertness. */
+  readonly disabled?: boolean
   readonly control?: string
   readonly onInput: (value: number) => void
   readonly onReset: (value: number) => void
@@ -44,7 +46,8 @@ export const sliderRow = (options: SliderRowOptions): SliderRow => {
   input.style.flex = '1'
   input.style.minWidth = '0'
   input.setAttribute('aria-label', options.label)
-  input.setAttribute('aria-disabled', String(options.locked === true))
+  input.setAttribute('aria-disabled', String(options.locked === true || options.disabled === true))
+  input.disabled = options.disabled === true
   if (options.control !== undefined) input.dataset.caelestisControl = options.control
 
   const readout = document.createElement('span')
@@ -60,7 +63,8 @@ export const sliderRow = (options: SliderRowOptions): SliderRow => {
   reset.title = `Reset ${options.label.toLowerCase()}`
   reset.setAttribute('aria-label', reset.title)
   reset.appendChild(icon('reset', 'size-3'))
-  reset.setAttribute('aria-disabled', String(options.locked === true))
+  reset.setAttribute('aria-disabled', String(options.locked === true || options.disabled === true))
+  reset.disabled = options.disabled === true
 
   const setValue = (value: number): void => {
     input.value = String(value)
@@ -70,7 +74,12 @@ export const sliderRow = (options: SliderRowOptions): SliderRow => {
   setValue(options.value)
 
   const restore = (): void => {
-    if (options.locked === true || Object.is(Number(input.value), options.defaultValue)) return
+    if (
+      options.locked === true ||
+      options.disabled === true ||
+      Object.is(Number(input.value), options.defaultValue)
+    )
+      return
     setValue(options.defaultValue)
     options.onReset(options.defaultValue)
   }
@@ -80,7 +89,7 @@ export const sliderRow = (options: SliderRowOptions): SliderRow => {
     restore()
   })
   input.addEventListener('input', () => {
-    if (options.locked === true) return
+    if (options.locked === true || options.disabled === true) return
     const value = Number(input.value)
     readout.textContent = options.format(value)
     reset.hidden = Object.is(value, options.defaultValue)
@@ -91,6 +100,7 @@ export const sliderRow = (options: SliderRowOptions): SliderRow => {
       input.addEventListener(gesture, (event) => event.preventDefault())
     }
   }
+  if (options.disabled === true) wrap.style.opacity = '0.45'
 
   wrap.append(name, input, readout, reset)
   return { element: wrap, input, readout, reset, setValue }

@@ -10,6 +10,11 @@ const harness = vi.hoisted(() => ({
   originY: 0,
   templateCount: 1,
   darkTheme: false,
+  contrastOutline: true,
+  contrastOutlineSize: 0.85,
+  unpainted: new Uint32Array(0),
+  unpaintedIn: vi.fn<() => Uint32Array>(),
+  mismatchRevision: 0,
   fade: { value: 0, done: false },
 }))
 
@@ -27,6 +32,8 @@ vi.mock('../templates/local-store.js', () => ({
     translateY: 0,
     rotation: 0,
     opacity: 1,
+    contrastOutline: harness.contrastOutline,
+    contrastOutlineSize: harness.contrastOutlineSize,
     hiddenColours: [],
   }),
   isTemplateVisible: () => true,
@@ -40,6 +47,12 @@ vi.mock('../templates/local-store.js', () => ({
       indices: harness.indices,
       appearance: null,
     })),
+}))
+vi.mock('../templates/mismatch.js', () => ({
+  beginUnpaintedFrame: vi.fn(),
+  endUnpaintedFrame: vi.fn(),
+  mismatchRevision: () => harness.mismatchRevision,
+  unpaintedIn: harness.unpaintedIn,
 }))
 vi.mock('../tile-transform.js', () => ({
   currentQuads: () => [{ tile: { x: 0, y: 0 }, x: 0, y: 0, width: 1_000, height: 1_000 }],
@@ -118,6 +131,7 @@ const gl = () =>
     bindTexture: vi.fn(),
     pixelStorei: vi.fn(),
     texImage2D: vi.fn(),
+    texSubImage2D: vi.fn(),
     texParameteri: vi.fn(),
     isEnabled: vi.fn(() => false),
     getParameter: vi.fn(() => null),
@@ -146,6 +160,11 @@ beforeEach(() => {
   harness.originY = 0
   harness.templateCount = 1
   harness.darkTheme = false
+  harness.contrastOutline = true
+  harness.contrastOutlineSize = 0.85
+  harness.unpainted = new Uint32Array(0)
+  harness.unpaintedIn.mockImplementation(() => harness.unpainted)
+  harness.mismatchRevision = 0
 })
 
 const orderedMap = (order: string[]) => {
@@ -237,6 +256,22 @@ describe('overlay layer', () => {
     expect(context.getParameter).not.toHaveBeenCalled()
   })
 
+  it('does not revisit unchanged unpainted answers on every map frame', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    harness.unpaintedIn.mockClear()
+
+    overlayLayer.draw(context, null)
+    expect(harness.unpaintedIn).not.toHaveBeenCalled()
+
+    harness.mismatchRevision++
+    overlayLayer.draw(context, null)
+    expect(harness.unpaintedIn).toHaveBeenCalledOnce()
+  })
+
   it('updates the contrast-outline theme uniform without rebuilding the layer', async () => {
     const { overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }
@@ -251,6 +286,36 @@ describe('overlay layer', () => {
     harness.darkTheme = false
     overlayLayer.draw(context, null)
     expect(context.uniform1i).toHaveBeenCalledWith('u_darkTheme', 0)
+  })
+
+  it('encodes only unpainted cells and passes each template outline preference to the shader', async () => {
+    const { overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.contrastOutlineSize = 1.25
+    harness.unpainted = new Uint32Array([0])
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+
+    overlayLayer.draw(context, null)
+
+    expect(context.uniform1i).toHaveBeenCalledWith('u_contrastOutline', 1)
+    expect(context.uniform1f).toHaveBeenCalledWith('u_contrastOutlineSize', 1.25)
+    expect(context.texSubImage2D).toHaveBeenCalledWith(
+      context.TEXTURE_2D,
+      0,
+      0,
+      0,
+      1,
+      1,
+      context.RED_INTEGER,
+      context.UNSIGNED_BYTE,
+      new Uint8Array([0x80]),
+    )
+
+    harness.unpainted = new Uint32Array(0)
+    harness.mismatchRevision++
+    overlayLayer.draw(context, null)
+    expect(vi.mocked(context.texSubImage2D).mock.calls.at(-1)?.at(-1)).toEqual(new Uint8Array([0]))
   })
 
   it('spreads a burst of large visible uploads across frames', async () => {

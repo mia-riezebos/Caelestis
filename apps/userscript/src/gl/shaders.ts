@@ -46,7 +46,7 @@ precision highp usampler2D;
 
 in vec2 v_uv;
 
-/** One byte per pixel: the wplace palette index. */
+/** Low six bits: palette index. Bit 7: this required pixel is still unpainted. */
 uniform usampler2D u_indices;
 /** 64x1 RGBA. Alpha 0 means this colour is filtered out. */
 uniform sampler2D u_palette;
@@ -55,6 +55,9 @@ uniform vec2 u_size;
 uniform float u_opacity;
 /** Wplace's active basemap theme. Low-contrast pixels receive the opposite-colour outline. */
 uniform bool u_darkTheme;
+uniform bool u_contrastOutline;
+/** Device-pixel thickness, converted to cell space from the fragment footprint. */
+uniform float u_contrastOutlineSize;
 
 /** Stamp geometry, all in cell fractions except rotation, which is radians. */
 uniform float u_stampSize;
@@ -94,7 +97,8 @@ bool needsContrastOutline(vec3 colour) {
 /** Whether the neighbouring full-size cell continues the same colour. */
 bool sameCellColour(ivec2 cell, uint index) {
   if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) return false;
-  return texelFetch(u_indices, cell, 0).r == index;
+  uint stored = texelFetch(u_indices, cell, 0).r;
+  return (stored & 128u) != 0u && (stored & 63u) == index;
 }
 
 /** One cell's colour, with w = 1 when it should be drawn at all and 0 when it is filtered or blank. */
@@ -103,7 +107,7 @@ vec4 cellColour(vec2 texel) {
   if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) {
     return vec4(0.0);
   }
-  uint index = texelFetch(u_indices, cell, 0).r;
+  uint index = texelFetch(u_indices, cell, 0).r & 63u;
   vec4 entry = texelFetch(u_palette, ivec2(int(index), 0), 0);
   // Alpha covers both the wildcard index — always 0 — and how far through the filter's fade the
   // colour is, which is why it is carried through rather than rounded to a yes or a no.
@@ -158,7 +162,9 @@ void main() {
   ivec2 cell = ivec2(floor(texel));
   if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) discard;
 
-  uint index = texelFetch(u_indices, cell, 0).r;
+  uint stored = texelFetch(u_indices, cell, 0).r;
+  uint index = stored & 63u;
+  bool unpainted = (stored & 128u) != 0u;
   vec4 entry = texelFetch(u_palette, ivec2(int(index), 0), 0);
   // Nothing at all to draw: the wildcard index, or a colour whose fade has finished leaving.
   if (entry.a <= 0.0) discard;
@@ -199,13 +205,13 @@ void main() {
   }
 
   vec3 colour = entry.rgb;
-  if (needsContrastOutline(colour)) {
+  if (u_contrastOutline && unpainted && needsContrastOutline(colour)) {
     // At distant zoom there is no room for an outline. The minification path above already turns a
     // whole group of source pixels into one antialiased fragment, so the treatment begins only once
     // individual pixels have enough screen space to keep their colour visible inside the ring.
     float pixel = max(footprint.x, footprint.y);
     if (pixel < 0.75) {
-      float width = min(pixel * 0.85, u_stampSize * 0.2);
+      float width = min(pixel * u_contrastOutlineSize, u_stampSize * 0.2);
       float antialias = pixel * 0.5;
       float outline = 0.0;
       if (u_plain) {

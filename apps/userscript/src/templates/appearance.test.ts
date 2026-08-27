@@ -20,6 +20,8 @@ describe('template appearances', () => {
       translateY: 0,
       rotation: 0,
       opacity: 0.85,
+      contrastOutline: true,
+      contrastOutlineSize: 0.85,
       hiddenColours: [],
       markMismatch: false,
       markUnpainted: false,
@@ -32,6 +34,21 @@ describe('template appearances', () => {
       dimOthers: true,
       otherOpacity: 0.15,
       otherColour: null,
+    })
+  })
+
+  it('preserves the original outline on upgrade and bounds configurable thickness', () => {
+    expect(normaliseAppearance({})).toMatchObject({
+      contrastOutline: true,
+      contrastOutlineSize: 0.85,
+    })
+    expect(normaliseAppearance({ contrastOutline: false, contrastOutlineSize: 4 })).toMatchObject({
+      contrastOutline: false,
+      contrastOutlineSize: 2,
+    })
+    expect(normaliseAppearance({ contrastOutline: 'no', contrastOutlineSize: 0 })).toMatchObject({
+      contrastOutline: true,
+      contrastOutlineSize: 0.25,
     })
   })
 

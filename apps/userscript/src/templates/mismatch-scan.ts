@@ -37,6 +37,9 @@ interface CommonScanJob {
   readonly unpainted: number
   /** False for progress-only work, which must not allocate coordinate lists nobody will draw. */
   readonly collectMarkers?: boolean
+  /** Narrow coordinate retention when a consumer needs only one disagreement class. */
+  readonly collectWrong?: boolean
+  readonly collectUnpainted?: boolean
 }
 
 export interface PixelScanJob extends CommonScanJob {
@@ -121,6 +124,8 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
   // domain rather than importing the application's current palette length.
   const progressByColour = new Uint32Array(256 * 3)
   const collectMarkers = job.collectMarkers !== false
+  const collectWrong = collectMarkers && job.collectWrong !== false
+  const collectUnpainted = collectMarkers && job.collectUnpainted !== false
   for (let y = top; y < bottom; y++) {
     let templateAt = (y - job.originY) * job.width + (left - job.originX)
     let tileAt = (y - tileTop) * tileSize + (left - tileLeft) - bandOffset
@@ -155,14 +160,15 @@ export const scanTile = (job: ScanJob, wantedPixels: Uint8Array): ScanOutcome =>
         }
       }
 
-      if (!collectMarkers || asserted[wanted] === 0) continue
+      if ((!collectWrong && !collectUnpainted) || asserted[wanted] === 0) continue
       assertedHere++
       if (classification === match) continue
       // An empty pixel is only "not done yet" when nobody chose it. One drafted Transparent arrives
       // as a real palette index rather than the sentinel, so it lands with the mistakes.
       const mark = (x - tileLeft) | ((y - tileTop) << 10) | (wanted << 20)
-      if (classification === blank) unpainted.push(mark)
-      else wrong.push(mark)
+      if (classification === blank) {
+        if (collectUnpainted) unpainted.push(mark)
+      } else if (collectWrong) wrong.push(mark)
     }
   }
 

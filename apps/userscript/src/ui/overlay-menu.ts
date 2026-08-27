@@ -745,6 +745,7 @@ const slider = (
   step: number,
   format: (value: number) => string,
   locked: boolean,
+  disabled: boolean,
   onCommit: (next: number, finished: () => void) => void,
   rerender: () => void,
 ): HTMLElement => {
@@ -775,6 +776,7 @@ const slider = (
     format,
     compact: true,
     locked,
+    disabled,
     control: property,
     onInput: (next) => {
       setDraft(id, property, next)
@@ -788,7 +790,7 @@ const slider = (
       rerender()
     },
   })
-  if (!locked) rangeGestures.bind(row.input, settleGesture)
+  if (!locked && !disabled) rangeGestures.bind(row.input, settleGesture)
 
   return row.element
 }
@@ -1450,6 +1452,27 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
     ),
   )
   pixels.body.appendChild(presetRow)
+  const outlineRow = document.createElement('label')
+  outlineRow.className = 'flex items-center justify-between gap-2 px-1 py-1 text-xs font-normal'
+  outlineRow.style.textTransform = 'none'
+  outlineRow.style.letterSpacing = 'normal'
+  const outlineLabel = document.createElement('span')
+  outlineLabel.className = 'opacity-70'
+  outlineLabel.textContent = 'Contrast outline'
+  const outline = document.createElement('input')
+  outline.type = 'checkbox'
+  outline.className = 'toggle toggle-xs'
+  outline.checked = appearance.contrastOutline
+  outline.disabled = locked
+  outline.dataset.caelestisControl = 'contrastOutline'
+  outline.addEventListener('change', () => {
+    const box = defaultsBoxes.get('pixels')
+    if (box !== undefined) box.checked = false
+    edit(['contrastOutline'], 'contrast outline', () => ({ contrastOutline: outline.checked }))
+    rerender()
+  })
+  outlineRow.append(outlineLabel, outline)
+  pixels.body.appendChild(outlineRow)
   for (const control of APPEARANCE_CONTROLS) {
     pixels.body.appendChild(
       slider(
@@ -1463,6 +1486,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
         control.step,
         control.format,
         locked,
+        control.key === 'contrastOutlineSize' && !appearance.contrastOutline,
         (value, finished) => {
           const box = defaultsBoxes.get('pixels')
           if (box !== undefined) box.checked = false

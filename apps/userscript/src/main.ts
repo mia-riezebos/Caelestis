@@ -8,7 +8,12 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
-import { installOverlayLayer, overlayGpuMemoryBytes, setNudge } from './gl/layer.js'
+import {
+  installOverlayLayer,
+  overlayGpuMemoryBytes,
+  overlayStagingMemoryBytes,
+  setNudge,
+} from './gl/layer.js'
 import {
   keepMarkersAboveDrafts,
   markerBatchMemoryBytes,
@@ -289,6 +294,7 @@ const main = (): void => {
   registerProfileMemorySource('Server mismatch masks', serverMismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
   registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
+  registerProfileMemorySource('Overlay index staging', overlayStagingMemoryBytes)
   registerProfileMemorySource('Marker density buffers', markerDensityMemoryBytes)
   registerProfileMemorySource('Marker draw batches', markerBatchMemoryBytes)
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)

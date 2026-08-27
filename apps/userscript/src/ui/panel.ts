@@ -707,6 +707,23 @@ const appearanceView = (): HTMLElement => {
     ),
   )
 
+  const outline = document.createElement('input')
+  outline.type = 'checkbox'
+  outline.className = 'toggle toggle-sm'
+  outline.checked = state.appearance.contrastOutline
+  outline.setAttribute('aria-label', 'Contrast outline')
+  outline.addEventListener('change', () => {
+    setState({
+      appearance: { ...getState().appearance, contrastOutline: outline.checked },
+    })
+    previewGlobalAppearance(getState().appearance)
+    redraw()
+    rerender()
+  })
+  view.appendChild(
+    settingRow('Contrast outline', 'For unpainted pixels that blend into the map', outline),
+  )
+
   // Same sliders as the per-overlay menu, deliberately — one vocabulary, learned once.
   const sliders = document.createElement('div')
   sliders.className = 'px-3 pb-2'
@@ -731,6 +748,7 @@ const appearanceView = (): HTMLElement => {
       max: control.max,
       step: control.step,
       format: control.format,
+      disabled: control.key === 'contrastOutlineSize' && !state.appearance.contrastOutline,
       onInput: (next) => {
         dirty = true
         previewGlobalAppearance({
