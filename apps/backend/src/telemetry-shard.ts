@@ -290,7 +290,12 @@ export class TelemetryShard extends DurableObject<Env> {
       // opposite ordering does. Both are wrong; only one of them is wrong in a direction that hides
       // work rather than exaggerating it.
       try {
-        await new D1SqlStore(this.env.DB).appendBuckets(buckets)
+        const sql = new D1SqlStore(this.env.DB)
+        await sql.appendBuckets(buckets)
+        await sql.foldTelemetryBuckets(
+          buckets.map((bucket) => bucket.templateId),
+          nowSeconds,
+        )
       } catch (error) {
         // Schedule the retry and return normally rather than rethrowing.
         //

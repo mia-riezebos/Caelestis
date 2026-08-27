@@ -6,6 +6,7 @@ import type {
   TemplateVersionRecord,
   TileObservation,
 } from '../ports/index.js'
+import { EXPIRES_AFTER_SECONDS, TELEMETRY_DECAY_EDGES } from '../ports/index.js'
 import { D1SqlStore } from './cloudflare/d1-sql-store.js'
 import { SqliteD1Database } from './cloudflare/sqlite-d1.test-helper.js'
 import { MemorySqlStore } from './memory/memory-sql-store.js'
@@ -268,5 +269,159 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     await expect(
       store.readTileHistory({ season: 1, tile: { x: -1, y: 0 }, resolution: 0, ...range }),
     ).rejects.toThrow('outside the canvas')
+  })
+
+  it('folds complete telemetry windows by sum at the retention boundary', async () => {
+    const now = seconds(1_800_000_000)
+    const cutoff = now - 6 * 3_600
+    const targetStart = cutoff - 300
+    await store.appendBuckets([
+      {
+        templateId: 'template-1',
+        resolution: 60,
+        bucketStart: seconds(targetStart),
+        placed: 4,
+        correct: 3,
+        repairs: 1,
+      },
+      {
+        templateId: 'template-1',
+        resolution: 60,
+        bucketStart: seconds(targetStart + 60),
+        placed: 6,
+        correct: 5,
+        repairs: 2,
+      },
+      {
+        templateId: 'template-1',
+        resolution: 60,
+        bucketStart: seconds(cutoff),
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      },
+    ])
+
+    await store.foldTelemetryBuckets(['template-1'], now)
+    await store.foldTelemetryBuckets(['template-1'], now)
+
+    await expect(
+      store.readBuckets({
+        templateIds: ['template-1'],
+        resolution: 300,
+        fromSeconds: seconds(targetStart),
+        toSeconds: seconds(cutoff),
+      }),
+    ).resolves.toEqual([
+      {
+        templateId: 'template-1',
+        resolution: 300,
+        bucketStart: seconds(targetStart),
+        placed: 10,
+        correct: 8,
+        repairs: 3,
+      },
+    ])
+    await expect(
+      store.readBuckets({
+        templateIds: ['template-1'],
+        resolution: 60,
+        fromSeconds: seconds(targetStart),
+        toSeconds: seconds(cutoff + 60),
+      }),
+    ).resolves.toEqual([expect.objectContaining({ bucketStart: seconds(cutoff), placed: 1 })])
+  })
+
+  it('keeps the first telemetry fold beyond the retained counter hot edge', () => {
+    expect(TELEMETRY_DECAY_EDGES[0]?.retainSeconds).toBeGreaterThan(EXPIRES_AFTER_SECONDS)
+  })
+
+  it('folds tile state by latest bucket and carries the winning reporter rows', async () => {
+    const now = seconds(1_800_000_000)
+    const targetStart = now - 86_400 - 3_600
+    const tile = { x: 3, y: 4 }
+    const at = (offset: number) => seconds(targetStart + offset)
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: at(60), hash: 'f'.repeat(64), reportedByUserId: 1 }),
+      [],
+    )
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: at(60), hash: 'f'.repeat(64), reportedByUserId: 2 }),
+      [],
+    )
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: at(60), hash: '1'.repeat(64), reportedByUserId: 3 }),
+      [],
+    )
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: at(120), hash: 'c'.repeat(64), reportedByUserId: 4 }),
+      [],
+    )
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: at(120), hash: 'c'.repeat(64), reportedByUserId: 5 }),
+      [],
+    )
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: at(120), hash: 'b'.repeat(64), reportedByUserId: 6 }),
+      [],
+    )
+
+    await store.foldTileHistory(1, tile, now)
+
+    await expect(
+      store.readTileHistory({
+        season: 1,
+        tile,
+        resolution: 3_600,
+        fromSeconds: seconds(targetStart),
+        toSeconds: seconds(targetStart + 3_600),
+      }),
+    ).resolves.toEqual([{ bucketStart: seconds(targetStart), hash: 'c'.repeat(64), reporters: 2 }])
+  })
+
+  it('exempts a frozen template tile ring from tile-history decay', async () => {
+    const now = seconds(1_800_000_000)
+    const templateId = 'frozen-template'
+    await store.insertTemplateVersion(version(templateId))
+    await store.updateTemplate(templateId, { timelapseFrozenAt: millis(now * 1_000) }, millis(1))
+    const ringTile = { x: 1, y: 0 }
+    const old = observation({
+      tile: ringTile,
+      reportedAt: seconds(now - 90_000),
+      hash: 'e'.repeat(64),
+    })
+    await store.recordTileObservation(old, [])
+
+    await expect(store.foldTileHistory(1, ringTile, now)).resolves.toEqual([])
+    await expect(
+      store.readTileHistory({
+        season: 1,
+        tile: ringTile,
+        resolution: 0,
+        fromSeconds: seconds(now - 100_000),
+        toSeconds: now,
+      }),
+    ).resolves.toEqual([{ bucketStart: old.reportedAt, hash: old.hash, reporters: 1 }])
+  })
+
+  it('never returns a tile hash still referenced by another current canvas row', async () => {
+    const now = seconds(1_800_000_000)
+    const targetStart = now - 86_400 - 3_600
+    const tile = { x: 3, y: 4 }
+    const oldHash = '7'.repeat(64)
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: seconds(targetStart + 60), hash: oldHash }),
+      [],
+    )
+    await store.recordTileObservation(
+      observation({ tile, reportedAt: seconds(targetStart + 120), hash: '8'.repeat(64) }),
+      [],
+    )
+    await store.recordTileObservation(
+      observation({ tile: { x: 4, y: 4 }, hash: oldHash, observedAt: millis(now * 1_000) }),
+      [],
+    )
+
+    await expect(store.foldTileHistory(1, tile, now)).resolves.not.toContain(oldHash)
   })
 })

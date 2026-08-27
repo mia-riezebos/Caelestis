@@ -237,6 +237,12 @@ export const recordObservation = async (
   await ports.sql.rememberPainter(metadata.wplaceUserId, metadata.displayName, millis(observedAtMs))
   const recordHistory = targets.length === 0 || targets.some((target) => !target.finished)
   await ports.sql.recordTileObservation(observation, statuses, recordHistory)
+  const orphaned = await ports.sql.foldTileHistory(
+    metadata.season,
+    metadata.tile,
+    seconds(Math.floor(Date.now() / 1_000)),
+  )
+  if (orphaned.length > 0) await ports.blobs.delete('tiles', orphaned)
 }
 
 /** Process an offer immediately when the content-addressed bytes already exist. */

@@ -1,9 +1,11 @@
 import {
   type ContributionDay,
   type Millis,
+  type Seconds,
   seconds,
   type TileHistoryFrame,
   WORLD_PIXELS,
+  WORLD_TILES,
 } from '@caelestis/shared'
 import {
   and,
@@ -50,7 +52,9 @@ import {
   type ContributionQuery,
   compareBuckets,
   compareContributionDays,
+  DECAY_FOLD_GROUP_LIMIT,
   foldTileFrames,
+  foldTileReporterRows,
   InvalidNodeParentError,
   type LatestTileObservation,
   MAX_NODE_PATH_LENGTH,
@@ -67,6 +71,7 @@ import {
   READ_BUCKETS_CHUNK_SIZE,
   type ServerSettings,
   type SqlStore,
+  TELEMETRY_DECAY_EDGES,
   type TelemetryBucket,
   type TelemetryTarget,
   type TemplateDeletePrecondition,
@@ -76,7 +81,9 @@ import {
   type TemplateRecord,
   type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  TILE_HISTORY_DECAY_EDGES,
   type TileHistoryQuery,
+  type TileHistoryReporterRow,
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -186,8 +193,10 @@ const toNode = (row: typeof nodes.$inferSelect): NodeRecord => ({
 
 export class D1SqlStore implements SqlStore {
   private readonly database: DrizzleD1Database
+  private readonly client: D1Database
 
   constructor(database: D1Database) {
+    this.client = database
     this.database = drizzle(database)
   }
 
@@ -1138,6 +1147,135 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
+  async foldTileHistory(
+    season: number,
+    tile: { readonly x: number; readonly y: number },
+    now: Seconds,
+  ): Promise<readonly string[]> {
+    const deletedHashes = new Set<string>()
+    for (const edge of TILE_HISTORY_DECAY_EDGES) {
+      const targetStart = `CAST(history.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}`
+      const ringX = `MIN(ABS(version_tiles.tile_x - history.tile_x), ${WORLD_TILES} - ABS(version_tiles.tile_x - history.tile_x))`
+      const chosen = `
+        SELECT ${targetStart} AS target_start
+        FROM tile_history AS history
+        WHERE history.season = ? AND history.tile_x = ? AND history.tile_y = ?
+          AND history.resolution_s = ${edge.source}
+          AND ${targetStart} + ${edge.target} <= ?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM templates
+            INNER JOIN template_versions
+              ON template_versions.id = templates.current_version_id
+            INNER JOIN version_tiles
+              ON version_tiles.version_id = template_versions.id
+            WHERE templates.season = history.season
+              AND templates.timelapse_frozen_at_ms IS NOT NULL
+              AND ${targetStart} * 1000 <= templates.timelapse_frozen_at_ms
+              AND ${ringX} <= 1
+              AND ABS(version_tiles.tile_y - history.tile_y) <= 1
+          )
+        GROUP BY target_start
+        ORDER BY target_start
+        LIMIT ?`
+      const query = `
+        WITH chosen AS (${chosen})
+        SELECT history.season, history.tile_x, history.tile_y,
+          history.resolution_s, history.bucket_start_s, history.sha256,
+          history.reported_with_token, history.reported_by_user_id
+        FROM tile_history AS history
+        INNER JOIN chosen
+          ON chosen.target_start = CAST(history.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}
+        WHERE history.season = ? AND history.tile_x = ? AND history.tile_y = ?
+          AND history.resolution_s = ${edge.source}
+        ORDER BY history.bucket_start_s, history.sha256, history.reported_by_user_id`
+      const cutoff = now - edge.retainSeconds
+      const selected = await this.client
+        .prepare(query)
+        .bind(season, tile.x, tile.y, cutoff, DECAY_FOLD_GROUP_LIMIT, season, tile.x, tile.y)
+        .all<{
+          season: number
+          tile_x: number
+          tile_y: number
+          resolution_s: number
+          bucket_start_s: number
+          sha256: string
+          reported_with_token: string
+          reported_by_user_id: number
+        }>()
+      const rows: TileHistoryReporterRow[] = selected.results.map((row) => ({
+        season: row.season,
+        tile: { x: row.tile_x, y: row.tile_y },
+        resolution: row.resolution_s,
+        bucketStart: seconds(row.bucket_start_s),
+        hash: row.sha256,
+        reportedWithToken: row.reported_with_token,
+        reportedByUserId: row.reported_by_user_id,
+      }))
+      if (rows.length === 0) continue
+      const folded = foldTileReporterRows(rows, edge.target)
+      const statements: D1PreparedStatement[] = []
+      for (const group of chunkRows(folded.rows, 10)) {
+        const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
+        statements.push(
+          this.client
+            .prepare(
+              `INSERT INTO tile_history (
+                season, tile_x, tile_y, resolution_s, bucket_start_s, sha256,
+                reported_with_token, reported_by_user_id
+              ) VALUES ${values}
+              ON CONFLICT(
+                season, tile_x, tile_y, resolution_s, bucket_start_s, sha256,
+                reported_by_user_id
+              ) DO UPDATE SET reported_with_token = excluded.reported_with_token`,
+            )
+            .bind(
+              ...group.flatMap((row) => [
+                row.season,
+                row.tile.x,
+                row.tile.y,
+                row.resolution,
+                row.bucketStart,
+                row.hash,
+                row.reportedWithToken,
+                row.reportedByUserId,
+              ]),
+            ),
+        )
+      }
+      const targetStarts = [
+        ...new Set(rows.map((row) => Math.floor(row.bucketStart / edge.target) * edge.target)),
+      ]
+      statements.push(
+        this.client
+          .prepare(
+            `DELETE FROM tile_history
+             WHERE season = ? AND tile_x = ? AND tile_y = ? AND resolution_s = ${edge.source}
+               AND CAST(bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}
+                 IN (${targetStarts.map(() => '?').join(', ')})`,
+          )
+          .bind(season, tile.x, tile.y, ...targetStarts),
+      )
+      await this.client.batch(statements)
+      for (const hash of folded.deletedHashes) deletedHashes.add(hash)
+    }
+
+    const orphaned: string[] = []
+    for (const hashes of chunkRows([...deletedHashes], 45)) {
+      const bindings = hashes.map(() => '?').join(', ')
+      const referenced = await this.client
+        .prepare(
+          `SELECT sha256 FROM tile_history WHERE sha256 IN (${bindings})
+           UNION SELECT sha256 FROM canvas_tiles WHERE sha256 IN (${bindings})`,
+        )
+        .bind(...hashes, ...hashes)
+        .all<{ sha256: string }>()
+      const held = new Set(referenced.results.map((row) => row.sha256))
+      orphaned.push(...hashes.filter((hash) => !held.has(hash)))
+    }
+    return orphaned.sort()
+  }
+
   async readTemplateStatuses(
     season: number,
     includeUnpublished: boolean,
@@ -1314,6 +1452,56 @@ export class D1SqlStore implements SqlStore {
     await this.database.batch(
       statements as [(typeof statements)[number], ...Array<(typeof statements)[number]>],
     )
+  }
+
+  async foldTelemetryBuckets(templateIds: readonly string[], now: Seconds): Promise<void> {
+    const ids = [...new Set(templateIds)].slice(0, READ_BUCKETS_CHUNK_SIZE)
+    if (ids.length === 0) return
+    const idBindings = ids.map(() => '?').join(', ')
+    for (const edge of TELEMETRY_DECAY_EDGES) {
+      const targetStart = `CAST(bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}`
+      const chosen = `
+        SELECT template_id, ${targetStart} AS target_start
+        FROM telemetry_buckets
+        WHERE resolution = ${edge.source}
+          AND template_id IN (${idBindings})
+          AND ${targetStart} + ${edge.target} <= ?
+        GROUP BY template_id, target_start
+        ORDER BY MIN(bucket_start_s), template_id
+        LIMIT ?`
+      const insert = `
+        WITH chosen AS (${chosen})
+        INSERT INTO telemetry_buckets (
+          template_id, resolution, bucket_start_s, placed, correct, repairs
+        )
+        SELECT source.template_id, ${edge.target}, chosen.target_start,
+          SUM(source.placed), SUM(source.correct), SUM(source.repairs)
+        FROM telemetry_buckets AS source
+        INNER JOIN chosen
+          ON chosen.template_id = source.template_id
+          AND chosen.target_start = CAST(source.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}
+        WHERE source.resolution = ${edge.source}
+        GROUP BY source.template_id, chosen.target_start
+        ON CONFLICT(template_id, resolution, bucket_start_s) DO UPDATE SET
+          placed = excluded.placed,
+          correct = excluded.correct,
+          repairs = excluded.repairs`
+      const remove = `
+        WITH chosen AS (${chosen})
+        DELETE FROM telemetry_buckets AS source
+        WHERE source.resolution = ${edge.source}
+          AND EXISTS (
+            SELECT 1 FROM chosen
+            WHERE chosen.template_id = source.template_id
+              AND chosen.target_start = CAST(source.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}
+          )`
+      const cutoff = now - edge.retainSeconds
+      const bindings = [...ids, cutoff, DECAY_FOLD_GROUP_LIMIT]
+      await this.client.batch([
+        this.client.prepare(insert).bind(...bindings),
+        this.client.prepare(remove).bind(...bindings),
+      ])
+    }
   }
 
   async insertAccessToken(token: AccessToken): Promise<void> {

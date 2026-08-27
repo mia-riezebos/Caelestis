@@ -2,11 +2,13 @@ import {
   type ContributionDay,
   type Millis,
   type Seconds,
+  seconds,
   type TemplateStatus,
   type TileCoord,
   type TileHistoryFrame,
   tileKey,
   WORLD_PIXELS,
+  WORLD_TILES,
 } from '@caelestis/shared'
 import {
   type AccessToken,
@@ -23,7 +25,9 @@ import {
   compareAccessTokens,
   compareBuckets,
   compareContributionDays,
+  DECAY_FOLD_GROUP_LIMIT,
   foldTileFrames,
+  foldTileReporterRows,
   InvalidNodeParentError,
   type LatestTileObservation,
   MAX_NODE_PATH_LENGTH,
@@ -39,6 +43,7 @@ import {
   NodeSubtreeChangedError,
   type ServerSettings,
   type SqlStore,
+  TELEMETRY_DECAY_EDGES,
   type TelemetryBucket,
   type TelemetryTarget,
   type TemplateDeletePrecondition,
@@ -48,7 +53,9 @@ import {
   type TemplateRecord,
   type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  TILE_HISTORY_DECAY_EDGES,
   type TileHistoryQuery,
+  type TileHistoryReporterRow,
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -68,14 +75,7 @@ const bucketKey = (bucket: TelemetryBucket): string =>
   `${bucket.templateId}\u0000${bucket.resolution}\u0000${bucket.bucketStart}`
 
 /** One `tile_history` row: an observation as one account reported it, keyed like D1's primary key. */
-interface TileHistoryRow {
-  readonly season: number
-  readonly tile: TileCoord
-  readonly resolution: number
-  readonly bucketStart: Seconds
-  readonly hash: string
-  readonly reportedByUserId: number
-}
+type TileHistoryRow = TileHistoryReporterRow
 
 const tileHistoryRowKey = (row: TileHistoryRow): string =>
   [
@@ -640,6 +640,7 @@ export class MemorySqlStore implements SqlStore {
       resolution: 0,
       bucketStart: observation.reportedAt,
       hash: observation.hash,
+      reportedWithToken: observation.reportedWithToken,
       reportedByUserId: observation.reportedByUserId,
     }
     if (recordHistory) {
@@ -658,6 +659,76 @@ export class MemorySqlStore implements SqlStore {
         this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
       }
     }
+  }
+
+  private tileIsFrozenAt(season: number, tile: TileCoord, targetStart: number): boolean {
+    for (const template of this.templates.values()) {
+      if (
+        template.season !== season ||
+        template.timelapseFrozenAt === null ||
+        targetStart * 1_000 > template.timelapseFrozenAt
+      ) {
+        continue
+      }
+      const version = this.templateVersions.get(template.currentVersionId)
+      if (version === undefined) continue
+      if (
+        version.chunks.some((chunk) => {
+          const directX = Math.abs(chunk.tileX - tile.x)
+          const wrappedX = Math.min(directX, WORLD_TILES - directX)
+          return wrappedX <= 1 && Math.abs(chunk.tileY - tile.y) <= 1
+        })
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  async foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<readonly string[]> {
+    const deletedHashes = new Set<string>()
+    for (const edge of TILE_HISTORY_DECAY_EDGES) {
+      const cutoff = now - edge.retainSeconds
+      const targetStarts = [
+        ...new Set(
+          [...this.tileHistory.values()]
+            .filter(
+              (row) =>
+                row.season === season &&
+                row.tile.x === tile.x &&
+                row.tile.y === tile.y &&
+                row.resolution === edge.source,
+            )
+            .map((row) => Math.floor(row.bucketStart / edge.target) * edge.target)
+            .filter(
+              (targetStart) =>
+                targetStart + edge.target <= cutoff &&
+                !this.tileIsFrozenAt(season, tile, targetStart),
+            ),
+        ),
+      ]
+        .sort((left, right) => left - right)
+        .slice(0, DECAY_FOLD_GROUP_LIMIT)
+      if (targetStarts.length === 0) continue
+      const selected = [...this.tileHistory.values()].filter(
+        (row) =>
+          row.season === season &&
+          row.tile.x === tile.x &&
+          row.tile.y === tile.y &&
+          row.resolution === edge.source &&
+          targetStarts.includes(Math.floor(row.bucketStart / edge.target) * edge.target),
+      )
+      const folded = foldTileReporterRows(selected, edge.target)
+      for (const row of selected) this.tileHistory.delete(tileHistoryRowKey(row))
+      for (const row of folded.rows) this.tileHistory.set(tileHistoryRowKey(row), row)
+      for (const hash of folded.deletedHashes) deletedHashes.add(hash)
+    }
+
+    const referenced = new Set([
+      ...[...this.tileHistory.values()].map((row) => row.hash),
+      ...[...this.canvasTiles.values()].map((row) => row.hash),
+    ])
+    return [...deletedHashes].filter((hash) => !referenced.has(hash)).sort()
   }
 
   async readTemplateStatuses(
@@ -756,6 +827,48 @@ export class MemorySqlStore implements SqlStore {
     assertValidBuckets(buckets)
     for (const bucket of buckets) {
       this.buckets.set(bucketKey(bucket), { ...bucket })
+    }
+  }
+
+  async foldTelemetryBuckets(templateIds: readonly string[], now: Seconds): Promise<void> {
+    const ids = new Set(templateIds)
+    if (ids.size === 0) return
+    for (const edge of TELEMETRY_DECAY_EDGES) {
+      const cutoff = now - edge.retainSeconds
+      const groups = [
+        ...new Set(
+          [...this.buckets.values()]
+            .filter((bucket) => ids.has(bucket.templateId) && bucket.resolution === edge.source)
+            .map((bucket) => {
+              const targetStart = Math.floor(bucket.bucketStart / edge.target) * edge.target
+              return `${bucket.templateId}\u0000${targetStart}`
+            })
+            .filter((key) => Number(key.slice(key.indexOf('\u0000') + 1)) + edge.target <= cutoff),
+        ),
+      ]
+        .sort()
+        .slice(0, DECAY_FOLD_GROUP_LIMIT)
+      for (const key of groups) {
+        const separator = key.indexOf('\u0000')
+        const templateId = key.slice(0, separator)
+        const targetStart = Number(key.slice(separator + 1))
+        const source = [...this.buckets.values()].filter(
+          (bucket) =>
+            bucket.templateId === templateId &&
+            bucket.resolution === edge.source &&
+            Math.floor(bucket.bucketStart / edge.target) * edge.target === targetStart,
+        )
+        const folded: TelemetryBucket = {
+          templateId,
+          resolution: edge.target,
+          bucketStart: seconds(targetStart),
+          placed: source.reduce((sum, bucket) => sum + bucket.placed, 0),
+          correct: source.reduce((sum, bucket) => sum + bucket.correct, 0),
+          repairs: source.reduce((sum, bucket) => sum + bucket.repairs, 0),
+        }
+        this.buckets.set(bucketKey(folded), folded)
+        for (const bucket of source) this.buckets.delete(bucketKey(bucket))
+      }
     }
   }
 

@@ -216,6 +216,10 @@ export class MemoryCounterStore implements CounterStore {
       // the oracle that one is measured against.
       try {
         await this.sql.appendBuckets(buckets)
+        await this.sql.foldTelemetryBuckets(
+          buckets.map((bucket) => bucket.templateId),
+          nowSeconds,
+        )
       } catch (error) {
         // Mirrors TelemetryShard: schedule the retry and return rather than rethrowing. Cloudflare
         // caps platform retries of a throwing alarm() at six, so owning the retry is what makes

@@ -14,6 +14,7 @@ import { createApp } from '../app.js'
 import type { Ports } from '../ports/index.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
+const TOKEN = 'a'.repeat(64)
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 const EVENT_ID = '01890f3e-7b2c-7abc-8def-0123456789ac'
 
@@ -348,5 +349,45 @@ describe('telemetry routes', () => {
         includeUnpublished: true,
       }),
     ).resolves.toEqual([])
+  })
+
+  it('folds the touched tile after a save and deletes only its orphaned blob', async () => {
+    const { app, sql, blobs } = await harness()
+    await createPublishedTemplate(app)
+    const reportToken = await mintToken(app, 'report')
+    const now = Math.floor(Date.now() / 1_000)
+    const oldHour = Math.floor((now - 2 * 86_400) / 3_600) * 3_600
+    const discarded = '6'.repeat(64)
+    const survivor = '7'.repeat(64)
+    await blobs.put('tiles', discarded, new Uint8Array([1]))
+    await blobs.put('tiles', survivor, new Uint8Array([2]))
+    await sql.recordTileObservation(
+      {
+        season: 0,
+        tile: { x: 0, y: 0 },
+        hash: discarded,
+        observedAt: millis((oldHour + 60) * 1_000),
+        reportedAt: seconds(oldHour + 60),
+        reportedWithToken: TOKEN,
+        reportedByUserId: 1,
+      },
+      [],
+    )
+    await sql.recordTileObservation(
+      {
+        season: 0,
+        tile: { x: 0, y: 0 },
+        hash: survivor,
+        observedAt: millis((oldHour + 120) * 1_000),
+        reportedAt: seconds(oldHour + 120),
+        reportedWithToken: TOKEN,
+        reportedByUserId: 1,
+      },
+      [],
+    )
+
+    await uploadCanvas(app, reportToken, await canvasTile(), now)
+
+    await expect(blobs.hasAll('tiles', [discarded, survivor])).resolves.toEqual(new Set([survivor]))
   })
 })
