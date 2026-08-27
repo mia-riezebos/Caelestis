@@ -134,7 +134,7 @@ const panelWidthForViewport = (wanted: number): number =>
  */
 const APP_NAME = 'Caelestis'
 const PANEL_TITLE = APP_NAME
-const BUTTON_TOOLTIP = `${APP_NAME} — shared templates`
+const BUTTON_TOOLTIP = `${APP_NAME} — shared templates (C)`
 
 type View = 'tree' | 'settings' | 'appearance'
 
@@ -930,7 +930,7 @@ const settingsView = (): HTMLElement => {
   view.appendChild(
     settingRow(
       'Middle-click colour order',
-      'Visits remaining pixels only inside the template nearest the viewport centre.',
+      'Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.',
       navigationOrder,
     ),
   )
@@ -1349,7 +1349,9 @@ export const syncColourModeState = (): void => {
   button.setAttribute('aria-pressed', String(on))
   const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
   // Says why nothing happened, at the moment it does not: the mode needs a colour to follow.
-  button.title = isPaintOpen() ? label : `${label} — open wplace's paint drawer to pick one`
+  button.title = isPaintOpen()
+    ? `${label} (S)`
+    : `${label} — open wplace's paint drawer to pick one (S)`
   button.setAttribute('aria-label', label)
 }
 

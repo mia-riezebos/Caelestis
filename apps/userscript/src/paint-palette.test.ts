@@ -16,6 +16,9 @@ const harness = vi.hoisted(() => ({
     opaque?: number
   } | null,
   colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
+  paintOpen: true,
+  selectedColour: 0 as number | null,
+  selectPaintColour: vi.fn(() => true),
   navigationTargets: {
     unpainted: {
       templateId: 'local',
@@ -32,6 +35,7 @@ const harness = vi.hoisted(() => ({
       kind: 'unpainted' | 'mismatched',
       _reference: { x: number; y: number },
       _templateId?: string,
+      _exclude?: { templateId: string; x: number; y: number; kind: string },
     ) => harness.navigationTargets[kind],
   ),
 }))
@@ -80,9 +84,12 @@ vi.mock('./templates/mismatch.js', () => ({
   onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
 }))
 vi.mock('./templates/navigate.js', () => ({ navigateTo: harness.navigateTo }))
-vi.mock('./templates/nearest.js', () => ({ templateAtCentre: () => harness.focused }))
+vi.mock('./templates/nearest.js', () => ({ focusedTemplate: () => harness.focused }))
 vi.mock('./wplace-paint.js', () => ({
+  isPaintOpen: () => harness.paintOpen,
   onPaintSelectionChange: (listener: () => void) => harness.paintListeners.push(listener),
+  selectPaintColour: harness.selectPaintColour,
+  selectedColour: () => harness.selectedColour,
 }))
 
 beforeEach(() => {
@@ -96,6 +103,8 @@ beforeEach(() => {
   ]
   harness.focused = local
   harness.colourNavigationOrder = 'unpainted-first'
+  harness.paintOpen = true
+  harness.selectedColour = 0
   harness.navigationTargets.unpainted = {
     templateId: 'local',
     x: 12,
@@ -130,6 +139,7 @@ describe('Wplace paint palette progress', () => {
       'unpainted',
       expect.any(Object),
       'local',
+      undefined,
     )
     expect(harness.navigateTo).toHaveBeenLastCalledWith({
       x: 12.5,
@@ -173,5 +183,40 @@ describe('Wplace paint palette progress', () => {
     harness.paintListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(remounted.querySelector('.caelestis-palette-progress')).toBeNull()
+  })
+
+  it('cycles unfinished focused-template colours around the current Wplace selection', async () => {
+    harness.localProgress = [
+      { index: 0, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
+      { index: 2, completed: 1, mismatched: 0, unpainted: 2, known: 3, total: 3 },
+      { index: 5, completed: 0, mismatched: 0, unpainted: 4, known: 4, total: 4 },
+    ]
+    harness.selectedColour = 2
+    const { cycleFocusedColour } = await import('./paint-palette.js')
+
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+    expect(cycleFocusedColour(-1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+
+    harness.selectedColour = 5
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(2)
+  })
+
+  it('cycles repeated F navigation past its previous focused-template target', async () => {
+    const { navigateFocusedSelectedColour } = await import('./paint-palette.js')
+
+    await expect(navigateFocusedSelectedColour()).resolves.toBe(true)
+    const first = harness.navigationTargets.unpainted
+    await expect(navigateFocusedSelectedColour()).resolves.toBe(true)
+
+    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(
+      0,
+      'unpainted',
+      expect.any(Object),
+      'local',
+      first,
+    )
   })
 })

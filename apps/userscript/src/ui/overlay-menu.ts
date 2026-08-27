@@ -1085,10 +1085,11 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
   hide.type = 'button'
   hide.dataset[CONTROL] = 'hide'
   hide.className = visible ? 'btn btn-ghost btn-xs btn-circle' : 'btn btn-xs btn-circle btn-active'
-  hide.title = visible ? 'Hide this overlay' : 'Show this overlay'
+  const hideLabel = visible ? 'Hide this overlay' : 'Show this overlay'
+  hide.title = `${hideLabel} (V)`
   // The label already says which way this goes. A pressed state on top of it announces "Show this
   // overlay, pressed", which reads as though showing were already on.
-  hide.setAttribute('aria-label', hide.title)
+  hide.setAttribute('aria-label', hideLabel)
   hide.appendChild(icon('image', 'size-4'))
   hide.setAttribute('aria-disabled', String(isDoomed(id)))
   hide.addEventListener('click', () => {
@@ -2083,7 +2084,7 @@ const renderControls = (
       buttons.set(template.id, button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
-    const title = `${template.name} — display options`
+    const title = `${template.name} — display options (T)`
     if (button.title !== title) button.title = title
     const label = `${template.name} display options`
     if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label)

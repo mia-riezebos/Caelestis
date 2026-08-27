@@ -1,4 +1,20 @@
-export type Shortcut = 'toggle-colour' | 'toggle-markers' | 'toggle-panel' | 'toggle-template-menu'
+export type Shortcut =
+  | 'cycle-colour-next'
+  | 'cycle-colour-previous'
+  | 'fly-to-colour'
+  | 'peek-overlays'
+  | 'set-opacity-100'
+  | 'set-opacity-20'
+  | 'set-opacity-40'
+  | 'set-opacity-60'
+  | 'set-opacity-80'
+  | 'toggle-colour'
+  | 'toggle-markers'
+  | 'toggle-panel'
+  | 'toggle-paint'
+  | 'toggle-selected-colour-markers'
+  | 'toggle-template-menu'
+  | 'toggle-visibility'
 
 /**
  * Whether a keystroke belongs to something else on the page.
@@ -25,14 +41,38 @@ export const shortcutFor = (
   if (isTyping(event.target)) return null
 
   switch (event.key.toLowerCase()) {
+    case '1':
+      return 'set-opacity-20'
+    case '2':
+      return 'set-opacity-40'
+    case '3':
+      return 'set-opacity-60'
+    case '4':
+      return 'set-opacity-80'
+    case '5':
+      return 'set-opacity-100'
+    case 'b':
+      return 'toggle-paint'
     case 'c':
       return 'toggle-panel'
+    case 'd':
+      return 'cycle-colour-next'
+    case 'f':
+      return 'fly-to-colour'
+    case 'g':
+      return 'peek-overlays'
+    case 'q':
+      return 'cycle-colour-previous'
     case 's':
       return 'toggle-colour'
     case 't':
       return 'toggle-template-menu'
+    case 'v':
+      return 'toggle-visibility'
     case 'w':
       return 'toggle-markers'
+    case 'x':
+      return 'toggle-selected-colour-markers'
     default:
       return null
   }

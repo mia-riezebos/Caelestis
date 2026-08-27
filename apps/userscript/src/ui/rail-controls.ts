@@ -12,7 +12,7 @@ export const syncMismatchModeState = (): void => {
   button.className = on ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
   button.setAttribute('aria-pressed', String(on))
   const label = on ? 'Hide global mismatch markers' : 'Show global mismatch markers'
-  button.title = label
+  button.title = `${label} (W)`
   button.setAttribute('aria-label', label)
 }
 

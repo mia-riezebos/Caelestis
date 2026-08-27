@@ -425,7 +425,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     rerender()
 
     expect(menu().textContent).toContain('renamed.png')
-    expect(gear('a').title).toBe('renamed.png — display options')
+    expect(gear('a').title).toBe('renamed.png — display options (T)')
   })
 
   it('keeps a dragged slider alive across the repaint it causes', () => {

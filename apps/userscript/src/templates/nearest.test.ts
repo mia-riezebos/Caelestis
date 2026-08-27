@@ -15,7 +15,7 @@ const harness = vi.hoisted(() => ({
 vi.mock('../main.js', () => ({ viewportCentre: () => harness.centre }))
 vi.mock('./local-store.js', () => ({
   displayTemplates: () => harness.templates,
-  isTemplateVisible: (template: { visible: boolean }) => template.visible,
+  isTemplateVisible: vi.fn((template: { visible: boolean }) => template.visible),
 }))
 
 const template = (id: string, originX: number, originY: number, width: number, height: number) => ({
@@ -30,6 +30,9 @@ const template = (id: string, originX: number, originY: number, width: number, h
 beforeEach(() => {
   harness.centre = { x: 10, y: 10 }
   harness.templates = []
+  return import('./local-store.js').then(({ isTemplateVisible }) => {
+    vi.mocked(isTemplateVisible).mockImplementation((candidate) => candidate.visible)
+  })
 })
 
 describe('template focus at the viewport centre', () => {
@@ -38,22 +41,67 @@ describe('template focus at the viewport centre', () => {
       template('large-containing', 0, 0, 1_000, 1_000),
       template('small-nearby', 20, 5, 10, 10),
     ]
-    const { templateAtCentre } = await import('./nearest.js')
+    const { focusedTemplate } = await import('./nearest.js')
 
-    expect(templateAtCentre()?.id).toBe('large-containing')
+    expect(focusedTemplate()?.id).toBe('large-containing')
   })
 
   it('chooses the topmost template when multiple visible templates contain the centre', async () => {
     harness.templates = [template('underneath', 0, 0, 20, 20), template('on-top', 5, 5, 20, 20)]
-    const { templateAtCentre } = await import('./nearest.js')
+    const { focusedTemplate } = await import('./nearest.js')
 
-    expect(templateAtCentre()?.id).toBe('on-top')
+    expect(focusedTemplate()?.id).toBe('on-top')
   })
 
   it('falls back to nearest-centre distance when the viewport centre is in empty space', async () => {
     harness.templates = [template('farther', 100, 100, 10, 10), template('nearer', 20, 20, 10, 10)]
-    const { templateAtCentre } = await import('./nearest.js')
+    const { focusedTemplate } = await import('./nearest.js')
 
-    expect(templateAtCentre()?.id).toBe('nearer')
+    expect(focusedTemplate()?.id).toBe('nearer')
+  })
+})
+
+describe('hidden-template restoration', () => {
+  it('does not expose a hidden template to ordinary template-local actions', async () => {
+    harness.templates = [{ ...template('hidden-containing', 0, 0, 20, 20), visible: false }]
+    const { focusedTemplate } = await import('./nearest.js')
+
+    expect(focusedTemplate()).toBeNull()
+  })
+
+  it('lets a containing visible template outrank the hidden restoration candidate', async () => {
+    harness.templates = [
+      { ...template('visible-under', 0, 0, 20, 20), visible: true },
+      { ...template('hidden-on-top', 5, 5, 20, 20), visible: false },
+    ]
+    const { focusedTemplate } = await import('./nearest.js')
+
+    expect(focusedTemplate({ restoreHiddenAtCentre: true })?.id).toBe('visible-under')
+  })
+
+  it('keeps the topmost-in-draw-order rule within the hidden tier', async () => {
+    harness.templates = [
+      { ...template('hidden-under', 0, 0, 20, 20), visible: false },
+      { ...template('hidden-on-top', 5, 5, 20, 20), visible: false },
+    ]
+    const { focusedTemplate } = await import('./nearest.js')
+
+    expect(focusedTemplate({ restoreHiddenAtCentre: true })?.id).toBe('hidden-on-top')
+  })
+
+  it('never reaches a hidden template through nearest-centre fallback', async () => {
+    harness.templates = [{ ...template('hidden-nearby', 20, 20, 10, 10), visible: false }]
+    const { focusedTemplate } = await import('./nearest.js')
+
+    expect(focusedTemplate({ restoreHiddenAtCentre: true })).toBeNull()
+  })
+
+  it('does not pretend an own-visible template hidden by an ancestor can be restored locally', async () => {
+    harness.templates = [{ ...template('ancestor-hidden', 0, 0, 20, 20), visible: true }]
+    const { focusedTemplate } = await import('./nearest.js')
+    const { isTemplateVisible } = await import('./local-store.js')
+    vi.mocked(isTemplateVisible).mockReturnValue(false)
+
+    expect(focusedTemplate({ restoreHiddenAtCentre: true })).toBeNull()
   })
 })

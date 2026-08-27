@@ -98,6 +98,11 @@ export interface ColourNavigationTarget {
   readonly kind: ColourTargetKind
 }
 
+export type ColourNavigationExclusion = Pick<
+  ColourNavigationTarget,
+  'kind' | 'templateId' | 'x' | 'y'
+>
+
 const markCoordinate = (mark: number): number => mark & 0xfffff
 
 /** Merge two row-major classifications without losing the renderer's spatial-order invariant. */
@@ -802,6 +807,7 @@ const scanCandidate = (
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
   previousDistance: number,
+  exclude?: ColourNavigationExclusion,
 ): CandidateResult => {
   let target: ColourNavigationTarget | null = null
   let distance = previousDistance
@@ -824,6 +830,13 @@ const scanCandidate = (
         kind === 'unpainted' ? placed === UNPAINTED : placed !== UNPAINTED && placed !== wanted
       if (!matches) continue
       matchingPixels++
+      if (
+        exclude?.templateId === candidate.template.id &&
+        exclude.kind === kind &&
+        exclude.x === x &&
+        exclude.y === y
+      )
+        continue
       const dx = wrappedDeltaX(reference.x, x + 0.5)
       const dy = y + 0.5 - reference.y
       const candidateDistance = dx * dx + dy * dy
@@ -847,6 +860,7 @@ export const nearestLoadedColourTarget = (
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
   templateId?: string,
+  exclude?: ColourNavigationExclusion,
 ): ColourNavigationTarget | null => {
   if (!Number.isInteger(index) || index < 0 || index >= PALETTE_SIZE) return null
   const candidates = navigationCandidates(reference, templateId)
@@ -861,7 +875,7 @@ export const nearestLoadedColourTarget = (
     const pixels = tilePixels(candidate.tile)
     if (pixels === null) continue
     loaded++
-    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance)
+    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance, exclude)
     desiredPixels += scanned.desiredPixels
     matchingPixels += scanned.matchingPixels
     if (scanned.target !== null) best = scanned.target
@@ -883,6 +897,7 @@ export const nearestColourTarget = async (
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
   templateId?: string,
+  exclude?: ColourNavigationExclusion,
 ): Promise<ColourNavigationTarget | null> => {
   if (!Number.isInteger(index) || index < 0 || index >= PALETTE_SIZE) return null
   const candidates = navigationCandidates(reference, templateId)
@@ -900,7 +915,7 @@ export const nearestColourTarget = async (
     }
     if (pixels === null) continue
     loaded++
-    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance)
+    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance, exclude)
     desiredPixels += scanned.desiredPixels
     matchingPixels += scanned.matchingPixels
     if (scanned.target !== null) best = scanned.target

@@ -1,6 +1,7 @@
 import { PALETTE_SIZE, TILE_SIZE, TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import { log, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
+import { isOverlayPeekActive } from '../overlay-peek.js'
 import {
   clearGpuProfile,
   isProfileEnabled,
@@ -595,6 +596,7 @@ export const overlayLayer = {
 
   draw(gl: WebGL2RenderingContext, _args: unknown): void {
     if (program === null || vao === null) return
+    if (isOverlayPeekActive()) return
     // Stop where wplace stops. A layer renders every frame whatever the zoom, so without this the
     // overlay stayed on screen past the point their canvas disappears — annotating nothing.
     if (!isDrawingTiles()) return

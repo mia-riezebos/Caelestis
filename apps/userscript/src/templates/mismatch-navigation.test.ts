@@ -119,4 +119,22 @@ describe('per-colour navigation', () => {
       'template',
     )
   })
+
+  it('can skip the previous target while cycling through one colour', async () => {
+    harness.pixels[1] = 255
+    const { nearestLoadedColourTarget } = await import('./mismatch.js')
+    const first = nearestLoadedColourTarget(4, 'unpainted', { x: 10, y: 0 }, 'template')
+
+    const next = nearestLoadedColourTarget(
+      4,
+      'unpainted',
+      { x: 10, y: 0 },
+      'template',
+      first ?? undefined,
+    )
+
+    expect(first).not.toBeNull()
+    expect(next).not.toEqual(first)
+    expect(next?.templateId).toBe('template')
+  })
 })

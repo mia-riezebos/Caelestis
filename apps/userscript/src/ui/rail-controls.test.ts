@@ -44,7 +44,7 @@ describe('global mismatch-marker rail control', () => {
 
     syncMismatchModeState()
 
-    expect(button.title).toBe('Hide global mismatch markers')
+    expect(button.title).toBe('Hide global mismatch markers (W)')
     expect(button.getAttribute('aria-pressed')).toBe('true')
   })
 

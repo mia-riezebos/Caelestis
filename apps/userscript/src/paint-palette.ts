@@ -5,6 +5,7 @@ import { type ConnectedServer, getState, onStateChange } from './state.js'
 import { onServerStatusChange, serverColourProgressFor } from './telemetry.js'
 import { onLocalChange, type PlacedTemplate } from './templates/local-store.js'
 import {
+  type ColourNavigationTarget,
   type ColourTargetKind,
   colourProgressFor,
   nearestColourTarget,
@@ -12,9 +13,14 @@ import {
   type TemplateColourProgress,
 } from './templates/mismatch.js'
 import { navigateTo } from './templates/navigate.js'
-import { templateAtCentre } from './templates/nearest.js'
+import { focusedTemplate } from './templates/nearest.js'
 import { freshestColourProgress } from './ui/progress.js'
-import { onPaintSelectionChange } from './wplace-paint.js'
+import {
+  isPaintOpen,
+  onPaintSelectionChange,
+  selectedColour,
+  selectPaintColour,
+} from './wplace-paint.js'
 
 /**
  * Per-colour progress for one template where Wplace's own paint controls are used.
@@ -47,7 +53,7 @@ const progressForTemplate = (
 
 /** The colour counts decorating Wplace's palette belong only to what the viewport is focused on. */
 export const paintPaletteProgress = (): readonly TemplateColourProgress[] =>
-  progressForTemplate(templateAtCentre())
+  progressForTemplate(focusedTemplate())
 
 const paletteIndexOf = (element: Element): number | null => {
   const raw = Number(element.id.slice('color-'.length))
@@ -59,23 +65,71 @@ const originalLabels = new WeakMap<HTMLElement, string>()
 const wired = new WeakSet<HTMLElement>()
 const PALETTE_SWATCH = '[id^="color-"]'
 
-const goToColour = async (index: number): Promise<void> => {
-  const template = templateAtCentre()
-  if (template === null) return
+let lastNavigation: { readonly index: number; readonly target: ColourNavigationTarget } | null =
+  null
+
+/** Navigate within the one shared focused template, optionally cycling past the previous target. */
+export const navigateFocusedColour = async (index: number, cycle = false): Promise<boolean> => {
+  const template = focusedTemplate()
+  if (template === null) return false
   const map = getMap()
-  if (map === null) return
+  if (map === null) return false
   const reference = latLngToCanvasPixel(map.getCenter())
   const order: readonly ColourTargetKind[] =
     getState().colourNavigationOrder === 'mismatched-first'
       ? ['mismatched', 'unpainted']
       : ['unpainted', 'mismatched']
   for (const kind of order) {
-    const target = await nearestColourTarget(index, kind, reference, template.id)
+    const previous =
+      cycle &&
+      lastNavigation?.index === index &&
+      lastNavigation.target.templateId === template.id &&
+      lastNavigation.target.kind === kind
+        ? lastNavigation.target
+        : undefined
+    let target = await nearestColourTarget(index, kind, reference, template.id, previous)
+    // Preserve the configured kind priority. If the excluded pixel is the only target of this kind,
+    // wrap to it instead of silently dropping into the lower-priority kind.
+    if (target === null && previous !== undefined)
+      target = await nearestColourTarget(index, kind, reference, template.id)
     if (target === null) continue
+    lastNavigation = { index, target }
     navigateTo({ x: target.x + 0.5, y: target.y + 0.5, width: 1, height: 1 })
-    return
+    return true
   }
   warn('install', `no remaining pixel for palette colour ${index} in template ${template.id}`)
+  return false
+}
+
+/** The keyboard form of middle-click: use Wplace's current colour and cycle on repeated presses. */
+export const navigateFocusedSelectedColour = async (): Promise<boolean> => {
+  const index = selectedColour()
+  return index === null ? false : await navigateFocusedColour(index, true)
+}
+
+/** Select the previous or next unfinished colour in the focused template, wrapping at either end. */
+export const cycleFocusedColour = (direction: -1 | 1): boolean => {
+  if (!isPaintOpen()) return false
+  const remaining = paintPaletteProgress()
+    .filter((entry) => entry.completed < entry.total)
+    .map((entry) => entry.index)
+    .sort((left, right) => left - right)
+  if (remaining.length === 0) return false
+  const selected = selectedColour()
+  let next: number | undefined
+  if (direction > 0)
+    next = remaining.find((index) => selected === null || index > selected) ?? remaining[0]
+  else {
+    for (let at = remaining.length - 1; at >= 0; at--) {
+      const index = remaining[at]
+      if (index !== undefined && (selected === null || index < selected)) {
+        next = index
+        break
+      }
+    }
+    next ??= remaining[remaining.length - 1]
+  }
+  return next !== undefined && selectPaintColour(next)
 }
 
 const wire = (swatch: HTMLElement, index: number): void => {
@@ -88,7 +142,7 @@ const wire = (swatch: HTMLElement, index: number): void => {
     if (event.button !== 1) return
     event.preventDefault()
     event.stopPropagation()
-    void goToColour(index)
+    void navigateFocusedColour(index)
   })
 }
 
@@ -123,7 +177,7 @@ const render = (): void => {
     originalLabels.set(element, label)
     element.setAttribute(
       'aria-label',
-      `${label}. ${remaining.toLocaleString()} ${remaining === 1 ? 'pixel' : 'pixels'} left in the focused template. Middle-click to go to its nearest ${navigationLabel} pixel.`,
+      `${label}. ${remaining.toLocaleString()} ${remaining === 1 ? 'pixel' : 'pixels'} left in the focused template. Middle-click, or select it and press F, to go to its nearest ${navigationLabel} pixel.`,
     )
     const badge = existing ?? document.createElement('span')
     badge.className = 'caelestis-palette-progress'
@@ -172,7 +226,7 @@ const discoverPalette = (): void => {
 /** Refresh the counters only when panning or zooming changes which template owns them. */
 export const refreshPaintPaletteFocus = (): void => {
   if (!paletteMounted) return
-  const next = templateAtCentre()?.id ?? null
+  const next = focusedTemplate()?.id ?? null
   if (next === focusedTemplateId) return
   focusedTemplateId = next
   queueRender()
