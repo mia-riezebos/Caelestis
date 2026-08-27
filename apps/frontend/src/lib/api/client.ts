@@ -45,11 +45,30 @@ export class ApiError extends Error {
   }
 }
 
+const retryableMethod = (method: string | undefined): boolean =>
+  method === undefined || method.toUpperCase() === 'GET' || method.toUpperCase() === 'HEAD'
+
+const transientStatus = (status: number): boolean =>
+  status === 408 || status === 429 || status >= 500
+
+/** One transient edge/backend failure must not strand the app until the user reloads it. */
+const fetchWithTransientRetry = async (url: string, init: RequestInit): Promise<Response> => {
+  let first: Response
+  try {
+    first = await fetch(url, init)
+  } catch (error) {
+    if (!retryableMethod(init.method)) throw error
+    return fetch(url, init)
+  }
+  if (!retryableMethod(init.method) || !transientStatus(first.status)) return first
+  return fetch(url, init)
+}
+
 const request = async (path: string, init?: RequestInit): Promise<Response> => {
   const token = readToken()
   const headers = new Headers(init?.headers)
   if (token !== null) headers.set('authorization', `Bearer ${token}`)
-  const response = await fetch(`${readServerUrl()}${path}`, { ...init, headers })
+  const response = await fetchWithTransientRetry(`${readServerUrl()}${path}`, { ...init, headers })
   if (!response.ok) {
     let message = response.statusText
     try {
