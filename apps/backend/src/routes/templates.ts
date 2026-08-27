@@ -172,10 +172,11 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     }
     const body: unknown = await c.req.json().catch(() => null)
     if (typeof body !== 'object' || body === null) return c.json({ error: 'invalid body' }, 400)
-    const { name, nodeId, published } = body as {
+    const { name, nodeId, published, timelapseFrozen } = body as {
       name?: unknown
       nodeId?: unknown
       published?: unknown
+      timelapseFrozen?: unknown
     }
 
     if (name !== undefined && (typeof name !== 'string' || !isValidName(name))) {
@@ -191,8 +192,19 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (published !== undefined && typeof published !== 'boolean') {
       return c.json({ error: 'published must be a boolean' }, 400)
     }
-    if (name === undefined && nodeId === undefined && published === undefined) {
-      return c.json({ error: 'patch must set at least one of name, nodeId, published' }, 400)
+    if (timelapseFrozen !== undefined && typeof timelapseFrozen !== 'boolean') {
+      return c.json({ error: 'timelapseFrozen must be a boolean' }, 400)
+    }
+    if (
+      name === undefined &&
+      nodeId === undefined &&
+      published === undefined &&
+      timelapseFrozen === undefined
+    ) {
+      return c.json(
+        { error: 'patch must set at least one of name, nodeId, published, timelapseFrozen' },
+        400,
+      )
     }
 
     const now = millis(Date.now())
@@ -200,6 +212,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       ...(name === undefined ? {} : { name: name as string }),
       ...(nodeId === undefined ? {} : { nodeId: nodeId as string | null }),
       ...(published === undefined ? {} : { publishedAt: published ? now : null }),
+      ...(timelapseFrozen === undefined ? {} : { timelapseFrozenAt: timelapseFrozen ? now : null }),
     }
     try {
       if (!(await ports.sql.updateTemplate(templateId, patch, now))) {
@@ -220,6 +233,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       ...(name === undefined ? {} : { name }),
       ...(nodeId === undefined ? {} : { nodeId }),
       ...(published === undefined ? {} : { published }),
+      ...(timelapseFrozen === undefined ? {} : { timelapseFrozen }),
       updatedAt: now,
     })
   })

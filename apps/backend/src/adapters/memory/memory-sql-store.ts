@@ -96,6 +96,7 @@ export class MemorySqlStore implements SqlStore {
     Pick<TemplateVersionRecord, 'season' | 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
       publishedAt: Millis | null
+      timelapseFrozenAt: Millis | null
       updatedAt: Millis
     }
   >()
@@ -414,6 +415,7 @@ export class MemorySqlStore implements SqlStore {
       createdAt: version.createdAt,
       currentVersionId: version.versionId,
       publishedAt: null,
+      timelapseFrozenAt: null,
       updatedAt: version.createdAt,
     }
     this.templateVersions.set(version.versionId, {
@@ -455,6 +457,7 @@ export class MemorySqlStore implements SqlStore {
       name: template.name,
       currentVersionId: template.currentVersionId,
       published: template.publishedAt !== null,
+      timelapseFrozen: template.timelapseFrozenAt !== null,
       createdAt: template.createdAt,
       updatedAt: template.updatedAt,
     }
@@ -489,6 +492,10 @@ export class MemorySqlStore implements SqlStore {
       name: patch.name ?? template.name,
       nodeId: patch.nodeId === undefined ? template.nodeId : patch.nodeId,
       publishedAt: patch.publishedAt === undefined ? template.publishedAt : patch.publishedAt,
+      timelapseFrozenAt:
+        patch.timelapseFrozenAt === undefined
+          ? template.timelapseFrozenAt
+          : patch.timelapseFrozenAt,
       updatedAt,
     })
     return true

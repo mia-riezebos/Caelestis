@@ -790,6 +790,7 @@ export class D1SqlStore implements SqlStore {
         name: templates.name,
         currentVersionId: templates.currentVersionId,
         publishedAt: templates.publishedAt,
+        timelapseFrozenAt: templates.timelapseFrozenAt,
         createdAt: templates.createdAtMs,
         updatedAt: templates.updatedAtMs,
       })
@@ -805,6 +806,7 @@ export class D1SqlStore implements SqlStore {
       name: row.name,
       currentVersionId: row.currentVersionId,
       published: row.publishedAt !== null,
+      timelapseFrozen: row.timelapseFrozenAt !== null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }
@@ -852,6 +854,9 @@ export class D1SqlStore implements SqlStore {
           ...(patch.name === undefined ? {} : { name: patch.name }),
           ...(patch.nodeId === undefined ? {} : { nodeId: patch.nodeId }),
           ...(patch.publishedAt === undefined ? {} : { publishedAt: patch.publishedAt }),
+          ...(patch.timelapseFrozenAt === undefined
+            ? {}
+            : { timelapseFrozenAt: patch.timelapseFrozenAt }),
           updatedAtMs: updatedAt,
         })
         .where(predicate)

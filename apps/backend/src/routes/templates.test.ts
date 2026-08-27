@@ -26,7 +26,7 @@ const harness = async () => {
     description: null,
     createdAt: millis(Date.now()),
   })
-  return { blobs, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
+  return { blobs, sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
 const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
@@ -303,6 +303,25 @@ describe('editing a template', () => {
     // Always a caller-side mistake — a typo'd field, or a body that failed to serialise. Answering
     // 200 would report success for a request that changed nothing.
     expect(response.status).toBe(400)
+  })
+
+  it('freezes and thaws a timelapse through PATCH', async () => {
+    const { app, sql } = await harness()
+    const template = await create(app)
+
+    const frozen = await patch(app, template.templateId, { timelapseFrozen: true })
+    expect(frozen.status).toBe(200)
+    await expect(frozen.json()).resolves.toEqual({
+      id: template.templateId,
+      timelapseFrozen: true,
+      updatedAt: expect.any(Number),
+    })
+    expect((await sql.readTemplate(template.templateId))?.timelapseFrozen).toBe(true)
+
+    const thawed = await patch(app, template.templateId, { timelapseFrozen: false })
+    expect(thawed.status).toBe(200)
+    expect((await sql.readTemplate(template.templateId))?.timelapseFrozen).toBe(false)
+    expect((await patch(app, template.templateId, { timelapseFrozen: 'yes' })).status).toBe(400)
   })
 
   it('replaces the pixels with a new version, keeping the template', async () => {

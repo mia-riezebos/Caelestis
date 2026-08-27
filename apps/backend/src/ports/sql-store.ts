@@ -408,6 +408,8 @@ export interface TemplateRecord {
   readonly name: string
   readonly currentVersionId: string | null
   readonly published: boolean
+  /** Frozen timelapses are exempt from decay through their freeze instant. */
+  readonly timelapseFrozen: boolean
   readonly createdAt: Millis
   readonly updatedAt: Millis
 }
@@ -576,6 +578,8 @@ export interface TemplatePatch {
   readonly nodeId?: string | null
   /** Null unpublishes; absent leaves publication alone. */
   readonly publishedAt?: Millis | null
+  /** Null thaws; absent leaves the freeze alone. */
+  readonly timelapseFrozenAt?: Millis | null
 }
 
 /**
