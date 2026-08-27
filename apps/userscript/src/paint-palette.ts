@@ -65,6 +65,18 @@ const originalLabels = new WeakMap<HTMLElement, string>()
 const wired = new WeakSet<HTMLElement>()
 const PALETTE_SWATCH = '[id^="color-"]'
 
+const renderedPaletteOrder = (): readonly number[] => {
+  const seen = new Set<number>()
+  const order: number[] = []
+  for (const element of document.querySelectorAll<HTMLElement>(PALETTE_SWATCH)) {
+    const index = paletteIndexOf(element)
+    if (index === null || seen.has(index)) continue
+    seen.add(index)
+    order.push(index)
+  }
+  return order
+}
+
 let lastNavigation: { readonly index: number; readonly target: ColourNavigationTarget } | null =
   null
 
@@ -110,26 +122,23 @@ export const navigateFocusedSelectedColour = async (): Promise<boolean> => {
 /** Select the previous or next unfinished colour in the focused template, wrapping at either end. */
 export const cycleFocusedColour = (direction: -1 | 1): boolean => {
   if (!isPaintOpen()) return false
-  const remaining = paintPaletteProgress()
-    .filter((entry) => entry.completed < entry.total)
-    .map((entry) => entry.index)
-    .sort((left, right) => left - right)
-  if (remaining.length === 0) return false
+  const remaining = new Set(
+    paintPaletteProgress()
+      .filter((entry) => entry.completed < entry.total)
+      .map((entry) => entry.index),
+  )
+  const order = renderedPaletteOrder()
+  if (remaining.size === 0 || order.length === 0) return false
+
   const selected = selectedColour()
-  let next: number | undefined
-  if (direction > 0)
-    next = remaining.find((index) => selected === null || index > selected) ?? remaining[0]
-  else {
-    for (let at = remaining.length - 1; at >= 0; at--) {
-      const index = remaining[at]
-      if (index !== undefined && (selected === null || index < selected)) {
-        next = index
-        break
-      }
-    }
-    next ??= remaining[remaining.length - 1]
+  const selectedAt = selected === null ? -1 : order.indexOf(selected)
+  let at = selectedAt >= 0 ? selectedAt : direction > 0 ? order.length - 1 : 0
+  for (let visited = 0; visited < order.length; visited++) {
+    at = (at + direction + order.length) % order.length
+    const next = order[at]
+    if (next !== undefined && remaining.has(next)) return selectPaintColour(next)
   }
-  return next !== undefined && selectPaintColour(next)
+  return false
 }
 
 const wire = (swatch: HTMLElement, index: number): void => {

@@ -185,23 +185,35 @@ describe('Wplace paint palette progress', () => {
     expect(remounted.querySelector('.caelestis-palette-progress')).toBeNull()
   })
 
-  it('cycles unfinished focused-template colours around the current Wplace selection', async () => {
+  it("cycles unfinished colours in Wplace's rendered palette order", async () => {
     harness.localProgress = [
       { index: 0, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
       { index: 2, completed: 1, mismatched: 0, unpainted: 2, known: 3, total: 3 },
       { index: 5, completed: 0, mismatched: 0, unpainted: 4, known: 4, total: 4 },
+      { index: 7, completed: 1, mismatched: 1, unpainted: 0, known: 2, total: 2 },
     ]
-    harness.selectedColour = 2
+    for (const index of [5, 0, 2, 7]) {
+      const swatch = document.createElement('button')
+      swatch.id = `color-${index + 1}`
+      document.body.appendChild(swatch)
+    }
     const { cycleFocusedColour } = await import('./paint-palette.js')
-
-    expect(cycleFocusedColour(1)).toBe(true)
-    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
-    expect(cycleFocusedColour(-1)).toBe(true)
-    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
 
     harness.selectedColour = 5
     expect(cycleFocusedColour(1)).toBe(true)
     expect(harness.selectPaintColour).toHaveBeenLastCalledWith(2)
+
+    harness.selectedColour = 2
+    expect(cycleFocusedColour(-1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(7)
+
+    harness.selectedColour = 0
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(2)
+    expect(cycleFocusedColour(-1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
   })
 
   it('cycles repeated F navigation past its previous focused-template target', async () => {
