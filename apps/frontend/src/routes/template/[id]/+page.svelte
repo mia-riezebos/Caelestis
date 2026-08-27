@@ -45,22 +45,6 @@ const storedOverlay = persisted<number>('caelestis:overlay-alpha', 0)
 const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
 
   // ── Timelapse ────────────────────────────────────────────────────────────────────────────────
-  // `raw` is resolution 0: every accepted observation. The folded tiers stay empty until the
-  // backend's ladder-fold writer lands, so raw is the default rather than the fallback.
-  const RESOLUTIONS = [
-    { key: 'raw', seconds: 0, window: 86_400 * 2 },
-    { key: '1h', seconds: 3_600, window: 86_400 * 3 },
-    { key: '6h', seconds: 21_600, window: 86_400 * 14 },
-    { key: '1d', seconds: 86_400, window: 86_400 * 60 },
-  ] as const
-
-  const storedResolution = persisted<(typeof RESOLUTIONS)[number]['key']>(
-    'caelestis:timelapse-resolution',
-    'raw',
-  )
-  const resolutionKey = $derived(storedResolution.value)
-  const resolution = $derived(RESOLUTIONS.find((r) => r.key === resolutionKey) ?? RESOLUTIONS[0])
-
   let frames = $state<ReadonlyMap<TileKey, readonly TileHistoryFrame[]> | null>(null)
   // The scrub position: 0..timeline.length, where the last stop is "live".
   let scrub = $state(0)
@@ -71,16 +55,15 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     const season = app.manifest?.season
     if (target === null || season === undefined) return
     const generation = { cancelled: false }
-    const align = resolution.seconds || 60
-    const to = Math.ceil(Date.now() / 1000 / align) * align
-    const from = to - resolution.window
+    const from = Math.floor(target.createdAt / 1_000)
+    const to = Math.floor((target.finishedAt ?? Date.now()) / 1_000) + 1
     frames = null
     playing = false
     Promise.all(
       tilesInRect(tileUnionRect(target)).map(async (placement) => {
         const [x, y] = placement.key.split('/').map(Number)
         try {
-          const response = await getTileHistory(x ?? 0, y ?? 0, season, resolution.seconds, from, to)
+          const response = await getTileHistory(x ?? 0, y ?? 0, season, from, to)
           return [placement.key, response.frames] as const
         } catch {
           return [placement.key, []] as const
@@ -258,16 +241,6 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
             {/if}
           </span>
         {/if}
-        <div class="join ms-auto">
-          {#each RESOLUTIONS as option (option.key)}
-            <button
-              class="btn join-item btn-xs {option.key === resolutionKey ? 'btn-primary' : 'btn-ghost'}"
-              onclick={() => (storedResolution.value = option.key)}
-            >
-              {option.key}
-            </button>
-          {/each}
-        </div>
       </div>
     </section>
 

@@ -43,6 +43,61 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 /** Larger leaderboards stop being leaderboards; page by narrowing the window instead. */
 const MAX_LEADERBOARD_LIMIT = 200
 const DEFAULT_LEADERBOARD_LIMIT = 50
+const TARGET_HISTORY_POINTS = 200
+
+interface HistoryTier {
+  readonly resolution: number
+  /** How long this tier is retained. Omitted for the final, permanent tier. */
+  readonly retainedFor?: number
+  /** Raw tile observations are irregular; one minute is a conservative density estimate. */
+  readonly estimatedStep?: number
+}
+
+const TELEMETRY_HISTORY_TIERS: readonly HistoryTier[] = [
+  { resolution: 60, retainedFor: 6 * 3_600 },
+  { resolution: 300, retainedFor: 24 * 3_600 },
+  { resolution: 900, retainedFor: 7 * 86_400 },
+  { resolution: 3_600, retainedFor: 30 * 86_400 },
+  { resolution: 21_600 },
+]
+
+const TILE_HISTORY_TIERS: readonly HistoryTier[] = [
+  { resolution: 0, retainedFor: 86_400, estimatedStep: 60 },
+  { resolution: 3_600, retainedFor: 7 * 86_400 },
+  { resolution: 21_600, retainedFor: 30 * 86_400 },
+  { resolution: 86_400 },
+]
+
+/** Pick one tier that covers the whole range without making the client know the ladder. */
+const selectHistoryResolution = (
+  tiers: readonly HistoryTier[],
+  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
+  now = seconds(Math.floor(Date.now() / 1_000)),
+): number => {
+  const permanent = tiers.at(-1)
+  if (permanent === undefined) throw new Error('history tier ladder must not be empty')
+  const eligible = tiers.filter(
+    (tier) => tier.retainedFor === undefined || range.fromSeconds >= now - tier.retainedFor,
+  )
+  const covering = eligible.length === 0 ? [permanent] : eligible
+  const width = range.toSeconds - range.fromSeconds
+  const selected =
+    covering
+      .filter((tier) => width / (tier.estimatedStep ?? tier.resolution) >= TARGET_HISTORY_POINTS)
+      .at(-1) ?? covering[0]
+  if (selected === undefined) throw new Error('history tier ladder must not be empty')
+  return selected.resolution
+}
+
+export const selectTelemetryHistoryResolution = (
+  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
+  now?: Seconds,
+): number => selectHistoryResolution(TELEMETRY_HISTORY_TIERS, range, now)
+
+export const selectTileHistoryResolution = (
+  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
+  now?: Seconds,
+): number => selectHistoryResolution(TILE_HISTORY_TIERS, range, now)
 
 const wholeNumber = (value: string | undefined): number | null => {
   if (value === undefined || !WHOLE_NUMBER.test(value)) return null
@@ -187,14 +242,23 @@ export const createTelemetryRoutes = (
         400,
       )
     }
-    const resolution = wholeNumber(c.req.query('resolution'))
-    if (resolution === null || !LADDER_RESOLUTIONS.includes(resolution)) {
+    const requestedResolution = c.req.query('resolution')
+    const legacyResolution =
+      requestedResolution === undefined ? undefined : wholeNumber(requestedResolution)
+    if (
+      requestedResolution !== undefined &&
+      (typeof legacyResolution !== 'number' || !LADDER_RESOLUTIONS.includes(legacyResolution))
+    ) {
       return c.json({ error: `resolution must be one of ${LADDER_RESOLUTIONS.join(', ')}` }, 400)
     }
     const range = parseRange(c.req.query('from'), c.req.query('to'))
     if (range === null) {
       return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
     }
+    const resolution =
+      typeof legacyResolution === 'number'
+        ? legacyResolution
+        : selectTelemetryHistoryResolution(range)
     // Buckets carry no publish state of their own, so the ids are resolved through the same gate
     // the manifest applies: to a read-scoped caller an unpublished template's history is as absent
     // as the template — a stale id from an earlier manifest poll answers with nothing, not a 403
@@ -341,8 +405,13 @@ export const createTelemetryRoutes = (
         ? options.currentSeason
         : wholeNumber(c.req.query('season'))
     if (season === null) return c.json({ error: 'season must be a non-negative integer' }, 400)
-    const resolution = wholeNumber(c.req.query('resolution'))
-    if (resolution === null || !TILE_HISTORY_RESOLUTIONS.includes(resolution)) {
+    const requestedResolution = c.req.query('resolution')
+    const legacyResolution =
+      requestedResolution === undefined ? undefined : wholeNumber(requestedResolution)
+    if (
+      requestedResolution !== undefined &&
+      (typeof legacyResolution !== 'number' || !TILE_HISTORY_RESOLUTIONS.includes(legacyResolution))
+    ) {
       return c.json(
         { error: `resolution must be one of ${TILE_HISTORY_RESOLUTIONS.join(', ')}` },
         400,
@@ -352,6 +421,8 @@ export const createTelemetryRoutes = (
     if (range === null) {
       return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
     }
+    const resolution =
+      typeof legacyResolution === 'number' ? legacyResolution : selectTileHistoryResolution(range)
     const response: TileHistoryResponse = {
       frames: await ports.sql.readTileHistory({ season, tile: { x, y }, resolution, ...range }),
     }
