@@ -82,6 +82,33 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
 
   afterEach(() => harness.close())
 
+  it('keeps a finished template frozen until it is reopened', async () => {
+    await store.insertTemplateVersion(version('template-1'))
+    await expect(
+      store.updateTemplate(
+        'template-1',
+        { finishedAt: millis(2_000), timelapseFrozenAt: millis(2_000) },
+        millis(2_000),
+      ),
+    ).resolves.toBe(true)
+
+    await expect(
+      store.updateTemplate('template-1', { timelapseFrozenAt: null }, millis(3_000)),
+    ).resolves.toBe(false)
+    await expect(store.readTemplate('template-1')).resolves.toMatchObject({
+      finished: true,
+      timelapseFrozen: true,
+    })
+
+    await expect(
+      store.updateTemplate(
+        'template-1',
+        { finishedAt: null, timelapseFrozenAt: null },
+        millis(4_000),
+      ),
+    ).resolves.toBe(true)
+  })
+
   it('reduces contributions to the maximum per reporter before anything can sum them', async () => {
     await store.insertTemplateVersion(version('template-1'))
     await store.rememberPainter(7, 'Mia', millis(1_000))

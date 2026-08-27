@@ -1,5 +1,6 @@
 <script lang="ts">
 import { Moon, Sun } from '@lucide/svelte'
+import { registerCaelestisUi } from '@caelestis/ui'
 import { onMount } from 'svelte'
 import { serverUrlIsConfigured } from '$lib/api/client'
 import ConnectDialog from '$lib/components/ConnectDialog.svelte'
@@ -13,6 +14,7 @@ let { children } = $props()
 let connectOpen = $state(false)
 
 onMount(() => {
+  registerCaelestisUi()
   void app.load()
 })
 

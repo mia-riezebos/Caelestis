@@ -13,6 +13,16 @@
 const STYLE_ID = 'caelestis-styles'
 
 const CSS = `
+caelestis-template-state,
+caelestis-template-admin {
+  --caelestis-surface: var(--color-base-100, oklch(0.27 0.025 264));
+  --caelestis-text: var(--color-base-content, currentColor);
+  --caelestis-border: var(--color-base-300, rgba(255, 255, 255, 0.14));
+  --caelestis-focus: var(--color-primary, oklch(0.74 0.14 244));
+  --caelestis-finished: var(--color-success, oklch(0.75 0.14 154));
+  --caelestis-frozen: var(--color-primary, oklch(0.76 0.12 238));
+  --caelestis-danger: var(--color-error, oklch(0.72 0.18 27));
+}
 .caelestis-row {
   position: relative;
   border-radius: 0.375rem;

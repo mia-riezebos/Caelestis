@@ -29,6 +29,12 @@ const { template } = $derived(entry)
         {template.totalPixels.toLocaleString()} px
       </span>
     </div>
+    <caelestis-template-state
+      compact
+      finished={template.finished}
+      frozen={template.timelapseFrozen}
+      griefed={template.finished && entry.progress.mismatched > 0}
+    ></caelestis-template-state>
     <ProgressMeter progress={entry.progress} size="sm" />
   </div>
 </a>

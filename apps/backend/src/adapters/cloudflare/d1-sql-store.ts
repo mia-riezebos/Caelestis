@@ -858,6 +858,9 @@ export class D1SqlStore implements SqlStore {
         existing.nodeId === null ? isNull(templates.nodeId) : eq(templates.nodeId, existing.nodeId)
       predicate = and(eq(templates.id, templateId), parentUnchanged) ?? predicate
     }
+    if (patch.timelapseFrozenAt === null && patch.finishedAt !== null) {
+      predicate = and(predicate, isNull(templates.finishedAt)) ?? predicate
+    }
 
     try {
       const result = await this.database

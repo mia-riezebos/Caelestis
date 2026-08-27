@@ -202,6 +202,12 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     if (finished === true && timelapseFrozen === false) {
       return c.json({ error: 'a finished template must keep its timelapse frozen' }, 400)
     }
+    if (timelapseFrozen === false && finished !== false) {
+      const current = await ports.sql.readTemplate(templateId)
+      if (current?.finished === true) {
+        return c.json({ error: 'reopen the template before thawing its timelapse' }, 400)
+      }
+    }
     if (
       name === undefined &&
       nodeId === undefined &&

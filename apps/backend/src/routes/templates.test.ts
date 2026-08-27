@@ -343,6 +343,14 @@ describe('editing a template', () => {
       timelapseFrozen: true,
     })
 
+    const thawedWhileFinished = await patch(app, template.templateId, {
+      timelapseFrozen: false,
+    })
+    expect(thawedWhileFinished.status).toBe(400)
+    await expect(thawedWhileFinished.json()).resolves.toEqual({
+      error: 'reopen the template before thawing its timelapse',
+    })
+
     const reopened = await patch(app, template.templateId, { finished: false })
     expect(reopened.status).toBe(200)
     await expect(sql.readTemplate(template.templateId)).resolves.toMatchObject({
@@ -350,6 +358,8 @@ describe('editing a template', () => {
       finishedAt: null,
       timelapseFrozen: true,
     })
+
+    expect((await patch(app, template.templateId, { timelapseFrozen: false })).status).toBe(200)
   })
 
   it('refuses a finished template with a thawed timelapse', async () => {

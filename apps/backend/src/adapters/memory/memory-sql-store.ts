@@ -482,6 +482,13 @@ export class MemorySqlStore implements SqlStore {
   ): Promise<boolean> {
     const template = this.templates.get(templateId)
     if (template === undefined) return false
+    if (
+      patch.timelapseFrozenAt === null &&
+      patch.finishedAt !== null &&
+      template.finishedAt !== null
+    ) {
+      return false
+    }
     if (patch.nodeId !== undefined && patch.nodeId !== null && !this.nodes.has(patch.nodeId)) {
       throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
     }

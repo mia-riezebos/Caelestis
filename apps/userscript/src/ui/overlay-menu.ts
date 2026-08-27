@@ -1,4 +1,5 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import type { CaelestisTemplateState } from '@caelestis/ui'
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
@@ -440,6 +441,23 @@ const serverActionTargetFor = (template: PlacedTemplate): ServerActionTarget | n
       }
 }
 
+/** Lifecycle state is visible to read-scoped users too; only the mutation target is admin-gated. */
+const serverLifecycleFor = (
+  template: PlacedTemplate,
+): { readonly finished: boolean; readonly frozen: boolean } | null => {
+  if (!isServerTemplate(template) || template.serverTemplateId === undefined) return null
+  const server = getState().servers.find((candidate) => candidate.url === template.serverUrl)
+  const remote =
+    server === undefined
+      ? undefined
+      : admittedServerContentsFor(server)?.templates.find(
+          (candidate) => candidate.id === template.serverTemplateId,
+        )
+  return remote === undefined
+    ? null
+    : { finished: remote.finished === true, frozen: remote.timelapseFrozen === true }
+}
+
 const currentServerActionTargetFor = (id: string): ServerActionTarget | null => {
   const current = templateFor(id)
   return current === undefined ? null : serverActionTargetFor(current)
@@ -643,6 +661,7 @@ const menuSignature = (template: PlacedTemplate): string => {
   const id = template.id
   const appearance = draftedAppearanceFor(id)
   const serverTarget = serverActionTargetFor(template)
+  const lifecycle = serverLifecycleFor(template)
   // Serialised, not joined on a separator. Ids and names are arbitrary strings, so a `|` they can
   // both contain lets two different templates produce one signature — `{id:"a|b", name:"c"}` and
   // `{id:"a", name:"b|c"}` — and the menu is then reused for the wrong one, handlers and all.
@@ -650,6 +669,8 @@ const menuSignature = (template: PlacedTemplate): string => {
     id,
     template.name,
     visibleFor(id),
+    lifecycle?.finished ?? false,
+    lifecycle?.frozen ?? false,
     appearance.radius,
     appearance.translateX,
     appearance.translateY,
@@ -978,6 +999,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
   const appearance = draftedAppearanceFor(id)
   const visible = visibleFor(id)
   const serverTarget = serverActionTargetFor(template)
+  const lifecycle = serverLifecycleFor(template)
   const serverProtected = serverTarget?.published === true
   const menu = document.createElement('div')
   menu.id = MENU_ID
@@ -1330,6 +1352,14 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
 
   header.append(title, close)
   menu.appendChild(header)
+  if (lifecycle !== null && (lifecycle.finished || lifecycle.frozen)) {
+    const state = document.createElement('caelestis-template-state') as CaelestisTemplateState
+    state.compact = true
+    state.finished = lifecycle.finished
+    state.frozen = lifecycle.frozen
+    state.style.marginBlock = '0.375rem 0.125rem'
+    menu.appendChild(state)
+  }
 
   const localActions =
     isServerTemplate(template) && serverTarget === null ? [hide] : [hide, move, remove]

@@ -1,4 +1,5 @@
 import { TILE_SIZE } from '@caelestis/shared'
+import { registerCaelestisUi } from '@caelestis/ui'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,
@@ -217,6 +218,7 @@ const step = (what: string, run: () => void): void => {
 }
 
 const main = (): void => {
+  step('shared UI', registerCaelestisUi)
   step('performance profile', installProfile)
   registerProfileMemorySource('Template pixels', templateIndexMemoryBytes)
   registerProfileMemorySource('Captured tile pixels', capturedPixelMemoryBytes)

@@ -15,6 +15,11 @@ export interface TreeItem {
   readonly childrenOf: string | null
   readonly createdAt?: number
   readonly meta?: string | undefined
+  readonly lifecycle?: {
+    readonly finished: boolean
+    readonly frozen: boolean
+    readonly griefed: boolean
+  }
   readonly progress?: TemplateProgress
   readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[]) | undefined

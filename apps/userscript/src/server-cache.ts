@@ -45,6 +45,10 @@ export interface ServerTemplate {
   /** Added to manifests with progress bars; absent only in an older persisted cache entry. */
   readonly totalPixels?: number
   readonly published: boolean
+  /** Absent only in a cache written before template lifecycle state shipped. */
+  readonly finished?: boolean
+  readonly finishedAt?: number | null
+  readonly timelapseFrozen?: boolean
   readonly updatedAt: number
   readonly bbox: {
     readonly minX: number
@@ -71,6 +75,11 @@ const cachedTemplatesFrom = (value: unknown): readonly ServerTemplate[] | undefi
       (candidate.totalPixels !== undefined &&
         (!Number.isSafeInteger(candidate.totalPixels) || Number(candidate.totalPixels) <= 0)) ||
       typeof candidate.published !== 'boolean' ||
+      (candidate.finished !== undefined && typeof candidate.finished !== 'boolean') ||
+      (candidate.finishedAt !== undefined &&
+        candidate.finishedAt !== null &&
+        !Number.isFinite(candidate.finishedAt)) ||
+      (candidate.timelapseFrozen !== undefined && typeof candidate.timelapseFrozen !== 'boolean') ||
       !Number.isFinite(candidate.updatedAt) ||
       typeof bbox !== 'object' ||
       bbox === null ||

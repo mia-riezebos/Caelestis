@@ -4,9 +4,13 @@
     type TileHistoryFrame,
     type TileKey,
   } from '@caelestis/shared'
+  import type {
+    CaelestisTemplateAdmin,
+    TemplateLifecycleChangeDetail,
+  } from '@caelestis/ui'
   import { ExternalLink, Pause, Play } from '@lucide/svelte'
   import { page } from '$app/state'
-  import { getTileHistory } from '$lib/api/client'
+  import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
   import ColourProgress from '$lib/components/ColourProgress.svelte'
   import ProgressMeter from '$lib/components/ProgressMeter.svelte'
   import StatsPanel from '$lib/components/StatsPanel.svelte'
@@ -49,6 +53,46 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
   // The scrub position: 0..timeline.length, where the last stop is "live".
   let scrub = $state(0)
   let playing = $state(false)
+  let lifecycleBusy = $state(false)
+  let lifecycleError = $state<string | null>(null)
+
+  const updateLifecycle = async (
+    patch: { readonly finished?: boolean; readonly timelapseFrozen?: boolean },
+  ): Promise<void> => {
+    const target = template
+    if (target === null || lifecycleBusy) return
+    lifecycleBusy = true
+    lifecycleError = null
+    try {
+      await patchTemplateLifecycle(target.id, patch)
+      await app.load()
+    } catch (error) {
+      lifecycleError = error instanceof Error ? error.message : String(error)
+    } finally {
+      lifecycleBusy = false
+    }
+  }
+
+  const lifecycleEvents = (node: CaelestisTemplateAdmin) => {
+    const finished = (event: Event) => {
+      void updateLifecycle({
+        finished: (event as CustomEvent<TemplateLifecycleChangeDetail>).detail.value,
+      })
+    }
+    const frozen = (event: Event) => {
+      void updateLifecycle({
+        timelapseFrozen: (event as CustomEvent<TemplateLifecycleChangeDetail>).detail.value,
+      })
+    }
+    node.addEventListener('caelestis-finished-change', finished)
+    node.addEventListener('caelestis-frozen-change', frozen)
+    return {
+      destroy: () => {
+        node.removeEventListener('caelestis-finished-change', finished)
+        node.removeEventListener('caelestis-frozen-change', frozen)
+      },
+    }
+  }
 
   $effect(() => {
     const target = template
@@ -163,6 +207,11 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {#if !template.published}
         <span class="badge badge-warning badge-sm">unpublished</span>
       {/if}
+      <caelestis-template-state
+        finished={template.finished}
+        frozen={template.timelapseFrozen}
+        griefed={template.finished && progress.mismatched > 0}
+      ></caelestis-template-state>
       <span class="text-sm tabular-nums text-base-content/50">
         {template.totalPixels.toLocaleString()} px ·
         {template.bbox.maxX - template.bbox.minX}×{template.bbox.maxY - template.bbox.minY}
@@ -175,11 +224,29 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {/if}
     </header>
 
-    <ProgressMeter {progress} />
+    <ProgressMeter {progress} griefWatch={template.finished} />
     {#if progress.known < progress.total}
       <p class="-mt-2 text-xs text-base-content/50">
         {Math.round((progress.known / Math.max(1, progress.total)) * 100)}% of pixels scanned.
       </p>
+    {/if}
+
+    {#if app.isAdmin}
+      <section class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-3">
+        <div>
+          <h2 class="font-semibold">Template lifecycle</h2>
+          <p class="text-xs text-base-content/60">Finished templates keep a live grief watch without adding history.</p>
+        </div>
+        <caelestis-template-admin
+          use:lifecycleEvents
+          finished={template.finished}
+          frozen={template.timelapseFrozen}
+          busy={lifecycleBusy}
+        ></caelestis-template-admin>
+        {#if lifecycleError !== null}
+          <p class="w-full text-sm text-error" role="alert">{lifecycleError}</p>
+        {/if}
+      </section>
     {/if}
 
     <section class="overflow-hidden rounded-2xl border-[1.5px] border-base-300 bg-base-100">
@@ -235,16 +302,23 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
           />
           <span class="w-32 shrink-0 text-end text-xs tabular-nums text-base-content/70">
             {#if live}
-              <span class="badge badge-success badge-xs align-middle">live</span>
+              <span class="badge badge-success badge-xs align-middle">{template.finished ? 'current' : 'live'}</span>
             {:else if scrubTime !== undefined && scrubTime !== null}
               {formatFrame(scrubTime)}
             {/if}
           </span>
         {/if}
       </div>
+      {#if template.timelapseFrozen}
+        <div class="border-t-[1.5px] border-base-300 px-4 py-2">
+          <caelestis-template-state compact frozen></caelestis-template-state>
+        </div>
+      {/if}
     </section>
 
-    <StatsPanel templateIds={[template.id]} season={app.manifest.season} {progress} />
+    {#if !template.finished}
+      <StatsPanel templateIds={[template.id]} season={app.manifest.season} {progress} />
+    {/if}
 
     {#if status?.colours !== undefined && status.colours.length > 0}
       <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">

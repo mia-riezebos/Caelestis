@@ -1405,7 +1405,13 @@ export const listServerTemplates = async (
 export const patchTemplate = async (
   server: ConnectedServer,
   templateId: string,
-  patch: { name?: string; nodeId?: string | null; published?: boolean },
+  patch: {
+    name?: string
+    nodeId?: string | null
+    published?: boolean
+    finished?: boolean
+    timelapseFrozen?: boolean
+  },
 ): Promise<{ ok: true } | { ok: false; message: string; retryable?: true }> => {
   try {
     const { response, body } = await requestServerMutation(
