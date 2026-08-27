@@ -1,6 +1,6 @@
 import { viewportCentre } from '../main.js'
 import { displayTemplates, isTemplateVisible, type PlacedTemplate } from './local-store.js'
-import { horizontalCentre, wrappedDeltaX } from './placement.js'
+import { horizontalCentre, sourceXAt, wrappedDeltaX } from './placement.js'
 
 /**
  * Which template a keybind means.
@@ -10,9 +10,13 @@ import { horizontalCentre, wrappedDeltaX } from './placement.js'
  * to go on is what is being looked at. The middle of the viewport is that: it is where the eye is,
  * it is where wplace centres what you navigate to, and it needs no extra state to exist.
  *
- * Nearest by centre distance rather than "contains the centre point", so an overlay just off to the
- * side is still reachable. Requiring containment would make a key do nothing whenever the centre
- * happened to land in a gap, which reads as the shortcut being broken rather than as a miss.
+ * Containment comes first. A large template can cover the point being looked at while its geometric
+ * centre is thousands of pixels away; choosing only by centre distance then lets a small, unrelated
+ * template steal focus from underneath the crosshair. When templates overlap, the last one in draw
+ * order wins, matching the colour picker and the pixels actually visible on top.
+ *
+ * Nearest-centre distance remains the fallback when the viewport centre lands in a genuine gap, so
+ * keyboard shortcuts do not become inert between adjacent templates.
  *
  * Hidden templates are not candidates. Toggling something invisible looks exactly like the key not
  * working, and the visible one behind it is what was meant.
@@ -24,14 +28,21 @@ import { horizontalCentre, wrappedDeltaX } from './placement.js'
 export const templateAtCentre = (): PlacedTemplate | null => {
   const centre = viewportCentre()
   if (centre === null) return null
+  let containing: PlacedTemplate | null = null
   let best: { template: PlacedTemplate; distance: number } | null = null
   for (const template of displayTemplates()) {
     if (!isTemplateVisible(template)) continue
+    if (
+      sourceXAt(template, centre.x) !== null &&
+      centre.y >= template.originY &&
+      centre.y < template.originY + template.height
+    )
+      containing = template
     const dx = wrappedDeltaX(centre.x, horizontalCentre(template))
     const dy = template.originY + template.height / 2 - centre.y
     // Squared, because only the ordering matters and a square root per template does not change it.
     const distance = dx * dx + dy * dy
     if (best === null || distance < best.distance) best = { template, distance }
   }
-  return best?.template ?? null
+  return containing ?? best?.template ?? null
 }
