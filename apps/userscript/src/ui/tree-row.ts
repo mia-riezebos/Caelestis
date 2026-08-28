@@ -623,8 +623,8 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
    * An eye, not a tick.
    *
    * A tick answers "is this selected", and nothing here is being selected — every one of these rows
-   * is either on the map or not, which is a thing you can *see*. The eye says which, and its absence
-   * says the other, so a column of these reads as what is drawn rather than as a form to fill in.
+   * is either on the map or not, which is a thing you can *see*. The open and crossed-out eyes make
+   * both states explicit, so the column reads as what is drawn rather than as a form to fill in.
    *
    * Still a checkbox underneath. It is the one element that already means "two states, toggled",
    * and hand-rolling a button in its place would owe the whole contract — the label association, the
