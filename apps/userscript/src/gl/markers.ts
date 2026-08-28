@@ -38,6 +38,7 @@ import {
 import {
   markerDensityMemoryBytes,
   markerSampleRate,
+  markerVisibilityBudget,
   visibleMarkerPoints,
 } from './marker-density.js'
 
@@ -587,11 +588,18 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }
   const points = (work: readonly { readonly marks: { readonly length: number } }[]): number =>
     work.reduce((total, one) => total + one.marks.length, 0)
+  const visibilityBudget = markerVisibilityBudget()
   const estimatedVisiblePoints = (work: readonly Work[]): number =>
     work.reduce(
       (total, one) =>
         total +
-        visibleMarkerPoints(one.marks, one.tile, gl.drawingBufferWidth, gl.drawingBufferHeight),
+        visibleMarkerPoints(
+          one.marks,
+          one.tile,
+          gl.drawingBufferWidth,
+          gl.drawingBufferHeight,
+          visibilityBudget,
+        ),
       0,
     )
   const selectedSourcePoints = points(selectedWork)

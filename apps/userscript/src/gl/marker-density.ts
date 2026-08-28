@@ -47,18 +47,29 @@ interface MarkerViewport {
   readonly height: number
 }
 
+export interface MarkerVisibilityBudget {
+  remainingComparisons: number
+}
+
+/** Shared per-frame ceiling for every clipped marker count. */
+export const markerVisibilityBudget = (): MarkerVisibilityBudget => ({
+  remainingComparisons: 64_000,
+})
+
 /**
  * Count visible packed marker coordinates without source-sized work or allocations.
  *
  * Mismatch marks are ordered by tile-local y then x. A clipped rectangle is therefore a pair of
  * binary searches per visible row, capped by the fixed 1,000-row tile size. Fully visible and fully
- * clipped tiles return without searching.
+ * clipped tiles return without searching. A shared frame allowance falls back to the conservative
+ * full source count before aggregate search work can become a stall.
  */
 export const visibleMarkerPoints = (
   marks: Uint32Array,
   tile: MarkerViewport,
   bufferWidth: number,
   bufferHeight: number,
+  budget: MarkerVisibilityBudget,
 ): number => {
   if (marks.length === 0 || bufferWidth <= 0 || bufferHeight <= 0) return 0
   if (tile.width <= 0 || tile.height <= 0) return 0
@@ -83,6 +94,13 @@ export const visibleMarkerPoints = (
   const startY = clampPixel(Math.ceil((-tile.y * TILE_SIZE) / tile.height - 0.5))
   const endY = clampPixel(Math.ceil(((bufferHeight - tile.y) * TILE_SIZE) / tile.height - 0.5))
   if (startX >= endX || startY >= endY) return 0
+
+  const comparisonsPerSearch = Math.ceil(Math.log2(marks.length + 1))
+  const requiredComparisons = (endY - startY) * 2 * comparisonsPerSearch
+  // Counting the whole source is conservative: the shader may retain fewer visible points, but it
+  // cannot exceed the configured target because uncounted offscreen points remain in the divisor.
+  if (requiredComparisons > budget.remainingComparisons) return marks.length
+  budget.remainingComparisons -= requiredComparisons
 
   const lowerBound = (coordinate: number): number => {
     let low = 0

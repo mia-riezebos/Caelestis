@@ -5,6 +5,7 @@ import {
   markerDensityMemoryBytes,
   markerHash,
   markerSampleRate,
+  markerVisibilityBudget,
   sampledMarkerPopulation,
   visibleMarkerPoints,
 } from './marker-density.js'
@@ -46,7 +47,18 @@ describe('GPU marker sampling', () => {
     }
 
     expect(
-      visibleMarkerPoints(marks, { x: -900, y: -900, width: 1_000, height: 1_000 }, 100, 100),
+      visibleMarkerPoints(
+        marks,
+        { x: -900, y: -900, width: 1_000, height: 1_000 },
+        100,
+        100,
+        markerVisibilityBudget(),
+      ),
     ).toBe(10_000)
+    expect(
+      visibleMarkerPoints(marks, { x: -900, y: -900, width: 1_000, height: 1_000 }, 100, 100, {
+        remainingComparisons: 0,
+      }),
+    ).toBe(marks.length)
   })
 })
