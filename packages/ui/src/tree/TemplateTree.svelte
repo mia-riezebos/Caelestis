@@ -1,5 +1,6 @@
 <script lang="ts">
   import TemplateState from '../template-state/TemplateState.svelte'
+  import ProgressMeter from '../progress/ProgressMeter.svelte'
   import { SvelteMap } from 'svelte/reactivity'
   import type {
     TemplateTreeIntent,
@@ -205,7 +206,7 @@
           {#if entry.lifecycle !== undefined}<TemplateState compact {...entry.lifecycle} />{/if}
           {#if entry.progress !== undefined}
             <button class="progress" type="button" aria-label={`${percent(entry.progress)}% complete`} onclick={(event) => { event.stopPropagation(); if (disclosure === undefined) disclosures.set(entry.key, 'expanded'); else disclosures.delete(entry.key) }}>
-              <span style:width={`${percent(entry.progress)}%`}></span><b>{percent(entry.progress)}%</b>
+              <ProgressMeter progress={entry.progress} size="sm" />
             </button>
           {/if}
           <span class="actions">
@@ -275,9 +276,7 @@
   .visibility { position: relative; display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; cursor: pointer; }
   .visibility input { position: absolute; opacity: 0; }
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
-  .progress { position: relative; inline-size: 5.5rem; block-size: 1.15rem; overflow: hidden; padding: 0; border: 1px solid var(--caelestis-border); border-radius: 999px; background: transparent; color: inherit; }
-  .progress > span { position: absolute; inset-block: 0; inset-inline-start: 0; background: color-mix(in oklch, var(--caelestis-success) 35%, transparent); }
-  .progress b { position: relative; font-size: 0.62rem; }
+  .progress { inline-size: 6.5rem; padding: 0; border: 0; background: transparent; color: inherit; }
   .progress-detail { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 0.5rem; padding: 0.2rem 2.25rem 0.35rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }
   .colours { display: flex; gap: 2px; inline-size: 100%; }
   .colours span { flex: 1; block-size: 0.35rem; border-radius: 999px; }

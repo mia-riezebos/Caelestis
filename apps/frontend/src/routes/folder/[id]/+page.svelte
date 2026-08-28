@@ -1,8 +1,8 @@
 <script lang="ts">
 import { page } from '$app/state'
+import { ProgressMeter } from '@caelestis/ui'
 import ColourProgress from '$lib/components/ColourProgress.svelte'
 import FolderSection from '$lib/components/FolderSection.svelte'
-import ProgressMeter from '$lib/components/ProgressMeter.svelte'
 import StatsPanel from '$lib/components/StatsPanel.svelte'
 import TemplateCard from '$lib/components/TemplateCard.svelte'
 import { Skeleton } from '$lib/components/ui/skeleton'

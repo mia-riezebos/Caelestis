@@ -4,12 +4,11 @@
     type TileHistoryFrame,
     type TileKey,
   } from '@caelestis/shared'
-  import { TemplateAdmin, TemplateState } from '@caelestis/ui'
+  import { ProgressMeter, TemplateAdmin, TemplateState } from '@caelestis/ui'
   import { ExternalLink, Pause, Play } from '@lucide/svelte'
   import { page } from '$app/state'
   import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
   import ColourProgress from '$lib/components/ColourProgress.svelte'
-  import ProgressMeter from '$lib/components/ProgressMeter.svelte'
   import StatsPanel from '$lib/components/StatsPanel.svelte'
   import TemplateViewer from '$lib/components/TemplateViewer.svelte'
   import { Skeleton } from '$lib/components/ui/skeleton'

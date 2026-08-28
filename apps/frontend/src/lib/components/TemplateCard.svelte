@@ -1,7 +1,6 @@
 <script lang="ts">
 import type { CanvasTileSummary, TileKey } from '@caelestis/shared'
-import { TemplateState } from '@caelestis/ui'
-import ProgressMeter from '$lib/components/ProgressMeter.svelte'
+import { ProgressMeter, TemplateState } from '@caelestis/ui'
 import TemplateCanvas from '$lib/components/TemplateCanvas.svelte'
 import type { TreeTemplate } from '$lib/tree'
 
