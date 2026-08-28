@@ -36,9 +36,9 @@ import {
   markerBatchMemoryBytes,
 } from './marker-batching.js'
 import {
-  estimatedVisibleMarkerPoints,
   markerDensityMemoryBytes,
   markerSampleRate,
+  visibleMarkerPoints,
 } from './marker-density.js'
 
 export { markerBatchMemoryBytes, markerDensityMemoryBytes }
@@ -591,12 +591,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     work.reduce(
       (total, one) =>
         total +
-        estimatedVisibleMarkerPoints(
-          one.marks,
-          one.tile,
-          gl.drawingBufferWidth,
-          gl.drawingBufferHeight,
-        ),
+        visibleMarkerPoints(one.marks, one.tile, gl.drawingBufferWidth, gl.drawingBufferHeight),
       0,
     )
   const selectedSourcePoints = points(selectedWork)

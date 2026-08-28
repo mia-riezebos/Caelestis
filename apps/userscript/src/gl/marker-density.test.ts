@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { packMismatchMark } from '../templates/mismatch-marks.js'
 import {
-  estimatedVisibleMarkerPoints,
   MARKER_VIEWPORT_BUDGET,
   markerDensityMemoryBytes,
   markerHash,
   markerSampleRate,
   sampledMarkerPopulation,
+  visibleMarkerPoints,
 } from './marker-density.js'
 
 describe('GPU marker sampling', () => {
@@ -34,16 +35,18 @@ describe('GPU marker sampling', () => {
     expect(markerDensityMemoryBytes()).toBe(0)
   })
 
-  it('detects markers clustered inside a clipped tile sliver with bounded sampling', () => {
-    const marks = new Uint32Array(1_000_000).fill((950 | (950 << 10) | (1 << 20)) >>> 0)
+  it('counts a legal coordinate cluster inside a clipped tile sliver', () => {
+    const marks = new Uint32Array(20_000)
+    let at = 0
+    for (let y = 0; y < 100; y++) {
+      for (let x = 0; x < 100; x++) marks[at++] = packMismatchMark(x, y, 1)
+    }
+    for (let y = 900; y < 1_000; y++) {
+      for (let x = 900; x < 1_000; x++) marks[at++] = packMismatchMark(x, y, 1)
+    }
 
     expect(
-      estimatedVisibleMarkerPoints(
-        marks,
-        { x: -900, y: -900, width: 1_000, height: 1_000 },
-        100,
-        100,
-      ),
-    ).toBe(marks.length)
+      visibleMarkerPoints(marks, { x: -900, y: -900, width: 1_000, height: 1_000 }, 100, 100),
+    ).toBe(10_000)
   })
 })

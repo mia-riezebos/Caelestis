@@ -148,6 +148,18 @@ const context = (): WebGL2RenderingContext => {
   } as unknown as WebGL2RenderingContext
 }
 
+const clippedClusterMarks = () => {
+  const marks = new Uint32Array(20_000)
+  let at = 0
+  for (let y = 0; y < 100; y++) {
+    for (let x = 0; x < 100; x++) marks[at++] = packMismatchMark(x, y, 1)
+  }
+  for (let y = 900; y < 1_000; y++) {
+    for (let x = 900; x < 1_000; x++) marks[at++] = packMismatchMark(x, y, 1)
+  }
+  return marks
+}
+
 describe('marker work selection', () => {
   beforeEach(() => {
     fixture.appearance.markMismatch = false
@@ -204,7 +216,7 @@ describe('marker work selection', () => {
   it('keeps a visible coordinate cluster near the target inside a clipped tile', async () => {
     fixture.appearance.markMismatch = true
     fixture.markerBudget = 4_096
-    fixture.marks = new Uint32Array(1_000_000).fill(packMismatchMark(950, 950, 1))
+    fixture.marks = clippedClusterMarks()
     fixture.quad = { tile: { x: 0, y: 0 }, x: -900, y: -900, width: 1_000, height: 1_000 }
     const gl = context()
     const { markerLayer } = await import('./markers.js')
@@ -212,7 +224,7 @@ describe('marker work selection', () => {
 
     markerLayer.render(gl)
 
-    expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.004096)
+    expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.4096)
     markerLayer.onRemove(null, gl)
   })
 

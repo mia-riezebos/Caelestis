@@ -40,8 +40,6 @@ export const sampledMarkerPopulation = (
   return retained
 }
 
-const MARKER_VISIBILITY_SAMPLE_LIMIT = 1_024
-
 interface MarkerViewport {
   readonly x: number
   readonly y: number
@@ -50,36 +48,57 @@ interface MarkerViewport {
 }
 
 /**
- * Estimate visible packed marker coordinates with fixed work, regardless of source size.
+ * Count visible packed marker coordinates without source-sized work or allocations.
  *
- * One hash-jittered ordinal per array stratum avoids both a full scan and assumptions about spatial
- * distribution. The single pseudo-hit keeps a missed small cluster conservative; an all-visible
- * source still estimates exactly to its full length.
+ * Mismatch marks are ordered by tile-local y then x. A clipped rectangle is therefore a pair of
+ * binary searches per visible row, capped by the fixed 1,000-row tile size. Fully visible and fully
+ * clipped tiles return without searching.
  */
-export const estimatedVisibleMarkerPoints = (
+export const visibleMarkerPoints = (
   marks: Uint32Array,
   tile: MarkerViewport,
   bufferWidth: number,
   bufferHeight: number,
 ): number => {
   if (marks.length === 0 || bufferWidth <= 0 || bufferHeight <= 0) return 0
-  const samples = Math.min(marks.length, MARKER_VISIBILITY_SAMPLE_LIMIT)
-  let visible = 0
-  for (let sample = 0; sample < samples; sample++) {
-    const jitter = markerHash(sample, marks.length) / 0x1_0000_0000
-    const ordinal = Math.min(
-      marks.length - 1,
-      Math.floor(((sample + jitter) * marks.length) / samples),
-    )
-    const mark = marks[ordinal] as number
-    const pixelX = mark & 1_023
-    const pixelY = (mark >>> 10) & 1_023
-    const screenX = tile.x + (pixelX + 0.5) * (tile.width / TILE_SIZE)
-    const screenY = tile.y + (pixelY + 0.5) * (tile.height / TILE_SIZE)
-    if (screenX >= 0 && screenX < bufferWidth && screenY >= 0 && screenY < bufferHeight) visible++
+  if (tile.width <= 0 || tile.height <= 0) return 0
+  if (
+    tile.x >= bufferWidth ||
+    tile.y >= bufferHeight ||
+    tile.x + tile.width <= 0 ||
+    tile.y + tile.height <= 0
+  )
+    return 0
+  if (
+    tile.x >= 0 &&
+    tile.y >= 0 &&
+    tile.x + tile.width <= bufferWidth &&
+    tile.y + tile.height <= bufferHeight
+  )
+    return marks.length
+
+  const clampPixel = (value: number): number => Math.max(0, Math.min(TILE_SIZE, value))
+  const startX = clampPixel(Math.ceil((-tile.x * TILE_SIZE) / tile.width - 0.5))
+  const endX = clampPixel(Math.ceil(((bufferWidth - tile.x) * TILE_SIZE) / tile.width - 0.5))
+  const startY = clampPixel(Math.ceil((-tile.y * TILE_SIZE) / tile.height - 0.5))
+  const endY = clampPixel(Math.ceil(((bufferHeight - tile.y) * TILE_SIZE) / tile.height - 0.5))
+  if (startX >= endX || startY >= endY) return 0
+
+  const lowerBound = (coordinate: number): number => {
+    let low = 0
+    let high = marks.length
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2)
+      if (((marks[middle] as number) & 0x0f_ffff) < coordinate) low = middle + 1
+      else high = middle
+    }
+    return low
   }
-  if (samples === marks.length) return visible
-  return (marks.length * (visible + 1)) / (samples + 1)
+  let visible = 0
+  for (let y = startY; y < endY; y++) {
+    visible += lowerBound((y << 10) | endX) - lowerBound((y << 10) | startX)
+  }
+  return visible
 }
 
 /** GPU sampling retains no density-analysis or sampled-marker CPU buffers. */
