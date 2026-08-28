@@ -59,3 +59,37 @@ export interface NotificationsProps {
   model?: NotificationsModel
   onIntent?: (intent: NotificationsIntent) => void
 }
+
+export type PanelView = 'tree' | 'settings' | 'appearance'
+
+export interface PanelModel {
+  readonly view: PanelView
+  readonly width: number
+  readonly minWidth: number
+  readonly maxWidth: number
+}
+
+export type PanelIntent =
+  | { readonly type: 'navigate'; readonly view: PanelView }
+  | { readonly type: 'close' }
+  | { readonly type: 'resize-preview'; readonly width: number }
+  | { readonly type: 'resize-commit'; readonly width: number }
+
+export interface PanelProps {
+  model: PanelModel
+  children?: import('svelte').Snippet
+  onIntent?: (intent: PanelIntent) => void
+}
+
+export type RailControlId = 'panel' | 'colour' | 'mismatch'
+
+export interface RailControlModel {
+  readonly id: RailControlId
+  readonly label: string
+  readonly pressed: boolean
+  readonly expanded?: boolean
+  readonly controls?: string
+  readonly badge?: number
+}
+
+export type RailControlIntent = { readonly type: 'activate'; readonly id: RailControlId }

@@ -1,3 +1,11 @@
+import type {
+  CaelestisPanel,
+  CaelestisRailControl,
+  PanelIntent,
+  PanelModel,
+  RailControlIntent,
+  RailControlModel,
+} from '@caelestis/ui/elements'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { redraw } from '../main.js'
 import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
@@ -42,12 +50,13 @@ import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
 import { refreshProgressIndicators } from './progress.js'
-import { mismatchModeButton, RAIL_BUTTON_CLASS, syncMismatchModeState } from './rail-controls.js'
+import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { createRangeGestures } from './range-gestures.js'
 import { sliderRow } from './slider.js'
 import { progressChangesCanReorder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID, toast } from './toast.js'
+import { applyWplaceTheme } from './theme.js'
 import { cancelDestinationAdmissions } from './transplant.js'
 import { isTreeDragActive, treeContents } from './tree.js'
 import {
@@ -112,15 +121,6 @@ const BUTTON_ID = 'caelestis-rail-button'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
 const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
-/**
- * Every way a pointer gesture stops.
- *
- * `pointerup` alone is the happy path. A gesture the browser takes back for a system swipe fires
- * `pointercancel` instead, and one whose capture is stolen fires `lostpointercapture` — both leave a
- * drag running forever if only the first is listened for.
- */
-const ENDINGS = ['pointerup', 'pointercancel', 'lostpointercapture'] as const
-
 const panelWidthForViewport = (wanted: number): number =>
   Math.min(maximumPanelWidth(), Math.max(minimumPanelWidth(), wanted))
 
@@ -138,15 +138,9 @@ const BUTTON_TOOLTIP = `${APP_NAME} — shared templates (C)`
 
 type View = 'tree' | 'settings' | 'appearance'
 
-/** The header title for each view, and `null` where the panel keeps its own name. */
-const VIEW_TITLE: Record<View, string | null> = {
-  tree: null,
-  settings: 'Settings',
-  appearance: 'Appearance',
-}
-
 let currentView: View = 'tree'
 let open = false
+let alarmBadge = 0
 let searchQuery = ''
 const rangeGestures = createRangeGestures()
 
@@ -155,26 +149,32 @@ const rangeGestures = createRangeGestures()
  * the class list. Using the same class rather than a colour of our own means our button lights up
  * in whatever their theme calls primary, now and after any theme change.
  */
+const panelRailModel = (): RailControlModel => ({
+  id: 'panel',
+  label: BUTTON_TOOLTIP,
+  pressed: open,
+  expanded: open,
+  controls: PANEL_ID,
+  ...(alarmBadge > 0 ? { badge: alarmBadge } : {}),
+})
+
 const syncRailButtonState = (): void => {
-  const button = document.getElementById(BUTTON_ID)
+  const button = document.getElementById(BUTTON_ID) as CaelestisRailControl | null
   if (button === null) return
-  button.className = open ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
-  button.setAttribute('aria-expanded', String(open))
+  button.model = panelRailModel()
 }
 
-const railButton = (): HTMLButtonElement => {
+const railButton = (): CaelestisRailControl => {
   const existing = document.getElementById(BUTTON_ID)
-  if (existing !== null) return existing as HTMLButtonElement
-  const button = document.createElement('button')
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
   button.id = BUTTON_ID
-  // Exactly the classes wplace's own rail buttons carry.
-  button.className = RAIL_BUTTON_CLASS
-  button.title = BUTTON_TOOLTIP
-  button.setAttribute('aria-label', BUTTON_TOOLTIP)
-  button.setAttribute('aria-expanded', 'false')
-  button.setAttribute('aria-controls', PANEL_ID)
-  button.appendChild(icon('extension'))
-  button.addEventListener('click', togglePanel)
+  button.model = panelRailModel()
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id === 'panel') togglePanel()
+  })
   return button
 }
 
@@ -184,18 +184,8 @@ const railButton = (): HTMLButtonElement => {
  * looked", so it clears itself by being seen.
  */
 export const setAlarmBadge = (count: number): void => {
-  const button = document.getElementById(BUTTON_ID)
-  if (button === null) return
-  const existing = button.querySelector('[data-caelestis-badge]')
-  if (count <= 0) {
-    existing?.remove()
-    return
-  }
-  const badge = existing ?? document.createElement('span')
-  badge.setAttribute('data-caelestis-badge', '')
-  badge.className = 'badge badge-sm badge-error absolute -top-1 -right-1'
-  badge.textContent = String(count)
-  if (existing === null) button.appendChild(badge)
+  alarmBadge = Math.max(0, count)
+  syncRailButtonState()
 }
 
 /**
@@ -979,174 +969,50 @@ const settingsView = (): HTMLElement => {
   return view
 }
 
-const buildPanel = (): HTMLElement => {
-  const panel = document.createElement('aside')
+
+const panelModel = (width = panelWidthForViewport(getState().panelWidth)): PanelModel => ({
+  view: currentView,
+  width,
+  minWidth: minimumPanelWidth(),
+  maxWidth: maximumPanelWidth(),
+})
+
+/** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
+const buildSveltePanel = (): CaelestisPanel => {
+  const panel = document.createElement('caelestis-panel')
   panel.id = PANEL_ID
   panel.setAttribute('aria-label', PANEL_TITLE)
-  // Fixed to the right edge, clear of the rail. Not a modal: no backdrop and nothing to dismiss, so
-  // the map stays live and you can watch a setting take effect while you change it.
-  panel.className = 'bg-base-100 shadow-2xl'
-  // Layout inline: these must not depend on whether wplace happens to use the same utility.
   Object.assign(panel.style, {
     position: 'fixed',
-    // Clear of the rail on the right, and starting on the same line as it — our surfaces are read
-    // together, so they begin together.
     right: `${CLEAR_OF_RAIL}px`,
     top: `${EDGE}px`,
     bottom: `${EDGE}px`,
-    // wplace's own chrome sits at z-40 (the rail) and z-50 (its overlay layer), and the map canvas
-    // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
-    // their rail and menus open over our panel rather than being trapped behind it.
     zIndex: '30',
-    width: `${panelWidthForViewport(getState().panelWidth)}px`,
-    display: 'flex',
-    flexDirection: 'column',
+    display: 'block',
     minHeight: '0',
-    color: 'var(--color-base-content, inherit)',
-    borderRadius: SURFACE_RADIUS,
     overflow: 'hidden',
+    borderRadius: SURFACE_RADIUS,
   } satisfies Partial<CSSStyleDeclaration>)
-
-  const handle = document.createElement('div')
-  handle.className = 'caelestis-resize'
-  // A separator that can be moved is a splitter, and a splitter has to be reachable and readable:
-  // the role and the label alone announced a control that could not be focused or operated, which
-  // is a promise the 6px strip could not keep.
-  handle.setAttribute('role', 'separator')
-  handle.setAttribute('aria-label', 'Resize panel')
-  handle.setAttribute('aria-orientation', 'vertical')
-  handle.tabIndex = 0
-  const noteWidth = (width: number): void => noteResizeRange(width, handle)
-  noteWidth(getState().panelWidth)
-  const KEYBOARD_STEP_PX = 16
-  // Held, then committed — the same shape the appearance sliders in this file use. Autorepeat is
-  // about thirty keydowns a second and each `setState` serialises the whole state, writes it to
-  // storage and rebuilds the view, so committing per keypress made holding an arrow key thirty
-  // full panel rebuilds a second. The width itself follows the key; only the record waits.
-  let held = false
-  handle.addEventListener('keydown', (event) => {
-    const step =
-      event.key === 'ArrowLeft'
-        ? KEYBOARD_STEP_PX
-        : event.key === 'ArrowRight'
-          ? -KEYBOARD_STEP_PX
-          : 0
-    if (step === 0) return
-    event.preventDefault()
-    held = true
-    const next = panelWidthForViewport(panel.getBoundingClientRect().width + step)
-    panel.style.width = `${next}px`
-    noteWidth(next)
-    // The template-local controls use this moving left edge as their viewport boundary.
-    redraw()
-  })
-  const commitWidth = (): void => {
-    if (!held) return
-    held = false
-    setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
-  }
-  handle.addEventListener('keyup', commitWidth)
-  handle.addEventListener('blur', commitWidth)
-  let resizing = false
-  handle.addEventListener('pointerdown', (event) => {
-    // Primary button, primary pointer, one at a time. Without this a right-click or a second touch
-    // on the 6px strip started a resize that followed the pointer until the next `pointerup`, and
-    // each extra press bound another set of move and ending listeners.
-    if (!event.isPrimary || event.button !== 0 || resizing) return
-    resizing = true
-    event.preventDefault()
-    handle.classList.add('caelestis-resizing')
-    // Capture is an optimisation, not a requirement — synthetic pointers can lack a capturable id,
-    // and throwing here would abort the whole drag before it started.
-    try {
-      handle.setPointerCapture(event.pointerId)
-    } catch {
-      /* proceed without capture */
+  panel.model = panelModel()
+  applyWplaceTheme(panel)
+  panel.addEventListener('caelestis-panel-intent', (event) => {
+    const intent = (event as CustomEvent<PanelIntent>).detail
+    switch (intent.type) {
+      case 'navigate':
+        showView(intent.view)
+        break
+      case 'close':
+        setOpen(false)
+        break
+      case 'resize-preview':
+        redraw()
+        break
+      case 'resize-commit':
+        setState({ panelWidth: intent.width })
+        break
     }
-    const startX = event.clientX
-    const startWidth = panel.getBoundingClientRect().width
-    const move = (moved: PointerEvent): void => {
-      // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
-      const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
-      panel.style.width = `${next}px`
-      noteWidth(next)
-      redraw()
-    }
-    // The same three endings every other drag here listens for. Ending on `pointerup` alone left a
-    // cancelled drag — the browser claiming the pointer for a system gesture — with `pointermove`
-    // still bound, so the panel went on resizing under a pointer nobody was pressing.
-    const done = (): void => {
-      resizing = false
-      handle.classList.remove('caelestis-resizing')
-      window.removeEventListener('pointermove', move)
-      for (const ending of ENDINGS) window.removeEventListener(ending, done)
-      setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
-    }
-    window.addEventListener('pointermove', move)
-    for (const ending of ENDINGS) window.addEventListener(ending, done)
   })
-  panel.appendChild(handle)
-
-  const header = document.createElement('div')
-  header.className = 'flex items-center gap-2 px-3 py-2 border-b border-base-300'
-  const title = document.createElement('h2')
-  title.className = 'font-semibold text-sm grow'
-  title.textContent = PANEL_TITLE
-
-  // Only present in settings, and it is the primary way back — the gear becomes a state indicator
-  // rather than a toggle, because a gear that also means "leave settings" is a gear that lies.
-  const backButton = document.createElement('button')
-  backButton.setAttribute('data-caelestis-back', '')
-  backButton.className = 'btn btn-ghost btn-xs btn-circle'
-  backButton.title = 'Back to templates'
-  backButton.setAttribute('aria-label', 'Back to templates')
-  backButton.appendChild(icon('arrowBack', 'size-4'))
-  backButton.addEventListener('click', () => showView('tree'))
-
-  const appearanceButton = document.createElement('button')
-  appearanceButton.setAttribute('data-caelestis-appearance', '')
-  appearanceButton.className = 'btn btn-ghost btn-xs btn-circle'
-  appearanceButton.title = 'Appearance'
-  appearanceButton.setAttribute('aria-label', 'Appearance')
-  appearanceButton.setAttribute('aria-pressed', 'false')
-  // A palette, not sliders. Two gear-adjacent glyphs side by side read as two settings buttons and
-  // say nothing about which is which; a palette says what the page is about before it is opened.
-  appearanceButton.appendChild(icon('palette', 'size-4'))
-  appearanceButton.addEventListener('click', () =>
-    showView(currentView === 'appearance' ? 'tree' : 'appearance'),
-  )
-
-  const settingsButton = document.createElement('button')
-  settingsButton.setAttribute('data-caelestis-settings', '')
-  settingsButton.className = 'btn btn-ghost btn-xs btn-circle'
-  settingsButton.title = 'Settings'
-  settingsButton.setAttribute('aria-label', 'Settings')
-  settingsButton.setAttribute('aria-pressed', 'false')
-  settingsButton.appendChild(icon('settings', 'size-4'))
-  settingsButton.addEventListener('click', () =>
-    showView(currentView === 'settings' ? 'tree' : 'settings'),
-  )
-
-  const closeButton = document.createElement('button')
-  closeButton.className = 'btn btn-ghost btn-xs btn-circle'
-  closeButton.title = 'Close'
-  closeButton.setAttribute('aria-label', 'Close')
-  closeButton.appendChild(icon('close', 'size-4'))
-  closeButton.addEventListener('click', () => setOpen(false))
-
-  header.append(backButton, title, appearanceButton, settingsButton, closeButton)
-
-  const body = document.createElement('div')
-  body.setAttribute('data-caelestis-body', '')
-  Object.assign(body.style, {
-    display: 'flex',
-    flexDirection: 'column',
-    minHeight: '0',
-    flex: '1',
-  })
-  body.appendChild(treeView())
-
-  panel.append(header, body)
+  panel.appendChild(treeView())
   return panel
 }
 
@@ -1194,18 +1060,6 @@ const rerenderTree = (): void => activeTreeRender?.()
  * Module-level because the bounds come from the viewport: a window resize moves them, and that
  * handler lives outside the builder that made the handle.
  */
-const noteResizeRange = (width: number, known?: Element): void => {
-  // The caller passes the handle when it has one. The lookup is for the window-resize listener,
-  // which lives outside the builder — and it was also the reason the range never appeared at all:
-  // `buildPanel` sets the initial value before its caller has put the panel in the document, so the
-  // lookup found nothing and a `separator` that had just been made operable announced no range
-  // until the first drag. Passing it also keeps a drag from doing two DOM lookups per pointermove.
-  const handle = known ?? document.getElementById(PANEL_ID)?.querySelector('.caelestis-resize')
-  if (handle === null || handle === undefined) return
-  handle.setAttribute('aria-valuenow', String(Math.round(width)))
-  handle.setAttribute('aria-valuemin', String(Math.round(minimumPanelWidth())))
-  handle.setAttribute('aria-valuemax', String(Math.round(maximumPanelWidth())))
-}
 
 const scrollerIn = (view: Element | null): HTMLElement | null =>
   view?.querySelector<HTMLElement>('[data-caelestis-scroller]') ??
@@ -1214,10 +1068,8 @@ const scrollerIn = (view: Element | null): HTMLElement | null =>
 const showView = (view: View): void => {
   const staying = currentView === view
   currentView = view
-  const panel = document.getElementById(PANEL_ID)
-  const body = panel?.querySelector('[data-caelestis-body]')
-  const title = panel?.querySelector('h2')
-  if (!body || !title) return
+  const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
+  if (panel === null) return
 
   /**
    * Keep the scroll position when re-rendering the view you are already on.
@@ -1227,30 +1079,15 @@ const showView = (view: View): void => {
    * next one meant scrolling down again. Switching *between* views still starts at the top, which is
    * right: that is a new thing to read, not the same one redrawn.
    */
-  const previous = scrollerIn(body.firstElementChild)
+  const previous = scrollerIn(panel.firstElementChild)
   const scrollTop = staying && previous !== null ? previous.scrollTop : 0
 
   const next =
     view === 'settings' ? settingsView() : view === 'appearance' ? appearanceView() : treeView()
-  body.replaceChildren(next)
+  panel.replaceChildren(next)
   const scroller = scrollerIn(next)
   if (scrollTop > 0 && scroller !== null) scroller.scrollTop = scrollTop
-  title.textContent = VIEW_TITLE[view] ?? PANEL_TITLE
-
-  const back = panel?.querySelector<HTMLElement>('[data-caelestis-back]')
-  if (back) back.style.visibility = view === 'tree' ? 'hidden' : 'visible'
-
-  for (const [attribute, owns] of [
-    ['data-caelestis-settings', 'settings'],
-    ['data-caelestis-appearance', 'appearance'],
-  ] as const) {
-    const button = panel?.querySelector<HTMLElement>(`[${attribute}]`)
-    if (!button) continue
-    const here = view === owns
-    // btn-active is DaisyUI's pressed state, so it reads as "you are here" in their theme.
-    button.className = `btn btn-ghost btn-xs btn-circle${here ? ' btn-active' : ''}`
-    button.setAttribute('aria-pressed', String(here))
-  }
+  panel.model = panelModel(panel.getBoundingClientRect().width)
   log('install', `panel view: ${view}`)
 }
 
@@ -1266,7 +1103,7 @@ const setOpen = (next: boolean): void => {
     return
   }
   if (existing !== null) return
-  document.body.appendChild(buildPanel())
+  document.body.appendChild(buildSveltePanel())
   showView(currentView)
   // The panel's measured left edge is now the map controls' right edge.
   redraw()
@@ -1329,14 +1166,28 @@ const positionRail = (): void => {
  * opening a panel to reach it costs more than the mode saves. It says nothing while their drawer is
  * shut — there is no selected colour then — which the tooltip carries.
  */
-const colourModeButton = (): HTMLButtonElement => {
+const colourRailModel = (): RailControlModel => {
+  const on = getState().onlySelectedColour
+  const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
+  return {
+    id: 'colour',
+    label: isPaintOpen()
+      ? `${label} (S)`
+      : `${label} — open wplace's paint drawer to pick one (S)`,
+    pressed: on,
+  }
+}
+
+const colourModeButton = (): CaelestisRailControl => {
   const existing = document.getElementById(COLOUR_MODE_ID)
-  if (existing !== null) return existing as HTMLButtonElement
-  const button = document.createElement('button')
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
   button.id = COLOUR_MODE_ID
-  button.className = RAIL_BUTTON_CLASS
-  button.appendChild(icon('palette'))
-  button.addEventListener('click', () => {
+  button.model = colourRailModel()
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id !== 'colour') return
     setState({ onlySelectedColour: !getState().onlySelectedColour })
     syncColourModeState()
   })
@@ -1346,17 +1197,9 @@ const colourModeButton = (): HTMLButtonElement => {
 const COLOUR_MODE_ID = 'caelestis-colour-mode'
 
 export const syncColourModeState = (): void => {
-  const button = document.getElementById(COLOUR_MODE_ID)
+  const button = document.getElementById(COLOUR_MODE_ID) as CaelestisRailControl | null
   if (button === null) return
-  const on = getState().onlySelectedColour
-  button.className = on ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
-  button.setAttribute('aria-pressed', String(on))
-  const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
-  // Says why nothing happened, at the moment it does not: the mode needs a colour to follow.
-  button.title = isPaintOpen()
-    ? `${label} (S)`
-    : `${label} — open wplace's paint drawer to pick one (S)`
-  button.setAttribute('aria-label', label)
+  button.model = colourRailModel()
 }
 
 /**
@@ -1404,12 +1247,10 @@ export const installPanel = (): void => {
   })
   window.addEventListener('resize', () => {
     positionRail()
-    const panel = document.getElementById(PANEL_ID)
+    const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
     if (panel === null) return
     const width = panelWidthForViewport(getState().panelWidth)
-    panel.style.width = `${width}px`
-    // The bounds are derived from the viewport, so they moved too.
-    noteResizeRange(width)
+    panel.model = panelModel(width)
     redraw()
   })
   onStateChange(syncColourModeState)

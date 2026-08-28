@@ -13,6 +13,9 @@ orchestration, and page layout. The first shared components are:
 - `TemplateAdmin` and `<caelestis-template-admin>` render finish/reopen and freeze/thaw actions.
 - `Notifications` and `<caelestis-notifications>` render toasts and destructive confirmations from
   a typed model and emit one typed intent event.
+- `Panel` and `<caelestis-panel>` own panel chrome, navigation, and resizing while host view content
+  moves across the Shadow DOM seam one slice at a time.
+- `RailControl` and `<caelestis-rail-control>` render the panel, colour, and mismatch rail buttons.
 
 Host themes cross the Shadow DOM seam through documented `--caelestis-*` custom properties. The
 components also provide usable light and dark defaults.
@@ -29,10 +32,10 @@ Two constraints are enforced by the implementation:
 
 The Svelte custom-element runtime is a fixed cost that later components reuse.
 
-| Build | Before Svelte | Lifecycle | Notifications |
-| --- | ---: | ---: | ---: |
-| Userscript, raw | 433,388 B | 455,360 B | 467,794 B |
-| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B |
-| Element entry, raw | n/a | 60,798 B | 76,160 B |
-| Element entry, gzip | n/a | 18,054 B | 22,229 B |
-| Frontend output | 688 KiB | 712 KiB | 724 KiB |
+| Build | Before Svelte | Lifecycle | Notifications | Panel and rail |
+| --- | ---: | ---: | ---: | ---: |
+| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B |
+| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B |
+| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B |
+| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B |
+| Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB |

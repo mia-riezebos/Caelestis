@@ -1,29 +1,28 @@
+import type { CaelestisRailControl, RailControlIntent } from '@caelestis/ui/elements'
 import { redraw } from '../main.js'
 import { getState, setState } from '../state.js'
-import { icon } from './icons.js'
+import { applyWplaceTheme } from './theme.js'
 
-export const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
 export const MISMATCH_MODE_ID = 'caelestis-mismatch-mode'
 
 export const syncMismatchModeState = (): void => {
-  const button = document.getElementById(MISMATCH_MODE_ID)
+  const button = document.getElementById(MISMATCH_MODE_ID) as CaelestisRailControl | null
   if (button === null) return
   const on = getState().appearance.markMismatch
-  button.className = on ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
-  button.setAttribute('aria-pressed', String(on))
   const label = on ? 'Hide global mismatch markers' : 'Show global mismatch markers'
-  button.title = `${label} (W)`
-  button.setAttribute('aria-label', label)
+  button.model = { id: 'mismatch', label: `${label} (W)`, pressed: on }
 }
 
 /** The always-reachable switch for the global marker default. */
-export const mismatchModeButton = (): HTMLButtonElement => {
+export const mismatchModeButton = (): CaelestisRailControl => {
   const existing = document.getElementById(MISMATCH_MODE_ID)
-  if (existing !== null) return existing as HTMLButtonElement
-  const button = document.createElement('button')
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
   button.id = MISMATCH_MODE_ID
-  button.appendChild(icon('bug'))
-  button.addEventListener('click', () => {
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id !== 'mismatch') return
     const appearance = getState().appearance
     setState({ appearance: { ...appearance, markMismatch: !appearance.markMismatch } })
     syncMismatchModeState()
