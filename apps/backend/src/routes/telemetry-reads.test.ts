@@ -17,6 +17,7 @@ import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
 import type { ContributionDelta, Ports } from '../ports/index.js'
+import { selectTelemetryHistoryResolution, selectTileHistoryResolution } from './telemetry.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
@@ -134,6 +135,34 @@ const contribution = (overrides: Partial<ContributionDelta>): ContributionDelta 
 })
 
 describe('telemetry read routes', () => {
+  it('selects the coarsest retained tier that still yields about 200 points', () => {
+    const now = seconds(2_000_000_000)
+    const range = (age: number, width = age) => ({
+      fromSeconds: seconds(now - age),
+      toSeconds: seconds(now - age + width),
+    })
+
+    expect(selectTelemetryHistoryResolution(range(6 * 3_600), now)).toBe(60)
+    expect(selectTelemetryHistoryResolution(range(24 * 3_600), now)).toBe(300)
+    expect(selectTelemetryHistoryResolution(range(7 * 86_400), now)).toBe(900)
+    expect(selectTelemetryHistoryResolution(range(30 * 86_400), now)).toBe(3_600)
+    expect(selectTelemetryHistoryResolution(range(60 * 86_400), now)).toBe(21_600)
+
+    expect(selectTileHistoryResolution(range(12 * 3_600), now)).toBe(0)
+    expect(selectTileHistoryResolution(range(3 * 86_400), now)).toBe(3_600)
+    expect(selectTileHistoryResolution(range(14 * 86_400), now)).toBe(21_600)
+    expect(selectTileHistoryResolution(range(60 * 86_400), now)).toBe(86_400)
+    expect(
+      selectTileHistoryResolution(
+        {
+          fromSeconds: seconds(now - 20 * 86_400),
+          toSeconds: seconds(now - 20 * 86_400 + 3_600),
+        },
+        now,
+      ),
+    ).toBe(21_600)
+  })
+
   it('serves the server-classified mismatch mask for one visible template tile', async () => {
     const { app } = await harness()
     const templateId = await createPublishedTemplate(app)
@@ -203,6 +232,72 @@ describe('telemetry read routes', () => {
           placed: 5,
           correct: 4,
           repairs: 1,
+        },
+      ],
+    })
+  })
+
+  it('accepts history reads without a client-selected tier', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const bucketStart = Math.floor((now - 60) / 60) * 60
+    await sql.appendBuckets([
+      {
+        templateId,
+        resolution: 60,
+        bucketStart: seconds(bucketStart),
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      },
+    ])
+
+    const response = await app.request(
+      `/telemetry/history?templateIds=${templateId}&from=${now - 3_600}&to=${now}`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      buckets: [expect.objectContaining({ templateId, resolution: 60, bucketStart })],
+    })
+  })
+
+  it('coalesces finer retained telemetry when the selected coarse tier is not materialised', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const to = Math.floor(now / 21_600) * 21_600
+    const from = to - 60 * 86_400
+    await sql.appendBuckets([
+      {
+        templateId,
+        resolution: 60,
+        bucketStart: seconds(from),
+        placed: 7,
+        correct: 6,
+        repairs: 2,
+      },
+    ])
+
+    const response = await app.request(
+      `/telemetry/history?templateIds=${templateId}&from=${from}&to=${to}`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      buckets: [
+        {
+          templateId,
+          resolution: 21_600,
+          bucketStart: from,
+          placed: 7,
+          correct: 6,
+          repairs: 2,
         },
       ],
     })
@@ -423,6 +518,37 @@ describe('telemetry read routes', () => {
       `/telemetry/tiles/0/0/history?season=0&resolution=0&from=${now - 1}&to=${now + 1}`,
     )
     expect(unauthenticated.status).toBe(401)
+  })
+
+  it('coalesces preserved raw tile history when an old range selects the permanent tier', async () => {
+    const { app, sql } = await harness()
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const to = Math.floor(now / 86_400) * 86_400
+    const from = to - 60 * 86_400
+    const hash = 'b'.repeat(64)
+    await sql.recordTileObservation(
+      {
+        season: 0,
+        tile: { x: 0, y: 0 },
+        hash,
+        observedAt: millis(from * 1_000),
+        reportedAt: seconds(from),
+        reportedWithToken: TOKEN_DIGEST,
+        reportedByUserId: 1,
+      },
+      [],
+    )
+
+    const response = await app.request(
+      `/telemetry/tiles/0/0/history?season=0&from=${from}&to=${to}`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      frames: [{ bucketStart: from, hash, reporters: 1 }],
+    })
   })
 
   it('serves mirrored tile blobs by hash like template chunks', async () => {

@@ -92,15 +92,36 @@ export const getManifest = (season?: number): Promise<Manifest> =>
 export const getStatus = (season?: number): Promise<StatusResponse> =>
   json(season === undefined ? '/telemetry/status' : `/telemetry/status?season=${season}`)
 
+/** `/server` deliberately exposes no caller scope, so admin admission is probed explicitly. */
+export const probeAdminScope = async (season: number): Promise<boolean> => {
+  try {
+    await request(`/admin/nodes?season=${season}`)
+    return true
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return false
+    throw error
+  }
+}
+
+export const patchTemplateLifecycle = async (
+  templateId: string,
+  patch: { readonly finished?: boolean; readonly timelapseFrozen?: boolean },
+): Promise<void> => {
+  await request(`/admin/templates/${templateId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
 export const getHistory = (
   templateIds: readonly string[],
-  resolution: number,
   from: number,
   to: number,
 ): Promise<HistoryResponse> =>
   json(
     `/telemetry/history?templateIds=${templateIds.map(encodeURIComponent).join(',')}` +
-      `&resolution=${resolution}&from=${from}&to=${to}`,
+      `&from=${from}&to=${to}`,
   )
 
 export const getContributions = (
@@ -132,14 +153,10 @@ export const getTileHistory = (
   x: number,
   y: number,
   season: number,
-  resolution: number,
   from: number,
   to: number,
 ): Promise<TileHistoryResponse> =>
-  json(
-    `/telemetry/tiles/${x}/${y}/history?season=${season}&resolution=${resolution}` +
-      `&from=${from}&to=${to}`,
-  )
+  json(`/telemetry/tiles/${x}/${y}/history?season=${season}&from=${from}&to=${to}`)
 
 /**
  * Authenticated image loading.

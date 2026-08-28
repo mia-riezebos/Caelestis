@@ -5,7 +5,15 @@ import type {
   TemplateStatus,
   TileKey,
 } from '@caelestis/shared'
-import { ApiError, getCanvas, getManifest, getServer, getStatus, readToken } from '$lib/api/client'
+import {
+  ApiError,
+  getCanvas,
+  getManifest,
+  getServer,
+  getStatus,
+  probeAdminScope,
+  readToken,
+} from '$lib/api/client'
 import { buildTree, type TemplateTree } from '$lib/tree'
 
 /**
@@ -19,6 +27,7 @@ class AppState {
   statuses = $state<ReadonlyMap<string, TemplateStatus>>(new Map())
   canvas = $state<ReadonlyMap<TileKey, CanvasTileSummary>>(new Map())
   loading = $state(false)
+  isAdmin = $state(false)
   /** A 401 or 403 opens the connect dialog. */
   authRequired = $state(false)
   error = $state<string | null>(null)
@@ -40,6 +49,7 @@ class AppState {
     this.manifest = null
     this.statuses = new Map()
     this.canvas = new Map()
+    this.isAdmin = false
     try {
       // `/server` is public and reports whether reads need a token. An open server must not show
       // the connect dialog.
@@ -54,9 +64,10 @@ class AppState {
       if (generation !== this.generation) return
       this.manifest = manifest
       // Status and canvas refine the picture; the tree already renders without them.
-      const [status, canvas] = await Promise.allSettled([
+      const [status, canvas, admin] = await Promise.allSettled([
         getStatus(manifest.season),
         getCanvas(manifest.season),
+        probeAdminScope(manifest.season),
       ])
       if (generation !== this.generation) return
       if (status.status === 'fulfilled') {
@@ -65,6 +76,7 @@ class AppState {
       if (canvas.status === 'fulfilled') {
         this.canvas = new Map(canvas.value.tiles.map((t) => [t.tile, t]))
       }
+      if (admin.status === 'fulfilled') this.isAdmin = admin.value
     } catch (error) {
       if (generation !== this.generation) return
       if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {

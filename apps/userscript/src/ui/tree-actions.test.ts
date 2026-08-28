@@ -58,6 +58,14 @@ describe('server folder context menu', () => {
 })
 
 describe('server template context menu', () => {
+  const templateTarget: TreeTarget = {
+    server,
+    nodeId: 'root',
+    key: 'st:template',
+    name: 'Template',
+    templateId: 'template',
+  }
+
   it('offers only read-only export to an ordinary server member', () => {
     const memberTarget: TreeTarget = {
       server: { ...server, isAdmin: false },
@@ -70,5 +78,33 @@ describe('server template context menu', () => {
     openContextMenu(memberTarget, new MouseEvent('contextmenu'), vi.fn())
 
     expect(document.querySelector('[data-caelestis-menu]')?.textContent).toBe('Export .wplace')
+  })
+
+  it('offers finish and freeze actions for a live template', () => {
+    serverRows.rowsFor.mockReturnValue({
+      nodes: [{ id: 'root', parentId: null }],
+      templates: [{ ...template(true), finished: false, timelapseFrozen: false }],
+    })
+
+    openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
+
+    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain('Mark finished')
+    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain(
+      'Freeze timelapse',
+    )
+  })
+
+  it('offers reopen and thaw actions for an archived template', () => {
+    serverRows.rowsFor.mockReturnValue({
+      nodes: [{ id: 'root', parentId: null }],
+      templates: [{ ...template(true), finished: true, timelapseFrozen: true }],
+    })
+
+    openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
+
+    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain(
+      'Reopen template',
+    )
+    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain('Thaw timelapse')
   })
 })

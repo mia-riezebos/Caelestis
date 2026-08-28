@@ -16,7 +16,8 @@
     "browser:relaunch": "node chromium.mjs --relaunch"
   },
   "dependencies": {
-    "@caelestis/shared": "workspace:*"
+    "@caelestis/shared": "workspace:*",
+    "@caelestis/ui": "workspace:*"
   },
   "devDependencies": {
     "@types/greasemonkey": "^4.0.7",

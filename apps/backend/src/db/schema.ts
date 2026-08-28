@@ -158,6 +158,16 @@ export const templates = sqliteTable(
     currentVersionId: text('current_version_id'),
     publishedAt: integer('published_at').$type<Millis>(),
     /**
+     * When an administrator froze this template's timelapse, or null while it is live.
+     *
+     * A finished artwork's history is an archive, not a cache. The decay sweeper must exempt
+     * `tile_history` rows on a frozen template's tiles and their one-tile ring at or before this
+     * instant.
+     */
+    timelapseFrozenAt: integer('timelapse_frozen_at_ms').$type<Millis>(),
+    /** When an administrator marked this artwork complete, or null while work is live. */
+    finishedAt: integer('finished_at_ms').$type<Millis>(),
+    /**
      * Who created this template.
      *
      * The digest is always recorded: the bootstrap operator has no `access_tokens` row, but it is

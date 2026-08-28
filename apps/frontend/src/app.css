@@ -138,6 +138,13 @@
   --heat-3: oklch(66% 0.13 253);
   --heat-4: oklch(54% 0.14 253);
   --heat-5: oklch(42% 0.13 253);
+  --caelestis-surface: var(--color-base-100);
+  --caelestis-text: var(--color-base-content);
+  --caelestis-border: var(--color-base-300);
+  --caelestis-focus: var(--color-primary);
+  --caelestis-finished: var(--color-success);
+  --caelestis-frozen: var(--color-primary);
+  --caelestis-danger: var(--color-error);
 }
 
 [data-theme='caelestis-dark'] {
@@ -148,6 +155,13 @@
   --heat-3: oklch(62% 0.13 253);
   --heat-4: oklch(71% 0.13 253);
   --heat-5: oklch(80% 0.12 253);
+  --caelestis-surface: var(--color-base-100);
+  --caelestis-text: var(--color-base-content);
+  --caelestis-border: var(--color-base-300);
+  --caelestis-focus: var(--color-primary);
+  --caelestis-finished: var(--color-success);
+  --caelestis-frozen: var(--color-primary);
+  --caelestis-danger: var(--color-error);
 }
 
 @media (prefers-color-scheme: dark) {

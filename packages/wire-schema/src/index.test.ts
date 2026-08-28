@@ -73,6 +73,9 @@ const validTemplate = {
   totalPixels: 1,
   chunks: [{ tile: '325/1781', hash: HASH }],
   published: true,
+  finished: false,
+  finishedAt: null,
+  timelapseFrozen: false,
   createdAt: MILLIS,
   updatedAt: MILLIS,
 }
@@ -574,6 +577,9 @@ describe('cross-field and time-unit schemas', () => {
           hash: HASH,
         })),
         published: true,
+        finished: false,
+        finishedAt: null,
+        timelapseFrozen: false,
         createdAt: MILLIS,
         updatedAt: MILLIS,
       }

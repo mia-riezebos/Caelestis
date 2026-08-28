@@ -6,11 +6,14 @@ let {
   progress,
   size = 'md',
   showPercent = true,
+  griefWatch = false,
   class: className,
 }: {
   progress: Progress
   size?: 'sm' | 'md'
   showPercent?: boolean
+  /** A finished template with wrong pixels is an alarm, not ordinary progress. */
+  griefWatch?: boolean
   class?: string
 } = $props()
 
@@ -35,7 +38,10 @@ const width = (value: number): string =>
     aria-valuenow={Math.round(percent)}
     aria-label="painted {Math.round(percent)}%, scanned {Math.round(scanned)}%"
   >
-    <div class="h-full bg-success" style:width={width(progress.completed)}></div>
+    <div
+      class={griefWatch && progress.mismatched > 0 ? 'h-full bg-error/25' : 'h-full bg-success'}
+      style:width={width(progress.completed)}
+    ></div>
     <div class="h-full bg-error" style:width={width(progress.mismatched)}></div>
     <div
       class="h-full bg-base-content/20"
@@ -46,6 +52,7 @@ const width = (value: number): string =>
     <span
       class={cn(
         'shrink-0 font-semibold tabular-nums',
+        griefWatch && progress.mismatched > 0 && 'text-error',
         size === 'sm' ? 'text-xs' : 'text-sm',
       )}
     >

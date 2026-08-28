@@ -4,6 +4,7 @@ import {
   PALETTE_SIZE,
   type PixelBounds,
   type Seconds,
+  seconds,
   type TemplateStatus,
   type TileCoord,
   type TileHistoryFrame,
@@ -59,6 +60,23 @@ export const tooManyTemplateIds = (count: number, method = 'readBuckets'): Error
 
 /** Bucket widths the decay ladder folds to, matching `telemetry_buckets_resolution_check`. */
 export const LADDER_RESOLUTIONS: readonly number[] = [60, 300, 900, 3_600, 21_600]
+
+export interface DecayEdge {
+  readonly source: number
+  readonly target: number
+  readonly retainSeconds: number
+}
+
+/** Delta buckets compact only after the complete target window has aged past this boundary. */
+export const TELEMETRY_DECAY_EDGES: readonly DecayEdge[] = [
+  { source: 60, target: 300, retainSeconds: 6 * 3_600 },
+  { source: 300, target: 900, retainSeconds: 24 * 3_600 },
+  { source: 900, target: 3_600, retainSeconds: 7 * 86_400 },
+  { source: 3_600, target: 21_600, retainSeconds: 30 * 86_400 },
+]
+
+/** Target groups processed per tier and write touch. Backlogs drain over later saves. */
+export const DECAY_FOLD_GROUP_LIMIT = 20
 
 /**
  * The domain `telemetry_buckets` will actually store, stated where both adapters can honour it.
@@ -116,7 +134,8 @@ export const compareBuckets = (left: TelemetryBucket, right: TelemetryBucket): n
 
 export interface BucketQuery {
   readonly templateIds: readonly string[]
-  readonly resolution: number
+  /** One exact tier for legacy callers, or several retained tiers for a lossless server-side read. */
+  readonly resolution: number | readonly number[]
   readonly fromSeconds: Seconds
   readonly toSeconds: Seconds
 }
@@ -128,7 +147,7 @@ export interface BucketQuery {
  * than on the whole store — a narrower dependency, and one that keeps its test doubles honest
  * instead of stubbing out credential methods they never call.
  */
-export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets'>
+export type BucketStore = Pick<SqlStore, 'appendBuckets' | 'readBuckets' | 'foldTelemetryBuckets'>
 
 /**
  * What `readContributions` may be asked for.
@@ -195,6 +214,75 @@ export const compareContributionDays = (left: ContributionDay, right: Contributi
 
 /** Bucket widths `tile_history` folds to, matching `tile_history_resolution_s_check`. 0 is raw. */
 export const TILE_HISTORY_RESOLUTIONS: readonly number[] = [0, 3_600, 21_600, 86_400]
+
+export const TILE_HISTORY_DECAY_EDGES: readonly DecayEdge[] = [
+  { source: 0, target: 3_600, retainSeconds: 86_400 },
+  { source: 3_600, target: 21_600, retainSeconds: 7 * 86_400 },
+  { source: 21_600, target: 86_400, retainSeconds: 30 * 86_400 },
+]
+
+/** One physical reporter row carried between tile-history tiers. */
+export interface TileHistoryReporterRow {
+  readonly season: number
+  readonly tile: TileCoord
+  readonly resolution: number
+  readonly bucketStart: Seconds
+  readonly hash: string
+  readonly reportedWithToken: string
+  readonly reportedByUserId: number
+}
+
+export interface FoldedTileRows {
+  readonly rows: readonly TileHistoryReporterRow[]
+  readonly deletedHashes: readonly string[]
+}
+
+/** Latest source bucket wins; quorum chooses its hash; every winning reporter row survives. */
+export const foldTileReporterRows = (
+  rows: readonly TileHistoryReporterRow[],
+  targetResolution: number,
+): FoldedTileRows => {
+  const targetGroups = new Map<number, TileHistoryReporterRow[]>()
+  for (const row of rows) {
+    const targetStart = Math.floor(row.bucketStart / targetResolution) * targetResolution
+    const held = targetGroups.get(targetStart)
+    if (held === undefined) targetGroups.set(targetStart, [row])
+    else held.push(row)
+  }
+
+  const folded: TileHistoryReporterRow[] = []
+  for (const [targetStart, group] of targetGroups) {
+    const reporters = new Map<string, Set<number>>()
+    for (const row of group) {
+      const key = `${row.bucketStart}\u0000${row.hash}`
+      const held = reporters.get(key)
+      if (held === undefined) reporters.set(key, new Set([row.reportedByUserId]))
+      else held.add(row.reportedByUserId)
+    }
+    const frames = foldTileFrames(
+      [...reporters].map(([key, accounts]) => {
+        const separator = key.indexOf('\u0000')
+        return {
+          bucketStart: seconds(Number(key.slice(0, separator))),
+          hash: key.slice(separator + 1),
+          reporters: accounts.size,
+        }
+      }),
+    )
+    const latest = frames.at(-1)
+    if (latest === undefined) continue
+    folded.push(
+      ...group
+        .filter((row) => row.bucketStart === latest.bucketStart && row.hash === latest.hash)
+        .map((row) => ({
+          ...row,
+          resolution: targetResolution,
+          bucketStart: seconds(targetStart),
+        })),
+    )
+  }
+  return { rows: folded, deletedHashes: [...new Set(rows.map((row) => row.hash))] }
+}
 
 export interface TileHistoryQuery {
   readonly season: number
@@ -408,6 +496,10 @@ export interface TemplateRecord {
   readonly name: string
   readonly currentVersionId: string | null
   readonly published: boolean
+  /** Frozen timelapses are exempt from decay through their freeze instant. */
+  readonly timelapseFrozen: boolean
+  readonly finished: boolean
+  readonly finishedAt: Millis | null
   readonly createdAt: Millis
   readonly updatedAt: Millis
 }
@@ -442,6 +534,9 @@ export interface ManifestTemplateRecord {
   readonly bbox: PixelBounds
   readonly totalPixels: number
   readonly published: boolean
+  readonly finished: boolean
+  readonly finishedAt: Millis | null
+  readonly timelapseFrozen: boolean
   readonly createdAt: Millis
   readonly updatedAt: Millis
 }
@@ -457,6 +552,7 @@ export interface ManifestTileRecord {
 /** One current template chunk affected by a canvas tile observation or paint event. */
 export interface TelemetryTarget extends ManifestTileRecord {
   readonly bbox: PixelBounds
+  readonly finished: boolean
 }
 
 export interface TileObservation {
@@ -576,6 +672,10 @@ export interface TemplatePatch {
   readonly nodeId?: string | null
   /** Null unpublishes; absent leaves publication alone. */
   readonly publishedAt?: Millis | null
+  /** Null thaws; absent leaves the freeze alone. */
+  readonly timelapseFrozenAt?: Millis | null
+  /** Null reopens; a timestamp finishes; absent leaves the lifecycle alone. */
+  readonly finishedAt?: Millis | null
 }
 
 /**
@@ -726,7 +826,11 @@ export interface SqlStore {
   recordTileObservation(
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
+    recordHistory?: boolean,
   ): Promise<void>
+
+  /** Fold the SQL history for one touched tile. Physical blob GC needs a separately safe protocol. */
+  foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<void>
 
   readTemplateStatuses(
     season: number,
@@ -779,6 +883,9 @@ export interface SqlStore {
    * cumulative total, never an increment.
    */
   appendBuckets(buckets: readonly TelemetryBucket[]): Promise<void>
+
+  /** Fold and prune eligible delta buckets for templates touched by the current write. */
+  foldTelemetryBuckets(templateIds: readonly string[], now: Seconds): Promise<void>
 
   /**
    * Read folded buckets for a set of templates at one resolution over a half-open range.

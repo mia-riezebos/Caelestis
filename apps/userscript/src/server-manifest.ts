@@ -233,6 +233,11 @@ const manifestContentsValid = (
     if (!Number.isSafeInteger(raw.totalPixels) || Number(raw.totalPixels) <= 0) return false
     if (
       typeof raw.published !== 'boolean' ||
+      (raw.finished !== undefined && typeof raw.finished !== 'boolean') ||
+      (raw.finishedAt !== undefined &&
+        raw.finishedAt !== null &&
+        !plausibleMillis(raw.finishedAt)) ||
+      (raw.timelapseFrozen !== undefined && typeof raw.timelapseFrozen !== 'boolean') ||
       !plausibleMillis(raw.createdAt) ||
       (raw.updatedAt !== undefined && !plausibleMillis(raw.updatedAt))
     )
@@ -311,6 +316,9 @@ export const parseServerManifest = (
       version: String(template.version),
       totalPixels: Number(template.totalPixels),
       published: template.published === true,
+      finished: template.finished === true,
+      finishedAt: typeof template.finishedAt === 'number' ? template.finishedAt : null,
+      timelapseFrozen: template.timelapseFrozen === true,
       updatedAt:
         typeof template.updatedAt === 'number'
           ? template.updatedAt

@@ -258,6 +258,9 @@ export const Template = Schema.Struct({
   totalPixels: NonNegativeInteger,
   chunks: boundedArray(Chunk, MAX_TEMPLATE_CHUNKS),
   published: Schema.Boolean,
+  finished: Schema.Boolean,
+  finishedAt: Schema.NullOr(Millis),
+  timelapseFrozen: Schema.Boolean,
   createdAt: Millis,
   /**
    * When anything last changed, including things that leave the chunks alone.

@@ -672,11 +672,15 @@ export const dropOnServerNode = async (
     : serverTemplateTreeKey(server, result.destinationId)
 }
 
-/** Whether the row's template is published, read from the copy the row itself was drawn from. */
-const publishedStateOf = (target: TreeTarget): boolean =>
+/** The template state from the same admitted snapshot that drew this row. */
+const templateStateOf = (target: TreeTarget): ServerTemplate | null =>
   target.server !== null && target.templateId !== undefined
-    ? (serverTemplateAt(target.server.url, target.templateId)?.published ?? false)
-    : false
+    ? (rowsFor(target.server)?.templates.find((template) => template.id === target.templateId) ??
+      null)
+    : null
+
+const publishedStateOf = (target: TreeTarget): boolean =>
+  templateStateOf(target)?.published ?? false
 
 /**
  * Replace a published template's artwork with a local template's.
@@ -828,6 +832,18 @@ const setServerTemplatePublished = async (
   await refreshCurrentNodes(server, rerender, true)
 }
 
+const setServerTemplateLifecycle = async (
+  target: TreeTarget,
+  patch: { readonly finished?: boolean; readonly timelapseFrozen?: boolean },
+  rerender: () => void,
+): Promise<void> => {
+  const { server, templateId } = target
+  if (server === null || templateId === undefined) return
+  const result = await patchTemplate(server, templateId, patch)
+  if (!result.ok) toast(result.message, 'error')
+  await refreshCurrentNodes(server, rerender, true)
+}
+
 const folderTemplatesFor = (target: TreeTarget): readonly ServerTemplate[] | null => {
   if (target.server === null || target.nodeId === null || target.templateId !== undefined)
     return null
@@ -957,6 +973,7 @@ export const openContextMenu = (
     () => void applyDelete(target, rerender, invoker),
   ]
   const published = publishedStateOf(target)
+  const lifecycle = templateStateOf(target)
   const folderTemplates = folderTemplatesFor(target)
   const folderPublished =
     folderTemplates !== null &&
@@ -988,6 +1005,30 @@ export const openContextMenu = (
                   () => void setServerTemplatePublished(target, false, rerender),
                 ]
               : ['eye', 'Publish', () => void setServerTemplatePublished(target, true, rerender)],
+            lifecycle?.finished === true
+              ? [
+                  'reset',
+                  'Reopen template',
+                  () => void setServerTemplateLifecycle(target, { finished: false }, rerender),
+                ]
+              : [
+                  'check',
+                  'Mark finished',
+                  () => void setServerTemplateLifecycle(target, { finished: true }, rerender),
+                ],
+            lifecycle?.timelapseFrozen === true
+              ? [
+                  'reset',
+                  'Thaw timelapse',
+                  () =>
+                    void setServerTemplateLifecycle(target, { timelapseFrozen: false }, rerender),
+                ]
+              : [
+                  'check',
+                  'Freeze timelapse',
+                  () =>
+                    void setServerTemplateLifecycle(target, { timelapseFrozen: true }, rerender),
+                ],
             ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
             rename,
             remove,

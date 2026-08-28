@@ -2,11 +2,13 @@ import {
   type ContributionDay,
   type Millis,
   type Seconds,
+  seconds,
   type TemplateStatus,
   type TileCoord,
   type TileHistoryFrame,
   tileKey,
   WORLD_PIXELS,
+  WORLD_TILES,
 } from '@caelestis/shared'
 import {
   type AccessToken,
@@ -23,7 +25,9 @@ import {
   compareAccessTokens,
   compareBuckets,
   compareContributionDays,
+  DECAY_FOLD_GROUP_LIMIT,
   foldTileFrames,
+  foldTileReporterRows,
   InvalidNodeParentError,
   type LatestTileObservation,
   MAX_NODE_PATH_LENGTH,
@@ -39,6 +43,7 @@ import {
   NodeSubtreeChangedError,
   type ServerSettings,
   type SqlStore,
+  TELEMETRY_DECAY_EDGES,
   type TelemetryBucket,
   type TelemetryTarget,
   type TemplateDeletePrecondition,
@@ -48,7 +53,9 @@ import {
   type TemplateRecord,
   type TemplateTileStatusRecord,
   type TemplateVersionRecord,
+  TILE_HISTORY_DECAY_EDGES,
   type TileHistoryQuery,
+  type TileHistoryReporterRow,
   type TileObservation,
   tooManyTemplateIds,
 } from '../../ports/index.js'
@@ -68,14 +75,7 @@ const bucketKey = (bucket: TelemetryBucket): string =>
   `${bucket.templateId}\u0000${bucket.resolution}\u0000${bucket.bucketStart}`
 
 /** One `tile_history` row: an observation as one account reported it, keyed like D1's primary key. */
-interface TileHistoryRow {
-  readonly season: number
-  readonly tile: TileCoord
-  readonly resolution: number
-  readonly bucketStart: Seconds
-  readonly hash: string
-  readonly reportedByUserId: number
-}
+type TileHistoryRow = TileHistoryReporterRow
 
 const tileHistoryRowKey = (row: TileHistoryRow): string =>
   [
@@ -96,6 +96,8 @@ export class MemorySqlStore implements SqlStore {
     Pick<TemplateVersionRecord, 'season' | 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
       publishedAt: Millis | null
+      timelapseFrozenAt: Millis | null
+      finishedAt: Millis | null
       updatedAt: Millis
     }
   >()
@@ -414,6 +416,8 @@ export class MemorySqlStore implements SqlStore {
       createdAt: version.createdAt,
       currentVersionId: version.versionId,
       publishedAt: null,
+      timelapseFrozenAt: null,
+      finishedAt: null,
       updatedAt: version.createdAt,
     }
     this.templateVersions.set(version.versionId, {
@@ -455,6 +459,9 @@ export class MemorySqlStore implements SqlStore {
       name: template.name,
       currentVersionId: template.currentVersionId,
       published: template.publishedAt !== null,
+      timelapseFrozen: template.timelapseFrozenAt !== null,
+      finished: template.finishedAt !== null,
+      finishedAt: template.finishedAt,
       createdAt: template.createdAt,
       updatedAt: template.updatedAt,
     }
@@ -475,6 +482,13 @@ export class MemorySqlStore implements SqlStore {
   ): Promise<boolean> {
     const template = this.templates.get(templateId)
     if (template === undefined) return false
+    if (
+      patch.timelapseFrozenAt === null &&
+      patch.finishedAt !== null &&
+      template.finishedAt !== null
+    ) {
+      return false
+    }
     if (patch.nodeId !== undefined && patch.nodeId !== null && !this.nodes.has(patch.nodeId)) {
       throw new NodeNotFoundError(`node does not exist: ${patch.nodeId}`)
     }
@@ -489,6 +503,11 @@ export class MemorySqlStore implements SqlStore {
       name: patch.name ?? template.name,
       nodeId: patch.nodeId === undefined ? template.nodeId : patch.nodeId,
       publishedAt: patch.publishedAt === undefined ? template.publishedAt : patch.publishedAt,
+      timelapseFrozenAt:
+        patch.timelapseFrozenAt === undefined
+          ? template.timelapseFrozenAt
+          : patch.timelapseFrozenAt,
+      finishedAt: patch.finishedAt === undefined ? template.finishedAt : patch.finishedAt,
       updatedAt,
     })
     return true
@@ -539,6 +558,9 @@ export class MemorySqlStore implements SqlStore {
         bbox: { ...version.bbox },
         totalPixels: version.totalPixels,
         published: template.publishedAt !== null,
+        finished: template.finishedAt !== null,
+        finishedAt: template.finishedAt,
+        timelapseFrozen: template.timelapseFrozenAt !== null,
         createdAt: template.createdAt,
         updatedAt: template.updatedAt,
       })
@@ -594,6 +616,7 @@ export class MemorySqlStore implements SqlStore {
         tileY: tile.y,
         hash: chunk.hash,
         bbox: { ...version.bbox },
+        finished: template.finishedAt !== null,
       })
     }
     return targets.sort((left, right) => left.templateId.localeCompare(right.templateId))
@@ -613,6 +636,7 @@ export class MemorySqlStore implements SqlStore {
   async recordTileObservation(
     observation: TileObservation,
     statuses: readonly TemplateTileStatusRecord[],
+    recordHistory = true,
   ): Promise<void> {
     // The raw tile-history tier, mirroring D1's insert-or-ignore: resolution 0, bucketed at the
     // report time itself. Without this row the memory oracle had no timelapse at all, so a
@@ -623,10 +647,13 @@ export class MemorySqlStore implements SqlStore {
       resolution: 0,
       bucketStart: observation.reportedAt,
       hash: observation.hash,
+      reportedWithToken: observation.reportedWithToken,
       reportedByUserId: observation.reportedByUserId,
     }
-    const historyKey = tileHistoryRowKey(row)
-    if (!this.tileHistory.has(historyKey)) this.tileHistory.set(historyKey, row)
+    if (recordHistory) {
+      const historyKey = tileHistoryRowKey(row)
+      if (!this.tileHistory.has(historyKey)) this.tileHistory.set(historyKey, row)
+    }
     const key = `${observation.season}\u0000${tileKey(observation.tile)}`
     const held = this.canvasTiles.get(key)
     if (held === undefined || held.observedAt <= observation.observedAt) {
@@ -638,6 +665,77 @@ export class MemorySqlStore implements SqlStore {
       if (current === undefined || current.observedAt <= status.observedAt) {
         this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
       }
+    }
+  }
+
+  private tileIsFrozenAt(season: number, tile: TileCoord, targetStart: number): boolean {
+    for (const template of this.templates.values()) {
+      if (
+        template.season !== season ||
+        template.timelapseFrozenAt === null ||
+        targetStart * 1_000 > template.timelapseFrozenAt
+      ) {
+        continue
+      }
+      const version = this.templateVersions.get(template.currentVersionId)
+      if (version === undefined) continue
+      if (
+        version.chunks.some((chunk) => {
+          const directX = Math.abs(chunk.tileX - tile.x)
+          const wrappedX = Math.min(directX, WORLD_TILES - directX)
+          return wrappedX <= 1 && Math.abs(chunk.tileY - tile.y) <= 1
+        })
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  async foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<void> {
+    for (const edge of TILE_HISTORY_DECAY_EDGES) {
+      const cutoff = now - edge.retainSeconds
+      const targetStarts = [
+        ...new Set(
+          [...this.tileHistory.values()]
+            .filter(
+              (row) =>
+                row.season === season &&
+                row.tile.x === tile.x &&
+                row.tile.y === tile.y &&
+                row.resolution === edge.source,
+            )
+            .map((row) => Math.floor(row.bucketStart / edge.target) * edge.target)
+            .filter(
+              (targetStart) =>
+                targetStart + edge.target <= cutoff &&
+                !this.tileIsFrozenAt(season, tile, targetStart) &&
+                ![...this.tileHistory.values()].some(
+                  (row) =>
+                    row.season === season &&
+                    row.tile.x === tile.x &&
+                    row.tile.y === tile.y &&
+                    row.resolution < edge.source &&
+                    row.bucketStart >= targetStart &&
+                    row.bucketStart < targetStart + edge.target,
+                ),
+            ),
+        ),
+      ]
+        .sort((left, right) => left - right)
+        .slice(0, DECAY_FOLD_GROUP_LIMIT)
+      if (targetStarts.length === 0) continue
+      const selected = [...this.tileHistory.values()].filter(
+        (row) =>
+          row.season === season &&
+          row.tile.x === tile.x &&
+          row.tile.y === tile.y &&
+          row.resolution === edge.source &&
+          targetStarts.includes(Math.floor(row.bucketStart / edge.target) * edge.target),
+      )
+      const folded = foldTileReporterRows(selected, edge.target)
+      for (const row of selected) this.tileHistory.delete(tileHistoryRowKey(row))
+      for (const row of folded.rows) this.tileHistory.set(tileHistoryRowKey(row), row)
     }
   }
 
@@ -740,6 +838,62 @@ export class MemorySqlStore implements SqlStore {
     }
   }
 
+  async foldTelemetryBuckets(templateIds: readonly string[], now: Seconds): Promise<void> {
+    const ids = new Set(templateIds)
+    if (ids.size === 0) return
+    for (const edge of TELEMETRY_DECAY_EDGES) {
+      const cutoff = now - edge.retainSeconds
+      const groups = [
+        ...new Set(
+          [...this.buckets.values()]
+            .filter((bucket) => ids.has(bucket.templateId) && bucket.resolution === edge.source)
+            .map((bucket) => {
+              const targetStart = Math.floor(bucket.bucketStart / edge.target) * edge.target
+              return `${bucket.templateId}\u0000${targetStart}`
+            })
+            .filter((key) => {
+              const separator = key.indexOf('\u0000')
+              const templateId = key.slice(0, separator)
+              const targetStart = Number(key.slice(separator + 1))
+              return (
+                targetStart + edge.target <= cutoff &&
+                ![...this.buckets.values()].some(
+                  (finer) =>
+                    finer.templateId === templateId &&
+                    finer.resolution < edge.source &&
+                    finer.bucketStart >= targetStart &&
+                    finer.bucketStart < targetStart + edge.target,
+                )
+              )
+            }),
+        ),
+      ]
+        .sort()
+        .slice(0, DECAY_FOLD_GROUP_LIMIT)
+      for (const key of groups) {
+        const separator = key.indexOf('\u0000')
+        const templateId = key.slice(0, separator)
+        const targetStart = Number(key.slice(separator + 1))
+        const source = [...this.buckets.values()].filter(
+          (bucket) =>
+            bucket.templateId === templateId &&
+            bucket.resolution === edge.source &&
+            Math.floor(bucket.bucketStart / edge.target) * edge.target === targetStart,
+        )
+        const folded: TelemetryBucket = {
+          templateId,
+          resolution: edge.target,
+          bucketStart: seconds(targetStart),
+          placed: source.reduce((sum, bucket) => sum + bucket.placed, 0),
+          correct: source.reduce((sum, bucket) => sum + bucket.correct, 0),
+          repairs: source.reduce((sum, bucket) => sum + bucket.repairs, 0),
+        }
+        this.buckets.set(bucketKey(folded), folded)
+        for (const bucket of source) this.buckets.delete(bucketKey(bucket))
+      }
+    }
+  }
+
   async insertAccessToken(token: AccessToken): Promise<void> {
     assertValidAccessToken(token)
     if (this.tokens.has(token.tokenHash)) {
@@ -777,13 +931,16 @@ export class MemorySqlStore implements SqlStore {
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
     const templateIds = new Set(query.templateIds)
+    const resolutions = new Set(
+      typeof query.resolution === 'number' ? [query.resolution] : query.resolution,
+    )
     if (templateIds.size > MAX_READ_BUCKETS_TEMPLATE_IDS) throw tooManyTemplateIds(templateIds.size)
 
     return [...this.buckets.values()]
       .filter(
         (bucket) =>
           templateIds.has(bucket.templateId) &&
-          bucket.resolution === query.resolution &&
+          resolutions.has(bucket.resolution) &&
           bucket.bucketStart >= query.fromSeconds &&
           bucket.bucketStart < query.toSeconds,
       )

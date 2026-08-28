@@ -235,7 +235,13 @@ export const recordObservation = async (
     reportedByUserId: metadata.wplaceUserId,
   }
   await ports.sql.rememberPainter(metadata.wplaceUserId, metadata.displayName, millis(observedAtMs))
-  await ports.sql.recordTileObservation(observation, statuses)
+  const recordHistory = targets.length === 0 || targets.some((target) => !target.finished)
+  await ports.sql.recordTileObservation(observation, statuses, recordHistory)
+  await ports.sql.foldTileHistory(
+    metadata.season,
+    metadata.tile,
+    seconds(Math.floor(Date.now() / 1_000)),
+  )
 }
 
 /** Process an offer immediately when the content-addressed bytes already exist. */
@@ -305,6 +311,7 @@ export const recordPaint = async (
       previousBytes === null ? null : await decodeCanvas(previousBytes).catch(() => null)
 
     for (const target of targets) {
+      if (target.finished) continue
       const rect = chunkRect(target)
       if (rect === null) continue
       const chunkBytes = await ports.blobs.get('chunks', target.hash)

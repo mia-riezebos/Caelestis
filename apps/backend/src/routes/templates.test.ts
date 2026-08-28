@@ -26,7 +26,7 @@ const harness = async () => {
     description: null,
     createdAt: millis(Date.now()),
   })
-  return { blobs, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
+  return { blobs, sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
 }
 
 const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
@@ -303,6 +303,78 @@ describe('editing a template', () => {
     // Always a caller-side mistake — a typo'd field, or a body that failed to serialise. Answering
     // 200 would report success for a request that changed nothing.
     expect(response.status).toBe(400)
+  })
+
+  it('freezes and thaws a timelapse through PATCH', async () => {
+    const { app, sql } = await harness()
+    const template = await create(app)
+
+    const frozen = await patch(app, template.templateId, { timelapseFrozen: true })
+    expect(frozen.status).toBe(200)
+    await expect(frozen.json()).resolves.toEqual({
+      id: template.templateId,
+      timelapseFrozen: true,
+      updatedAt: expect.any(Number),
+    })
+    expect((await sql.readTemplate(template.templateId))?.timelapseFrozen).toBe(true)
+
+    const thawed = await patch(app, template.templateId, { timelapseFrozen: false })
+    expect(thawed.status).toBe(200)
+    expect((await sql.readTemplate(template.templateId))?.timelapseFrozen).toBe(false)
+    expect((await patch(app, template.templateId, { timelapseFrozen: 'yes' })).status).toBe(400)
+  })
+
+  it('finishes with a frozen archive and reopens without thawing it', async () => {
+    const { app, sql } = await harness()
+    const template = await create(app)
+
+    const finished = await patch(app, template.templateId, { finished: true })
+    expect(finished.status).toBe(200)
+    await expect(finished.json()).resolves.toEqual({
+      id: template.templateId,
+      finished: true,
+      finishedAt: expect.any(Number),
+      timelapseFrozen: true,
+      updatedAt: expect.any(Number),
+    })
+    await expect(sql.readTemplate(template.templateId)).resolves.toMatchObject({
+      finished: true,
+      finishedAt: expect.any(Number),
+      timelapseFrozen: true,
+    })
+
+    const thawedWhileFinished = await patch(app, template.templateId, {
+      timelapseFrozen: false,
+    })
+    expect(thawedWhileFinished.status).toBe(400)
+    await expect(thawedWhileFinished.json()).resolves.toEqual({
+      error: 'reopen the template before thawing its timelapse',
+    })
+
+    const reopened = await patch(app, template.templateId, { finished: false })
+    expect(reopened.status).toBe(200)
+    await expect(sql.readTemplate(template.templateId)).resolves.toMatchObject({
+      finished: false,
+      finishedAt: null,
+      timelapseFrozen: true,
+    })
+
+    expect((await patch(app, template.templateId, { timelapseFrozen: false })).status).toBe(200)
+  })
+
+  it('refuses a finished template with a thawed timelapse', async () => {
+    const { app } = await harness()
+    const template = await create(app)
+
+    expect(
+      (
+        await patch(app, template.templateId, {
+          finished: true,
+          timelapseFrozen: false,
+        })
+      ).status,
+    ).toBe(400)
+    expect((await patch(app, template.templateId, { finished: 'yes' })).status).toBe(400)
   })
 
   it('replaces the pixels with a new version, keeping the template', async () => {

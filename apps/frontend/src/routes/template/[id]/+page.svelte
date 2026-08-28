@@ -4,9 +4,13 @@
     type TileHistoryFrame,
     type TileKey,
   } from '@caelestis/shared'
+  import type {
+    CaelestisTemplateAdmin,
+    TemplateLifecycleChangeDetail,
+  } from '@caelestis/ui'
   import { ExternalLink, Pause, Play } from '@lucide/svelte'
   import { page } from '$app/state'
-  import { getTileHistory } from '$lib/api/client'
+  import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
   import ColourProgress from '$lib/components/ColourProgress.svelte'
   import ProgressMeter from '$lib/components/ProgressMeter.svelte'
   import StatsPanel from '$lib/components/StatsPanel.svelte'
@@ -45,42 +49,65 @@ const storedOverlay = persisted<number>('caelestis:overlay-alpha', 0)
 const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
 
   // ── Timelapse ────────────────────────────────────────────────────────────────────────────────
-  // `raw` is resolution 0: every accepted observation. The folded tiers stay empty until the
-  // backend's ladder-fold writer lands, so raw is the default rather than the fallback.
-  const RESOLUTIONS = [
-    { key: 'raw', seconds: 0, window: 86_400 * 2 },
-    { key: '1h', seconds: 3_600, window: 86_400 * 3 },
-    { key: '6h', seconds: 21_600, window: 86_400 * 14 },
-    { key: '1d', seconds: 86_400, window: 86_400 * 60 },
-  ] as const
-
-  const storedResolution = persisted<(typeof RESOLUTIONS)[number]['key']>(
-    'caelestis:timelapse-resolution',
-    'raw',
-  )
-  const resolutionKey = $derived(storedResolution.value)
-  const resolution = $derived(RESOLUTIONS.find((r) => r.key === resolutionKey) ?? RESOLUTIONS[0])
-
   let frames = $state<ReadonlyMap<TileKey, readonly TileHistoryFrame[]> | null>(null)
   // The scrub position: 0..timeline.length, where the last stop is "live".
   let scrub = $state(0)
   let playing = $state(false)
+  let lifecycleBusy = $state(false)
+  let lifecycleError = $state<string | null>(null)
+
+  const updateLifecycle = async (
+    patch: { readonly finished?: boolean; readonly timelapseFrozen?: boolean },
+  ): Promise<void> => {
+    const target = template
+    if (target === null || lifecycleBusy) return
+    lifecycleBusy = true
+    lifecycleError = null
+    try {
+      await patchTemplateLifecycle(target.id, patch)
+      await app.load()
+    } catch (error) {
+      lifecycleError = error instanceof Error ? error.message : String(error)
+    } finally {
+      lifecycleBusy = false
+    }
+  }
+
+  const lifecycleEvents = (node: CaelestisTemplateAdmin) => {
+    const finished = (event: Event) => {
+      void updateLifecycle({
+        finished: (event as CustomEvent<TemplateLifecycleChangeDetail>).detail.value,
+      })
+    }
+    const frozen = (event: Event) => {
+      void updateLifecycle({
+        timelapseFrozen: (event as CustomEvent<TemplateLifecycleChangeDetail>).detail.value,
+      })
+    }
+    node.addEventListener('caelestis-finished-change', finished)
+    node.addEventListener('caelestis-frozen-change', frozen)
+    return {
+      destroy: () => {
+        node.removeEventListener('caelestis-finished-change', finished)
+        node.removeEventListener('caelestis-frozen-change', frozen)
+      },
+    }
+  }
 
   $effect(() => {
     const target = template
     const season = app.manifest?.season
     if (target === null || season === undefined) return
     const generation = { cancelled: false }
-    const align = resolution.seconds || 60
-    const to = Math.ceil(Date.now() / 1000 / align) * align
-    const from = to - resolution.window
+    const from = Math.floor(target.createdAt / 1_000)
+    const to = Math.floor((target.finishedAt ?? Date.now()) / 1_000) + 1
     frames = null
     playing = false
     Promise.all(
       tilesInRect(tileUnionRect(target)).map(async (placement) => {
         const [x, y] = placement.key.split('/').map(Number)
         try {
-          const response = await getTileHistory(x ?? 0, y ?? 0, season, resolution.seconds, from, to)
+          const response = await getTileHistory(x ?? 0, y ?? 0, season, from, to)
           return [placement.key, response.frames] as const
         } catch {
           return [placement.key, []] as const
@@ -180,6 +207,11 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {#if !template.published}
         <span class="badge badge-warning badge-sm">unpublished</span>
       {/if}
+      <caelestis-template-state
+        finished={template.finished}
+        frozen={template.timelapseFrozen}
+        griefed={template.finished && progress.mismatched > 0}
+      ></caelestis-template-state>
       <span class="text-sm tabular-nums text-base-content/50">
         {template.totalPixels.toLocaleString()} px ·
         {template.bbox.maxX - template.bbox.minX}×{template.bbox.maxY - template.bbox.minY}
@@ -192,11 +224,29 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {/if}
     </header>
 
-    <ProgressMeter {progress} />
+    <ProgressMeter {progress} griefWatch={template.finished} />
     {#if progress.known < progress.total}
       <p class="-mt-2 text-xs text-base-content/50">
         {Math.round((progress.known / Math.max(1, progress.total)) * 100)}% of pixels scanned.
       </p>
+    {/if}
+
+    {#if app.isAdmin}
+      <section class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-3">
+        <div>
+          <h2 class="font-semibold">Template lifecycle</h2>
+          <p class="text-xs text-base-content/60">Finished templates keep a live grief watch without adding history.</p>
+        </div>
+        <caelestis-template-admin
+          use:lifecycleEvents
+          finished={template.finished}
+          frozen={template.timelapseFrozen}
+          busy={lifecycleBusy}
+        ></caelestis-template-admin>
+        {#if lifecycleError !== null}
+          <p class="w-full text-sm text-error" role="alert">{lifecycleError}</p>
+        {/if}
+      </section>
     {/if}
 
     <section class="overflow-hidden rounded-2xl border-[1.5px] border-base-300 bg-base-100">
@@ -252,26 +302,23 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
           />
           <span class="w-32 shrink-0 text-end text-xs tabular-nums text-base-content/70">
             {#if live}
-              <span class="badge badge-success badge-xs align-middle">live</span>
+              <span class="badge badge-success badge-xs align-middle">{template.finished ? 'current' : 'live'}</span>
             {:else if scrubTime !== undefined && scrubTime !== null}
               {formatFrame(scrubTime)}
             {/if}
           </span>
         {/if}
-        <div class="join ms-auto">
-          {#each RESOLUTIONS as option (option.key)}
-            <button
-              class="btn join-item btn-xs {option.key === resolutionKey ? 'btn-primary' : 'btn-ghost'}"
-              onclick={() => (storedResolution.value = option.key)}
-            >
-              {option.key}
-            </button>
-          {/each}
-        </div>
       </div>
+      {#if template.timelapseFrozen}
+        <div class="border-t-[1.5px] border-base-300 px-4 py-2">
+          <caelestis-template-state compact frozen></caelestis-template-state>
+        </div>
+      {/if}
     </section>
 
-    <StatsPanel templateIds={[template.id]} season={app.manifest.season} {progress} />
+    {#if !template.finished}
+      <StatsPanel templateIds={[template.id]} season={app.manifest.season} {progress} />
+    {/if}
 
     {#if status?.colours !== undefined && status.colours.length > 0}
       <section class="rounded-2xl border-[1.5px] border-base-300 bg-base-100 p-4">

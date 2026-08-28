@@ -1,3 +1,4 @@
+import type { CaelestisTemplateState } from '@caelestis/ui'
 import { getState, setState } from '../state.js'
 import type { TemplateColourProgress, TemplateProgress } from '../templates/mismatch.js'
 import { type IconName, icon } from './icons.js'
@@ -220,6 +221,11 @@ export interface TreeRowOptions {
   /** One continuation flag per visible tree column, ending with this row's sibling branch. */
   readonly branches?: readonly boolean[] | undefined
   readonly meta?: string
+  readonly lifecycle?: {
+    readonly finished: boolean
+    readonly frozen: boolean
+    readonly griefed: boolean
+  }
   readonly progress?: TemplateProgress
   readonly progressReader?: (() => TemplateProgress) | undefined
   readonly colourProgress?: (() => readonly TemplateColourProgress[] | undefined) | undefined
@@ -448,6 +454,16 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
     meta.style.flex = '0 0 auto'
     meta.textContent = options.meta
     row.appendChild(meta)
+  }
+
+  if (options.lifecycle !== undefined && (options.lifecycle.finished || options.lifecycle.frozen)) {
+    const state = document.createElement('caelestis-template-state') as CaelestisTemplateState
+    state.compact = true
+    state.finished = options.lifecycle.finished
+    state.frozen = options.lifecycle.frozen
+    state.griefed = options.lifecycle.griefed
+    state.style.flex = '0 0 auto'
+    row.appendChild(state)
   }
 
   const requestedDisclosure = progressDisclosure.get(options.key)

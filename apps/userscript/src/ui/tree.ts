@@ -302,6 +302,7 @@ const renderLevel = (
           )
         },
         ...(item.meta === undefined ? {} : { meta: item.meta }),
+        ...(item.lifecycle === undefined ? {} : { lifecycle: item.lifecycle }),
         ...(item.progress === undefined ? {} : { progress: item.progress }),
         ...(item.progressReader === undefined ? {} : { progressReader: item.progressReader }),
         ...(item.colourProgress === undefined ? {} : { colourProgress: item.colourProgress }),
@@ -683,6 +684,7 @@ export const treeContents = (
           const templateKey = serverTemplateTreeKey(server, template.id)
           const drawn = drawnById.get(template.id)
           const colourProgress = serverTemplateColourProgress(server, template)
+          const progress = serverTemplateProgress(server, template)
           const visibilityKey = serverTemplateKey(server.url, template.id)
           const templateTarget: TreeTarget = {
             server,
@@ -703,8 +705,13 @@ export const treeContents = (
               createdAt: template.updatedAt,
               muted: !template.published,
               ...(template.published ? {} : { excludeFromRollup: true as const }),
-              progress: serverTemplateProgress(server, template),
+              progress,
               progressReader: () => serverTemplateProgress(server, template),
+              lifecycle: {
+                finished: template.finished === true,
+                frozen: template.timelapseFrozen === true,
+                griefed: template.finished === true && progress.mismatched > 0,
+              },
               ...(colourProgress === undefined
                 ? {}
                 : {

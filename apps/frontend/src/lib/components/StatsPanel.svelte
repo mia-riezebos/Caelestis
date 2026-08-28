@@ -28,36 +28,6 @@
   const from = Math.floor((now - WINDOW_SECONDS) / RESOLUTION) * RESOLUTION
   const to = Math.ceil(now / RESOLUTION) * RESOLUTION
 
-  /** Fold fine buckets into `resolution`-wide ones client-side. */
-  const fold = (buckets: readonly HistoryBucket[], resolution: number): HistoryBucket[] => {
-    const byKey = new Map<string, HistoryBucket>()
-    for (const bucket of buckets) {
-      const bucketStart = Math.floor(bucket.bucketStart / resolution) * resolution
-      const key = `${bucket.templateId}:${bucketStart}`
-      const entry = byKey.get(key)
-      if (entry === undefined) {
-        byKey.set(key, { ...bucket, resolution, bucketStart: bucketStart as never })
-      } else {
-        byKey.set(key, {
-          ...entry,
-          placed: entry.placed + bucket.placed,
-          correct: entry.correct + bucket.correct,
-          repairs: entry.repairs + bucket.repairs,
-        })
-      }
-    }
-    return [...byKey.values()]
-  }
-
-  // The decay ladder's fold writer isn't live yet, so coarse tiers can be empty while the 60s tier
-  // holds the data. Ask for the honest tier first, then fold the base tier ourselves.
-  const loadHistory = async (): Promise<HistoryBucket[]> => {
-    const wanted = await getHistory(templateIds, RESOLUTION, from, to)
-    if (wanted.buckets.length > 0) return [...wanted.buckets]
-    const base = await getHistory(templateIds, 60, from, to)
-    return fold(base.buckets, RESOLUTION)
-  }
-
   let history = $state<HistoryBucket[] | null>(null)
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
@@ -68,9 +38,9 @@
     const generation = { cancelled: false }
     history = null
     failed = false
-    loadHistory()
-      .then((buckets) => {
-        if (!generation.cancelled) history = buckets
+    getHistory(templateIds, from, to)
+      .then((response) => {
+        if (!generation.cancelled) history = [...response.buckets]
       })
       .catch(() => {
         if (!generation.cancelled) failed = true
@@ -150,7 +120,7 @@
     {:else}
       <ProgressPaceChart
         buckets={history}
-        resolution={RESOLUTION}
+        resolution={history[0]?.resolution ?? RESOLUTION}
         {from}
         {to}
         anchorCorrect={progress.completed}
