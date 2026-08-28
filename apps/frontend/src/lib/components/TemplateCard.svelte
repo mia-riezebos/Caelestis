@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { CanvasTileSummary, TileKey } from '@caelestis/shared'
+import { TemplateState } from '@caelestis/ui'
 import ProgressMeter from '$lib/components/ProgressMeter.svelte'
 import TemplateCanvas from '$lib/components/TemplateCanvas.svelte'
 import type { TreeTemplate } from '$lib/tree'
@@ -29,12 +30,7 @@ const { template } = $derived(entry)
         {template.totalPixels.toLocaleString()} px
       </span>
     </div>
-    <caelestis-template-state
-      compact
-      finished={template.finished}
-      frozen={template.timelapseFrozen}
-      griefed={template.finished && entry.progress.mismatched > 0}
-    ></caelestis-template-state>
+    <TemplateState compact finished={template.finished} frozen={template.timelapseFrozen} griefed={template.finished && entry.progress.mismatched > 0} />
     <ProgressMeter progress={entry.progress} size="sm" />
   </div>
 </a>

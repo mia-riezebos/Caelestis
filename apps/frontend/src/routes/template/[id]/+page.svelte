@@ -4,10 +4,7 @@
     type TileHistoryFrame,
     type TileKey,
   } from '@caelestis/shared'
-  import type {
-    CaelestisTemplateAdmin,
-    TemplateLifecycleChangeDetail,
-  } from '@caelestis/ui/elements'
+  import { TemplateAdmin, TemplateState } from '@caelestis/ui'
   import { ExternalLink, Pause, Play } from '@lucide/svelte'
   import { page } from '$app/state'
   import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
@@ -70,27 +67,6 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       lifecycleError = error instanceof Error ? error.message : String(error)
     } finally {
       lifecycleBusy = false
-    }
-  }
-
-  const lifecycleEvents = (node: CaelestisTemplateAdmin) => {
-    const finished = (event: Event) => {
-      void updateLifecycle({
-        finished: (event as CustomEvent<TemplateLifecycleChangeDetail>).detail.value,
-      })
-    }
-    const frozen = (event: Event) => {
-      void updateLifecycle({
-        timelapseFrozen: (event as CustomEvent<TemplateLifecycleChangeDetail>).detail.value,
-      })
-    }
-    node.addEventListener('caelestis-finished-change', finished)
-    node.addEventListener('caelestis-frozen-change', frozen)
-    return {
-      destroy: () => {
-        node.removeEventListener('caelestis-finished-change', finished)
-        node.removeEventListener('caelestis-frozen-change', frozen)
-      },
     }
   }
 
@@ -207,11 +183,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       {#if !template.published}
         <span class="badge badge-warning badge-sm">unpublished</span>
       {/if}
-      <caelestis-template-state
-        finished={template.finished}
-        frozen={template.timelapseFrozen}
-        griefed={template.finished && progress.mismatched > 0}
-      ></caelestis-template-state>
+      <TemplateState finished={template.finished} frozen={template.timelapseFrozen} griefed={template.finished && progress.mismatched > 0} />
       <span class="text-sm tabular-nums text-base-content/50">
         {template.totalPixels.toLocaleString()} px ·
         {template.bbox.maxX - template.bbox.minX}×{template.bbox.maxY - template.bbox.minY}
@@ -237,12 +209,13 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
           <h2 class="font-semibold">Template lifecycle</h2>
           <p class="text-xs text-base-content/60">Finished templates keep a live grief watch without adding history.</p>
         </div>
-        <caelestis-template-admin
-          use:lifecycleEvents
+        <TemplateAdmin
           finished={template.finished}
           frozen={template.timelapseFrozen}
           busy={lifecycleBusy}
-        ></caelestis-template-admin>
+          onFinishedChange={({ value }) => void updateLifecycle({ finished: value })}
+          onFrozenChange={({ value }) => void updateLifecycle({ timelapseFrozen: value })}
+        />
         {#if lifecycleError !== null}
           <p class="w-full text-sm text-error" role="alert">{lifecycleError}</p>
         {/if}
@@ -311,7 +284,7 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
       </div>
       {#if template.timelapseFrozen}
         <div class="border-t-[1.5px] border-base-300 px-4 py-2">
-          <caelestis-template-state compact frozen></caelestis-template-state>
+          <TemplateState compact frozen />
         </div>
       {/if}
     </section>
