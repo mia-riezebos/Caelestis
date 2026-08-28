@@ -1,5 +1,15 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
-import type { CaelestisTemplateState } from '@caelestis/ui/elements'
+import type {
+  AppearanceEditorIntent,
+  AppearanceEditorModel,
+  CaelestisOverlayControls,
+  CaelestisRailControl,
+  CaelestisTemplateState,
+  OverlayControlsIntent,
+  OverlayControlsModel,
+  RailControlIntent,
+  RailControlModel,
+} from '@caelestis/ui/elements'
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'
@@ -19,6 +29,8 @@ import {
   type AppearanceGroup,
   DEFAULT_APPEARANCE,
   GROUP_FIELDS,
+  PIXEL_STYLE_PRESETS,
+  pixelStylePresetOf,
 } from '../templates/appearance.js'
 import { clearAppearancePreview, setAppearancePreview } from '../templates/appearance-preview.js'
 import { hiddenColoursFor } from '../templates/colour-filter.js'
@@ -52,7 +64,15 @@ import {
 } from '../templates/move.js'
 import { isPaintOpen } from '../wplace-paint.js'
 import { isColourPickerOpen } from './colour-picker.js'
-import { colourPresets, paletteSwatch, setPresetState, setSwatchState } from './colours.js'
+import {
+  activeColourPreset,
+  type ColourPresetId,
+  colourPresets,
+  hiddenForPreset,
+  paletteSwatch,
+  setPresetState,
+  setSwatchState,
+} from './colours.js'
 import { icon } from './icons.js'
 import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
@@ -65,6 +85,7 @@ import { pixelStylePresets } from './pixel-style-presets.js'
 import { createRangeGestures } from './range-gestures.js'
 import { sliderRow } from './slider.js'
 import { installStyles } from './styles.js'
+import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID } from './toast.js'
 
 /**
@@ -295,14 +316,39 @@ const queues = new Map<string, Promise<unknown>>()
  * `getElementById` every frame would let it substitute a convincing fake in the exact spot the
  * user expects a control.
  */
-const buttons = new Map<string, HTMLElement>()
+const buttons = new Map<string, CaelestisRailControl>()
 
 interface PlacementRail {
-  readonly apply: HTMLButtonElement
-  readonly cancel: HTMLButtonElement
+  readonly apply: CaelestisRailControl
+  readonly cancel: CaelestisRailControl
 }
 
 const placementRails = new Map<string, PlacementRail>()
+
+const overlayRailControl = (
+  model: RailControlModel,
+  control: string,
+  activate: () => void,
+): CaelestisRailControl => {
+  const element = document.createElement('caelestis-rail-control')
+  element.dataset[CONTROL] = control
+  element.model = model
+  Object.assign(element.style, {
+    position: 'fixed',
+    width: `${MENU_BUTTON_SIZE}px`,
+    height: `${MENU_BUTTON_SIZE}px`,
+    zIndex: BUTTON_Z,
+  })
+  applyWplaceTheme(element)
+  element.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id === model.id) activate()
+  })
+  element.addEventListener('click', (event) => {
+    if (event.composedPath()[0] === element) activate()
+  })
+  return element
+}
 
 const removePlacementRail = (id: string): void => {
   const rail = placementRails.get(id)
@@ -703,6 +749,215 @@ const menuSignature = (template: PlacedTemplate): string => {
 }
 
 const deleteQuestion = (name: string): string => `Delete “${name}”? This cannot be undone.`
+
+const commitAppearance = (
+  id: string,
+  properties: readonly string[],
+  label: string,
+  patch: Updater,
+  rerender: () => void,
+  satisfied?: () => boolean,
+  finished?: () => void,
+): void => {
+  if (isDoomed(id)) {
+    rerender()
+    finished?.()
+    return
+  }
+  const seq = intendAppearance(id, properties, patch)
+  settle(
+    id,
+    properties.map((property): FailureKey => `appearance:${property}`),
+    async () => {
+      const groups = new Set(properties.map(groupForProperty))
+      for (const group of groups) {
+        if (!(await setOwnsGroup(id, group, true))) return false
+      }
+      const base = storedAppearance(id)
+      return await setAppearance(id, { ...base, ...patch(base) })
+    },
+    (name) => `Could not change ${label} for “${name}”.`,
+    () => releaseAppearance(id, properties, seq),
+    rerender,
+    satisfied ??
+      (() => {
+        const stored = storedAppearance(id)
+        const asked = { ...stored, ...patch(stored) }
+        return properties.every((property) => {
+          const field = property.split(':')[0] as keyof Appearance
+          return JSON.stringify(stored[field]) === JSON.stringify(asked[field])
+        })
+      }),
+    true,
+    finished,
+  )
+}
+
+const overlayAppearanceModel = (template: PlacedTemplate): AppearanceEditorModel => {
+  const appearance = draftedAppearanceFor(template.id)
+  const hidden = new Set(hiddenColoursFor(appearanceFor(template.id)))
+  const activePixelPreset = pixelStylePresetOf(appearance)
+  const activePreset = activeColourPreset(appearance.hiddenColours)
+  return {
+    values: appearance,
+    sliders: APPEARANCE_CONTROLS.map((control) => ({
+      key: control.key,
+      label: control.label,
+      value: appearance[control.key],
+      defaultValue: (getState().appearance ?? DEFAULT_APPEARANCE)[control.key],
+      min: control.min,
+      max: control.max,
+      step: control.step,
+      format:
+        control.key === 'rotation'
+          ? 'degrees'
+          : control.key === 'contrastOutlineSize'
+            ? 'decimal-pixels'
+            : 'percent',
+      ...(control.key === 'contrastOutlineSize' && !appearance.contrastOutline
+        ? { disabled: true }
+        : {}),
+    })),
+    pixelPresets: PIXEL_STYLE_PRESETS.map((preset) => ({
+      id: preset.id,
+      label: preset.label,
+      active: preset.id === activePixelPreset,
+    })),
+    colourPresets: (
+      [
+        ['all', 'All'],
+        ['free', 'Free'],
+        ['premium', 'Premium'],
+        ['owned', 'Owned'],
+      ] as const
+    ).map(([id, label]) => ({ id, label, active: id === activePreset })),
+    palette: WPLACE_PALETTE.filter((colour) => colour.index !== TRANSPARENT_INDEX).map(
+      (colour) => ({
+        index: colour.index,
+        name: colour.name,
+        hex: colour.hex,
+        kind: colour.kind,
+        visible: !hidden.has(colour.index),
+      }),
+    ),
+    onlySelectedColour: false,
+    showOnlySelectedColour: false,
+    paintOpen: isPaintOpen(),
+    groups: {
+      pixels: { owned: ownsGroup(template, 'pixels') },
+      markers: { owned: ownsGroup(template, 'markers') },
+      colours: { owned: ownsGroup(template, 'colours') },
+    },
+    disabled: isDoomed(template.id),
+  }
+}
+
+const overlayModel = (template: PlacedTemplate): OverlayControlsModel => {
+  const lifecycle = serverLifecycleFor(template)
+  return {
+    name: template.name,
+    ...(lifecycle === null
+      ? {}
+      : {
+          lifecycle: {
+            finished: lifecycle.finished,
+            frozen: lifecycle.frozen,
+            griefed: false,
+          },
+        }),
+    failures: overlayFailures.render(template.id, template.name).map((failure) => ({
+      id: failure.key,
+      message: failure.message,
+      announce: failure.announce,
+    })),
+    confirmingDelete: confirming.has(template.id),
+    deleting: isDoomed(template.id),
+    appearance: overlayAppearanceModel(template),
+  }
+}
+
+const handleOverlayAppearance = (
+  id: string,
+  intent: AppearanceEditorIntent,
+  rerender: () => void,
+): void => {
+  switch (intent.type) {
+    case 'preview-number':
+      setDraft(id, intent.key, intent.value)
+      setAppearancePreview(id, intent.key, intent.value)
+      rerender()
+      break
+    case 'commit-number': {
+      clearDraft(id, intent.key)
+      const value = intent.value
+      commitAppearance(
+        id,
+        [intent.key],
+        intent.key,
+        () => ({ [intent.key]: value }),
+        rerender,
+        undefined,
+        () => clearAppearancePreview(id, intent.key, value),
+      )
+      break
+    }
+    case 'set-boolean':
+    case 'set-colour':
+      commitAppearance(
+        id,
+        [intent.key],
+        intent.key,
+        () => ({ [intent.key]: intent.value }),
+        rerender,
+      )
+      break
+    case 'pixel-preset': {
+      const preset = PIXEL_STYLE_PRESETS.find((candidate) => candidate.id === intent.id)
+      if (preset !== undefined)
+        commitAppearance(id, GROUP_FIELDS.pixels, 'pixel style', () => preset.values, rerender)
+      break
+    }
+    case 'colour-preset':
+      if (['all', 'free', 'premium', 'owned'].includes(intent.id)) {
+        const hiddenColours = hiddenForPreset(intent.id as ColourPresetId)
+        commitAppearance(
+          id,
+          ['hiddenColours'],
+          'colour preset',
+          () => ({ hiddenColours }),
+          rerender,
+        )
+      }
+      break
+    case 'toggle-colour': {
+      const wantHidden = !intent.visible
+      commitAppearance(
+        id,
+        [`hiddenColours:${intent.index}`],
+        `the ${WPLACE_PALETTE[intent.index]?.name ?? 'selected'} colour filter`,
+        (base) => {
+          const next = new Set(base.hiddenColours)
+          if (wantHidden) next.add(intent.index)
+          else next.delete(intent.index)
+          return { hiddenColours: [...next] }
+        },
+        rerender,
+        () => storedAppearance(id).hiddenColours.includes(intent.index) === wantHidden,
+      )
+      break
+    }
+    case 'set-group-owned':
+      void setOwnsGroup(id, intent.group, intent.owned)
+        .catch((error: unknown) =>
+          warn('install', `could not change ${intent.group} ownership`, String(error)),
+        )
+        .finally(rerender)
+      break
+    case 'only-selected-colour':
+    case 'marker-budget':
+      break
+  }
+}
 
 /** Store a server draft's new canvas origin as a new immutable pixel version. */
 const moveServerDraft = async (id: string, originX: number, originY: number): Promise<boolean> => {
@@ -1623,6 +1878,83 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
   return { menu, actions: localActions }
 }
 
+/** Svelte owns the visible menu and its separately positioned action rail. */
+const buildSvelteMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlayMenu => {
+  const legacy = buildMenu(template, rerender)
+  legacy.menu.removeAttribute('id')
+  legacy.menu.hidden = true
+  const actions = legacy.actions.map((legacyAction) => {
+    const control = legacyAction.dataset[CONTROL]
+    const id =
+      control === 'hide'
+        ? 'overlay-visible'
+        : control === 'move'
+          ? 'overlay-move'
+          : 'overlay-delete'
+    const action = overlayRailControl(
+      {
+        id,
+        label: legacyAction.getAttribute('aria-label') ?? 'Overlay action',
+        pressed: control === 'hide' && !visibleFor(template.id),
+        disabled: legacyAction.getAttribute('aria-disabled') === 'true',
+        danger: control === 'delete',
+      },
+      control ?? id,
+      () => legacyAction.click(),
+    )
+    action.setAttribute('data-caelestis-rail-action', '')
+    legacyAction.removeAttribute('data-caelestis-rail-action')
+    return action
+  })
+  legacy.menu.append(...legacy.actions)
+  const menu = document.createElement('caelestis-overlay-controls') as CaelestisOverlayControls
+  menu.id = MENU_ID
+  menu.dataset.caelestisTemplate = template.id
+  menu.setAttribute('role', 'dialog')
+  menu.setAttribute('aria-label', `${template.name} display options`)
+  menu.model = overlayModel(template)
+  Object.assign(menu.style, {
+    position: 'fixed',
+    zIndex: MENU_Z,
+    width: NATURAL_WIDTH,
+    maxHeight: NATURAL_MAX_HEIGHT,
+  })
+  applyWplaceTheme(menu)
+  // The current operation tests run synchronously, before Svelte custom elements attach their
+  // Shadow DOM. Keep the detached operation view hidden in light DOM until those tests move to the
+  // typed adapter seam, then delete it with the legacy builder.
+  menu.appendChild(legacy.menu)
+  menu.addEventListener('caelestis-overlay-intent', (event) => {
+    const intent = (event as CustomEvent<OverlayControlsIntent>).detail
+    switch (intent.type) {
+      case 'close':
+        closeOverlayMenu()
+        handBack(template.id)
+        rerender()
+        break
+      case 'cancel-delete':
+      case 'confirm-delete': {
+        const key = intent.type === 'cancel-delete' ? 'cancel-delete' : 'confirm-delete'
+        controlIn(legacy.menu, key)?.click()
+        break
+      }
+      case 'appearance':
+        handleOverlayAppearance(template.id, intent.intent, rerender)
+        break
+    }
+  })
+  queueMicrotask(() => {
+    for (const input of menu.shadowRoot?.querySelectorAll<HTMLInputElement>(
+      'input[type="range"]',
+    ) ?? []) {
+      rangeGestures.bind(input, () => {}, {
+        afterSettle: () => setTimeout(() => lastRerender?.(), 0),
+      })
+    }
+  })
+  return { menu, actions }
+}
+
 /**
  * Escape closes the menu wherever focus is.
  *
@@ -1702,7 +2034,8 @@ export const refreshOverlayMenu = (): void => {
  */
 const handBack = (id: string): void => {
   if (isMoving()) return
-  buttons.get(id)?.focus()
+  const button = buttons.get(id)
+  ;(button?.shadowRoot?.querySelector<HTMLButtonElement>('button') ?? button)?.focus()
 }
 
 const removeRailActions = (): void => {
@@ -1715,46 +2048,27 @@ const placementRailFor = (id: string): PlacementRail => {
   if (existing !== undefined && onPage(existing.apply) && onPage(existing.cancel)) return existing
   removePlacementRail(id)
 
-  const apply = document.createElement('button')
-  apply.type = 'button'
-  apply.dataset[CONTROL] = 'apply-move'
+  const apply = overlayRailControl(
+    { id: 'placement-apply', label: 'Apply template position', pressed: true },
+    'apply-move',
+    () => {
+      if (movingId() !== id || isFinishing()) return
+      void commitMove()
+      lastRerender?.()
+    },
+  )
   apply.setAttribute('data-caelestis-placement-action', '')
-  apply.className = 'btn btn-square shadow-md relative btn-primary'
-  apply.title = 'Apply template position'
-  apply.setAttribute('aria-label', apply.title)
-  apply.appendChild(icon('check'))
-  apply.addEventListener('click', () => {
-    if (movingId() !== id || isFinishing()) return
-    void commitMove()
-    lastRerender?.()
-  })
 
-  const cancel = document.createElement('button')
-  cancel.type = 'button'
-  cancel.dataset[CONTROL] = 'cancel-move'
+  const cancel = overlayRailControl(
+    { id: 'placement-cancel', label: 'Cancel template move', pressed: false },
+    'cancel-move',
+    () => {
+      if (movingId() !== id || isFinishing()) return
+      void abortMove()
+      lastRerender?.()
+    },
+  )
   cancel.setAttribute('data-caelestis-placement-action', '')
-  cancel.className = 'btn btn-square shadow-md relative'
-  cancel.title = 'Cancel template move'
-  cancel.setAttribute('aria-label', cancel.title)
-  cancel.appendChild(icon('close'))
-  cancel.addEventListener('click', () => {
-    if (movingId() !== id || isFinishing()) return
-    void abortMove()
-    lastRerender?.()
-  })
-
-  Object.assign(apply.style, {
-    position: 'fixed',
-    width: `${MENU_BUTTON_SIZE}px`,
-    height: `${MENU_BUTTON_SIZE}px`,
-    zIndex: BUTTON_Z,
-  })
-  Object.assign(cancel.style, {
-    position: 'fixed',
-    width: `${MENU_BUTTON_SIZE}px`,
-    height: `${MENU_BUTTON_SIZE}px`,
-    zIndex: BUTTON_Z,
-  })
   const rail = { apply, cancel }
   placementRails.set(id, rail)
   document.body.append(apply, cancel)
@@ -1842,6 +2156,21 @@ const sweepControls = (live: ReadonlySet<string>): void => {
 const controlIn = (menu: HTMLElement, key: string): HTMLElement | null => {
   for (const candidate of menu.querySelectorAll('[data-caelestis-control]')) {
     if (candidate instanceof HTMLElement && candidate.dataset[CONTROL] === key) return candidate
+  }
+  const root = menu.shadowRoot
+  if (root !== null) {
+    for (const candidate of root.querySelectorAll('[data-caelestis-control]')) {
+      if (candidate instanceof HTMLElement && candidate.dataset[CONTROL] === key) return candidate
+    }
+    const label =
+      key === 'close'
+        ? 'Close'
+        : key === 'cancel-delete'
+          ? 'Cancel delete'
+          : key === 'confirm-delete'
+            ? 'Confirm delete'
+            : null
+    if (label !== null) return root.querySelector<HTMLElement>(`[aria-label="${label}"]`)
   }
   return null
 }
@@ -2051,9 +2380,17 @@ const renderControls = (
       )
       const railLeft = Math.min(Math.max(corner.x + 6, 4), controlsRightEdge - MENU_BUTTON_SIZE)
       const finishing = isFinishing()
-      for (const control of [rail.apply, rail.cancel]) {
-        if (control.getAttribute('aria-disabled') !== String(finishing))
-          control.setAttribute('aria-disabled', String(finishing))
+      rail.apply.model = {
+        id: 'placement-apply',
+        label: 'Apply template position',
+        pressed: true,
+        disabled: finishing,
+      }
+      rail.cancel.model = {
+        id: 'placement-cancel',
+        label: 'Cancel template move',
+        pressed: false,
+        disabled: finishing,
       }
       positionFloatingControl(rail.apply, railLeft, railTop)
       positionFloatingControl(rail.cancel, railLeft, railTop + MENU_BUTTON_SIZE + RAIL_GAP)
@@ -2085,15 +2422,26 @@ const renderControls = (
       continue
     }
     if (button === undefined) {
-      button = document.createElement('button')
+      button = overlayRailControl(
+        {
+          id: 'overlay-menu',
+          label: `${template.name} display options`,
+          pressed: openFor === template.id,
+          expanded: openFor === template.id,
+          controls: MENU_ID,
+          popup: 'dialog',
+        },
+        'open-menu',
+        () => {
+          if (openFor === template.id) {
+            closeOverlayMenu()
+            handBack(template.id)
+            rerender()
+          } else openOverlayMenu(template.id, rerender)
+        },
+      )
       button.id = `${BUTTON_PREFIX}${template.id}`
-      button.className = 'btn btn-square shadow-md relative'
-      button.style.position = 'fixed'
-      button.style.width = `${MENU_BUTTON_SIZE}px`
-      button.style.height = `${MENU_BUTTON_SIZE}px`
-      button.style.zIndex = BUTTON_Z
       button.setAttribute('aria-haspopup', 'dialog')
-      button.appendChild(icon('kebab'))
       // The keyboard can arrive here without a frame — Tab produces none — and the rule that keeps
       // it off a gear during a placement runs in the render. Focus is the one event every arrival
       // has in common, so it is answered where it happens as well as where it is stated.
@@ -2101,25 +2449,22 @@ const renderControls = (
       gear.addEventListener('focus', () => {
         if (isMoving()) gear.blur()
       })
-      button.addEventListener('click', () => {
-        if (openFor === template.id) {
-          closeOverlayMenu()
-          // The click that closed it left the keyboard on this gear.
-          handBack(template.id)
-          rerender()
-        } else openOverlayMenu(template.id, rerender)
-      })
       document.body.appendChild(button)
       buttons.set(template.id, button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
     const title = `${template.name} — display options (T)`
-    if (button.title !== title) button.title = title
     const label = `${template.name} display options`
-    if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label)
-    const expanded = String(openFor === template.id)
-    if (button.getAttribute('aria-expanded') !== expanded)
-      button.setAttribute('aria-expanded', expanded)
+    button.title = title
+    button.setAttribute('aria-label', label)
+    button.model = {
+      id: 'overlay-menu',
+      label,
+      pressed: openFor === template.id,
+      expanded: openFor === template.id,
+      controls: MENU_ID,
+      popup: 'dialog',
+    }
     // Clamped into the viewport, so a template hanging off an edge keeps a reachable button
     // rather than losing its controls exactly when you want to bring it back.
     const actionCount =
@@ -2182,7 +2527,7 @@ const renderControls = (
           : null
       previous?.remove()
       removeRailActions()
-      const built = buildMenu(template, rerender)
+      const built = buildSvelteMenu(template, rerender)
       menuNode = built.menu
       railActions = [...built.actions]
       // A new node has no measurement, whatever the viewport has been doing.

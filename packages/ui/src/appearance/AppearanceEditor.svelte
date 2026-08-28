@@ -5,6 +5,7 @@
   import type {
     AppearanceEditorIntent,
     AppearanceEditorModel,
+    AppearanceGroupKey,
     AppearanceNumberKey,
     AppearanceSliderModel,
   } from '../types.js'
@@ -28,16 +29,32 @@
     emit({ type: 'preview-number', key, value })
   const sliderCommit = (key: AppearanceNumberKey, value: number): void =>
     emit({ type: 'commit-number', key, value })
+  const group = (key: AppearanceGroupKey) => model.groups?.[key]
+  const groupDisabled = (key: AppearanceGroupKey): boolean =>
+    model.disabled === true || group(key)?.owned === false
+  // svelte-ignore state_referenced_locally -- group ownership chooses only the initial disclosure;
+  // after that the user's expand/collapse action owns the local state.
+  let expanded = $state<Record<AppearanceGroupKey, boolean>>({
+    pixels: model.groups?.pixels.owned ?? true,
+    markers: model.groups?.markers.owned ?? true,
+    colours: model.groups?.colours.owned ?? true,
+  })
 </script>
 
 <div class="editor" data-caelestis-scroller>
   <section>
-    <h3>Appearance</h3>
+    <div class="section-head">
+      <button class="section-toggle" type="button" aria-expanded={expanded.pixels} onclick={() => expanded.pixels = !expanded.pixels}><h3>Pixels</h3></button>
+      {#if group('pixels') !== undefined}
+        <label class="defaults"><input type="checkbox" aria-label="Use default pixels" checked={!group('pixels')?.owned} disabled={model.disabled || group('pixels')?.locked} onchange={(event) => emit({ type: 'set-group-owned', group: 'pixels', owned: !event.currentTarget.checked })} /> Use defaults</label>
+      {/if}
+    </div>
+    <fieldset hidden={!expanded.pixels} disabled={groupDisabled('pixels')}>
     <SettingRow label="Pixel style">
       {#snippet children()}
         <div class="presets" role="group" aria-label="Pixel style">
           {#each model.pixelPresets as preset (preset.id)}
-            <button type="button" class:active={preset.active} disabled={preset.disabled} aria-pressed={preset.active} aria-label={preset.label} title={preset.label} onclick={() => emit({ type: 'pixel-preset', id: preset.id })}>
+            <button type="button" data-caelestis-pixel-preset={preset.id} class:active={preset.active} disabled={preset.disabled} aria-pressed={preset.active} aria-label={preset.label} title={preset.label} onclick={() => emit({ type: 'pixel-preset', id: preset.id })}>
               <span class={`preset-icon ${preset.id}`} aria-hidden="true"></span>
             </button>
           {/each}
@@ -46,18 +63,25 @@
     </SettingRow>
     <SettingRow label="Contrast outline" hint="Visible behind the overlay until Wplace art covers it">
       {#snippet children()}
-        <Toggle label="Contrast outline" checked={model.values.contrastOutline} onChange={(value) => emit({ type: 'set-boolean', key: 'contrastOutline', value })} />
+        <Toggle label="Contrast outline" control="contrastOutline" checked={model.values.contrastOutline} onChange={(value) => emit({ type: 'set-boolean', key: 'contrastOutline', value })} />
       {/snippet}
     </SettingRow>
     <div class="sliders">
       {#each model.sliders as slider (slider.key)}
-        <SliderRow {...slider} format={format(slider)} onInput={(value) => sliderInput(slider.key, value)} onCommit={(value) => sliderCommit(slider.key, value)} onReset={(value) => sliderCommit(slider.key, value)} />
+        <SliderRow {...slider} control={slider.key} format={format(slider)} onInput={(value) => sliderInput(slider.key, value)} onCommit={(value) => sliderCommit(slider.key, value)} onReset={(value) => sliderCommit(slider.key, value)} />
       {/each}
     </div>
+    </fieldset>
   </section>
 
   <section>
-    <h3>Markers</h3>
+    <div class="section-head">
+      <button class="section-toggle" type="button" aria-expanded={expanded.markers} onclick={() => expanded.markers = !expanded.markers}><h3>Markers</h3></button>
+      {#if group('markers') !== undefined}
+        <label class="defaults"><input type="checkbox" aria-label="Use default markers" checked={!group('markers')?.owned} disabled={model.disabled || group('markers')?.locked} onchange={(event) => emit({ type: 'set-group-owned', group: 'markers', owned: !event.currentTarget.checked })} /> Use defaults</label>
+      {/if}
+    </div>
+    <fieldset hidden={!expanded.markers} disabled={groupDisabled('markers')}>
     <SettingRow label="Mark mismatched pixels">
       {#snippet children()}
         <Toggle label="Mark mismatched pixels" checked={model.values.markMismatch} onChange={(value) => emit({ type: 'set-boolean', key: 'markMismatch', value })} />
@@ -117,34 +141,49 @@
         {/snippet}
       </SettingRow>
     {/if}
+    </fieldset>
   </section>
 
   <section>
-    <h3>Colours</h3>
+    <div class="section-head">
+      <button class="section-toggle" type="button" aria-expanded={expanded.colours} onclick={() => expanded.colours = !expanded.colours}><h3>Colours</h3></button>
+      {#if group('colours') !== undefined}
+        <label class="defaults"><input type="checkbox" aria-label="Use default colours" checked={!group('colours')?.owned} disabled={model.disabled || group('colours')?.locked} onchange={(event) => emit({ type: 'set-group-owned', group: 'colours', owned: !event.currentTarget.checked })} /> Use defaults</label>
+      {/if}
+    </div>
+    <fieldset hidden={!expanded.colours} disabled={groupDisabled('colours')}>
     <div class="colour-toolbar">
       <div class="presets" role="group" aria-label="Colour presets">
         {#each model.colourPresets as preset (preset.id)}
-          <button type="button" class:active={preset.active} disabled={preset.disabled} aria-pressed={preset.active} onclick={() => emit({ type: 'colour-preset', id: preset.id })}>{preset.label}</button>
+          <button type="button" data-caelestis-preset={preset.id} class:active={preset.active} disabled={preset.disabled} aria-pressed={preset.active} onclick={() => emit({ type: 'colour-preset', id: preset.id })}>{preset.label}</button>
         {/each}
       </div>
-      <button type="button" class:active={model.onlySelectedColour} aria-pressed={model.onlySelectedColour} title={model.paintOpen ? 'Highlight the selected colour' : 'Open Wplace’s paint drawer to pick a colour'} onclick={() => emit({ type: 'only-selected-colour', value: !model.onlySelectedColour })}>
-        {model.selectedColourName === undefined ? 'Selected' : model.selectedColourName}
-      </button>
+      {#if model.showOnlySelectedColour !== false}
+        <button type="button" class:active={model.onlySelectedColour} aria-pressed={model.onlySelectedColour} title={model.paintOpen ? 'Highlight the selected colour' : 'Open Wplace’s paint drawer to pick a colour'} onclick={() => emit({ type: 'only-selected-colour', value: !model.onlySelectedColour })}>
+          {model.selectedColourName === undefined ? 'Selected' : model.selectedColourName}
+        </button>
+      {/if}
     </div>
     <div class="palette" role="group" aria-label="Visible colours">
       {#each model.palette as colour (colour.index)}
-        <button type="button" class:visible={colour.visible} style:background={colour.hex} aria-label={`${colour.name}, ${colour.kind}`} aria-pressed={colour.visible} title={`${colour.name} · ${colour.kind}`} onclick={() => emit({ type: 'toggle-colour', index: colour.index, visible: !colour.visible })}>
+        <button type="button" class:visible={colour.visible} data-caelestis-control={`swatch:${colour.index}`} style:background={colour.hex} aria-label={`${colour.name}, ${colour.kind}`} aria-pressed={colour.visible} title={`${colour.name} · ${colour.kind}`} onclick={() => emit({ type: 'toggle-colour', index: colour.index, visible: !colour.visible })}>
           <span aria-hidden="true">{colour.visible ? '●' : '○'}</span>
         </button>
       {/each}
     </div>
+    </fieldset>
   </section>
 </div>
 
 <style>
   .editor { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 500 0.82rem/1.3 ui-sans-serif, system-ui, sans-serif; }
   section + section { border-block-start: 1px solid var(--caelestis-border); }
-  h3 { margin: 0; padding: 1.15rem 0.75rem 0.45rem; font-size: 0.9rem; }
+  .section-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 1.15rem 0.75rem 0.45rem; }
+  h3 { margin: 0; font-size: 0.9rem; }
+  .section-toggle { min-block-size: 0; padding: 0; border: 0; background: transparent; }
+  .defaults { display: flex; align-items: center; gap: 0.35rem; color: var(--caelestis-muted-text); font-size: 0.72rem; font-weight: 500; white-space: nowrap; }
+  fieldset { min-inline-size: 0; margin: 0; padding: 0; border: 0; }
+  fieldset:disabled { opacity: 0.62; }
   .sliders, .nested { padding-inline: 0.75rem; }
   .nested { padding-inline-start: 1.35rem; }
   .deeper { padding-inline-start: 1rem; }

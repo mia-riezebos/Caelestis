@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
-import { icon } from './icons.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
 import { PANEL_ID } from './toast.js'
 
@@ -180,11 +179,14 @@ const connectServerTemplate = (published: boolean, isAdmin = true): void => {
 /** Flush the microtask queue, however many turns the store's continuation chain actually takes. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-const gear = (id: string): HTMLButtonElement => {
+const gear = (id: string): HTMLElement => {
   const button = document.getElementById(`caelestis-overlay-button-${id}`)
   if (button === null) throw new Error(`no gear button for ${id}`)
-  return button as HTMLButtonElement
+  return button
 }
+
+const railModel = (control: HTMLElement): { id: string; expanded?: boolean } =>
+  (control as HTMLElement & { model: { id: string; expanded?: boolean } }).model
 
 const floatingPosition = (element: HTMLElement): { x: number; y: number } => {
   return { x: Number.parseFloat(element.style.left), y: Number.parseFloat(element.style.top) }
@@ -196,14 +198,17 @@ const menu = (): HTMLElement => {
   return el
 }
 
+const menuRoot = (): ParentNode => menu().shadowRoot ?? menu()
+
 const byKey = (key: string): HTMLElement => {
-  const el = document.querySelector(`[data-caelestis-control="${key}"]`)
+  const selector = `[data-caelestis-control="${key}"]`
+  const el = document.querySelector(selector) ?? menuRoot().querySelector(selector)
   if (el === null) throw new Error(`no control keyed ${key}`)
   return el as HTMLElement
 }
 
 const pixelPreset = (id: 'small' | 'full' | 'corner'): HTMLButtonElement => {
-  const el = menu().querySelector(`[data-caelestis-pixel-preset="${id}"]`)
+  const el = menuRoot().querySelector(`[data-caelestis-pixel-preset="${id}"]`)
   if (!(el instanceof HTMLButtonElement)) throw new Error(`no ${id} pixel preset`)
   return el
 }
@@ -227,7 +232,7 @@ const drag = (input: HTMLInputElement, to: string): void => {
 const setRadius = (to = '1'): void => drag(byKey('radius') as HTMLInputElement, to)
 
 const errorText = (): string | null =>
-  menu().querySelector('[data-caelestis-error]')?.textContent ?? null
+  menuRoot().querySelector('[data-caelestis-error]')?.textContent ?? null
 
 let mapCanvas: HTMLCanvasElement
 let render: (rerender: () => void, canvas: HTMLCanvasElement) => void
@@ -374,7 +379,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     harness.localTemplates.mockReturnValue([template()])
     rerender()
 
-    expect(gear('a')).toBeInstanceOf(HTMLButtonElement)
+    expect(gear('a').tagName).toBe('CAELESTIS-RAIL-CONTROL')
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
     expect(harness.setLocalVisible).toHaveBeenCalledOnce()
     expect(harness.setLocalVisible).toHaveBeenCalledWith('a', false)
@@ -406,13 +411,13 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     rerender()
     gear('a').click()
     rerender()
-    expect(menu().textContent).toContain('alpha.png')
+    expect(menuRoot().textContent).toContain('alpha.png')
 
     gear('b').click()
     rerender()
 
-    expect(menu().textContent).toContain('beta.png')
-    expect(menu().textContent).not.toContain('alpha.png')
+    expect(menuRoot().textContent).toContain('beta.png')
+    expect(menuRoot().textContent).not.toContain('alpha.png')
   })
 
   it('follows a rename into the menu title and the gear tooltip', () => {
@@ -424,7 +429,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect(menu().textContent).toContain('renamed.png')
+    expect(menuRoot().textContent).toContain('renamed.png')
     expect(gear('a').title).toBe('renamed.png — display options (T)')
   })
 
@@ -448,7 +453,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     rerender()
     gear('a').click()
     rerender()
-    const before = menu().querySelector<HTMLInputElement>(
+    const before = menuRoot().querySelector<HTMLInputElement>(
       'input[type="range"]:not([data-caelestis-control])',
     )
     if (before === null) throw new Error('no Mismatches Size track')
@@ -457,7 +462,9 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     before.value = '17'
     before.dispatchEvent(new Event('input'))
 
-    expect(menu().querySelector('input[type="range"]:not([data-caelestis-control])')).toBe(before)
+    expect(menuRoot().querySelector('input[type="range"]:not([data-caelestis-control])')).toBe(
+      before,
+    )
   })
 
   it('moves an unfocused slider to a value changed elsewhere', () => {
@@ -652,15 +659,12 @@ describe('the menu controls announce their state', () => {
     rerender()
 
     const button = gear('a')
-    expect(button.classList.contains('btn-square')).toBe(true)
-    expect(button.classList.contains('btn-xs')).toBe(false)
+    expect(button.tagName).toBe('CAELESTIS-RAIL-CONTROL')
     expect(button.style.width).toBe(`${RAIL_BUTTON}px`)
     expect(button.style.height).toBe(`${RAIL_BUTTON}px`)
     expect(button.style.transform).toBe('')
     expect(button.style.willChange).toBe('')
-    expect(button.querySelector('path')?.getAttribute('d')).toBe(
-      icon('kebab').querySelector('path')?.getAttribute('d'),
-    )
+    expect(railModel(button).id).toBe('overlay-menu')
   })
 
   it('labels the hide action without announcing a contradictory toggle state', () => {
@@ -677,12 +681,12 @@ describe('the menu controls announce their state', () => {
   it('tells assistive technology the gear owns a dialog', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
-    expect(gear('a').getAttribute('aria-expanded')).toBe('false')
+    expect(railModel(gear('a')).expanded).toBe(false)
 
     gear('a').click()
     rerender()
 
-    expect(gear('a').getAttribute('aria-expanded')).toBe('true')
+    expect(railModel(gear('a')).expanded).toBe(true)
     expect(gear('a').getAttribute('aria-haspopup')).toBe('dialog')
     expect(menu().getAttribute('role')).toBe('dialog')
   })
@@ -695,13 +699,9 @@ describe('the menu controls announce their state', () => {
 
     const actions = [...document.querySelectorAll('[data-caelestis-rail-action]')]
     expect(actions).toHaveLength(3)
-    expect(menu().querySelector('[data-caelestis-rail-action]')).toBeNull()
+    expect(menuRoot().querySelector('[data-caelestis-rail-action]')).toBeNull()
     for (const action of actions) {
-      expect(action).toBeInstanceOf(HTMLButtonElement)
-      expect((action as HTMLElement).classList.contains('btn-square')).toBe(true)
-      expect((action as HTMLElement).classList.contains('shadow-md')).toBe(true)
-      expect((action as HTMLElement).classList.contains('relative')).toBe(true)
-      expect((action as HTMLElement).classList.contains('btn-outline')).toBe(false)
+      expect((action as HTMLElement).tagName).toBe('CAELESTIS-RAIL-CONTROL')
       expect((action as HTMLElement).style.width).toBe(`${RAIL_BUTTON}px`)
       expect((action as HTMLElement).style.height).toBe(`${RAIL_BUTTON}px`)
       expect(floatingPosition(action as HTMLElement).x).toBe(floatingPosition(gear('a')).x)
@@ -753,7 +753,7 @@ describe('the menu controls announce their state', () => {
     harness.placementSeq.mockReturnValue(null)
     rerender()
     expect(document.querySelector('[data-caelestis-placement-action]')).toBeNull()
-    expect(gear('a')).toBeInstanceOf(HTMLButtonElement)
+    expect(gear('a').tagName).toBe('CAELESTIS-RAIL-CONTROL')
   })
 })
 
@@ -1033,7 +1033,9 @@ describe('deferred work stays tied to the template that asked for it', () => {
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect(menu().querySelector('[data-caelestis-confirm]')?.textContent).toContain('renamed.png')
+    expect(menuRoot().querySelector('[data-caelestis-confirm]')?.textContent).toContain(
+      'renamed.png',
+    )
   })
 
   it('lets the latest visibility request own the intent through an ABA sequence', async () => {
@@ -1139,7 +1141,7 @@ describe('focus goes somewhere deliberate', () => {
 
     byKey('delete').click()
 
-    const box = menu().querySelector('[data-caelestis-confirm]')
+    const box = menuRoot().querySelector('[data-caelestis-confirm]')
     expect(box?.getAttribute('role')).toBe('alertdialog')
     expect(box?.getAttribute('aria-label')).toContain('This cannot be undone')
   })
@@ -1562,7 +1564,7 @@ describe('failure messages are resolved when they are shown', () => {
     byKey('move').click()
     rerender()
 
-    const messages = [...menu().querySelectorAll('[data-caelestis-error]')].map(
+    const messages = [...menuRoot().querySelectorAll('[data-caelestis-error]')].map(
       (el) => el.textContent,
     )
     expect(messages).toHaveLength(2)
@@ -1579,13 +1581,13 @@ describe('failure messages are resolved when they are shown', () => {
 
     byKey('hide').click()
     await settle()
-    expect(menu().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
+    expect(menuRoot().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
 
     byKey('swatch:1').click()
     await settle()
 
     // A rebuild reconstructs the node; a fresh role="alert" would read the old failure out again.
-    expect(menu().querySelector('[data-caelestis-error]')?.hasAttribute('role')).toBe(false)
+    expect(menuRoot().querySelector('[data-caelestis-error]')?.hasAttribute('role')).toBe(false)
   })
 })
 
@@ -1699,7 +1701,7 @@ describe('the delete question is retracted by the gestures that dismiss it', () 
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect(menuRoot().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 })
 
@@ -1765,7 +1767,7 @@ describe('an edit carries the change, not a resolved snapshot', () => {
     drag(size, '0.5')
     await settle()
 
-    const messages = [...menu().querySelectorAll('[data-caelestis-error]')].map(
+    const messages = [...menuRoot().querySelectorAll('[data-caelestis-error]')].map(
       (el) => el.textContent,
     )
     expect(messages.join(' ')).toContain('rounding')
@@ -1822,7 +1824,7 @@ describe('a delete owns the template whichever surface started it', () => {
     rerender()
 
     // Without it the controls are all disabled with nothing on screen explaining why.
-    expect(menu().querySelector('[data-caelestis-confirm]')).not.toBeNull()
+    expect(menuRoot().querySelector('[data-caelestis-confirm]')).not.toBeNull()
   })
 
   it('opens onto a control that can take focus while a delete runs', () => {
@@ -1857,7 +1859,7 @@ describe('a delete owns the template whichever surface started it', () => {
     rerender()
 
     // The old question must not be handed to the new lifetime.
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+    expect(menuRoot().querySelector('[data-wts-confirm]')).toBeNull()
   })
 })
 
@@ -1973,7 +1975,7 @@ describe('a held slider holds its own menu, not the next one', () => {
     // Two touches: one holding A's thumb, one tapping B's gear. Keeping A's menu would park A's
     // handlers beside B — the wrong-template failure this relay opened with.
     expect(menu().dataset.caelestisTemplate).toBe('b')
-    expect(menu().textContent).toContain('beta.png')
+    expect(menuRoot().textContent).toContain('beta.png')
   })
 
   it('rebuilds a menu the page has torn off even while held, keeping the value', async () => {
@@ -2004,7 +2006,7 @@ describe('a held slider holds its own menu, not the next one', () => {
     rerender()
     gear('a').click()
     rerender()
-    const markerSize = menu().querySelector<HTMLInputElement>(
+    const markerSize = menuRoot().querySelector<HTMLInputElement>(
       'input[type="range"]:not([data-caelestis-control])',
     )
     if (markerSize === null) throw new Error('no Mismatches Size track')
@@ -2028,7 +2030,9 @@ describe('a held slider holds its own menu, not the next one', () => {
     rerender()
     gear('a').click()
     rerender()
-    const swatch = menu().querySelector<HTMLButtonElement>('button[aria-label^="Marker colour:"]')
+    const swatch = menuRoot().querySelector<HTMLElement>(
+      'button[aria-label^="Marker colour:"], input[aria-label="Marker colour"]',
+    )
     if (swatch === null) throw new Error('no marker colour swatch')
     swatch.click()
     const square = document.querySelector<HTMLElement>('.caelestis-cp-sv')
@@ -2140,7 +2144,7 @@ describe('the menu belongs to us, and to one template at a time', () => {
 
     // ✕ and Escape both retract it; walking away via another gear must not be the one that leaves
     // a live destructive button waiting.
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect(menuRoot().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 
   it('does not flip a swatch back while its own write is landing', async () => {
@@ -2170,7 +2174,7 @@ describe('a condemned template is condemned everywhere', () => {
     rerender()
     gear('a').click()
     rerender()
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect(menuRoot().querySelector('[data-caelestis-confirm]')).toBeNull()
 
     // A delete started from the panel, with the record still present for its IndexedDB round trip.
     harness.isDeletingLocal.mockReturnValue(true)
@@ -2196,7 +2200,7 @@ describe('a condemned template is condemned everywhere', () => {
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect(menuRoot().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 })
 
@@ -2218,7 +2222,7 @@ describe('a locked slider arms nothing', () => {
     ])
     rerender()
 
-    expect(menu().textContent).toContain('renamed.png')
+    expect(menuRoot().textContent).toContain('renamed.png')
   })
 
   it('commits a drag that returned to its origin rather than losing it', async () => {
@@ -2429,13 +2433,13 @@ describe('more than one thing can be happening at once', () => {
 
     byKey('hide').click()
     await settle()
-    const first = menu().querySelector('[data-caelestis-error]')
+    const first = menuRoot().querySelector('[data-caelestis-error]')
     byKey('hide').click()
     await settle()
 
     // Only Move used to get a second announcement; a deliberate retry of anything deserves one.
-    expect(menu().querySelector('[data-caelestis-error]')).not.toBe(first)
-    expect(menu().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
+    expect(menuRoot().querySelector('[data-caelestis-error]')).not.toBe(first)
+    expect(menuRoot().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
   })
 })
 
@@ -2459,7 +2463,7 @@ describe('a pointer gesture ends wherever the pointer does', () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.65 } })])
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
-    expect(menu().textContent).toContain('renamed.png')
+    expect(menuRoot().textContent).toContain('renamed.png')
   })
 
   it('waits for every pointer on one slider before ending the gesture', async () => {
@@ -2594,7 +2598,7 @@ describe('an action waits for the state it depends on', () => {
     rerender()
 
     expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect(menuRoot().querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 
   it('still exits when another page listener prevented the Escape', () => {

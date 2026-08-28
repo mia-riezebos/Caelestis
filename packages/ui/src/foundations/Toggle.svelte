@@ -4,10 +4,11 @@
     checked: boolean
     disabled?: boolean
     compact?: boolean
+    control?: string
     onChange?: (checked: boolean) => void
   }
 
-  let { label, checked, disabled = false, compact = false, onChange }: Props = $props()
+  let { label, checked, disabled = false, compact = false, control, onChange }: Props = $props()
 </script>
 
 <input
@@ -17,6 +18,7 @@
   class:compact
   {checked}
   {disabled}
+  data-caelestis-control={control}
   onchange={(event) => onChange?.(event.currentTarget.checked)}
 />
 

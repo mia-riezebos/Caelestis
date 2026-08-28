@@ -5,6 +5,7 @@ export { default as SettingRow } from './foundations/SettingRow.svelte'
 export { default as SliderRow } from './foundations/SliderRow.svelte'
 export { default as Toggle } from './foundations/Toggle.svelte'
 export { default as Notifications } from './notifications/Notifications.svelte'
+export { default as OverlayControls } from './overlay/OverlayControls.svelte'
 export { default as Panel } from './panel/Panel.svelte'
 export { default as ProgressMeter } from './progress/ProgressMeter.svelte'
 export { default as RailControl } from './rail/RailControl.svelte'
@@ -16,6 +17,8 @@ export type {
   AppearanceColourKey,
   AppearanceEditorIntent,
   AppearanceEditorModel,
+  AppearanceGroupKey,
+  AppearanceGroupModel,
   AppearanceNumberKey,
   AppearancePaletteColourModel,
   AppearancePresetModel,
@@ -25,6 +28,8 @@ export type {
   NotificationsIntent,
   NotificationsModel,
   NotificationsProps,
+  OverlayControlsIntent,
+  OverlayControlsModel,
   PanelIntent,
   PanelModel,
   PanelProps,

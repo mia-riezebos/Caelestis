@@ -13,6 +13,8 @@ orchestration, and page layout. The first shared components are:
 - `TemplateAdmin` and `<caelestis-template-admin>` render finish/reopen and freeze/thaw actions.
 - `Notifications` and `<caelestis-notifications>` render toasts and destructive confirmations from
   a typed model and emit one typed intent event.
+- `OverlayControls` and `<caelestis-overlay-controls>` render a template's map-anchored appearance
+  menu, lifecycle state, failures, and destructive confirmation.
 - `Panel` and `<caelestis-panel>` own panel chrome, navigation, and resizing while host view content
   moves across the Shadow DOM seam one slice at a time.
 - `TemplateTree` renders the searchable, sortable template hierarchy from a typed model and emits
@@ -38,10 +40,10 @@ Two constraints are enforced by the implementation:
 
 The Svelte custom-element runtime is a fixed cost that later components reuse.
 
-| Build | Before Svelte | Lifecycle | Notifications | Panel and rail | Template tree | Appearance defaults | Direct frontend imports | Shared progress |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B | 499,428 B | 499,428 B | 501,294 B |
-| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B | 162,866 B | 162,866 B | 163,564 B |
-| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B | 143,287 B | 143,287 B | 145,579 B |
-| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B | 38,294 B | 38,294 B | 39,363 B |
-| Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB | 756 KiB | 776 KiB | 684 KiB | 684 KiB |
+| Build | Before Svelte | Lifecycle | Notifications | Panel and rail | Template tree | Appearance defaults | Direct frontend imports | Shared progress | Overlay controls |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B | 499,428 B | 499,428 B | 501,294 B | 515,142 B |
+| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B | 162,866 B | 162,866 B | 163,564 B | 167,202 B |
+| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B | 143,287 B | 143,287 B | 145,579 B | 156,905 B |
+| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B | 38,294 B | 38,294 B | 39,363 B | 41,391 B |
+| Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB | 756 KiB | 776 KiB | 684 KiB | 684 KiB | 684 KiB |

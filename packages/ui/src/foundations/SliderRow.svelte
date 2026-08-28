@@ -10,6 +10,7 @@
     compact?: boolean
     locked?: boolean
     disabled?: boolean
+    control?: string
     onInput?: (value: number) => void
     onCommit?: (value: number) => void
     onReset?: (value: number) => void
@@ -26,6 +27,7 @@
     compact = false,
     locked = false,
     disabled = false,
+    control,
     onInput,
     onCommit,
     onReset,
@@ -55,6 +57,7 @@
     {disabled}
     aria-label={label}
     aria-disabled={locked || disabled}
+    data-caelestis-control={control}
     bind:value={local}
     oninput={input}
     onchange={() => { if (!locked && !disabled) onCommit?.(local) }}

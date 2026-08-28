@@ -9,6 +9,7 @@
     pressed?: boolean
     disabled?: boolean
     iconOnly?: boolean
+    control?: string
     onclick?: (event: MouseEvent) => void
     children?: Snippet
   }
@@ -21,6 +22,7 @@
     pressed,
     disabled = false,
     iconOnly = false,
+    control,
     onclick,
     children,
   }: Props = $props()
@@ -37,6 +39,7 @@
   {disabled}
   aria-label={iconOnly ? label : undefined}
   aria-pressed={pressed}
+  data-caelestis-control={control}
   {onclick}
 >
   {#if children !== undefined}{@render children()}{:else}{label}{/if}

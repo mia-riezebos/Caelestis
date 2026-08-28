@@ -1,5 +1,11 @@
-import type { NotificationsModel, PanelModel, RailControlModel } from '../types.js'
+import type {
+  NotificationsModel,
+  OverlayControlsModel,
+  PanelModel,
+  RailControlModel,
+} from '../types.js'
 import NotificationsElement from './Notifications.element.svelte'
+import OverlayControlsElement from './OverlayControls.element.svelte'
 import PanelElement from './Panel.element.svelte'
 import RailControlElement from './RailControl.element.svelte'
 import TemplateAdminElement from './TemplateAdmin.element.svelte'
@@ -9,6 +15,8 @@ export type {
   AppearanceEditorIntent,
   AppearanceEditorModel,
   NotificationsIntent,
+  OverlayControlsIntent,
+  OverlayControlsModel,
   PanelIntent,
   PanelModel,
   RailControlIntent,
@@ -19,6 +27,7 @@ export type {
 export const TEMPLATE_ADMIN_TAG = 'caelestis-template-admin'
 export const TEMPLATE_STATE_TAG = 'caelestis-template-state'
 export const NOTIFICATIONS_TAG = 'caelestis-notifications'
+export const OVERLAY_CONTROLS_TAG = 'caelestis-overlay-controls'
 export const PANEL_TAG = 'caelestis-panel'
 export const RAIL_CONTROL_TAG = 'caelestis-rail-control'
 
@@ -39,6 +48,8 @@ export type CaelestisNotifications = HTMLElement & {
   model: NotificationsModel
 }
 
+export type CaelestisOverlayControls = HTMLElement & { model: OverlayControlsModel }
+
 export type CaelestisPanel = HTMLElement & { model: PanelModel }
 export type CaelestisRailControl = HTMLElement & { model: RailControlModel }
 
@@ -53,6 +64,8 @@ export const CaelestisTemplateState =
   TemplateStateElement.element as ElementConstructor<CaelestisTemplateState>
 export const CaelestisNotifications =
   NotificationsElement.element as ElementConstructor<CaelestisNotifications>
+export const CaelestisOverlayControls =
+  OverlayControlsElement.element as ElementConstructor<CaelestisOverlayControls>
 export const CaelestisPanel = PanelElement.element as ElementConstructor<CaelestisPanel>
 export const CaelestisRailControl =
   RailControlElement.element as ElementConstructor<CaelestisRailControl>
@@ -69,6 +82,9 @@ export const registerCaelestisUi = (): void => {
   if (customElements.get(NOTIFICATIONS_TAG) === undefined) {
     customElements.define(NOTIFICATIONS_TAG, CaelestisNotifications)
   }
+  if (customElements.get(OVERLAY_CONTROLS_TAG) === undefined) {
+    customElements.define(OVERLAY_CONTROLS_TAG, CaelestisOverlayControls)
+  }
   if (customElements.get(PANEL_TAG) === undefined) {
     customElements.define(PANEL_TAG, CaelestisPanel)
   }
@@ -82,6 +98,7 @@ declare global {
     'caelestis-template-admin': CaelestisTemplateAdmin
     'caelestis-template-state': CaelestisTemplateState
     'caelestis-notifications': CaelestisNotifications
+    'caelestis-overlay-controls': CaelestisOverlayControls
     'caelestis-panel': CaelestisPanel
     'caelestis-rail-control': CaelestisRailControl
   }

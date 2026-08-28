@@ -85,7 +85,16 @@ export interface PanelProps {
   onIntent?: (intent: PanelIntent) => void
 }
 
-export type RailControlId = 'panel' | 'colour' | 'mismatch'
+export type RailControlId =
+  | 'panel'
+  | 'colour'
+  | 'mismatch'
+  | 'overlay-menu'
+  | 'overlay-visible'
+  | 'overlay-move'
+  | 'overlay-delete'
+  | 'placement-apply'
+  | 'placement-cancel'
 
 export interface RailControlModel {
   readonly id: RailControlId
@@ -93,7 +102,10 @@ export interface RailControlModel {
   readonly pressed: boolean
   readonly expanded?: boolean
   readonly controls?: string
+  readonly popup?: 'dialog' | 'menu'
   readonly badge?: number
+  readonly disabled?: boolean
+  readonly danger?: boolean
 }
 
 export type RailControlIntent = { readonly type: 'activate'; readonly id: RailControlId }
@@ -227,6 +239,13 @@ export type AppearanceBooleanKey =
 
 export type AppearanceColourKey = 'markerColour' | 'selectedMarkerColour' | 'otherColour'
 
+export type AppearanceGroupKey = 'pixels' | 'markers' | 'colours'
+
+export interface AppearanceGroupModel {
+  readonly owned: boolean
+  readonly locked?: boolean
+}
+
 export interface AppearanceValuesModel {
   readonly size: number
   readonly radius: number
@@ -283,10 +302,13 @@ export interface AppearanceEditorModel {
   readonly colourPresets: readonly AppearancePresetModel[]
   readonly palette: readonly AppearancePaletteColourModel[]
   readonly onlySelectedColour: boolean
+  readonly showOnlySelectedColour?: boolean
   readonly paintOpen: boolean
   readonly selectedColourName?: string
   readonly markerBudget?: number
   readonly markerBudgetOptions?: readonly number[]
+  readonly groups?: Readonly<Record<AppearanceGroupKey, AppearanceGroupModel>>
+  readonly disabled?: boolean
 }
 
 export type AppearanceEditorIntent =
@@ -315,3 +337,33 @@ export type AppearanceEditorIntent =
   | { readonly type: 'toggle-colour'; readonly index: number; readonly visible: boolean }
   | { readonly type: 'only-selected-colour'; readonly value: boolean }
   | { readonly type: 'marker-budget'; readonly value: number }
+  | {
+      readonly type: 'set-group-owned'
+      readonly group: AppearanceGroupKey
+      readonly owned: boolean
+    }
+
+export interface OverlayFailureModel {
+  readonly id: string
+  readonly message: string
+  readonly announce: boolean
+}
+
+export interface OverlayControlsModel {
+  readonly name: string
+  readonly lifecycle?: {
+    readonly finished: boolean
+    readonly frozen: boolean
+    readonly griefed: boolean
+  }
+  readonly failures: readonly OverlayFailureModel[]
+  readonly confirmingDelete: boolean
+  readonly deleting: boolean
+  readonly appearance: AppearanceEditorModel
+}
+
+export type OverlayControlsIntent =
+  | { readonly type: 'close' }
+  | { readonly type: 'cancel-delete' }
+  | { readonly type: 'confirm-delete' }
+  | { readonly type: 'appearance'; readonly intent: AppearanceEditorIntent }
