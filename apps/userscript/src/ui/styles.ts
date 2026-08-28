@@ -333,11 +333,8 @@ const CSS = `
   border: 1px solid rgba(0, 0, 0, 0.55);
   cursor: pointer;
 }
-/* The tree's visibility control: a circle, with an eye in it when the row is on the map.
-
-   The circle never changes. It is what says "hidden" rather than "nothing here" — an absent eye in
-   an absent container is a gap, not a state, and it leaves nothing to aim at for the click that
-   would bring the row back. */
+/* The tree's visibility control: the circle remains a stable target while open and crossed-out eyes
+   make both states explicit. */
 .caelestis-eye {
   display: inline-flex;
   flex: 0 0 auto;
@@ -360,16 +357,25 @@ const CSS = `
   height: 1.5rem;
   border-radius: 999px;
   box-sizing: border-box;
-  /* Quiet enough to sit beside sixty of itself, findable enough to aim at. The same in both states:
-     the circle is the control, and the eye inside it is the answer. */
-  border: 1px solid var(--color-base-300, rgba(0, 0, 0, 0.18));
+  color: var(--color-base-content, currentColor);
+  border: 1px solid currentColor;
+  border-color: color-mix(in srgb, var(--color-base-content, currentColor) 44%, transparent);
 }
 .caelestis-eye > span > svg {
-  opacity: 0;
-  transition: opacity 100ms ease-out;
+  display: none;
 }
-.caelestis-eye > input:checked + span > svg {
-  opacity: 1;
+.caelestis-eye > span > .caelestis-eye-off {
+  display: block;
+  opacity: 0.8;
+}
+.caelestis-eye > input:checked + span > .caelestis-eye-off {
+  display: none;
+}
+.caelestis-eye > input:checked + span > .caelestis-eye-on {
+  display: block;
+}
+.caelestis-eye:hover > span {
+  border-color: color-mix(in srgb, var(--color-base-content, currentColor) 64%, transparent);
 }
 .caelestis-eye > input:focus-visible + span {
   outline: 2px solid var(--color-primary, currentColor);

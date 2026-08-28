@@ -648,7 +648,7 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
   eye.className = 'caelestis-eye'
   eye.addEventListener('click', (event) => event.stopPropagation())
   const box = document.createElement('span')
-  box.appendChild(icon('eye', 'size-4'))
+  box.append(icon('eyeOff', 'size-4 caelestis-eye-off'), icon('eye', 'size-4 caelestis-eye-on'))
   eye.append(check, box)
   row.appendChild(eye)
 
