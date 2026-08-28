@@ -1,12 +1,13 @@
-import TemplateAdminElement from './TemplateAdmin.element.svelte'
-import TemplateStateElement from './TemplateState.element.svelte'
+import type { NotificationsModel, PanelModel, RailControlModel } from '../types.js'
 import NotificationsElement from './Notifications.element.svelte'
 import PanelElement from './Panel.element.svelte'
 import RailControlElement from './RailControl.element.svelte'
-
-import type { NotificationsModel, PanelModel, RailControlModel } from '../types.js'
+import TemplateAdminElement from './TemplateAdmin.element.svelte'
+import TemplateStateElement from './TemplateState.element.svelte'
 
 export type {
+  AppearanceEditorIntent,
+  AppearanceEditorModel,
   NotificationsIntent,
   PanelIntent,
   PanelModel,
@@ -46,11 +47,15 @@ type ElementConstructor<T extends HTMLElement> = {
   readonly prototype: T
 }
 
-export const CaelestisTemplateAdmin = TemplateAdminElement.element as ElementConstructor<CaelestisTemplateAdmin>
-export const CaelestisTemplateState = TemplateStateElement.element as ElementConstructor<CaelestisTemplateState>
-export const CaelestisNotifications = NotificationsElement.element as ElementConstructor<CaelestisNotifications>
+export const CaelestisTemplateAdmin =
+  TemplateAdminElement.element as ElementConstructor<CaelestisTemplateAdmin>
+export const CaelestisTemplateState =
+  TemplateStateElement.element as ElementConstructor<CaelestisTemplateState>
+export const CaelestisNotifications =
+  NotificationsElement.element as ElementConstructor<CaelestisNotifications>
 export const CaelestisPanel = PanelElement.element as ElementConstructor<CaelestisPanel>
-export const CaelestisRailControl = RailControlElement.element as ElementConstructor<CaelestisRailControl>
+export const CaelestisRailControl =
+  RailControlElement.element as ElementConstructor<CaelestisRailControl>
 
 /** Browser-only and idempotent, so both hosts can call it whenever their UI mounts. */
 export const registerCaelestisUi = (): void => {

@@ -11,6 +11,7 @@
     locked?: boolean
     disabled?: boolean
     onInput?: (value: number) => void
+    onCommit?: (value: number) => void
     onReset?: (value: number) => void
   }
 
@@ -26,6 +27,7 @@
     locked = false,
     disabled = false,
     onInput,
+    onCommit,
     onReset,
   }: Props = $props()
 
@@ -55,6 +57,7 @@
     aria-disabled={locked || disabled}
     bind:value={local}
     oninput={input}
+    onchange={() => { if (!locked && !disabled) onCommit?.(local) }}
     onpointerdown={(event) => { if (locked) event.preventDefault() }}
     onkeydown={(event) => { if (locked) event.preventDefault() }}
   />

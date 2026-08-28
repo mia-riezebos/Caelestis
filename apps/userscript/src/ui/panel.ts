@@ -1,4 +1,7 @@
+import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
 import type {
+  AppearanceEditorIntent,
+  AppearanceEditorModel,
   CaelestisPanel,
   CaelestisRailControl,
   PanelIntent,
@@ -8,7 +11,7 @@ import type {
 } from '@caelestis/ui/elements'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { redraw } from '../main.js'
-import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
+import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
 import { isProfileEnabled, setProfileEnabled } from '../profile.js'
 import { forgetServer } from '../server-cache.js'
 import {
@@ -32,26 +35,29 @@ import {
   upsertServer,
 } from '../state.js'
 import { onServerStatusChange } from '../telemetry.js'
-import { APPEARANCE_CONTROLS, DEFAULT_APPEARANCE } from '../templates/appearance.js'
+import {
+  APPEARANCE_CONTROLS,
+  DEFAULT_APPEARANCE,
+  PIXEL_STYLE_PRESETS,
+  pixelStylePresetOf,
+} from '../templates/appearance.js'
+import { globalHiddenColours } from '../templates/colour-filter.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
 import { pixelAccounting } from '../templates/mismatch.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
-import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
+import { ownedColours, refreshAccount } from '../wplace-account.js'
+import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
 import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
 import { whileBusy } from './button.js'
 import { isColourPickerOpen } from './colour-picker.js'
-import { coloursSection } from './colours.js'
+import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { frameQueue } from './frame-queue.js'
 import type { IconName } from './icons.js'
 import { icon } from './icons.js'
-import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
-import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
-import { createRangeGestures } from './range-gestures.js'
-import { sliderRow } from './slider.js'
 import { progressChangesCanReorder } from './sort.js'
 import { installStyles } from './styles.js'
 import { applyWplaceTheme } from './theme.js'
@@ -146,7 +152,6 @@ let currentView: View = 'tree'
 let open = false
 let alarmBadge = 0
 let searchQuery = ''
-const rangeGestures = createRangeGestures()
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
@@ -595,139 +600,6 @@ const serverRow = (server: ConnectedServer): HTMLElement => {
  * Everything here is a *default*. An overlay that has been given settings of its own ignores all of
  * it; see `hiddenColoursFor`.
  */
-const appearanceView = (): HTMLElement => {
-  const view = document.createElement('div')
-  Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
-  const rerender = (): void => showView('appearance')
-  const state = getState()
-
-  view.appendChild(sectionHeader('Appearance', 'tune'))
-  view.appendChild(
-    settingRow(
-      'Pixel style',
-      null,
-      pixelStylePresets(state.appearance, (values) => {
-        setState({ appearance: { ...getState().appearance, ...values } })
-        redraw()
-        rerender()
-      }),
-    ),
-  )
-
-  const outline = document.createElement('input')
-  outline.type = 'checkbox'
-  outline.className = 'toggle toggle-sm'
-  outline.checked = state.appearance.contrastOutline
-  outline.setAttribute('aria-label', 'Contrast outline')
-  outline.addEventListener('change', () => {
-    setState({
-      appearance: { ...getState().appearance, contrastOutline: outline.checked },
-    })
-    previewGlobalAppearance(getState().appearance)
-    redraw()
-    rerender()
-  })
-  view.appendChild(
-    settingRow(
-      'Contrast outline',
-      'Visible behind the overlay until Wplace art covers it',
-      outline,
-    ),
-  )
-
-  // Same sliders as the per-overlay menu, deliberately — one vocabulary, learned once.
-  const sliders = document.createElement('div')
-  sliders.className = 'px-3 pb-2'
-  for (const control of APPEARANCE_CONTROLS) {
-    let dirty = false
-    let row: ReturnType<typeof sliderRow>
-    const commit = (): void => {
-      if (!dirty) return
-      dirty = false
-      const next = Number(row.input.value)
-      // Read the live value rather than the one captured when this row was built, so dragging one
-      // slider cannot revert another.
-      setState({
-        appearance: { ...getState().appearance, [control.key]: next },
-      })
-    }
-    row = sliderRow({
-      label: control.label,
-      value: state.appearance[control.key],
-      defaultValue: DEFAULT_APPEARANCE[control.key],
-      min: control.min,
-      max: control.max,
-      step: control.step,
-      format: control.format,
-      disabled: control.key === 'contrastOutlineSize' && !state.appearance.contrastOutline,
-      onInput: (next) => {
-        dirty = true
-        previewGlobalAppearance({
-          ...getState().appearance,
-          [control.key]: next,
-        })
-        redraw()
-      },
-      onReset: (next) => {
-        dirty = false
-        setState({ appearance: { ...getState().appearance, [control.key]: next } })
-        previewGlobalAppearance(getState().appearance)
-        redraw()
-        rerender()
-      },
-    })
-    rangeGestures.bind(row.input, commit)
-    sliders.appendChild(row.element)
-  }
-  view.appendChild(sliders)
-
-  view.appendChild(sectionHeader('Markers', 'search'))
-  const setAppearance = (patch: Partial<typeof state.appearance>): void => {
-    setState({ appearance: { ...getState().appearance, ...patch } })
-  }
-
-  // The same block the per-overlay menu shows, at this pane's density — one place that decides what
-  // these switches are called and which of them qualifies which.
-  const markers = document.createElement('div')
-  markers.className = 'px-3 pb-2'
-  markers.appendChild(
-    mismatchSettings(
-      { ...state.appearance, hiddenColours: state.hiddenColours },
-      (patch) => {
-        setAppearance(patch)
-      },
-      rerender,
-    ),
-  )
-  view.appendChild(markers)
-  const markerBudget = document.createElement('select')
-  markerBudget.className = 'select select-bordered select-sm'
-  for (const value of MARKER_BUDGET_OPTIONS) {
-    const option = document.createElement('option')
-    option.value = String(value)
-    option.textContent =
-      value === DEFAULT_MARKER_BUDGET
-        ? `${value.toLocaleString()} (default)`
-        : value.toLocaleString()
-    option.selected = value === state.markerBudget
-    markerBudget.appendChild(option)
-  }
-  markerBudget.addEventListener('change', () => {
-    setState({ markerBudget: Number(markerBudget.value) })
-  })
-  view.appendChild(
-    settingRow(
-      'Visible marker limit',
-      'Approximate GPU target per marker kind across the viewport. Higher limits use more GPU time.',
-      markerBudget,
-    ),
-  )
-
-  view.appendChild(sectionHeader('Colours', 'palette'))
-  view.appendChild(coloursSection(rerender, refreshView))
-  return view
-}
-
 const settingsView = (): HTMLElement => {
   const view = document.createElement('div')
   Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
@@ -887,6 +759,122 @@ const settingsView = (): HTMLElement => {
 
 let activeTreeAdapter: TemplateTreeAdapter | null = null
 
+const appearanceModel = (): AppearanceEditorModel => {
+  const state = getState()
+  const effectiveHidden = new Set(globalHiddenColours())
+  const activePixelPreset = pixelStylePresetOf(state.appearance)
+  const activePreset = activeColourPreset(state.hiddenColours)
+  const selected = selectedColour()
+  const selectedColourName = selected === null ? undefined : WPLACE_PALETTE[selected]?.name
+  return {
+    values: state.appearance,
+    sliders: APPEARANCE_CONTROLS.map((control) => ({
+      key: control.key,
+      label: control.label,
+      value: state.appearance[control.key],
+      defaultValue: DEFAULT_APPEARANCE[control.key],
+      min: control.min,
+      max: control.max,
+      step: control.step,
+      format:
+        control.key === 'rotation'
+          ? 'degrees'
+          : control.key === 'contrastOutlineSize'
+            ? 'decimal-pixels'
+            : 'percent',
+      ...(control.key === 'contrastOutlineSize' && !state.appearance.contrastOutline
+        ? { disabled: true }
+        : {}),
+    })),
+    pixelPresets: PIXEL_STYLE_PRESETS.map((preset) => ({
+      id: preset.id,
+      label: preset.label,
+      active: preset.id === activePixelPreset,
+    })),
+    colourPresets: (
+      [
+        ['all', 'All'],
+        ['free', 'Free'],
+        ['premium', 'Premium'],
+        ['owned', 'Owned'],
+      ] as const
+    ).map(([id, label]) => ({
+      id,
+      label,
+      active: id === activePreset,
+      ...(id === 'owned' && ownedColours() === null ? { disabled: true } : {}),
+    })),
+    palette: WPLACE_PALETTE.filter((colour) => colour.index !== TRANSPARENT_INDEX).map(
+      (colour) => ({
+        index: colour.index,
+        name: colour.name,
+        hex: colour.hex,
+        kind: colour.kind,
+        visible: !effectiveHidden.has(colour.index),
+      }),
+    ),
+    onlySelectedColour: state.onlySelectedColour,
+    paintOpen: isPaintOpen(),
+    ...(selectedColourName === undefined ? {} : { selectedColourName }),
+    markerBudget: state.markerBudget,
+    markerBudgetOptions: MARKER_BUDGET_OPTIONS,
+  }
+}
+
+const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
+  switch (intent.type) {
+    case 'preview-number':
+      previewGlobalAppearance({ ...getState().appearance, [intent.key]: intent.value })
+      redraw()
+      break
+    case 'commit-number':
+      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      redraw()
+      break
+    case 'set-boolean':
+      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      redraw()
+      break
+    case 'set-colour':
+      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      redraw()
+      break
+    case 'pixel-preset': {
+      const preset = PIXEL_STYLE_PRESETS.find((candidate) => candidate.id === intent.id)
+      if (preset === undefined) break
+      setState({ appearance: { ...getState().appearance, ...preset.values } })
+      redraw()
+      break
+    }
+    case 'colour-preset':
+      if (!['all', 'free', 'premium', 'owned'].includes(intent.id)) break
+      setState({ hiddenColours: hiddenForPreset(intent.id as ColourPresetId) })
+      redraw()
+      break
+    case 'toggle-colour': {
+      const base =
+        getState().onlySelectedColour && isPaintOpen()
+          ? globalHiddenColours()
+          : getState().hiddenColours
+      const hidden = new Set(base)
+      if (intent.visible) hidden.delete(intent.index)
+      else hidden.add(intent.index)
+      setState({ hiddenColours: [...hidden], onlySelectedColour: false })
+      redraw()
+      break
+    }
+    case 'only-selected-colour':
+      setState({ onlySelectedColour: intent.value })
+      redraw()
+      break
+    case 'marker-budget':
+      if (MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)) {
+        setState({ markerBudget: intent.value })
+      }
+      break
+  }
+}
+
 const treeCallbacks = (): TreeCallbacks => ({
   onAddServer: () => showView('settings'),
   onCreateFolder: (target) => void createFolder(target, rerenderTree),
@@ -914,6 +902,7 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
   ...(currentView === 'tree' && activeTreeAdapter !== null
     ? { tree: activeTreeAdapter.model }
     : {}),
+  ...(currentView === 'appearance' ? { appearance: appearanceModel() } : {}),
 })
 
 /** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
@@ -959,6 +948,9 @@ const buildSveltePanel = (): CaelestisPanel => {
         } else {
           activeTreeAdapter?.handle(intent.intent)
         }
+        break
+      case 'appearance':
+        handleAppearanceIntent(intent.intent)
         break
     }
   })
@@ -1035,14 +1027,14 @@ const showView = (view: View): void => {
   const previous = scrollerIn(panel.firstElementChild)
   const scrollTop = staying && previous !== null ? previous.scrollTop : 0
 
-  const next =
-    view === 'settings' ? settingsView() : view === 'appearance' ? appearanceView() : null
+  const next = view === 'settings' ? settingsView() : null
   panel.replaceChildren(...(next === null ? [] : [next]))
   if (view === 'tree') {
     activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
     void primeFromCache(rerenderTree)
   } else {
     activeTreeAdapter = null
+    if (view === 'appearance') refreshAccount(refreshView)
   }
   const scroller = scrollerIn(next)
   if (scrollTop > 0 && scroller !== null) scroller.scrollTop = scrollTop

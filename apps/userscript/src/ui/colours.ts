@@ -145,7 +145,7 @@ const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
  * like a fifth preset, and left nothing on screen saying what you would be back to on switching it
  * off.
  */
-const activePreset = (hidden: readonly number[]): ColourPresetId | null => {
+export const activeColourPreset = (hidden: readonly number[]): ColourPresetId | null => {
   for (const [id] of PRESETS) {
     if (id === 'owned' && ownedColours() === null) continue
     if (sameSet(hidden, hiddenForPreset(id))) return id
@@ -185,7 +185,7 @@ export const colourPresets = (
   // settings pane had this from its own wrapper; the overlay menu has no wrapper, and the grid sat
   // flush against the buttons.
   presets.style.marginBottom = '0.5rem'
-  const active = activePreset(scope.hidden)
+  const active = activeColourPreset(scope.hidden)
   // The labels are the labels. Nothing here needs a sentence.
   for (const [id, label] of PRESETS) {
     const button = document.createElement('button')
@@ -233,7 +233,7 @@ export const setPresetState = (
   hidden: readonly number[],
   onlySelected: boolean,
 ): void => {
-  const active = activePreset(hidden)
+  const active = activeColourPreset(hidden)
   for (const element of root.querySelectorAll<HTMLElement>('[data-caelestis-preset]')) {
     const id = element.dataset.caelestisPreset
     // Two independent answers, not one choice between five buttons.

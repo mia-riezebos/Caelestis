@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from '../foundations/Button.svelte'
+  import AppearanceEditor from '../appearance/AppearanceEditor.svelte'
   import TemplateTree from '../tree/TemplateTree.svelte'
   import type { PanelIntent, PanelProps, PanelView } from '../types.js'
 
@@ -96,6 +97,8 @@
   <div class="body">
     {#if model.view === 'tree' && model.tree !== undefined}
       <TemplateTree model={model.tree} onIntent={(intent) => emit({ type: 'tree', intent })} />
+    {:else if model.view === 'appearance' && model.appearance !== undefined}
+      <AppearanceEditor model={model.appearance} onIntent={(intent) => emit({ type: 'appearance', intent })} />
     {:else if children !== undefined}
       {@render children()}
     {/if}

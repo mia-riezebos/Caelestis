@@ -1,3 +1,4 @@
+export { default as AppearanceEditor } from './appearance/AppearanceEditor.svelte'
 export { default as Button } from './foundations/Button.svelte'
 export { default as SectionHeader } from './foundations/SectionHeader.svelte'
 export { default as SettingRow } from './foundations/SettingRow.svelte'
@@ -10,6 +11,15 @@ export { default as TemplateAdmin } from './template-admin/TemplateAdmin.svelte'
 export { default as TemplateState } from './template-state/TemplateState.svelte'
 export { default as TemplateTree } from './tree/TemplateTree.svelte'
 export type {
+  AppearanceBooleanKey,
+  AppearanceColourKey,
+  AppearanceEditorIntent,
+  AppearanceEditorModel,
+  AppearanceNumberKey,
+  AppearancePaletteColourModel,
+  AppearancePresetModel,
+  AppearanceSliderModel,
+  AppearanceValuesModel,
   ConfirmDialogModel,
   NotificationsIntent,
   NotificationsModel,

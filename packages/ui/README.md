@@ -17,6 +17,8 @@ orchestration, and page layout. The first shared components are:
   moves across the Shadow DOM seam one slice at a time.
 - `TemplateTree` renders the searchable, sortable template hierarchy from a typed model and emits
   typed intents for every host-owned operation.
+- `AppearanceEditor` renders shared pixel, marker, and palette controls for panel defaults and
+  map-anchored template overrides.
 - `RailControl` and `<caelestis-rail-control>` render the panel, colour, and mismatch rail buttons.
 
 Host themes cross the Shadow DOM seam through documented `--caelestis-*` custom properties. The
@@ -34,10 +36,10 @@ Two constraints are enforced by the implementation:
 
 The Svelte custom-element runtime is a fixed cost that later components reuse.
 
-| Build | Before Svelte | Lifecycle | Notifications | Panel and rail | Template tree |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B |
-| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B |
-| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B |
-| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B |
-| Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB | 756 KiB |
+| Build | Before Svelte | Lifecycle | Notifications | Panel and rail | Template tree | Appearance defaults |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B | 499,428 B |
+| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B | 162,866 B |
+| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B | 143,287 B |
+| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B | 38,294 B |
+| Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB | 756 KiB | 776 KiB |
