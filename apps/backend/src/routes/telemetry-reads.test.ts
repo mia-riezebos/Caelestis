@@ -265,6 +265,44 @@ describe('telemetry read routes', () => {
     })
   })
 
+  it('coalesces finer retained telemetry when the selected coarse tier is not materialised', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const to = Math.floor(now / 21_600) * 21_600
+    const from = to - 60 * 86_400
+    await sql.appendBuckets([
+      {
+        templateId,
+        resolution: 60,
+        bucketStart: seconds(from),
+        placed: 7,
+        correct: 6,
+        repairs: 2,
+      },
+    ])
+
+    const response = await app.request(
+      `/telemetry/history?templateIds=${templateId}&from=${from}&to=${to}`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      buckets: [
+        {
+          templateId,
+          resolution: 21_600,
+          bucketStart: from,
+          placed: 7,
+          correct: 6,
+          repairs: 2,
+        },
+      ],
+    })
+  })
+
   it('rejects malformed history queries and unauthenticated readers', async () => {
     const { app } = await harness()
     const templateId = await createPublishedTemplate(app)
@@ -480,6 +518,37 @@ describe('telemetry read routes', () => {
       `/telemetry/tiles/0/0/history?season=0&resolution=0&from=${now - 1}&to=${now + 1}`,
     )
     expect(unauthenticated.status).toBe(401)
+  })
+
+  it('coalesces preserved raw tile history when an old range selects the permanent tier', async () => {
+    const { app, sql } = await harness()
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const to = Math.floor(now / 86_400) * 86_400
+    const from = to - 60 * 86_400
+    const hash = 'b'.repeat(64)
+    await sql.recordTileObservation(
+      {
+        season: 0,
+        tile: { x: 0, y: 0 },
+        hash,
+        observedAt: millis(from * 1_000),
+        reportedAt: seconds(from),
+        reportedWithToken: TOKEN_DIGEST,
+        reportedByUserId: 1,
+      },
+      [],
+    )
+
+    const response = await app.request(
+      `/telemetry/tiles/0/0/history?season=0&from=${from}&to=${to}`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      frames: [{ bucketStart: from, hash, reporters: 1 }],
+    })
   })
 
   it('serves mirrored tile blobs by hash like template chunks', async () => {

@@ -551,6 +551,40 @@ export const tileHistory = sqliteTable(
   ],
 )
 
+/** Short-lived ownership that prevents R2 deletion while an observation is being committed. */
+export const tileBlobReservations = sqliteTable(
+  'tile_blob_reservations',
+  {
+    id: text('id').primaryKey(),
+    sha256: text('sha256').notNull(),
+    expiresAtMs: integer('expires_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    index('tile_blob_reservations_sha256_idx').on(table.sha256),
+    check(
+      'tile_blob_reservations_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
+/** Exclusive, expiring ownership held while an unreferenced tile blob is removed from R2. */
+export const tileBlobDeletionLocks = sqliteTable(
+  'tile_blob_deletion_locks',
+  {
+    sha256: text('sha256').primaryKey(),
+    expiresAtMs: integer('expires_at_ms').$type<Millis>().notNull(),
+  },
+  (table) => [
+    check(
+      'tile_blob_deletion_locks_sha256_check',
+      sql`typeof(${table.sha256}) = 'text' AND length(${table.sha256}) = 64
+        AND ${table.sha256} NOT GLOB '*[^0-9a-f]*'`,
+    ),
+  ],
+)
+
 /** Latest accepted canvas observation per tile, used to classify later paint repairs. */
 export const canvasTiles = sqliteTable(
   'canvas_tiles',

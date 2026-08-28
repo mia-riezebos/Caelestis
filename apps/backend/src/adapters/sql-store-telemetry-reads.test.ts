@@ -363,6 +363,40 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     expect(TELEMETRY_DECAY_EDGES[0]?.retainSeconds).toBeGreaterThan(EXPIRES_AFTER_SECONDS)
   })
 
+  it('does not cascade a partially drained telemetry window', async () => {
+    const now = seconds(1_800_000_000)
+    const targetStart = Math.floor((now - 2 * 86_400) / 900) * 900
+    await store.appendBuckets(
+      Array.from({ length: 21 }, (_, index) => ({
+        templateId: 'template-1',
+        resolution: 60,
+        bucketStart: seconds(targetStart + index * 300),
+        placed: 1,
+        correct: 1,
+        repairs: 0,
+      })),
+    )
+
+    await store.foldTelemetryBuckets(['template-1'], now)
+
+    await expect(
+      store.readBuckets({
+        templateIds: ['template-1'],
+        resolution: 300,
+        fromSeconds: seconds(targetStart + 18 * 300),
+        toSeconds: seconds(targetStart + 21 * 300),
+      }),
+    ).resolves.toHaveLength(2)
+    await expect(
+      store.readBuckets({
+        templateIds: ['template-1'],
+        resolution: 900,
+        fromSeconds: seconds(targetStart + 18 * 300),
+        toSeconds: seconds(targetStart + 21 * 300),
+      }),
+    ).resolves.toEqual([])
+  })
+
   it('folds tile state by latest bucket and carries the winning reporter rows', async () => {
     const now = seconds(1_800_000_000)
     const targetStart = now - 86_400 - 3_600
@@ -450,5 +484,20 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     )
 
     await expect(store.foldTileHistory(1, tile, now)).resolves.not.toContain(oldHash)
+  })
+
+  it('serialises tile blob references against deletion claims', async () => {
+    const hash = '9'.repeat(64)
+    const now = millis(1_800_000_000_000)
+    const expiresAt = millis(now + 30_000)
+
+    await expect(store.reserveTileBlob(hash, 'reservation-1', now, expiresAt)).resolves.toBe(true)
+    await expect(store.claimTileBlobDeletion(hash, now, expiresAt)).resolves.toBe(false)
+    await store.releaseTileBlobReservation('reservation-1')
+
+    await expect(store.claimTileBlobDeletion(hash, now, expiresAt)).resolves.toBe(true)
+    await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(false)
+    await store.releaseTileBlobDeletion(hash)
+    await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(true)
   })
 })

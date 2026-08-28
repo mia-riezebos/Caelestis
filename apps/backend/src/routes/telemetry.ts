@@ -1,6 +1,7 @@
 import {
   type CanvasTilesResponse,
   type ContributionsResponse,
+  type HistoryBucket,
   type HistoryResponse,
   type LeaderboardEntry,
   type LeaderboardResponse,
@@ -11,6 +12,7 @@ import {
   type Seconds,
   type StatusResponse,
   seconds,
+  type TileHistoryFrame,
   type TileHistoryResponse,
   type TileOfferBatch as TileOfferBatchValue,
   tileKey,
@@ -98,6 +100,92 @@ export const selectTileHistoryResolution = (
   range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
   now?: Seconds,
 ): number => selectHistoryResolution(TILE_HISTORY_TIERS, range, now)
+
+const coalesceTelemetryHistory = (
+  buckets: readonly HistoryBucket[],
+  resolution: number,
+  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
+): readonly HistoryBucket[] => {
+  const groups = new Map<string, HistoryBucket[]>()
+  for (const bucket of buckets) {
+    const bucketStart = seconds(Math.floor(bucket.bucketStart / resolution) * resolution)
+    if (bucketStart < range.fromSeconds || bucketStart >= range.toSeconds) continue
+    const key = `${bucket.templateId}\u0000${bucketStart}`
+    const held = groups.get(key) ?? []
+    held.push(bucket)
+    groups.set(key, held)
+  }
+  return [...groups.entries()]
+    .map(([key, candidates]) => {
+      const separator = key.indexOf('\u0000')
+      const templateId = key.slice(0, separator)
+      const bucketStart = seconds(Number(key.slice(separator + 1)))
+      const selected: HistoryBucket[] = []
+      for (const candidate of [...candidates].sort(
+        (left, right) => right.resolution - left.resolution || left.bucketStart - right.bucketStart,
+      )) {
+        const end = candidate.bucketStart + candidate.resolution
+        if (
+          selected.some(
+            (held) =>
+              candidate.bucketStart < held.bucketStart + held.resolution && end > held.bucketStart,
+          )
+        ) {
+          continue
+        }
+        selected.push(candidate)
+      }
+      return {
+        templateId,
+        resolution,
+        bucketStart,
+        placed: selected.reduce((total, bucket) => total + bucket.placed, 0),
+        correct: selected.reduce((total, bucket) => total + bucket.correct, 0),
+        repairs: selected.reduce((total, bucket) => total + bucket.repairs, 0),
+      }
+    })
+    .sort((left, right) =>
+      left.templateId < right.templateId
+        ? -1
+        : left.templateId > right.templateId
+          ? 1
+          : left.bucketStart - right.bucketStart,
+    )
+}
+
+const coalesceTileHistory = (
+  tiers: readonly { readonly resolution: number; readonly frames: readonly TileHistoryFrame[] }[],
+  resolution: number,
+  range: { readonly fromSeconds: Seconds; readonly toSeconds: Seconds },
+): readonly TileHistoryFrame[] => {
+  if (resolution === 0) return tiers[0]?.frames ?? []
+  const groups = new Map<
+    number,
+    { readonly resolution: number; readonly frame: TileHistoryFrame }[]
+  >()
+  for (const tier of tiers) {
+    for (const frame of tier.frames) {
+      const bucketStart = Math.floor(frame.bucketStart / resolution) * resolution
+      if (bucketStart < range.fromSeconds || bucketStart >= range.toSeconds) continue
+      const held = groups.get(bucketStart) ?? []
+      held.push({ resolution: tier.resolution, frame })
+      groups.set(bucketStart, held)
+    }
+  }
+  return [...groups]
+    .sort(([left], [right]) => left - right)
+    .flatMap(([bucketStart, candidates]) => {
+      const latest = [...candidates]
+        .sort(
+          (left, right) =>
+            left.frame.bucketStart - right.frame.bucketStart || right.resolution - left.resolution,
+        )
+        .at(-1)?.frame
+      return latest === undefined
+        ? []
+        : [{ bucketStart: seconds(bucketStart), hash: latest.hash, reporters: latest.reporters }]
+    })
+}
 
 const wholeNumber = (value: string | undefined): number | null => {
   if (value === undefined || !WHOLE_NUMBER.test(value)) return null
@@ -267,11 +355,22 @@ export const createTelemetryRoutes = (
       c.get('caller').scope === 'admin'
         ? templateIds
         : await ports.sql.filterPublishedTemplateIds(templateIds)
+    const buckets =
+      visibleIds.length === 0
+        ? []
+        : await ports.sql.readBuckets({
+            templateIds: visibleIds,
+            resolution:
+              typeof legacyResolution === 'number'
+                ? resolution
+                : LADDER_RESOLUTIONS.filter((tier) => tier <= resolution),
+            ...range,
+          })
     const response: HistoryResponse = {
       buckets:
-        visibleIds.length === 0
-          ? []
-          : await ports.sql.readBuckets({ templateIds: visibleIds, resolution, ...range }),
+        typeof legacyResolution === 'number'
+          ? buckets
+          : coalesceTelemetryHistory(buckets, resolution, range),
     }
     return c.json(response)
   })
@@ -423,8 +522,35 @@ export const createTelemetryRoutes = (
     }
     const resolution =
       typeof legacyResolution === 'number' ? legacyResolution : selectTileHistoryResolution(range)
+    const tiers =
+      typeof legacyResolution === 'number'
+        ? [
+            {
+              resolution,
+              frames: await ports.sql.readTileHistory({
+                season,
+                tile: { x, y },
+                resolution,
+                ...range,
+              }),
+            },
+          ]
+        : await Promise.all(
+            TILE_HISTORY_RESOLUTIONS.filter((tier) => tier <= resolution).map(async (tier) => ({
+              resolution: tier,
+              frames: await ports.sql.readTileHistory({
+                season,
+                tile: { x, y },
+                resolution: tier,
+                ...range,
+              }),
+            })),
+          )
     const response: TileHistoryResponse = {
-      frames: await ports.sql.readTileHistory({ season, tile: { x, y }, resolution, ...range }),
+      frames:
+        typeof legacyResolution === 'number'
+          ? (tiers[0]?.frames ?? [])
+          : coalesceTileHistory(tiers, resolution, range),
     }
     return c.json(response)
   })

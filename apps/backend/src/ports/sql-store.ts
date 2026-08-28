@@ -134,7 +134,8 @@ export const compareBuckets = (left: TelemetryBucket, right: TelemetryBucket): n
 
 export interface BucketQuery {
   readonly templateIds: readonly string[]
-  readonly resolution: number
+  /** One exact tier for legacy callers, or several retained tiers for a lossless server-side read. */
+  readonly resolution: number | readonly number[]
   readonly fromSeconds: Seconds
   readonly toSeconds: Seconds
 }
@@ -827,6 +828,21 @@ export interface SqlStore {
     statuses: readonly TemplateTileStatusRecord[],
     recordHistory?: boolean,
   ): Promise<void>
+
+  /** Reserve a content hash while its blob and SQL references are being committed. */
+  reserveTileBlob(
+    hash: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<boolean>
+
+  releaseTileBlobReservation(reservationId: string): Promise<void>
+
+  /** Exclusively claim an unreferenced hash before deleting its R2 object. */
+  claimTileBlobDeletion(hash: string, now: Millis, expiresAt: Millis): Promise<boolean>
+
+  releaseTileBlobDeletion(hash: string): Promise<void>
 
   /** Fold one touched tile and return hashes no history or current-canvas row still references. */
   foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<readonly string[]>

@@ -1150,6 +1150,69 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
+  async reserveTileBlob(
+    hash: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<boolean> {
+    const results = await this.client.batch([
+      this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
+      this.client
+        .prepare('DELETE FROM tile_blob_deletion_locks WHERE expires_at_ms <= ?')
+        .bind(now),
+      this.client
+        .prepare(
+          `INSERT INTO tile_blob_reservations (id, sha256, expires_at_ms)
+           SELECT ?, ?, ?
+           WHERE NOT EXISTS (
+             SELECT 1 FROM tile_blob_deletion_locks
+             WHERE sha256 = ? AND expires_at_ms > ?
+           )
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .bind(reservationId, hash, expiresAt, hash, now),
+    ])
+    return Number(results.at(-1)?.meta.changes) > 0
+  }
+
+  async releaseTileBlobReservation(reservationId: string): Promise<void> {
+    await this.client
+      .prepare('DELETE FROM tile_blob_reservations WHERE id = ?')
+      .bind(reservationId)
+      .run()
+  }
+
+  async claimTileBlobDeletion(hash: string, now: Millis, expiresAt: Millis): Promise<boolean> {
+    const results = await this.client.batch([
+      this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
+      this.client
+        .prepare('DELETE FROM tile_blob_deletion_locks WHERE expires_at_ms <= ?')
+        .bind(now),
+      this.client
+        .prepare(
+          `INSERT INTO tile_blob_deletion_locks (sha256, expires_at_ms)
+           SELECT ?, ?
+           WHERE NOT EXISTS (
+             SELECT 1 FROM tile_blob_reservations
+             WHERE sha256 = ? AND expires_at_ms > ?
+           )
+             AND NOT EXISTS (SELECT 1 FROM tile_history WHERE sha256 = ?)
+             AND NOT EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = ?)
+           ON CONFLICT(sha256) DO NOTHING`,
+        )
+        .bind(hash, expiresAt, hash, now, hash, hash),
+    ])
+    return Number(results.at(-1)?.meta.changes) > 0
+  }
+
+  async releaseTileBlobDeletion(hash: string): Promise<void> {
+    await this.client
+      .prepare('DELETE FROM tile_blob_deletion_locks WHERE sha256 = ?')
+      .bind(hash)
+      .run()
+  }
+
   async foldTileHistory(
     season: number,
     tile: { readonly x: number; readonly y: number },
@@ -1165,6 +1228,15 @@ export class D1SqlStore implements SqlStore {
         WHERE history.season = ? AND history.tile_x = ? AND history.tile_y = ?
           AND history.resolution_s = ${edge.source}
           AND ${targetStart} + ${edge.target} <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM tile_history AS finer
+            WHERE finer.season = history.season
+              AND finer.tile_x = history.tile_x
+              AND finer.tile_y = history.tile_y
+              AND finer.resolution_s < ${edge.source}
+              AND finer.bucket_start_s >= ${targetStart}
+              AND finer.bucket_start_s < ${targetStart} + ${edge.target}
+          )
           AND NOT EXISTS (
             SELECT 1
             FROM templates
@@ -1246,19 +1318,26 @@ export class D1SqlStore implements SqlStore {
             ),
         )
       }
-      const targetStarts = [
-        ...new Set(rows.map((row) => Math.floor(row.bucketStart / edge.target) * edge.target)),
-      ]
-      statements.push(
-        this.client
-          .prepare(
-            `DELETE FROM tile_history
-             WHERE season = ? AND tile_x = ? AND tile_y = ? AND resolution_s = ${edge.source}
-               AND CAST(bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}
-                 IN (${targetStarts.map(() => '?').join(', ')})`,
-          )
-          .bind(season, tile.x, tile.y, ...targetStarts),
-      )
+      // Delete only the reporter rows that participated in this fold. A new observation can land
+      // after the SELECT above; deleting by the whole target window would erase that unrepresented
+      // row. Exact primary keys leave it for the next touch instead.
+      for (const group of chunkRows(rows, 20)) {
+        const keys = group.map(() => '(?, ?, ?)').join(', ')
+        statements.push(
+          this.client
+            .prepare(
+              `DELETE FROM tile_history
+               WHERE season = ? AND tile_x = ? AND tile_y = ? AND resolution_s = ${edge.source}
+                 AND (bucket_start_s, sha256, reported_by_user_id) IN (${keys})`,
+            )
+            .bind(
+              season,
+              tile.x,
+              tile.y,
+              ...group.flatMap((row) => [row.bucketStart, row.hash, row.reportedByUserId]),
+            ),
+        )
+      }
       await this.client.batch(statements)
       for (const hash of folded.deletedHashes) deletedHashes.add(hash)
     }
@@ -1462,15 +1541,22 @@ export class D1SqlStore implements SqlStore {
     if (ids.length === 0) return
     const idBindings = ids.map(() => '?').join(', ')
     for (const edge of TELEMETRY_DECAY_EDGES) {
-      const targetStart = `CAST(bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}`
+      const targetStart = `CAST(source.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}`
       const chosen = `
-        SELECT template_id, ${targetStart} AS target_start
-        FROM telemetry_buckets
-        WHERE resolution = ${edge.source}
-          AND template_id IN (${idBindings})
+        SELECT source.template_id, ${targetStart} AS target_start
+        FROM telemetry_buckets AS source
+        WHERE source.resolution = ${edge.source}
+          AND source.template_id IN (${idBindings})
           AND ${targetStart} + ${edge.target} <= ?
-        GROUP BY template_id, target_start
-        ORDER BY MIN(bucket_start_s), template_id
+          AND NOT EXISTS (
+            SELECT 1 FROM telemetry_buckets AS finer
+            WHERE finer.template_id = source.template_id
+              AND finer.resolution < ${edge.source}
+              AND finer.bucket_start_s >= ${targetStart}
+              AND finer.bucket_start_s < ${targetStart} + ${edge.target}
+          )
+        GROUP BY source.template_id, target_start
+        ORDER BY MIN(source.bucket_start_s), source.template_id
         LIMIT ?`
       const insert = `
         WITH chosen AS (${chosen})
@@ -1562,6 +1648,10 @@ export class D1SqlStore implements SqlStore {
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
     if (query.templateIds.length === 0) return []
+    const resolutions = [
+      ...new Set(typeof query.resolution === 'number' ? [query.resolution] : query.resolution),
+    ]
+    if (resolutions.length === 0) return []
 
     // Deduplicate before chunking. Each chunk returns its own rows and the merge does not join
     // them, so an id repeated across two chunks came back twice and any consumer summing the result
@@ -1582,7 +1672,7 @@ export class D1SqlStore implements SqlStore {
           .from(telemetryBuckets)
           .where(
             and(
-              eq(telemetryBuckets.resolution, query.resolution),
+              inArray(telemetryBuckets.resolution, resolutions),
               gte(telemetryBuckets.bucketStartS, query.fromSeconds),
               lt(telemetryBuckets.bucketStartS, query.toSeconds),
               inArray(telemetryBuckets.templateId, chunk),

@@ -27,6 +27,46 @@ import type {
 } from '../ports/index.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
+const TILE_BLOB_OWNERSHIP_MS = 30_000
+const TILE_BLOB_RESERVATION_RETRIES = 40
+
+const reserveTileBlob = async (ports: Ports, hash: string): Promise<string> => {
+  const reservationId = crypto.randomUUID()
+  for (let attempt = 0; attempt < TILE_BLOB_RESERVATION_RETRIES; attempt++) {
+    const now = millis(Date.now())
+    if (
+      await ports.sql.reserveTileBlob(
+        hash,
+        reservationId,
+        now,
+        millis(now + TILE_BLOB_OWNERSHIP_MS),
+      )
+    ) {
+      return reservationId
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error('tile blob is still being reclaimed')
+}
+
+const deleteOrphanedTileBlobs = async (
+  ports: Ports,
+  candidates: readonly string[],
+): Promise<void> => {
+  const claimed: string[] = []
+  for (const hash of candidates) {
+    const now = millis(Date.now())
+    if (await ports.sql.claimTileBlobDeletion(hash, now, millis(now + TILE_BLOB_OWNERSHIP_MS))) {
+      claimed.push(hash)
+    }
+  }
+  if (claimed.length === 0) return
+  try {
+    await ports.blobs.delete('tiles', claimed)
+  } finally {
+    await Promise.all(claimed.map((hash) => ports.sql.releaseTileBlobDeletion(hash)))
+  }
+}
 
 interface Reporter {
   readonly wplaceUserId: number
@@ -215,34 +255,46 @@ export const recordObservation = async (
   bytes: Uint8Array,
 ): Promise<void> => {
   const canvas = await decodeCanvas(bytes)
-  const targets = await ports.sql.listTelemetryTargets(
-    metadata.season,
-    metadata.tile,
-    metadata.includeUnpublished,
-  )
-  const observedAtMs = metadata.observedAt * 1_000
-  const classified = (
-    await Promise.all(targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)))
-  ).filter((result): result is ClassifiedTarget => result !== null)
-  const statuses = classified.map((result) => result.status)
-  const observation: TileObservation = {
-    season: metadata.season,
-    tile: metadata.tile,
-    hash: metadata.hash,
-    observedAt: millis(observedAtMs),
-    reportedAt: metadata.observedAt,
-    reportedWithToken: metadata.tokenHash,
-    reportedByUserId: metadata.wplaceUserId,
+  const reservationId = await reserveTileBlob(ports, metadata.hash)
+  try {
+    await ports.blobs.put('tiles', metadata.hash, bytes)
+    const targets = await ports.sql.listTelemetryTargets(
+      metadata.season,
+      metadata.tile,
+      metadata.includeUnpublished,
+    )
+    const observedAtMs = metadata.observedAt * 1_000
+    const classified = (
+      await Promise.all(
+        targets.map((target) => classifyTarget(ports, target, canvas, observedAtMs)),
+      )
+    ).filter((result): result is ClassifiedTarget => result !== null)
+    const statuses = classified.map((result) => result.status)
+    const observation: TileObservation = {
+      season: metadata.season,
+      tile: metadata.tile,
+      hash: metadata.hash,
+      observedAt: millis(observedAtMs),
+      reportedAt: metadata.observedAt,
+      reportedWithToken: metadata.tokenHash,
+      reportedByUserId: metadata.wplaceUserId,
+    }
+    await ports.sql.rememberPainter(
+      metadata.wplaceUserId,
+      metadata.displayName,
+      millis(observedAtMs),
+    )
+    const recordHistory = targets.length === 0 || targets.some((target) => !target.finished)
+    await ports.sql.recordTileObservation(observation, statuses, recordHistory)
+    const orphaned = await ports.sql.foldTileHistory(
+      metadata.season,
+      metadata.tile,
+      seconds(Math.floor(Date.now() / 1_000)),
+    )
+    await deleteOrphanedTileBlobs(ports, orphaned)
+  } finally {
+    await ports.sql.releaseTileBlobReservation(reservationId)
   }
-  await ports.sql.rememberPainter(metadata.wplaceUserId, metadata.displayName, millis(observedAtMs))
-  const recordHistory = targets.length === 0 || targets.some((target) => !target.finished)
-  await ports.sql.recordTileObservation(observation, statuses, recordHistory)
-  const orphaned = await ports.sql.foldTileHistory(
-    metadata.season,
-    metadata.tile,
-    seconds(Math.floor(Date.now() / 1_000)),
-  )
-  if (orphaned.length > 0) await ports.blobs.delete('tiles', orphaned)
 }
 
 /** Process an offer immediately when the content-addressed bytes already exist. */
@@ -278,7 +330,6 @@ export const uploadTile = async (
     metadata.includeUnpublished,
   )
   if (targets.length === 0) throw new RangeError('tile is not covered by a visible template')
-  await ports.blobs.put('tiles', actualHash, bytes)
   await recordObservation(ports, metadata, bytes)
 }
 

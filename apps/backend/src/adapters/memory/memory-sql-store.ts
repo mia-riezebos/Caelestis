@@ -109,6 +109,11 @@ export class MemorySqlStore implements SqlStore {
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
   private readonly tileHistory = new Map<string, TileHistoryRow>()
+  private readonly tileBlobReservations = new Map<
+    string,
+    { readonly hash: string; readonly expiresAt: Millis }
+  >()
+  private readonly tileBlobDeletionLocks = new Map<string, Millis>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -668,6 +673,47 @@ export class MemorySqlStore implements SqlStore {
     }
   }
 
+  async reserveTileBlob(
+    hash: string,
+    reservationId: string,
+    now: Millis,
+    expiresAt: Millis,
+  ): Promise<boolean> {
+    for (const [id, reservation] of this.tileBlobReservations) {
+      if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
+    }
+    const lockExpiresAt = this.tileBlobDeletionLocks.get(hash)
+    if (lockExpiresAt !== undefined && lockExpiresAt > now) return false
+    if (lockExpiresAt !== undefined) this.tileBlobDeletionLocks.delete(hash)
+    this.tileBlobReservations.set(reservationId, { hash, expiresAt })
+    return true
+  }
+
+  async releaseTileBlobReservation(reservationId: string): Promise<void> {
+    this.tileBlobReservations.delete(reservationId)
+  }
+
+  async claimTileBlobDeletion(hash: string, now: Millis, expiresAt: Millis): Promise<boolean> {
+    for (const [id, reservation] of this.tileBlobReservations) {
+      if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
+    }
+    const heldLock = this.tileBlobDeletionLocks.get(hash)
+    if (heldLock !== undefined && heldLock > now) return false
+    if (
+      [...this.tileBlobReservations.values()].some((reservation) => reservation.hash === hash) ||
+      [...this.tileHistory.values()].some((row) => row.hash === hash) ||
+      [...this.canvasTiles.values()].some((row) => row.hash === hash)
+    ) {
+      return false
+    }
+    this.tileBlobDeletionLocks.set(hash, expiresAt)
+    return true
+  }
+
+  async releaseTileBlobDeletion(hash: string): Promise<void> {
+    this.tileBlobDeletionLocks.delete(hash)
+  }
+
   private tileIsFrozenAt(season: number, tile: TileCoord, targetStart: number): boolean {
     for (const template of this.templates.values()) {
       if (
@@ -710,7 +756,16 @@ export class MemorySqlStore implements SqlStore {
             .filter(
               (targetStart) =>
                 targetStart + edge.target <= cutoff &&
-                !this.tileIsFrozenAt(season, tile, targetStart),
+                !this.tileIsFrozenAt(season, tile, targetStart) &&
+                ![...this.tileHistory.values()].some(
+                  (row) =>
+                    row.season === season &&
+                    row.tile.x === tile.x &&
+                    row.tile.y === tile.y &&
+                    row.resolution < edge.source &&
+                    row.bucketStart >= targetStart &&
+                    row.bucketStart < targetStart + edge.target,
+                ),
             ),
         ),
       ]
@@ -850,7 +905,21 @@ export class MemorySqlStore implements SqlStore {
               const targetStart = Math.floor(bucket.bucketStart / edge.target) * edge.target
               return `${bucket.templateId}\u0000${targetStart}`
             })
-            .filter((key) => Number(key.slice(key.indexOf('\u0000') + 1)) + edge.target <= cutoff),
+            .filter((key) => {
+              const separator = key.indexOf('\u0000')
+              const templateId = key.slice(0, separator)
+              const targetStart = Number(key.slice(separator + 1))
+              return (
+                targetStart + edge.target <= cutoff &&
+                ![...this.buckets.values()].some(
+                  (finer) =>
+                    finer.templateId === templateId &&
+                    finer.resolution < edge.source &&
+                    finer.bucketStart >= targetStart &&
+                    finer.bucketStart < targetStart + edge.target,
+                )
+              )
+            }),
         ),
       ]
         .sort()
@@ -916,13 +985,16 @@ export class MemorySqlStore implements SqlStore {
 
   async readBuckets(query: BucketQuery): Promise<readonly TelemetryBucket[]> {
     const templateIds = new Set(query.templateIds)
+    const resolutions = new Set(
+      typeof query.resolution === 'number' ? [query.resolution] : query.resolution,
+    )
     if (templateIds.size > MAX_READ_BUCKETS_TEMPLATE_IDS) throw tooManyTemplateIds(templateIds.size)
 
     return [...this.buckets.values()]
       .filter(
         (bucket) =>
           templateIds.has(bucket.templateId) &&
-          bucket.resolution === query.resolution &&
+          resolutions.has(bucket.resolution) &&
           bucket.bucketStart >= query.fromSeconds &&
           bucket.bucketStart < query.toSeconds,
       )
