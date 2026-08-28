@@ -1,5 +1,8 @@
 import {
+  BLANK,
+  MATCH,
   type MismatchMask,
+  mismatchClassAt,
   PALETTE_SIZE,
   parseTileKey,
   TILE_SIZE,
@@ -1424,18 +1427,10 @@ export const progressIn = (template: PlacedTemplate, tile: TileCoord): boolean =
  * The rebuild is over the tile's own mismatches rather than its pixels, which is the difference
  * between thousands and a million.
  */
-const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): void => {
-  // What matters is the effective colour: the draft where there is one, the server's pixel where
-  // there is not. The announced value cannot stand in for either, because two producers announce
-  // through the same channel — a write announces what was drafted, and a tile re-read announces
-  // what the server now says. Reading the second as a draft put a marker back on a pixel the user's
-  // own draft still covers.
-  const server = tilePixels(tile)
+const patchTile = (tile: TileCoord, x: number, y: number): void => {
   const draft = draftPixels(tile)
   const at = (y - tile.y * TILE_SIZE) * TILE_SIZE + (x - tile.x * TILE_SIZE)
   const drafted = draft === null ? UNPAINTED : (draft[at] as number)
-  const placed =
-    drafted !== UNPAINTED ? drafted : server === null ? UNPAINTED : (server[at] as number)
   // Counted whether or not this patch changes anything, so a scan in flight can see that the ground
   // moved under it and drop its result rather than writing a pre-paint answer over it.
   //
@@ -1496,8 +1491,42 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
      * unpainted list is *shown* is not decided here — it is decided when the answer is read, and a
      * pixel that moves in or out of that list can change the ratio it is decided by.
      */
-    const belongs =
-      !asserted || placed === wanted ? null : placed === UNPAINTED ? 'unpainted' : 'wrong'
+    let belongs: 'wrong' | 'unpainted' | null | undefined
+    if (!asserted) belongs = null
+    else if (drafted !== UNPAINTED) belongs = drafted === wanted ? null : 'wrong'
+    else {
+      const serverMask = serverMismatchMaskFor(template, tile)
+      const maskIsCurrent =
+        serverMask !== null && supersededServerSource.get(cacheKey) !== template.serverUrl
+      if (maskIsCurrent) {
+        const classification = mismatchClassAt(
+          serverMask,
+          x - tile.x * TILE_SIZE,
+          y - tile.y * TILE_SIZE,
+        )
+        belongs =
+          classification === null
+            ? undefined
+            : classification === MATCH
+              ? null
+              : classification === BLANK
+                ? 'unpainted'
+                : 'wrong'
+      } else {
+        const server = tilePixels(tile)
+        if (server === null) belongs = undefined
+        else {
+          const placed = server[at] as number
+          belongs = placed === wanted ? null : placed === UNPAINTED ? 'unpainted' : 'wrong'
+        }
+      }
+    }
+
+    if (belongs === undefined) {
+      stale.add(cacheKey)
+      scheduleIdleScan()
+      continue
+    }
 
     const mark = packMismatchMark(x - tile.x * TILE_SIZE, y - tile.y * TILE_SIZE, wanted)
     const listed = (marks: Mismatches): number => marks.indexOf(mark)
@@ -1656,12 +1685,7 @@ onTilePixels((tile, triples) => {
     for (let i = 0; i < triples.length; i += 3) {
       const localX = triples[i] as number
       const localY = triples[i + 1] as number
-      patchTile(
-        tile,
-        tile.x * TILE_SIZE + localX,
-        tile.y * TILE_SIZE + localY,
-        triples[i + 2] as number,
-      )
+      patchTile(tile, tile.x * TILE_SIZE + localX, tile.y * TILE_SIZE + localY)
     }
   }
   const suffix = `|${tile.x}/${tile.y}`

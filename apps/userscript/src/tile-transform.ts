@@ -1345,6 +1345,49 @@ const apply = (
   return moved
 }
 
+/** Accept one complete read of Wplace's draft canvas and announce its first visible pixels. */
+export const captureDraftPixels = (
+  tile: TileCoord,
+  indices: Uint8Array,
+  firstChanges?: readonly number[],
+): void => {
+  const key = tileKey(tile)
+  const existing = draftOfTile.get(key)
+  if (existing !== undefined && existing.length === indices.length) {
+    rememberDraft(key, existing)
+    apply(tile, existing, indices)
+    count('pixels:draft re-read')
+    reconcileDraftedTile(tile)
+    return
+  }
+
+  rememberDraft(key, indices)
+  let changedTriples = firstChanges
+  if (changedTriples === undefined) {
+    const discovered: number[] = []
+    for (let p = 0; p < indices.length; p++) {
+      const index = indices[p] as number
+      if (index !== UNPAINTED) discovered.push(p % TILE_SIZE, Math.floor(p / TILE_SIZE), index)
+    }
+    changedTriples = discovered
+  }
+  for (let i = 0; i < changedTriples.length; i += 3) {
+    const x = changedTriples[i] as number
+    const y = changedTriples[i + 1] as number
+    const index = changedTriples[i + 2] as number
+    for (const listener of pixelListeners) {
+      try {
+        listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
+      } catch {
+        count('pixels:listener-failed')
+      }
+    }
+  }
+  notifyPixelBatch(tile, changedTriples)
+  count('pixels:draft captured')
+  reconcileDraftedTile(tile)
+}
+
 let captureContext: OffscreenCanvasRenderingContext2D | null = null
 
 const reusableCaptureContext = (): OffscreenCanvasRenderingContext2D | null => {
@@ -1375,7 +1418,10 @@ const capture = (
     const empty = from === 'tile' && bitmap.width < TILE_SIZE && bitmap.height < TILE_SIZE
     if (!empty && (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE)) return
     try {
+      const key = tileKey(tile)
       const indices = new Uint8Array(TILE_SIZE * TILE_SIZE)
+      const firstDraftChanges: number[] | null =
+        from === 'preview' && !draftOfTile.has(key) ? [] : null
       if (empty) {
         indices.fill(UNPAINTED)
       } else {
@@ -1399,30 +1445,16 @@ const capture = (
           // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
           if (from === 'preview') {
             const x = p % TILE_SIZE
-            indices[flipRow((p - x) / TILE_SIZE) * TILE_SIZE + x] = index
+            const y = flipRow((p - x) / TILE_SIZE)
+            indices[y * TILE_SIZE + x] = index
+            if (index !== UNPAINTED) firstDraftChanges?.push(x, y, index)
           } else {
             indices[p] = index
           }
         }
       }
-
-      const key = tileKey(tile)
-
       if (from === 'preview') {
-        // The draft layer, kept whole and kept apart. It is read as it is — an empty one means nothing
-        // is drafted here, which is true and needs no special case.
-        const existingDraft = draftOfTile.get(key)
-        if (existingDraft === undefined || existingDraft.length !== indices.length) {
-          rememberDraft(key, indices)
-          count('pixels:draft captured')
-        } else {
-          rememberDraft(key, existingDraft)
-          apply(tile, existingDraft, indices)
-          count('pixels:draft re-read')
-        }
-        // A re-read comes from the canvas, which cannot see a transparent draft, so it has just undone
-        // every one of them. Restoring them in the same tick keeps that invisible rather than a blink.
-        reconcileDraftedTile(tile)
+        captureDraftPixels(tile, indices, firstDraftChanges ?? [])
         return
       }
 

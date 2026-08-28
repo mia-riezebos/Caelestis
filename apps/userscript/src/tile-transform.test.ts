@@ -2,9 +2,11 @@ import { decodePng } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { counters } from './debug.js'
 import {
+  captureDraftPixels,
   captureTilePixels,
   consumeBySize,
   currentQuads,
+  draftPixels,
   enqueueBySize,
   ensureTilePixels,
   install,
@@ -12,6 +14,7 @@ import {
   onAcceptedPaint,
   onFetchedTile,
   onTileFrame,
+  onTilePixels,
   project,
   quadFromMatrix,
   resetQueues,
@@ -1391,5 +1394,18 @@ describe('transparent browser hooks', () => {
       Object.getOwnPropertyDescriptor(Response.prototype, 'blob')?.enumerable,
     )
     await expect(response.blob.call(undefined as unknown as Response)).rejects.toThrow()
+  })
+
+  it('announces pixels already present in the first captured draft frame', () => {
+    const observed = vi.fn()
+    onTilePixels(observed)
+    const first = new Uint8Array(1_000 * 1_000).fill(UNPAINTED)
+    first[0] = 4
+    first[1] = 5
+
+    captureDraftPixels({ x: 8, y: 9 }, first)
+
+    expect(observed).toHaveBeenCalledWith({ x: 8, y: 9 }, [0, 0, 4, 1, 0, 5])
+    expect(draftPixels({ x: 8, y: 9 })?.slice(0, 2)).toEqual(new Uint8Array([4, 5]))
   })
 })
