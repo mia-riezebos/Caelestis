@@ -11,6 +11,8 @@ orchestration, and page layout. The first shared components are:
 
 - `TemplateState` and `<caelestis-template-state>` render finished, frozen, and grief-watch state.
 - `TemplateAdmin` and `<caelestis-template-admin>` render finish/reopen and freeze/thaw actions.
+- `Notifications` and `<caelestis-notifications>` render toasts and destructive confirmations from
+  a typed model and emit one typed intent event.
 
 Host themes cross the Shadow DOM seam through documented `--caelestis-*` custom properties. The
 components also provide usable light and dark defaults.
@@ -27,10 +29,10 @@ Two constraints are enforced by the implementation:
 
 The Svelte custom-element runtime is a fixed cost that later components reuse.
 
-| Build | Before Svelte | Lifecycle slice |
-| --- | ---: | ---: |
-| Userscript, raw | 433,388 B | 455,360 B |
-| Userscript, gzip | 140,309 B | 149,269 B |
-| Element entry, raw | n/a | 60,798 B |
-| Element entry, gzip | n/a | 18,054 B |
-| Frontend output | 688 KiB | 712 KiB |
+| Build | Before Svelte | Lifecycle | Notifications |
+| --- | ---: | ---: | ---: |
+| Userscript, raw | 433,388 B | 455,360 B | 467,794 B |
+| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B |
+| Element entry, raw | n/a | 60,798 B | 76,160 B |
+| Element entry, gzip | n/a | 18,054 B | 22,229 B |
+| Frontend output | 688 KiB | 712 KiB | 724 KiB |

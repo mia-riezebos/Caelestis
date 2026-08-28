@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerCaelestisUi } from '@caelestis/ui/elements'
 import { PANEL_ID, toast } from './toast.js'
 
 beforeEach(() => {
+  registerCaelestisUi()
   vi.useFakeTimers()
   document.body.replaceChildren()
   const panel = document.createElement('aside')
@@ -10,46 +12,63 @@ beforeEach(() => {
   document.body.appendChild(panel)
 })
 
+afterEach(() => vi.useRealTimers())
+
+const settle = async (): Promise<void> => {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+const shadow = (): ShadowRoot | null =>
+  document.querySelector('caelestis-notifications')?.shadowRoot ?? null
+
 describe('toast', () => {
-  it('announces messages through one persistent status region', () => {
+  it('announces messages through one persistent status region', async () => {
     toast('Reading')
     toast('Published')
+    await settle()
 
-    const region = document.querySelector('[role="status"]')
+    const region = shadow()?.querySelector('[role="status"]')
     expect(region?.children).toHaveLength(1)
     expect(region?.textContent).toContain('Published')
   })
 
-  it('keeps errors until they are dismissed', () => {
+  it('keeps errors until they are dismissed', async () => {
     toast('Upload failed', 'error')
     vi.advanceTimersByTime(60_000)
+    await settle()
 
-    const error = document.querySelector<HTMLElement>('[data-caelestis-toast="error"]')
+    const error = shadow()?.querySelector<HTMLElement>('[data-caelestis-toast="error"]')
     expect(error?.textContent).toContain('Upload failed')
     error?.querySelector<HTMLButtonElement>('button')?.click()
-    expect(document.querySelector('[data-caelestis-toast="error"]')).toBeNull()
+    await settle()
+    expect(shadow()?.querySelector('[data-caelestis-toast="error"]')).toBeNull()
   })
 
-  it('replaces stale progress with an error without letting later progress erase it', () => {
+  it('replaces stale progress with an error without letting later progress erase it', async () => {
     toast('Preparing…')
     toast('Export failed', 'error')
+    await settle()
 
-    expect(document.querySelector('[data-caelestis-toast="info"]')).toBeNull()
-    expect(document.querySelector('[data-caelestis-toast="error"]')?.textContent).toContain(
+    expect(shadow()?.querySelector('[data-caelestis-toast="info"]')).toBeNull()
+    expect(shadow()?.querySelector('[data-caelestis-toast="error"]')?.textContent).toContain(
       'Export failed',
     )
 
     toast('Trying something else…')
-    expect(document.querySelector('[data-caelestis-toast="error"]')?.textContent).toContain(
+    await settle()
+    expect(shadow()?.querySelector('[data-caelestis-toast="error"]')?.textContent).toContain(
       'Export failed',
     )
   })
 
-  it('removes non-errors after six seconds without removing the live region', () => {
+  it('removes non-errors after six seconds without removing the custom-element root', async () => {
     toast('Done')
+    await settle()
     vi.advanceTimersByTime(6000)
+    await settle()
 
-    expect(document.querySelector('[data-caelestis-toast="info"]')).toBeNull()
-    expect(document.querySelector('[role="status"]')).not.toBeNull()
+    expect(shadow()?.querySelector('[data-caelestis-toast="info"]')).toBeNull()
+    expect(document.querySelector('caelestis-notifications')).not.toBeNull()
   })
 })

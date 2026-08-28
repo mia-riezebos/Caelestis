@@ -12,6 +12,10 @@
     "./elements": {
       "types": "./dist/elements/index.d.ts",
       "default": "./dist/elements/index.js"
+    },
+    "./theme": {
+      "types": "./dist/theme.d.ts",
+      "default": "./dist/theme.js"
     }
   },
   "main": "./dist/index.js",
