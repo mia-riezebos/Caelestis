@@ -33,6 +33,7 @@ const model: TemplateTreeModel = {
       name: 'City',
       icon: 'image',
       depth: 1,
+      branches: [false],
       parentKey: 'local',
       container: false,
       expanded: false,
@@ -88,6 +89,9 @@ describe('template tree', () => {
     document.querySelector<HTMLButtonElement>('[aria-label="75% complete"]')?.click()
     flushSync()
     expect(document.body.textContent).toContain('75 completed')
+    expect(
+      document.querySelector('[data-caelestis-tree-key="local:city"] .connector'),
+    ).not.toBeNull()
     void unmount(component)
   })
 

@@ -7,6 +7,7 @@ export { default as Toggle } from './foundations/Toggle.svelte'
 export { default as Notifications } from './notifications/Notifications.svelte'
 export { default as OverlayControls } from './overlay/OverlayControls.svelte'
 export { default as Panel } from './panel/Panel.svelte'
+export { default as ColourProgress } from './progress/ColourProgress.svelte'
 export { default as ProgressMeter } from './progress/ProgressMeter.svelte'
 export { default as RailControl } from './rail/RailControl.svelte'
 export { default as TemplateAdmin } from './template-admin/TemplateAdmin.svelte'
@@ -24,6 +25,7 @@ export type {
   AppearancePresetModel,
   AppearanceSliderModel,
   AppearanceValuesModel,
+  ColourProgressSort,
   ConfirmDialogModel,
   NotificationsIntent,
   NotificationsModel,

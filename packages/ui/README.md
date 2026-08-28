@@ -23,6 +23,8 @@ orchestration, and page layout. The first shared components are:
   map-anchored template overrides.
 - `ProgressMeter` renders the same painted, mismatched, unpainted, and scan coverage in the
   userscript tree and SvelteKit frontend.
+- `ColourProgress` owns palette-aware progress sorting and rows while the frontend keeps its
+  persisted sort preference.
 - `RailControl` and `<caelestis-rail-control>` render the panel, colour, and mismatch rail buttons.
 
 Host themes cross the Shadow DOM seam through documented `--caelestis-*` custom properties. The
@@ -40,10 +42,10 @@ Two constraints are enforced by the implementation:
 
 The Svelte custom-element runtime is a fixed cost that later components reuse.
 
-| Build | Before Svelte | Lifecycle | Notifications | Panel and rail | Template tree | Appearance defaults | Direct frontend imports | Shared progress | Overlay controls |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B | 499,428 B | 499,428 B | 501,294 B | 515,142 B |
-| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B | 162,866 B | 162,866 B | 163,564 B | 167,202 B |
-| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B | 143,287 B | 143,287 B | 145,579 B | 156,905 B |
-| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B | 38,294 B | 38,294 B | 39,363 B | 41,391 B |
-| Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB | 756 KiB | 776 KiB | 684 KiB | 684 KiB | 684 KiB |
+| Build | Before Svelte | Lifecycle | Notifications | Panel and rail | Template tree | Appearance defaults | Direct frontend imports | Shared progress | Overlay controls | Tree parity and colour progress |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B | 499,428 B | 499,428 B | 501,294 B | 515,142 B | 516,151 B |
+| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B | 162,866 B | 162,866 B | 163,564 B | 167,202 B | 167,659 B |
+| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B | 143,287 B | 143,287 B | 145,579 B | 156,905 B | 158,252 B |
+| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B | 38,294 B | 38,294 B | 39,363 B | 41,391 B | 41,954 B |
+| Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB | 756 KiB | 776 KiB | 684 KiB | 684 KiB | 684 KiB | 680 KiB |

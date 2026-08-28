@@ -167,6 +167,7 @@
     {#each model.entries as entry (entry.key)}
       {#if entry.type === 'row'}
         {@const disclosure = disclosures.get(entry.key)}
+        {@const connectorWidth = (entry.branches?.length ?? 0) * 18 + (entry.container ? 0 : 20)}
         <div
           class:muted={entry.muted}
           class:dragging={draggingKey === entry.key}
@@ -183,13 +184,23 @@
           tabindex={activeKey === null ? (entry.positionInSet === 1 && entry.depth === 0 ? 0 : -1) : activeKey === entry.key ? 0 : -1}
           data-caelestis-tree-key={entry.key}
           draggable={entry.draggable === true}
-          style:padding-inline-start={`${0.45 + entry.depth * 1.1}rem`}
+          style:padding-inline-start={connectorWidth === 0 ? '0.45rem' : `calc(0.45rem + ${connectorWidth}px)`}
           onclick={() => { activeKey = entry.key; if (entry.container && !entry.forceExpanded) emit({ type: 'toggle-expanded', key: entry.key }) }}
           onkeydown={(event) => keydown(event, entry)}
           oncontextmenu={(event) => { if (entry.contextMenu) { event.preventDefault(); emit({ type: 'context-menu', key: entry.key, x: event.clientX, y: event.clientY }) } }}
           ondragstart={(event) => startDrag(event, entry)}
           ondragover={(event) => dragOver(event, entry)}
         >
+          {#if connectorWidth > 0}
+            {@const current = (entry.branches?.length ?? 1) - 1}
+            <svg class="connector" style:width={`${connectorWidth}px`} viewBox={`0 0 ${connectorWidth} 36`} preserveAspectRatio="none" aria-hidden="true">
+              {#each entry.branches?.slice(0, -1) ?? [] as continued, index}
+                {#if continued}<line x1={index * 18 + 9} y1="0" x2={index * 18 + 9} y2="36" />{/if}
+              {/each}
+              <line x1={current * 18 + 9} y1="0" x2={current * 18 + 9} y2={entry.branches?.[current] === true ? 36 : 18} />
+              <line x1={current * 18 + 9} y1="18" x2={connectorWidth - 4} y2="18" />
+            </svg>
+          {/if}
           {#if entry.container}<span class:open={entry.expanded} class="caret" aria-hidden="true">›</span>{/if}
           <svg class="kind" viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[entry.icon]} /></svg>
           {#each entry.leadingActions ?? [] as item (item.id)}
@@ -257,6 +268,7 @@
   .scroller { flex: 1; min-block-size: 0; overflow-y: auto; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 500 0.78rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .row { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; min-block-size: 2.25rem; padding-block: 0.2rem; padding-inline-end: 0.5rem; border: 1px solid transparent; border-radius: 0.4rem; outline: none; }
+  .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; block-size: 100%; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.28; pointer-events: none; }
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
   .row:focus-visible { border-color: var(--caelestis-focus); }
   .row.muted { opacity: 0.55; }

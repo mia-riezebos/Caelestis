@@ -1060,6 +1060,7 @@ export const templateTreeAdapter = (
         name: options.name,
         icon: treeIcon(options.kind),
         depth: options.depth,
+        branches: options.branches ?? [],
         parentKey: options.parentKey ?? null,
         container: options.container,
         expanded: options.forceExpanded === true || isExpanded(options.key),
@@ -1093,7 +1094,7 @@ export const templateTreeAdapter = (
         ...(options.canReparent === true ? { canReparent: true } : {}),
       })
     },
-    notice: (text, depth, _branches, action) => {
+    notice: (text, depth, branches = [], action) => {
       const key = `notice-${generatedKey++}`
       let actionModel: TreeActionModel | undefined
       if (action !== undefined) {
@@ -1104,6 +1105,7 @@ export const templateTreeAdapter = (
         type: 'notice',
         key,
         depth,
+        branches,
         text,
         ...(actionModel === undefined ? {} : { action: actionModel }),
       })

@@ -129,6 +129,16 @@ export interface TreeProgressModel {
   readonly total: number
 }
 
+export type ColourProgressSort =
+  | 'index'
+  | 'progress'
+  | 'progress-asc'
+  | 'remaining'
+  | 'remaining-asc'
+  | 'total'
+  | 'free'
+  | 'premium'
+
 export interface TreeColourProgressModel extends TreeProgressModel {
   readonly index: number
   readonly name: string
@@ -147,6 +157,7 @@ export interface TreeRowModel {
   readonly name: string
   readonly icon: Extract<TreeIcon, 'folder' | 'image' | 'server'>
   readonly depth: number
+  readonly branches?: readonly boolean[]
   readonly parentKey: string | null
   readonly container: boolean
   readonly expanded: boolean
@@ -175,6 +186,7 @@ export interface TreeNoticeModel {
   readonly type: 'notice'
   readonly key: string
   readonly depth: number
+  readonly branches?: readonly boolean[]
   readonly text: string
   readonly action?: TreeActionModel
 }
