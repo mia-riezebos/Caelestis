@@ -1,4 +1,3 @@
-import { DARK_THEME_LUMA_MAX, LIGHT_THEME_LUMA_MIN } from './contrast-outline.js'
 import { FULL_MINIFY_FOOTPRINT, MEDIUM_MINIFY_FOOTPRINT } from './minify-quality.js'
 
 /**
@@ -46,19 +45,13 @@ precision highp usampler2D;
 
 in vec2 v_uv;
 
-/** Low six bits: palette index. Bit 7: this required pixel is still unpainted. */
+/** Palette index for each template pixel. */
 uniform usampler2D u_indices;
 /** 64x1 RGBA. Alpha 0 means this colour is filtered out. */
 uniform sampler2D u_palette;
 /** Current index-texture size, including a neighbour halo when the template was split. */
 uniform vec2 u_size;
 uniform float u_opacity;
-/** Wplace's active basemap theme. Low-contrast pixels receive the opposite-colour outline. */
-uniform bool u_darkTheme;
-uniform bool u_contrastOutline;
-/** Device-pixel thickness, converted to cell space from the fragment footprint. */
-uniform float u_contrastOutlineSize;
-
 /** Stamp geometry, all in cell fractions except rotation, which is radians. */
 uniform float u_stampSize;
 uniform float u_stampRadius;
@@ -80,25 +73,6 @@ const int MAX_MINIFY_TAPS = 4;
 float roundedBox(vec2 point, vec2 half_, float radius) {
   vec2 q = abs(point) - half_ + radius;
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
-}
-
-/** Cheap perceptual brightness, matching the CPU-side policy without linearising every fragment. */
-float luma(vec3 colour) {
-  return dot(colour, vec3(0.299, 0.587, 0.114));
-}
-
-bool needsContrastOutline(vec3 colour) {
-  float brightness = luma(colour);
-  return u_darkTheme
-    ? brightness <= ${DARK_THEME_LUMA_MAX.toFixed(2)}
-    : brightness >= ${LIGHT_THEME_LUMA_MIN.toFixed(2)};
-}
-
-/** Whether the neighbouring full-size cell continues the same colour. */
-bool sameCellColour(ivec2 cell, uint index) {
-  if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) return false;
-  uint stored = texelFetch(u_indices, cell, 0).r;
-  return (stored & 128u) != 0u && (stored & 63u) == index;
 }
 
 /** One cell's colour, with w = 1 when it should be drawn at all and 0 when it is filtered or blank. */
@@ -164,7 +138,6 @@ void main() {
 
   uint stored = texelFetch(u_indices, cell, 0).r;
   uint index = stored & 63u;
-  bool unpainted = (stored & 128u) != 0u;
   vec4 entry = texelFetch(u_palette, ivec2(int(index), 0), 0);
   // Nothing at all to draw: the wildcard index, or a colour whose fade has finished leaving.
   if (entry.a <= 0.0) discard;
@@ -172,7 +145,6 @@ void main() {
   // Position within this cell, centred, so the stamp transform is about the cell's middle.
   vec2 local = fract(texel) - 0.5;
   float coverage = 1.0;
-  float edgeDistance = 0.0;
   if (!u_plain) {
     // Undo the stamp's own transform rather than transforming the stamp: rotate the sample point
     // backwards, then remove the offset, and the box stays axis-aligned at the origin.
@@ -199,44 +171,72 @@ void main() {
     float half_ = u_stampSize * 0.5 + outset;
     float radius = u_stampRadius * (u_stampSize * 0.5);
     float distance = roundedBox(point, vec2(half_), radius);
-    edgeDistance = roundedBox(point, vec2(u_stampSize * 0.5), radius);
     coverage = 1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance);
     if (coverage <= 0.0) discard;
   }
 
-  vec3 colour = entry.rgb;
-  if (u_contrastOutline && unpainted && needsContrastOutline(colour)) {
-    // At distant zoom there is no room for an outline. The minification path above already turns a
-    // whole group of source pixels into one antialiased fragment, so the treatment begins only once
-    // individual pixels have enough screen space to keep their colour visible inside the ring.
-    float pixel = max(footprint.x, footprint.y);
-    if (pixel < 0.75) {
-      float width = min(pixel * u_contrastOutlineSize, u_stampSize * 0.2);
-      float antialias = pixel * 0.5;
-      float outline = 0.0;
-      if (u_plain) {
-        float fromX = 0.5 - abs(local.x);
-        float fromY = 0.5 - abs(local.y);
-        float xEdge = 1.0 - smoothstep(width - antialias, width + antialias, fromX);
-        float yEdge = 1.0 - smoothstep(width - antialias, width + antialias, fromY);
-        ivec2 xNeighbour = cell + ivec2(local.x < 0.0 ? -1 : 1, 0);
-        ivec2 yNeighbour = cell + ivec2(0, local.y < 0.0 ? -1 : 1);
-        // Interior fragments do no neighbour reads. Only the thin candidate ring checks whether a
-        // same-colour cell continues through that edge, which keeps solid regions from becoming a
-        // grid without adding two texture fetches to every full-pixel fragment.
-        if (xEdge > 0.0 && sameCellColour(xNeighbour, index)) xEdge = 0.0;
-        if (yEdge > 0.0 && sameCellColour(yNeighbour, index)) yEdge = 0.0;
-        outline = max(xEdge, yEdge);
-      } else {
-        outline = coverage * smoothstep(-width - antialias, -width + antialias, edgeDistance);
-      }
-      vec3 outlineColour = u_darkTheme ? vec3(1.0) : vec3(0.0);
-      colour = mix(colour, outlineColour, outline * 0.82);
-    }
-  }
-
   float alpha = coverage * u_opacity * u_fade * entry.a;
   // Premultiplied, to match the blend mode MapLibre leaves set.
+  fragColor = vec4(entry.rgb * alpha, alpha);
+}
+`
+
+/**
+ * A silhouette rendered below Wplace's art and the coloured overlay.
+ *
+ * Wplace's painted cells cover it naturally. The overlay covers its centre, leaving only the
+ * expanded edge visible. No mismatch mask or painted-state texture is involved.
+ */
+export const OUTLINE_FRAGMENT_SOURCE = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp usampler2D;
+
+in vec2 v_uv;
+
+uniform usampler2D u_indices;
+uniform sampler2D u_palette;
+uniform vec2 u_size;
+uniform bool u_darkTheme;
+uniform float u_outlineSize;
+uniform float u_stampSize;
+uniform float u_stampRadius;
+uniform vec2 u_stampOffset;
+uniform float u_stampRotation;
+uniform float u_fade;
+
+out vec4 fragColor;
+
+float roundedBox(vec2 point, vec2 half_, float radius) {
+  vec2 q = abs(point) - half_ + radius;
+  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
+}
+
+void main() {
+  vec2 texel = v_uv * u_size;
+  vec2 footprint = vec2(fwidth(texel.x), fwidth(texel.y));
+  // The ring is a close-zoom treatment. At distant zoom it cannot fit around an individual cell.
+  if (max(footprint.x, footprint.y) >= 0.75) discard;
+
+  ivec2 cell = ivec2(floor(texel));
+  if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) discard;
+  uint index = texelFetch(u_indices, cell, 0).r & 63u;
+  if (texelFetch(u_palette, ivec2(int(index), 0), 0).a <= 0.0) discard;
+
+  vec2 local = fract(texel) - 0.5;
+  float c = cos(-u_stampRotation);
+  float s = sin(-u_stampRotation);
+  vec2 point = mat2(c, s, -s, c) * local - u_stampOffset;
+  float pixel = max(footprint.x, footprint.y);
+  float half_ = u_stampSize * 0.5;
+  float radius = u_stampRadius * half_;
+  float distance = roundedBox(point, vec2(half_), radius);
+  float expansion = pixel * u_outlineSize;
+  float coverage = 1.0 - smoothstep(expansion - pixel * 0.5, expansion + pixel * 0.5, distance);
+  if (coverage <= 0.0) discard;
+
+  vec3 colour = u_darkTheme ? vec3(1.0) : vec3(0.0);
+  float alpha = coverage * u_fade * 0.82;
   fragColor = vec4(colour * alpha, alpha);
 }
 `

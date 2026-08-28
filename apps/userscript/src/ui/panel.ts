@@ -722,7 +722,11 @@ const appearanceView = (): HTMLElement => {
     rerender()
   })
   view.appendChild(
-    settingRow('Contrast outline', 'For unpainted pixels that blend into the map', outline),
+    settingRow(
+      'Contrast outline',
+      'Visible behind the overlay until Wplace art covers it',
+      outline,
+    ),
   )
 
   // Same sliders as the per-overlay menu, deliberately — one vocabulary, learned once.
@@ -808,7 +812,7 @@ const appearanceView = (): HTMLElement => {
   view.appendChild(
     settingRow(
       'Visible marker limit',
-      'Dense-marker target per kind across the viewport. Isolated markers stay visible; higher targets use more GPU time and memory.',
+      'Approximate GPU target per marker kind across the viewport. Higher limits use more GPU time.',
       markerBudget,
     ),
   )
