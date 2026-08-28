@@ -109,11 +109,6 @@ export class MemorySqlStore implements SqlStore {
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
   private readonly tileHistory = new Map<string, TileHistoryRow>()
-  private readonly tileBlobReservations = new Map<
-    string,
-    { readonly hash: string; readonly expiresAt: Millis }
-  >()
-  private readonly tileBlobDeletionLocks = new Map<string, string>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -673,44 +668,6 @@ export class MemorySqlStore implements SqlStore {
     }
   }
 
-  async reserveTileBlob(
-    hash: string,
-    reservationId: string,
-    now: Millis,
-    expiresAt: Millis,
-  ): Promise<boolean> {
-    for (const [id, reservation] of this.tileBlobReservations) {
-      if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
-    }
-    if (this.tileBlobDeletionLocks.has(hash)) return false
-    this.tileBlobReservations.set(reservationId, { hash, expiresAt })
-    return true
-  }
-
-  async releaseTileBlobReservation(reservationId: string): Promise<void> {
-    this.tileBlobReservations.delete(reservationId)
-  }
-
-  async claimTileBlobDeletion(hash: string, ownerId: string, now: Millis): Promise<boolean> {
-    for (const [id, reservation] of this.tileBlobReservations) {
-      if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
-    }
-    if (this.tileBlobDeletionLocks.has(hash)) return false
-    if (
-      [...this.tileBlobReservations.values()].some((reservation) => reservation.hash === hash) ||
-      [...this.tileHistory.values()].some((row) => row.hash === hash) ||
-      [...this.canvasTiles.values()].some((row) => row.hash === hash)
-    ) {
-      return false
-    }
-    this.tileBlobDeletionLocks.set(hash, ownerId)
-    return true
-  }
-
-  async releaseTileBlobDeletion(hash: string, ownerId: string): Promise<void> {
-    if (this.tileBlobDeletionLocks.get(hash) === ownerId) this.tileBlobDeletionLocks.delete(hash)
-  }
-
   private tileIsFrozenAt(season: number, tile: TileCoord, targetStart: number): boolean {
     for (const template of this.templates.values()) {
       if (
@@ -735,8 +692,7 @@ export class MemorySqlStore implements SqlStore {
     return false
   }
 
-  async foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<readonly string[]> {
-    const deletedHashes = new Set<string>()
+  async foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<void> {
     for (const edge of TILE_HISTORY_DECAY_EDGES) {
       const cutoff = now - edge.retainSeconds
       const targetStarts = [
@@ -780,14 +736,7 @@ export class MemorySqlStore implements SqlStore {
       const folded = foldTileReporterRows(selected, edge.target)
       for (const row of selected) this.tileHistory.delete(tileHistoryRowKey(row))
       for (const row of folded.rows) this.tileHistory.set(tileHistoryRowKey(row), row)
-      for (const hash of folded.deletedHashes) deletedHashes.add(hash)
     }
-
-    const referenced = new Set([
-      ...[...this.tileHistory.values()].map((row) => row.hash),
-      ...[...this.canvasTiles.values()].map((row) => row.hash),
-    ])
-    return [...deletedHashes].filter((hash) => !referenced.has(hash)).sort()
   }
 
   async readTemplateStatuses(

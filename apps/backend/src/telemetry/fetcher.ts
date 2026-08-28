@@ -119,6 +119,7 @@ export const fetchCanvasTiles = async (
         unchanged++
         continue
       }
+      await ports.blobs.put('tiles', hash, bytes)
       await recordObservation(
         ports,
         {

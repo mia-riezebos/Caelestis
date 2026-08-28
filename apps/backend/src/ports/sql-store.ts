@@ -829,23 +829,8 @@ export interface SqlStore {
     recordHistory?: boolean,
   ): Promise<void>
 
-  /** Reserve a content hash while its blob and SQL references are being committed. */
-  reserveTileBlob(
-    hash: string,
-    reservationId: string,
-    now: Millis,
-    expiresAt: Millis,
-  ): Promise<boolean>
-
-  releaseTileBlobReservation(reservationId: string): Promise<void>
-
-  /** Exclusively claim an unreferenced hash before deleting its R2 object. Claims fail closed. */
-  claimTileBlobDeletion(hash: string, ownerId: string, now: Millis): Promise<boolean>
-
-  releaseTileBlobDeletion(hash: string, ownerId: string): Promise<void>
-
-  /** Fold one touched tile and return hashes no history or current-canvas row still references. */
-  foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<readonly string[]>
+  /** Fold the SQL history for one touched tile. Physical blob GC needs a separately safe protocol. */
+  foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<void>
 
   readTemplateStatuses(
     season: number,

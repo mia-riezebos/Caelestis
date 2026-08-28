@@ -453,7 +453,7 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     })
     await store.recordTileObservation(old, [])
 
-    await expect(store.foldTileHistory(1, ringTile, now)).resolves.toEqual([])
+    await store.foldTileHistory(1, ringTile, now)
     await expect(
       store.readTileHistory({
         season: 1,
@@ -463,43 +463,5 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
         toSeconds: now,
       }),
     ).resolves.toEqual([{ bucketStart: old.reportedAt, hash: old.hash, reporters: 1 }])
-  })
-
-  it('never returns a tile hash still referenced by another current canvas row', async () => {
-    const now = seconds(1_800_000_000)
-    const targetStart = now - 86_400 - 3_600
-    const tile = { x: 3, y: 4 }
-    const oldHash = '7'.repeat(64)
-    await store.recordTileObservation(
-      observation({ tile, reportedAt: seconds(targetStart + 60), hash: oldHash }),
-      [],
-    )
-    await store.recordTileObservation(
-      observation({ tile, reportedAt: seconds(targetStart + 120), hash: '8'.repeat(64) }),
-      [],
-    )
-    await store.recordTileObservation(
-      observation({ tile: { x: 4, y: 4 }, hash: oldHash, observedAt: millis(now * 1_000) }),
-      [],
-    )
-
-    await expect(store.foldTileHistory(1, tile, now)).resolves.not.toContain(oldHash)
-  })
-
-  it('serialises tile blob references against deletion claims', async () => {
-    const hash = '9'.repeat(64)
-    const now = millis(1_800_000_000_000)
-    const expiresAt = millis(now + 30_000)
-
-    await expect(store.reserveTileBlob(hash, 'reservation-1', now, expiresAt)).resolves.toBe(true)
-    await expect(store.claimTileBlobDeletion(hash, 'deletion-1', now)).resolves.toBe(false)
-    await store.releaseTileBlobReservation('reservation-1')
-
-    await expect(store.claimTileBlobDeletion(hash, 'deletion-1', now)).resolves.toBe(true)
-    await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(false)
-    await store.releaseTileBlobDeletion(hash, 'stale-owner')
-    await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(false)
-    await store.releaseTileBlobDeletion(hash, 'deletion-1')
-    await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(true)
   })
 })

@@ -351,7 +351,7 @@ describe('telemetry routes', () => {
     ).resolves.toEqual([])
   })
 
-  it('folds the touched tile after a save and deletes only its orphaned blob', async () => {
+  it('folds the touched tile after a save without racing blob writes', async () => {
     const { app, sql, blobs } = await harness()
     await createPublishedTemplate(app)
     const reportToken = await mintToken(app, 'report')
@@ -388,6 +388,18 @@ describe('telemetry routes', () => {
 
     await uploadCanvas(app, reportToken, await canvasTile(), now)
 
-    await expect(blobs.hasAll('tiles', [discarded, survivor])).resolves.toEqual(new Set([survivor]))
+    await expect(
+      sql.readTileHistory({
+        season: 0,
+        tile: { x: 0, y: 0 },
+        resolution: 3_600,
+        fromSeconds: seconds(oldHour),
+        toSeconds: seconds(oldHour + 3_600),
+      }),
+    ).resolves.toEqual([{ bucketStart: seconds(oldHour), hash: survivor, reporters: 1 }])
+    // R2 has no conditional delete, so physical GC cannot safely race content-addressed writes.
+    await expect(blobs.hasAll('tiles', [discarded, survivor])).resolves.toEqual(
+      new Set([discarded, survivor]),
+    )
   })
 })

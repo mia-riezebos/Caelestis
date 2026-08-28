@@ -1150,69 +1150,11 @@ export class D1SqlStore implements SqlStore {
     }
   }
 
-  async reserveTileBlob(
-    hash: string,
-    reservationId: string,
-    now: Millis,
-    expiresAt: Millis,
-  ): Promise<boolean> {
-    const results = await this.client.batch([
-      this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
-      this.client
-        .prepare(
-          `INSERT INTO tile_blob_reservations (id, sha256, expires_at_ms)
-           SELECT ?, ?, ?
-           WHERE NOT EXISTS (
-             SELECT 1 FROM tile_blob_deletion_locks
-             WHERE sha256 = ?
-           )
-           ON CONFLICT(id) DO NOTHING`,
-        )
-        .bind(reservationId, hash, expiresAt, hash),
-    ])
-    return Number(results.at(-1)?.meta.changes) > 0
-  }
-
-  async releaseTileBlobReservation(reservationId: string): Promise<void> {
-    await this.client
-      .prepare('DELETE FROM tile_blob_reservations WHERE id = ?')
-      .bind(reservationId)
-      .run()
-  }
-
-  async claimTileBlobDeletion(hash: string, ownerId: string, now: Millis): Promise<boolean> {
-    const results = await this.client.batch([
-      this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
-      this.client
-        .prepare(
-          `INSERT INTO tile_blob_deletion_locks (sha256, owner_id)
-           SELECT ?, ?
-           WHERE NOT EXISTS (
-             SELECT 1 FROM tile_blob_reservations
-             WHERE sha256 = ? AND expires_at_ms > ?
-           )
-             AND NOT EXISTS (SELECT 1 FROM tile_history WHERE sha256 = ?)
-             AND NOT EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = ?)
-           ON CONFLICT(sha256) DO NOTHING`,
-        )
-        .bind(hash, ownerId, hash, now, hash, hash),
-    ])
-    return Number(results.at(-1)?.meta.changes) > 0
-  }
-
-  async releaseTileBlobDeletion(hash: string, ownerId: string): Promise<void> {
-    await this.client
-      .prepare('DELETE FROM tile_blob_deletion_locks WHERE sha256 = ? AND owner_id = ?')
-      .bind(hash, ownerId)
-      .run()
-  }
-
   async foldTileHistory(
     season: number,
     tile: { readonly x: number; readonly y: number },
     now: Seconds,
-  ): Promise<readonly string[]> {
-    const deletedHashes = new Set<string>()
+  ): Promise<void> {
     for (const edge of TILE_HISTORY_DECAY_EDGES) {
       const targetStart = `CAST(history.bucket_start_s / ${edge.target} AS INTEGER) * ${edge.target}`
       const ringX = `MIN(ABS(version_tiles.tile_x - history.tile_x), ${WORLD_TILES} - ABS(version_tiles.tile_x - history.tile_x))`
@@ -1333,23 +1275,7 @@ export class D1SqlStore implements SqlStore {
         )
       }
       await this.client.batch(statements)
-      for (const hash of folded.deletedHashes) deletedHashes.add(hash)
     }
-
-    const orphaned: string[] = []
-    for (const hashes of chunkRows([...deletedHashes], 45)) {
-      const bindings = hashes.map(() => '?').join(', ')
-      const referenced = await this.client
-        .prepare(
-          `SELECT sha256 FROM tile_history WHERE sha256 IN (${bindings})
-           UNION SELECT sha256 FROM canvas_tiles WHERE sha256 IN (${bindings})`,
-        )
-        .bind(...hashes, ...hashes)
-        .all<{ sha256: string }>()
-      const held = new Set(referenced.results.map((row) => row.sha256))
-      orphaned.push(...hashes.filter((hash) => !held.has(hash)))
-    }
-    return orphaned.sort()
   }
 
   async readTemplateStatuses(
