@@ -1159,19 +1159,16 @@ export class D1SqlStore implements SqlStore {
     const results = await this.client.batch([
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
       this.client
-        .prepare('DELETE FROM tile_blob_deletion_locks WHERE expires_at_ms <= ?')
-        .bind(now),
-      this.client
         .prepare(
           `INSERT INTO tile_blob_reservations (id, sha256, expires_at_ms)
            SELECT ?, ?, ?
            WHERE NOT EXISTS (
              SELECT 1 FROM tile_blob_deletion_locks
-             WHERE sha256 = ? AND expires_at_ms > ?
+             WHERE sha256 = ?
            )
            ON CONFLICT(id) DO NOTHING`,
         )
-        .bind(reservationId, hash, expiresAt, hash, now),
+        .bind(reservationId, hash, expiresAt, hash),
     ])
     return Number(results.at(-1)?.meta.changes) > 0
   }
@@ -1183,15 +1180,12 @@ export class D1SqlStore implements SqlStore {
       .run()
   }
 
-  async claimTileBlobDeletion(hash: string, now: Millis, expiresAt: Millis): Promise<boolean> {
+  async claimTileBlobDeletion(hash: string, ownerId: string, now: Millis): Promise<boolean> {
     const results = await this.client.batch([
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE expires_at_ms <= ?').bind(now),
       this.client
-        .prepare('DELETE FROM tile_blob_deletion_locks WHERE expires_at_ms <= ?')
-        .bind(now),
-      this.client
         .prepare(
-          `INSERT INTO tile_blob_deletion_locks (sha256, expires_at_ms)
+          `INSERT INTO tile_blob_deletion_locks (sha256, owner_id)
            SELECT ?, ?
            WHERE NOT EXISTS (
              SELECT 1 FROM tile_blob_reservations
@@ -1201,15 +1195,15 @@ export class D1SqlStore implements SqlStore {
              AND NOT EXISTS (SELECT 1 FROM canvas_tiles WHERE sha256 = ?)
            ON CONFLICT(sha256) DO NOTHING`,
         )
-        .bind(hash, expiresAt, hash, now, hash, hash),
+        .bind(hash, ownerId, hash, now, hash, hash),
     ])
     return Number(results.at(-1)?.meta.changes) > 0
   }
 
-  async releaseTileBlobDeletion(hash: string): Promise<void> {
+  async releaseTileBlobDeletion(hash: string, ownerId: string): Promise<void> {
     await this.client
-      .prepare('DELETE FROM tile_blob_deletion_locks WHERE sha256 = ?')
-      .bind(hash)
+      .prepare('DELETE FROM tile_blob_deletion_locks WHERE sha256 = ? AND owner_id = ?')
+      .bind(hash, ownerId)
       .run()
   }
 

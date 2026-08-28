@@ -569,12 +569,12 @@ export const tileBlobReservations = sqliteTable(
   ],
 )
 
-/** Exclusive, expiring ownership held while an unreferenced tile blob is removed from R2. */
+/** Exclusive ownership held until an unreferenced tile blob has finished deleting from R2. */
 export const tileBlobDeletionLocks = sqliteTable(
   'tile_blob_deletion_locks',
   {
     sha256: text('sha256').primaryKey(),
-    expiresAtMs: integer('expires_at_ms').$type<Millis>().notNull(),
+    ownerId: text('owner_id').notNull(),
   },
   (table) => [
     check(

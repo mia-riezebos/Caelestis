@@ -27,7 +27,7 @@ import type {
 } from '../ports/index.js'
 
 export const MAX_CANVAS_TILE_BYTES = 8 * 1024 * 1024
-const TILE_BLOB_OWNERSHIP_MS = 30_000
+const TILE_BLOB_RESERVATION_MS = 30_000
 const TILE_BLOB_RESERVATION_RETRIES = 40
 
 const reserveTileBlob = async (ports: Ports, hash: string): Promise<string> => {
@@ -39,7 +39,7 @@ const reserveTileBlob = async (ports: Ports, hash: string): Promise<string> => {
         hash,
         reservationId,
         now,
-        millis(now + TILE_BLOB_OWNERSHIP_MS),
+        millis(now + TILE_BLOB_RESERVATION_MS),
       )
     ) {
       return reservationId
@@ -53,19 +53,22 @@ const deleteOrphanedTileBlobs = async (
   ports: Ports,
   candidates: readonly string[],
 ): Promise<void> => {
-  const claimed: string[] = []
+  const claimed: { readonly hash: string; readonly ownerId: string }[] = []
   for (const hash of candidates) {
     const now = millis(Date.now())
-    if (await ports.sql.claimTileBlobDeletion(hash, now, millis(now + TILE_BLOB_OWNERSHIP_MS))) {
-      claimed.push(hash)
+    const ownerId = crypto.randomUUID()
+    if (await ports.sql.claimTileBlobDeletion(hash, ownerId, now)) {
+      claimed.push({ hash, ownerId })
     }
   }
   if (claimed.length === 0) return
-  try {
-    await ports.blobs.delete('tiles', claimed)
-  } finally {
-    await Promise.all(claimed.map((hash) => ports.sql.releaseTileBlobDeletion(hash)))
-  }
+  await ports.blobs.delete(
+    'tiles',
+    claimed.map(({ hash }) => hash),
+  )
+  await Promise.all(
+    claimed.map(({ hash, ownerId }) => ports.sql.releaseTileBlobDeletion(hash, ownerId)),
+  )
 }
 
 interface Reporter {

@@ -113,7 +113,7 @@ export class MemorySqlStore implements SqlStore {
     string,
     { readonly hash: string; readonly expiresAt: Millis }
   >()
-  private readonly tileBlobDeletionLocks = new Map<string, Millis>()
+  private readonly tileBlobDeletionLocks = new Map<string, string>()
 
   private settings: ServerSettings = { name: null, description: null }
 
@@ -682,9 +682,7 @@ export class MemorySqlStore implements SqlStore {
     for (const [id, reservation] of this.tileBlobReservations) {
       if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
     }
-    const lockExpiresAt = this.tileBlobDeletionLocks.get(hash)
-    if (lockExpiresAt !== undefined && lockExpiresAt > now) return false
-    if (lockExpiresAt !== undefined) this.tileBlobDeletionLocks.delete(hash)
+    if (this.tileBlobDeletionLocks.has(hash)) return false
     this.tileBlobReservations.set(reservationId, { hash, expiresAt })
     return true
   }
@@ -693,12 +691,11 @@ export class MemorySqlStore implements SqlStore {
     this.tileBlobReservations.delete(reservationId)
   }
 
-  async claimTileBlobDeletion(hash: string, now: Millis, expiresAt: Millis): Promise<boolean> {
+  async claimTileBlobDeletion(hash: string, ownerId: string, now: Millis): Promise<boolean> {
     for (const [id, reservation] of this.tileBlobReservations) {
       if (reservation.expiresAt <= now) this.tileBlobReservations.delete(id)
     }
-    const heldLock = this.tileBlobDeletionLocks.get(hash)
-    if (heldLock !== undefined && heldLock > now) return false
+    if (this.tileBlobDeletionLocks.has(hash)) return false
     if (
       [...this.tileBlobReservations.values()].some((reservation) => reservation.hash === hash) ||
       [...this.tileHistory.values()].some((row) => row.hash === hash) ||
@@ -706,12 +703,12 @@ export class MemorySqlStore implements SqlStore {
     ) {
       return false
     }
-    this.tileBlobDeletionLocks.set(hash, expiresAt)
+    this.tileBlobDeletionLocks.set(hash, ownerId)
     return true
   }
 
-  async releaseTileBlobDeletion(hash: string): Promise<void> {
-    this.tileBlobDeletionLocks.delete(hash)
+  async releaseTileBlobDeletion(hash: string, ownerId: string): Promise<void> {
+    if (this.tileBlobDeletionLocks.get(hash) === ownerId) this.tileBlobDeletionLocks.delete(hash)
   }
 
   private tileIsFrozenAt(season: number, tile: TileCoord, targetStart: number): boolean {

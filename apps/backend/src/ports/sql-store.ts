@@ -839,10 +839,10 @@ export interface SqlStore {
 
   releaseTileBlobReservation(reservationId: string): Promise<void>
 
-  /** Exclusively claim an unreferenced hash before deleting its R2 object. */
-  claimTileBlobDeletion(hash: string, now: Millis, expiresAt: Millis): Promise<boolean>
+  /** Exclusively claim an unreferenced hash before deleting its R2 object. Claims fail closed. */
+  claimTileBlobDeletion(hash: string, ownerId: string, now: Millis): Promise<boolean>
 
-  releaseTileBlobDeletion(hash: string): Promise<void>
+  releaseTileBlobDeletion(hash: string, ownerId: string): Promise<void>
 
   /** Fold one touched tile and return hashes no history or current-canvas row still references. */
   foldTileHistory(season: number, tile: TileCoord, now: Seconds): Promise<readonly string[]>

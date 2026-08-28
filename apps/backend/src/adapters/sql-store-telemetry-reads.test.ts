@@ -492,12 +492,14 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
     const expiresAt = millis(now + 30_000)
 
     await expect(store.reserveTileBlob(hash, 'reservation-1', now, expiresAt)).resolves.toBe(true)
-    await expect(store.claimTileBlobDeletion(hash, now, expiresAt)).resolves.toBe(false)
+    await expect(store.claimTileBlobDeletion(hash, 'deletion-1', now)).resolves.toBe(false)
     await store.releaseTileBlobReservation('reservation-1')
 
-    await expect(store.claimTileBlobDeletion(hash, now, expiresAt)).resolves.toBe(true)
+    await expect(store.claimTileBlobDeletion(hash, 'deletion-1', now)).resolves.toBe(true)
     await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(false)
-    await store.releaseTileBlobDeletion(hash)
+    await store.releaseTileBlobDeletion(hash, 'stale-owner')
+    await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(false)
+    await store.releaseTileBlobDeletion(hash, 'deletion-1')
     await expect(store.reserveTileBlob(hash, 'reservation-2', now, expiresAt)).resolves.toBe(true)
   })
 })
