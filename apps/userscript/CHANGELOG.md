@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.4.1
+
+### Patch Changes
+
+- 79c097a: Show finished and frozen template state, with lifecycle actions for administrators.
+
 ## 0.4.0
 
 ### Minor Changes
