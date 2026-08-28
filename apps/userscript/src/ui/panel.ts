@@ -682,11 +682,15 @@ const appearanceModel = (): AppearanceEditorModel => {
 
 const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
   switch (intent.type) {
+    case 'layout':
+      break
     case 'preview-number':
+    case 'preview-colour':
       previewGlobalAppearance({ ...getState().appearance, [intent.key]: intent.value })
       redraw()
       break
     case 'commit-number':
+    case 'commit-colour':
       setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
       redraw()
       break

@@ -27,7 +27,8 @@
   aria-controls={model.controls}
   aria-haspopup={model.popup}
   aria-disabled={model.disabled}
-  onclick={() => { if (!model.disabled) onIntent?.({ type: 'activate', id: model.id }) }}
+  data-caelestis-control={model.control}
+  onclick={() => onIntent?.({ type: 'activate', id: model.id })}
 >
   <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[model.id]} /></svg>
   {#if model.badge !== undefined && model.badge > 0}

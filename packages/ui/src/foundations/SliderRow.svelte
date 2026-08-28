@@ -34,10 +34,20 @@
   }: Props = $props()
 
   let local = $state(0)
+  let dirty = $state(false)
+  let keyHeld = $state(false)
   $effect(() => { local = value })
 
   const input = (): void => {
-    if (!locked && !disabled) onInput?.(local)
+    if (locked || disabled) return
+    dirty = true
+    onInput?.(local)
+  }
+
+  const commit = (): void => {
+    if (!dirty || locked || disabled) return
+    dirty = false
+    onCommit?.(local)
   }
 
   const reset = (): void => {
@@ -60,9 +70,18 @@
     data-caelestis-control={control}
     bind:value={local}
     oninput={input}
-    onchange={() => { if (!locked && !disabled) onCommit?.(local) }}
-    onpointerdown={(event) => { if (locked) event.preventDefault() }}
-    onkeydown={(event) => { if (locked) event.preventDefault() }}
+    onchange={() => { if (!keyHeld) commit() }}
+    onpointerdown={(event) => { if (locked || disabled) event.preventDefault() }}
+    onkeydown={(event) => {
+      if (locked || disabled) event.preventDefault()
+      else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) keyHeld = true
+    }}
+    onkeyup={(event) => {
+      if (!keyHeld || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) return
+      keyHeld = false
+      commit()
+    }}
+    onblur={() => setTimeout(commit, 0)}
   />
   <span class="readout">{format(local)}</span>
   <button

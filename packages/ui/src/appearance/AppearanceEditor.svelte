@@ -2,6 +2,7 @@
   import SettingRow from '../foundations/SettingRow.svelte'
   import SliderRow from '../foundations/SliderRow.svelte'
   import Toggle from '../foundations/Toggle.svelte'
+  import ColourInput from './ColourInput.svelte'
   import type {
     AppearanceEditorIntent,
     AppearanceEditorModel,
@@ -39,12 +40,16 @@
     markers: model.groups?.markers.owned ?? true,
     colours: model.groups?.colours.owned ?? true,
   })
+  const toggleGroup = (key: AppearanceGroupKey): void => {
+    expanded[key] = !expanded[key]
+    emit({ type: 'layout' })
+  }
 </script>
 
 <div class="editor" data-caelestis-scroller>
   <section>
     <div class="section-head">
-      <button class="section-toggle" type="button" aria-expanded={expanded.pixels} onclick={() => expanded.pixels = !expanded.pixels}><h3>Pixels</h3></button>
+      <button class="section-toggle" type="button" aria-expanded={expanded.pixels} onclick={() => toggleGroup('pixels')}><h3>Pixels</h3></button>
       {#if group('pixels') !== undefined}
         <label class="defaults"><input type="checkbox" aria-label="Use default pixels" checked={!group('pixels')?.owned} disabled={model.disabled || group('pixels')?.locked} onchange={(event) => emit({ type: 'set-group-owned', group: 'pixels', owned: !event.currentTarget.checked })} /> Use defaults</label>
       {/if}
@@ -76,7 +81,7 @@
 
   <section>
     <div class="section-head">
-      <button class="section-toggle" type="button" aria-expanded={expanded.markers} onclick={() => expanded.markers = !expanded.markers}><h3>Markers</h3></button>
+      <button class="section-toggle" type="button" aria-expanded={expanded.markers} onclick={() => toggleGroup('markers')}><h3>Markers</h3></button>
       {#if group('markers') !== undefined}
         <label class="defaults"><input type="checkbox" aria-label="Use default markers" checked={!group('markers')?.owned} disabled={model.disabled || group('markers')?.locked} onchange={(event) => emit({ type: 'set-group-owned', group: 'markers', owned: !event.currentTarget.checked })} /> Use defaults</label>
       {/if}
@@ -91,7 +96,7 @@
       <SliderRow {...markerSizeSlider} format={format(markerSizeSlider)} onInput={(value) => sliderInput('markerSize', value)} onCommit={(value) => sliderCommit('markerSize', value)} onReset={(value) => sliderCommit('markerSize', value)} />
       <SettingRow label="Colour">
         {#snippet children()}
-          <input class="colour" type="color" aria-label="Marker colour" value={model.values.markerColour} disabled={!model.values.markMismatch} oninput={(event) => emit({ type: 'set-colour', key: 'markerColour', value: event.currentTarget.value })} />
+          <ColourInput label="Marker colour" value={model.values.markerColour} disabled={!model.values.markMismatch} onPreview={(value) => emit({ type: 'preview-colour', key: 'markerColour', value })} onCommit={(value) => emit({ type: 'commit-colour', key: 'markerColour', value })} />
         {/snippet}
       </SettingRow>
       <SettingRow label="Include unpainted pixels">
@@ -110,7 +115,7 @@
         <SettingRow label="Marked in">
           {#snippet children()}
             <div class="same-colour">
-              <input class="colour" type="color" aria-label="Colour for other colours" value={model.values.otherColour ?? model.values.markerColour} disabled={!model.values.markMismatch || !model.values.dimOthers} oninput={(event) => emit({ type: 'set-colour', key: 'otherColour', value: event.currentTarget.value })} />
+              <ColourInput label="Colour for other colours" value={model.values.otherColour ?? model.values.markerColour} disabled={!model.values.markMismatch || !model.values.dimOthers} onPreview={(value) => emit({ type: 'preview-colour', key: 'otherColour', value })} onCommit={(value) => emit({ type: 'commit-colour', key: 'otherColour', value })} />
               <button type="button" class:active={model.values.otherColour === null} disabled={!model.values.markMismatch || !model.values.dimOthers} onclick={() => emit({ type: 'set-colour', key: 'otherColour', value: null })}>Same</button>
             </div>
           {/snippet}
@@ -127,7 +132,7 @@
       <SliderRow {...selectedMarkerSizeSlider} format={format(selectedMarkerSizeSlider)} onInput={(value) => sliderInput('selectedMarkerSize', value)} onCommit={(value) => sliderCommit('selectedMarkerSize', value)} onReset={(value) => sliderCommit('selectedMarkerSize', value)} />
       <SettingRow label="Colour">
         {#snippet children()}
-          <input class="colour" type="color" aria-label="Selected colour marker colour" value={model.values.selectedMarkerColour} disabled={!model.values.markSelectedColour} oninput={(event) => emit({ type: 'set-colour', key: 'selectedMarkerColour', value: event.currentTarget.value })} />
+          <ColourInput label="Selected colour marker colour" value={model.values.selectedMarkerColour} disabled={!model.values.markSelectedColour} onPreview={(value) => emit({ type: 'preview-colour', key: 'selectedMarkerColour', value })} onCommit={(value) => emit({ type: 'commit-colour', key: 'selectedMarkerColour', value })} />
         {/snippet}
       </SettingRow>
     </div>
@@ -146,7 +151,7 @@
 
   <section>
     <div class="section-head">
-      <button class="section-toggle" type="button" aria-expanded={expanded.colours} onclick={() => expanded.colours = !expanded.colours}><h3>Colours</h3></button>
+      <button class="section-toggle" type="button" aria-expanded={expanded.colours} onclick={() => toggleGroup('colours')}><h3>Colours</h3></button>
       {#if group('colours') !== undefined}
         <label class="defaults"><input type="checkbox" aria-label="Use default colours" checked={!group('colours')?.owned} disabled={model.disabled || group('colours')?.locked} onchange={(event) => emit({ type: 'set-group-owned', group: 'colours', owned: !event.currentTarget.checked })} /> Use defaults</label>
       {/if}
@@ -166,7 +171,7 @@
     </div>
     <div class="palette" role="group" aria-label="Visible colours">
       {#each model.palette as colour (colour.index)}
-        <button type="button" class:visible={colour.visible} data-caelestis-control={`swatch:${colour.index}`} style:background={colour.hex} aria-label={`${colour.name}, ${colour.kind}`} aria-pressed={colour.visible} title={`${colour.name} · ${colour.kind}`} onclick={() => emit({ type: 'toggle-colour', index: colour.index, visible: !colour.visible })}>
+        <button type="button" class:visible={colour.visible} data-caelestis-control={`swatch:${colour.index}`} style:background={colour.hex} aria-label={`${colour.name}, ${colour.kind}`} aria-pressed={colour.visible} aria-disabled={model.disabled} title={`${colour.name} · ${colour.kind}`} onclick={() => { if (!model.disabled) emit({ type: 'toggle-colour', index: colour.index, visible: !colour.visible }) }}>
           <span aria-hidden="true">{colour.visible ? '●' : '○'}</span>
         </button>
       {/each}

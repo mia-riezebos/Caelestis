@@ -155,8 +155,9 @@ export type RailControlId =
 
 export interface RailControlModel {
   readonly id: RailControlId
+  readonly control?: string
   readonly label: string
-  readonly pressed: boolean
+  readonly pressed?: boolean
   readonly expanded?: boolean
   readonly controls?: string
   readonly popup?: 'dialog' | 'menu'
@@ -381,6 +382,7 @@ export interface AppearanceEditorModel {
 }
 
 export type AppearanceEditorIntent =
+  | { readonly type: 'layout' }
   | {
       readonly type: 'preview-number'
       readonly key: AppearanceNumberKey
@@ -401,6 +403,8 @@ export type AppearanceEditorIntent =
       readonly key: AppearanceColourKey
       readonly value: string | null
     }
+  | { readonly type: 'preview-colour'; readonly key: AppearanceColourKey; readonly value: string }
+  | { readonly type: 'commit-colour'; readonly key: AppearanceColourKey; readonly value: string }
   | { readonly type: 'pixel-preset'; readonly id: string }
   | { readonly type: 'colour-preset'; readonly id: string }
   | { readonly type: 'toggle-colour'; readonly index: number; readonly visible: boolean }

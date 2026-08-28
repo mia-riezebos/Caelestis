@@ -8,6 +8,7 @@
     size?: 'compact' | 'normal'
     pressed?: boolean
     disabled?: boolean
+    ariaDisabled?: boolean
     iconOnly?: boolean
     control?: string
     onclick?: (event: MouseEvent) => void
@@ -21,6 +22,7 @@
     size = 'normal',
     pressed,
     disabled = false,
+    ariaDisabled = false,
     iconOnly = false,
     control,
     onclick,
@@ -37,10 +39,11 @@
   class:ghost={kind === 'ghost'}
   {title}
   {disabled}
+  aria-disabled={ariaDisabled}
   aria-label={iconOnly ? label : undefined}
   aria-pressed={pressed}
   data-caelestis-control={control}
-  {onclick}
+  onclick={(event) => { if (!disabled && !ariaDisabled) onclick?.(event) }}
 >
   {#if children !== undefined}{@render children()}{:else}{label}{/if}
 </button>

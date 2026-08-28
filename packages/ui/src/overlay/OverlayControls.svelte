@@ -30,8 +30,8 @@
     <div class="confirm" data-caelestis-confirm role="alertdialog" aria-label={question} tabindex="-1">
       <span>{question}</span>
       <div class="confirm-actions">
-        <Button label="Cancel delete" kind="ghost" size="compact" control="cancel-delete" disabled={model.deleting} onclick={() => emit({ type: 'cancel-delete' })}>Cancel</Button>
-        <Button label="Confirm delete" kind="danger" size="compact" control="confirm-delete" disabled={model.deleting} onclick={() => emit({ type: 'confirm-delete' })}>{model.deleting ? 'Deleting…' : 'Delete'}</Button>
+        <Button label="Cancel delete" kind="ghost" size="compact" control="cancel-delete" ariaDisabled={model.deleting} onclick={() => emit({ type: 'cancel-delete' })}>Cancel</Button>
+        <Button label="Confirm delete" kind="danger" size="compact" control="confirm-delete" ariaDisabled={model.deleting} onclick={() => emit({ type: 'confirm-delete' })}>{model.deleting ? 'Deleting…' : 'Delete'}</Button>
       </div>
     </div>
   {/if}
