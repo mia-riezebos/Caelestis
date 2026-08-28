@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   MARKER_VIEWPORT_BUDGET,
   markerDensityMemoryBytes,
+  markerHash,
   markerSampleRate,
+  sampledMarkerPopulation,
 } from './marker-density.js'
 
 describe('GPU marker sampling', () => {
@@ -13,6 +15,16 @@ describe('GPU marker sampling', () => {
 
   it('turns an overflowing budget into an approximate keep rate', () => {
     expect(markerSampleRate(32_768, 4_096)).toBe(0.125)
+  })
+
+  it('keeps dense shader populations close to low targets', () => {
+    const source = 1_048_576
+    const target = 4_096
+    const retained = sampledMarkerPopulation(source, markerSampleRate(source, target), 0x52ab_91d3)
+
+    expect(retained).toBeGreaterThan(target * 0.9)
+    expect(retained).toBeLessThan(target * 1.1)
+    expect(markerHash(source - 1, 0x52ab_91d3)).not.toBe(markerHash(source - 2, 0x52ab_91d3))
   })
 
   it('handles empty and disabled targets without retained CPU buffers', () => {

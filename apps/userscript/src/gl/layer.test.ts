@@ -14,6 +14,10 @@ const harness = vi.hoisted(() => ({
   completedTileSize: 2_000,
   contrastOutline: true,
   contrastOutlineSize: 0.85,
+  visible: true,
+  size: 1,
+  opacity: 1,
+  transitionedSize: null as number | null,
   fade: { value: 0, done: false },
 }))
 
@@ -25,17 +29,17 @@ vi.mock('../templates/appearance.js', () => ({ isPlain: () => true }))
 vi.mock('../templates/colour-filter.js', () => ({ hiddenColoursFor: () => [] }))
 vi.mock('../templates/local-store.js', () => ({
   appearanceOf: () => ({
-    size: 1,
+    size: harness.size,
     radius: 0,
     translateX: 0,
     translateY: 0,
     rotation: 0,
-    opacity: 1,
+    opacity: harness.opacity,
     contrastOutline: harness.contrastOutline,
     contrastOutlineSize: harness.contrastOutlineSize,
     hiddenColours: [],
   }),
-  isTemplateVisible: () => true,
+  isTemplateVisible: () => harness.visible,
   displayTemplates: () =>
     Array.from({ length: harness.templateCount }, (_, index) => ({
       id: `visible-template-${index}`,
@@ -67,6 +71,19 @@ vi.mock('./fade.js', () => ({
     value: () => harness.fade.value,
     prune: vi.fn(),
   },
+}))
+vi.mock('./appearance-transition.js', () => ({
+  appearanceTransitions: {
+    advance: (_id: string, target: { size: number }) => ({
+      appearance: {
+        ...target,
+        size: harness.transitionedSize ?? target.size,
+      },
+      done: true,
+    }),
+    prune: vi.fn(),
+  },
+  prefersReducedMotion: () => false,
 }))
 vi.mock('./contrast-outline.js', () => ({ isDarkMapTheme: () => harness.darkTheme }))
 vi.mock('./markers.js', () => ({ markerLayer: { id: 'caelestis-markers' } }))
@@ -177,6 +194,10 @@ beforeEach(() => {
   harness.completedTileSize = 2_000
   harness.contrastOutline = true
   harness.contrastOutlineSize = 0.85
+  harness.visible = true
+  harness.size = 1
+  harness.opacity = 1
+  harness.transitionedSize = null
 })
 
 const orderedMap = (order: string[]) => {
@@ -337,7 +358,27 @@ describe('overlay layer', () => {
     expect(context.drawArrays).not.toHaveBeenCalled()
   })
 
-  it('spreads a burst of large visible uploads across frames', async () => {
+  it('keeps the outline aligned with a fading and transitioning overlay', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    vi.mocked(context.uniform1f).mockClear()
+    vi.mocked(context.drawArrays).mockClear()
+
+    harness.visible = false
+    harness.fade = { value: 0.5, done: false }
+    harness.transitionedSize = 0.65
+    outlineLayer.draw(context, null)
+
+    expect(context.uniform1f).toHaveBeenCalledWith('u_fade', 0.5)
+    expect(context.uniform1f).toHaveBeenCalledWith('u_stampSize', 0.65)
+    expect(context.drawArrays).toHaveBeenCalledOnce()
+  })
+
+  it('shares a frame upload budget across every pending visible template', async () => {
     const { overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }
     harness.width = 800
@@ -353,11 +394,32 @@ describe('overlay layer', () => {
         .mocked(context.texSubImage2D)
         .mock.calls.reduce((total, call) => total + (call[8] as Uint8Array).byteLength, 0),
     ).toBe(512 * 1024)
-    expect(context.drawArrays).toHaveBeenCalledOnce()
+    expect(
+      vi.mocked(context.texSubImage2D).mock.calls.filter((call) => call[6] === context.RED_INTEGER),
+    ).toHaveLength(4)
+    expect(context.drawArrays).not.toHaveBeenCalled()
     expect(harness.triggerRepaint).toHaveBeenCalledOnce()
 
     overlayLayer.draw(context, null)
-    expect(context.drawArrays).toHaveBeenCalledTimes(3)
+    expect(context.drawArrays).toHaveBeenCalledTimes(2)
+  })
+
+  it('requests a pre-art follow-up after the final delayed upload', async () => {
+    const { OVERLAY_UPLOAD_PIXELS_PER_FRAME, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.width = OVERLAY_UPLOAD_PIXELS_PER_FRAME + 1
+    harness.indices = new Uint8Array(harness.width)
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+
+    overlayLayer.draw(context, null)
+    overlayLayer.draw(context, null)
+    overlayLayer.draw(context, null)
+    vi.mocked(harness.triggerRepaint).mockClear()
+    overlayLayer.draw(context, null)
+
+    expect(context.drawArrays).toHaveBeenCalledOnce()
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
   })
 
   it('does not let one large template bypass the per-frame upload budget', async () => {

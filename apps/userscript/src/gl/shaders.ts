@@ -215,24 +215,43 @@ float roundedBox(vec2 point, vec2 half_, float radius) {
 void main() {
   vec2 texel = v_uv * u_size;
   vec2 footprint = vec2(fwidth(texel.x), fwidth(texel.y));
-  // The ring is a close-zoom treatment. At distant zoom it cannot fit around an individual cell.
-  if (max(footprint.x, footprint.y) >= 0.75) discard;
+  float pixel = max(footprint.x, footprint.y);
+  // A one-cell halo contains the expanded ring. Hide the LOD before a thick device-pixel outline
+  // could reach beyond that halo.
+  if (pixel * (u_outlineSize + 0.5) >= 1.0) discard;
 
   ivec2 cell = ivec2(floor(texel));
-  if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_size.x) || cell.y >= int(u_size.y)) discard;
-  uint index = texelFetch(u_indices, cell, 0).r & 63u;
-  if (texelFetch(u_palette, ivec2(int(index), 0), 0).a <= 0.0) discard;
-
   vec2 local = fract(texel) - 0.5;
   float c = cos(-u_stampRotation);
   float s = sin(-u_stampRotation);
-  vec2 point = mat2(c, s, -s, c) * local - u_stampOffset;
-  float pixel = max(footprint.x, footprint.y);
   float half_ = u_stampSize * 0.5;
   float radius = u_stampRadius * half_;
-  float distance = roundedBox(point, vec2(half_), radius);
   float expansion = pixel * u_outlineSize;
-  float coverage = 1.0 - smoothstep(expansion - pixel * 0.5, expansion + pixel * 0.5, distance);
+  float coverage = 0.0;
+  // Search this cell and its neighbours. The coloured overlay clips each stamp to its source cell;
+  // intersecting the stamp distance with that cell reproduces the same silhouette before dilation.
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      ivec2 neighbour = cell + ivec2(x, y);
+      if (neighbour.x < 0 || neighbour.y < 0 || neighbour.x >= int(u_size.x) || neighbour.y >= int(u_size.y)) continue;
+      uint index = texelFetch(u_indices, neighbour, 0).r & 63u;
+      float paletteAlpha = texelFetch(u_palette, ivec2(int(index), 0), 0).a;
+      if (paletteAlpha <= 0.0) continue;
+
+      vec2 relative = local - vec2(float(x), float(y));
+      vec2 point = mat2(c, s, -s, c) * relative - u_stampOffset;
+      float stampDistance = roundedBox(point, vec2(half_), radius);
+      float cellDistance = roundedBox(relative, vec2(0.5), 0.0);
+      float distance = max(stampDistance, cellDistance);
+      float outer = 1.0 - smoothstep(
+        expansion - pixel * 0.5,
+        expansion + pixel * 0.5,
+        distance
+      );
+      float inner = 1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance);
+      coverage = max(coverage, max(0.0, outer - inner) * paletteAlpha);
+    }
+  }
   if (coverage <= 0.0) discard;
 
   vec3 colour = u_darkTheme ? vec3(1.0) : vec3(0.0);

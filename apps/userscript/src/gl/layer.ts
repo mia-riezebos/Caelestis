@@ -301,7 +301,7 @@ const uploadPalette = (
 /** Maximum side this context accepts, falling back to one whole-template upload in test shims. */
 const textureLimit = (width: number, height: number): number => {
   if (maximumTextureSize === null) {
-    return Math.max(width, height)
+    return Math.max(width, height) + 2
   }
   return maximumTextureSize
 }
@@ -327,10 +327,9 @@ const allocateIndices = (
 /** Split accepted templates into bounded allocations this particular device can upload gradually. */
 const pendingIndexTiles = (width: number, height: number): readonly PendingIndexGpuTile[] => {
   const allocationLimit = textureLimit(width, height)
-  // A one-cell halo lets the shader inspect the real neighbour across a texture split. WebGL 2
-  // guarantees a far larger limit, but tiny test shims keep the old unpadded fallback valid.
-  const inset =
-    (width > allocationLimit || height > allocationLimit) && allocationLimit >= 3 ? 1 : 0
+  // A one-cell halo lets the outline inspect neighbours across texture and template edges. WebGL 2
+  // guarantees a far larger limit, but tiny test shims keep the unpadded fallback valid.
+  const inset = allocationLimit >= 3 ? 1 : 0
   const contentLimit = Math.max(1, allocationLimit - inset * 2)
   const pending: PendingIndexGpuTile[] = []
   for (let y = 0; y < height; y += contentLimit) {
@@ -539,15 +538,28 @@ const visitIntersections = (
   bufferWidth: number,
   bufferHeight: number,
   draw: (source: IndexGpuTile, vertices: Float32Array) => void,
+  margin = 0,
 ): number => {
   let count = 0
   const templateTop = template.originY + nudgeY
   for (const source of entry.indices) {
-    const top = templateTop + source.y
-    const bottom = top + source.height
+    const topMargin = source.y === 0 ? Math.min(margin, source.inset) : 0
+    const bottomMargin =
+      source.y + source.height === entry.height ? Math.min(margin, source.inset) : 0
+    const top = templateTop + source.y - topMargin
+    const bottom = templateTop + source.y + source.height + bottomMargin
     for (const span of spans) {
-      const sourceStart = Math.max(source.x, span.sourceStart)
-      const sourceEnd = Math.min(source.x + source.width, span.sourceEnd)
+      const leftMargin =
+        source.x === 0 && span.sourceStart === 0 ? Math.min(margin, source.inset) : 0
+      const rightMargin =
+        source.x + source.width === entry.width && span.sourceEnd === entry.width
+          ? Math.min(margin, source.inset)
+          : 0
+      const sourceStart = Math.max(source.x - leftMargin, span.sourceStart - leftMargin)
+      const sourceEnd = Math.min(
+        source.x + source.width + rightMargin,
+        span.sourceEnd + rightMargin,
+      )
       if (sourceEnd <= sourceStart) continue
       const left = span.worldStart + sourceStart - span.sourceStart + nudgeX
       const right = span.worldStart + sourceEnd - span.sourceStart + nudgeX
@@ -771,6 +783,15 @@ export const overlayLayer = {
     let uploadPixelsLeft = OVERLAY_UPLOAD_PIXELS_PER_FRAME
     let uploadedIndexPixels = 0
     let drawIntersections = 0
+    let uploadsLeft = visible.reduce((total, { template }) => {
+      const entry = gpu.get(template.id)
+      const complete =
+        entry !== undefined &&
+        entry.source === template.indices &&
+        entry.width === template.width &&
+        entry.height === template.height
+      return total + (complete ? 0 : 1)
+    }, 0)
 
     try {
       for (const { template, fade, spans } of visible) {
@@ -791,6 +812,9 @@ export const overlayLayer = {
           pending = undefined
         }
         if (entry === undefined) {
+          const uploadAllowance =
+            uploadsLeft > 0 ? Math.floor(uploadPixelsLeft / uploadsLeft) : uploadPixelsLeft
+          uploadsLeft = Math.max(0, uploadsLeft - 1)
           if (pending === undefined) {
             const palette = gl.createTexture()
             if (palette === null) continue
@@ -807,7 +831,7 @@ export const overlayLayer = {
             pendingGpu.set(template.id, pending)
           }
           pending.lastUsed = renderGeneration
-          const advanced = advanceIndexUpload(gl, pending, uploadPixelsLeft)
+          const advanced = advanceIndexUpload(gl, pending, uploadAllowance)
           uploadPixelsLeft -= advanced.uploadedPixels
           uploadedIndexPixels += advanced.uploadedPixels
           if (advanced.status === 'failed') {
@@ -831,6 +855,8 @@ export const overlayLayer = {
           }
           pendingGpu.delete(template.id)
           gpu.set(template.id, entry)
+          // The outline layer already ran earlier in this frame and could not see this entry.
+          animating = true
         }
         entry.lastUsed = renderGeneration
 
@@ -1017,18 +1043,30 @@ export const outlineLayer = {
 
     const bufferWidth = gl.drawingBufferWidth
     const bufferHeight = gl.drawingBufferHeight
+    const now = performance.now()
+    const reducedMotion = prefersReducedMotion()
     let drawIntersections = 0
     let visibleTemplates = 0
     for (const template of displayTemplates()) {
-      if (!isTemplateVisible(template)) continue
       const entry = gpu.get(template.id)
       if (entry === undefined) continue
-      const appearance = appearanceWithPreview(template.id, appearanceOf(template))
+      const fade = templateFades.advance(
+        template.id,
+        isTemplateVisible(template) ? 1 : 0,
+        now,
+      ).value
+      if (fade <= 0) continue
+      const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
+      const appearance = appearanceTransitions.advance(
+        template.id,
+        targetAppearance,
+        now,
+        reducedMotion,
+        hasAppearancePreview(template.id),
+      ).appearance
       if (!appearance.contrastOutline) continue
       const spans = horizontalSpans(template)
       if (!intersectsTiles(template, spans, tiles)) continue
-      const fade = templateFades.value(template.id)
-      if (fade <= 0) continue
       visibleTemplates++
 
       gl.activeTexture(gl.TEXTURE1)
@@ -1060,6 +1098,7 @@ export const outlineLayer = {
           gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices)
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
         },
+        1,
       )
     }
     if (isProfileEnabled()) {

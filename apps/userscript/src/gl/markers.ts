@@ -57,6 +57,7 @@ export { markerBatchMemoryBytes, markerDensityMemoryBytes }
  */
 
 const VERTEX = `#version 300 es
+precision highp int;
 /** Tile-local x, y and wanted palette index packed into one uint. */
 in uint a_mark;
 
@@ -67,16 +68,22 @@ uniform vec2 u_tileScale;
 uniform vec2 u_buffer;
 uniform float u_size;
 uniform float u_sampleRate;
-uniform float u_sampleSeed;
+uniform uint u_sampleSeed;
 
 flat out float v_wanted;
+
+uint markerHash(uint value) {
+  value = (value ^ (value >> 16u)) * 0x7feb352du;
+  value = (value ^ (value >> 15u)) * 0x846ca68bu;
+  return value ^ (value >> 16u);
+}
 
 void main() {
   v_wanted = float(a_mark >> 20u);
   if (u_sampleRate < 1.0) {
-    // Golden-ratio sequence: evenly distributed without a CPU selection or an integer hash per
-    // vertex. The tile seed prevents neighbouring draws from retaining the same ordinal points.
-    float random = fract(float(gl_VertexID) * 0.61803398875 + u_sampleSeed);
+    // Hash uint ordinals before converting to float. Converting a large vertex ID first collapses
+    // the fractional bins and badly exceeds low budgets on million-point buffers.
+    float random = float(markerHash(uint(gl_VertexID) ^ u_sampleSeed) >> 8u) / 16777216.0;
     if (random >= u_sampleRate) {
       gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
       gl_PointSize = 0.0;
@@ -314,7 +321,7 @@ export const drawMarkers = (
   gl.uniform2f(uniform(gl, 'u_buffer'), gl.drawingBufferWidth, gl.drawingBufferHeight)
   gl.uniform1f(uniform(gl, 'u_sampleRate'), sampleRate)
   const sampleSeed = (Math.imul(tile.tile.x, 73_856_093) ^ Math.imul(tile.tile.y, 19_349_663)) >>> 0
-  gl.uniform1f(uniform(gl, 'u_sampleSeed'), (sampleSeed & 0xffff) / 0x1_0000)
+  gl.uniform1ui(uniform(gl, 'u_sampleSeed'), sampleSeed)
   // `gl_PointSize` is in device pixels, so a size fixed there is half as big on a 2x display and a
   // quarter on 3x — the markers shrank exactly where the screen has more room to show them.
   applyMarkerStyle(gl, style, fade)
@@ -576,12 +583,24 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }
   const points = (work: readonly { readonly marks: { readonly length: number } }[]): number =>
     work.reduce((total, one) => total + one.marks.length, 0)
+  const visibleFraction = ({ tile }: Work): number => {
+    const width = Math.abs(tile.width)
+    const height = Math.abs(tile.height)
+    if (width === 0 || height === 0) return 0
+    const left = Math.max(0, Math.min(tile.x, tile.x + tile.width))
+    const right = Math.min(gl.drawingBufferWidth, Math.max(tile.x, tile.x + tile.width))
+    const top = Math.max(0, Math.min(tile.y, tile.y + tile.height))
+    const bottom = Math.min(gl.drawingBufferHeight, Math.max(tile.y, tile.y + tile.height))
+    return (Math.max(0, right - left) * Math.max(0, bottom - top)) / (width * height)
+  }
+  const estimatedVisiblePoints = (work: readonly Work[]): number =>
+    work.reduce((total, one) => total + one.marks.length * visibleFraction(one), 0)
   const selectedSourcePoints = points(selectedWork)
   const mismatchSourcePoints = points(mismatchWork)
-  const selectedSampleRate = markerSampleRate(selectedSourcePoints, renderBudget)
-  const mismatchSampleRate = markerSampleRate(mismatchSourcePoints, renderBudget)
-  const expectedSelectedPoints = Math.min(selectedSourcePoints, renderBudget)
-  const expectedMismatchPoints = Math.min(mismatchSourcePoints, renderBudget)
+  const selectedSampleRate = markerSampleRate(estimatedVisiblePoints(selectedWork), renderBudget)
+  const mismatchSampleRate = markerSampleRate(estimatedVisiblePoints(mismatchWork), renderBudget)
+  const expectedSelectedPoints = Math.round(selectedSourcePoints * selectedSampleRate)
+  const expectedMismatchPoints = Math.round(mismatchSourcePoints * mismatchSampleRate)
   const reportWorkload = (drawBatches: number, drawnPoints: number): void => {
     if (!profiling) return
     const sourcePoints = selectedSourcePoints + mismatchSourcePoints

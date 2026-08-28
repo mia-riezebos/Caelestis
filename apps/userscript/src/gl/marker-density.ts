@@ -17,5 +17,27 @@ export const markerSampleRate = (sourcePoints: number, budget = MARKER_VIEWPORT_
   return Math.min(1, limit / source)
 }
 
+/** Exact uint hash used by the marker vertex shader, exposed for sequence regression tests. */
+export const markerHash = (ordinal: number, seed = 0): number => {
+  let value = (ordinal ^ seed) >>> 0
+  value = Math.imul(value ^ (value >>> 16), 0x7feb_352d) >>> 0
+  value = Math.imul(value ^ (value >>> 15), 0x846c_a68b) >>> 0
+  return (value ^ (value >>> 16)) >>> 0
+}
+
+/** Population retained by the shader's 24-bit threshold for a focused test-sized source. */
+export const sampledMarkerPopulation = (
+  sourcePoints: number,
+  sampleRate: number,
+  seed = 0,
+): number => {
+  const threshold = Math.max(0, Math.min(0x1_000000, Math.floor(sampleRate * 0x1_000000)))
+  let retained = 0
+  for (let ordinal = 0; ordinal < sourcePoints; ordinal++) {
+    if (markerHash(ordinal, seed) >>> 8 < threshold) retained++
+  }
+  return retained
+}
+
 /** GPU sampling retains no density-analysis or sampled-marker CPU buffers. */
 export const markerDensityMemoryBytes = (): number => 0

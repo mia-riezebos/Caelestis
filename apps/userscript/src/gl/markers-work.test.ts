@@ -201,6 +201,21 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
+  it('estimates the visible share of a clipped dense tile before setting the GPU rate', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.markerBudget = 4_096
+    fixture.marks = new Uint32Array(1_000_000)
+    fixture.quad = { tile: { x: 0, y: 0 }, x: -900, y: -900, width: 1_000, height: 1_000 }
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.4096)
+    markerLayer.onRemove(null, gl)
+  })
+
   it('keeps the configured marker budget while the map is moving', async () => {
     fixture.appearance.markMismatch = true
     fixture.moving = true
