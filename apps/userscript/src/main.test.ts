@@ -31,6 +31,7 @@ vi.mock('./debug.js', () => ({ installDebugApi: vi.fn(), warn: vi.fn() }))
 vi.mock('./gl/layer.js', () => ({
   installOverlayLayer: vi.fn(() => true),
   overlayGpuMemoryBytes: vi.fn(() => 0),
+  overlayStagingMemoryBytes: vi.fn(() => 0),
   setNudge: vi.fn(),
 }))
 vi.mock('./gl/markers.js', () => ({
@@ -39,14 +40,19 @@ vi.mock('./gl/markers.js', () => ({
   markerDensityMemoryBytes: vi.fn(() => 0),
   markerGpuMemoryBytes: vi.fn(() => 0),
 }))
+vi.mock('./keyboard-shortcuts.js', () => ({ installKeyboardShortcuts: vi.fn() }))
 vi.mock('./map-handle.js', () => ({
   getMap: () => ({ triggerRepaint: harness.triggerRepaint }),
   installMapCapture: vi.fn(),
 }))
 vi.mock('./paint-palette.js', () => ({
+  cycleFocusedColour: vi.fn(),
   installPaintPaletteProgress: vi.fn(),
+  navigateFocusedSelectedColour: vi.fn(),
   paintPaletteProgress: vi.fn(() => []),
+  refreshPaintPaletteFocus: vi.fn(),
 }))
+vi.mock('./overlay-peek.js', () => ({ setOverlayPeekActive: vi.fn(() => false) }))
 vi.mock('./shortcuts.js', () => ({ shortcutFor: vi.fn(() => null) }))
 vi.mock('./server-mismatch.js', () => ({ serverMismatchMemoryBytes: vi.fn(() => 0) }))
 vi.mock('./state.js', () => ({
@@ -64,6 +70,8 @@ vi.mock('./templates/local-store.js', () => ({
   ownsGroup: vi.fn(() => false),
   restoreLocalTemplates: vi.fn(),
   setAppearance: vi.fn(),
+  setLocalVisible: vi.fn(),
+  setOwnsGroup: vi.fn(),
   templateIndexMemoryBytes: vi.fn(() => 0),
 }))
 vi.mock('./templates/mismatch.js', () => ({
@@ -72,7 +80,7 @@ vi.mock('./templates/mismatch.js', () => ({
   wantsTilePixels: vi.fn(() => false),
 }))
 vi.mock('./templates/mismatch-worker.js', () => ({ mismatchWorkerMemoryBytes: vi.fn(() => 0) }))
-vi.mock('./templates/nearest.js', () => ({ templateAtCentre: vi.fn(() => null) }))
+vi.mock('./templates/nearest.js', () => ({ focusedTemplate: vi.fn(() => null) }))
 vi.mock('./templates/server-sync.js', () => ({ installServerSync: vi.fn() }))
 vi.mock('./telemetry.js', () => ({ installTelemetry: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
@@ -94,6 +102,7 @@ vi.mock('./wplace-account.js', () => ({ loadAccount: vi.fn() }))
 vi.mock('./wplace-paint.js', () => ({
   isPaintOpen: vi.fn(() => false),
   onPaintSelectionChange: (listener: () => void) => harness.paintListeners.push(listener),
+  togglePaintMode: vi.fn(),
   watchPaintSelection: vi.fn(),
 }))
 vi.mock('./wplace-picker.js', () => ({ installColourPicker: vi.fn() }))

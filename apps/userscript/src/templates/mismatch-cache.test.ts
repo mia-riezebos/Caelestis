@@ -158,6 +158,78 @@ describe('visible mismatch answer retention', () => {
     expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 })
   })
 
+  it('exposes unpainted cells independently of the mismatch-marker threshold', async () => {
+    const selected = template(203)
+    harness.templates = [selected]
+    harness.pixels[0] = 255
+    const { beginMismatchFrame, endMismatchFrame, unpaintedIn } = await import('./mismatch.js')
+
+    beginMismatchFrame()
+    const marks = unpaintedIn(selected, { x: 0, y: 0 })
+    endMismatchFrame()
+
+    expect(marks).toHaveLength(1)
+    expect(marks?.[0]).toBe(0)
+  })
+
+  it('does not mistake an outline-only answer for a complete mismatch list', async () => {
+    const selected = template(204)
+    harness.templates = [selected]
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn, unpaintedIn } = await import(
+      './mismatch.js'
+    )
+
+    beginMismatchFrame()
+    expect(unpaintedIn(selected, { x: 0, y: 0 })).toHaveLength(0)
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+  })
+
+  it('asks the worker for unpainted coordinates without allocating wrong-pixel markers', async () => {
+    const selected = template(205)
+    harness.templates = [selected]
+    harness.workerAvailable = true
+    harness.workerScan.mockResolvedValue(null)
+    const { beginUnpaintedFrame, endUnpaintedFrame, unpaintedIn } = await import('./mismatch.js')
+
+    beginUnpaintedFrame()
+    expect(unpaintedIn(selected, { x: 0, y: 0 })).toBeNull()
+    endUnpaintedFrame()
+
+    expect(harness.workerScan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collectMarkers: true,
+        collectWrong: false,
+        collectUnpainted: true,
+      }),
+      selected.indices,
+    )
+  })
+
+  it('resumes an unavailable outline scan when captured tile pixels arrive', async () => {
+    const selected = template(206)
+    harness.templates = [selected]
+    harness.pixels[0] = 255
+    harness.pixelsAvailable = false
+    const { beginUnpaintedFrame, endUnpaintedFrame, unpaintedIn } = await import('./mismatch.js')
+
+    beginUnpaintedFrame()
+    expect(unpaintedIn(selected, { x: 0, y: 0 })).toBeNull()
+    endUnpaintedFrame()
+
+    harness.pixelsAvailable = true
+    const available = harness.onTilePixelsAvailable.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }) => void)
+      | undefined
+    available?.({ x: 0, y: 0 })
+    expect(harness.idleCallbacks).toHaveLength(1)
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 50 })
+
+    beginUnpaintedFrame()
+    expect(unpaintedIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endUnpaintedFrame()
+  })
+
   it('retries a rejected progress-only worker scan while idle', async () => {
     harness.markersEnabled = false
     harness.workerAvailable = true

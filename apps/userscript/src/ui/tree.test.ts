@@ -18,6 +18,7 @@ import {
   setState,
 } from '../state.js'
 import { treeContents } from './tree.js'
+import { treeRow } from './tree-row.js'
 import {
   acceptServerSnapshot,
   forgetServerRows,
@@ -81,7 +82,9 @@ class FakeElement {
     this.children.push(...children)
   }
 
-  setAttribute(): void {}
+  setAttribute(name: string, value: string): void {
+    if (name === 'class') this.className = value
+  }
   addEventListener(): void {}
   focus(): void {}
   remove(): void {}
@@ -112,6 +115,15 @@ const renderedText = (element: FakeElement): string =>
     .filter((text) => text !== '')
     .join(' ')
 
+const elementWithClass = (element: FakeElement, className: string): FakeElement | null => {
+  if (element.className.split(' ').includes(className)) return element
+  for (const child of element.children) {
+    const found = elementWithClass(child, className)
+    if (found !== null) return found
+  }
+  return null
+}
+
 const callbacks = {
   onAddServer: vi.fn(),
   onCreateFolder: vi.fn(),
@@ -132,6 +144,25 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
 })
 
 describe('tree identity and ordering', () => {
+  it('renders explicit visible and hidden icons inside the visibility control', () => {
+    installFakeDom()
+    const row = treeRow({
+      key: 'template-a',
+      name: 'Template A',
+      kind: 'image',
+      depth: 0,
+      container: false,
+      siblings: ['template-a'],
+      checked: false,
+      rerender: vi.fn(),
+      onError: vi.fn(),
+    }) as unknown as FakeElement
+
+    expect(elementWithClass(row, 'caelestis-eye-off')).not.toBeNull()
+    expect(elementWithClass(row, 'caelestis-eye-on')).not.toBeNull()
+    expect(elementWithClass(row, 'caelestis-eye')?.children[0]?.checked).toBe(false)
+  })
+
   it('replaces tree rows when a manifest arrives outside an explicit refresh', () => {
     const connected = server(SERVER_ID, 0)
     setState({ servers: [connected] })

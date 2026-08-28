@@ -210,7 +210,8 @@ describe('tree drag and drop', () => {
     expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
     expect(row?.querySelector('[aria-label="Expand progress"]')).not.toBeNull()
     expect(row?.textContent).not.toContain('unpublished')
-    expect(row?.style.opacity).toBe('0.55')
+    expect(row?.classList.contains('caelestis-muted')).toBe(true)
+    expect(flyTo?.classList.contains('caelestis-row-action')).toBe(true)
     flyTo?.click()
     expect(navigationHarness.navigateTo).toHaveBeenCalledWith({
       x: 0.5,
@@ -218,6 +219,42 @@ describe('tree drag and drop', () => {
       width: 1,
       height: 1,
     })
+  })
+
+  it('opens the export menu for server members without edit permission', () => {
+    const server = { ...connectedServer(), isAdmin: false }
+    setState({
+      servers: [server],
+      collapsed: ['local'],
+      sort: { field: 'custom', direction: 'asc' },
+    })
+    acceptServerSnapshot(server, {
+      nodes: [],
+      templates: [serverTemplate(TEMPLATE_A_ID, null, 'Template', 1)],
+    })
+    const onContextMenu = vi.fn()
+    const tree = treeContents(
+      {
+        onAddServer: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onImportTemplate: vi.fn(),
+        onContextMenu,
+        onCopyToServer: vi.fn(),
+        onDropInLocal: vi.fn(),
+        onDropInServer: vi.fn(),
+      },
+      vi.fn(),
+    )
+    const row = tree.querySelector<HTMLElement>(
+      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
+    )
+
+    row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+
+    expect(onContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: TEMPLATE_A_ID }),
+      expect.any(MouseEvent),
+    )
   })
 
   it('renders newly discovered server templates newest-first', () => {
@@ -358,6 +395,10 @@ describe('tree drag and drop', () => {
     expect(templateRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
     expect(serverRow?.style.marginInline).toBe('0.25rem 0.5rem')
     expect(folderRow?.style.marginInline).toBe(serverRow?.style.marginInline)
+    expect(folderRow?.getAttribute('aria-setsize')).toBe('1')
+    expect(folderRow?.getAttribute('aria-posinset')).toBe('1')
+    expect(templateRow?.getAttribute('aria-setsize')).toBe('2')
+    expect(templateRow?.getAttribute('aria-posinset')).toBe('2')
     expect(templateRow?.style.marginInline).toBe(serverRow?.style.marginInline)
     for (const row of [serverRow, folderRow]) {
       const tail = row?.querySelector('.caelestis-row-tail')

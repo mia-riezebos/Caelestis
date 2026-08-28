@@ -116,7 +116,7 @@ const placeholder = (depth: number): HTMLElement => {
   el.dataset.caelestisPlaceholder = ''
   // Indented to the level it would land at, so the outline says *where* and not merely *between
   // which two rows* — the two differ exactly when the drop would change a row's parent.
-  el.style.marginLeft = `${0.25 + depth * 1.125}rem`
+  el.style.marginInlineStart = `${0.25 + depth * 1.125}rem`
   // The hole is the shape of what would fill it. A folder carrying nine templates leaves a
   // one-row gap otherwise, which reads as "this lands here alone" and makes the list jump on drop.
   if (draggedPixels > 0) el.style.height = `${draggedPixels}px`
@@ -351,7 +351,7 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
     row.appendChild(connector.element)
   }
   row.style.minHeight = '2rem'
-  if (options.muted === true) row.style.opacity = '0.55'
+  if (options.muted === true) row.classList.add('caelestis-muted')
   row.draggable = draggable
   row.tabIndex = -1
   row.setAttribute('role', 'treeitem')
@@ -378,7 +378,7 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
     group.style.flex = '0 0 auto'
     for (const action of options.leadingActions) {
       const button = document.createElement('button')
-      button.className = 'btn btn-ghost btn-xs btn-circle'
+      button.className = 'btn btn-ghost btn-xs btn-circle caelestis-row-action'
       button.title = action.label
       button.setAttribute('aria-label', action.label)
       button.appendChild(icon(action.icon, 'size-4'))
@@ -444,7 +444,7 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
 
   if (options.meta !== undefined) {
     const meta = document.createElement('span')
-    meta.className = 'text-xs opacity-50'
+    meta.className = 'caelestis-meta text-xs opacity-50'
     meta.style.flex = '0 0 auto'
     meta.textContent = options.meta
     row.appendChild(meta)
@@ -521,7 +521,7 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
 
   const actionButton = (action: RowAction): HTMLButtonElement => {
     const button = document.createElement('button')
-    button.className = 'btn btn-ghost btn-xs btn-circle'
+    button.className = 'btn btn-ghost btn-xs btn-circle caelestis-row-action'
     button.title = action.label
     button.setAttribute('aria-label', action.label)
     button.appendChild(icon(action.icon, 'size-4'))
@@ -556,7 +556,7 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
       ['close', 'Cancel', cancel],
     ] as ReadonlyArray<readonly [IconName, string, () => void]>) {
       const button = document.createElement('button')
-      button.className = 'btn btn-ghost btn-xs btn-circle'
+      button.className = 'btn btn-ghost btn-xs btn-circle caelestis-row-action'
       button.title = label
       button.setAttribute('aria-label', label)
       button.appendChild(icon(glyphName, 'size-4'))
@@ -623,8 +623,8 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
    * An eye, not a tick.
    *
    * A tick answers "is this selected", and nothing here is being selected — every one of these rows
-   * is either on the map or not, which is a thing you can *see*. The eye says which, and its absence
-   * says the other, so a column of these reads as what is drawn rather than as a form to fill in.
+   * is either on the map or not, which is a thing you can *see*. The open and crossed-out eyes make
+   * both states explicit, so the column reads as what is drawn rather than as a form to fill in.
    *
    * Still a checkbox underneath. It is the one element that already means "two states, toggled",
    * and hand-rolling a button in its place would owe the whole contract — the label association, the
@@ -648,7 +648,7 @@ export const treeRow = (options: TreeRowOptions): HTMLElement => {
   eye.className = 'caelestis-eye'
   eye.addEventListener('click', (event) => event.stopPropagation())
   const box = document.createElement('span')
-  box.appendChild(icon('eye', 'size-4'))
+  box.append(icon('eyeOff', 'size-4 caelestis-eye-off'), icon('eye', 'size-4 caelestis-eye-on'))
   eye.append(check, box)
   row.appendChild(eye)
 
@@ -892,6 +892,19 @@ export const finishTreeRoot = (root: HTMLElement): void => {
   }
 
   const rows = [...root.querySelectorAll<HTMLElement>('[role="treeitem"][data-caelestis-key]')]
+  const siblingGroups = new Map<string, HTMLElement[]>()
+  for (const row of rows) {
+    const parent = row.dataset.caelestisParent ?? '__root__'
+    const siblings = siblingGroups.get(parent) ?? []
+    siblings.push(row)
+    siblingGroups.set(parent, siblings)
+  }
+  for (const siblings of siblingGroups.values()) {
+    siblings.forEach((row, index) => {
+      row.setAttribute('aria-setsize', String(siblings.length))
+      row.setAttribute('aria-posinset', String(index + 1))
+    })
+  }
   const active = rows.find((row) => row.dataset.caelestisKey === activeTreeKey) ?? rows[0]
   const activate = (row: HTMLElement): void => {
     for (const candidate of rows) {

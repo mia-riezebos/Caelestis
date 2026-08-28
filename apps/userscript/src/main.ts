@@ -8,15 +8,25 @@ import {
   viewportCentreIn,
 } from './coordinates.js'
 import { installDebugApi, warn } from './debug.js'
-import { installOverlayLayer, overlayGpuMemoryBytes, setNudge } from './gl/layer.js'
+import {
+  installOverlayLayer,
+  overlayGpuMemoryBytes,
+  overlayStagingMemoryBytes,
+  setNudge,
+} from './gl/layer.js'
 import {
   keepMarkersAboveDrafts,
   markerBatchMemoryBytes,
   markerDensityMemoryBytes,
   markerGpuMemoryBytes,
 } from './gl/markers.js'
+import { installKeyboardShortcuts } from './keyboard-shortcuts.js'
 import { getMap, installMapCapture, releaseMapCapture } from './map-handle.js'
-import { installPaintPaletteProgress, paintPaletteProgress } from './paint-palette.js'
+import {
+  installPaintPaletteProgress,
+  paintPaletteProgress,
+  refreshPaintPaletteFocus,
+} from './paint-palette.js'
 import {
   installProfile,
   measureProfile,
@@ -26,23 +36,18 @@ import {
   resetProfile,
 } from './profile.js'
 import { serverMismatchMemoryBytes } from './server-mismatch.js'
-import { shortcutFor } from './shortcuts.js'
-import { getState, loadState, onStateChange, setState } from './state.js'
+import { loadState, onStateChange } from './state.js'
 import { installTelemetry } from './telemetry.js'
 import {
-  appearanceOf,
   isTemplateVisible,
   localTemplates,
   onLocalChange,
   onLocalPreviewChange,
-  ownsGroup,
   restoreLocalTemplates,
-  setAppearance,
   templateIndexMemoryBytes,
 } from './templates/local-store.js'
 import { mismatchMemoryBytes, onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
 import { mismatchWorkerMemoryBytes } from './templates/mismatch-worker.js'
-import { templateAtCentre } from './templates/nearest.js'
 import { installServerSync } from './templates/server-sync.js'
 import {
   capturedPixelMemoryBytes,
@@ -52,8 +57,8 @@ import {
   reconcileDrafts,
   type TileFrame,
 } from './tile-transform.js'
-import { refreshOverlayMenu, renderOverlayControls, toggleOverlayMenu } from './ui/overlay-menu.js'
-import { installPanel, togglePanel } from './ui/panel.js'
+import { renderOverlayControls } from './ui/overlay-menu.js'
+import { installPanel } from './ui/panel.js'
 import { loadAccount } from './wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, watchPaintSelection } from './wplace-paint.js'
 import { installColourPicker } from './wplace-picker.js'
@@ -211,76 +216,6 @@ const step = (what: string, run: () => void): void => {
   }
 }
 
-/**
- * The keyboard shortcuts, such as they are.
- *
- * Deliberately few and deliberately not on letters wplace already use. Scanned across all 150 of
- * their bundles, the only keys they compare against are MapLibre's own — arrows, `+`, `-`, `=`, `_`,
- * `0`, `r`/`R` — plus Escape, Enter and Space. `C`, `S`, `T`, and `W` are free, and stay free of a
- * modifier so they cost nothing to reach mid-brushstroke. A bare letter is only ours when nobody is
- * typing and no modifier is held: `⌘S` remains the browser's, and a chat box or template name never
- * loses a character to a shortcut.
- *
- * Anything acting on one template asks `templateAtCentre` which one that is, rather than deciding
- * for itself — see the module for why the answer has to be shared.
- */
-const installKeys = (): void => {
-  window.addEventListener('keydown', (event) => {
-    const shortcut = shortcutFor(event)
-    if (shortcut === null) return
-
-    if (shortcut === 'toggle-panel') {
-      event.preventDefault()
-      togglePanel()
-      return
-    }
-
-    if (shortcut === 'toggle-template-menu') {
-      const nearest = templateAtCentre()
-      if (nearest === null) return
-      event.preventDefault()
-      toggleOverlayMenu(nearest.id, redraw)
-      return
-    }
-
-    if (shortcut === 'toggle-colour') {
-      event.preventDefault()
-      setState({ onlySelectedColour: !getState().onlySelectedColour })
-      return
-    }
-
-    /**
-     * `W` for wrong: the markers on or off.
-     *
-     * Which switch it reaches depends on what the template nearest the centre has already said. One
-     * that answers for its own markers is toggled on its own; one following the defaults means the
-     * question was never about that template, so the global switch moves and every follower moves
-     * with it.
-     *
-     * The ambiguity is real and worth naming: with two templates on screen, which one is "nearest"
-     * is a judgement the interface makes and the keystroke does not show. It is tolerable here in a
-     * way it was not for the colour mode, because markers genuinely are per template — each asserts
-     * its own pixels — where the colour mode is a lens over the whole view.
-     */
-    if (shortcut === 'toggle-markers') {
-      event.preventDefault()
-      const nearest = templateAtCentre()
-      if (nearest !== null && ownsGroup(nearest, 'markers')) {
-        setAppearance(nearest.id, {
-          ...appearanceOf(nearest),
-          markMismatch: !appearanceOf(nearest).markMismatch,
-        })
-        // Its menu may be open on the switch this just moved, and it does not rebuild on a redraw.
-        refreshOverlayMenu()
-        return
-      }
-      setState({
-        appearance: { ...getState().appearance, markMismatch: !getState().appearance.markMismatch },
-      })
-    }
-  })
-}
-
 const main = (): void => {
   step('performance profile', installProfile)
   registerProfileMemorySource('Template pixels', templateIndexMemoryBytes)
@@ -289,6 +224,7 @@ const main = (): void => {
   registerProfileMemorySource('Server mismatch masks', serverMismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
   registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
+  registerProfileMemorySource('Overlay index staging', overlayStagingMemoryBytes)
   registerProfileMemorySource('Marker density buffers', markerDensityMemoryBytes)
   registerProfileMemorySource('Marker draw batches', markerBatchMemoryBytes)
   registerProfileMemorySource('Marker GPU buffers', markerGpuMemoryBytes)
@@ -310,7 +246,7 @@ const main = (): void => {
           serverTemplateId: template.serverTemplateId ?? null,
           opaque: template.opaque,
         })),
-      /** The exact aggregate currently decorating Wplace's native paint palette. */
+      /** The exact focused-template counts currently decorating Wplace's native paint palette. */
       paletteProgress: () => paintPaletteProgress(),
       /** A live performance snapshot. Enable profiling in Settings first. */
       profile: () => profileSnapshot(),
@@ -361,9 +297,12 @@ const main = (): void => {
     onPaintSelectionChange(repaint)
   })
   step('paint palette progress', installPaintPaletteProgress)
+  onFrame(refreshPaintPaletteFocus, 'Paint palette focus')
   // Middle-click picking, answered from the template when the template is what you can see.
   step('colour picker', installColourPicker)
-  step('keyboard shortcuts', installKeys)
+  step('keyboard shortcuts', () => {
+    installKeyboardShortcuts(redraw)
+  })
   // Painting is not a map movement, so nothing would otherwise ask for the frame that shows a
   // marker going away.
   // A completed scan changes marker buffers and progress only. Progress has its own DOM listeners;

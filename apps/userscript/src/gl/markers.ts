@@ -1,6 +1,7 @@
 import { TILE_SIZE } from '@caelestis/shared'
 import { count, warn } from '../debug.js'
 import { getMap } from '../map-handle.js'
+import { isOverlayPeekActive } from '../overlay-peek.js'
 import { isProfileEnabled, measureProfile, profileGpu, recordProfileWorkload } from '../profile.js'
 import { getState } from '../state.js'
 import { isColourHidden, toRgbUnit } from '../templates/appearance.js'
@@ -682,6 +683,9 @@ export const markerLayer = {
   },
 
   render(gl: WebGL2RenderingContext): void {
+    // Peek is a display suppression, not cache invalidation. Stop before `drawAll` so its normal
+    // unused-buffer sweep does not discard every retained marker buffer during the held key.
+    if (isOverlayPeekActive()) return
     // Never let this escape into MapLibre's render loop; a throw here takes the whole frame with it.
     try {
       profileGpu(gl, 'Marker GPU', () => measureProfile('Marker render', () => drawAll(gl)))

@@ -26,6 +26,56 @@ export const selectedColour = (): number | null => selected
 /** Whether wplace's paint drawer is currently on screen. */
 export const isPaintOpen = (): boolean => open
 
+/** Select one of Wplace's own paint swatches without owning a second palette state. */
+export const selectPaintColour = (index: number): boolean => {
+  if (!Number.isInteger(index) || index < 0 || index >= TRANSPARENT_INDEX) return false
+  const swatch = document.getElementById(`color-${index + 1}`)
+  if (!(swatch instanceof HTMLElement)) return false
+  swatch.click()
+  return true
+}
+
+/**
+ * Wplace's paint drawer close button has no label or title. Locate it from the native palette's
+ * stable structure instead: palette swatch -> wrapper -> grid -> palette section -> drawer, then
+ * the last direct button in the drawer header. Keeping this traversal here avoids teaching the
+ * shortcut controller about Wplace's DOM.
+ */
+const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
+  const drawer = swatch.parentElement?.parentElement?.parentElement?.parentElement
+  if (drawer === undefined || drawer === null) return null
+  const header = Array.from(drawer.children).find((child) => child.querySelector('h2') !== null)
+  if (header === undefined) return null
+  const directButtons = Array.from(header.children).filter(
+    (child): child is HTMLButtonElement => child instanceof HTMLButtonElement,
+  )
+  return directButtons.at(-1) ?? null
+}
+
+/**
+ * Drive Wplace's own paint-mode control. Exact accessible labels only: a broad text search could
+ * click a template action or a dialog button after Wplace changes its chrome.
+ */
+export const togglePaintMode = (): boolean => {
+  const swatch = document.querySelector('[id^="color-"]')
+  if (swatch !== null) {
+    const close = paintDrawerCloseButton(swatch)
+    if (close === null) return false
+    close.click()
+    return true
+  }
+  const labels = new Set(['paint', 'open paint', 'paint pixel'])
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button')) {
+    const label = (button.getAttribute('aria-label') ?? button.getAttribute('title') ?? '')
+      .trim()
+      .toLowerCase()
+    if (!labels.has(label)) continue
+    button.click()
+    return true
+  }
+  return false
+}
+
 export const onPaintSelectionChange = (listener: () => void): void => {
   listeners.push(listener)
 }

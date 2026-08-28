@@ -4,6 +4,7 @@ import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.j
 import { isProfileEnabled, setProfileEnabled } from '../profile.js'
 import { forgetServer } from '../server-cache.js'
 import {
+  type ColourNavigationOrder,
   type ConnectedServer,
   cancelServerProbe,
   canonicalServerUrl,
@@ -23,7 +24,7 @@ import {
   upsertServer,
 } from '../state.js'
 import { onServerStatusChange } from '../telemetry.js'
-import { APPEARANCE_CONTROLS } from '../templates/appearance.js'
+import { APPEARANCE_CONTROLS, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
 import { onMismatchesChanged } from '../templates/mismatch.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
@@ -41,7 +42,9 @@ import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
 import { refreshProgressIndicators } from './progress.js'
+import { mismatchModeButton, RAIL_BUTTON_CLASS, syncMismatchModeState } from './rail-controls.js'
 import { createRangeGestures } from './range-gestures.js'
+import { sliderRow } from './slider.js'
 import { progressChangesCanReorder, sortControl } from './sort.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID, toast } from './toast.js'
@@ -131,7 +134,7 @@ const panelWidthForViewport = (wanted: number): number =>
  */
 const APP_NAME = 'Caelestis'
 const PANEL_TITLE = APP_NAME
-const BUTTON_TOOLTIP = `${APP_NAME} — shared templates`
+const BUTTON_TOOLTIP = `${APP_NAME} — shared templates (C)`
 
 type View = 'tree' | 'settings' | 'appearance'
 
@@ -152,8 +155,6 @@ const rangeGestures = createRangeGestures()
  * the class list. Using the same class rather than a colour of our own means our button lights up
  * in whatever their theme calls primary, now and after any theme change.
  */
-export const RAIL_BUTTON_CLASS = 'btn btn-square shadow-md relative'
-
 const syncRailButtonState = (): void => {
   const button = document.getElementById(BUTTON_ID)
   if (button === null) return
@@ -707,56 +708,66 @@ const appearanceView = (): HTMLElement => {
     ),
   )
 
+  const outline = document.createElement('input')
+  outline.type = 'checkbox'
+  outline.className = 'toggle toggle-sm'
+  outline.checked = state.appearance.contrastOutline
+  outline.setAttribute('aria-label', 'Contrast outline')
+  outline.addEventListener('change', () => {
+    setState({
+      appearance: { ...getState().appearance, contrastOutline: outline.checked },
+    })
+    previewGlobalAppearance(getState().appearance)
+    redraw()
+    rerender()
+  })
+  view.appendChild(
+    settingRow('Contrast outline', 'For unpainted pixels that blend into the map', outline),
+  )
+
   // Same sliders as the per-overlay menu, deliberately — one vocabulary, learned once.
   const sliders = document.createElement('div')
   sliders.className = 'px-3 pb-2'
   for (const control of APPEARANCE_CONTROLS) {
-    const row = document.createElement('label')
-    row.className = 'flex items-center gap-3 py-1'
-    const name = document.createElement('span')
-    name.className = 'text-sm'
-    name.style.width = '5rem'
-    name.style.flex = '0 0 auto'
-    name.textContent = control.label
-    const input = document.createElement('input')
-    input.type = 'range'
-    input.className = 'range range-xs'
-    input.min = String(control.min)
-    input.max = String(control.max)
-    input.step = String(control.step)
-    input.value = String(state.appearance[control.key])
-    input.style.flex = '1'
-    input.style.minWidth = '0'
-    const readout = document.createElement('span')
-    readout.className = 'text-xs opacity-60'
-    readout.style.width = '2.75rem'
-    readout.style.flex = '0 0 auto'
-    readout.style.textAlign = 'right'
-    readout.textContent = control.format(state.appearance[control.key])
     let dirty = false
+    let row: ReturnType<typeof sliderRow>
     const commit = (): void => {
       if (!dirty) return
       dirty = false
-      const next = Number(input.value)
+      const next = Number(row.input.value)
       // Read the live value rather than the one captured when this row was built, so dragging one
       // slider cannot revert another.
       setState({
         appearance: { ...getState().appearance, [control.key]: next },
       })
     }
-    input.addEventListener('input', () => {
-      dirty = true
-      const next = Number(input.value)
-      readout.textContent = control.format(next)
-      previewGlobalAppearance({
-        ...getState().appearance,
-        [control.key]: next,
-      })
-      redraw()
+    row = sliderRow({
+      label: control.label,
+      value: state.appearance[control.key],
+      defaultValue: DEFAULT_APPEARANCE[control.key],
+      min: control.min,
+      max: control.max,
+      step: control.step,
+      format: control.format,
+      disabled: control.key === 'contrastOutlineSize' && !state.appearance.contrastOutline,
+      onInput: (next) => {
+        dirty = true
+        previewGlobalAppearance({
+          ...getState().appearance,
+          [control.key]: next,
+        })
+        redraw()
+      },
+      onReset: (next) => {
+        dirty = false
+        setState({ appearance: { ...getState().appearance, [control.key]: next } })
+        previewGlobalAppearance(getState().appearance)
+        redraw()
+        rerender()
+      },
     })
-    rangeGestures.bind(input, commit)
-    row.append(name, input, readout)
-    sliders.appendChild(row)
+    rangeGestures.bind(row.input, commit)
+    sliders.appendChild(row.element)
   }
   view.appendChild(sliders)
 
@@ -898,6 +909,31 @@ const settingsView = (): HTMLElement => {
   for (const server of getState().servers) view.appendChild(serverRow(server))
 
   const state = getState()
+
+  view.appendChild(sectionHeader('Painting', 'palette'))
+  const navigationOrder = document.createElement('select')
+  navigationOrder.className = 'select select-bordered select-sm'
+  navigationOrder.setAttribute('aria-label', 'Middle-click colour order')
+  for (const [value, label] of [
+    ['unpainted-first', 'Unpainted, then mismatched'],
+    ['mismatched-first', 'Mismatched, then unpainted'],
+  ] satisfies ReadonlyArray<readonly [ColourNavigationOrder, string]>) {
+    const option = document.createElement('option')
+    option.value = value
+    option.textContent = label
+    option.selected = value === state.colourNavigationOrder
+    navigationOrder.appendChild(option)
+  }
+  navigationOrder.addEventListener('change', () => {
+    setState({ colourNavigationOrder: navigationOrder.value as ColourNavigationOrder })
+  })
+  view.appendChild(
+    settingRow(
+      'Middle-click colour order',
+      'Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.',
+      navigationOrder,
+    ),
+  )
 
   view.appendChild(sectionHeader('Contribution', 'share'))
   view.appendChild(
@@ -1313,7 +1349,9 @@ export const syncColourModeState = (): void => {
   button.setAttribute('aria-pressed', String(on))
   const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
   // Says why nothing happened, at the moment it does not: the mode needs a colour to follow.
-  button.title = isPaintOpen() ? label : `${label} — open wplace's paint drawer to pick one`
+  button.title = isPaintOpen()
+    ? `${label} (S)`
+    : `${label} — open wplace's paint drawer to pick one (S)`
   button.setAttribute('aria-label', label)
 }
 
@@ -1330,15 +1368,18 @@ export const installPanel = (): void => {
   installServerConnectionRetry(refreshView)
   installStyles()
   const rail = railContainer()
-  rail.append(railButton(), colourModeButton())
+  rail.append(railButton(), colourModeButton(), mismatchModeButton())
   syncRailButtonState()
   syncColourModeState()
+  syncMismatchModeState()
   positionRail()
   log('install', 'rail installed beside wplace’s')
 
   const sync = (): void => {
     // Their re-render may have taken our buttons if anything ever moves them; put them back cheaply.
-    if (!rail.contains(railButton())) rail.append(railButton(), colourModeButton())
+    for (const button of [railButton(), colourModeButton(), mismatchModeButton()]) {
+      if (!rail.contains(button)) rail.appendChild(button)
+    }
     positionRail()
   }
   // Once per frame, not once per mutation. `sync` walks every button in the document looking for
@@ -1368,6 +1409,7 @@ export const installPanel = (): void => {
     redraw()
   })
   onStateChange(syncColourModeState)
+  onStateChange(syncMismatchModeState)
   // Once, here, rather than each time a view is built: subscribing from inside `treeView` added a
   // fresh listener on every switch back to it, so the tenth visit redrew the panel ten times per
   // change.

@@ -1214,6 +1214,35 @@ describe('local template lifecycle', () => {
     )
   })
 
+  it('merges queued marker toggles and opacity changes against the latest appearance', async () => {
+    const store = await import('./local-store.js')
+    const added = await store.addLocalTemplate(template())
+    await store.setOwnsGroup(added.id, 'markers', true)
+    await store.setOwnsGroup(added.id, 'pixels', true)
+    persistence.saveTemplate.mockClear()
+    let finishFirst = (_value: { status: 'saved'; revision: number }): void => undefined
+    persistence.saveTemplate.mockImplementationOnce(
+      async () =>
+        await new Promise<{ status: 'saved'; revision: number }>((resolve) => {
+          finishFirst = resolve
+        }),
+    )
+
+    const mismatch = store.toggleAppearanceBoolean(added.id, 'markMismatch')
+    await vi.waitFor(() => expect(persistence.saveTemplate).toHaveBeenCalledOnce())
+    const selected = store.toggleAppearanceBoolean(added.id, 'markSelectedColour')
+    const opacity = store.setAppearance(added.id, { opacity: 0.2 })
+    finishFirst({ status: 'saved', revision: added.revision + 1 })
+
+    await expect(Promise.all([mismatch, selected, opacity])).resolves.toEqual([true, true, true])
+    const current = store.localTemplates()[0]
+    expect(current === undefined ? null : store.appearanceOf(current)).toMatchObject({
+      markMismatch: true,
+      markSelectedColour: true,
+      opacity: 0.2,
+    })
+  })
+
   it('removes stale local state when a CAS conflict reveals a cross-tab deletion', async () => {
     const store = await import('./local-store.js')
     const added = await store.addLocalTemplate(template())

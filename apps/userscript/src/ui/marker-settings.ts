@@ -173,12 +173,17 @@ const swatch = (
     ...(onClose === undefined ? {} : { onClose }),
   })
 
-const tick = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
+const tick = (
+  value: boolean,
+  onChange: (next: boolean) => void,
+  title?: string,
+): HTMLInputElement => {
   const input = document.createElement('input')
   input.type = 'checkbox'
   // A switch, not a tick: each of these turns a behaviour on rather than picking one of a set.
   input.className = 'toggle toggle-sm'
   input.checked = value
+  if (title !== undefined) input.title = title
   input.addEventListener('change', () => onChange(input.checked))
   return input
 }
@@ -342,10 +347,14 @@ export const mismatchSettings = (
   selectedGroup.appendChild(
     row(
       'Mark selected colour pixels',
-      tick(values.markSelectedColour, (next) => {
-        write({ markSelectedColour: next })
-        rerender()
-      }),
+      tick(
+        values.markSelectedColour,
+        (next) => {
+          write({ markSelectedColour: next })
+          rerender()
+        },
+        'Toggle selected-colour markers (X)',
+      ),
       at(0, 'Follows the colour selected in Wplace'),
     ),
   )

@@ -31,10 +31,25 @@ describe('server state boundaries', () => {
     const { loadState } = await import('./state.js')
 
     expect(loadState()).toMatchObject({
+      colourNavigationOrder: 'unpainted-first',
       markerBudget: 16_384,
       reportPaints: true,
       shareTiles: true,
     })
+  })
+
+  it.each([
+    ['mismatched-first', 'mismatched-first'],
+    ['unpainted-first', 'unpainted-first'],
+    ['somewhere-else', 'unpainted-first'],
+  ])('normalises stored colour navigation order %s to %s', async (stored, expected) => {
+    vi.stubGlobal(
+      'GM_getValue',
+      vi.fn(() => JSON.stringify({ colourNavigationOrder: stored })),
+    )
+    const { loadState } = await import('./state.js')
+
+    expect(loadState().colourNavigationOrder).toBe(expected)
   })
 
   it.each([

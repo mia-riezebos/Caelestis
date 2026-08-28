@@ -79,6 +79,7 @@ vi.mock('../state.js', () => ({
   admittedServerContentsFor: () => ({ nodes: [], templates: harness.serverTemplates }),
   deleteTemplate: harness.deleteServerTemplate,
   getState: () => ({
+    appearance: DEFAULT_APPEARANCE,
     hiddenColours: [],
     onlySelectedColour: false,
     servers: harness.servers,
@@ -424,7 +425,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     rerender()
 
     expect(menu().textContent).toContain('renamed.png')
-    expect(gear('a').title).toBe('renamed.png — display options')
+    expect(gear('a').title).toBe('renamed.png — display options (T)')
   })
 
   it('keeps a dragged slider alive across the repaint it causes', () => {
@@ -494,6 +495,42 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
 
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
     expect(appearanceWritten(0).opacity).toBe(0.6)
+  })
+
+  it('owns, toggles, and sizes the contrast outline locally', async () => {
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const toggle = byKey('contrastOutline') as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+    toggle.click()
+    await settle()
+
+    expect(harness.setOwnsGroup).toHaveBeenCalledWith('a', 'pixels', true)
+    expect(appearanceWritten(0).contrastOutline).toBe(false)
+
+    harness.localTemplates.mockReturnValue([
+      template({ appearance: { contrastOutline: true, contrastOutlineSize: 0.85 } }),
+    ])
+    rerender()
+    const thickness = byKey('contrastOutlineSize') as HTMLInputElement
+    drag(thickness, '1.25')
+    await settle()
+
+    expect(appearanceWritten(1).contrastOutlineSize).toBe(1.25)
+  })
+
+  it('makes local outline thickness inert while the outline is off', () => {
+    harness.localTemplates.mockReturnValue([
+      template({ appearance: { contrastOutline: false, contrastOutlineSize: 0.85 } }),
+    ])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    expect((byKey('contrastOutlineSize') as HTMLInputElement).disabled).toBe(true)
   })
 })
 
@@ -1290,6 +1327,27 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     rerender()
 
     expect(Number((byKey('size') as HTMLInputElement).value)).toBe(DEFAULT_APPEARANCE.size)
+  })
+
+  it('resets one owned slider to the value inherited from settings', async () => {
+    harness.localTemplates.mockReturnValue([template({ appearance: { size: 0.8 } })])
+    rerender()
+    gear('a').click()
+    rerender()
+
+    const input = byKey('size') as HTMLInputElement
+    const reset = input
+      .closest('label')
+      ?.querySelector<HTMLButtonElement>('.caelestis-slider-reset')
+    expect(reset?.hidden).toBe(false)
+    reset?.click()
+
+    await vi.waitFor(() =>
+      expect(harness.setAppearance).toHaveBeenCalledWith(
+        'a',
+        expect.objectContaining({ size: DEFAULT_APPEARANCE.size }),
+      ),
+    )
   })
 })
 

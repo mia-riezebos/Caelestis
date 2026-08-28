@@ -60,6 +60,9 @@ interface Cached extends ScanOutcome {
   /** Identity of the template pixels this answer was computed against. */
   readonly templateSource: Uint8Array
   readonly key: string
+  /** Which coordinate lists this scan actually retained. Progress counts are always complete. */
+  readonly wrongComplete: boolean
+  readonly unpaintedComplete: boolean
   /**
    * The two kinds of disagreement, kept apart.
    *
@@ -95,6 +98,11 @@ export interface ColourNavigationTarget {
   readonly kind: ColourTargetKind
 }
 
+export type ColourNavigationExclusion = Pick<
+  ColourNavigationTarget,
+  'kind' | 'templateId' | 'x' | 'y'
+>
+
 const markCoordinate = (mark: number): number => mark & 0xfffff
 
 /** Merge two row-major classifications without losing the renderer's spatial-order invariant. */
@@ -120,7 +128,24 @@ const mergeMarks = (left: Mismatches, right: Mismatches): Mismatches => {
   return merged
 }
 
-const answerFrom = (entry: Cached, includeUnpainted: boolean): Mismatches => {
+type AnswerKind = 'configured' | 'all' | 'unpainted'
+
+const collectionFor = (
+  kind: AnswerKind,
+): { readonly wrong: boolean; readonly unpainted: boolean } => ({
+  wrong: kind !== 'unpainted',
+  unpainted: true,
+})
+
+const satisfies = (
+  entry: Cached,
+  collection: { readonly wrong: boolean; readonly unpainted: boolean },
+): boolean =>
+  (!collection.wrong || entry.wrongComplete) && (!collection.unpainted || entry.unpaintedComplete)
+
+const answerFrom = (entry: Cached, kind: AnswerKind, template: PlacedTemplate): Mismatches => {
+  if (kind === 'unpainted') return entry.unpainted
+  const includeUnpainted = kind === 'all' || countsUnpainted(template)
   if (!includeUnpainted || entry.unpainted.length === 0) return entry.wrong
   if (entry.wrong.length === 0) return entry.unpainted
   if (entry.both === null) {
@@ -445,6 +470,19 @@ const notifyChanged = (): void => {
 const SCAN_BUDGET_MS = 8
 let scanDeadline = 0
 let requestedThisFrame: Set<string> | null = null
+let requestedForOutlines: Set<string> | null = null
+let retainedForOutlines = new Set<string>()
+
+/** Start the overlay layer's independent answer-retention pass. */
+export const beginUnpaintedFrame = (): void => {
+  requestedForOutlines = new Set()
+}
+
+/** Keep outline answers without resetting the marker layer's own frame request set. */
+export const endUnpaintedFrame = (): void => {
+  retainedForOutlines = requestedForOutlines ?? new Set()
+  requestedForOutlines = null
+}
 
 /** Called once per frame by the renderer, before it asks for anything. */
 export const beginMismatchFrame = (): void => {
@@ -471,7 +509,7 @@ export const endMismatchFrame = (): void => {
   }
   for (const cacheKey of cache.keys()) {
     if (cache.size <= MAX_CACHED_ANSWERS && cacheBytes <= MAX_CACHED_ANSWER_BYTES) break
-    if (requested.has(cacheKey)) continue
+    if (requested.has(cacheKey) || retainedForOutlines.has(cacheKey)) continue
     deleteCachedAnswer(cacheKey)
     forgetCoverage(cacheKey)
     stale.delete(cacheKey)
@@ -517,7 +555,8 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
       stale.delete(cacheKey)
       continue
     }
-    mismatchesIn(template, tile)
+    if (retainedForOutlines.has(cacheKey)) unpaintedIn(template, tile)
+    else mismatchesIn(template, tile)
     count('mismatch:rescanned while idle')
   }
   for (const cacheKey of [...staleProgress]) {
@@ -698,13 +737,17 @@ const minimumDistanceTo = (
   return dx * dx + dy * dy
 }
 
-const navigationCandidates = (reference: {
-  readonly x: number
-  readonly y: number
-}): NavigationCandidate[] => {
+const navigationCandidates = (
+  reference: {
+    readonly x: number
+    readonly y: number
+  },
+  templateId?: string,
+): NavigationCandidate[] => {
   const candidates: NavigationCandidate[] = []
   for (const template of displayTemplates()) {
     if (!isTemplateVisible(template)) continue
+    if (templateId !== undefined && template.id !== templateId) continue
     const templateTop = template.originY
     const templateBottom = template.originY + template.height
     for (const key of templateTileKeys(template)) {
@@ -765,6 +808,7 @@ const scanCandidate = (
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
   previousDistance: number,
+  exclude?: ColourNavigationExclusion,
 ): CandidateResult => {
   let target: ColourNavigationTarget | null = null
   let distance = previousDistance
@@ -787,6 +831,13 @@ const scanCandidate = (
         kind === 'unpainted' ? placed === UNPAINTED : placed !== UNPAINTED && placed !== wanted
       if (!matches) continue
       matchingPixels++
+      if (
+        exclude?.templateId === candidate.template.id &&
+        exclude.kind === kind &&
+        exclude.x === x &&
+        exclude.y === y
+      )
+        continue
       const dx = wrappedDeltaX(reference.x, x + 0.5)
       const dy = y + 0.5 - reference.y
       const candidateDistance = dx * dx + dy * dy
@@ -809,9 +860,11 @@ export const nearestLoadedColourTarget = (
   index: number,
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
+  templateId?: string,
+  exclude?: ColourNavigationExclusion,
 ): ColourNavigationTarget | null => {
   if (!Number.isInteger(index) || index < 0 || index >= PALETTE_SIZE) return null
-  const candidates = navigationCandidates(reference)
+  const candidates = navigationCandidates(reference, templateId)
 
   let best: ColourNavigationTarget | null = null
   let bestDistance = Number.POSITIVE_INFINITY
@@ -823,7 +876,7 @@ export const nearestLoadedColourTarget = (
     const pixels = tilePixels(candidate.tile)
     if (pixels === null) continue
     loaded++
-    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance)
+    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance, exclude)
     desiredPixels += scanned.desiredPixels
     matchingPixels += scanned.matchingPixels
     if (scanned.target !== null) best = scanned.target
@@ -844,9 +897,11 @@ export const nearestColourTarget = async (
   index: number,
   kind: ColourTargetKind,
   reference: { readonly x: number; readonly y: number },
+  templateId?: string,
+  exclude?: ColourNavigationExclusion,
 ): Promise<ColourNavigationTarget | null> => {
   if (!Number.isInteger(index) || index < 0 || index >= PALETTE_SIZE) return null
-  const candidates = navigationCandidates(reference)
+  const candidates = navigationCandidates(reference, templateId)
   let best: ColourNavigationTarget | null = null
   let bestDistance = Number.POSITIVE_INFINITY
   let desiredPixels = 0
@@ -861,7 +916,7 @@ export const nearestColourTarget = async (
     }
     if (pixels === null) continue
     loaded++
-    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance)
+    const scanned = scanCandidate(candidate, pixels, index, kind, reference, bestDistance, exclude)
     desiredPixels += scanned.desiredPixels
     matchingPixels += scanned.matchingPixels
     if (scanned.target !== null) best = scanned.target
@@ -885,6 +940,8 @@ const buildJob = (
   pixels: Uint8Array,
   forWorker: boolean,
   collectMarkers = true,
+  collectWrong = collectMarkers,
+  collectUnpainted = collectMarkers,
 ): ScanJob => {
   const tileLeft = tile.x * TILE_SIZE
   const tileTop = tile.y * TILE_SIZE
@@ -924,6 +981,8 @@ const buildJob = (
     transparent: TRANSPARENT_INDEX,
     unpainted: UNPAINTED,
     collectMarkers,
+    collectWrong,
+    collectUnpainted,
   }
 }
 
@@ -934,6 +993,8 @@ const buildMaskJob = (
   mask: MismatchMask,
   forWorker: boolean,
   collectMarkers = true,
+  collectWrong = collectMarkers,
+  collectUnpainted = collectMarkers,
 ): ScanJob => {
   const tileLeft = tile.x * TILE_SIZE
   const tileTop = tile.y * TILE_SIZE
@@ -969,6 +1030,8 @@ const buildMaskJob = (
     transparent: TRANSPARENT_INDEX,
     unpainted: UNPAINTED,
     collectMarkers,
+    collectWrong,
+    collectUnpainted,
     maskLeft: mask.left,
     maskTop: mask.top,
     maskWidth: mask.width,
@@ -984,8 +1047,18 @@ const store = (
   key: string,
   progressKey: string,
   outcome: ScanOutcome,
+  wrongComplete = true,
+  unpaintedComplete = true,
 ): Cached => {
-  const entry: Cached = { source, templateSource, key, ...outcome, both: null }
+  const entry: Cached = {
+    source,
+    templateSource,
+    key,
+    ...outcome,
+    wrongComplete,
+    unpaintedComplete,
+    both: null,
+  }
   staleProgress.delete(cacheKey)
   rememberCoverage(cacheKey, entry)
   rememberProgress(cacheKey, entry, progressKey)
@@ -1024,6 +1097,8 @@ interface PendingScan {
   readonly patches: number
   /** A full answer may satisfy progress-only work, but not the other way around. */
   readonly markers: boolean
+  readonly wrong: boolean
+  readonly unpainted: boolean
 }
 
 /** Patches applied per cache key, so a scan can tell whether the ground moved under it. */
@@ -1045,13 +1120,17 @@ const requestScan = (
   const templateSource = template.indices
   const asked = signature(template)
   const patchesAtStart = patchCount.get(cacheKey) ?? 0
+  const wrong = job.collectMarkers !== false && job.collectWrong !== false
+  const unpainted = job.collectMarkers !== false && job.collectUnpainted !== false
   const pending = inFlight.get(cacheKey)
   if (
     pending?.source === source &&
     pending.templateSource === templateSource &&
     pending.signature === asked &&
     pending.patches === patchesAtStart &&
-    (pending.markers || !markers)
+    (pending.markers || !markers) &&
+    (!wrong || pending.wrong) &&
+    (!unpainted || pending.unpainted)
   ) {
     if (pending.markers) stale.delete(cacheKey)
     staleProgress.delete(cacheKey)
@@ -1067,6 +1146,8 @@ const requestScan = (
     signature: asked,
     patches: patchesAtStart,
     markers,
+    wrong,
+    unpainted,
   }
   inFlight.set(cacheKey, mine)
   if (markers) stale.delete(cacheKey)
@@ -1086,7 +1167,16 @@ const requestScan = (
     if (markers) {
       stale.delete(cacheKey)
       staleProgress.delete(cacheKey)
-      store(cacheKey, source, templateSource, key, progressSignature(template), outcome)
+      store(
+        cacheKey,
+        source,
+        templateSource,
+        key,
+        progressSignature(template),
+        outcome,
+        wrong,
+        unpainted,
+      )
     } else {
       rememberProgress(cacheKey, { templateSource, ...outcome }, progressSignature(template))
       staleProgress.delete(cacheKey)
@@ -1111,11 +1201,12 @@ const requestScan = (
 const mismatchAnswer = (
   template: PlacedTemplate,
   tile: TileCoord,
-  includeAllUnpainted: boolean,
+  kind: AnswerKind,
 ): Mismatches | null => {
   const cacheKey = `${template.id}|${tile.x}/${tile.y}`
   requestedThisFrame?.add(cacheKey)
   const key = signature(template)
+  const collection = collectionFor(kind)
   const serverMask = serverMismatchMaskFor(template, tile)
   const superseded = supersededServerSource.get(cacheKey)
   if (superseded !== undefined && superseded !== template.serverUrl) {
@@ -1128,10 +1219,11 @@ const mismatchAnswer = (
       existing.source === serverMask.packed &&
       existing.templateSource === template.indices &&
       existing.key === key &&
+      satisfies(existing, collection) &&
       !stale.has(cacheKey)
     ) {
       remember(cacheKey, existing)
-      return answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
+      return answerFrom(existing, kind, template)
     }
     if (hasWorker()) {
       requestScan(
@@ -1139,11 +1231,19 @@ const mismatchAnswer = (
         serverMask.packed,
         cacheKey,
         key,
-        buildMaskJob(template, tile, serverMask, true),
+        buildMaskJob(
+          template,
+          tile,
+          serverMask,
+          true,
+          true,
+          collection.wrong,
+          collection.unpainted,
+        ),
       )
-      return existing === undefined
+      return existing === undefined || !satisfies(existing, collection)
         ? null
-        : answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
+        : answerFrom(existing, kind, template)
     }
     stale.delete(cacheKey)
     const entry = store(
@@ -1153,14 +1253,28 @@ const mismatchAnswer = (
       key,
       progressSignature(template),
       measureProfile('Server mismatch expansion', () =>
-        scanTile(buildMaskJob(template, tile, serverMask, false), template.indices),
+        scanTile(
+          buildMaskJob(
+            template,
+            tile,
+            serverMask,
+            false,
+            true,
+            collection.wrong,
+            collection.unpainted,
+          ),
+          template.indices,
+        ),
       ),
+      collection.wrong,
+      collection.unpainted,
     )
-    return answerFrom(entry, includeAllUnpainted || countsUnpainted(template))
+    return answerFrom(entry, kind, template)
   }
   const pixels = tilePixels(tile)
   if (pixels === null) {
     // Never decoded while we were watching. Go and get it rather than wait for wplace to.
+    stale.add(cacheKey)
     ensureTilePixels(tile)
     return null
   }
@@ -1171,18 +1285,25 @@ const mismatchAnswer = (
     existing.source === pixels &&
     existing.templateSource === template.indices &&
     existing.key === key &&
+    satisfies(existing, collection) &&
     !stale.has(cacheKey)
   ) {
     stale.delete(cacheKey)
     remember(cacheKey, existing)
-    return answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
+    return answerFrom(existing, kind, template)
   }
 
   if (hasWorker()) {
-    requestScan(template, pixels, cacheKey, key, buildJob(template, tile, pixels, true))
-    return existing === undefined
+    requestScan(
+      template,
+      pixels,
+      cacheKey,
+      key,
+      buildJob(template, tile, pixels, true, true, collection.wrong, collection.unpainted),
+    )
+    return existing === undefined || !satisfies(existing, collection)
       ? null
-      : answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
+      : answerFrom(existing, kind, template)
   }
 
   /**
@@ -1197,9 +1318,9 @@ const mismatchAnswer = (
   if (performance.now() >= scanDeadline) {
     stale.add(cacheKey)
     scheduleIdleScan()
-    if (existing === undefined) return null
+    if (existing === undefined || !satisfies(existing, collection)) return null
     count('mismatch:showed the previous answer while busy')
-    return answerFrom(existing, includeAllUnpainted || countsUnpainted(template))
+    return answerFrom(existing, kind, template)
   }
   stale.delete(cacheKey)
 
@@ -1210,21 +1331,37 @@ const mismatchAnswer = (
     key,
     progressSignature(template),
     measureProfile('Mismatch scan', () =>
-      scanTile(buildJob(template, tile, pixels, false), template.indices),
+      scanTile(
+        buildJob(template, tile, pixels, false, true, collection.wrong, collection.unpainted),
+        template.indices,
+      ),
     ),
+    collection.wrong,
+    collection.unpainted,
   )
   changed++
   notifyChanged()
-  return answerFrom(entry, includeAllUnpainted || countsUnpainted(template))
+  return answerFrom(entry, kind, template)
 }
 
 /** Mismatches shown by the magenta marker, including unpainted only when its appearance allows it. */
 export const mismatchesIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null =>
-  mismatchAnswer(template, tile, false)
+  mismatchAnswer(template, tile, 'configured')
 
 /** Every wrong or unpainted pixel, used to narrow the selected-colour work list. */
 export const disagreementsIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null =>
-  mismatchAnswer(template, tile, true)
+  mismatchAnswer(template, tile, 'all')
+
+/** Keep a visible outline answer eligible for reuse without reading or rescanning it. */
+export const retainUnpainted = (template: PlacedTemplate, tile: TileCoord): void => {
+  requestedForOutlines?.add(`${template.id}|${tile.x}/${tile.y}`)
+}
+
+/** Every unpainted pixel, independently of whether mismatch markers include that class. */
+export const unpaintedIn = (template: PlacedTemplate, tile: TileCoord): Mismatches | null => {
+  retainUnpainted(template, tile)
+  return mismatchAnswer(template, tile, 'unpainted')
+}
 
 /**
  * Refresh local progress without producing marker coordinates.
@@ -1370,7 +1507,10 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
     // Marker lists deliberately carry no state for filtered colours, so they cannot tell us what
     // this pixel counted as before the patch. Re-scan that tile in idle time instead of guessing and
     // corrupting the progress total.
-    if (hiddenFromMarkers) {
+    if (
+      hiddenFromMarkers ||
+      (already === null && (!entry.wrongComplete || !entry.unpaintedComplete))
+    ) {
       stale.add(cacheKey)
       scheduleIdleScan()
       changed++
@@ -1446,6 +1586,8 @@ const patchTile = (tile: TileCoord, x: number, y: number, _announced: number): v
       source: entry.source,
       templateSource: entry.templateSource,
       key: entry.key,
+      wrongComplete: entry.wrongComplete,
+      unpaintedComplete: entry.unpaintedComplete,
       wrong,
       unpainted,
       asserted: entry.asserted,

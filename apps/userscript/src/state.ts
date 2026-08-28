@@ -131,6 +131,7 @@ export interface ServerTemplatePreference {
 }
 
 export type ColourPreset = 'all' | 'free' | 'premium' | 'owned'
+export type ColourNavigationOrder = 'unpainted-first' | 'mismatched-first'
 
 export interface State {
   readonly servers: readonly ConnectedServer[]
@@ -144,6 +145,8 @@ export interface State {
   /** Palette indices deliberately hidden. Empty means every colour draws. */
   readonly hiddenColours: readonly number[]
   readonly onlySelectedColour: boolean
+  /** Which kind of remaining work a middle-clicked Wplace colour swatch visits first. */
+  readonly colourNavigationOrder: ColourNavigationOrder
   /** Target mismatch or selected-colour markers submitted across one viewport. */
   readonly markerBudget: number
   readonly localFolders: readonly LocalFolder[]
@@ -162,6 +165,7 @@ const DEFAULT_STATE: State = {
   sort: DEFAULT_SORT,
   hiddenColours: [],
   onlySelectedColour: false,
+  colourNavigationOrder: 'unpainted-first',
   markerBudget: DEFAULT_MARKER_BUDGET,
   localFolders: [],
   hiddenScopes: [],
@@ -429,6 +433,10 @@ export const loadState = (): State => {
       sort,
       hiddenColours,
       onlySelectedColour: stored.onlySelectedColour === true,
+      colourNavigationOrder:
+        stored.colourNavigationOrder === 'mismatched-first'
+          ? 'mismatched-first'
+          : 'unpainted-first',
       markerBudget: normaliseMarkerBudget(stored.markerBudget),
       localFolders,
       hiddenScopes,

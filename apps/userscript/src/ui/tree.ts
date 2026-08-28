@@ -729,12 +729,7 @@ export const treeContents = (
               },
               canReparent: canEdit,
               ...(canEdit ? { onDropAt: intoServer } : {}),
-              ...(canEdit
-                ? {
-                    onContextMenu: (event: MouseEvent) =>
-                      callbacks.onContextMenu(templateTarget, event),
-                  }
-                : {}),
+              onContextMenu: (event: MouseEvent) => callbacks.onContextMenu(templateTarget, event),
               ...(canEdit
                 ? {
                     onRename: (value: string) => void renameTarget(templateTarget, value, rerender),

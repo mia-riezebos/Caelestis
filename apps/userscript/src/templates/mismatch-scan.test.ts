@@ -37,6 +37,17 @@ describe('mismatch scan progress', () => {
     expect([...outcome.progressByColour]).toEqual([1, 1, 0, 0, 2, 0, 1, 0, 3, 0, 0, 1])
   })
 
+  it('can retain only unpainted coordinates for contrast outlines', () => {
+    const outcome = scanTile(
+      { ...job(), collectWrong: false, collectUnpainted: true },
+      new Uint8Array([1, 2, 3]),
+    )
+
+    expect(outcome.wrong).toHaveLength(0)
+    expect([...outcome.unpainted]).toEqual([packMismatchMark(2, 0, 3)])
+    expect(outcome.mismatched).toBe(2)
+  })
+
   it('keeps display-hidden colours in progress while excluding them from marker coordinates', () => {
     const outcome = scanTile(
       job({

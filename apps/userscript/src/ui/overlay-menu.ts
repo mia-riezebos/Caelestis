@@ -62,6 +62,7 @@ import {
 import { type OverlayFailureKey as FailureKey, overlayFailures } from './overlay-failures.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
 import { createRangeGestures } from './range-gestures.js'
+import { sliderRow } from './slider.js'
 import { installStyles } from './styles.js'
 import { PANEL_ID } from './toast.js'
 
@@ -738,52 +739,18 @@ const slider = (
   property: SliderKey,
   label: string,
   stored: number,
+  defaultValue: number,
   min: number,
   max: number,
   step: number,
   format: (value: number) => string,
   locked: boolean,
+  disabled: boolean,
   onCommit: (next: number, finished: () => void) => void,
   rerender: () => void,
 ): HTMLElement => {
   const value = draftFor(id, property) ?? stored
-  const wrap = document.createElement('label')
-  wrap.className = 'flex items-center gap-2'
-  wrap.style.padding = '0.25rem 0'
-  const name = document.createElement('span')
-  name.className = 'text-xs opacity-70'
-  name.style.width = '3.5rem'
-  name.textContent = label
-  const input = document.createElement('input')
-  input.type = 'range'
-  input.dataset[CONTROL] = property
-  input.className = 'range range-xs'
-  // The contract is 0..1 continuous (`local-store.ts` accepts both endpoints, and a reconciled
-  // record from another client can hold either). A stepped grid both excludes the default 1/3 —
-  // which the browser then snaps, so the thumb and the readout disagree for ever — and makes
-  // legitimately stored values unrepresentable.
-  input.min = String(min)
-  input.max = String(max)
-  input.step = String(step)
-  input.value = String(value)
-  input.style.flex = '1'
-  input.setAttribute('aria-disabled', String(locked))
-  const readout = document.createElement('span')
-  readout.className = 'text-xs opacity-50'
-  readout.style.width = '2.5rem'
-  readout.style.textAlign = 'right'
-  readout.textContent = format(value)
-  wrap.append(name, input, readout)
-
-  if (locked) {
-    // `readonly` does not apply to a range in any browser, so the lock refuses the gesture — and
-    // refuses it without arming anything, since a prevented native gesture takes no pointer capture
-    // and would never deliver the release that disarms it.
-    for (const gesture of ['pointerdown', 'keydown']) {
-      input.addEventListener(gesture, (event) => event.preventDefault())
-    }
-    return wrap
-  }
+  let row: ReturnType<typeof sliderRow>
 
   /** End the gesture: commit the draft if there is one, and let the map catch up either way. */
   const settleGesture = (): void => {
@@ -791,8 +758,7 @@ const slider = (
     if (draft === undefined) {
       // Nothing pending — including a draft just abandoned — so the element goes back to what the
       // store says. Its own value is not a render input, so no rebuild would correct it.
-      input.value = String(stored)
-      readout.textContent = format(stored)
+      row.setValue(stored)
       rerender()
       return
     }
@@ -800,18 +766,33 @@ const slider = (
     onCommit(draft, () => clearAppearancePreview(id, property, draft))
   }
 
-  // Every `input` is a live render preview, never a durable write. Persistence still happens once
-  // when the gesture ends.
-  input.addEventListener('input', () => {
-    const next = Number(input.value)
-    setDraft(id, property, next)
-    setAppearancePreview(id, property, next)
-    readout.textContent = format(next)
-    rerender()
+  row = sliderRow({
+    label,
+    value,
+    defaultValue,
+    min,
+    max,
+    step,
+    format,
+    compact: true,
+    locked,
+    disabled,
+    control: property,
+    onInput: (next) => {
+      setDraft(id, property, next)
+      setAppearancePreview(id, property, next)
+      rerender()
+    },
+    onReset: (next) => {
+      clearDraft(id, property)
+      setAppearancePreview(id, property, next)
+      onCommit(next, () => clearAppearancePreview(id, property, next))
+      rerender()
+    },
   })
-  rangeGestures.bind(input, settleGesture)
+  if (!locked && !disabled) rangeGestures.bind(row.input, settleGesture)
 
-  return wrap
+  return row.element
 }
 
 const section = (title: string): HTMLElement => {
@@ -1104,10 +1085,11 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
   hide.type = 'button'
   hide.dataset[CONTROL] = 'hide'
   hide.className = visible ? 'btn btn-ghost btn-xs btn-circle' : 'btn btn-xs btn-circle btn-active'
-  hide.title = visible ? 'Hide this overlay' : 'Show this overlay'
+  const hideLabel = visible ? 'Hide this overlay' : 'Show this overlay'
+  hide.title = `${hideLabel} (V)`
   // The label already says which way this goes. A pressed state on top of it announces "Show this
   // overlay, pressed", which reads as though showing were already on.
-  hide.setAttribute('aria-label', hide.title)
+  hide.setAttribute('aria-label', hideLabel)
   hide.appendChild(icon('image', 'size-4'))
   hide.setAttribute('aria-disabled', String(isDoomed(id)))
   hide.addEventListener('click', () => {
@@ -1471,6 +1453,27 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
     ),
   )
   pixels.body.appendChild(presetRow)
+  const outlineRow = document.createElement('label')
+  outlineRow.className = 'flex items-center justify-between gap-2 px-1 py-1 text-xs font-normal'
+  outlineRow.style.textTransform = 'none'
+  outlineRow.style.letterSpacing = 'normal'
+  const outlineLabel = document.createElement('span')
+  outlineLabel.className = 'opacity-70'
+  outlineLabel.textContent = 'Contrast outline'
+  const outline = document.createElement('input')
+  outline.type = 'checkbox'
+  outline.className = 'toggle toggle-xs'
+  outline.checked = appearance.contrastOutline
+  outline.disabled = locked
+  outline.dataset.caelestisControl = 'contrastOutline'
+  outline.addEventListener('change', () => {
+    const box = defaultsBoxes.get('pixels')
+    if (box !== undefined) box.checked = false
+    edit(['contrastOutline'], 'contrast outline', () => ({ contrastOutline: outline.checked }))
+    rerender()
+  })
+  outlineRow.append(outlineLabel, outline)
+  pixels.body.appendChild(outlineRow)
   for (const control of APPEARANCE_CONTROLS) {
     pixels.body.appendChild(
       slider(
@@ -1478,11 +1481,13 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
         control.key,
         control.label,
         appearance[control.key],
+        (getState().appearance ?? DEFAULT_APPEARANCE)[control.key],
         control.min,
         control.max,
         control.step,
         control.format,
         locked,
+        control.key === 'contrastOutlineSize' && !appearance.contrastOutline,
         (value, finished) => {
           const box = defaultsBoxes.get('pixels')
           if (box !== undefined) box.checked = false
@@ -2079,7 +2084,7 @@ const renderControls = (
       buttons.set(template.id, button)
     }
     // Refreshed rather than set once: a rename has to reach the tooltip and the accessible name.
-    const title = `${template.name} — display options`
+    const title = `${template.name} — display options (T)`
     if (button.title !== title) button.title = title
     const label = `${template.name} display options`
     if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label)

@@ -42,6 +42,10 @@ export interface Appearance {
   /** Rotation of each stamp in degrees. 45 turns squares into diamonds. */
   readonly rotation: number
   readonly opacity: number
+  /** Whether colours that blend into the active map theme receive a contrasting edge. */
+  readonly contrastOutline: boolean
+  /** Contrast-outline thickness in device pixels. */
+  readonly contrastOutlineSize: number
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]
   /**
@@ -124,7 +128,16 @@ export const APPEARANCE_GROUPS: readonly AppearanceGroup[] = ['pixels', 'colours
 
 /** Which fields each group owns, so composing one from two sources is not a list of field names. */
 export const GROUP_FIELDS: Record<AppearanceGroup, readonly (keyof Appearance)[]> = {
-  pixels: ['size', 'radius', 'translateX', 'translateY', 'rotation', 'opacity'],
+  pixels: [
+    'size',
+    'radius',
+    'translateX',
+    'translateY',
+    'rotation',
+    'opacity',
+    'contrastOutline',
+    'contrastOutlineSize',
+  ],
   colours: ['hiddenColours'],
   markers: [
     'markMismatch',
@@ -164,6 +177,8 @@ export const DEFAULT_APPEARANCE: Appearance = {
   translateY: 0,
   rotation: 0,
   opacity: 0.85,
+  contrastOutline: true,
+  contrastOutlineSize: 0.85,
   hiddenColours: [],
   markMismatch: false,
   markUnpainted: false,
@@ -349,6 +364,15 @@ export const normaliseAppearance = (raw: unknown): Appearance | null => {
       ? legacyPixels.rotation
       : number('rotation', DEFAULT_APPEARANCE.rotation, 0, 360),
     opacity: number('opacity', DEFAULT_APPEARANCE.opacity, 0.05, 1),
+    // The treatment shipped enabled before it became configurable, so missing persisted fields
+    // preserve that appearance instead of silently opting upgraded users out.
+    contrastOutline: source.contrastOutline !== false,
+    contrastOutlineSize: number(
+      'contrastOutlineSize',
+      DEFAULT_APPEARANCE.contrastOutlineSize,
+      0.25,
+      2,
+    ),
     hiddenColours: hidden,
     // `onlySelectedColour` used to live here too. A stored one is simply dropped: the mode is one
     // switch for the whole view now, so there is nothing per-overlay left for it to mean.
@@ -463,7 +487,14 @@ export const drawableIndices = (): readonly number[] =>
 
 /** The controls, in the order they are shown. One row each, all the same shape. */
 export const APPEARANCE_CONTROLS: ReadonlyArray<{
-  key: 'size' | 'radius' | 'translateX' | 'translateY' | 'rotation' | 'opacity'
+  key:
+    | 'size'
+    | 'radius'
+    | 'translateX'
+    | 'translateY'
+    | 'rotation'
+    | 'opacity'
+    | 'contrastOutlineSize'
   label: string
   min: number
   max: number
@@ -523,5 +554,13 @@ export const APPEARANCE_CONTROLS: ReadonlyArray<{
     max: 1,
     step: 0.05,
     format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'contrastOutlineSize',
+    label: 'Outline thickness',
+    min: 0.25,
+    max: 2,
+    step: 0.05,
+    format: (v) => `${Number(v.toFixed(2))}px`,
   },
 ]

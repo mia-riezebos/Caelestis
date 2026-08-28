@@ -2,6 +2,7 @@ import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
 import { warn } from '../debug.js'
 import { createLocalFolder, removeLocalFolder } from '../local-folders.js'
 import { viewportCentre } from '../main.js'
+import type { ServerTemplate } from '../server-cache.js'
 import {
   type ConnectedServer,
   countNodeSubtree,
@@ -35,8 +36,14 @@ import {
 import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templates/move.js'
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
+import { templateAsWplace, wplaceFilename } from '../templates/wplace-export.js'
 import { whileBusy } from './button.js'
 import { confirmDestructive } from './confirm.js'
+import {
+  claimFolderPublication,
+  setFolderTemplatesPublished,
+  templatesInFolderSubtree,
+} from './folder-publication.js'
 import { type IconName, icon } from './icons.js'
 import { importTemplatesToServer } from './import-to-server.js'
 import { SURFACE_RADIUS } from './metrics.js'
@@ -60,6 +67,8 @@ import {
   nodeTreeKey,
   optimisticallyPlaceServerRow,
   refreshServerSnapshot,
+  rowsFor,
+  type ServerSnapshotResult,
   serverTemplateAt,
   serverTemplateTreeKey,
   templatesForServer,
@@ -68,7 +77,12 @@ import {
 
 type RetriableMutationResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly message: string; readonly retryable?: true }
+  | {
+      readonly ok: false
+      readonly message: string
+      readonly retryable?: true
+      readonly stop?: true
+    }
 
 const retryOptimisticMutation = async (
   mutate: () => Promise<RetriableMutationResult>,
@@ -107,6 +121,46 @@ const freeFolderName = (
 /** `local:<id>` is a template; `local`, `server:<url>` and `node:<id>` are containers. */
 const localTemplateId = (target: TreeTarget): string | null =>
   target.key.startsWith('local:') ? target.key.slice('local:'.length) : null
+
+const exportTemplate = async (target: TreeTarget): Promise<void> => {
+  const localId = localTemplateId(target)
+  const id =
+    localId ??
+    (target.server !== null && target.templateId !== undefined
+      ? serverTemplateKey(target.server.url, target.templateId)
+      : null)
+  const template = id === null ? undefined : templateById(id)
+  if (template === undefined) {
+    toast('That template has not finished loading yet.', 'warning')
+    return
+  }
+  if (movingId() === template.id || !template.everPlaced) {
+    toast(`Finish placing “${template.name}” before exporting it.`, 'warning')
+    return
+  }
+
+  toast(`Preparing “${template.name}”…`)
+  try {
+    const file = await templateAsWplace(template)
+    if (file === null) {
+      toast(`“${template.name}” changed while it was being exported. Try again.`, 'warning')
+      return
+    }
+    const url = URL.createObjectURL(file)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = wplaceFilename(template.name)
+    link.hidden = true
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+    toast(`Exported “${template.name}”.`)
+  } catch (error) {
+    warn('install', `could not export ${template.name}`, String(error))
+    toast(`Could not export “${template.name}”.`, 'error')
+  }
+}
 
 /**
  * Delete sits in a context menu one slip away from Rename, and a folder is not recoverable from the
@@ -774,6 +828,90 @@ const setServerTemplatePublished = async (
   await refreshCurrentNodes(server, rerender, true)
 }
 
+const folderTemplatesFor = (target: TreeTarget): readonly ServerTemplate[] | null => {
+  if (target.server === null || target.nodeId === null || target.templateId !== undefined)
+    return null
+  const rows = rowsFor(target.server)
+  return rows === undefined
+    ? null
+    : templatesInFolderSubtree(rows.nodes, rows.templates, target.nodeId)
+}
+
+/** Publish or unpublish every template hanging anywhere below one server folder. */
+const setServerFolderPublished = async (
+  target: TreeTarget,
+  published: boolean,
+  rerender: () => void,
+): Promise<void> => {
+  const { server, nodeId } = target
+  if (server === null || nodeId === null || target.templateId !== undefined) return
+  const releasePublication = claimFolderPublication(server.url)
+  if (releasePublication === null) {
+    toast('Another folder on that server is already changing publication state.', 'warning')
+    return
+  }
+  try {
+    const refreshed = await refreshCurrentNodesResult(server, rerender, true)
+    if (refreshed?.status !== 'admitted') {
+      toast(
+        refreshed?.message ?? 'That server was disconnected before the folder could change.',
+        'error',
+      )
+      return
+    }
+    const current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current === undefined) {
+      toast('That server was disconnected before the folder could change.', 'error')
+      return
+    }
+    const rows = rowsFor(current)
+    const templates =
+      rows === undefined ? null : templatesInFolderSubtree(rows.nodes, rows.templates, nodeId)
+    if (templates === null) {
+      toast(`Could not read what is inside “${target.name}”.`, 'error')
+      return
+    }
+    const wanted = templates.filter((template) => template.published !== published).length
+    if (wanted === 0) {
+      toast(
+        templates.length === 0
+          ? `There are no templates in “${target.name}”.`
+          : `Everything in “${target.name}” is already ${published ? 'published' : 'unpublished'}.`,
+      )
+      return
+    }
+
+    toast(
+      `${published ? 'Publishing' : 'Unpublishing'} ${wanted} template${wanted === 1 ? '' : 's'}…`,
+    )
+    const result = await setFolderTemplatesPublished(templates, published, (template) =>
+      retryOptimisticMutation(async () => {
+        if (!stillConnected(current))
+          return {
+            ok: false,
+            message: 'That server was disconnected or replaced.',
+            stop: true,
+          }
+        return await patchTemplate(current, template.id, { published })
+      }),
+    )
+    if (stillConnected(current)) await refreshCurrentNodes(current, rerender, true)
+    else rerender()
+    if (result.failures.length === 0) {
+      toast(
+        `${published ? 'Published' : 'Unpublished'} ${result.succeeded} template${result.succeeded === 1 ? '' : 's'} in “${target.name}”.`,
+      )
+      return
+    }
+    toast(
+      `${result.succeeded} of ${result.requested} templates changed; ${result.failures.length} could not be ${published ? 'published' : 'unpublished'}.`,
+      'error',
+    )
+  } finally {
+    releasePublication()
+  }
+}
+
 /**
  * A right-click menu carrying the row's actions plus the ones deliberately kept off it.
  *
@@ -819,32 +957,52 @@ export const openContextMenu = (
     () => void applyDelete(target, rerender, invoker),
   ]
   const published = publishedStateOf(target)
+  const folderTemplates = folderTemplatesFor(target)
+  const folderPublished =
+    folderTemplates !== null &&
+    folderTemplates.length > 0 &&
+    folderTemplates.every((template) => template.published)
+  const folderPublication: readonly [IconName, string, () => void] | null =
+    folderTemplates === null
+      ? null
+      : folderPublished
+        ? [
+            'eyeOff',
+            'Unpublish folder',
+            () => void setServerFolderPublished(target, false, rerender),
+          ]
+        : ['eye', 'Publish folder', () => void setServerFolderPublished(target, true, rerender)]
   const entries: ReadonlyArray<readonly [IconName, string, () => void]> =
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
-      ? [
-          ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
-          published
-            ? [
-                'eyeOff',
-                'Unpublish',
-                () => void setServerTemplatePublished(target, false, rerender),
-              ]
-            : ['eye', 'Publish', () => void setServerTemplatePublished(target, true, rerender)],
-          ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
-          rename,
-          remove,
-        ]
+      ? target.server?.isAdmin === false
+        ? [['download', 'Export .wplace', () => void exportTemplate(target)]]
+        : [
+            ['move', 'Move to folder', () => void moveServerTemplate(target, rerender)],
+            ['download', 'Export .wplace', () => void exportTemplate(target)],
+            published
+              ? [
+                  'eyeOff',
+                  'Unpublish',
+                  () => void setServerTemplatePublished(target, false, rerender),
+                ]
+              : ['eye', 'Publish', () => void setServerTemplatePublished(target, true, rerender)],
+            ['uploadFile', 'Replace artwork', () => void replaceServerArtwork(target, rerender)],
+            rename,
+            remove,
+          ]
       : templateId === null
         ? [
             ['createFolder', 'New folder', () => void createFolder(target, rerender)],
             ['uploadFile', 'Import template', () => void importTemplate(target, rerender)],
+            ...(folderPublication === null ? [] : [folderPublication]),
             rename,
             remove,
           ]
         : [
             ['search', 'Go to', () => goToLocalTemplate(templateId)],
+            ['download', 'Export .wplace', () => void exportTemplate(target)],
             [
               'move',
               'Move',
@@ -1283,19 +1441,28 @@ const serverNodesFailure = (result: Exclude<ServerNodesResult, { status: 'ok' }>
 const stillConnected = (server: ConnectedServer): boolean => isCurrentServerConnection(server)
 
 /** Refresh with the connection that is configured now, never credentials captured before an await. */
+const refreshCurrentNodesResult = async (
+  server: ConnectedServer,
+  rerender: () => void,
+  force = false,
+): Promise<ServerSnapshotResult | null> => {
+  let current = getState().servers.find((candidate) => candidate.url === server.url)
+  if (current === undefined) return null
+  let result = await refreshServerSnapshot(current, rerender, force)
+  while (result.status === 'superseded') {
+    current = getState().servers.find((candidate) => candidate.url === server.url)
+    if (current === undefined) return null
+    result = await refreshServerSnapshot(current, rerender)
+  }
+  return result
+}
+
 const refreshCurrentNodes = async (
   server: ConnectedServer,
   rerender: () => void,
   force = false,
 ): Promise<void> => {
-  let current = getState().servers.find((candidate) => candidate.url === server.url)
-  if (current === undefined) return
-  let result = await refreshServerSnapshot(current, rerender, force)
-  while (result.status === 'superseded') {
-    current = getState().servers.find((candidate) => candidate.url === server.url)
-    if (current === undefined) return
-    result = await refreshServerSnapshot(current, rerender)
-  }
+  await refreshCurrentNodesResult(server, rerender, force)
 }
 
 export const cancelTreeActionSetup = (reason: Error): void => {

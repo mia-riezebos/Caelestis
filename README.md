@@ -26,7 +26,8 @@ the same access token used by the userscript.
 
 ### Shared templates
 
-- Import PNG images, Blue Marble exports, and `.wplace` files.
+- Import PNG images, Blue Marble exports, and `.wplace` files, then export placed templates back to
+  native `.wplace` files.
 - Publish templates to a server so everyone connected to it sees the same artwork and organisation.
 - Organise local and server templates with nested folders, ordering, drag and drop, and search.
 - Connect to several template servers at once.
@@ -38,6 +39,7 @@ the same access token used by the userscript.
 - Adjust pixel size, rounding, position, rotation, opacity, and colour visibility per template.
 - Switch between small-pixel, full-pixel, and corner pixel styles.
 - Mark mismatches, unpainted pixels, or every pixel of the selected paint colour.
+- Toggle the global mismatch-marker default directly from the map button rail.
 - Pick colours from the template itself, including when visible pixels do not fill their source cell.
 - Jump to the next missing pixel for a colour, then to mismatches once that colour is complete.
 

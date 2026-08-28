@@ -9,13 +9,35 @@ const harness = vi.hoisted(() => ({
   mismatchListeners: [] as Array<() => void>,
   statusListeners: [] as Array<() => void>,
   paintListeners: [] as Array<() => void>,
+  focused: null as {
+    id: string
+    serverUrl?: string
+    serverTemplateId?: string
+    opaque?: number
+  } | null,
+  colourNavigationOrder: 'unpainted-first' as 'unpainted-first' | 'mismatched-first',
+  paintOpen: true,
+  selectedColour: 0 as number | null,
+  selectPaintColour: vi.fn(() => true),
+  navigationTargets: {
+    unpainted: {
+      templateId: 'local',
+      x: 12,
+      y: 56,
+      kind: 'unpainted' as const,
+    } as { templateId: string; x: number; y: number; kind: 'unpainted' } | null,
+    mismatched: null as { templateId: string; x: number; y: number; kind: 'mismatched' } | null,
+  },
   navigateTo: vi.fn(),
-  nearestColourTarget: vi.fn(async (_index: number, kind: 'unpainted' | 'mismatched') => ({
-    templateId: 'local',
-    x: kind === 'unpainted' ? 12 : 34,
-    y: kind === 'unpainted' ? 56 : 78,
-    kind,
-  })),
+  nearestColourTarget: vi.fn(
+    async (
+      _index: number,
+      kind: 'unpainted' | 'mismatched',
+      _reference: { x: number; y: number },
+      _templateId?: string,
+      _exclude?: { templateId: string; x: number; y: number; kind: string },
+    ) => harness.navigationTargets[kind],
+  ),
 }))
 
 const server = {
@@ -31,13 +53,17 @@ const remote = {
   id: 'remote-drawn',
   serverUrl: server.url,
   serverTemplateId: 'remote',
+  opaque: 3,
 }
 vi.mock('./debug.js', () => ({ count: vi.fn(), warn: vi.fn() }))
 vi.mock('./map-handle.js', () => ({
   getMap: () => ({ getCenter: () => ({ lat: 0, lng: 0 }) }),
 }))
 vi.mock('./state.js', () => ({
-  getState: () => ({ servers: [server] }),
+  getState: () => ({
+    servers: [server],
+    colourNavigationOrder: harness.colourNavigationOrder,
+  }),
   onStateChange: (listener: () => void) => harness.stateListeners.push(listener),
 }))
 vi.mock('./telemetry.js', () => ({
@@ -58,8 +84,12 @@ vi.mock('./templates/mismatch.js', () => ({
   onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
 }))
 vi.mock('./templates/navigate.js', () => ({ navigateTo: harness.navigateTo }))
+vi.mock('./templates/nearest.js', () => ({ focusedTemplate: () => harness.focused }))
 vi.mock('./wplace-paint.js', () => ({
+  isPaintOpen: () => harness.paintOpen,
   onPaintSelectionChange: (listener: () => void) => harness.paintListeners.push(listener),
+  selectPaintColour: harness.selectPaintColour,
+  selectedColour: () => harness.selectedColour,
 }))
 
 beforeEach(() => {
@@ -71,27 +101,46 @@ beforeEach(() => {
   harness.serverProgress = [
     { index: 0, completed: 2, mismatched: 1, unpainted: 0, known: 3, total: 3 },
   ]
+  harness.focused = local
+  harness.colourNavigationOrder = 'unpainted-first'
+  harness.paintOpen = true
+  harness.selectedColour = 0
+  harness.navigationTargets.unpainted = {
+    templateId: 'local',
+    x: 12,
+    y: 56,
+    kind: 'unpainted',
+  }
+  harness.navigationTargets.mismatched = null
 })
 
 describe('Wplace paint palette progress', () => {
-  it('renders an aggregate counter and middle-clicks blank work before mismatches', async () => {
+  it('shows pixels left for only the focused template and hides a completed colour', async () => {
     const swatch = document.createElement('button')
     swatch.id = 'color-1'
     swatch.setAttribute('aria-label', 'Black')
     document.body.appendChild(swatch)
-    const { installPaintPaletteProgress, paintPaletteProgress } = await import('./paint-palette.js')
+    const { installPaintPaletteProgress, paintPaletteProgress, refreshPaintPaletteFocus } =
+      await import('./paint-palette.js')
 
     installPaintPaletteProgress()
 
     expect(paintPaletteProgress()).toEqual([
-      { index: 0, completed: 3, mismatched: 1, unpainted: 1, known: 5, total: 5 },
+      { index: 0, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
     ])
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('60%')
-    expect(swatch.getAttribute('aria-label')).toContain('60% complete')
+    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('1')
+    expect(swatch.getAttribute('aria-label')).toContain('1 pixel left in the focused template')
+    expect(swatch.getAttribute('aria-label')).not.toContain('%')
 
     swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(0, 'unpainted', expect.any(Object))
+    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(
+      0,
+      'unpainted',
+      expect.any(Object),
+      'local',
+      undefined,
+    )
     expect(harness.navigateTo).toHaveBeenLastCalledWith({
       x: 12.5,
       y: 56.5,
@@ -99,26 +148,31 @@ describe('Wplace paint palette progress', () => {
       height: 1,
     })
 
-    harness.localProgress = [
-      { index: 0, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
+    harness.colourNavigationOrder = 'mismatched-first'
+    harness.nearestColourTarget.mockClear()
+    harness.navigateTo.mockClear()
+    swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(harness.nearestColourTarget.mock.calls.map((call) => [call[1], call[3]])).toEqual([
+      ['mismatched', 'local'],
+      ['unpainted', 'local'],
+    ])
+    expect(harness.navigateTo).toHaveBeenCalledOnce()
+
+    harness.focused = remote
+    refreshPaintPaletteFocus()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(paintPaletteProgress()).toEqual(harness.serverProgress)
+    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('1')
+
+    harness.serverProgress = [
+      { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
     ]
     harness.statusListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('80%')
-    swatch.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(
-      0,
-      'mismatched',
-      expect.any(Object),
-    )
-    expect(harness.navigateTo).toHaveBeenLastCalledWith({
-      x: 34.5,
-      y: 78.5,
-      width: 1,
-      height: 1,
-    })
+    expect(swatch.querySelector('.caelestis-palette-progress')).toBeNull()
+    expect(swatch.getAttribute('aria-label')).toBe('Black')
 
     swatch.remove()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -128,6 +182,53 @@ describe('Wplace paint palette progress', () => {
     document.body.appendChild(remounted)
     harness.paintListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(remounted.querySelector('.caelestis-palette-progress')?.textContent).toBe('80%')
+    expect(remounted.querySelector('.caelestis-palette-progress')).toBeNull()
+  })
+
+  it("cycles unfinished colours in Wplace's rendered palette order", async () => {
+    harness.localProgress = [
+      { index: 0, completed: 2, mismatched: 0, unpainted: 0, known: 2, total: 2 },
+      { index: 2, completed: 1, mismatched: 0, unpainted: 2, known: 3, total: 3 },
+      { index: 5, completed: 0, mismatched: 0, unpainted: 4, known: 4, total: 4 },
+      { index: 7, completed: 1, mismatched: 1, unpainted: 0, known: 2, total: 2 },
+    ]
+    for (const index of [5, 0, 2, 7]) {
+      const swatch = document.createElement('button')
+      swatch.id = `color-${index + 1}`
+      document.body.appendChild(swatch)
+    }
+    const { cycleFocusedColour } = await import('./paint-palette.js')
+
+    harness.selectedColour = 5
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(2)
+
+    harness.selectedColour = 2
+    expect(cycleFocusedColour(-1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(7)
+
+    harness.selectedColour = 0
+    expect(cycleFocusedColour(1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(2)
+    expect(cycleFocusedColour(-1)).toBe(true)
+    expect(harness.selectPaintColour).toHaveBeenLastCalledWith(5)
+  })
+
+  it('cycles repeated F navigation past its previous focused-template target', async () => {
+    const { navigateFocusedSelectedColour } = await import('./paint-palette.js')
+
+    await expect(navigateFocusedSelectedColour()).resolves.toBe(true)
+    const first = harness.navigationTargets.unpainted
+    await expect(navigateFocusedSelectedColour()).resolves.toBe(true)
+
+    expect(harness.nearestColourTarget).toHaveBeenLastCalledWith(
+      0,
+      'unpainted',
+      expect.any(Object),
+      'local',
+      first,
+    )
   })
 })

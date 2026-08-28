@@ -5,7 +5,9 @@ const harness = vi.hoisted(() => {
   pixels[1] = 7
   return {
     cached: true,
+    draft: null as Uint8Array | null,
     pixels,
+    templates: [] as Array<Record<string, unknown>>,
     template: {
       id: 'template',
       name: 'Template',
@@ -27,7 +29,7 @@ const harness = vi.hoisted(() => {
 
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
 vi.mock('../tile-transform.js', () => ({
-  draftPixels: () => null,
+  draftPixels: () => harness.draft,
   ensureTilePixels: vi.fn(),
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
@@ -40,7 +42,7 @@ vi.mock('../tile-transform.js', () => ({
 vi.mock('./colour-filter.js', () => ({ claimedHiddenFor: () => [] }))
 vi.mock('./local-store.js', () => ({
   appearanceOf: () => ({ markUnpainted: false }),
-  displayTemplates: () => [harness.template],
+  displayTemplates: () => harness.templates,
   isTemplateVisible: () => true,
   onLocalChange: vi.fn(),
   templateTileKeys: (template: typeof harness.template) => template.tiles.keys(),
@@ -53,8 +55,10 @@ vi.mock('./mismatch-worker.js', () => ({
 
 beforeEach(() => {
   harness.cached = true
+  harness.draft = null
   harness.pixels.fill(255)
   harness.pixels[1] = 7
+  harness.templates = [harness.template]
 })
 
 describe('per-colour navigation', () => {
@@ -82,5 +86,55 @@ describe('per-colour navigation', () => {
       y: 0,
       kind: 'unpainted',
     })
+  })
+
+  it('does not navigate to a blank canvas pixel already covered by the correct draft', async () => {
+    harness.pixels.fill(255)
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.draft[0] = 4
+    const { nearestLoadedColourTarget } = await import('./mismatch.js')
+
+    expect(nearestLoadedColourTarget(4, 'unpainted', { x: 0, y: 0 })).toEqual({
+      templateId: 'template',
+      x: 1,
+      y: 0,
+      kind: 'unpainted',
+    })
+  })
+
+  it('never crosses into a nearer template when navigation is scoped to the focused one', async () => {
+    harness.templates.push({
+      ...harness.template,
+      id: 'nearer-template',
+      originX: 10,
+      width: 1,
+      indices: new Uint8Array([4]),
+    })
+    const { nearestLoadedColourTarget } = await import('./mismatch.js')
+
+    expect(nearestLoadedColourTarget(4, 'unpainted', { x: 10, y: 0 })?.templateId).toBe(
+      'nearer-template',
+    )
+    expect(nearestLoadedColourTarget(4, 'unpainted', { x: 10, y: 0 }, 'template')?.templateId).toBe(
+      'template',
+    )
+  })
+
+  it('can skip the previous target while cycling through one colour', async () => {
+    harness.pixels[1] = 255
+    const { nearestLoadedColourTarget } = await import('./mismatch.js')
+    const first = nearestLoadedColourTarget(4, 'unpainted', { x: 10, y: 0 }, 'template')
+
+    const next = nearestLoadedColourTarget(
+      4,
+      'unpainted',
+      { x: 10, y: 0 },
+      'template',
+      first ?? undefined,
+    )
+
+    expect(first).not.toBeNull()
+    expect(next).not.toEqual(first)
+    expect(next?.templateId).toBe('template')
   })
 })
