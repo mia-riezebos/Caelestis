@@ -37,7 +37,7 @@ SERVER_DESCRIPTION = "The official Caelestis template server"
 # season, so a later-season server has to say so here or it answers with season 0's.
 SEASON = "0"
 # "true" serves the read surface without a token and makes /server advertise auth: 'none'.
-OPEN_ACCESS = "false"
+OPEN_ACCESS = "true"
 # Mount the runtime adapter here while keeping the portable Hono app root-relative.
 BASE_PATH = "/backend"
 
