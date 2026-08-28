@@ -22,7 +22,7 @@ const harness = vi.hoisted(() => {
       appearance: null,
       owns: [],
       folderId: null,
-      tiles: new Map([['0/0', {}]]),
+      tiles: new Set(['0/0']),
     },
   }
 })

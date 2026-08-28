@@ -154,16 +154,17 @@ describe('template import', () => {
     expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
-  it('rejects native dimensions that cannot be moved within the source-tile budget', async () => {
+  it('admits native dimensions beyond the obsolete source-tile budget', async () => {
+    bitmapSizes.push({ width: 6_001, height: 1 })
     const { importFile } = await import('./import.js')
 
     await expect(
-      importFile(file('too-wide.png', '', 'image/png', 24, { width: 2_100, height: 2_100 }), {
+      importFile(file('wide.png', '', 'image/png', 24, { width: 6_001, height: 1 }), {
         x: 0,
         y: 0,
       }),
-    ).rejects.toThrow(/movable template tile budget/i)
-    expect(createImageBitmap).not.toHaveBeenCalled()
+    ).resolves.toEqual([])
+    expect(createImageBitmap).toHaveBeenCalledOnce()
   })
 
   it('decodes Blue Marble 3x stamped chunks back to fixed native pixels', async () => {

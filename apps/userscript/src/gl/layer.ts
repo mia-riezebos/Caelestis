@@ -6,6 +6,7 @@ import {
   clearGpuProfile,
   isProfileEnabled,
   measureProfile,
+  measureProfileDetail,
   profileGpu,
   recordProfileWorkload,
 } from '../profile.js'
@@ -18,28 +19,15 @@ import {
   isTemplateVisible,
   type PlacedTemplate,
 } from '../templates/local-store.js'
-import {
-  beginUnpaintedFrame,
-  endUnpaintedFrame,
-  mismatchRevision,
-  retainUnpainted,
-  unpaintedIn,
-} from '../templates/mismatch.js'
-import { type MismatchMarks, markLocalX, markLocalY } from '../templates/mismatch-marks.js'
-import {
-  type HorizontalPlacement,
-  type HorizontalSpan,
-  horizontalSpans,
-  sourceXAt,
-} from '../templates/placement.js'
-import { currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
+import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
+import { completedQuads, currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
 import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
 import { colourFades, templateFades } from './fade.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
 import { movingOverlayTapCap } from './minify-quality.js'
-import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
+import { FRAGMENT_SOURCE, OUTLINE_FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
 
 /**
  * The overlay, drawn inside wplace's own canvas.
@@ -64,6 +52,8 @@ import { FRAGMENT_SOURCE, VERTEX_SOURCE } from './shaders.js'
  */
 
 const LAYER_ID = 'caelestis-overlay'
+const OUTLINE_LAYER_ID = 'caelestis-outline'
+const PIXEL_ART_LAYER = 'pixel-art-layer'
 /** Their marker layer. Ours goes immediately before it. */
 const BEFORE_LAYER = 'pixel-hover'
 const DRAFT_LAYER_ID = /^paint-preview-/
@@ -78,8 +68,28 @@ interface IndexGpuTile {
   readonly textureWidth: number
   readonly textureHeight: number
   readonly inset: number
-  /** Mutable upload copy. Bit 7 marks cells whose required pixel is still unpainted. */
-  readonly pixels: Uint8Array
+}
+
+interface PendingIndexGpuTile {
+  texture: WebGLTexture | null
+  /** Top-left and size of the non-halo source cells in template coordinates. */
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+  readonly textureWidth: number
+  readonly textureHeight: number
+  readonly inset: number
+  uploadedPixels: number
+}
+
+interface PendingTemplateGpu {
+  readonly indices: readonly PendingIndexGpuTile[]
+  readonly palette: WebGLTexture
+  readonly width: number
+  readonly height: number
+  readonly source: Uint8Array
+  lastUsed: number
 }
 
 interface TemplateGpu {
@@ -89,11 +99,6 @@ interface TemplateGpu {
   height: number
   /** Array identity of the pixels currently uploaded into `indices`. */
   source: Uint8Array
-  /** Unpainted answers currently encoded into the spare bit of the index textures. */
-  readonly outlineAnswers: Map<string, OutlineAnswer>
-  /** Mismatch and viewport identity already reflected in the spare bits. */
-  outlineRevision: number
-  outlineKey: string
   /**
    * What the palette texture was built from, so it is only rewritten when the filter moves.
    *
@@ -110,17 +115,7 @@ interface TemplateGpu {
 }
 
 const MAX_OVERLAY_GPU_BYTES = 64 * 1024 * 1024
-const UPLOAD_PIXELS_PER_FRAME = 2 * 1024 * 1024
-const UNPAINTED_BIT = 0x80
-
-interface OutlinePlacement extends HorizontalPlacement {
-  readonly originY: number
-}
-
-interface OutlineAnswer extends OutlinePlacement {
-  readonly tile: TileQuad['tile']
-  readonly marks: MismatchMarks
-}
+export const OVERLAY_UPLOAD_PIXELS_PER_FRAME = 512 * 1024
 
 /** Every palette index, for pruning ramps — one per template per colour. */
 const paletteKeys = Array.from({ length: PALETTE_SIZE }, (_, index) => index)
@@ -189,25 +184,26 @@ let vao: WebGLVertexArrayObject | null = null
 let maximumTextureSize: number | null = null
 const uniforms = new Map<string, WebGLUniformLocation | null>()
 const gpu = new Map<string, TemplateGpu>()
+const pendingGpu = new Map<string, PendingTemplateGpu>()
 let renderGeneration = 0
 
 const gpuBytes = (entry: TemplateGpu): number =>
-  PALETTE_SIZE * 4 + entry.indices.reduce((total, tile) => total + tile.pixels.byteLength, 0)
+  PALETTE_SIZE * 4 +
+  entry.indices.reduce((total, tile) => total + tile.textureWidth * tile.textureHeight, 0)
+
+const pendingGpuBytes = (entry: PendingTemplateGpu): number =>
+  PALETTE_SIZE * 4 +
+  entry.indices.reduce((total, tile) => total + tile.textureWidth * tile.textureHeight, 0)
 
 export const overlayGpuMemoryBytes = (): number => {
   let bytes = quad === null ? 0 : corners.byteLength
   for (const entry of gpu.values()) bytes += gpuBytes(entry)
+  for (const entry of pendingGpu.values()) bytes += pendingGpuBytes(entry)
   return bytes
 }
 
-/** Mutable CPU copies backing sparse unpainted-bit texture updates. */
-export const overlayStagingMemoryBytes = (): number => {
-  let bytes = 0
-  for (const entry of gpu.values()) {
-    for (const tile of entry.indices) bytes += tile.pixels.byteLength
-  }
-  return bytes
-}
+/** Upload chunks are ephemeral; no full-template CPU staging copy is retained. */
+export const overlayStagingMemoryBytes = (): number => 0
 
 const compile = (gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null => {
   const shader = gl.createShader(type)
@@ -222,12 +218,20 @@ const compile = (gl: WebGL2RenderingContext, type: number, source: string): WebG
   return shader
 }
 
-const link = (gl: WebGL2RenderingContext): WebGLProgram | null => {
+const link = (gl: WebGL2RenderingContext, fragmentSource: string): WebGLProgram | null => {
   const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX_SOURCE)
-  const fragment = compile(gl, gl.FRAGMENT_SHADER, FRAGMENT_SOURCE)
-  if (vertex === null || fragment === null) return null
+  const fragment = compile(gl, gl.FRAGMENT_SHADER, fragmentSource)
+  if (vertex === null || fragment === null) {
+    if (vertex !== null) gl.deleteShader(vertex)
+    if (fragment !== null) gl.deleteShader(fragment)
+    return null
+  }
   const created = gl.createProgram()
-  if (created === null) return null
+  if (created === null) {
+    gl.deleteShader(vertex)
+    gl.deleteShader(fragment)
+    return null
+  }
   gl.attachShader(created, vertex)
   gl.attachShader(created, fragment)
   gl.linkProgram(created)
@@ -235,6 +239,7 @@ const link = (gl: WebGL2RenderingContext): WebGLProgram | null => {
   gl.deleteShader(fragment)
   if (!gl.getProgramParameter(created, gl.LINK_STATUS)) {
     warn('install', 'overlay program failed to link', gl.getProgramInfoLog(created))
+    gl.deleteProgram(created)
     return null
   }
   return created
@@ -296,32 +301,21 @@ const uploadPalette = (
 /** Maximum side this context accepts, falling back to one whole-template upload in test shims. */
 const textureLimit = (width: number, height: number): number => {
   if (maximumTextureSize === null) {
-    return Math.max(width, height)
+    return Math.max(width, height) + 2
   }
   return maximumTextureSize
 }
 
-/** Upload a template's indices once, as one byte per pixel. */
-const uploadIndices = (
+/** Allocate one index texture without synchronously transferring the whole template into it. */
+const allocateIndices = (
   gl: WebGL2RenderingContext,
   texture: WebGLTexture,
   width: number,
   height: number,
-  indices: Uint8Array,
 ): void => {
   gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.R8UI,
-    width,
-    height,
-    0,
-    gl.RED_INTEGER,
-    gl.UNSIGNED_BYTE,
-    indices,
-  )
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, null)
   // Integer textures cannot be filtered, which is also exactly what we want: an index is a name,
   // and the average of two names is not a name.
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
@@ -330,43 +324,22 @@ const uploadIndices = (
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 }
 
-/** Split accepted templates into textures this particular device can upload. */
-const uploadIndexTiles = (
-  gl: WebGL2RenderingContext,
-  width: number,
-  height: number,
-  indices: Uint8Array,
-): readonly IndexGpuTile[] | null => {
-  const limit = textureLimit(width, height)
-  // A one-cell halo lets the shader inspect the real neighbour across a texture split. WebGL 2
-  // guarantees a far larger limit, but tiny test shims keep the old unpadded fallback valid.
-  const inset = (width > limit || height > limit) && limit >= 3 ? 1 : 0
-  const contentLimit = Math.max(1, limit - inset * 2)
-  const uploaded: IndexGpuTile[] = []
+/** Split accepted templates into bounded allocations this particular device can upload gradually. */
+const pendingIndexTiles = (width: number, height: number): readonly PendingIndexGpuTile[] => {
+  const allocationLimit = textureLimit(width, height)
+  // A one-cell halo lets the outline inspect neighbours across texture and template edges. WebGL 2
+  // guarantees a far larger limit, but tiny test shims keep the unpadded fallback valid.
+  const inset = allocationLimit >= 3 ? 1 : 0
+  const contentLimit = Math.max(1, allocationLimit - inset * 2)
+  const pending: PendingIndexGpuTile[] = []
   for (let y = 0; y < height; y += contentLimit) {
     const tileHeight = Math.min(contentLimit, height - y)
     for (let x = 0; x < width; x += contentLimit) {
       const tileWidth = Math.min(contentLimit, width - x)
-      const texture = gl.createTexture()
-      if (texture === null) {
-        for (const tile of uploaded) gl.deleteTexture(tile.texture)
-        return null
-      }
       const textureWidth = tileWidth + inset * 2
       const textureHeight = tileHeight + inset * 2
-      const pixels = new Uint8Array(textureWidth * textureHeight).fill(TRANSPARENT_INDEX)
-      const sourceLeft = Math.max(0, x - inset)
-      const sourceRight = Math.min(width, x + tileWidth + inset)
-      for (let row = -inset; row < tileHeight + inset; row++) {
-        const sourceY = y + row
-        if (sourceY < 0 || sourceY >= height) continue
-        const start = sourceY * width + sourceLeft
-        const destination = (row + inset) * textureWidth + sourceLeft - (x - inset)
-        pixels.set(indices.subarray(start, start + sourceRight - sourceLeft), destination)
-      }
-      uploadIndices(gl, texture, textureWidth, textureHeight, pixels)
-      uploaded.push({
-        texture,
+      pending.push({
+        texture: null,
         x,
         y,
         width: tileWidth,
@@ -374,172 +347,142 @@ const uploadIndexTiles = (
         textureWidth,
         textureHeight,
         inset,
-        pixels,
+        uploadedPixels: 0,
       })
     }
   }
-  return uploaded
+  return pending
 }
 
-interface DirtyRect {
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
-
-/** Locate every texture that contains one template cell, including duplicate halo copies. */
-const indexTilesAt = (entry: TemplateGpu, x: number, y: number): readonly IndexGpuTile[] =>
-  entry.indices.filter(
-    (tile) =>
-      x >= tile.x - tile.inset &&
-      x < tile.x + tile.width + tile.inset &&
-      y >= tile.y - tile.inset &&
-      y < tile.y + tile.height + tile.inset,
-  )
-
-/** Change one spare-bit flag and grow the one upload rectangle for its texture. */
-const setUnpaintedBit = (
-  entry: TemplateGpu,
-  placement: OutlinePlacement,
-  hostTile: TileQuad['tile'],
-  mark: number,
-  enabled: boolean,
-  dirty: Map<IndexGpuTile, DirtyRect>,
-): void => {
-  const x = sourceXAt(placement, hostTile.x * TILE_SIZE + markLocalX(mark))
-  const y = hostTile.y * TILE_SIZE + markLocalY(mark) - placement.originY
-  if (x === null) return
-  for (const tile of indexTilesAt(entry, x, y)) {
-    const localX = x - tile.x + tile.inset
-    const localY = y - tile.y + tile.inset
-    const at = localY * tile.textureWidth + localX
-    const before = tile.pixels[at]
-    if (before === undefined) continue
-    const after = enabled ? before | UNPAINTED_BIT : before & ~UNPAINTED_BIT
-    if (after === before) continue
-    tile.pixels[at] = after
-    const held = dirty.get(tile)
-    if (held === undefined) {
-      dirty.set(tile, { left: localX, top: localY, right: localX + 1, bottom: localY + 1 })
-      continue
-    }
-    held.left = Math.min(held.left, localX)
-    held.top = Math.min(held.top, localY)
-    held.right = Math.max(held.right, localX + 1)
-    held.bottom = Math.max(held.bottom, localY + 1)
+const fillIndexUpload = (
+  pending: PendingTemplateGpu,
+  tile: PendingIndexGpuTile,
+  uploadX: number,
+  uploadY: number,
+  uploadWidth: number,
+  uploadHeight: number,
+): Uint8Array => {
+  const pixels = new Uint8Array(uploadWidth * uploadHeight).fill(TRANSPARENT_INDEX)
+  const textureLeft = tile.x - tile.inset
+  for (let row = 0; row < uploadHeight; row++) {
+    const textureY = uploadY + row
+    const destination = row * uploadWidth
+    const sourceY = tile.y - tile.inset + textureY
+    if (sourceY < 0 || sourceY >= pending.height) continue
+    const requestedLeft = textureLeft + uploadX
+    const sourceLeft = Math.max(0, requestedLeft)
+    const sourceRight = Math.min(pending.width, requestedLeft + uploadWidth)
+    if (sourceRight <= sourceLeft) continue
+    const source = sourceY * pending.width + sourceLeft
+    pixels.set(
+      pending.source.subarray(source, source + sourceRight - sourceLeft),
+      destination + sourceLeft - requestedLeft,
+    )
   }
+  return pixels
 }
 
-/** Upload only the rectangle whose unpainted flags changed, never the whole template again. */
-const uploadOutlineChanges = (
+type UploadAdvance =
+  | { readonly status: 'pending'; readonly uploadedPixels: number }
+  | { readonly status: 'failed'; readonly uploadedPixels: number }
+  | {
+      readonly status: 'complete'
+      readonly uploadedPixels: number
+      readonly indices: readonly IndexGpuTile[]
+    }
+
+/** Transfer bounded rectangles until this frame's allowance is spent. */
+const advanceIndexUpload = (
   gl: WebGL2RenderingContext,
-  dirty: ReadonlyMap<IndexGpuTile, DirtyRect>,
-): void => {
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-  for (const [tile, rect] of dirty) {
-    const width = rect.right - rect.left
-    const height = rect.bottom - rect.top
-    const pixels = new Uint8Array(width * height)
-    for (let row = 0; row < height; row++) {
-      const start = (rect.top + row) * tile.textureWidth + rect.left
-      pixels.set(tile.pixels.subarray(start, start + width), row * width)
+  pending: PendingTemplateGpu,
+  allowance: number,
+): UploadAdvance => {
+  let left = Math.max(0, Math.floor(allowance))
+  let uploadedPixels = 0
+  for (const tile of pending.indices) {
+    const total = tile.textureWidth * tile.textureHeight
+    if (tile.uploadedPixels >= total) continue
+    if (left === 0) return { status: 'pending', uploadedPixels }
+    if (tile.texture === null) {
+      const texture = gl.createTexture()
+      if (texture === null) return { status: 'failed', uploadedPixels }
+      tile.texture = texture
+      measureProfileDetail('Overlay texture allocation', () =>
+        allocateIndices(gl, texture, tile.textureWidth, tile.textureHeight),
+      )
     }
     gl.bindTexture(gl.TEXTURE_2D, tile.texture)
-    gl.texSubImage2D(
-      gl.TEXTURE_2D,
-      0,
-      rect.left,
-      rect.top,
-      width,
-      height,
-      gl.RED_INTEGER,
-      gl.UNSIGNED_BYTE,
-      pixels,
-    )
-  }
-}
-
-/** Encode the visible tiles' retained unpainted answers into the index texture's spare bit. */
-const syncOutlineState = (
-  gl: WebGL2RenderingContext,
-  entry: TemplateGpu,
-  template: PlacedTemplate,
-  spans: readonly HorizontalSpan[],
-  tiles: readonly TileQuad[],
-  appearanceKey: string,
-): void => {
-  const top = template.originY
-  const bottom = top + template.height
-  const relevant = tiles.filter((tile) => {
-    const tileLeft = tile.tile.x * TILE_SIZE
-    const tileTop = tile.tile.y * TILE_SIZE
-    return (
-      bottom > tileTop &&
-      top < tileTop + TILE_SIZE &&
-      spans.some((span) => span.worldEnd > tileLeft && span.worldStart < tileLeft + TILE_SIZE)
-    )
-  })
-  // A placement may move within one host tile. Tile identity alone then stays unchanged even though
-  // every retained world-space mark maps to a different source cell.
-  const placementKey = `${template.originX}/${template.originY}/${template.wrapX === true ? 1 : 0}`
-  const outlineKey = `${appearanceKey}|${placementKey}|${relevant.map((tile) => `${tile.tile.x}/${tile.tile.y}`).join(' ')}`
-  const revision = mismatchRevision()
-  if (entry.outlineRevision === revision && entry.outlineKey === outlineKey) {
-    for (const tile of relevant) retainUnpainted(template, tile.tile)
-    return
-  }
-
-  const requested = new Set<string>()
-  let complete = true
-  for (const tile of relevant) {
-    const key = `${tile.tile.x}/${tile.tile.y}`
-    requested.add(key)
-    const marks = unpaintedIn(template, tile.tile)
-    const held = entry.outlineAnswers.get(key)
-    if (marks === null) {
-      complete = false
-      continue
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    while (tile.uploadedPixels < total && left > 0) {
+      const uploadY = Math.floor(tile.uploadedPixels / tile.textureWidth)
+      const uploadX = tile.uploadedPixels - uploadY * tile.textureWidth
+      const uploadWidth =
+        uploadX === 0 && left >= tile.textureWidth
+          ? tile.textureWidth
+          : Math.min(tile.textureWidth - uploadX, left)
+      const uploadHeight =
+        uploadX === 0 && uploadWidth === tile.textureWidth
+          ? Math.min(tile.textureHeight - uploadY, Math.max(1, Math.floor(left / uploadWidth)))
+          : 1
+      const count = uploadWidth * uploadHeight
+      const pixels = measureProfileDetail('Overlay index staging', () =>
+        fillIndexUpload(pending, tile, uploadX, uploadY, uploadWidth, uploadHeight),
+      )
+      measureProfileDetail('Overlay index upload', () =>
+        gl.texSubImage2D(
+          gl.TEXTURE_2D,
+          0,
+          uploadX,
+          uploadY,
+          uploadWidth,
+          uploadHeight,
+          gl.RED_INTEGER,
+          gl.UNSIGNED_BYTE,
+          pixels,
+        ),
+      )
+      tile.uploadedPixels += count
+      uploadedPixels += count
+      left -= count
     }
-    if (held?.marks === marks) continue
-    // One host tile per upload rectangle. Combining a tile leaving on the left with one entering on
-    // the right can otherwise turn two small changes into a template-wide upload during a pan.
-    const dirty = new Map<IndexGpuTile, DirtyRect>()
-    const previous = entry.outlineAnswers.get(key)
-    if (previous !== undefined)
-      for (const mark of previous.marks)
-        setUnpaintedBit(entry, previous, previous.tile, mark, false, dirty)
-    for (const mark of marks) setUnpaintedBit(entry, template, tile.tile, mark, true, dirty)
-    entry.outlineAnswers.set(key, {
-      tile: tile.tile,
-      marks,
-      originX: template.originX,
-      originY: template.originY,
-      width: template.width,
-      ...(template.wrapX === undefined ? {} : { wrapX: template.wrapX }),
+  }
+
+  const complete: IndexGpuTile[] = []
+  for (const tile of pending.indices) {
+    if (tile.texture === null || tile.uploadedPixels < tile.textureWidth * tile.textureHeight) {
+      return { status: 'pending', uploadedPixels }
+    }
+    complete.push({
+      texture: tile.texture,
+      x: tile.x,
+      y: tile.y,
+      width: tile.width,
+      height: tile.height,
+      textureWidth: tile.textureWidth,
+      textureHeight: tile.textureHeight,
+      inset: tile.inset,
     })
-    uploadOutlineChanges(gl, dirty)
   }
-  // Keep the texture truthful without retaining one sparse answer for every tile ever panned past.
-  for (const [key, answer] of [...entry.outlineAnswers]) {
-    if (requested.has(key)) continue
-    const dirty = new Map<IndexGpuTile, DirtyRect>()
-    for (const mark of answer.marks) setUnpaintedBit(entry, answer, answer.tile, mark, false, dirty)
-    entry.outlineAnswers.delete(key)
-    uploadOutlineChanges(gl, dirty)
-  }
-  if (complete) {
-    entry.outlineRevision = revision
-    entry.outlineKey = outlineKey
-  }
+  return { status: 'complete', uploadedPixels, indices: complete }
 }
 
 const release = (gl: WebGL2RenderingContext, id: string): void => {
-  const existing = gpu.get(id)
-  if (existing === undefined) return
-  for (const tile of existing.indices) gl.deleteTexture(tile.texture)
-  gl.deleteTexture(existing.palette)
-  gpu.delete(id)
+  measureProfileDetail('Overlay texture deletion', () => {
+    const existing = gpu.get(id)
+    if (existing !== undefined) {
+      for (const tile of existing.indices) gl.deleteTexture(tile.texture)
+      gl.deleteTexture(existing.palette)
+      gpu.delete(id)
+    }
+    const pending = pendingGpu.get(id)
+    if (pending !== undefined) {
+      for (const tile of pending.indices) {
+        if (tile.texture !== null) gl.deleteTexture(tile.texture)
+      }
+      gl.deleteTexture(pending.palette)
+      pendingGpu.delete(id)
+    }
+  })
 }
 
 /** Keep recent offscreen uploads for pan-back, under a soft budget; deleted sources leave at once. */
@@ -555,6 +498,15 @@ const collect = (
     visible: visible.has(id),
     exists: existing.has(id),
   }))
+  for (const [id, entry] of pendingGpu) {
+    records.push({
+      id,
+      bytes: pendingGpuBytes(entry),
+      lastUsed: entry.lastUsed,
+      visible: visible.has(id),
+      exists: existing.has(id),
+    })
+  }
   for (const id of gpuCacheEvictions(records, MAX_OVERLAY_GPU_BYTES)) release(gl, id)
 }
 
@@ -577,6 +529,73 @@ const intersectsTiles = (
   })
 }
 
+/** Visit each source/host-tile intersection once, with exact clip-space corners from Wplace. */
+const visitIntersections = (
+  template: PlacedTemplate,
+  spans: readonly HorizontalSpan[],
+  entry: TemplateGpu,
+  tiles: readonly TileQuad[],
+  bufferWidth: number,
+  bufferHeight: number,
+  draw: (source: IndexGpuTile, vertices: Float32Array) => void,
+  margin = 0,
+): number => {
+  let count = 0
+  const templateTop = template.originY + nudgeY
+  for (const source of entry.indices) {
+    const topMargin = source.y === 0 ? Math.min(margin, source.inset) : 0
+    const bottomMargin =
+      source.y + source.height === entry.height ? Math.min(margin, source.inset) : 0
+    const top = templateTop + source.y - topMargin
+    const bottom = templateTop + source.y + source.height + bottomMargin
+    for (const span of spans) {
+      const leftMargin =
+        source.x === 0 && span.sourceStart === 0 ? Math.min(margin, source.inset) : 0
+      const rightMargin =
+        source.x + source.width === entry.width && span.sourceEnd === entry.width
+          ? Math.min(margin, source.inset)
+          : 0
+      const sourceStart = Math.max(source.x - leftMargin, span.sourceStart - leftMargin)
+      const sourceEnd = Math.min(
+        source.x + source.width + rightMargin,
+        span.sourceEnd + rightMargin,
+      )
+      if (sourceEnd <= sourceStart) continue
+      const left = span.worldStart + sourceStart - span.sourceStart + nudgeX
+      const right = span.worldStart + sourceEnd - span.sourceStart + nudgeX
+      for (const tile of tiles) {
+        const tileLeft = tile.tile.x * TILE_SIZE
+        const tileTop = tile.tile.y * TILE_SIZE
+        const cutLeft = Math.max(left, tileLeft)
+        const cutTop = Math.max(top, tileTop)
+        const cutRight = Math.min(right, tileLeft + TILE_SIZE)
+        const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
+        if (cutRight <= cutLeft || cutBottom <= cutTop) continue
+
+        const scaleX = tile.width / TILE_SIZE
+        const scaleY = tile.height / TILE_SIZE
+        const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
+        const screenRight = tile.x + (cutRight - tileLeft) * scaleX
+        const screenTop = tile.y + (cutTop - tileTop) * scaleY
+        const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
+
+        const u0 = (source.inset + sourceStart - source.x + cutLeft - left) / source.textureWidth
+        const u1 = (source.inset + sourceStart - source.x + cutRight - left) / source.textureWidth
+        const v0 = (source.inset + cutTop - top) / source.textureHeight
+        const v1 = (source.inset + cutBottom - top) / source.textureHeight
+
+        corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
+        corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
+        corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
+        corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
+        draw(source, corners)
+        count++
+      }
+    }
+  }
+  return count
+}
+
 export const overlayLayer = {
   id: LAYER_ID,
   type: 'custom' as const,
@@ -592,6 +611,7 @@ export const overlayLayer = {
     maximumTextureSize = null
     uniforms.clear()
     gpu.clear()
+    pendingGpu.clear()
     renderGeneration = 0
     owner = gl
     try {
@@ -600,7 +620,7 @@ export const overlayLayer = {
         maximumTextureSize = Math.max(1, Math.floor(measured))
       }
     } catch {}
-    program = link(gl)
+    program = link(gl, FRAGMENT_SOURCE)
     if (program === null) return
     quad = gl.createBuffer()
     vao = gl.createVertexArray()
@@ -625,7 +645,7 @@ export const overlayLayer = {
     if (owner !== gl) return
     clearGpuProfile(gl)
     owner = null
-    for (const id of [...gpu.keys()]) release(gl, id)
+    for (const id of new Set([...gpu.keys(), ...pendingGpu.keys()])) release(gl, id)
     if (quad !== null) gl.deleteBuffer(quad)
     if (vao !== null) gl.deleteVertexArray(vao)
     if (program !== null) gl.deleteProgram(program)
@@ -736,6 +756,7 @@ export const overlayLayer = {
         recordProfileWorkload('Overlay visible source pixels', 0)
         recordProfileWorkload('Overlay visible templates', 0)
         recordProfileWorkload('Overlay draw intersections', 0)
+        recordProfileWorkload('Overlay uploaded index pixels', 0)
         recordProfileWorkload('Overlay minify tap cap', 0)
       }
       askForAnotherFrame()
@@ -759,53 +780,83 @@ export const overlayLayer = {
     const moving = (getMap() as { isMoving?: () => boolean } | null)?.isMoving?.() === true
     const minifyTapCap = moving ? movingOverlayTapCap(visible.length) : 4
     gl.uniform1i(uniform(gl, 'u_maxMinifyTaps'), minifyTapCap)
-    gl.uniform1i(uniform(gl, 'u_darkTheme'), isDarkMapTheme() ? 1 : 0)
-    let uploadPixelsLeft = UPLOAD_PIXELS_PER_FRAME
-    let uploadedThisFrame = false
+    let uploadPixelsLeft = OVERLAY_UPLOAD_PIXELS_PER_FRAME
+    let uploadedIndexPixels = 0
     let drawIntersections = 0
+    let uploadsLeft = visible.reduce((total, { template }) => {
+      const entry = gpu.get(template.id)
+      const complete =
+        entry !== undefined &&
+        entry.source === template.indices &&
+        entry.width === template.width &&
+        entry.height === template.height
+      return total + (complete ? 0 : 1)
+    }, 0)
 
-    beginUnpaintedFrame()
     try {
       for (const { template, fade, spans } of visible) {
         let entry = gpu.get(template.id)
+        let pending = pendingGpu.get(template.id)
         const sourceChanged =
-          entry !== undefined &&
-          (entry.source !== template.indices ||
-            entry.width !== template.width ||
-            entry.height !== template.height)
+          (entry !== undefined &&
+            (entry.source !== template.indices ||
+              entry.width !== template.width ||
+              entry.height !== template.height)) ||
+          (pending !== undefined &&
+            (pending.source !== template.indices ||
+              pending.width !== template.width ||
+              pending.height !== template.height))
         if (sourceChanged) {
           release(gl, template.id)
           entry = undefined
+          pending = undefined
         }
         if (entry === undefined) {
-          const uploadPixels = template.width * template.height
-          if (uploadedThisFrame && uploadPixels > uploadPixelsLeft) {
+          const uploadAllowance =
+            uploadsLeft > 0 ? Math.floor(uploadPixelsLeft / uploadsLeft) : uploadPixelsLeft
+          uploadsLeft = Math.max(0, uploadsLeft - 1)
+          if (pending === undefined) {
+            const palette = gl.createTexture()
+            if (palette === null) continue
+            pending = {
+              indices: measureProfileDetail('Overlay upload planning', () =>
+                pendingIndexTiles(template.width, template.height),
+              ),
+              palette,
+              width: template.width,
+              height: template.height,
+              source: template.indices,
+              lastUsed: renderGeneration,
+            }
+            pendingGpu.set(template.id, pending)
+          }
+          pending.lastUsed = renderGeneration
+          const advanced = advanceIndexUpload(gl, pending, uploadAllowance)
+          uploadPixelsLeft -= advanced.uploadedPixels
+          uploadedIndexPixels += advanced.uploadedPixels
+          if (advanced.status === 'failed') {
+            release(gl, template.id)
             animating = true
             continue
           }
-          const palette = gl.createTexture()
-          if (palette === null) continue
-          const indices = uploadIndexTiles(gl, template.width, template.height, template.indices)
-          if (indices === null) {
-            gl.deleteTexture(palette)
+          if (advanced.status === 'pending') {
+            animating = true
             continue
           }
           entry = {
-            indices,
-            palette,
+            indices: advanced.indices,
+            palette: pending.palette,
             width: template.width,
             height: template.height,
             source: template.indices,
-            outlineAnswers: new Map(),
-            outlineRevision: -1,
-            outlineKey: '',
             paletteKey: null,
             paletteMoving: false,
             lastUsed: renderGeneration,
           }
+          pendingGpu.delete(template.id)
           gpu.set(template.id, entry)
-          uploadedThisFrame = true
-          uploadPixelsLeft = Math.max(0, uploadPixelsLeft - uploadPixels)
+          // The outline layer already ran earlier in this frame and could not see this entry.
+          animating = true
         }
         entry.lastUsed = renderGeneration
 
@@ -820,8 +871,6 @@ export const overlayLayer = {
         const appearance = transitioned.appearance
         if (!transitioned.done) animating = true
         const hidden = hiddenColoursFor(appearance)
-        if (appearance.contrastOutline)
-          syncOutlineState(gl, entry, template, spans, tiles, hidden.join(','))
         const paletteKey = hidden.join(',')
         // Re-uploaded while anything in it is still moving, not only when the filter changes: the
         // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
@@ -839,75 +888,36 @@ export const overlayLayer = {
 
         gl.uniform1f(uniform(gl, 'u_fade'), fade)
         gl.uniform1f(uniform(gl, 'u_opacity'), appearance.opacity)
-        gl.uniform1i(uniform(gl, 'u_contrastOutline'), appearance.contrastOutline ? 1 : 0)
-        gl.uniform1f(uniform(gl, 'u_contrastOutlineSize'), appearance.contrastOutlineSize)
         gl.uniform1f(uniform(gl, 'u_stampSize'), appearance.size)
         gl.uniform1f(uniform(gl, 'u_stampRadius'), appearance.radius)
         gl.uniform2f(uniform(gl, 'u_stampOffset'), appearance.translateX, appearance.translateY)
         gl.uniform1f(uniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
         gl.uniform1i(uniform(gl, 'u_plain'), isPlain(appearance) ? 1 : 0)
 
-        const templateTop = template.originY + nudgeY
-
-        for (const source of entry.indices) {
-          gl.activeTexture(gl.TEXTURE0)
-          gl.bindTexture(gl.TEXTURE_2D, source.texture)
-          gl.uniform1i(uniform(gl, 'u_indices'), 0)
-          gl.uniform2f(uniform(gl, 'u_size'), source.textureWidth, source.textureHeight)
-          const top = templateTop + source.y
-          const bottom = top + source.height
-          for (const span of spans) {
-            const sourceStart = Math.max(source.x, span.sourceStart)
-            const sourceEnd = Math.min(source.x + source.width, span.sourceEnd)
-            if (sourceEnd <= sourceStart) continue
-            const left = span.worldStart + sourceStart - span.sourceStart + nudgeX
-            const right = span.worldStart + sourceEnd - span.sourceStart + nudgeX
-            for (const tile of tiles) {
-              const tileLeft = tile.tile.x * TILE_SIZE
-              const tileTop = tile.tile.y * TILE_SIZE
-              // The part of this template run that falls inside this tile, in canvas pixels.
-              const cutLeft = Math.max(left, tileLeft)
-              const cutTop = Math.max(top, tileTop)
-              const cutRight = Math.min(right, tileLeft + TILE_SIZE)
-              const cutBottom = Math.min(bottom, tileTop + TILE_SIZE)
-              if (cutRight <= cutLeft || cutBottom <= cutTop) continue
-
-              // Positioned from their tile's own on-screen rect, so whatever MapLibre did to place it —
-              // including snapping it to whole device pixels once the map stops moving — is inherited
-              // rather than guessed at.
-              const scaleX = tile.width / TILE_SIZE
-              const scaleY = tile.height / TILE_SIZE
-              const screenLeft = tile.x + (cutLeft - tileLeft) * scaleX
-              const screenRight = tile.x + (cutRight - tileLeft) * scaleX
-              const screenTop = tile.y + (cutTop - tileTop) * scaleY
-              const screenBottom = tile.y + (cutBottom - tileTop) * scaleY
-
-              const u0 =
-                (source.inset + sourceStart - source.x + cutLeft - left) / source.textureWidth
-              const u1 =
-                (source.inset + sourceStart - source.x + cutRight - left) / source.textureWidth
-              const v0 = (source.inset + cutTop - top) / source.textureHeight
-              const v1 = (source.inset + cutBottom - top) / source.textureHeight
-
-              // Strip order: top-left, top-right, bottom-left, bottom-right.
-              corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
-              corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
-              corner(screenLeft, screenBottom, bufferWidth, bufferHeight, u0, v1, corners, 12)
-              corner(screenRight, screenBottom, bufferWidth, bufferHeight, u1, v1, corners, 18)
-              gl.bufferSubData(gl.ARRAY_BUFFER, 0, corners)
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
-              drawIntersections++
-            }
-          }
-        }
+        drawIntersections += visitIntersections(
+          template,
+          spans,
+          entry,
+          tiles,
+          bufferWidth,
+          bufferHeight,
+          (source, vertices) => {
+            gl.activeTexture(gl.TEXTURE0)
+            gl.bindTexture(gl.TEXTURE_2D, source.texture)
+            gl.uniform1i(uniform(gl, 'u_indices'), 0)
+            gl.uniform2f(uniform(gl, 'u_size'), source.textureWidth, source.textureHeight)
+            gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices)
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+          },
+        )
       }
     } finally {
-      endUnpaintedFrame()
       if (profiling) {
         recordProfileWorkload('Overlay host tiles', tiles.length)
         recordProfileWorkload('Overlay visible source pixels', visibleSourcePixels)
         recordProfileWorkload('Overlay visible templates', visible.length)
         recordProfileWorkload('Overlay draw intersections', drawIntersections)
+        recordProfileWorkload('Overlay uploaded index pixels', uploadedIndexPixels)
         recordProfileWorkload('Overlay minify tap cap', minifyTapCap)
         recordProfileWorkload('Overlay moving', moving ? 1 : 0)
         if (moving) {
@@ -917,6 +927,184 @@ export const overlayLayer = {
       }
       // A fade in progress still needs its next frame if one template failed to draw.
       askForAnotherFrame()
+    }
+  },
+}
+
+let outlineOwner: WebGL2RenderingContext | null = null
+let outlineProgram: WebGLProgram | null = null
+let outlineQuad: WebGLBuffer | null = null
+let outlineVao: WebGLVertexArrayObject | null = null
+const outlineUniforms = new Map<string, WebGLUniformLocation | null>()
+let lastOutlineQuadKey = ''
+
+const outlineUniform = (gl: WebGL2RenderingContext, name: string): WebGLUniformLocation | null => {
+  if (!outlineUniforms.has(name)) {
+    outlineUniforms.set(
+      name,
+      outlineProgram === null ? null : gl.getUniformLocation(outlineProgram, name),
+    )
+  }
+  return outlineUniforms.get(name) ?? null
+}
+
+/**
+ * A cheap silhouette below Wplace's art.
+ *
+ * Painted art covers this layer naturally; the coloured overlay later covers the middle of the
+ * silhouette. This is the whole painted/unpainted test, expressed by layer order instead of a CPU
+ * scan and sparse index-texture rewrites.
+ */
+export const outlineLayer = {
+  id: OUTLINE_LAYER_ID,
+  type: 'custom' as const,
+  renderingMode: '2d' as const,
+
+  onAdd(_map: unknown, gl: WebGL2RenderingContext): void {
+    outlineProgram = null
+    outlineQuad = null
+    outlineVao = null
+    outlineUniforms.clear()
+    lastOutlineQuadKey = ''
+    outlineOwner = gl
+    outlineProgram = link(gl, OUTLINE_FRAGMENT_SOURCE)
+    if (outlineProgram === null) return
+    outlineQuad = gl.createBuffer()
+    outlineVao = gl.createVertexArray()
+    gl.bindVertexArray(outlineVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, outlineQuad)
+    gl.bufferData(gl.ARRAY_BUFFER, corners.byteLength, gl.DYNAMIC_DRAW)
+    const clip = gl.getAttribLocation(outlineProgram, 'a_clip')
+    const uv = gl.getAttribLocation(outlineProgram, 'a_uv')
+    gl.enableVertexAttribArray(clip)
+    gl.vertexAttribPointer(clip, 4, gl.FLOAT, false, 24, 0)
+    gl.enableVertexAttribArray(uv)
+    gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 24, 16)
+    gl.bindVertexArray(null)
+    log('install', 'outline layer added below wplace art')
+  },
+
+  onRemove(_map: unknown, gl: WebGL2RenderingContext): void {
+    if (outlineOwner !== gl) return
+    outlineOwner = null
+    if (outlineQuad !== null) gl.deleteBuffer(outlineQuad)
+    if (outlineVao !== null) gl.deleteVertexArray(outlineVao)
+    if (outlineProgram !== null) gl.deleteProgram(outlineProgram)
+    outlineProgram = null
+    outlineQuad = null
+    outlineVao = null
+    outlineUniforms.clear()
+    lastOutlineQuadKey = ''
+  },
+
+  render(gl: WebGL2RenderingContext, args: unknown): void {
+    try {
+      profileGpu(gl, 'Outline GPU', () =>
+        measureProfile('Outline render', () => this.draw(gl, args)),
+      )
+    } catch (error) {
+      warn('install', 'outline layer render failed; skipping this frame', String(error))
+    }
+  },
+
+  draw(gl: WebGL2RenderingContext, _args: unknown): void {
+    if (outlineProgram === null || outlineVao === null || outlineQuad === null) return
+    if (isOverlayPeekActive() || !isDrawingTiles()) return
+    const map = getMap() as { isMoving?: () => boolean; triggerRepaint?: () => void } | null
+    // The current frame's tile quads are emitted later in the layer stack. During motion the last
+    // complete frame is stale, so omit this decorative pass until the map settles.
+    if (map?.isMoving?.() === true) return
+    const completed = completedQuads()
+    if (completed.length === 0) return
+    // Match the shader's close-zoom cutoff on the CPU too. At distant zoom there is no room for an
+    // individual ring, so avoid issuing draws whose every fragment would immediately discard.
+    const tiles = completed.filter(
+      (tile) => tile.width / TILE_SIZE > 1 / 0.75 && tile.height / TILE_SIZE > 1 / 0.75,
+    )
+    if (tiles.length === 0) return
+
+    const quadKey = tiles
+      .map(({ tile, x, y, width, height }) => `${tile.x}:${tile.y}:${x}:${y}:${width}:${height}`)
+      .join('|')
+    if (quadKey !== lastOutlineQuadKey) {
+      lastOutlineQuadKey = quadKey
+      // Wplace records the settled quads later in this frame. One follow-up repaint lets the next
+      // outline pass consume those exact positions without creating a continuous render loop.
+      map?.triggerRepaint?.()
+    }
+
+    gl.useProgram(outlineProgram)
+    gl.bindVertexArray(outlineVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, outlineQuad)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    gl.disable(gl.DEPTH_TEST)
+    gl.uniform1i(outlineUniform(gl, 'u_darkTheme'), isDarkMapTheme() ? 1 : 0)
+
+    const bufferWidth = gl.drawingBufferWidth
+    const bufferHeight = gl.drawingBufferHeight
+    const now = performance.now()
+    const reducedMotion = prefersReducedMotion()
+    let drawIntersections = 0
+    let visibleTemplates = 0
+    for (const template of displayTemplates()) {
+      const entry = gpu.get(template.id)
+      if (entry === undefined) continue
+      const fade = templateFades.advance(
+        template.id,
+        isTemplateVisible(template) ? 1 : 0,
+        now,
+      ).value
+      if (fade <= 0) continue
+      const targetAppearance = appearanceWithPreview(template.id, appearanceOf(template))
+      const appearance = appearanceTransitions.advance(
+        template.id,
+        targetAppearance,
+        now,
+        reducedMotion,
+        hasAppearancePreview(template.id),
+      ).appearance
+      if (!appearance.contrastOutline) continue
+      const spans = horizontalSpans(template)
+      if (!intersectsTiles(template, spans, tiles)) continue
+      visibleTemplates++
+
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, entry.palette)
+      gl.uniform1i(outlineUniform(gl, 'u_palette'), 1)
+      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity)
+      gl.uniform1f(outlineUniform(gl, 'u_outlineSize'), appearance.contrastOutlineSize)
+      gl.uniform1f(outlineUniform(gl, 'u_stampSize'), appearance.size)
+      gl.uniform1f(outlineUniform(gl, 'u_stampRadius'), appearance.radius)
+      gl.uniform2f(
+        outlineUniform(gl, 'u_stampOffset'),
+        appearance.translateX,
+        appearance.translateY,
+      )
+      gl.uniform1f(outlineUniform(gl, 'u_stampRotation'), (appearance.rotation * Math.PI) / 180)
+
+      drawIntersections += visitIntersections(
+        template,
+        spans,
+        entry,
+        tiles,
+        bufferWidth,
+        bufferHeight,
+        (source, vertices) => {
+          gl.activeTexture(gl.TEXTURE0)
+          gl.bindTexture(gl.TEXTURE_2D, source.texture)
+          gl.uniform1i(outlineUniform(gl, 'u_indices'), 0)
+          gl.uniform2f(outlineUniform(gl, 'u_size'), source.textureWidth, source.textureHeight)
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices)
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+        },
+        1,
+      )
+    }
+    if (isProfileEnabled()) {
+      recordProfileWorkload('Outline host tiles', tiles.length)
+      recordProfileWorkload('Outline visible templates', visibleTemplates)
+      recordProfileWorkload('Outline draw intersections', drawIntersections)
     }
   },
 }
@@ -945,10 +1133,16 @@ export const installOverlayLayer = (): boolean => {
    * add the second — and a throw from *outside* the try escapes into `setInterval`, where it repeats
    * every 250ms with nothing catching it.
    */
-  const add = (layer: { readonly id: string }, what: string): boolean => {
+  const add = (
+    layer: { readonly id: string },
+    what: string,
+    requestedBefore: string = BEFORE_LAYER,
+    requireAnchor = false,
+  ): boolean => {
     try {
       if (map.getLayer?.(layer.id) !== undefined) return true
-      const before = map.getLayer?.(BEFORE_LAYER) === undefined ? undefined : BEFORE_LAYER
+      const before = map.getLayer?.(requestedBefore) === undefined ? undefined : requestedBefore
+      if (requireAnchor && before === undefined) return false
       map.addLayer?.(layer, before)
       log('install', `${what} inserted${before === undefined ? ' on top' : ` before ${before}`}`)
       return true
@@ -958,6 +1152,7 @@ export const installOverlayLayer = (): boolean => {
     }
   }
 
+  const outline = add(outlineLayer, 'outline layer', PIXEL_ART_LAYER, true)
   // The markers go in second so they land above the overlay: same anchor, later insertion.
   const overlay = add(overlayLayer, 'overlay layer')
   const markers = add(markerLayer, 'marker layer')
@@ -968,17 +1163,19 @@ export const installOverlayLayer = (): boolean => {
    * they need have been recorded. Existing is therefore not enough; the order is part of attachment.
    */
   const order = map.style?._order
-  if (overlay && markers && order !== undefined && map.moveLayer !== undefined) {
-    const tile = order.indexOf('pixel-art-layer')
+  if (outline && overlay && markers && order !== undefined && map.moveLayer !== undefined) {
+    const tile = order.indexOf(PIXEL_ART_LAYER)
+    const outlineAt = order.indexOf(outlineLayer.id)
     const overlayAt = order.indexOf(overlayLayer.id)
     const markersAt = order.indexOf(markerLayer.id)
     const crosshair = order.indexOf(BEFORE_LAYER)
-    const afterTiles = tile < 0 || tile < overlayAt
+    const surroundsTiles = tile < 0 || (outlineAt < tile && tile < overlayAt)
     const correctlyOrdered =
+      outlineAt >= 0 &&
       overlayAt >= 0 &&
       markersAt > overlayAt &&
       (crosshair < 0 || markersAt < crosshair) &&
-      afterTiles
+      surroundsTiles
     if (!correctlyOrdered) {
       try {
         const firstDraft = order.find(
@@ -991,6 +1188,7 @@ export const installOverlayLayer = (): boolean => {
         const overlayAnchor =
           firstDraft ??
           (markersFollowTiles ? markerLayer.id : crosshair < 0 ? undefined : BEFORE_LAYER)
+        map.moveLayer(outlineLayer.id, tile < 0 ? undefined : PIXEL_ART_LAYER)
         map.moveLayer(overlayLayer.id, overlayAnchor)
         map.moveLayer(markerLayer.id, crosshair < 0 ? undefined : BEFORE_LAYER)
         log('install', 'restored overlay order after a style change')
@@ -1000,5 +1198,5 @@ export const installOverlayLayer = (): boolean => {
       }
     }
   }
-  return overlay && markers
+  return outline && overlay && markers
 }

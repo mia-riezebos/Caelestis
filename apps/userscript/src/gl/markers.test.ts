@@ -63,6 +63,7 @@ describe('marker GPU retention', () => {
       getUniformLocation: vi.fn(() => ({})),
       uniform2f: vi.fn(),
       uniform1f: vi.fn(),
+      uniform1ui: vi.fn(),
       uniform3f: vi.fn(),
       drawArrays: vi.fn(),
       deleteVertexArray: vi.fn(),

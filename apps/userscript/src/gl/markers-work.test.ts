@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { markLocalX, packMismatchMark } from '../templates/mismatch-marks.js'
+import { packMismatchMark } from '../templates/mismatch-marks.js'
 
 const fixture = vi.hoisted(() => ({
   appearance: {
@@ -134,6 +134,7 @@ const context = (): WebGL2RenderingContext => {
     getUniformLocation: vi.fn(() => ({})),
     uniform2f: vi.fn(),
     uniform1f: vi.fn(),
+    uniform1ui: vi.fn(),
     uniform3f: vi.fn(),
     drawArrays: vi.fn(),
     deleteVertexArray: vi.fn(),
@@ -145,6 +146,18 @@ const context = (): WebGL2RenderingContext => {
     blendFunc: vi.fn(),
     blendFuncSeparate: vi.fn(),
   } as unknown as WebGL2RenderingContext
+}
+
+const clippedClusterMarks = () => {
+  const marks = new Uint32Array(20_000)
+  let at = 0
+  for (let y = 0; y < 100; y++) {
+    for (let x = 0; x < 100; x++) marks[at++] = packMismatchMark(x, y, 1)
+  }
+  for (let y = 900; y < 1_000; y++) {
+    for (let x = 900; x < 1_000; x++) marks[at++] = packMismatchMark(x, y, 1)
+  }
+  return marks
 }
 
 describe('marker work selection', () => {
@@ -195,7 +208,23 @@ describe('marker work selection', () => {
 
     markerLayer.render(gl)
 
-    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 100)
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
+    expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.1)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('keeps a visible coordinate cluster near the target inside a clipped tile', async () => {
+    fixture.appearance.markMismatch = true
+    fixture.markerBudget = 4_096
+    fixture.marks = clippedClusterMarks()
+    fixture.quad = { tile: { x: 0, y: 0 }, x: -900, y: -900, width: 1_000, height: 1_000 }
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.4096)
     markerLayer.onRemove(null, gl)
   })
 
@@ -215,7 +244,7 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
-  it('reuses a bounded marker buffer across unchanged render transforms', async () => {
+  it('reuses the source marker buffer across unchanged render transforms', async () => {
     fixture.appearance.markMismatch = true
     fixture.markerBudget = 100
     fixture.marks = new Uint32Array(1_000)
@@ -228,7 +257,7 @@ describe('marker work selection', () => {
     vi.mocked(gl.bufferData).mockClear()
     markerLayer.render(gl)
 
-    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.markerBudget)
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
     expect(gl.bufferData).not.toHaveBeenCalled()
     markerLayer.onRemove(null, gl)
   })
@@ -247,7 +276,7 @@ describe('marker work selection', () => {
     markerLayer.onRemove(null, gl)
   })
 
-  it('refreshes the drawn selection when a hidden source region enters the viewport', async () => {
+  it('reuses the source buffer when the viewport moves', async () => {
     fixture.appearance.markMismatch = true
     fixture.markerBudget = 1_000
     fixture.quad = { tile: { x: 0, y: 0 }, x: 0, y: 0, width: 512, height: 512 }
@@ -261,14 +290,12 @@ describe('marker work selection', () => {
     markerLayer.onAdd(null, gl)
 
     markerLayer.render(gl)
-    const first = vi.mocked(gl.bufferData).mock.calls.at(-1)?.[1] as Uint32Array
+    vi.mocked(gl.bufferData).mockClear()
     fixture.quad = { ...fixture.quad, x: -120 }
     markerLayer.render(gl)
-    const moved = vi.mocked(gl.bufferData).mock.calls.at(-1)?.[1] as Uint32Array
 
-    expect(Math.max(...Array.from(moved, markLocalX))).toBeGreaterThan(
-      Math.max(...Array.from(first, markLocalX)),
-    )
+    expect(gl.bufferData).not.toHaveBeenCalled()
+    expect(gl.uniform2f).toHaveBeenCalledWith(expect.anything(), -120, 0)
     markerLayer.onRemove(null, gl)
   })
 
@@ -285,7 +312,8 @@ describe('marker work selection', () => {
     markerLayer.render(gl)
 
     expect(fixture.disagreementsIn).toHaveBeenCalledOnce()
-    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, 100)
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
+    expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.1)
     markerLayer.onRemove(null, gl)
   })
 })

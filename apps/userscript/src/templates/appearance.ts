@@ -42,9 +42,9 @@ export interface Appearance {
   /** Rotation of each stamp in degrees. 45 turns squares into diamonds. */
   readonly rotation: number
   readonly opacity: number
-  /** Whether colours that blend into the active map theme receive a contrasting edge. */
+  /** Whether template pixels receive a contrasting silhouette below Wplace's painted art. */
   readonly contrastOutline: boolean
-  /** Contrast-outline thickness in device pixels. */
+  /** Underlay-outline thickness in device pixels. */
   readonly contrastOutlineSize: number
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]

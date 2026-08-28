@@ -878,8 +878,7 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
   confirm.dataset[CONTROL] = 'confirm-delete'
   confirm.className = 'btn btn-xs btn-error'
   // The write is serialised behind any appearance or visibility write still running for this
-  // template, and `setLocalVisible` can be rebuilding source bitmaps. Say so rather than presenting
-  // a dead button.
+  // template. Say so rather than presenting a dead button.
   confirm.textContent = running ? 'Deleting…' : 'Delete'
   // Refused while the template is being placed, exactly as the button that raised this question is
   // — a question opened before the placement started is still on screen after it does, and a
@@ -932,7 +931,7 @@ const deleteConfirm = (id: string, rerender: () => void): HTMLElement => {
     // Deliberately *not* queued behind this module's own writes. `removeLocalTemplate` sets the
     // store's terminal `deleting` guard synchronously, which is what stops an in-flight save from
     // resurrecting the record — holding it behind a slow `setLocalVisible` defeats that and leaves
-    // the question reading "Deleting…" for as long as the bitmaps take. The store serialises this
+    // the question reading "Deleting…" for as long as the earlier write takes. The store serialises this
     // itself, through `writeInOrder`.
     let serverRemovalFailure: string | null = null
     const removal =
@@ -1179,7 +1178,7 @@ const buildMenu = (template: PlacedTemplate, rerender: () => void): BuiltOverlay
     // renderer is no longer drawing.
     // One request at a time, and every assumption re-checked when it lands: the user can press
     // Move again, press Hide, open another template's menu, or start a placement from the panel
-    // while the bitmaps are being built.
+    // while the visibility write is pending.
     if (showingToMove.has(id)) return
     // Both, because they disagree in opposite directions: a hide that has not persisted yet leaves
     // the durable value `true`, and an optimistic show leaves the intent `true` — either one alone

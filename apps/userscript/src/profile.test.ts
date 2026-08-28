@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   measureProfile,
+  measureProfileDetail,
   profileGpu,
   profileSnapshot,
   recordProfileDuration,
@@ -52,6 +53,18 @@ describe('performance profile', () => {
       'main:work',
       'gpu:work',
     ])
+  })
+
+  it('reports nested detail without double-counting it as CPU duty', () => {
+    setProfileEnabled(true)
+    recordProfileDuration('frame', 5)
+    measureProfileDetail('upload', () => undefined)
+
+    const snapshot = profileSnapshot()
+    expect(snapshot.cpu.main.totalMs).toBe(5)
+    expect(snapshot.tasks.some((task) => task.kind === 'detail' && task.name === 'upload')).toBe(
+      true,
+    )
   })
 
   it('summarises render workload without recording while disabled', () => {

@@ -1,4 +1,4 @@
-export type ProfileKind = 'main' | 'worker' | 'gpu'
+export type ProfileKind = 'main' | 'worker' | 'gpu' | 'detail'
 
 interface MutableStat {
   count: number
@@ -271,6 +271,17 @@ export const measureProfile = <T>(name: string, run: () => T): T => {
     return run()
   } finally {
     recordProfileDuration(name, performance.now() - start, 'main')
+  }
+}
+
+/** Nested diagnostic timing that stays out of aggregate CPU duty to avoid double-counting. */
+export const measureProfileDetail = <T>(name: string, run: () => T): T => {
+  if (!enabled) return run()
+  const start = performance.now()
+  try {
+    return run()
+  } finally {
+    recordProfileDuration(name, performance.now() - start, 'detail')
   }
 }
 

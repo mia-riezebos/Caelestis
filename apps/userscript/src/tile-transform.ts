@@ -425,6 +425,9 @@ let lastQuads: readonly TileQuad[] = []
  */
 export const currentQuads = (): readonly TileQuad[] => (scheduled ? pending : lastQuads)
 
+/** The most recent complete tile frame, for layers that must render before Wplace's art layer. */
+export const completedQuads = (): readonly TileQuad[] => lastQuads
+
 const flush = (): void => {
   scheduled = false
   if (mapCanvas === null) return
