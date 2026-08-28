@@ -35,7 +35,11 @@ import {
   endMarkerBatchFrame,
   markerBatchMemoryBytes,
 } from './marker-batching.js'
-import { markerDensityMemoryBytes, markerSampleRate } from './marker-density.js'
+import {
+  estimatedVisibleMarkerPoints,
+  markerDensityMemoryBytes,
+  markerSampleRate,
+} from './marker-density.js'
 
 export { markerBatchMemoryBytes, markerDensityMemoryBytes }
 
@@ -583,18 +587,18 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   }
   const points = (work: readonly { readonly marks: { readonly length: number } }[]): number =>
     work.reduce((total, one) => total + one.marks.length, 0)
-  const visibleFraction = ({ tile }: Work): number => {
-    const width = Math.abs(tile.width)
-    const height = Math.abs(tile.height)
-    if (width === 0 || height === 0) return 0
-    const left = Math.max(0, Math.min(tile.x, tile.x + tile.width))
-    const right = Math.min(gl.drawingBufferWidth, Math.max(tile.x, tile.x + tile.width))
-    const top = Math.max(0, Math.min(tile.y, tile.y + tile.height))
-    const bottom = Math.min(gl.drawingBufferHeight, Math.max(tile.y, tile.y + tile.height))
-    return (Math.max(0, right - left) * Math.max(0, bottom - top)) / (width * height)
-  }
   const estimatedVisiblePoints = (work: readonly Work[]): number =>
-    work.reduce((total, one) => total + one.marks.length * visibleFraction(one), 0)
+    work.reduce(
+      (total, one) =>
+        total +
+        estimatedVisibleMarkerPoints(
+          one.marks,
+          one.tile,
+          gl.drawingBufferWidth,
+          gl.drawingBufferHeight,
+        ),
+      0,
+    )
   const selectedSourcePoints = points(selectedWork)
   const mismatchSourcePoints = points(mismatchWork)
   const selectedSampleRate = markerSampleRate(estimatedVisiblePoints(selectedWork), renderBudget)

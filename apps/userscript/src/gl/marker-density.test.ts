@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  estimatedVisibleMarkerPoints,
   MARKER_VIEWPORT_BUDGET,
   markerDensityMemoryBytes,
   markerHash,
@@ -31,5 +32,18 @@ describe('GPU marker sampling', () => {
     expect(markerSampleRate(0, 4_096)).toBe(0)
     expect(markerSampleRate(100, 0)).toBe(0)
     expect(markerDensityMemoryBytes()).toBe(0)
+  })
+
+  it('detects markers clustered inside a clipped tile sliver with bounded sampling', () => {
+    const marks = new Uint32Array(1_000_000).fill((950 | (950 << 10) | (1 << 20)) >>> 0)
+
+    expect(
+      estimatedVisibleMarkerPoints(
+        marks,
+        { x: -900, y: -900, width: 1_000, height: 1_000 },
+        100,
+        100,
+      ),
+    ).toBe(marks.length)
   })
 })
