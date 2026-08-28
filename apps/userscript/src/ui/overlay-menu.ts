@@ -1,5 +1,5 @@
 import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
-import type { CaelestisTemplateState } from '@caelestis/ui'
+import type { CaelestisTemplateState } from '@caelestis/ui/elements'
 import type { ScreenProjection } from '../coordinates.js'
 import { log, warn } from '../debug.js'
 import { screenProjection } from '../main.js'

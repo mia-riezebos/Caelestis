@@ -1,28 +1,36 @@
 # @caelestis/ui
 
-Web components shared by the userscript and the SvelteKit frontend.
+Svelte components shared by the userscript and the SvelteKit frontend.
 
-The shared elements are authored in Lit and consumed as custom elements by both hosts. Lit keeps
-the userscript bundle small, always renders through Shadow DOM, and does not require the frontend
-to compile this package in Svelte custom-element mode. The frontend is a client-rendered static SPA,
-so the lack of custom-element SSR is acceptable.
+The root entry exports ordinary Svelte components for SvelteKit. `@caelestis/ui/elements` is a
+browser bundle of native custom elements for the userscript. The element bundle includes its Svelte
+runtime, so the userscript build does not need a Svelte plugin. Lit is not part of the package.
 
-See [packages/ui — shared web components #20](https://github.com/mia-riezebos/wplace-template-server/issues/20).
+The package owns presentation and DOM events only. Hosts own auth, network requests, menus, loading
+orchestration, and page layout. The first shared components are:
 
-The package owns presentation and DOM events only. The hosts own auth, network requests, menus,
-loading orchestration, and page layout. Today that leaves two genuinely shared elements:
+- `TemplateState` and `<caelestis-template-state>` render finished, frozen, and grief-watch state.
+- `TemplateAdmin` and `<caelestis-template-admin>` render finish/reopen and freeze/thaw actions.
 
-- `<caelestis-template-state>` renders finished, frozen, and grief-watch state anywhere a template
-  appears.
-- `<caelestis-template-admin>` renders the paired finish/reopen and freeze/thaw actions, then emits
-  composed bubbling events for the host to persist.
-
-Host themes cross the shadow seam through the documented `--caelestis-*` custom properties. Both
-elements also provide usable light/dark defaults.
+Host themes cross the Shadow DOM seam through documented `--caelestis-*` custom properties. The
+components also provide usable light and dark defaults.
 
 Two constraints are enforced by the implementation:
 
-- **Shadow DOM is mandatory.** These components mount inside wplace's own DOM, and wplace ships
-  Tailwind + DaisyUI. Without isolation the styles collide in both directions.
-- **Registration is explicit and guarded.** Call `registerCaelestisUi()` in a browser; it checks
-  `customElements.get()` before each definition and is safe when a userscript is injected twice.
+- **Shadow DOM is mandatory for custom elements.** These components mount inside Wplace's own DOM,
+  which ships Tailwind and DaisyUI. Isolation prevents style collisions in both directions.
+- **Registration is explicit and guarded.** Call `registerCaelestisUi()` from the `/elements` entry
+  in a browser. It checks `customElements.get()` before each definition and is safe when a
+  userscript is injected twice.
+
+## Bundle baseline
+
+The Svelte custom-element runtime is a fixed cost that later components reuse.
+
+| Build | Before Svelte | Lifecycle slice |
+| --- | ---: | ---: |
+| Userscript, raw | 433,388 B | 455,360 B |
+| Userscript, gzip | 140,309 B | 149,269 B |
+| Element entry, raw | n/a | 60,798 B |
+| Element entry, gzip | n/a | 18,054 B |
+| Frontend output | 688 KiB | 712 KiB |

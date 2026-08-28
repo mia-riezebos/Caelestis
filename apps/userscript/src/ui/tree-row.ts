@@ -1,4 +1,4 @@
-import type { CaelestisTemplateState } from '@caelestis/ui'
+import type { CaelestisTemplateState } from '@caelestis/ui/elements'
 import { getState, setState } from '../state.js'
 import type { TemplateColourProgress, TemplateProgress } from '../templates/mismatch.js'
 import { type IconName, icon } from './icons.js'

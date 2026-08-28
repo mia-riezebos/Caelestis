@@ -1,18 +1,29 @@
 // @vitest-environment happy-dom
 
+import { tick } from 'svelte'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { CaelestisTemplateAdmin, CaelestisTemplateState, registerCaelestisUi } from './index.js'
+import { TemplateAdmin, TemplateState } from '../src/index.js'
+import {
+  CaelestisTemplateAdmin,
+  CaelestisTemplateState,
+  registerCaelestisUi,
+} from '../src/elements/index.js'
 
 beforeAll(() => registerCaelestisUi())
 
 describe('@caelestis/ui', () => {
+  it('exposes ordinary Svelte components from the root entry', () => {
+    expect(TemplateState).toBeTypeOf('function')
+    expect(TemplateAdmin).toBeTypeOf('function')
+  })
+
   it('registers idempotently and renders inside shadow DOM', async () => {
     expect(() => registerCaelestisUi()).not.toThrow()
     const state = document.createElement('caelestis-template-state')
     state.finished = true
     state.frozen = true
     document.body.append(state)
-    await state.updateComplete
+    await tick()
 
     expect(state).toBeInstanceOf(CaelestisTemplateState)
     expect(state.shadowRoot?.textContent).toContain('Finished')
@@ -24,11 +35,11 @@ describe('@caelestis/ui', () => {
     const state = new CaelestisTemplateState()
     state.griefed = true
     document.body.append(state)
-    await state.updateComplete
+    await tick()
     expect(state.shadowRoot?.textContent).not.toContain('Grief detected')
 
     state.finished = true
-    await state.updateComplete
+    await tick()
     expect(state.shadowRoot?.querySelector('[role="status"]')?.textContent).toContain(
       'Grief detected',
     )
@@ -39,7 +50,7 @@ describe('@caelestis/ui', () => {
     const changed = vi.fn()
     admin.addEventListener('caelestis-finished-change', changed)
     document.body.append(admin)
-    await admin.updateComplete
+    await tick()
 
     admin.shadowRoot?.querySelector<HTMLButtonElement>('button')?.click()
     expect(changed).toHaveBeenCalledWith(
@@ -47,7 +58,7 @@ describe('@caelestis/ui', () => {
     )
 
     admin.busy = true
-    await admin.updateComplete
+    await tick()
     expect(
       Array.from(admin.shadowRoot?.querySelectorAll('button') ?? []).every(
         (button) => button.disabled,

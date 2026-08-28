@@ -7,7 +7,7 @@
   import type {
     CaelestisTemplateAdmin,
     TemplateLifecycleChangeDetail,
-  } from '@caelestis/ui'
+  } from '@caelestis/ui/elements'
   import { ExternalLink, Pause, Play } from '@lucide/svelte'
   import { page } from '$app/state'
   import { getTileHistory, patchTemplateLifecycle } from '$lib/api/client'
