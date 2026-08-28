@@ -49,16 +49,20 @@ import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { pixelStylePresets } from './pixel-style-presets.js'
 import { profilePanel } from './profile.js'
-import { refreshProgressIndicators } from './progress.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { createRangeGestures } from './range-gestures.js'
 import { sliderRow } from './slider.js'
-import { progressChangesCanReorder, sortControl } from './sort.js'
+import { progressChangesCanReorder } from './sort.js'
 import { installStyles } from './styles.js'
-import { PANEL_ID, toast } from './toast.js'
 import { applyWplaceTheme } from './theme.js'
+import { PANEL_ID, toast } from './toast.js'
 import { cancelDestinationAdmissions } from './transplant.js'
-import { isTreeDragActive, treeContents } from './tree.js'
+import {
+  isTreeDragActive,
+  type TemplateTreeAdapter,
+  type TreeCallbacks,
+  templateTreeAdapter,
+} from './tree.js'
 import {
   cancelTreeActionSetup,
   copyServerTemplateToLocal,
@@ -212,94 +216,6 @@ const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
   h.textContent = title
   row.append(chip, h)
   return row
-}
-
-const treeView = (): HTMLElement => {
-  const view = document.createElement('div')
-  Object.assign(view.style, {
-    display: 'flex',
-    flexDirection: 'column',
-    minHeight: '0',
-    flex: '1',
-  })
-
-  // Search and sort share a row: both are ways of finding one template among many, and giving sort
-  // its own row would push the tree down for a control most people set once.
-  const toolbar = document.createElement('div')
-  toolbar.className = 'flex items-center gap-1'
-  Object.assign(toolbar.style, { margin: '0.75rem 0.75rem 0' })
-
-  const search = document.createElement('label')
-  search.className = 'input input-sm input-bordered flex items-center gap-2'
-  Object.assign(search.style, { flex: '1', minWidth: '0' })
-  const searchIcon = icon('search', 'size-4 opacity-50')
-  const searchInput = document.createElement('input')
-  searchInput.type = 'search'
-  searchInput.style.flex = '1'
-  searchInput.style.minWidth = '0'
-  searchInput.placeholder = 'Search templates'
-  searchInput.setAttribute('aria-label', 'Search templates')
-  searchInput.value = searchQuery
-  search.append(searchIcon, searchInput)
-
-  toolbar.append(
-    search,
-    sortControl(getState().sort, (next) => {
-      setState({ sort: next })
-      showView('tree')
-    }),
-  )
-
-  const body = document.createElement('div')
-  body.dataset.caelestisScroller = ''
-  Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
-  const renderTree = (): void => {
-    body.replaceChildren(
-      treeContents(
-        {
-          onAddServer: () => showView('settings'),
-          onCreateFolder: (target) => void createFolder(target, rerenderTree),
-          onImportTemplate: (target) => void importTemplate(target, rerenderTree),
-          onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
-          onCopyToServer: (id) => void copyToServer(id, rerenderTree),
-          onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
-            dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
-          onDropInLocal: async (draggedKey, folderId) => {
-            if (draggedKey.startsWith('node:')) {
-              return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree)
-            }
-            if (draggedKey.startsWith('st:')) {
-              return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree)
-            }
-            return null
-          },
-        },
-        rerenderTree,
-        searchQuery,
-      ),
-    )
-  }
-  let searchTimer: ReturnType<typeof setTimeout> | null = null
-  searchInput.addEventListener('input', () => {
-    searchQuery = searchInput.value
-    if (searchTimer !== null) clearTimeout(searchTimer)
-    searchTimer = setTimeout(() => {
-      searchTimer = null
-      rerenderTree()
-    }, 100)
-  })
-  // Claimed here rather than inside `renderTree`, because a closure that is still holding a
-  // reference will go on being called after its view is gone — `primeFromCache` resolves from
-  // IndexedDB long after a state change may have rebuilt everything. Claiming on call let that
-  // stale closure take the tree back and every redraw after it painted a detached element, which is
-  // the very failure the indirection was added to stop.
-  activeTreeRender = renderTree
-  renderTree()
-  // Paint what the servers said last time, then let a live fetch replace it.
-  void primeFromCache(rerenderTree)
-
-  view.append(toolbar, body)
-  return view
 }
 
 /**
@@ -969,12 +885,35 @@ const settingsView = (): HTMLElement => {
   return view
 }
 
+let activeTreeAdapter: TemplateTreeAdapter | null = null
+
+const treeCallbacks = (): TreeCallbacks => ({
+  onAddServer: () => showView('settings'),
+  onCreateFolder: (target) => void createFolder(target, rerenderTree),
+  onImportTemplate: (target) => void importTemplate(target, rerenderTree),
+  onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
+  onCopyToServer: (id) => void copyToServer(id, rerenderTree),
+  onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
+    dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
+  onDropInLocal: async (draggedKey, folderId) => {
+    if (draggedKey.startsWith('node:')) {
+      return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree)
+    }
+    if (draggedKey.startsWith('st:')) {
+      return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree)
+    }
+    return null
+  },
+})
 
 const panelModel = (width = panelWidthForViewport(getState().panelWidth)): PanelModel => ({
   view: currentView,
   width,
   minWidth: minimumPanelWidth(),
   maxWidth: maximumPanelWidth(),
+  ...(currentView === 'tree' && activeTreeAdapter !== null
+    ? { tree: activeTreeAdapter.model }
+    : {}),
 })
 
 /** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
@@ -1010,9 +949,19 @@ const buildSveltePanel = (): CaelestisPanel => {
       case 'resize-commit':
         setState({ panelWidth: intent.width })
         break
+      case 'tree':
+        if (intent.intent.type === 'search') {
+          searchQuery = intent.intent.query
+          rerenderTree()
+        } else if (intent.intent.type === 'sort') {
+          setState({ sort: intent.intent.sort })
+          rerenderTree()
+        } else {
+          activeTreeAdapter?.handle(intent.intent)
+        }
+        break
     }
   })
-  panel.appendChild(treeView())
   return panel
 }
 
@@ -1050,9 +999,13 @@ const stillConnected = (server: ConnectedServer): boolean => isCurrentServerConn
  * element that is no longer in the document. Routing through this makes a stale closure redraw the
  * live tree instead of a detached one.
  */
-let activeTreeRender: (() => void) | null = null
-
-const rerenderTree = (): void => activeTreeRender?.()
+const rerenderTree = (): void => {
+  if (!open || currentView !== 'tree') return
+  const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
+  if (panel === null) return
+  activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
+  panel.model = panelModel(panel.getBoundingClientRect().width)
+}
 
 /**
  * What the splitter reports to assistive technology.
@@ -1083,8 +1036,14 @@ const showView = (view: View): void => {
   const scrollTop = staying && previous !== null ? previous.scrollTop : 0
 
   const next =
-    view === 'settings' ? settingsView() : view === 'appearance' ? appearanceView() : treeView()
-  panel.replaceChildren(next)
+    view === 'settings' ? settingsView() : view === 'appearance' ? appearanceView() : null
+  panel.replaceChildren(...(next === null ? [] : [next]))
+  if (view === 'tree') {
+    activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
+    void primeFromCache(rerenderTree)
+  } else {
+    activeTreeAdapter = null
+  }
   const scroller = scrollerIn(next)
   if (scrollTop > 0 && scroller !== null) scroller.scrollTop = scrollTop
   panel.model = panelModel(panel.getBoundingClientRect().width)
@@ -1171,9 +1130,7 @@ const colourRailModel = (): RailControlModel => {
   const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
   return {
     id: 'colour',
-    label: isPaintOpen()
-      ? `${label} (S)`
-      : `${label} — open wplace's paint drawer to pick one (S)`,
+    label: isPaintOpen() ? `${label} (S)` : `${label} — open wplace's paint drawer to pick one (S)`,
     pressed: on,
   }
 }
@@ -1271,8 +1228,7 @@ export const installPanel = (): void => {
         refreshView()
         return
       }
-      const panel = document.getElementById(PANEL_ID)
-      if (panel !== null) refreshProgressIndicators(panel)
+      rerenderTree()
     }),
   )
   onServerStatusChange(() => {

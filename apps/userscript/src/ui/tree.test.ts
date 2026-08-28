@@ -17,7 +17,7 @@ import {
   probeServer,
   setState,
 } from '../state.js'
-import { treeContents } from './tree.js'
+import { templateTreeAdapter, treeContents } from './tree.js'
 import { treeRow } from './tree-row.js'
 import {
   acceptServerSnapshot,
@@ -141,6 +141,38 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
   status: 'connected',
   isAdmin: true,
   season,
+})
+
+describe('tree model adapter', () => {
+  it('translates tree state and routes typed expansion and action intents', () => {
+    setState({ collapsed: ['local'] })
+    const rerender = vi.fn()
+    const onImportTemplate = vi.fn()
+    const adapter = templateTreeAdapter({ ...callbacks, onImportTemplate }, rerender)
+
+    expect(adapter.model.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'row',
+          key: 'local',
+          name: 'Local',
+          expanded: false,
+          positionInSet: 1,
+          setSize: 1,
+        }),
+        expect.objectContaining({ type: 'action', key: 'add-server' }),
+      ]),
+    )
+
+    adapter.handle({ type: 'toggle-expanded', key: 'local' })
+    expect(getState().collapsed).not.toContain('local')
+    expect(rerender).toHaveBeenCalled()
+
+    adapter.handle({ type: 'action', key: 'local', actionId: 'row-1' })
+    expect(onImportTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'local', server: null }),
+    )
+  })
 })
 
 describe('tree identity and ordering', () => {

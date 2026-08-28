@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from '../foundations/Button.svelte'
+  import TemplateTree from '../tree/TemplateTree.svelte'
   import type { PanelIntent, PanelProps, PanelView } from '../types.js'
 
   let { model, children, onIntent }: PanelProps = $props()
@@ -92,7 +93,13 @@
     </Button>
   </header>
 
-  <div class="body">{#if children !== undefined}{@render children()}{/if}</div>
+  <div class="body">
+    {#if model.view === 'tree' && model.tree !== undefined}
+      <TemplateTree model={model.tree} onIntent={(intent) => emit({ type: 'tree', intent })} />
+    {:else if children !== undefined}
+      {@render children()}
+    {/if}
+  </div>
 </section>
 
 <style>

@@ -29,6 +29,11 @@ export const startRenaming = (key: string): void => {
   renaming = key
   renameDraft = null
 }
+export const currentRenamingKey = (): string | null => renaming
+export const finishRenaming = (): void => {
+  renaming = null
+  renameDraft = null
+}
 const disabled = new Set<string>()
 
 export const isTreeExpanded = (key: string): boolean => !getState().collapsed.includes(key)
@@ -207,7 +212,7 @@ const clearDropMarks = (root: ParentNode): void => {
   for (const el of root.querySelectorAll('[data-caelestis-placeholder]')) el.remove()
 }
 
-interface RowAction {
+export interface RowAction {
   readonly icon: IconName
   readonly label: string
   readonly run: () => void
