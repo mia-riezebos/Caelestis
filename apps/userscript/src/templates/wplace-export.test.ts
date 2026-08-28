@@ -36,7 +36,7 @@ const template = (overrides: Partial<PlacedTemplate> = {}): PlacedTemplate =>
     indices: new Uint8Array(500_000),
     moved: 0,
     opaque: 500_000,
-    tiles: new Map(),
+    tiles: new Set(),
     visible: true,
     everPlaced: true,
     appearance: null,

@@ -131,7 +131,7 @@ const placedTemplate = (): PlacedTemplate => ({
   indices: new Uint8Array([0, 4]),
   moved: 0,
   opaque: 2,
-  tiles: new Map(),
+  tiles: new Set(),
   visible: true,
   everPlaced: true,
   appearance: null,

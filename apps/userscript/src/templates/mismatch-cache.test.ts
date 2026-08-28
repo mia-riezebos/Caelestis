@@ -65,7 +65,7 @@ const template = (index: number): PlacedTemplate => ({
   indices: new Uint8Array([0]),
   moved: 0,
   opaque: 1,
-  tiles: new Map([['0/0', { levels: [] }]]),
+  tiles: new Set(['0/0']),
   visible: true,
   everPlaced: true,
   appearance: null,
