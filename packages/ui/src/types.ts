@@ -69,6 +69,7 @@ export interface PanelModel {
   readonly maxWidth: number
   readonly tree?: TemplateTreeModel
   readonly appearance?: AppearanceEditorModel
+  readonly settings?: SettingsModel
 }
 
 export type PanelIntent =
@@ -78,12 +79,68 @@ export type PanelIntent =
   | { readonly type: 'resize-commit'; readonly width: number }
   | { readonly type: 'tree'; readonly intent: TemplateTreeIntent }
   | { readonly type: 'appearance'; readonly intent: AppearanceEditorIntent }
+  | { readonly type: 'settings'; readonly intent: SettingsIntent }
 
 export interface PanelProps {
   model: PanelModel
   children?: import('svelte').Snippet
   onIntent?: (intent: PanelIntent) => void
 }
+
+export type SettingsBooleanKey =
+  | 'reportPaints'
+  | 'shareTiles'
+  | 'debugLogging'
+  | 'performanceProfiling'
+
+export interface SettingsServerModel {
+  readonly url: string
+  readonly name: string
+  readonly status: 'connected' | 'needs-token' | 'unreachable'
+  readonly error?: string
+  readonly expanded: boolean
+  readonly tokenSaved: boolean
+  readonly tokenUsable?: boolean
+  readonly isAdmin: boolean
+  readonly pending?: boolean
+  readonly message?: string
+}
+
+export interface ProfileMetricModel {
+  readonly id: string
+  readonly label: string
+  readonly value: string
+}
+
+export interface SettingsModel {
+  readonly servers: readonly SettingsServerModel[]
+  readonly addServerPending?: boolean
+  readonly addServerMessage?: string
+  readonly colourNavigationOrder: 'unpainted-first' | 'mismatched-first'
+  readonly reportPaints: boolean
+  readonly shareTiles: boolean
+  readonly debugLogging: boolean
+  readonly performanceProfiling: boolean
+  readonly profile?: {
+    readonly note: string
+    readonly metrics: readonly ProfileMetricModel[]
+    readonly status?: string
+  }
+}
+
+export type SettingsIntent =
+  | { readonly type: 'add-server'; readonly url: string }
+  | { readonly type: 'toggle-server'; readonly url: string; readonly expanded: boolean }
+  | { readonly type: 'prefetch-server'; readonly url: string }
+  | { readonly type: 'update-server-token'; readonly url: string; readonly token: string }
+  | { readonly type: 'disconnect-server'; readonly url: string }
+  | {
+      readonly type: 'set-colour-navigation-order'
+      readonly value: SettingsModel['colourNavigationOrder']
+    }
+  | { readonly type: 'set-boolean'; readonly key: SettingsBooleanKey; readonly value: boolean }
+  | { readonly type: 'reset-profile' }
+  | { readonly type: 'copy-profile' }
 
 export type RailControlId =
   | 'panel'

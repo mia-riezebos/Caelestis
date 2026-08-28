@@ -21,6 +21,8 @@ export type {
   PanelModel,
   RailControlIntent,
   RailControlModel,
+  SettingsIntent,
+  SettingsModel,
   TemplateLifecycleChangeDetail,
 } from '../types.js'
 

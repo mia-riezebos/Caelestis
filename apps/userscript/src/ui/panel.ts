@@ -8,14 +8,21 @@ import type {
   PanelModel,
   RailControlIntent,
   RailControlModel,
+  SettingsIntent,
+  SettingsModel,
 } from '@caelestis/ui/elements'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
-import { isProfileEnabled, setProfileEnabled } from '../profile.js'
+import {
+  isProfileEnabled,
+  profileReport,
+  profileSnapshot,
+  resetProfile,
+  setProfileEnabled,
+} from '../profile.js'
 import { forgetServer } from '../server-cache.js'
 import {
-  type ColourNavigationOrder,
   type ConnectedServer,
   cancelServerProbe,
   canonicalServerUrl,
@@ -49,19 +56,15 @@ import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templat
 import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
 import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
-import { whileBusy } from './button.js'
 import { isColourPickerOpen } from './colour-picker.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { frameQueue } from './frame-queue.js'
-import type { IconName } from './icons.js'
-import { icon } from './icons.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
-import { profilePanel } from './profile.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { installStyles } from './styles.js'
 import { applyWplaceTheme } from './theme.js'
-import { PANEL_ID, toast } from './toast.js'
+import { PANEL_ID } from './toast.js'
 import { cancelDestinationAdmissions } from './transplant.js'
 import {
   isTreeDragActive,
@@ -198,32 +201,6 @@ export const setAlarmBadge = (count: number): void => {
 }
 
 /**
- * A section heading: an icon in a tinted chip, then the name at normal weight and full contrast.
- *
- * Not faded all-caps. A settings pane is scanned for the section you want, and the previous
- * treatment made every heading — the one thing you are actually looking for — the least legible
- * text on the screen.
- */
-const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
-  const row = document.createElement('div')
-  row.className = 'flex items-center gap-2 px-3 pt-5 pb-2'
-  const chip = document.createElement('span')
-  chip.className = 'bg-base-200 flex items-center justify-center'
-  Object.assign(chip.style, {
-    borderRadius: '0.5rem',
-    width: '1.75rem',
-    height: '1.75rem',
-    flex: '0 0 auto',
-  })
-  chip.appendChild(icon(glyph, 'size-4'))
-  const h = document.createElement('h3')
-  h.className = 'text-sm font-semibold'
-  h.textContent = title
-  row.append(chip, h)
-  return row
-}
-
-/**
  * Redraw whatever the panel is showing when the state changes underneath it.
  *
  * The panel used to subscribe to nothing, so every row showed whatever was true when it was last
@@ -309,35 +286,6 @@ const repayRefresh = (): void => {
   setTimeout(refreshView, 0)
 }
 
-const settingRow = (label: string, hint: string | null, control: HTMLElement): HTMLElement => {
-  const row = document.createElement('div')
-  row.className = 'flex items-center justify-between gap-4 px-3 py-2'
-  row.style.minHeight = '3rem'
-  const text = document.createElement('div')
-  text.className = 'flex flex-col'
-  const name = document.createElement('span')
-  name.className = 'text-sm'
-  name.textContent = label
-  text.append(name)
-  if (hint !== null) {
-    const sub = document.createElement('span')
-    sub.className = 'text-xs opacity-60'
-    sub.textContent = hint
-    text.appendChild(sub)
-  }
-  row.append(text, control)
-  return row
-}
-
-const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
-  const el = document.createElement('input')
-  el.type = 'checkbox'
-  el.className = 'checkbox checkbox-sm'
-  el.checked = value
-  el.addEventListener('change', () => onChange(el.checked))
-  return el
-}
-
 /** Which servers' rows are open. Kept across re-renders, which rebuild the whole pane. */
 const expandedServers = new Set<string>()
 
@@ -410,354 +358,265 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   }
 }
 
-/**
- * One connected server: its name and state, and everything about it behind a caret.
- *
- * Expandable because a server has more than one thing to say about it and only one of them is worth
- * a line in a list. Collapsed it is a name and whether it is working; open it is the token you
- * connect with, the tokens it will accept from other people, and the way to disconnect.
- *
- * Disconnect lives inside rather than on the collapsed row. It used to sit beside the name, one
- * stray click from throwing a server away, in a list where every other control is harmless — and it
- * is not something anyone reaches for while scanning.
- */
-const serverRow = (server: ConnectedServer): HTMLElement => {
-  const wrap = document.createElement('div')
-  wrap.className = 'px-3 py-2'
-  // Opened for you when it is asking for something, once — the token field is inside, and a row you
-  // have to discover before you can fix it is a row that reads as broken rather than as waiting.
-  if (server.status === 'needs-token' && !autoExpanded.has(server.url)) {
-    autoExpanded.add(server.url)
-    expandedServers.add(server.url)
+let activeTreeAdapter: TemplateTreeAdapter | null = null
+
+const settingsMessages = new Map<string, string>()
+const pendingServers = new Set<string>()
+let addServerPending = false
+let addServerMessage: string | undefined
+let profileStatus: string | undefined
+
+const formatBytes = (value: number | null): string => {
+  if (value === null) return 'Unavailable'
+  if (value < 1024) return `${value} B`
+  const units = ['KiB', 'MiB', 'GiB']
+  let amount = value / 1024
+  let unit = units[0] ?? 'KiB'
+  for (let index = 1; index < units.length && amount >= 1024; index++) {
+    amount /= 1024
+    unit = units[index] ?? unit
   }
-  const open = expandedServers.has(server.url)
-
-  const top = document.createElement('button')
-  top.type = 'button'
-  top.className = 'flex items-center gap-2 w-full'
-  top.setAttribute('aria-expanded', String(open))
-
-  const caret = icon('caret', 'size-3 opacity-60')
-  caret.style.flex = '0 0 auto'
-  caret.style.transition = 'transform 120ms ease-out'
-  caret.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)'
-
-  const name = document.createElement('span')
-  name.className = 'text-sm'
-  name.style.flex = '1'
-  name.style.overflow = 'hidden'
-  name.style.textOverflow = 'ellipsis'
-  name.style.whiteSpace = 'nowrap'
-  name.style.textAlign = 'left'
-  name.textContent = server.info?.name ?? server.url
-  name.title = server.url
-
-  top.append(caret, name)
-  // Only trouble gets a badge. A server that is in this list at all is one you added and one that
-  // works, so "connected" was a green label on every row saying what the absence of a label already
-  // said — and it made the two rows that do need attention harder to pick out, not easier.
-  if (server.status !== 'connected') {
-    const badge = document.createElement('span')
-    badge.className =
-      server.status === 'needs-token'
-        ? 'badge badge-sm badge-warning'
-        : 'badge badge-sm badge-error'
-    badge.textContent = server.status === 'needs-token' ? 'token' : 'offline'
-    top.appendChild(badge)
-  }
-  top.addEventListener('click', () => {
-    if (open) expandedServers.delete(server.url)
-    else expandedServers.add(server.url)
-    showView('settings')
-  })
-  // A pointer arriving at the row is the earliest honest sign someone is about to open it, and the
-  // tokens are the one thing inside that has to be asked for. Fetching now means the expansion opens
-  // at its final height rather than growing a moment later, and it costs a request that was about to
-  // happen anyway.
-  top.addEventListener('pointerenter', () => prefetchAccessTokens(server))
-  wrap.appendChild(top)
-
-  // Why it is offline, which the two words on the row above cannot carry. Nothing extra for a
-  // server wanting a token: the row says so, and what to do about it is one click away.
-  if (!open) {
-    if (server.status === 'unreachable' && server.error !== undefined) {
-      const why = document.createElement('p')
-      why.className = 'text-xs opacity-60'
-      why.style.marginTop = '0.125rem'
-      why.textContent = server.error
-      wrap.appendChild(why)
-    }
-    return wrap
-  }
-
-  const body = document.createElement('div')
-  body.style.marginTop = '0.5rem'
-  body.style.paddingLeft = '1.25rem'
-
-  /**
-   * The token you connect with, always editable.
-   *
-   * It used to appear only while the server was refusing you, so a token that had been accepted
-   * could not be changed without disconnecting and adding the server again — which is exactly what
-   * you need to do when yours is rotated or upgraded to admin.
-   */
-  const codeRow = document.createElement('div')
-  codeRow.className = 'flex gap-2'
-  const code = document.createElement('input')
-  code.dataset.caelestisDraft = `token:${server.url}`
-  code.type = 'password'
-  code.autocomplete = 'off'
-  code.className = 'input input-sm input-bordered'
-  code.style.flex = '1'
-  code.style.minWidth = '0'
-  code.placeholder = server.token === null ? 'Access token' : '••••••••'
-  code.setAttribute('aria-label', 'Your access token for this server')
-  const submit = document.createElement('button')
-  submit.className = 'btn btn-sm btn-primary'
-  submit.textContent = server.status === 'connected' ? 'Update' : 'Connect'
-
-  const status = document.createElement('p')
-  status.className = 'text-xs opacity-60'
-  status.style.marginTop = '0.25rem'
-  status.textContent =
-    server.status === 'needs-token'
-      ? 'This server needs an access token from whoever runs it.'
-      : server.status === 'unreachable'
-        ? (server.error ?? 'Could not be reached.')
-        : server.tokenUsable === false
-          ? 'Your saved token was not accepted. Connected without it.'
-          : server.isAdmin
-            ? 'Your token can change this server.'
-            : 'Your token can read this server.'
-
-  const attempt = async (): Promise<void> => {
-    const value = code.value.trim()
-    if (value === '') return
-    status.className = 'text-xs opacity-60'
-    status.textContent = 'Checking…'
-    const next = await whileBusy(
-      submit,
-      () => probeServer(server.url, value),
-      `server:probe:${server.url}`,
-    )
-    if (next === null) return
-    if (next.superseded === true) return
-    if (!stillConnected(server)) return
-    if (next.status === 'connected') {
-      cancelDestinationAdmissions(server.url)
-      upsertServer(next)
-      // Closed again, because what was open for is done. Left open, a row that opened itself would
-      // stay open on a pane that is otherwise a short list of servers.
-      expandedServers.delete(server.url)
-      showView('settings')
-      return
-    }
-    // A wrong token and an unreachable server are different problems with different fixes, so they
-    // must not share a message.
-    const message =
-      next.status === 'needs-token'
-        ? 'That token was not accepted. Ask whoever runs the server for a current one.'
-        : `Could not reach the server. ${next.error ?? ''}`.trim()
-    // A background redraw during the probe leaves this row's status element detached, and writing
-    // the failure into it put the answer somewhere nobody can see. Say it out loud instead.
-    if (!status.isConnected) {
-      toast(message, 'error')
-      return
-    }
-    status.className = 'text-xs text-error'
-    status.textContent = message
-  }
-
-  submit.addEventListener('click', () => void attempt())
-  code.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') void attempt()
-  })
-  codeRow.append(code, submit)
-  body.append(codeRow, status)
-
-  // Only for someone who can actually use it. The routes are admin-only, so for anyone else this
-  // would be a section that exists to say 403.
-  if (server.isAdmin) body.appendChild(accessTokenSection(server))
-
-  const disconnect = document.createElement('button')
-  disconnect.className = 'btn btn-sm btn-ghost text-error'
-  disconnect.style.marginTop = '0.75rem'
-  disconnect.textContent = 'Disconnect'
-  disconnect.addEventListener('click', () => void disconnectServer(server))
-  body.appendChild(disconnect)
-
-  wrap.appendChild(body)
-  return wrap
+  return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${unit}`
 }
 
-/**
- * How overlays look: the defaults every overlay follows, and the colours any of them may draw.
- *
- * Its own view rather than a section of settings. Settings is a page you visit rarely — a server to
- * connect, a switch to flip once — while this is the page you come back to constantly, and burying
- * a colour grid below server plumbing made the thing used most the thing furthest down.
- *
- * Everything here is a *default*. An overlay that has been given settings of its own ignores all of
- * it; see `hiddenColoursFor`.
- */
-const settingsView = (): HTMLElement => {
-  const view = document.createElement('div')
-  Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
+const formatMilliseconds = (value: number): string => `${value.toFixed(value >= 10 ? 1 : 2)} ms`
 
-  view.appendChild(sectionHeader('Servers', 'server'))
-  const addRow = document.createElement('div')
-  addRow.className = 'px-3 pb-2 flex gap-2'
-  const url = document.createElement('input')
-  url.dataset.caelestisDraft = 'add-server'
-  url.type = 'url'
-  url.className = 'input input-sm input-bordered'
-  url.style.flex = '1'
-  url.style.minWidth = '0'
-  url.placeholder = 'https://templates.example.org'
-  const add = document.createElement('button')
-  add.className = 'btn btn-sm btn-primary'
-  add.textContent = 'Add'
-  const status = document.createElement('p')
-  status.className = 'text-xs px-3 pb-2'
-  status.style.display = 'none'
+const settingsModel = (): SettingsModel => {
+  const state = getState()
+  for (const server of state.servers) {
+    if (server.status === 'needs-token' && !autoExpanded.has(server.url)) {
+      autoExpanded.add(server.url)
+      expandedServers.add(server.url)
+    }
+  }
+  const snapshot = isProfileEnabled() ? profileSnapshot() : null
+  return {
+    servers: state.servers.map((server) => {
+      const message = settingsMessages.get(server.url)
+      return {
+        url: server.url,
+        name: server.info?.name ?? server.url,
+        status: server.status,
+        ...(server.error === undefined ? {} : { error: server.error }),
+        expanded: expandedServers.has(server.url),
+        tokenSaved: server.token !== null,
+        ...(server.tokenUsable === undefined ? {} : { tokenUsable: server.tokenUsable }),
+        isAdmin: server.isAdmin,
+        ...(pendingServers.has(server.url) ? { pending: true } : {}),
+        ...(message === undefined ? {} : { message }),
+      }
+    }),
+    ...(addServerPending ? { addServerPending: true } : {}),
+    ...(addServerMessage === undefined ? {} : { addServerMessage }),
+    colourNavigationOrder: state.colourNavigationOrder,
+    reportPaints: state.reportPaints,
+    shareTiles: state.shareTiles,
+    debugLogging: isDebugEnabled(),
+    performanceProfiling: isProfileEnabled(),
+    ...(snapshot === null
+      ? {}
+      : {
+          profile: {
+            note: 'CPU and GPU cover measured Caelestis work. Frame timing, long tasks and heap cover the whole tab.',
+            metrics: [
+              {
+                id: 'main',
+                label: 'Measured CPU',
+                value: `${snapshot.cpu.main.dutyPercent.toFixed(2)}%`,
+              },
+              {
+                id: 'worker',
+                label: 'Worker CPU',
+                value: `${snapshot.cpu.worker.dutyPercent.toFixed(2)}%`,
+              },
+              {
+                id: 'gpu',
+                label: 'Overlay GPU',
+                value:
+                  snapshot.gpu.supported === false
+                    ? 'Unavailable'
+                    : snapshot.gpu.count === 0
+                      ? 'Waiting for a frame'
+                      : formatMilliseconds(snapshot.gpu.averageMs),
+              },
+              {
+                id: 'buffers',
+                label: 'Known buffers',
+                value: formatBytes(snapshot.memory.knownTotalBytes),
+              },
+              {
+                id: 'heap',
+                label: 'Page JS heap',
+                value: formatBytes(snapshot.memory.pageUsedJSHeapBytes),
+              },
+              {
+                id: 'frames',
+                label: 'Frame p95',
+                value:
+                  snapshot.frames.count === 0
+                    ? 'Waiting for a frame'
+                    : `${formatMilliseconds(snapshot.frames.p95Ms)} · ${snapshot.frames.estimatedFps?.toFixed(0) ?? '0'} fps`,
+              },
+              {
+                id: 'long-tasks',
+                label: 'Page long tasks',
+                value: `${snapshot.longTasks.count} · ${formatMilliseconds(snapshot.longTasks.totalMs)}`,
+              },
+            ],
+            ...(profileStatus === undefined ? {} : { status: profileStatus }),
+          },
+        }),
+  }
+}
 
-  const connect = async (): Promise<void> => {
-    const value = url.value.trim()
-    if (value === '') return
+const refreshSettings = (): void => {
+  if (open && currentView === 'settings') showView('settings')
+}
+
+let profileTimer: number | null = null
+const syncProfileTimer = (): void => {
+  const wanted = open && currentView === 'settings' && isProfileEnabled()
+  if (wanted && profileTimer === null) {
+    profileTimer = window.setInterval(refreshSettings, 1_000)
+  } else if (!wanted && profileTimer !== null) {
+    window.clearInterval(profileTimer)
+    profileTimer = null
+  }
+}
+
+const connectServer = async (value: string): Promise<void> => {
+  if (addServerPending) return
+  addServerPending = true
+  addServerMessage = 'Connecting…'
+  refreshSettings()
+  try {
     let canonical: string | null = null
     try {
       canonical = canonicalServerUrl(value)
     } catch {
-      // Let probeServer render the existing invalid-address error below.
+      /* probe reports the address error */
     }
     if (canonical !== null && getState().servers.some((server) => server.url === canonical)) {
-      status.style.display = ''
-      status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = `${canonical} is already connected.`
+      addServerMessage = `${canonical} is already connected.`
       return
     }
     if (canonical !== null && disconnectingServerUrls.has(canonical)) {
-      status.style.display = ''
-      status.className = 'text-xs px-3 pb-2 opacity-60'
-      status.textContent = `Still disconnecting ${canonical}. Try again in a moment.`
+      addServerMessage = `Still disconnecting ${canonical}. Try again in a moment.`
       return
     }
-    status.style.display = ''
-    status.className = 'text-xs px-3 pb-2 opacity-60'
-    status.textContent = 'Connecting…'
-    // Keyed on the URL being probed rather than on the button, because the settings pane is rebuilt
-    // on any state change and hands back a fresh enabled one — the case `whileBusy`'s own docstring
-    // names, and these two probes are the example in it.
-    const server = await whileBusy(add, () => probeServer(value, null), `server:probe:${value}`)
-    if (server === null) return
+    const server = await probeServer(value, null)
     if (server.superseded === true) return
     if (server.status === 'unreachable') {
-      status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
+      addServerMessage = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
       return
     }
-    const fail = (message: string): void => {
-      status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = message
-    }
-    // This probe was anonymous, so writing it over a URL that is already connected replaces a
-    // working token with nothing: a protected server drops to "needs a token" and an open one loses
-    // its admin credential. Adding a server you already have is a no-op with an explanation.
     if (getState().servers.some((one) => one.url === server.url)) {
-      fail(`${server.url} is already connected.`)
+      addServerMessage = `${server.url} is already connected.`
       return
     }
-    // `upsertServer` refuses past the limit. Ignoring that cleared the field and redrew the view, so
-    // the thirty-third server looked added and simply was not there.
     if (!upsertServer(server)) {
-      fail(`Already connected to ${MAX_CONNECTED_SERVERS} servers. Disconnect one first.`)
+      addServerMessage = `Already connected to ${MAX_CONNECTED_SERVERS} servers. Disconnect one first.`
       return
     }
-    url.value = ''
-    // Re-render so the new server's row appears — it is what carries the status badge and, when the
-    // server wants one, the access-token field. Without this the panel reported "needs a token" and
-    // then offered nowhere to type one.
-    showView('settings')
+    addServerMessage = undefined
+  } finally {
+    addServerPending = false
+    refreshSettings()
   }
-
-  add.addEventListener('click', () => void connect())
-  url.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') void connect()
-  })
-  addRow.append(url, add)
-  view.appendChild(addRow)
-  view.appendChild(status)
-
-  for (const server of getState().servers) view.appendChild(serverRow(server))
-
-  const state = getState()
-
-  view.appendChild(sectionHeader('Painting', 'palette'))
-  const navigationOrder = document.createElement('select')
-  navigationOrder.className = 'select select-bordered select-sm'
-  navigationOrder.setAttribute('aria-label', 'Middle-click colour order')
-  for (const [value, label] of [
-    ['unpainted-first', 'Unpainted, then mismatched'],
-    ['mismatched-first', 'Mismatched, then unpainted'],
-  ] satisfies ReadonlyArray<readonly [ColourNavigationOrder, string]>) {
-    const option = document.createElement('option')
-    option.value = value
-    option.textContent = label
-    option.selected = value === state.colourNavigationOrder
-    navigationOrder.appendChild(option)
-  }
-  navigationOrder.addEventListener('change', () => {
-    setState({ colourNavigationOrder: navigationOrder.value as ColourNavigationOrder })
-  })
-  view.appendChild(
-    settingRow(
-      'Middle-click colour order',
-      'Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.',
-      navigationOrder,
-    ),
-  )
-
-  view.appendChild(sectionHeader('Contribution', 'share'))
-  view.appendChild(
-    settingRow(
-      'Report my activity',
-      'Shares paint activity only in areas covered by server templates, and only with the servers providing those templates. Together with shared tiles, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
-      checkbox(state.reportPaints, (next) => setState({ reportPaints: next })),
-    ),
-  )
-  view.appendChild(
-    settingRow(
-      'Share tiles',
-      'Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates. Together with reported activity, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
-      checkbox(state.shareTiles, (next) => setState({ shareTiles: next })),
-    ),
-  )
-
-  view.appendChild(sectionHeader('Diagnostics', 'bug'))
-  view.appendChild(
-    settingRow(
-      'Debug logging',
-      'Verbose console output for bug reports',
-      checkbox(isDebugEnabled(), (next) => {
-        setDebugEnabled(next)
-      }),
-    ),
-  )
-  view.appendChild(
-    settingRow(
-      'Performance profiling',
-      'Measures Caelestis CPU, GPU and known buffers. Profiling adds a small overhead.',
-      checkbox(isProfileEnabled(), (next) => {
-        setProfileEnabled(next)
-        showView('settings')
-      }),
-    ),
-  )
-  if (isProfileEnabled()) view.appendChild(profilePanel())
-  return view
 }
 
-let activeTreeAdapter: TemplateTreeAdapter | null = null
+const updateServerToken = async (url: string, token: string): Promise<void> => {
+  const server = getState().servers.find((candidate) => candidate.url === url)
+  if (server === undefined || pendingServers.has(url)) return
+  pendingServers.add(url)
+  settingsMessages.set(url, 'Checking…')
+  refreshSettings()
+  try {
+    const next = await probeServer(url, token)
+    if (next.superseded === true || !stillConnected(server)) return
+    if (next.status === 'connected') {
+      cancelDestinationAdmissions(url)
+      upsertServer(next)
+      expandedServers.delete(url)
+      settingsMessages.delete(url)
+      return
+    }
+    settingsMessages.set(
+      url,
+      next.status === 'needs-token'
+        ? 'That token was not accepted. Ask whoever runs the server for a current one.'
+        : `Could not reach the server. ${next.error ?? ''}`.trim(),
+    )
+  } finally {
+    pendingServers.delete(url)
+    refreshSettings()
+  }
+}
+
+const handleSettingsIntent = (intent: SettingsIntent): void => {
+  switch (intent.type) {
+    case 'add-server':
+      void connectServer(intent.url)
+      break
+    case 'toggle-server':
+      if (intent.expanded) expandedServers.add(intent.url)
+      else expandedServers.delete(intent.url)
+      refreshSettings()
+      break
+    case 'prefetch-server': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server !== undefined) prefetchAccessTokens(server)
+      break
+    }
+    case 'update-server-token':
+      void updateServerToken(intent.url, intent.token)
+      break
+    case 'disconnect-server': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server !== undefined) void disconnectServer(server)
+      break
+    }
+    case 'set-colour-navigation-order':
+      setState({ colourNavigationOrder: intent.value })
+      break
+    case 'set-boolean':
+      if (intent.key === 'debugLogging') setDebugEnabled(intent.value)
+      else if (intent.key === 'performanceProfiling') setProfileEnabled(intent.value)
+      else setState({ [intent.key]: intent.value })
+      refreshSettings()
+      break
+    case 'reset-profile':
+      resetProfile()
+      profileStatus = 'Reset'
+      refreshSettings()
+      break
+    case 'copy-profile':
+      if (navigator.clipboard === undefined) {
+        profileStatus = 'Clipboard unavailable'
+        refreshSettings()
+        break
+      }
+      void navigator.clipboard.writeText(profileReport()).then(
+        () => {
+          profileStatus = 'Copied'
+          refreshSettings()
+        },
+        () => {
+          profileStatus = 'Clipboard unavailable'
+          refreshSettings()
+        },
+      )
+      break
+  }
+}
+
+const settingsSlots = (): HTMLElement[] =>
+  getState().servers.flatMap((server) => {
+    if (!server.isAdmin || !expandedServers.has(server.url)) return []
+    const section = accessTokenSection(server)
+    section.slot = `server-admin:${server.url}`
+    return [section]
+  })
 
 const appearanceModel = (): AppearanceEditorModel => {
   const state = getState()
@@ -903,6 +762,7 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
     ? { tree: activeTreeAdapter.model }
     : {}),
   ...(currentView === 'appearance' ? { appearance: appearanceModel() } : {}),
+  ...(currentView === 'settings' ? { settings: settingsModel() } : {}),
 })
 
 /** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
@@ -951,6 +811,9 @@ const buildSveltePanel = (): CaelestisPanel => {
         break
       case 'appearance':
         handleAppearanceIntent(intent.intent)
+        break
+      case 'settings':
+        handleSettingsIntent(intent.intent)
         break
     }
   })
@@ -1006,29 +869,13 @@ const rerenderTree = (): void => {
  * handler lives outside the builder that made the handle.
  */
 
-const scrollerIn = (view: Element | null): HTMLElement | null =>
-  view?.querySelector<HTMLElement>('[data-caelestis-scroller]') ??
-  (view instanceof HTMLElement ? view : null)
-
 const showView = (view: View): void => {
-  const staying = currentView === view
   currentView = view
   const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
   if (panel === null) return
 
-  /**
-   * Keep the scroll position when re-rendering the view you are already on.
-   *
-   * Every control here re-renders by rebuilding the whole view, which throws away the scroller with
-   * it — so toggling a colour near the bottom of settings jumped back to the top, and toggling the
-   * next one meant scrolling down again. Switching *between* views still starts at the top, which is
-   * right: that is a new thing to read, not the same one redrawn.
-   */
-  const previous = scrollerIn(panel.firstElementChild)
-  const scrollTop = staying && previous !== null ? previous.scrollTop : 0
-
-  const next = view === 'settings' ? settingsView() : null
-  panel.replaceChildren(...(next === null ? [] : [next]))
+  if (view === 'settings') settingsModel()
+  panel.replaceChildren(...(view === 'settings' ? settingsSlots() : []))
   if (view === 'tree') {
     activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
     void primeFromCache(rerenderTree)
@@ -1036,9 +883,8 @@ const showView = (view: View): void => {
     activeTreeAdapter = null
     if (view === 'appearance') refreshAccount(refreshView)
   }
-  const scroller = scrollerIn(next)
-  if (scrollTop > 0 && scroller !== null) scroller.scrollTop = scrollTop
   panel.model = panelModel(panel.getBoundingClientRect().width)
+  syncProfileTimer()
   log('install', `panel view: ${view}`)
 }
 
@@ -1049,6 +895,7 @@ const setOpen = (next: boolean): void => {
   if (!open) {
     cancelTreeActionSetup(new Error('panel closed'))
     existing?.remove()
+    syncProfileTimer()
     // Give map-anchored controls the reclaimed width immediately, even while the map is still.
     redraw()
     return

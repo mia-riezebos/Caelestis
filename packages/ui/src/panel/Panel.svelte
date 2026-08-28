@@ -2,6 +2,7 @@
   import Button from '../foundations/Button.svelte'
   import AppearanceEditor from '../appearance/AppearanceEditor.svelte'
   import TemplateTree from '../tree/TemplateTree.svelte'
+  import SettingsPanel from '../settings/SettingsPanel.svelte'
   import type { PanelIntent, PanelProps, PanelView } from '../types.js'
 
   let { model, children, onIntent }: PanelProps = $props()
@@ -99,6 +100,8 @@
       <TemplateTree model={model.tree} onIntent={(intent) => emit({ type: 'tree', intent })} />
     {:else if model.view === 'appearance' && model.appearance !== undefined}
       <AppearanceEditor model={model.appearance} onIntent={(intent) => emit({ type: 'appearance', intent })} />
+    {:else if model.view === 'settings' && model.settings !== undefined}
+      <SettingsPanel model={model.settings} onIntent={(intent) => emit({ type: 'settings', intent })} />
     {:else if children !== undefined}
       {@render children()}
     {/if}
