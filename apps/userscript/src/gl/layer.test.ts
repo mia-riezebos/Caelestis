@@ -55,7 +55,7 @@ vi.mock('../templates/local-store.js', () => ({
     })),
 }))
 vi.mock('../tile-transform.js', () => ({
-  completedQuads: () => [
+  underlayQuads: () => [
     {
       tile: { x: 0, y: 0 },
       x: 0,

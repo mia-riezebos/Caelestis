@@ -11,6 +11,7 @@ import {
   enqueueBySize,
   ensureTilePixels,
   install,
+  livePixelArtQuads,
   loadTilePixels,
   onAcceptedPaint,
   onFetchedTile,
@@ -149,6 +150,61 @@ describe('quadFromMatrix', () => {
 
     expect(quad?.width).toBeCloseTo(131_072, 6)
     expect(quad?.height).toBeCloseTo(131_072, 6)
+  })
+})
+
+describe('livePixelArtQuads', () => {
+  it('uses MapLibre current tile coordinates and its moving alignment mode', () => {
+    const coordinate = {
+      key: 'current',
+      canonical: { z: 11, x: 3, y: 4 },
+      overscaledZ: 11,
+      wrap: 0,
+    }
+    const calculatePosMatrix = vi.fn(() => new Float32Array(tileMatrix(1)))
+    const map = {
+      painter: {
+        options: { moving: true },
+        transform: { calculatePosMatrix },
+      },
+      style: {
+        tileManagers: {
+          'pixel-art-layer': {
+            getVisibleCoordinates: () => [coordinate],
+          },
+        },
+      },
+    }
+
+    expect(livePixelArtQuads(map, canvas(1_000))).toEqual([
+      { tile: { x: 3, y: 4 }, x: 250, y: 250, width: 500, height: 500 },
+    ])
+    expect(calculatePosMatrix).toHaveBeenCalledWith(coordinate, false, true)
+  })
+
+  it('uses aligned raster matrices when the map is settled', () => {
+    const coordinate = { canonical: { x: 3, y: 4 } }
+    const calculatePosMatrix = vi.fn(() => new Float32Array(tileMatrix(1)))
+    const map = {
+      painter: {
+        options: { moving: false },
+        transform: { calculatePosMatrix },
+      },
+      style: {
+        tileManagers: {
+          'pixel-art-layer': {
+            getVisibleCoordinates: () => [coordinate],
+          },
+        },
+      },
+    }
+
+    expect(livePixelArtQuads(map, canvas(1_000))).toHaveLength(1)
+    expect(calculatePosMatrix).toHaveBeenCalledWith(coordinate, true, true)
+  })
+
+  it('reports unavailable private MapLibre state for the compatibility fallback', () => {
+    expect(livePixelArtQuads({}, canvas(1_000))).toBeNull()
   })
 })
 

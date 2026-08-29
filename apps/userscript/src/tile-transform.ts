@@ -381,6 +381,64 @@ export const quadFromMatrix = (
   return { tile, x, y, width, height }
 }
 
+/**
+ * Current pixel-art tile quads from the same MapLibre matrix generator its raster layer uses.
+ *
+ * This deliberately accepts `unknown`: everything below the Map object is private MapLibre state,
+ * so callers should only learn that a live answer exists or does not. A missing or changed internal
+ * returns null and lets the underlay fall back to the last intercepted frame.
+ */
+export const livePixelArtQuads = (
+  map: unknown,
+  canvas: HTMLCanvasElement,
+): readonly TileQuad[] | null => {
+  try {
+    const candidate = map as {
+      painter?: {
+        options?: { moving?: boolean }
+        transform?: {
+          calculatePosMatrix?: (
+            coordinate: unknown,
+            aligned?: boolean,
+            asFloat32?: boolean,
+          ) => ArrayLike<number>
+        }
+      }
+      style?: {
+        tileManagers?: ReadonlyMap<string, unknown> | Record<string, unknown>
+      }
+    }
+    const managers = candidate.style?.tileManagers
+    const manager =
+      managers instanceof Map
+        ? managers.get('pixel-art-layer')
+        : ((managers as Record<string, unknown> | undefined)?.['pixel-art-layer'] ?? null)
+    const visible = (manager as { getVisibleCoordinates?: () => unknown } | null)
+      ?.getVisibleCoordinates
+    const calculate = candidate.painter?.transform?.calculatePosMatrix
+    if (typeof visible !== 'function' || typeof calculate !== 'function') return null
+    const coordinates = visible.call(manager)
+    if (!Array.isArray(coordinates)) return null
+
+    const aligned = candidate.painter?.options?.moving !== true
+    const quads: TileQuad[] = []
+    for (const coordinate of coordinates) {
+      const canonical = (coordinate as { canonical?: { x?: unknown; y?: unknown } })?.canonical
+      if (!Number.isInteger(canonical?.x) || !Number.isInteger(canonical?.y)) continue
+      const matrix = calculate.call(candidate.painter?.transform, coordinate, aligned, true)
+      const quad = quadFromMatrix(
+        matrix,
+        { x: Number(canonical?.x), y: Number(canonical?.y) },
+        canvas,
+      )
+      if (quad !== null) quads.push(quad)
+    }
+    return quads
+  } catch {
+    return null
+  }
+}
+
 let frameDraws = 0
 let frameTileDraws = 0
 /** Whether the overlay currently has anything painted on it, so a clear is worth doing once. */
@@ -427,6 +485,22 @@ export const currentQuads = (): readonly TileQuad[] => (scheduled ? pending : la
 
 /** The most recent complete tile frame, for layers that must render before Wplace's art layer. */
 export const completedQuads = (): readonly TileQuad[] => lastQuads
+
+/** Current-frame quads for a layer that renders before Wplace art, with a safe stale fallback. */
+export const underlayQuads = (): readonly TileQuad[] => {
+  const map = getMap() as { getCanvas?: () => HTMLCanvasElement } | null
+  let canvas = mapCanvas
+  if (canvas === null) {
+    try {
+      canvas = map?.getCanvas?.() ?? null
+    } catch {}
+  }
+  if (map !== null && canvas !== null) {
+    const live = livePixelArtQuads(map, canvas)
+    if (live !== null) return live
+  }
+  return completedQuads()
+}
 
 const flush = (): void => {
   scheduled = false

@@ -20,7 +20,7 @@ import {
   type PlacedTemplate,
 } from '../templates/local-store.js'
 import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
-import { completedQuads, currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
+import { currentQuads, isDrawingTiles, type TileQuad, underlayQuads } from '../tile-transform.js'
 import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
 import { colourFades, templateFades } from './fade.js'
@@ -1043,14 +1043,14 @@ export const outlineLayer = {
     for (const entry of gpu.values()) entry.palettePreparedForOverlay = false
     if (isOverlayPeekActive() || !isDrawingTiles()) return
     const map = getMap() as { triggerRepaint?: () => void } | null
-    // The current frame's tile quads are emitted later in the layer stack, so this underlay uses
-    // the previous complete frame while the map moves. That can trail by one frame, but retaining
-    // the outline is less disruptive than making it disappear throughout every pan and zoom.
-    const completed = completedQuads()
-    if (completed.length === 0) return
+    // MapLibre exposes the same current tile matrices its raster layer will upload later in this
+    // frame. The coordinate module reads those early, with the intercepted previous frame only as
+    // a compatibility fallback when private MapLibre state is unavailable.
+    const underlay = underlayQuads()
+    if (underlay.length === 0) return
     // Match the shader's close-zoom cutoff on the CPU too. At distant zoom there is no room for an
     // individual ring, so avoid issuing draws whose every fragment would immediately discard.
-    const tiles = completed.filter(
+    const tiles = underlay.filter(
       (tile) => tile.width / TILE_SIZE > 1 / 0.75 && tile.height / TILE_SIZE > 1 / 0.75,
     )
     if (tiles.length === 0) return
