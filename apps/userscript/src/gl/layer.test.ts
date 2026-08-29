@@ -17,8 +17,10 @@ const harness = vi.hoisted(() => ({
   visible: true,
   size: 1,
   opacity: 1,
+  hiddenColours: [] as number[],
   transitionedSize: null as number | null,
   fade: { value: 0, done: false },
+  outlineFade: { value: 1, done: true },
 }))
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
@@ -26,7 +28,9 @@ vi.mock('../map-handle.js', () => ({
   getMap: () => harness.map,
 }))
 vi.mock('../templates/appearance.js', () => ({ isPlain: () => true }))
-vi.mock('../templates/colour-filter.js', () => ({ hiddenColoursFor: () => [] }))
+vi.mock('../templates/colour-filter.js', () => ({
+  hiddenColoursFor: () => harness.hiddenColours,
+}))
 vi.mock('../templates/local-store.js', () => ({
   appearanceOf: () => ({
     size: harness.size,
@@ -52,7 +56,7 @@ vi.mock('../templates/local-store.js', () => ({
     })),
 }))
 vi.mock('../tile-transform.js', () => ({
-  completedQuads: () => [
+  underlayQuads: () => [
     {
       tile: { x: 0, y: 0 },
       x: 0,
@@ -65,7 +69,14 @@ vi.mock('../tile-transform.js', () => ({
   isDrawingTiles: () => true,
 }))
 vi.mock('./fade.js', () => ({
-  colourFades: { advance: () => ({ value: 1, done: true }), prune: vi.fn() },
+  colourFades: {
+    advance: (_key: string, target: number) => ({ value: target, done: true }),
+    prune: vi.fn(),
+  },
+  outlineFades: {
+    advance: () => harness.outlineFade,
+    prune: vi.fn(),
+  },
   templateFades: {
     advance: () => harness.fade,
     value: () => harness.fade.value,
@@ -183,6 +194,7 @@ beforeEach(() => {
     isMoving: () => harness.moving,
   }
   harness.fade = { value: 0, done: false }
+  harness.outlineFade = { value: 1, done: true }
   harness.indices = new Uint8Array([0])
   harness.width = 1
   harness.height = 1
@@ -197,6 +209,7 @@ beforeEach(() => {
   harness.visible = true
   harness.size = 1
   harness.opacity = 1
+  harness.hiddenColours = []
   harness.transitionedSize = null
 })
 
@@ -330,11 +343,37 @@ describe('overlay layer', () => {
 
     expect(context.texSubImage2D).not.toHaveBeenCalled()
     expect(context.uniform1i).toHaveBeenCalledWith('u_darkTheme', 1)
-    expect(context.uniform1f).toHaveBeenCalledWith('u_outlineSize', 1.25)
+    expect(context.uniform1f).toHaveBeenCalledWith('u_outlineWidth', 0.15625)
     expect(context.drawArrays).toHaveBeenCalledOnce()
   })
 
-  it('omits the outline while the map moves or the template setting is off', async () => {
+  it('refreshes the shared visibility palette before drawing an outline', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    vi.mocked(context.texImage2D).mockClear()
+    vi.mocked(context.drawArrays).mockClear()
+
+    harness.hiddenColours = [0]
+    outlineLayer.draw(context, null)
+
+    const paletteUpload = vi
+      .mocked(context.texImage2D)
+      .mock.calls.find((call) => call[2] === context.RGBA)
+    expect(paletteUpload).toBeDefined()
+    if (paletteUpload === undefined) throw new Error('visibility palette was not uploaded')
+    expect((paletteUpload[8] as Uint8Array)[3]).toBe(0)
+    expect(context.drawArrays).toHaveBeenCalledOnce()
+
+    vi.mocked(context.texImage2D).mockClear()
+    overlayLayer.draw(context, null)
+    expect(context.texImage2D).not.toHaveBeenCalled()
+  })
+
+  it('keeps the outline visible while the map moves', async () => {
     const { outlineLayer, overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }
     const context = gl()
@@ -345,17 +384,56 @@ describe('overlay layer', () => {
 
     harness.moving = true
     outlineLayer.draw(context, null)
-    expect(context.drawArrays).not.toHaveBeenCalled()
+    expect(context.drawArrays).toHaveBeenCalledOnce()
 
+    vi.mocked(context.drawArrays).mockClear()
     harness.moving = false
     harness.contrastOutline = false
+    harness.outlineFade = { value: 0, done: true }
     outlineLayer.draw(context, null)
     expect(context.drawArrays).not.toHaveBeenCalled()
+  })
 
-    harness.contrastOutline = true
+  it('fades outline visibility and requests frames until the ramp settles', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    outlineLayer.draw(context, null)
+    vi.mocked(context.uniform1f).mockClear()
+    vi.mocked(context.drawArrays).mockClear()
+    vi.mocked(harness.triggerRepaint).mockClear()
+
+    harness.contrastOutline = false
+    harness.outlineFade = { value: 0.5, done: false }
+    outlineLayer.draw(context, null)
+
+    expect(context.uniform1f).toHaveBeenCalledWith('u_fade', 0.5)
+    expect(context.drawArrays).toHaveBeenCalledOnce()
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
+
+    vi.mocked(context.drawArrays).mockClear()
+    vi.mocked(harness.triggerRepaint).mockClear()
+    harness.outlineFade = { value: 0, done: true }
+    outlineLayer.draw(context, null)
+    expect(context.drawArrays).not.toHaveBeenCalled()
+    expect(harness.triggerRepaint).not.toHaveBeenCalled()
+  })
+
+  it('keeps the zoom-scaled outline available below one screen pixel per canvas pixel', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    vi.mocked(context.drawArrays).mockClear()
+
     harness.completedTileSize = 1_000
     outlineLayer.draw(context, null)
-    expect(context.drawArrays).not.toHaveBeenCalled()
+    expect(context.drawArrays).toHaveBeenCalledOnce()
   })
 
   it('keeps the outline aligned with a fading and transitioning overlay', async () => {

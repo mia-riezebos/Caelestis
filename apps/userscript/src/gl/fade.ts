@@ -142,3 +142,6 @@ export const markerFades = ramps({ startAt: 'target' })
  * breaking rather than as a filter being applied.
  */
 export const colourFades = ramps({ startAt: 'target' })
+
+/** Each template's contrast outline, independently of the template it surrounds. */
+export const outlineFades = ramps({ startAt: 'target' })

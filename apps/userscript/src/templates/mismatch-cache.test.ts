@@ -6,10 +6,12 @@ import type { ScanOutcome } from './mismatch-scan.js'
 
 const harness = vi.hoisted(() => ({
   pixels: new Uint8Array(1_000 * 1_000).fill(1),
+  draft: null as Uint8Array | null,
   templates: [] as PlacedTemplate[],
   serverMask: null as MismatchMask | null,
   workerAvailable: false,
   markersEnabled: true,
+  visible: true,
   pixelsAvailable: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   idleCallbacks: [] as Array<(deadline: { timeRemaining: () => number }) => void>,
@@ -20,7 +22,7 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('../debug.js', () => ({ count: vi.fn() }))
 vi.mock('../tile-transform.js', () => ({
-  draftPixels: () => null,
+  draftPixels: () => harness.draft,
   ensureTilePixels: vi.fn(),
   loadTilePixels: async () => harness.pixels,
   onTilePixel: vi.fn(),
@@ -44,7 +46,7 @@ vi.mock('./local-store.js', () => ({
     markUnpainted: false,
   }),
   displayTemplates: () => harness.templates,
-  isTemplateVisible: () => true,
+  isTemplateVisible: () => harness.visible,
   onLocalChange: vi.fn(),
   templateTileKeys: (template: PlacedTemplate) => template.tiles.keys(),
 }))
@@ -79,9 +81,11 @@ beforeEach(() => {
   vi.spyOn(performance, 'now').mockReturnValue(0)
   harness.templates = Array.from({ length: 129 }, (_, index) => template(index))
   harness.pixels.fill(1)
+  harness.draft = null
   harness.serverMask = null
   harness.workerAvailable = false
   harness.markersEnabled = true
+  harness.visible = true
   harness.pixelsAvailable = true
   harness.workerScan.mockReset()
   harness.idleCallbacks = []
@@ -156,6 +160,45 @@ describe('visible mismatch answer retention', () => {
     expect(progressIn(selected, { x: 0, y: 0 })).toBe(true)
     endMismatchFrame()
     expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 })
+  })
+
+  it('cold-loads every local template tile when a progress consumer asks after reload', async () => {
+    const selected = template(209)
+    harness.templates = [selected]
+    harness.pixels[0] = 0
+    harness.pixelsAvailable = false
+    const { pixelAccounting } = await import('./mismatch.js')
+
+    expect(pixelAccounting.read(selected).colours).toEqual([
+      { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 1 },
+    ])
+    expect(harness.idleCallbacks).toHaveLength(1)
+
+    harness.pixelsAvailable = true
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 50 })
+
+    expect(pixelAccounting.read(selected).colours).toEqual([
+      { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
+    ])
+  })
+
+  it('cold-loads progress for a hidden local template without admitting unrelated tiles', async () => {
+    const selected = template(210)
+    harness.templates = [selected]
+    harness.visible = false
+    harness.pixels[0] = 0
+    harness.pixelsAvailable = false
+    const { pixelAccounting } = await import('./mismatch.js')
+
+    expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 0, known: 0 })
+    expect(pixelAccounting.wantsTilePixels()).toBe(true)
+    expect(pixelAccounting.wantsTilePixels({ x: 0, y: 0 })).toBe(true)
+    expect(pixelAccounting.wantsTilePixels({ x: 1, y: 0 })).toBe(false)
+
+    harness.pixelsAvailable = true
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 50 })
+
+    expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
   })
 
   it('exposes unpainted cells independently of the mismatch-marker threshold', async () => {
@@ -410,10 +453,10 @@ describe('visible mismatch answer retention', () => {
   it('invalidates a busy tile once instead of patching every announced pixel', async () => {
     const selected = template(203)
     harness.templates = [selected]
-    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
-    beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
-    endMismatchFrame()
+    const { pixelAccounting } = await import('./mismatch.js')
+    expect(
+      pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 })?.markers),
+    ).toHaveLength(1)
 
     harness.workerAvailable = true
     harness.workerScan.mockReturnValueOnce(new Promise(() => undefined))
@@ -422,9 +465,9 @@ describe('visible mismatch answer retention', () => {
       | undefined
     listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 1]).flat())
 
-    beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
-    endMismatchFrame()
+    expect(
+      pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 })?.markers),
+    ).toHaveLength(1)
     expect(harness.workerScan).toHaveBeenCalledOnce()
   })
 
@@ -477,10 +520,12 @@ describe('visible mismatch answer retention', () => {
     harness.serverMask = decodeMismatchMask(
       encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
     )
-    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
-    beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
-    endMismatchFrame()
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn, pixelAccounting } = await import(
+      './mismatch.js'
+    )
+    expect(
+      pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 })?.markers),
+    ).toHaveLength(1)
 
     harness.pixels.fill(0)
     harness.workerAvailable = true
@@ -512,5 +557,69 @@ describe('visible mismatch answer retention', () => {
     beginMismatchFrame()
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()
+  })
+
+  it('keeps a server mismatch marked after a wrong draft is removed', async () => {
+    const selected = {
+      ...template(207),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.pixelsAvailable = false
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    )
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+
+    harness.draft[0] = 2
+    changed?.({ x: 0, y: 0 }, [0, 0, 2])
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+
+    harness.draft[0] = 255
+    changed?.({ x: 0, y: 0 }, [0, 0, 255])
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+  })
+
+  it('removes a selected-colour disagreement as soon as the correct draft pixel is captured', async () => {
+    const selected = {
+      ...template(208),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.pixelsAvailable = false
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    )
+    const { pixelAccounting } = await import('./mismatch.js')
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+
+    const initial = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(initial?.disagreements).toEqual(new Uint32Array([0]))
+    expect(initial?.markers).toBe(initial?.mismatched)
+
+    harness.draft[0] = 0
+    changed?.({ x: 0, y: 0 }, [0, 0, 0])
+    const fixed = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(fixed?.disagreements).toHaveLength(0)
+    expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
   })
 })

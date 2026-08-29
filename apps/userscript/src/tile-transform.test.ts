@@ -2,16 +2,21 @@ import { decodePng } from '@caelestis/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { counters } from './debug.js'
 import {
+  captureDraftPixels,
   captureTilePixels,
+  clearDraftPixels,
   consumeBySize,
   currentQuads,
+  draftPixels,
   enqueueBySize,
   ensureTilePixels,
   install,
+  livePixelArtQuads,
   loadTilePixels,
   onAcceptedPaint,
   onFetchedTile,
   onTileFrame,
+  onTilePixels,
   project,
   quadFromMatrix,
   resetQueues,
@@ -145,6 +150,77 @@ describe('quadFromMatrix', () => {
 
     expect(quad?.width).toBeCloseTo(131_072, 6)
     expect(quad?.height).toBeCloseTo(131_072, 6)
+  })
+})
+
+describe('livePixelArtQuads', () => {
+  it('uses MapLibre current tile coordinates and its moving alignment mode', () => {
+    const coordinate = {
+      key: 'current',
+      canonical: { z: 11, x: 3, y: 4 },
+      overscaledZ: 11,
+      wrap: 0,
+    }
+    const calculatePosMatrix = vi.fn(() => new Float32Array(tileMatrix(1)))
+    const map = {
+      painter: {
+        options: { moving: true },
+        transform: { calculatePosMatrix },
+      },
+      style: {
+        tileManagers: {
+          'pixel-art-layer': {
+            getVisibleCoordinates: () => [coordinate],
+          },
+        },
+      },
+    }
+
+    expect(livePixelArtQuads(map, canvas(1_000))).toEqual([
+      { tile: { x: 3, y: 4 }, x: 250, y: 250, width: 500, height: 500 },
+    ])
+    expect(calculatePosMatrix).toHaveBeenCalledWith(coordinate, false, true)
+  })
+
+  it('uses aligned raster matrices when the map is settled', () => {
+    const coordinate = { canonical: { x: 3, y: 4 } }
+    const calculatePosMatrix = vi.fn(() => new Float32Array(tileMatrix(1)))
+    const map = {
+      painter: {
+        options: { moving: false },
+        transform: { calculatePosMatrix },
+      },
+      style: {
+        tileManagers: {
+          'pixel-art-layer': {
+            getVisibleCoordinates: () => [coordinate],
+          },
+        },
+      },
+    }
+
+    expect(livePixelArtQuads(map, canvas(1_000))).toHaveLength(1)
+    expect(calculatePosMatrix).toHaveBeenCalledWith(coordinate, true, true)
+  })
+
+  it('accepts a map-like tile-manager collection from another JavaScript realm', () => {
+    const coordinate = { canonical: { x: 3, y: 4 } }
+    const manager = { getVisibleCoordinates: () => [coordinate] }
+    const get = vi.fn((key: string) => (key === 'pixel-art-layer' ? manager : undefined))
+    const map = {
+      painter: {
+        options: { moving: true },
+        transform: { calculatePosMatrix: () => new Float32Array(tileMatrix(1)) },
+      },
+      style: { tileManagers: { get } },
+    }
+
+    expect(livePixelArtQuads(map, canvas(1_000))).toHaveLength(1)
+    expect(get).toHaveBeenCalledWith('pixel-art-layer')
+  })
+
+  it('reports unavailable private MapLibre state for the compatibility fallback', () => {
+    expect(livePixelArtQuads({}, canvas(1_000))).toBeNull()
   })
 })
 
@@ -1391,5 +1467,33 @@ describe('transparent browser hooks', () => {
       Object.getOwnPropertyDescriptor(Response.prototype, 'blob')?.enumerable,
     )
     await expect(response.blob.call(undefined as unknown as Response)).rejects.toThrow()
+  })
+
+  it('announces pixels already present in the first captured draft frame', () => {
+    const observed = vi.fn()
+    onTilePixels(observed)
+    const first = new Uint8Array(1_000 * 1_000).fill(UNPAINTED)
+    first[0] = 4
+    first[1] = 5
+
+    captureDraftPixels({ x: 8, y: 9 }, first)
+
+    expect(observed).toHaveBeenCalledWith({ x: 8, y: 9 }, [0, 0, 4, 1, 0, 5])
+    expect(draftPixels({ x: 8, y: 9 })?.slice(0, 2)).toEqual(new Uint8Array([4, 5]))
+  })
+
+  it('announces canonical server fallback when the paint drawer discards its draft', () => {
+    const observed = vi.fn()
+    onTilePixels(observed)
+    const draft = new Uint8Array(1_000 * 1_000).fill(UNPAINTED)
+    draft[7] = 4
+    draft[1_003] = 5
+    captureDraftPixels({ x: 10, y: 11 }, draft)
+    observed.mockClear()
+
+    clearDraftPixels()
+
+    expect(draftPixels({ x: 10, y: 11 })).toBeNull()
+    expect(observed).toHaveBeenCalledWith({ x: 10, y: 11 }, [7, 0, UNPAINTED, 3, 1, UNPAINTED])
   })
 })

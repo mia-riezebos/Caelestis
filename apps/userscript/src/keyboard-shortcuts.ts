@@ -1,7 +1,7 @@
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
-import { shortcutFor } from './shortcuts.js'
+import { currentShortcutPlatform, type ShortcutPlatform, shortcutFor } from './shortcuts.js'
 import { getState, setState } from './state.js'
 import {
   ownsGroup,
@@ -13,7 +13,8 @@ import {
 import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
 import { togglePanel } from './ui/panel.js'
-import { togglePaintMode } from './wplace-paint.js'
+import { toggleShortcutHelp } from './ui/shortcut-help.js'
+import { redoPaintDraft, togglePaintMode, undoPaintDraft } from './wplace-paint.js'
 
 const triggerMapRepaint = (): void => {
   const map = getMap() as { triggerRepaint?: () => void } | null
@@ -30,6 +31,23 @@ const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void
   }
   const appearance = getState().appearance
   setState({ appearance: { ...appearance, [property]: !appearance[property] } })
+}
+
+const toggleRings = (): void => {
+  const focused = focusedTemplate()
+  if (focused !== null && ownsGroup(focused, 'pixels')) {
+    void toggleAppearanceBoolean(focused.id, 'contrastOutline').then((changed) => {
+      if (!changed) return
+      refreshOverlayMenu()
+      triggerMapRepaint()
+    })
+    return
+  }
+  const appearance = getState().appearance
+  setState({
+    appearance: { ...appearance, contrastOutline: !appearance.contrastOutline },
+  })
+  triggerMapRepaint()
 }
 
 const opacityFor = (shortcut: string): number | null => {
@@ -56,7 +74,10 @@ const opacityFor = (shortcut: string): number | null => {
  * narrow hidden-template restoration mode. Peek is runtime render state and is always released on
  * keyup, blur, disposal, or a hidden tab rather than touching any persisted visibility switch.
  */
-export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
+export const installKeyboardShortcuts = (
+  redraw: () => void,
+  platform: ShortcutPlatform = currentShortcutPlatform(),
+): (() => void) => {
   let peeking = false
   const repaintPeek = (active: boolean): void => {
     if (!setOverlayPeekActive(active)) return
@@ -77,9 +98,19 @@ export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
     if (document.hidden) endPeek()
   }
   const onKeydown = (event: KeyboardEvent): void => {
-    const shortcut = shortcutFor(event)
+    const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
 
+    if (shortcut === 'show-shortcut-help') {
+      event.preventDefault()
+      toggleShortcutHelp(platform)
+      return
+    }
+    if (shortcut === 'undo-paint' || shortcut === 'redo-paint') {
+      const moved = shortcut === 'undo-paint' ? undoPaintDraft() : redoPaintDraft()
+      if (moved) event.preventDefault()
+      return
+    }
     if (shortcut === 'toggle-panel') {
       event.preventDefault()
       togglePanel()
@@ -106,6 +137,11 @@ export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
     if (shortcut === 'toggle-markers') {
       event.preventDefault()
       toggleMarkerKind('markMismatch')
+      return
+    }
+    if (shortcut === 'toggle-rings') {
+      event.preventDefault()
+      toggleRings()
       return
     }
     if (shortcut === 'toggle-selected-colour-markers') {

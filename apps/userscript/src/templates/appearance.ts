@@ -44,7 +44,7 @@ export interface Appearance {
   readonly opacity: number
   /** Whether template pixels receive a contrasting silhouette below Wplace's painted art. */
   readonly contrastOutline: boolean
-  /** Underlay-outline thickness in device pixels. */
+  /** Underlay-outline thickness scale, mapped to a fraction of each canvas pixel. */
   readonly contrastOutlineSize: number
   /** Palette indices hidden for this overlay specifically. */
   readonly hiddenColours: readonly number[]
@@ -178,7 +178,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   rotation: 0,
   opacity: 0.85,
   contrastOutline: true,
-  contrastOutlineSize: 0.85,
+  contrastOutlineSize: 0.4,
   hiddenColours: [],
   markMismatch: false,
   markUnpainted: false,
@@ -561,6 +561,6 @@ export const APPEARANCE_CONTROLS: ReadonlyArray<{
     min: 0.25,
     max: 2,
     step: 0.05,
-    format: (v) => `${Number(v.toFixed(2))}px`,
+    format: (v) => `${Number(((v / 8) * 100).toFixed(1))}%`,
   },
 ]

@@ -41,9 +41,14 @@ export const selectPaintColour = (index: number): boolean => {
  * the last direct button in the drawer header. Keeping this traversal here avoids teaching the
  * shortcut controller about Wplace's DOM.
  */
-const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
+const paintDrawerOf = (swatch: Element): HTMLElement | null => {
   const drawer = swatch.parentElement?.parentElement?.parentElement?.parentElement
-  if (drawer === undefined || drawer === null) return null
+  return drawer instanceof HTMLElement ? drawer : null
+}
+
+const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
+  const drawer = paintDrawerOf(swatch)
+  if (drawer === null) return null
   const header = Array.from(drawer.children).find((child) => child.querySelector('h2') !== null)
   if (header === undefined) return null
   const directButtons = Array.from(header.children).filter(
@@ -53,8 +58,51 @@ const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
 }
 
 /**
- * Drive Wplace's own paint-mode control. Exact accessible labels only: a broad text search could
- * click a template action or a dialog button after Wplace changes its chrome.
+ * Ask Wplace's own paint drawer to move through its authoritative draft history.
+ *
+ * The native controls own pixel recency, redo invalidation after a new paint, and the draft payload
+ * eventually submitted to Wplace. Driving those controls keeps all of that state in one place; the
+ * resulting canvas writes then flow through our canonical pixel-accounting interception exactly
+ * like a hand-painted pixel.
+ */
+const movePaintHistory = (title: 'Undo' | 'Redo'): boolean => {
+  const swatch = document.querySelector('[id^="color-"]')
+  if (swatch === null) return false
+  const drawer = paintDrawerOf(swatch)
+  if (drawer === null) return false
+  const button = drawer.querySelector(`button[title="${title}"]`)
+  if (!(button instanceof HTMLButtonElement) || button.disabled) return false
+  button.click()
+  return true
+}
+
+/** Undo the most recently drafted pixel, if Wplace currently has one. */
+export const undoPaintDraft = (): boolean => movePaintHistory('Undo')
+
+/** Redo the most recently undone draft pixel, if Wplace currently has one. */
+export const redoPaintDraft = (): boolean => movePaintHistory('Redo')
+
+const paintDockButton = (): HTMLButtonElement | null => {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {
+    const dock = button.parentElement
+    if (
+      dock?.classList.contains('absolute') === true &&
+      dock.classList.contains('bottom-3') &&
+      dock.classList.contains('left-1/2') &&
+      dock.classList.contains('z-30') &&
+      dock.classList.contains('-translate-x-1/2')
+    ) {
+      return button
+    }
+  }
+  return null
+}
+
+/**
+ * Drive Wplace's own paint-mode control. Prefer an exact accessible label, then the current
+ * structurally unique bottom-centre primary control. The latter is needed because Wplace's live
+ * Paint button has dynamic timer text but no aria-label or title. Neither path searches arbitrary
+ * page text, so a template action or dialog button cannot be mistaken for paint mode.
  */
 export const togglePaintMode = (): boolean => {
   const swatch = document.querySelector('[id^="color-"]')
@@ -71,6 +119,11 @@ export const togglePaintMode = (): boolean => {
       .toLowerCase()
     if (!labels.has(label)) continue
     button.click()
+    return true
+  }
+  const dockButton = paintDockButton()
+  if (dockButton !== null) {
+    dockButton.click()
     return true
   }
   return false

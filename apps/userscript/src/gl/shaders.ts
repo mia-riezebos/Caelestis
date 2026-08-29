@@ -198,7 +198,7 @@ uniform usampler2D u_indices;
 uniform sampler2D u_palette;
 uniform vec2 u_size;
 uniform bool u_darkTheme;
-uniform float u_outlineSize;
+uniform float u_outlineWidth;
 uniform float u_stampSize;
 uniform float u_stampRadius;
 uniform vec2 u_stampOffset;
@@ -216,9 +216,6 @@ void main() {
   vec2 texel = v_uv * u_size;
   vec2 footprint = vec2(fwidth(texel.x), fwidth(texel.y));
   float pixel = max(footprint.x, footprint.y);
-  // A one-cell halo contains the expanded ring. Hide the LOD before a thick device-pixel outline
-  // could reach beyond that halo.
-  if (pixel * (u_outlineSize + 0.5) >= 1.0) discard;
 
   ivec2 cell = ivec2(floor(texel));
   vec2 local = fract(texel) - 0.5;
@@ -226,7 +223,9 @@ void main() {
   float s = sin(-u_stampRotation);
   float half_ = u_stampSize * 0.5;
   float radius = u_stampRadius * half_;
-  float expansion = pixel * u_outlineSize;
+  // The width is measured in canvas pixels, so the ring scales with its pixel under map zoom. Only
+  // the antialiasing ramp stays one device pixel wide.
+  float expansion = u_outlineWidth;
   float coverage = 0.0;
   // Search this cell and its neighbours. The coloured overlay clips each stamp to its source cell;
   // intersecting the stamp distance with that cell reproduces the same silhouette before dilation.

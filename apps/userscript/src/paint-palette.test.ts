@@ -79,9 +79,18 @@ vi.mock('./templates/local-store.js', () => ({
   onLocalChange: (listener: () => void) => harness.localListeners.push(listener),
 }))
 vi.mock('./templates/mismatch.js', () => ({
-  colourProgressFor: () => harness.localProgress,
-  nearestColourTarget: harness.nearestColourTarget,
-  onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
+  pixelAccounting: {
+    read: (template: { id: string }) => ({
+      colours: harness.localProgress,
+      nearest: (
+        index: number,
+        kind: 'unpainted' | 'mismatched',
+        reference: { x: number; y: number },
+        exclude?: { templateId: string; x: number; y: number; kind: string },
+      ) => harness.nearestColourTarget(index, kind, reference, template.id, exclude),
+    }),
+    onChange: (listener: () => void) => harness.mismatchListeners.push(listener),
+  },
 }))
 vi.mock('./templates/navigate.js', () => ({ navigateTo: harness.navigateTo }))
 vi.mock('./templates/nearest.js', () => ({ focusedTemplate: () => harness.focused }))
@@ -116,6 +125,9 @@ beforeEach(() => {
 
 describe('Wplace paint palette progress', () => {
   it('shows pixels left for only the focused template and hides a completed colour', async () => {
+    harness.localProgress = [
+      { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 112 },
+    ]
     const swatch = document.createElement('button')
     swatch.id = 'color-1'
     swatch.setAttribute('aria-label', 'Black')
@@ -124,6 +136,16 @@ describe('Wplace paint palette progress', () => {
       await import('./paint-palette.js')
 
     installPaintPaletteProgress()
+
+    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('…')
+    expect(swatch.getAttribute('aria-label')).toContain('Checking progress')
+    expect(swatch.getAttribute('aria-label')).not.toContain('112 pixels left')
+
+    harness.localProgress = [
+      { index: 0, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
+    ]
+    harness.mismatchListeners.at(-1)?.()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
     expect(paintPaletteProgress()).toEqual([
       { index: 0, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },

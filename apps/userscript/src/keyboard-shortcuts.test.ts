@@ -31,6 +31,9 @@ const harness = vi.hoisted(() => ({
   toggleMenu: vi.fn(),
   togglePanel: vi.fn(),
   togglePaint: vi.fn(() => true),
+  undoPaint: vi.fn(() => true),
+  redoPaint: vi.fn(() => true),
+  toggleShortcutHelp: vi.fn(),
 }))
 
 vi.mock('./map-handle.js', () => ({
@@ -59,12 +62,17 @@ vi.mock('./ui/overlay-menu.js', () => ({
   toggleOverlayMenu: harness.toggleMenu,
 }))
 vi.mock('./ui/panel.js', () => ({ togglePanel: harness.togglePanel }))
-vi.mock('./wplace-paint.js', () => ({ togglePaintMode: harness.togglePaint }))
+vi.mock('./ui/shortcut-help.js', () => ({ toggleShortcutHelp: harness.toggleShortcutHelp }))
+vi.mock('./wplace-paint.js', () => ({
+  redoPaintDraft: harness.redoPaint,
+  togglePaintMode: harness.togglePaint,
+  undoPaintDraft: harness.undoPaint,
+}))
 
 let dispose: (() => void) | null = null
 
-const press = (key: string): KeyboardEvent => {
-  const event = new KeyboardEvent('keydown', { key, cancelable: true })
+const press = (key: string, init: KeyboardEventInit = {}): KeyboardEvent => {
+  const event = new KeyboardEvent('keydown', { key, cancelable: true, ...init })
   window.dispatchEvent(event)
   return event
 }
@@ -76,7 +84,7 @@ beforeEach(async () => {
   harness.focused = { id: 'focused', visible: true, owns: ['markers'] }
   harness.focus.mockImplementation(() => harness.focused)
   const { installKeyboardShortcuts } = await import('./keyboard-shortcuts.js')
-  dispose = installKeyboardShortcuts(vi.fn())
+  dispose = installKeyboardShortcuts(vi.fn(), 'mac')
 })
 
 afterEach(() => {
@@ -124,6 +132,54 @@ describe('keyboard shortcut actions', () => {
     expect(harness.cycleColour).toHaveBeenNthCalledWith(1, -1)
     expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)
     expect(harness.togglePaint).toHaveBeenCalledOnce()
+  })
+
+  it('delegates repeatable Mac history only through Cmd', () => {
+    expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
+    expect(press('z', { ctrlKey: true, repeat: true }).defaultPrevented).toBe(false)
+    expect(press('Z', { metaKey: true, repeat: true, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(harness.undoPaint).toHaveBeenCalledOnce()
+    expect(harness.redoPaint).toHaveBeenCalledOnce()
+
+    harness.undoPaint.mockReturnValueOnce(false)
+    expect(press('z', { metaKey: true }).defaultPrevented).toBe(false)
+  })
+
+  it('delegates repeatable Windows and Linux history only through Ctrl', async () => {
+    dispose?.()
+    const { installKeyboardShortcuts } = await import('./keyboard-shortcuts.js')
+    dispose = installKeyboardShortcuts(vi.fn(), 'windows-linux')
+
+    expect(press('z', { ctrlKey: true }).defaultPrevented).toBe(true)
+    expect(press('z', { metaKey: true, repeat: true }).defaultPrevented).toBe(false)
+    expect(press('Z', { ctrlKey: true, repeat: true, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(harness.undoPaint).toHaveBeenCalledOnce()
+    expect(harness.redoPaint).toHaveBeenCalledOnce()
+  })
+
+  it('toggles rings on a focused pixel-owned template or on the global appearance', async () => {
+    harness.focused = { id: 'focused', visible: true, owns: ['pixels'] }
+    expect(press('r').defaultPrevented).toBe(true)
+    await Promise.resolve()
+    expect(harness.toggleAppearanceBoolean).toHaveBeenCalledWith('focused', 'contrastOutline')
+    expect(harness.refreshMenu).toHaveBeenCalledOnce()
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
+
+    harness.focused = { id: 'focused', visible: true, owns: [] }
+    harness.appearance = { ...harness.appearance, contrastOutline: true }
+    expect(press('R').defaultPrevented).toBe(true)
+    expect(harness.setState).toHaveBeenCalledWith({
+      appearance: { ...harness.appearance, contrastOutline: false },
+    })
+    expect(harness.triggerRepaint).toHaveBeenCalledTimes(2)
+  })
+
+  it('opens shortcut help from the physical Shift+/ chord', () => {
+    const event = press('Dead', { code: 'Slash', shiftKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(harness.toggleShortcutHelp).toHaveBeenCalledOnce()
+    expect(harness.toggleShortcutHelp).toHaveBeenCalledWith('mac')
   })
 
   it('releases peek if the window loses focus before keyup', () => {

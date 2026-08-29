@@ -20,10 +20,10 @@ import {
   type PlacedTemplate,
 } from '../templates/local-store.js'
 import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
-import { completedQuads, currentQuads, isDrawingTiles, type TileQuad } from '../tile-transform.js'
+import { currentQuads, isDrawingTiles, type TileQuad, underlayQuads } from '../tile-transform.js'
 import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
-import { colourFades, templateFades } from './fade.js'
+import { colourFades, outlineFades, templateFades } from './fade.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
 import { movingOverlayTapCap } from './minify-quality.js'
@@ -110,6 +110,8 @@ interface TemplateGpu {
   paletteKey: string | null
   /** Whether any colour in it is still fading, and so whether it needs re-uploading next frame. */
   paletteMoving: boolean
+  /** Whether the earlier outline pass already prepared this frame's shared palette. */
+  palettePreparedForOverlay: boolean
   /** Render generation in which this template was most recently visible. */
   lastUsed: number
 }
@@ -296,6 +298,39 @@ const uploadPalette = (
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+}
+
+/**
+ * Bring the one palette texture shared by the outline and overlay to the requested visibility.
+ *
+ * The outline sits earlier in MapLibre's layer stack, so it must prepare the texture first. The
+ * overlay then consumes that exact preparation instead of advancing the same colour ramps again a
+ * few milliseconds later. Besides keeping both passes on the same pixels and alpha, this matters
+ * on the final fade frame: if the overlay were the first pass to upload alpha zero, MapLibre could
+ * retain the stale outline drawn immediately before it without scheduling another repaint.
+ */
+const preparePalette = (
+  gl: WebGL2RenderingContext,
+  entry: TemplateGpu,
+  templateId: string,
+  hidden: readonly number[],
+  now: number,
+  pass: 'outline' | 'overlay',
+): boolean => {
+  if (pass === 'overlay' && entry.palettePreparedForOverlay) {
+    entry.palettePreparedForOverlay = false
+    return entry.paletteMoving
+  }
+
+  const paletteKey = hidden.join(',')
+  if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
+    const built = buildPalette(templateId, hidden, now)
+    uploadPalette(gl, entry.palette, built.data)
+    entry.paletteKey = paletteKey
+    entry.paletteMoving = built.animating
+  }
+  entry.palettePreparedForOverlay = pass === 'outline'
+  return entry.paletteMoving
 }
 
 /** Maximum side this context accepts, falling back to one whole-template upload in test shims. */
@@ -719,6 +754,7 @@ export const overlayLayer = {
     }
     const ids = new Set(all.map((template) => template.id))
     templateFades.prune(ids)
+    outlineFades.prune(ids)
     appearanceTransitions.prune(ids)
     // Offscreen textures can be large. Keep only the templates this frame could actually draw;
     // panning back uploads them lazily again.
@@ -851,6 +887,7 @@ export const overlayLayer = {
             source: template.indices,
             paletteKey: null,
             paletteMoving: false,
+            palettePreparedForOverlay: false,
             lastUsed: renderGeneration,
           }
           pendingGpu.delete(template.id)
@@ -871,16 +908,9 @@ export const overlayLayer = {
         const appearance = transitioned.appearance
         if (!transitioned.done) animating = true
         const hidden = hiddenColoursFor(appearance)
-        const paletteKey = hidden.join(',')
         // Re-uploaded while anything in it is still moving, not only when the filter changes: the
         // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
-        if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
-          const built = buildPalette(template.id, hidden, now)
-          uploadPalette(gl, entry.palette, built.data)
-          entry.paletteKey = paletteKey
-          entry.paletteMoving = built.animating
-          if (built.animating) animating = true
-        }
+        if (preparePalette(gl, entry, template.id, hidden, now, 'overlay')) animating = true
 
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, entry.palette)
@@ -1009,19 +1039,17 @@ export const outlineLayer = {
 
   draw(gl: WebGL2RenderingContext, _args: unknown): void {
     if (outlineProgram === null || outlineVao === null || outlineQuad === null) return
+    // This pass is always before the overlay. Clear any preparation the overlay did not consume in
+    // an earlier partial frame, then mark only entries actually prepared below.
+    for (const entry of gpu.values()) entry.palettePreparedForOverlay = false
     if (isOverlayPeekActive() || !isDrawingTiles()) return
-    const map = getMap() as { isMoving?: () => boolean; triggerRepaint?: () => void } | null
-    // The current frame's tile quads are emitted later in the layer stack. During motion the last
-    // complete frame is stale, so omit this decorative pass until the map settles.
-    if (map?.isMoving?.() === true) return
-    const completed = completedQuads()
-    if (completed.length === 0) return
-    // Match the shader's close-zoom cutoff on the CPU too. At distant zoom there is no room for an
-    // individual ring, so avoid issuing draws whose every fragment would immediately discard.
-    const tiles = completed.filter(
-      (tile) => tile.width / TILE_SIZE > 1 / 0.75 && tile.height / TILE_SIZE > 1 / 0.75,
-    )
-    if (tiles.length === 0) return
+    const map = getMap() as { triggerRepaint?: () => void } | null
+    // MapLibre exposes the same current tile matrices its raster layer will upload later in this
+    // frame. The coordinate module reads those early, with the intercepted previous frame only as
+    // a compatibility fallback when private MapLibre state is unavailable.
+    const underlay = underlayQuads()
+    if (underlay.length === 0) return
+    const tiles = underlay
 
     const quadKey = tiles
       .map(({ tile, x, y, width, height }) => `${tile.x}:${tile.y}:${x}:${y}:${width}:${height}`)
@@ -1047,6 +1075,7 @@ export const outlineLayer = {
     const reducedMotion = prefersReducedMotion()
     let drawIntersections = 0
     let visibleTemplates = 0
+    let animating = false
     for (const template of displayTemplates()) {
       const entry = gpu.get(template.id)
       if (entry === undefined) continue
@@ -1064,16 +1093,22 @@ export const outlineLayer = {
         reducedMotion,
         hasAppearancePreview(template.id),
       ).appearance
-      if (!appearance.contrastOutline) continue
+      const outlineFade = outlineFades.advance(template.id, appearance.contrastOutline ? 1 : 0, now)
+      if (!outlineFade.done) animating = true
+      if (outlineFade.value <= 0) continue
       const spans = horizontalSpans(template)
       if (!intersectsTiles(template, spans, tiles)) continue
       visibleTemplates++
 
+      preparePalette(gl, entry, template.id, hiddenColoursFor(appearance), now, 'outline')
+
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(outlineUniform(gl, 'u_palette'), 1)
-      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity)
-      gl.uniform1f(outlineUniform(gl, 'u_outlineSize'), appearance.contrastOutlineSize)
+      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity * outlineFade.value)
+      // Keep the persisted control scale, but render it as 3.125%..25% of a canvas pixel. Unlike a
+      // device-pixel width, this grows and shrinks with Wplace's pixels as the map zooms.
+      gl.uniform1f(outlineUniform(gl, 'u_outlineWidth'), appearance.contrastOutlineSize / 8)
       gl.uniform1f(outlineUniform(gl, 'u_stampSize'), appearance.size)
       gl.uniform1f(outlineUniform(gl, 'u_stampRadius'), appearance.radius)
       gl.uniform2f(
@@ -1106,6 +1141,7 @@ export const outlineLayer = {
       recordProfileWorkload('Outline visible templates', visibleTemplates)
       recordProfileWorkload('Outline draw intersections', drawIntersections)
     }
+    if (animating) map?.triggerRepaint?.()
   },
 }
 

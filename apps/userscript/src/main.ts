@@ -47,12 +47,13 @@ import {
   restoreLocalTemplates,
   templateIndexMemoryBytes,
 } from './templates/local-store.js'
-import { mismatchMemoryBytes, onMismatchesChanged, wantsTilePixels } from './templates/mismatch.js'
+import { pixelAccounting } from './templates/mismatch.js'
 import { mismatchWorkerMemoryBytes } from './templates/mismatch-worker.js'
 import { installServerSync } from './templates/server-sync.js'
 import {
   capturedPixelMemoryBytes,
   captureTilePixels,
+  clearDraftPixels,
   install,
   onTileFrame,
   reconcileDrafts,
@@ -222,7 +223,7 @@ const main = (): void => {
   step('performance profile', installProfile)
   registerProfileMemorySource('Template pixels', templateIndexMemoryBytes)
   registerProfileMemorySource('Captured tile pixels', capturedPixelMemoryBytes)
-  registerProfileMemorySource('Mismatch cache', mismatchMemoryBytes)
+  registerProfileMemorySource('Mismatch cache', pixelAccounting.memoryBytes)
   registerProfileMemorySource('Server mismatch masks', serverMismatchMemoryBytes)
   registerProfileMemorySource('Mismatch worker copy', mismatchWorkerMemoryBytes)
   registerProfileMemorySource('Overlay GPU buffers', overlayGpuMemoryBytes)
@@ -296,7 +297,13 @@ const main = (): void => {
   step('wplace account', () => void loadAccount())
   step('paint watcher', () => {
     watchPaintSelection()
-    onPaintSelectionChange(repaint)
+    // The selected-colour marker lives in MapLibre's custom layer. Returning from Eraser to Pencil
+    // changes the selected swatch without moving the map, so repainting only the retained
+    // screen-space frame leaves that marker stale until some unrelated map animation happens.
+    onPaintSelectionChange(() => {
+      if (!isPaintOpen()) clearDraftPixels()
+      redraw()
+    })
   })
   step('paint palette progress', installPaintPaletteProgress)
   onFrame(refreshPaintPaletteFocus, 'Paint palette focus')
@@ -309,7 +316,7 @@ const main = (): void => {
   // marker going away.
   // A completed scan changes marker buffers and progress only. Progress has its own DOM listeners;
   // rerunning every screen-space overlay control here duplicates the MapLibre frame requested next.
-  step('mismatch repaint', () => onMismatchesChanged(repaintMap))
+  step('mismatch repaint', () => pixelAccounting.onChange(repaintMap))
   // wplace add a layer per tile being painted, above anything of ours added earlier, so a placed
   // pixel would otherwise cover the marker it just cleared.
   step('marker order', () => onFrame(keepMarkersAboveDrafts, 'Keep marker layer above drafts'))
@@ -329,8 +336,9 @@ const main = (): void => {
     // when mismatch markers are off. Starting at drawer-open gives visible tiles time to populate
     // before the one-shot picker click; a miss is also chased on demand by `placedIndexAt`.
     const interest = (tile: { readonly x: number; readonly y: number }): boolean =>
-      isPaintOpen() || wantsTilePixels(tile)
-    const sync = (): void => captureTilePixels(wantsTilePixels() || isPaintOpen(), interest)
+      isPaintOpen() || pixelAccounting.wantsTilePixels(tile)
+    const sync = (): void =>
+      captureTilePixels(pixelAccounting.wantsTilePixels() || isPaintOpen(), interest)
     sync()
     onStateChange(sync)
     onLocalChange(sync)

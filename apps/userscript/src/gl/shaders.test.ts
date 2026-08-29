@@ -7,4 +7,10 @@ describe('outline shader', () => {
     expect(OUTLINE_FRAGMENT_SOURCE).toContain('outer - inner')
     expect(OUTLINE_FRAGMENT_SOURCE).toContain('* paletteAlpha')
   })
+
+  it('measures ring width in canvas pixels while keeping antialiasing device-pixel stable', () => {
+    expect(OUTLINE_FRAGMENT_SOURCE).toContain('float expansion = u_outlineWidth;')
+    expect(OUTLINE_FRAGMENT_SOURCE).not.toContain('pixel * u_outlineWidth')
+    expect(OUTLINE_FRAGMENT_SOURCE).toContain('expansion - pixel * 0.5')
+  })
 })

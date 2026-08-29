@@ -3,6 +3,8 @@ export type Shortcut =
   | 'cycle-colour-previous'
   | 'fly-to-colour'
   | 'peek-overlays'
+  | 'redo-paint'
+  | 'show-shortcut-help'
   | 'set-opacity-100'
   | 'set-opacity-20'
   | 'set-opacity-40'
@@ -12,9 +14,30 @@ export type Shortcut =
   | 'toggle-markers'
   | 'toggle-panel'
   | 'toggle-paint'
+  | 'toggle-rings'
   | 'toggle-selected-colour-markers'
   | 'toggle-template-menu'
   | 'toggle-visibility'
+  | 'undo-paint'
+
+export type ShortcutPlatform = 'mac' | 'windows-linux'
+
+interface ShortcutPlatformSource {
+  readonly platform?: string
+  readonly userAgent?: string
+  readonly userAgentData?: { readonly platform?: string }
+}
+
+/** Resolve the keyboard convention once without relying on the character produced by a key. */
+export const shortcutPlatformFor = (source: ShortcutPlatformSource): ShortcutPlatform => {
+  const platform = source.userAgentData?.platform || source.platform || source.userAgent || ''
+  return /mac|iphone|ipad|ipod/i.test(platform) ? 'mac' : 'windows-linux'
+}
+
+export const currentShortcutPlatform = (): ShortcutPlatform =>
+  typeof navigator === 'undefined'
+    ? 'windows-linux'
+    : shortcutPlatformFor(navigator as Navigator & ShortcutPlatformSource)
 
 /**
  * Whether a keystroke belongs to something else on the page.
@@ -32,13 +55,28 @@ const isTyping = (target: EventTarget | null): boolean => {
   )
 }
 
-/** Resolve an unmodified, non-typing keydown to one of Caelestis's deliberately few shortcuts. */
+/** Resolve a non-typing keydown to one of Caelestis's deliberately few shortcuts. */
 export const shortcutFor = (
-  event: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
+  event: Pick<KeyboardEvent, 'altKey' | 'code' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
     Partial<Pick<KeyboardEvent, 'repeat' | 'shiftKey'>>,
+  platform = currentShortcutPlatform(),
 ): Shortcut | null => {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat) return null
   if (isTyping(event.target)) return null
+  const command = platform === 'mac' ? event.metaKey : event.ctrlKey
+  const foreignCommand = platform === 'mac' ? event.ctrlKey : event.metaKey
+  if (command || foreignCommand) {
+    if (!command || foreignCommand || event.altKey || event.key.toLowerCase() !== 'z') {
+      return null
+    }
+    // Repeats are intentional here: holding the chord walks Wplace's per-pixel history. Every
+    // other shortcut remains single-shot below.
+    return event.shiftKey ? 'redo-paint' : 'undo-paint'
+  }
+  if (event.altKey || event.repeat) return null
+  // Physical position is intentional: layouts with dead keys may report `key: 'Dead'` for `?`,
+  // while `code: 'Slash'` still identifies the requested Shift+/ chord exactly.
+  if (event.shiftKey) return event.code === 'Slash' ? 'show-shortcut-help' : null
+  if (event.code === 'Backquote') return 'show-shortcut-help'
 
   switch (event.key.toLowerCase()) {
     case '1':
@@ -61,6 +99,8 @@ export const shortcutFor = (
       return 'fly-to-colour'
     case 'g':
       return 'peek-overlays'
+    case 'r':
+      return 'toggle-rings'
     case 'a':
       return 'cycle-colour-previous'
     case 's':
