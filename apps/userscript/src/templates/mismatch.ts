@@ -1766,7 +1766,7 @@ export const onMismatchesChanged = (listener: () => void): void => {
 
 const MAX_PATCHED_PIXELS = 32
 
-onTilePixels((tile, triples) => {
+onTilePixels((tile, triples, source) => {
   const before = changed
   if (triples.length / 3 > MAX_PATCHED_PIXELS) {
     const suffix = `|${tile.x}/${tile.y}`
@@ -1776,7 +1776,7 @@ onTilePixels((tile, triples) => {
     for (const [cacheKey, entry] of cache) {
       if (!cacheKey.endsWith(suffix)) continue
       const serverUrl = templatesById.get(templateIdOf(cacheKey))?.serverUrl
-      if (entry.source !== pixels && serverUrl !== undefined) {
+      if (source === 'server' && entry.source !== pixels && serverUrl !== undefined) {
         supersededServerSource.set(cacheKey, serverUrl)
       }
       stale.add(cacheKey)
@@ -1786,7 +1786,7 @@ onTilePixels((tile, triples) => {
     for (const [cacheKey, pending] of inFlight) {
       if (!cacheKey.endsWith(suffix) || cache.has(cacheKey)) continue
       const serverUrl = templatesById.get(templateIdOf(cacheKey))?.serverUrl
-      if (pending.source !== pixels && serverUrl !== undefined) {
+      if (source === 'server' && pending.source !== pixels && serverUrl !== undefined) {
         supersededServerSource.set(cacheKey, serverUrl)
       }
       patchCount.set(cacheKey, (patchCount.get(cacheKey) ?? 0) + 1)

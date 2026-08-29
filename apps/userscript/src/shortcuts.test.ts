@@ -21,12 +21,13 @@ describe('shortcutFor', () => {
     ['3', 'set-opacity-60'],
     ['4', 'set-opacity-80'],
     ['5', 'set-opacity-100'],
-    ['b', 'toggle-paint'],
+    ['b', 'paint-action'],
     ['c', 'toggle-panel'],
     ['C', 'toggle-panel'],
     ['d', 'cycle-colour-next'],
     ['f', 'fly-to-colour'],
     ['g', 'peek-overlays'],
+    ['l', 'toggle-theme'],
     ['r', 'toggle-rings'],
     ['a', 'cycle-colour-previous'],
     ['s', 'toggle-colour'],
@@ -36,6 +37,7 @@ describe('shortcutFor', () => {
     ['V', 'toggle-visibility'],
     ['w', 'toggle-markers'],
     ['x', 'toggle-selected-colour-markers'],
+    ['Escape', 'cancel-paint'],
   ])('maps %s to %s', (key, expected) => {
     expect(shortcutFor(keydown(key))).toBe(expected)
   })

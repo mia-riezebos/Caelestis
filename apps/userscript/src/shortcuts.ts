@@ -1,8 +1,10 @@
 export type Shortcut =
+  | 'cancel-paint'
   | 'cycle-colour-next'
   | 'cycle-colour-previous'
   | 'fly-to-colour'
   | 'peek-overlays'
+  | 'paint-action'
   | 'redo-paint'
   | 'show-shortcut-help'
   | 'set-opacity-100'
@@ -13,10 +15,10 @@ export type Shortcut =
   | 'toggle-colour'
   | 'toggle-markers'
   | 'toggle-panel'
-  | 'toggle-paint'
   | 'toggle-rings'
   | 'toggle-selected-colour-markers'
   | 'toggle-template-menu'
+  | 'toggle-theme'
   | 'toggle-visibility'
   | 'undo-paint'
 
@@ -90,7 +92,7 @@ export const shortcutFor = (
     case '5':
       return 'set-opacity-100'
     case 'b':
-      return 'toggle-paint'
+      return 'paint-action'
     case 'c':
       return 'toggle-panel'
     case 'd':
@@ -99,6 +101,8 @@ export const shortcutFor = (
       return 'fly-to-colour'
     case 'g':
       return 'peek-overlays'
+    case 'l':
+      return 'toggle-theme'
     case 'r':
       return 'toggle-rings'
     case 'a':
@@ -113,6 +117,8 @@ export const shortcutFor = (
       return 'toggle-markers'
     case 'x':
       return 'toggle-selected-colour-markers'
+    case 'escape':
+      return 'cancel-paint'
     default:
       return null
   }

@@ -1186,15 +1186,24 @@ export const draftPixels = (tile: TileCoord): Uint8Array | null => {
 const transparentOfTile = new Map<string, Set<number>>()
 
 type PixelListener = (tile: TileCoord, x: number, y: number, index: number) => void
-type PixelBatchListener = (tile: TileCoord, triples: readonly number[]) => void
+export type PixelChangeSource = 'draft' | 'server'
+type PixelBatchListener = (
+  tile: TileCoord,
+  triples: readonly number[],
+  source: PixelChangeSource,
+) => void
 const pixelListeners: PixelListener[] = []
 const pixelBatchListeners: PixelBatchListener[] = []
 
-const notifyPixelBatch = (tile: TileCoord, triples: readonly number[]): void => {
+const notifyPixelBatch = (
+  tile: TileCoord,
+  triples: readonly number[],
+  source: PixelChangeSource,
+): void => {
   if (triples.length === 0) return
   for (const listener of pixelBatchListeners) {
     try {
-      listener(tile, triples)
+      listener(tile, triples, source)
     } catch {
       count('pixels:listener-failed')
     }
@@ -1211,7 +1220,7 @@ const notifyPixel = (tile: TileCoord, p: number, index: number): void => {
       count('pixels:listener-failed')
     }
   }
-  notifyPixelBatch(tile, [x, y, index])
+  notifyPixelBatch(tile, [x, y, index], 'draft')
 }
 
 /**
@@ -1393,7 +1402,7 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
       }
     }
   }
-  notifyPixelBatch(tile, changedTriples)
+  notifyPixelBatch(tile, changedTriples, 'draft')
   if (changed > 0) count('pixels:patched a draft write')
   // The write that lands on a pixel drafted Transparent is a no-op — see `reconcileDraftedTile`.
   // Asking now rather than waiting for the throttled pass is what makes that marker appear at once.
@@ -1412,13 +1421,14 @@ const apply = (
   tile: TileCoord,
   into: Uint8Array,
   from: Uint8Array | Map<number, number>,
+  source: PixelChangeSource,
 ): number => {
   let moved = 0
   const changedTriples: number[] = []
   const at = (p: number, index: number): void => {
     if (into[p] === index) return
     into[p] = index
-    rememberDraftedOffset(tileKey(tile), p, index)
+    if (source === 'draft') rememberDraftedOffset(tileKey(tile), p, index)
     moved++
     const x = p % TILE_SIZE
     const y = (p - x) / TILE_SIZE
@@ -1433,7 +1443,7 @@ const apply = (
   }
   if (from instanceof Map) for (const [p, index] of from) at(p, index)
   else for (let p = 0; p < from.length; p++) at(p, from[p] as number)
-  notifyPixelBatch(tile, changedTriples)
+  notifyPixelBatch(tile, changedTriples, source)
   if (moved > 0) count('pixels:changed', moved)
   return moved
 }
@@ -1448,7 +1458,7 @@ export const captureDraftPixels = (
   const existing = draftOfTile.get(key)
   if (existing !== undefined && existing.length === indices.length) {
     rememberDraft(key, existing)
-    apply(tile, existing, indices)
+    apply(tile, existing, indices, 'draft')
     count('pixels:draft re-read')
     reconcileDraftedTile(tile)
     return
@@ -1477,7 +1487,7 @@ export const captureDraftPixels = (
       }
     }
   }
-  notifyPixelBatch(tile, changedTriples)
+  notifyPixelBatch(tile, changedTriples, 'draft')
   count('pixels:draft captured')
   reconcileDraftedTile(tile)
 }
@@ -1499,7 +1509,7 @@ export const clearDraftPixels = (): void => {
   draftOfTile.clear()
   transparentOfTile.clear()
   draftedOffsets.clear()
-  for (const one of changed) notifyPixelBatch(one.tile, one.triples)
+  for (const one of changed) notifyPixelBatch(one.tile, one.triples, 'draft')
   if (changed.length > 0) count('pixels:drafts cleared')
 }
 
@@ -1588,7 +1598,7 @@ const capture = (
         return
       }
       rememberTilePixels(key, existing)
-      apply(tile, existing, indices)
+      apply(tile, existing, indices, 'server')
       count('pixels:re-read as a diff')
     } catch (error) {
       warn('bitmap', 'could not read tile pixels', String(error))

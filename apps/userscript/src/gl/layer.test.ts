@@ -347,6 +347,28 @@ describe('overlay layer', () => {
     expect(context.drawArrays).toHaveBeenCalledOnce()
   })
 
+  it('maps the expanded outline quad onto the texture halo without shifting its source row', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    harness.originY = 100
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    vi.mocked(context.bufferSubData).mockClear()
+
+    outlineLayer.draw(context, null)
+
+    const vertices = vi.mocked(context.bufferSubData).mock.calls[0]?.[2] as Float32Array | undefined
+    expect(vertices).toBeDefined()
+    // Four vertices carry clip xyzw then uv. A one-cell template is uploaded into the centre of a
+    // 3x3 texture; expanding through both halo rows must map the outline from v=0 through v=1.
+    expect(vertices?.[5]).toBeCloseTo(0)
+    expect(vertices?.[11]).toBeCloseTo(0)
+    expect(vertices?.[17]).toBeCloseTo(1)
+    expect(vertices?.[23]).toBeCloseTo(1)
+  })
+
   it('refreshes the shared visibility palette before drawing an outline', async () => {
     const { outlineLayer, overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }
