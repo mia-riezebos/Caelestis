@@ -23,7 +23,7 @@ import { type HorizontalSpan, horizontalSpans } from '../templates/placement.js'
 import { currentQuads, isDrawingTiles, type TileQuad, underlayQuads } from '../tile-transform.js'
 import { appearanceTransitions, prefersReducedMotion } from './appearance-transition.js'
 import { isDarkMapTheme } from './contrast-outline.js'
-import { colourFades, templateFades } from './fade.js'
+import { colourFades, outlineFades, templateFades } from './fade.js'
 import { gpuCacheEvictions } from './gpu-cache.js'
 import { markerLayer } from './markers.js'
 import { movingOverlayTapCap } from './minify-quality.js'
@@ -754,6 +754,7 @@ export const overlayLayer = {
     }
     const ids = new Set(all.map((template) => template.id))
     templateFades.prune(ids)
+    outlineFades.prune(ids)
     appearanceTransitions.prune(ids)
     // Offscreen textures can be large. Keep only the templates this frame could actually draw;
     // panning back uploads them lazily again.
@@ -1074,6 +1075,7 @@ export const outlineLayer = {
     const reducedMotion = prefersReducedMotion()
     let drawIntersections = 0
     let visibleTemplates = 0
+    let animating = false
     for (const template of displayTemplates()) {
       const entry = gpu.get(template.id)
       if (entry === undefined) continue
@@ -1091,7 +1093,9 @@ export const outlineLayer = {
         reducedMotion,
         hasAppearancePreview(template.id),
       ).appearance
-      if (!appearance.contrastOutline) continue
+      const outlineFade = outlineFades.advance(template.id, appearance.contrastOutline ? 1 : 0, now)
+      if (!outlineFade.done) animating = true
+      if (outlineFade.value <= 0) continue
       const spans = horizontalSpans(template)
       if (!intersectsTiles(template, spans, tiles)) continue
       visibleTemplates++
@@ -1101,7 +1105,7 @@ export const outlineLayer = {
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(outlineUniform(gl, 'u_palette'), 1)
-      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity)
+      gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity * outlineFade.value)
       // Keep the persisted control scale, but render it as 3.125%..25% of a canvas pixel. Unlike a
       // device-pixel width, this grows and shrinks with Wplace's pixels as the map zooms.
       gl.uniform1f(outlineUniform(gl, 'u_outlineWidth'), appearance.contrastOutlineSize / 8)
@@ -1137,6 +1141,7 @@ export const outlineLayer = {
       recordProfileWorkload('Outline visible templates', visibleTemplates)
       recordProfileWorkload('Outline draw intersections', drawIntersections)
     }
+    if (animating) map?.triggerRepaint?.()
   },
 }
 

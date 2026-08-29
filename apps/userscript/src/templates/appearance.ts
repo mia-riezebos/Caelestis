@@ -178,7 +178,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   rotation: 0,
   opacity: 0.85,
   contrastOutline: true,
-  contrastOutlineSize: 0.85,
+  contrastOutlineSize: 0.4,
   hiddenColours: [],
   markMismatch: false,
   markUnpainted: false,

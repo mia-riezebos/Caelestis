@@ -10,3 +10,5 @@ Align outlines from MapLibre's current-frame raster matrices so the underlay doe
 without delaying the art, overlay, or markers.
 Scale contrast rings with canvas pixels instead of device pixels, and add R to toggle them for the
 focused template or global defaults.
+Add repeatable Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z shortcuts for Wplace's native per-pixel draft undo
+and redo history. Default contrast rings to 5% of a canvas pixel and fade their visibility toggle.

@@ -20,6 +20,7 @@ const harness = vi.hoisted(() => ({
   hiddenColours: [] as number[],
   transitionedSize: null as number | null,
   fade: { value: 0, done: false },
+  outlineFade: { value: 1, done: true },
 }))
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
@@ -70,6 +71,10 @@ vi.mock('../tile-transform.js', () => ({
 vi.mock('./fade.js', () => ({
   colourFades: {
     advance: (_key: string, target: number) => ({ value: target, done: true }),
+    prune: vi.fn(),
+  },
+  outlineFades: {
+    advance: () => harness.outlineFade,
     prune: vi.fn(),
   },
   templateFades: {
@@ -189,6 +194,7 @@ beforeEach(() => {
     isMoving: () => harness.moving,
   }
   harness.fade = { value: 0, done: false }
+  harness.outlineFade = { value: 1, done: true }
   harness.indices = new Uint8Array([0])
   harness.width = 1
   harness.height = 1
@@ -383,8 +389,37 @@ describe('overlay layer', () => {
     vi.mocked(context.drawArrays).mockClear()
     harness.moving = false
     harness.contrastOutline = false
+    harness.outlineFade = { value: 0, done: true }
     outlineLayer.draw(context, null)
     expect(context.drawArrays).not.toHaveBeenCalled()
+  })
+
+  it('fades outline visibility and requests frames until the ramp settles', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    outlineLayer.draw(context, null)
+    vi.mocked(context.uniform1f).mockClear()
+    vi.mocked(context.drawArrays).mockClear()
+    vi.mocked(harness.triggerRepaint).mockClear()
+
+    harness.contrastOutline = false
+    harness.outlineFade = { value: 0.5, done: false }
+    outlineLayer.draw(context, null)
+
+    expect(context.uniform1f).toHaveBeenCalledWith('u_fade', 0.5)
+    expect(context.drawArrays).toHaveBeenCalledOnce()
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
+
+    vi.mocked(context.drawArrays).mockClear()
+    vi.mocked(harness.triggerRepaint).mockClear()
+    harness.outlineFade = { value: 0, done: true }
+    outlineLayer.draw(context, null)
+    expect(context.drawArrays).not.toHaveBeenCalled()
+    expect(harness.triggerRepaint).not.toHaveBeenCalled()
   })
 
   it('keeps the zoom-scaled outline available below one screen pixel per canvas pixel', async () => {

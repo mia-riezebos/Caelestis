@@ -21,7 +21,7 @@ describe('template appearances', () => {
       rotation: 0,
       opacity: 0.85,
       contrastOutline: true,
-      contrastOutlineSize: 0.85,
+      contrastOutlineSize: 0.4,
       hiddenColours: [],
       markMismatch: false,
       markUnpainted: false,
@@ -40,7 +40,7 @@ describe('template appearances', () => {
   it('preserves the original outline on upgrade and bounds configurable thickness', () => {
     expect(normaliseAppearance({})).toMatchObject({
       contrastOutline: true,
-      contrastOutlineSize: 0.85,
+      contrastOutlineSize: 0.4,
     })
     expect(normaliseAppearance({ contrastOutline: false, contrastOutlineSize: 4 })).toMatchObject({
       contrastOutline: false,
