@@ -839,6 +839,31 @@ describe('placement and geometry', () => {
     }
   }
 
+  it('remeasures after a custom-element menu first connects at zero height', async () => {
+    let menuMeasurements = 0
+    Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+      const isMenu = this instanceof HTMLElement && this.dataset.caelestisSignature !== undefined
+      const height = isMenu && ++menuMeasurements > 1 ? 200 : 0
+      return {
+        width: isMenu ? 240 : 0,
+        height,
+        top: 0,
+        left: 0,
+        right: isMenu ? 240 : 0,
+        bottom: height,
+        x: 0,
+        y: 0,
+      } as DOMRect
+    }
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+
+    gear('a').click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(menu().style.maxHeight).toBe('200px')
+  })
+
   it('keeps its trigger and menu clear of the right-hand button rail', async () => {
     const restore = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })

@@ -51,13 +51,13 @@ The Svelte custom-element runtime is a fixed cost that later components reuse.
 
 | Build | Before Svelte | Lifecycle | Notifications | Panel and rail | Template tree | Appearance defaults | Direct frontend imports | Shared progress | Overlay controls | Tree parity and colour progress | Settings and profile | Overlay bridge removed | Token admin and cleanup | Legacy UI removed |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B | 499,428 B | 499,428 B | 501,294 B | 515,142 B | 516,151 B | 524,486 B | 506,763 B | 504,874 B | 486,784 B |
-| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B | 162,866 B | 162,866 B | 163,564 B | 167,202 B | 167,659 B | 170,175 B | 165,731 B | 164,781 B | 158,567 B |
-| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B | 143,287 B | 143,287 B | 145,579 B | 156,905 B | 158,252 B | 177,262 B | 186,409 B | 189,705 B | 199,296 B |
-| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B | 38,294 B | 38,294 B | 39,363 B | 41,391 B | 41,954 B | 46,688 B | 49,616 B | 49,937 B | 52,410 B |
+| Userscript, raw | 433,388 B | 455,360 B | 467,794 B | 477,705 B | 482,868 B | 499,428 B | 499,428 B | 501,294 B | 515,142 B | 516,151 B | 524,486 B | 506,763 B | 504,874 B | 486,832 B |
+| Userscript, gzip | 140,309 B | 149,269 B | 153,588 B | 156,457 B | 158,491 B | 162,866 B | 162,866 B | 163,564 B | 167,202 B | 167,659 B | 170,175 B | 165,731 B | 164,781 B | 158,602 B |
+| Element entry, raw | n/a | 60,798 B | 76,160 B | 92,661 B | 122,217 B | 143,287 B | 143,287 B | 145,579 B | 156,905 B | 158,252 B | 177,262 B | 186,409 B | 189,705 B | 199,263 B |
+| Element entry, gzip | n/a | 18,054 B | 22,229 B | 26,276 B | 33,646 B | 38,294 B | 38,294 B | 39,363 B | 41,391 B | 41,954 B | 46,688 B | 49,616 B | 49,937 B | 52,409 B |
 | Frontend output | 688 KiB | 712 KiB | 724 KiB | 736 KiB | 756 KiB | 776 KiB | 684 KiB | 684 KiB | 684 KiB | 680 KiB | 680 KiB | 780 KiB | 780 KiB | 784 KiB |
 
 The final large-tree check mounts the userscript's 2,000-row render budget through
-`<caelestis-panel>`. In Happy DOM on the development machine it mounted in 4,853.4 ms and updated all
-2,000 rows in 252.9 ms. This intentionally records the test environment rather than treating it as a
+`<caelestis-panel>`. In Happy DOM on the development machine it mounted in 1,423.9 ms and updated all
+2,000 rows in 144.6 ms. This intentionally records the test environment rather than treating it as a
 browser performance budget.

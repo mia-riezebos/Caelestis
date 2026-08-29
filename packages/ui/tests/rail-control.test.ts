@@ -41,4 +41,15 @@ describe('rail control', () => {
       expect.objectContaining({ detail: { type: 'activate', id: 'colour' }, composed: true }),
     )
   })
+
+  it('matches the circular Wplace rail controls', async () => {
+    const control = new CaelestisRailControl()
+    control.model = { id: 'panel', label: 'Caelestis', pressed: false }
+    document.body.append(control)
+    await tick()
+
+    const button = control.shadowRoot?.querySelector('button')
+    expect(button).not.toBeNull()
+    expect(getComputedStyle(button as Element).borderRadius).toBe('999px')
+  })
 })

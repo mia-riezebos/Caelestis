@@ -37,7 +37,7 @@
 </button>
 
 <style>
-  button { position: relative; display: grid; place-items: center; inline-size: var(--caelestis-touch-target, 2.75rem); block-size: var(--caelestis-touch-target, 2.75rem); padding: 0; border: 1px solid var(--caelestis-border, rgb(255 255 255 / 0.14)); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-surface, oklch(0.27 0.025 264)); color: var(--caelestis-text, oklch(0.91 0.015 264)); box-shadow: 0 4px 12px rgb(0 0 0 / 0.25); cursor: pointer; }
+  button { position: relative; display: grid; place-items: center; inline-size: var(--caelestis-touch-target, 2.75rem); block-size: var(--caelestis-touch-target, 2.75rem); padding: 0; border: 1px solid var(--caelestis-border, rgb(255 255 255 / 0.14)); border-radius: 999px; background: var(--caelestis-surface, oklch(0.27 0.025 264)); color: var(--caelestis-text, oklch(0.91 0.015 264)); box-shadow: 0 4px 12px rgb(0 0 0 / 0.25); cursor: pointer; }
   button.pressed { border-color: transparent; background: var(--caelestis-primary, oklch(0.68 0.15 244)); color: white; }
   button.danger { color: var(--caelestis-danger, oklch(0.72 0.18 27)); }
   button[aria-disabled='true'] { cursor: not-allowed; opacity: 0.5; }

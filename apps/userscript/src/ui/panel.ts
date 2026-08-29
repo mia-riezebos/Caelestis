@@ -86,6 +86,7 @@ import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-p
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
+import { panelWidthAfterMount } from './panel-geometry.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
 import { applyWplaceTheme } from './theme.js'
@@ -781,6 +782,9 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
   ...(currentView === 'settings' ? { settings: settingsModel() } : {}),
 })
 
+const currentPanelWidth = (panel: CaelestisPanel): number =>
+  panelWidthAfterMount(panel.getBoundingClientRect().width, panel.model.width)
+
 /** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
 const buildSveltePanel = (): CaelestisPanel => {
   const panel = document.createElement('caelestis-panel')
@@ -878,7 +882,7 @@ const rerenderTree = (): void => {
   const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
   if (panel === null) return
   activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
-  panel.model = panelModel(panel.getBoundingClientRect().width)
+  panel.model = panelModel(currentPanelWidth(panel))
 }
 
 /**
@@ -901,7 +905,7 @@ const showView = (view: View): void => {
     activeTreeAdapter = null
     if (view === 'appearance') refreshAccount(refreshView)
   }
-  panel.model = panelModel(panel.getBoundingClientRect().width)
+  panel.model = panelModel(currentPanelWidth(panel))
   syncProfileTimer()
   log('install', `panel view: ${view}`)
 }

@@ -1942,6 +1942,14 @@ const renderControls = (
       menuNode.dataset.caelestisSignature = menuSignature(template)
       menuOwner = template.id
       document.body.append(menuNode, ...railActions)
+      // Svelte custom elements finish their first render after connection. The same-task geometry
+      // pass can therefore see a zero-height host and cache that collapsed size for the viewport.
+      // Measure once more after connection so a static map does not leave the menu invisible.
+      setTimeout(() => {
+        if (menuNode !== built.menu || menuOwner !== template.id) return
+        invalidateMenuMeasurement()
+        rerender()
+      }, 0)
       menuNode.scrollTop = scrollTop
       // Focus this module *asks* for is dropped while something is being placed; focus it merely
       // finds is kept. An action that asks — opening the delete question — can be deferred by a
