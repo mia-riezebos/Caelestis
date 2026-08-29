@@ -52,4 +52,13 @@ describe('rail control', () => {
     expect(button).not.toBeNull()
     expect(getComputedStyle(button as Element).borderRadius).toBe('999px')
   })
+
+  it('uses the complete Material palette glyph', async () => {
+    const control = new CaelestisRailControl()
+    control.model = { id: 'colour', label: 'Show only the selected colour', pressed: false }
+    document.body.append(control)
+    await tick()
+
+    expect(control.shadowRoot?.querySelector('path')?.getAttribute('d')).toContain('Zm-220-440')
+  })
 })

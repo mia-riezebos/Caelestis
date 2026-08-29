@@ -190,7 +190,7 @@
 
 <style>
   .editor { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 400 0.875rem/1.3 ui-sans-serif, system-ui, sans-serif; }
-  .editor.compact { padding: 0.5rem 0.625rem 0.625rem; font-size: 0.75rem; }
+  .editor.compact { padding: 0; font-size: 0.75rem; }
   .defaults { display: flex; align-items: center; gap: 0.5rem; color: var(--caelestis-muted-text); font-size: 0.75rem; font-weight: 400; white-space: nowrap; }
   .defaults input { --toggle-size: 1rem; --toggle-padding: calc(var(--toggle-size) * 0.125); appearance: none; display: inline-grid; flex-shrink: 0; grid-template-columns: 0fr 1fr 1fr; place-content: center; inline-size: calc((var(--toggle-size) * 2) - (var(--border, 1px) + var(--toggle-padding)) * 2); block-size: var(--toggle-size); margin: 0; padding: var(--toggle-padding); border: var(--border, 1px) solid currentColor; border-radius: calc(var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)) + var(--toggle-padding) + var(--border, 1px)); color: color-mix(in oklab, var(--caelestis-text) 50%, transparent); cursor: pointer; }
   .defaults input::before { content: ''; position: relative; grid-column: 2; grid-row: 1; inline-size: 100%; block-size: 100%; aspect-ratio: 1; border-radius: var(--caelestis-selector-radius, var(--radius-selector, 0.5rem)); background: currentColor; }

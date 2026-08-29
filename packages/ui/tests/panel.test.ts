@@ -81,6 +81,9 @@ describe('panel shell', () => {
 
     const surface = panel.shadowRoot?.querySelector<HTMLElement>('.panel')
     const settings = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Settings"]')
+    const appearanceButton = panel.shadowRoot?.querySelector<HTMLElement>(
+      '[aria-label="Appearance"]',
+    )
     const preset = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Full pixel"]')
     const toggle = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Contrast outline"]')
     const range = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Opacity"]')
@@ -92,6 +95,7 @@ describe('panel shell', () => {
     expect(getComputedStyle(toggle as Element).blockSize).toBe('1.25rem')
     expect(getComputedStyle(range as Element).appearance).toBe('none')
     expect(getComputedStyle(range as Element).blockSize).toBe('1rem')
+    expect(appearanceButton?.querySelector('path')?.getAttribute('d')).toContain('Zm-220-440')
   })
 
   it('emits one composed intent event for navigation and closing', async () => {
