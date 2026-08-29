@@ -55,6 +55,7 @@ export const shortcutFor = (
   // Physical position is intentional: layouts with dead keys may report `key: 'Dead'` for `?`,
   // while `code: 'Slash'` still identifies the requested Shift+/ chord exactly.
   if (event.shiftKey) return event.code === 'Slash' ? 'show-shortcut-help' : null
+  if (event.code === 'Backquote') return 'show-shortcut-help'
 
   switch (event.key.toLowerCase()) {
     case '1':

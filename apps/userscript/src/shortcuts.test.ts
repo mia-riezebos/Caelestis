@@ -60,10 +60,12 @@ describe('shortcutFor', () => {
     expect(shortcutFor(keydown('r', { repeat: true }))).toBeNull()
   })
 
-  it('maps the physical Shift+/ chord even when the layout reports a dead key', () => {
+  it('maps the physical help keys even when the layout reports a dead key', () => {
     expect(shortcutFor(keydown('Dead', { code: 'Slash', shiftKey: true }))).toBe(
       'show-shortcut-help',
     )
+    expect(shortcutFor(keydown('Dead', { code: 'Backquote' }))).toBe('show-shortcut-help')
     expect(shortcutFor(keydown('?', { code: 'Quote', shiftKey: true }))).toBeNull()
+    expect(shortcutFor(keydown('`', { code: 'Backquote', shiftKey: true }))).toBeNull()
   })
 })
