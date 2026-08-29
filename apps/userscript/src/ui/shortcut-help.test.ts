@@ -12,14 +12,14 @@ describe('shortcut help', () => {
     document.body.appendChild(trigger)
     trigger.focus()
 
-    toggleShortcutHelp()
+    toggleShortcutHelp('mac')
 
     const dialog = document.querySelector<HTMLDialogElement>('dialog[data-caelestis-shortcut-help]')
     expect(dialog?.open).toBe(true)
     expect(dialog?.textContent).toContain('Keyboard shortcuts')
     expect(dialog?.textContent).toContain('` or Shift+/')
     expect(dialog?.textContent).toContain('Paint drawer')
-    expect(dialog?.textContent).toContain('Cmd/Ctrl+Shift+Z')
+    expect(dialog?.textContent).toContain('Cmd+Shift+Z')
     expect(dialog?.textContent).toContain('Redo drafted pixel')
     expect(dialog?.textContent).toContain('Toggle contrast rings')
     expect(dialog?.querySelectorAll('kbd').length).toBeGreaterThanOrEqual(14)
@@ -32,7 +32,7 @@ describe('shortcut help', () => {
     expect(box?.style.getPropertyValue('max-height')).toBe('var(--caelestis-shortcut-max-height)')
     expect(box?.style.getPropertyPriority('max-height')).toBe('important')
 
-    toggleShortcutHelp()
+    toggleShortcutHelp('mac')
 
     expect(document.querySelector('dialog[data-caelestis-shortcut-help]')).toBeNull()
     expect(document.activeElement).toBe(trigger)
@@ -48,7 +48,7 @@ describe('shortcut help', () => {
   })
 
   it('groups related keys and reveals their shared explanation on focus', () => {
-    toggleShortcutHelp()
+    toggleShortcutHelp('mac')
     const map = document.querySelector<HTMLElement>('.caelestis-keymap')
     const previous = map?.querySelector<HTMLButtonElement>('[data-keyboard-key="KeyA"]')
     const next = map?.querySelector<HTMLButtonElement>('[data-keyboard-key="KeyD"]')
@@ -97,6 +97,49 @@ describe('shortcut help', () => {
       '20%, 40%, 60%, 80% or 100%',
     )
 
-    toggleShortcutHelp()
+    toggleShortcutHelp('mac')
+  })
+
+  it.each([
+    {
+      platform: 'mac' as const,
+      legends: ['Ctrl', 'Opt', 'Cmd', 'Space'],
+      historyKey: 'Cmd+Z',
+      activeModifier: 'MetaLeft',
+      inactiveModifier: 'ControlLeft',
+    },
+    {
+      platform: 'windows-linux' as const,
+      legends: ['Ctrl', 'Win / Meta', 'Alt', 'Space'],
+      historyKey: 'Ctrl+Z',
+      activeModifier: 'ControlLeft',
+      inactiveModifier: 'MetaLeft',
+    },
+  ])('renders $platform modifiers and history chord', (expected) => {
+    toggleShortcutHelp(expected.platform)
+    const map = document.querySelector<HTMLElement>('.caelestis-keymap')
+    const modifierRow = map?.querySelector('.caelestis-keymap-row:last-child')
+    expect(Array.from(modifierRow?.children ?? []).map((key) => key.textContent)).toEqual(
+      expected.legends,
+    )
+    expect(map?.dataset.platform).toBe(expected.platform)
+    expect(
+      [...document.querySelectorAll('.caelestis-shortcut-list kbd')].map((key) => key.textContent),
+    ).toContain(expected.historyKey)
+
+    map?.querySelector<HTMLButtonElement>('[data-keyboard-key="KeyZ"]')?.focus()
+
+    expect(
+      map
+        ?.querySelector(`[data-keyboard-key="${expected.activeModifier}"]`)
+        ?.hasAttribute('data-active'),
+    ).toBe(true)
+    expect(
+      map
+        ?.querySelector(`[data-keyboard-key="${expected.inactiveModifier}"]`)
+        ?.hasAttribute('data-active'),
+    ).toBe(false)
+
+    toggleShortcutHelp(expected.platform)
   })
 })

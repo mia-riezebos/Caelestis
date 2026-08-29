@@ -20,6 +20,25 @@ export type Shortcut =
   | 'toggle-visibility'
   | 'undo-paint'
 
+export type ShortcutPlatform = 'mac' | 'windows-linux'
+
+interface ShortcutPlatformSource {
+  readonly platform?: string
+  readonly userAgent?: string
+  readonly userAgentData?: { readonly platform?: string }
+}
+
+/** Resolve the keyboard convention once without relying on the character produced by a key. */
+export const shortcutPlatformFor = (source: ShortcutPlatformSource): ShortcutPlatform => {
+  const platform = source.userAgentData?.platform || source.platform || source.userAgent || ''
+  return /mac|iphone|ipad|ipod/i.test(platform) ? 'mac' : 'windows-linux'
+}
+
+export const currentShortcutPlatform = (): ShortcutPlatform =>
+  typeof navigator === 'undefined'
+    ? 'windows-linux'
+    : shortcutPlatformFor(navigator as Navigator & ShortcutPlatformSource)
+
 /**
  * Whether a keystroke belongs to something else on the page.
  *
@@ -40,11 +59,13 @@ const isTyping = (target: EventTarget | null): boolean => {
 export const shortcutFor = (
   event: Pick<KeyboardEvent, 'altKey' | 'code' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
     Partial<Pick<KeyboardEvent, 'repeat' | 'shiftKey'>>,
+  platform = currentShortcutPlatform(),
 ): Shortcut | null => {
   if (isTyping(event.target)) return null
-  const command = event.metaKey || event.ctrlKey
-  if (command) {
-    if (event.altKey || (event.metaKey && event.ctrlKey) || event.key.toLowerCase() !== 'z') {
+  const command = platform === 'mac' ? event.metaKey : event.ctrlKey
+  const foreignCommand = platform === 'mac' ? event.ctrlKey : event.metaKey
+  if (command || foreignCommand) {
+    if (!command || foreignCommand || event.altKey || event.key.toLowerCase() !== 'z') {
       return null
     }
     // Repeats are intentional here: holding the chord walks Wplace's per-pixel history. Every

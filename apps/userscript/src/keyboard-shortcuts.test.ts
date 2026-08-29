@@ -84,7 +84,7 @@ beforeEach(async () => {
   harness.focused = { id: 'focused', visible: true, owns: ['markers'] }
   harness.focus.mockImplementation(() => harness.focused)
   const { installKeyboardShortcuts } = await import('./keyboard-shortcuts.js')
-  dispose = installKeyboardShortcuts(vi.fn())
+  dispose = installKeyboardShortcuts(vi.fn(), 'mac')
 })
 
 afterEach(() => {
@@ -134,15 +134,27 @@ describe('keyboard shortcut actions', () => {
     expect(harness.togglePaint).toHaveBeenCalledOnce()
   })
 
-  it('delegates repeatable undo and redo to Wplace and claims only an available history step', () => {
+  it('delegates repeatable Mac history only through Cmd', () => {
     expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
-    expect(press('z', { ctrlKey: true, repeat: true }).defaultPrevented).toBe(true)
+    expect(press('z', { ctrlKey: true, repeat: true }).defaultPrevented).toBe(false)
     expect(press('Z', { metaKey: true, repeat: true, shiftKey: true }).defaultPrevented).toBe(true)
-    expect(harness.undoPaint).toHaveBeenCalledTimes(2)
+    expect(harness.undoPaint).toHaveBeenCalledOnce()
     expect(harness.redoPaint).toHaveBeenCalledOnce()
 
     harness.undoPaint.mockReturnValueOnce(false)
     expect(press('z', { metaKey: true }).defaultPrevented).toBe(false)
+  })
+
+  it('delegates repeatable Windows and Linux history only through Ctrl', async () => {
+    dispose?.()
+    const { installKeyboardShortcuts } = await import('./keyboard-shortcuts.js')
+    dispose = installKeyboardShortcuts(vi.fn(), 'windows-linux')
+
+    expect(press('z', { ctrlKey: true }).defaultPrevented).toBe(true)
+    expect(press('z', { metaKey: true, repeat: true }).defaultPrevented).toBe(false)
+    expect(press('Z', { ctrlKey: true, repeat: true, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(harness.undoPaint).toHaveBeenCalledOnce()
+    expect(harness.redoPaint).toHaveBeenCalledOnce()
   })
 
   it('toggles rings on a focused pixel-owned template or on the global appearance', async () => {
@@ -167,6 +179,7 @@ describe('keyboard shortcut actions', () => {
 
     expect(event.defaultPrevented).toBe(true)
     expect(harness.toggleShortcutHelp).toHaveBeenCalledOnce()
+    expect(harness.toggleShortcutHelp).toHaveBeenCalledWith('mac')
   })
 
   it('releases peek if the window loses focus before keyup', () => {

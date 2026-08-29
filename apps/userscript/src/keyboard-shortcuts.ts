@@ -1,7 +1,7 @@
 import { getMap } from './map-handle.js'
 import { setOverlayPeekActive } from './overlay-peek.js'
 import { cycleFocusedColour, navigateFocusedSelectedColour } from './paint-palette.js'
-import { shortcutFor } from './shortcuts.js'
+import { currentShortcutPlatform, type ShortcutPlatform, shortcutFor } from './shortcuts.js'
 import { getState, setState } from './state.js'
 import {
   ownsGroup,
@@ -74,7 +74,10 @@ const opacityFor = (shortcut: string): number | null => {
  * narrow hidden-template restoration mode. Peek is runtime render state and is always released on
  * keyup, blur, disposal, or a hidden tab rather than touching any persisted visibility switch.
  */
-export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
+export const installKeyboardShortcuts = (
+  redraw: () => void,
+  platform: ShortcutPlatform = currentShortcutPlatform(),
+): (() => void) => {
   let peeking = false
   const repaintPeek = (active: boolean): void => {
     if (!setOverlayPeekActive(active)) return
@@ -95,12 +98,12 @@ export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
     if (document.hidden) endPeek()
   }
   const onKeydown = (event: KeyboardEvent): void => {
-    const shortcut = shortcutFor(event)
+    const shortcut = shortcutFor(event, platform)
     if (shortcut === null) return
 
     if (shortcut === 'show-shortcut-help') {
       event.preventDefault()
-      toggleShortcutHelp()
+      toggleShortcutHelp(platform)
       return
     }
     if (shortcut === 'undo-paint' || shortcut === 'redo-paint') {

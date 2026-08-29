@@ -1,3 +1,4 @@
+import { currentShortcutPlatform, type ShortcutPlatform } from '../shortcuts.js'
 import { DIALOG_BODY_CLASS, DIALOG_BOX_CLASS, DIALOG_HEADER_CLASS } from './confirm.js'
 import { installStyles } from './styles.js'
 
@@ -23,7 +24,7 @@ interface ShortcutSet {
  * A set may own several physical keys (A/D, 1–5, the history chord) and several list rows. Keeping
  * those together is what makes a hover group, its connector lines and the plain reference agree.
  */
-const SHORTCUT_SETS: readonly ShortcutSet[] = [
+const shortcutSetsFor = (platform: ShortcutPlatform): readonly ShortcutSet[] => [
   {
     id: 'colour-cycle',
     category: 'Painting',
@@ -71,12 +72,18 @@ const SHORTCUT_SETS: readonly ShortcutSet[] = [
     id: 'history',
     category: 'Painting',
     title: 'Move through draft history',
-    description: 'Hold Cmd/Ctrl+Z to undo drafted pixels in recency order. Add Shift to redo them.',
+    description: `Hold ${platform === 'mac' ? 'Cmd' : 'Ctrl'}+Z to undo drafted pixels in recency order. Add Shift to redo them.`,
     rows: [
-      { key: 'Cmd/Ctrl+Z', label: 'Undo drafted pixels (hold)' },
-      { key: 'Cmd/Ctrl+Shift+Z', label: 'Redo drafted pixels (hold)' },
+      {
+        key: `${platform === 'mac' ? 'Cmd' : 'Ctrl'}+Z`,
+        label: 'Undo drafted pixels (hold)',
+      },
+      {
+        key: `${platform === 'mac' ? 'Cmd' : 'Ctrl'}+Shift+Z`,
+        label: 'Redo drafted pixels (hold)',
+      },
     ],
-    keyboardKeys: ['ShiftLeft', 'KeyZ', 'ControlOrMeta'],
+    keyboardKeys: ['ShiftLeft', 'KeyZ', platform === 'mac' ? 'MetaLeft' : 'ControlLeft'],
   },
   {
     id: 'panel',
@@ -165,7 +172,7 @@ const KEY_GAP_EM = 0.5
 const keyboardKeyBasis = (units: number): string =>
   `${units * KEY_UNIT_EM + (units - 1) * KEY_GAP_EM}em`
 
-const KEYBOARD_ROWS: readonly (readonly KeyboardKey[])[] = [
+const keyboardRowsFor = (platform: ShortcutPlatform): readonly (readonly KeyboardKey[])[] => [
   [
     { code: 'Backquote', legend: '`' },
     { code: 'Digit1', legend: '1' },
@@ -198,27 +205,29 @@ const KEYBOARD_ROWS: readonly (readonly KeyboardKey[])[] = [
     { code: 'KeyV', legend: 'V' },
     { code: 'KeyB', legend: 'B' },
   ],
-  [
-    { code: 'ControlOrMeta', legend: 'Ctrl / ⌘', width: 1.25 },
-    { code: 'AltLeft', legend: 'Alt / ⌥', width: 1.25 },
-    { code: 'Space', legend: 'Space', width: 3.75 },
-  ],
+  platform === 'mac'
+    ? [
+        { code: 'ControlLeft', legend: 'Ctrl', width: 1.25 },
+        { code: 'AltLeft', legend: 'Opt', width: 1.25 },
+        { code: 'MetaLeft', legend: 'Cmd', width: 1.25 },
+        { code: 'Space', legend: 'Space', width: 2.5 },
+      ]
+    : [
+        { code: 'ControlLeft', legend: 'Ctrl', width: 1.25 },
+        { code: 'MetaLeft', legend: 'Win / Meta', width: 1.25 },
+        { code: 'AltLeft', legend: 'Alt', width: 1.25 },
+        { code: 'Space', legend: 'Space', width: 2.5 },
+      ],
 ]
 
-const setByKeyboardKey = new Map(
-  SHORTCUT_SETS.flatMap((set) => set.keyboardKeys.map((key) => [key, set] as const)),
-)
-
-const makeGroup = (category: ShortcutCategory): HTMLElement => {
+const makeGroup = (category: ShortcutCategory, sets: readonly ShortcutSet[]): HTMLElement => {
   const section = document.createElement('section')
   const heading = document.createElement('h4')
   heading.className = 'caelestis-shortcut-group-title'
   heading.textContent = category
   const list = document.createElement('dl')
   list.className = 'caelestis-shortcut-list'
-  for (const row of SHORTCUT_SETS.filter((set) => set.category === category).flatMap(
-    (set) => set.rows,
-  )) {
+  for (const row of sets.filter((set) => set.category === category).flatMap((set) => set.rows)) {
     const term = document.createElement('dt')
     const key = document.createElement('kbd')
     key.textContent = row.key
@@ -236,14 +245,18 @@ interface KeyboardMap {
   readonly dispose: () => void
 }
 
-const makeKeyboardMap = (): KeyboardMap => {
+const makeKeyboardMap = (platform: ShortcutPlatform, sets: readonly ShortcutSet[]): KeyboardMap => {
   const map = document.createElement('section')
   map.className = 'caelestis-keymap'
+  map.dataset.platform = platform
   map.setAttribute('aria-label', 'Left half of a QWERTY keyboard')
 
   const keyboard = document.createElement('div')
   keyboard.className = 'caelestis-keymap-keyboard'
-  for (const [rowIndex, keys] of KEYBOARD_ROWS.entries()) {
+  const setByKeyboardKey = new Map(
+    sets.flatMap((set) => set.keyboardKeys.map((key) => [key, set] as const)),
+  )
+  for (const [rowIndex, keys] of keyboardRowsFor(platform).entries()) {
     const row = document.createElement('div')
     row.className = 'caelestis-keymap-row'
     row.style.setProperty('--caelestis-key-row', String(rowIndex))
@@ -348,7 +361,7 @@ const makeKeyboardMap = (): KeyboardMap => {
   }
 
   for (const key of map.querySelectorAll<HTMLButtonElement>('button[data-shortcut-set]')) {
-    const set = SHORTCUT_SETS.find((candidate) => candidate.id === key.dataset.shortcutSet)
+    const set = sets.find((candidate) => candidate.id === key.dataset.shortcutSet)
     if (set === undefined) continue
     key.addEventListener('pointerenter', () => inspect(set))
     key.addEventListener('pointerleave', (event) => clear(set, event.relatedTarget))
@@ -368,7 +381,7 @@ const makeKeyboardMap = (): KeyboardMap => {
 }
 
 /** Toggle the scan-first and spatial keyboard reference, using Wplace's native modal surface. */
-export const toggleShortcutHelp = (): void => {
+export const toggleShortcutHelp = (platform = currentShortcutPlatform()): void => {
   const current = document.querySelector<HTMLDialogElement>('dialog[data-caelestis-shortcut-help]')
   if (current !== null) {
     current.close()
@@ -403,10 +416,11 @@ export const toggleShortcutHelp = (): void => {
 
   const content = document.createElement('div')
   content.className = DIALOG_BODY_CLASS
-  const keyboardMap = makeKeyboardMap()
+  const sets = shortcutSetsFor(platform)
+  const keyboardMap = makeKeyboardMap(platform, sets)
   const groups = document.createElement('div')
   groups.className = 'caelestis-shortcut-groups'
-  groups.append(makeGroup('Painting'), makeGroup('Overlay'))
+  groups.append(makeGroup('Painting', sets), makeGroup('Overlay', sets))
   const layout = document.createElement('div')
   layout.className = 'caelestis-shortcut-layout'
   layout.append(groups, keyboardMap.element)

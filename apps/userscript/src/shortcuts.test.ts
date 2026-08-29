@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shortcutFor } from './shortcuts.js'
+import { shortcutFor, shortcutPlatformFor } from './shortcuts.js'
 
 const keydown = (
   key: string,
@@ -47,16 +47,31 @@ describe('shortcutFor', () => {
     expect(shortcutFor(keydown('f', { repeat: true }))).toBeNull()
   })
 
-  it('maps repeatable platform undo and redo without claiming typing or mixed modifiers', () => {
-    expect(shortcutFor(keydown('z', { metaKey: true }))).toBe('undo-paint')
-    expect(shortcutFor(keydown('z', { ctrlKey: true, repeat: true }))).toBe('undo-paint')
-    expect(shortcutFor(keydown('Z', { metaKey: true, repeat: true, shiftKey: true }))).toBe(
+  it('uses only Cmd for repeatable undo and redo on macOS', () => {
+    expect(shortcutFor(keydown('z', { metaKey: true }), 'mac')).toBe('undo-paint')
+    expect(shortcutFor(keydown('z', { metaKey: true, repeat: true }), 'mac')).toBe('undo-paint')
+    expect(shortcutFor(keydown('Z', { metaKey: true, repeat: true, shiftKey: true }), 'mac')).toBe(
       'redo-paint',
     )
+    expect(shortcutFor(keydown('z', { ctrlKey: true }), 'mac')).toBeNull()
+    expect(shortcutFor(keydown('z', { ctrlKey: true, metaKey: true }), 'mac')).toBeNull()
+  })
+
+  it('uses only Ctrl for repeatable undo and redo on Windows and Linux', () => {
+    expect(shortcutFor(keydown('z', { ctrlKey: true }), 'windows-linux')).toBe('undo-paint')
+    expect(
+      shortcutFor(keydown('Z', { ctrlKey: true, repeat: true, shiftKey: true }), 'windows-linux'),
+    ).toBe('redo-paint')
+    expect(shortcutFor(keydown('z', { metaKey: true }), 'windows-linux')).toBeNull()
+    expect(shortcutFor(keydown('z', { ctrlKey: true, metaKey: true }), 'windows-linux')).toBeNull()
+  })
+
+  it('does not claim undo while typing or with mixed modifiers', () => {
     const textarea = Object.assign(new EventTarget(), { tagName: 'TEXTAREA' })
-    expect(shortcutFor(keydown('z', { ctrlKey: true, target: textarea }))).toBeNull()
-    expect(shortcutFor(keydown('z', { altKey: true, ctrlKey: true }))).toBeNull()
-    expect(shortcutFor(keydown('z', { ctrlKey: true, metaKey: true }))).toBeNull()
+    expect(
+      shortcutFor(keydown('z', { ctrlKey: true, target: textarea }), 'windows-linux'),
+    ).toBeNull()
+    expect(shortcutFor(keydown('z', { altKey: true, ctrlKey: true }), 'windows-linux')).toBeNull()
     expect(shortcutFor(keydown('r', { repeat: true }))).toBeNull()
   })
 
@@ -67,5 +82,27 @@ describe('shortcutFor', () => {
     expect(shortcutFor(keydown('Dead', { code: 'Backquote' }))).toBe('show-shortcut-help')
     expect(shortcutFor(keydown('?', { code: 'Quote', shiftKey: true }))).toBeNull()
     expect(shortcutFor(keydown('`', { code: 'Backquote', shiftKey: true }))).toBeNull()
+  })
+})
+
+describe('shortcutPlatformFor', () => {
+  it.each(['MacIntel', 'macOS', 'iPhone', 'iPad'])(
+    'treats %s as a Mac command keyboard',
+    (platform) => {
+      expect(shortcutPlatformFor({ platform })).toBe('mac')
+    },
+  )
+
+  it.each(['Win32', 'Windows', 'Linux x86_64', 'FreeBSD'])(
+    'treats %s as Ctrl-based',
+    (platform) => {
+      expect(shortcutPlatformFor({ platform })).toBe('windows-linux')
+    },
+  )
+
+  it('prefers user-agent client hints when available', () => {
+    expect(shortcutPlatformFor({ platform: 'Win32', userAgentData: { platform: 'macOS' } })).toBe(
+      'mac',
+    )
   })
 })

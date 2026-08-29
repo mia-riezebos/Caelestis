@@ -810,14 +810,7 @@ button.caelestis-keymap-key {
     grid-template-columns: 1fr;
   }
   .caelestis-keymap {
-    grid-row: 2;
-  }
-  .caelestis-keymap-keyboard {
-    font-size: 0.5625rem;
-  }
-  .caelestis-keymap-callout {
-    min-height: 4.5rem;
-    text-align: center;
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
