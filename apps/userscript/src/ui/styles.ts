@@ -578,13 +578,17 @@ caelestis-template-admin {
 }
 .caelestis-shortcut-box {
   --caelestis-shortcut-max-height: 91.666dvh;
-  max-width: 58rem;
+  max-width: 62rem;
 }
 .caelestis-shortcut-layout {
   display: grid;
-  grid-template-columns: minmax(20rem, 0.85fr) minmax(26rem, 1.15fr);
-  gap: 1.5rem;
-  align-items: start;
+  flex: none;
+  grid-template-columns: minmax(20rem, 0.82fr) minmax(27rem, 1.18fr);
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--color-base-200, rgba(0, 0, 0, 0.08)) 58%, transparent);
 }
 .caelestis-keymap {
   --tt-in-dur: 150ms;
@@ -598,13 +602,13 @@ caelestis-template-admin {
   display: grid;
   flex: none;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
+  grid-template-rows: minmax(0, 1fr) minmax(6.75rem, auto);
+  gap: 1.5rem;
   align-items: center;
   margin: 0;
-  padding: 1rem;
-  border: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
-  border-radius: 0.75rem;
-  background: color-mix(in srgb, var(--color-base-200, rgba(0, 0, 0, 0.08)) 58%, transparent);
+  padding: clamp(1.25rem, 2.5vw, 2rem);
+  border-inline-start: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
+  background: color-mix(in srgb, var(--color-base-100, transparent) 30%, transparent);
   overflow: hidden;
 }
 .caelestis-keymap-keyboard {
@@ -617,7 +621,7 @@ caelestis-template-admin {
   flex-direction: column;
   gap: var(--caelestis-key-gap);
   margin-inline: auto;
-  font-size: 0.6875rem;
+  font-size: clamp(0.75rem, 1.35vw, 0.875rem);
 }
 .caelestis-keymap-row {
   display: flex;
@@ -676,8 +680,11 @@ button.caelestis-keymap-key {
   z-index: 2;
   display: grid;
   min-height: 5.5rem;
-  align-items: center;
+  align-items: start;
   margin: 0;
+  padding-block-start: 1.25rem;
+  border-block-start: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
+  text-align: center;
 }
 .caelestis-keymap-callout-hint,
 .caelestis-keymap-callout-detail {
@@ -750,14 +757,15 @@ button.caelestis-keymap-key {
   display: grid;
   flex: none;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1.5rem;
+  gap: 1rem;
   padding: 1rem;
-  border: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
-  border-radius: 0.75rem;
-  background: color-mix(in srgb, var(--color-base-200, rgba(0, 0, 0, 0.08)) 58%, transparent);
+}
+.caelestis-shortcut-groups > section + section {
+  padding-block-start: 1rem;
+  border-block-start: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
 }
 .caelestis-shortcut-group-title {
-  margin-block-end: 0.625rem;
+  margin-block-end: 0.5rem;
   color: var(--color-base-content, currentColor);
   font-size: 0.75rem;
   font-weight: 700;
@@ -766,20 +774,24 @@ button.caelestis-keymap-key {
 }
 .caelestis-shortcut-list {
   display: grid;
-  grid-template-columns: 9.25rem minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: center;
-  gap: 0.375rem 0.75rem;
+  gap: 0.25rem 0.75rem;
   margin: 0;
 }
 .caelestis-shortcut-list dt,
 .caelestis-shortcut-list dd {
   margin: 0;
 }
+.caelestis-shortcut-list dt {
+  display: flex;
+  justify-content: flex-end;
+}
 .caelestis-shortcut-list kbd {
   display: inline-flex;
   min-width: 2rem;
   width: fit-content;
-  min-height: 1.75rem;
+  min-height: 1.625rem;
   align-items: center;
   justify-content: center;
   padding-inline: 0.5rem;
@@ -802,7 +814,7 @@ button.caelestis-keymap-key {
   color: color-mix(in srgb, var(--color-base-content, currentColor) 62%, transparent);
   font-size: 0.75rem;
 }
-@media (max-width: 48rem) {
+@media (max-width: 53rem) {
   .caelestis-shortcut-box {
     --caelestis-shortcut-max-height: 85dvh;
   }

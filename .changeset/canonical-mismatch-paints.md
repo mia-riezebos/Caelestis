@@ -15,4 +15,5 @@ and redo history. Default contrast rings to 5% of a canvas pixel and fade their 
 Show the shortcut reference as a categorized list beside an interactive, correctly staggered
 left-hand QWERTY map with grouped key explanations, and let physical Backquote toggle it alongside
 Shift+/. Hide the keyboard visualizer on mobile, and match both its modifier row and draft-history
-chords to macOS or Windows/Linux conventions.
+chords to macOS or Windows/Linux conventions. Balance the desktop reference as one split surface
+with a denser scan list and a full-height keyboard pane.
