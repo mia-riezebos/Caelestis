@@ -29,3 +29,37 @@ export const exactRgbIndex = (
   const entry = table[(r << 8) | b] ?? 0
   return entry >>> 8 === g + 1 ? entry & 0xff : missing
 }
+
+const CANVAS_RGB_NOISE = 2
+
+/**
+ * Decode palette pixels read back from a canvas while tolerating Helium's bounded privacy noise.
+ * Exact colours retain the fast path; noisy reads probe only their small RGB neighbourhood.
+ */
+export const canvasRgbIndex = (
+  table: Uint32Array,
+  r: number,
+  g: number,
+  b: number,
+  missing: number,
+): number => {
+  const exact = exactRgbIndex(table, r, g, b, missing)
+  if (exact !== missing) return exact
+
+  for (let dr = -CANVAS_RGB_NOISE; dr <= CANVAS_RGB_NOISE; dr += 1) {
+    const candidateR = r + dr
+    if (candidateR < 0 || candidateR > 255) continue
+
+    for (let db = -CANVAS_RGB_NOISE; db <= CANVAS_RGB_NOISE; db += 1) {
+      const candidateB = b + db
+      if (candidateB < 0 || candidateB > 255) continue
+
+      const entry = table[(candidateR << 8) | candidateB] ?? 0
+      if (entry !== 0 && Math.abs((entry >>> 8) - 1 - g) <= CANVAS_RGB_NOISE) {
+        return entry & 0xff
+      }
+    }
+  }
+
+  return missing
+}

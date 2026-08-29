@@ -10,7 +10,7 @@ import { count, isEnabled, log, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { isPageInstance, pageWindow } from './page-world.js'
 import { measureProfile } from './profile.js'
-import { buildExactRgbIndex, exactRgbIndex } from './rgb-index.js'
+import { buildExactRgbIndex, canvasRgbIndex } from './rgb-index.js'
 import { draftedPixelsIn } from './templates/drafted.js'
 import { tilePixelCacheLimit } from './tile-pixel-cache.js'
 import {
@@ -1360,7 +1360,7 @@ const readWrite = (image: ImageData, dx: number, dy: number): number[] => {
         y,
         data[at + 3] === 0
           ? UNPAINTED
-          : exactRgbIndex(table, data[at] ?? 0, data[at + 1] ?? 0, data[at + 2] ?? 0, UNPAINTED),
+          : canvasRgbIndex(table, data[at] ?? 0, data[at + 1] ?? 0, data[at + 2] ?? 0, UNPAINTED),
       )
     }
   }
@@ -1560,13 +1560,12 @@ const capture = (
         const { data } = context.getImageData(0, 0, TILE_SIZE, TILE_SIZE)
         const table = indexTable()
         for (let i = 0, p = 0; p < indices.length; i += 4, p++) {
-          // Fully transparent is unpainted. Their canvas is otherwise exact palette colours, so a colour
-          // that is not in the table can only be something we do not model — treated as unpainted rather
-          // than guessed at.
+          // Fully transparent is unpainted. Opaque pixels are palette colours, allowing for bounded
+          // privacy noise added by browsers such as Helium during canvas readback.
           const index =
             data[i + 3] === 0
               ? UNPAINTED
-              : exactRgbIndex(table, data[i] ?? 0, data[i + 1] ?? 0, data[i + 2] ?? 0, UNPAINTED)
+              : canvasRgbIndex(table, data[i] ?? 0, data[i + 1] ?? 0, data[i + 2] ?? 0, UNPAINTED)
           // A draft canvas is upside down relative to its tile — see `flipRow`. The tile PNG is not.
           if (from === 'preview') {
             const x = p % TILE_SIZE
