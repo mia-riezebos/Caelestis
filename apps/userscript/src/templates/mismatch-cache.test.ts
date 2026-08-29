@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
   serverMask: null as MismatchMask | null,
   workerAvailable: false,
   markersEnabled: true,
+  visible: true,
   pixelsAvailable: true,
   workerScan: vi.fn<(...args: unknown[]) => Promise<ScanOutcome | null>>(),
   idleCallbacks: [] as Array<(deadline: { timeRemaining: () => number }) => void>,
@@ -45,7 +46,7 @@ vi.mock('./local-store.js', () => ({
     markUnpainted: false,
   }),
   displayTemplates: () => harness.templates,
-  isTemplateVisible: () => true,
+  isTemplateVisible: () => harness.visible,
   onLocalChange: vi.fn(),
   templateTileKeys: (template: PlacedTemplate) => template.tiles.keys(),
 }))
@@ -84,6 +85,7 @@ beforeEach(() => {
   harness.serverMask = null
   harness.workerAvailable = false
   harness.markersEnabled = true
+  harness.visible = true
   harness.pixelsAvailable = true
   harness.workerScan.mockReset()
   harness.idleCallbacks = []
@@ -178,6 +180,25 @@ describe('visible mismatch answer retention', () => {
     expect(pixelAccounting.read(selected).colours).toEqual([
       { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
     ])
+  })
+
+  it('cold-loads progress for a hidden local template without admitting unrelated tiles', async () => {
+    const selected = template(210)
+    harness.templates = [selected]
+    harness.visible = false
+    harness.pixels[0] = 0
+    harness.pixelsAvailable = false
+    const { pixelAccounting } = await import('./mismatch.js')
+
+    expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 0, known: 0 })
+    expect(pixelAccounting.wantsTilePixels()).toBe(true)
+    expect(pixelAccounting.wantsTilePixels({ x: 0, y: 0 })).toBe(true)
+    expect(pixelAccounting.wantsTilePixels({ x: 1, y: 0 })).toBe(false)
+
+    harness.pixelsAvailable = true
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 50 })
+
+    expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
   })
 
   it('exposes unpainted cells independently of the mismatch-marker threshold', async () => {

@@ -203,6 +203,22 @@ describe('livePixelArtQuads', () => {
     expect(calculatePosMatrix).toHaveBeenCalledWith(coordinate, true, true)
   })
 
+  it('accepts a map-like tile-manager collection from another JavaScript realm', () => {
+    const coordinate = { canonical: { x: 3, y: 4 } }
+    const manager = { getVisibleCoordinates: () => [coordinate] }
+    const get = vi.fn((key: string) => (key === 'pixel-art-layer' ? manager : undefined))
+    const map = {
+      painter: {
+        options: { moving: true },
+        transform: { calculatePosMatrix: () => new Float32Array(tileMatrix(1)) },
+      },
+      style: { tileManagers: { get } },
+    }
+
+    expect(livePixelArtQuads(map, canvas(1_000))).toHaveLength(1)
+    expect(get).toHaveBeenCalledWith('pixel-art-layer')
+  })
+
   it('reports unavailable private MapLibre state for the compatibility fallback', () => {
     expect(livePixelArtQuads({}, canvas(1_000))).toBeNull()
   })

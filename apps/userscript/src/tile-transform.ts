@@ -409,9 +409,10 @@ export const livePixelArtQuads = (
       }
     }
     const managers = candidate.style?.tileManagers
+    const mapLike = managers as { get?: unknown } | undefined
     const manager =
-      managers instanceof Map
-        ? managers.get('pixel-art-layer')
+      typeof mapLike?.get === 'function'
+        ? Reflect.apply(mapLike.get, mapLike, ['pixel-art-layer'])
         : ((managers as Record<string, unknown> | undefined)?.['pixel-art-layer'] ?? null)
     const visible = (manager as { getVisibleCoordinates?: () => unknown } | null)
       ?.getVisibleCoordinates

@@ -565,6 +565,8 @@ export const endMismatchFrame = (): void => {
 const stale = new Set<string>()
 /** Progress-only tiles invalidated by paint; their previous aggregate remains visible until replaced. */
 const staleProgress = new Set<string>()
+/** Hidden local-template tiles whose pixels were explicitly requested by a progress consumer. */
+const pendingProgressPixels = new Set<string>()
 let idleScheduled = false
 
 type IdleWindow = typeof globalThis & {
@@ -603,6 +605,7 @@ const runIdleScan = (deadline: { timeRemaining: () => number }): void => {
     const template = templatesById.get(id)
     if (template === undefined || tile === null) {
       staleProgress.delete(cacheKey)
+      pendingProgressPixels.delete(cacheKey)
       continue
     }
     progressIn(template, tile)
@@ -637,7 +640,6 @@ const scheduleIdleScan = (): void => {
  */
 export const wantsTilePixels = (tile?: TileCoord): boolean => {
   const templates = displayTemplates().filter((template) => {
-    if (!isTemplateVisible(template)) return false
     // A server template's marker list comes from its server mismatch mask and its progress comes
     // from telemetry. Capturing the underlying Wplace tile as a fallback makes every newly visible
     // tile perform a million-pixel canvas read during a pan, precisely when the map needs its frame
@@ -645,17 +647,23 @@ export const wantsTilePixels = (tile?: TileCoord): boolean => {
     // both mismatch markers and progress (including when their marker switches are off).
     return template.serverUrl === undefined
   })
-  if (tile === undefined) return templates.length > 0
+  if (tile === undefined)
+    return (
+      pendingProgressPixels.size > 0 || templates.some((template) => isTemplateVisible(template))
+    )
   const left = tile.x * TILE_SIZE
   const top = tile.y * TILE_SIZE
-  return templates.some(
-    (template) =>
+  return templates.some((template) => {
+    if (pendingProgressPixels.has(`${template.id}|${tile.x}/${tile.y}`)) return true
+    return (
+      isTemplateVisible(template) &&
       template.originY < top + TILE_SIZE &&
       template.originY + template.height > top &&
       horizontalSpans(template).some(
         (span) => span.worldStart < left + TILE_SIZE && span.worldEnd > left,
-      ),
-  )
+      )
+    )
+  })
 }
 
 /** The switches, not what is on screen — see `claimedHiddenFor` for why the two differ. */
@@ -696,6 +704,7 @@ const queueIncompleteLocalProgress = (template: PlacedTemplate): void => {
     return
 
   let pending = false
+  let captureChanged = false
   for (const tileKey of templateTileKeys(template)) {
     const tile = parseTileKey(tileKey)
     if (tile === null) continue
@@ -709,9 +718,16 @@ const queueIncompleteLocalProgress = (template: PlacedTemplate): void => {
     )
       continue
     staleProgress.add(cacheKey)
+    if (!pendingProgressPixels.has(cacheKey)) {
+      pendingProgressPixels.add(cacheKey)
+      captureChanged = true
+    }
     pending = true
   }
-  if (pending) scheduleIdleScan()
+  if (pending) {
+    scheduleIdleScan()
+    if (captureChanged) notifyChanged()
+  }
 }
 
 /** Progress for scanned tiles; unknown tiles remain outside the three classified counts. */
@@ -1456,14 +1472,20 @@ export const progressIn = (template: PlacedTemplate, tile: TileCoord): boolean =
     held.templateSource === template.indices &&
     held.key === progressKey &&
     !staleProgress.has(cacheKey)
-  )
+  ) {
+    pendingProgressPixels.delete(cacheKey)
     return true
+  }
 
   const pixels = tilePixels(tile)
   if (pixels === null) {
+    const captureChanged = !pendingProgressPixels.has(cacheKey)
+    pendingProgressPixels.add(cacheKey)
     ensureTilePixels(tile)
+    if (captureChanged) notifyChanged()
     return false
   }
+  pendingProgressPixels.delete(cacheKey)
   const key = signature(template)
   if (hasWorker()) {
     requestScan(
@@ -1839,6 +1861,9 @@ export const forgetMismatches = (id: string): void => {
   }
   for (const key of [...staleProgress]) {
     if (key.startsWith(`${id}|`)) staleProgress.delete(key)
+  }
+  for (const key of [...pendingProgressPixels]) {
+    if (key.startsWith(`${id}|`)) pendingProgressPixels.delete(key)
   }
   for (const key of [...supersededServerSource.keys()]) {
     if (key.startsWith(`${id}|`)) supersededServerSource.delete(key)
