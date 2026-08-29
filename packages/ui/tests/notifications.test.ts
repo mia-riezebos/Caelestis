@@ -74,4 +74,24 @@ describe('notifications', () => {
       }),
     )
   })
+
+  it('keeps a one-time secret modal explicit and emits copy and acknowledgement intents', async () => {
+    const root = new CaelestisNotifications()
+    const intent = vi.fn()
+    root.addEventListener('caelestis-notifications-intent', intent)
+    root.model = model({
+      oneTimeSecret: { id: 'secret-1', label: 'Painter', value: 'only-copy' },
+    })
+    document.body.append(root)
+    await tick()
+
+    const dialog = root.shadowRoot?.querySelector('dialog')
+    expect(dialog?.textContent).toContain('It is shown once.')
+    expect(dialog?.querySelector<HTMLInputElement>('[aria-label="Access token"]')?.value).toBe('only-copy')
+    const button = (name: string) => [...(dialog?.querySelectorAll('button') ?? [])].find((item) => item.textContent?.trim() === name)
+    button('Copy')?.click()
+    expect(intent).toHaveBeenCalledWith(expect.objectContaining({ detail: { type: 'copy-one-time-secret', id: 'secret-1' } }))
+    button('I have copied it')?.click()
+    expect(intent).toHaveBeenCalledWith(expect.objectContaining({ detail: { type: 'resolve-one-time-secret', id: 'secret-1' } }))
+  })
 })

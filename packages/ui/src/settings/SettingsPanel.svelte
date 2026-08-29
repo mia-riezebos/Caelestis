@@ -3,11 +3,14 @@
   import SectionHeader from '../foundations/SectionHeader.svelte'
   import SettingRow from '../foundations/SettingRow.svelte'
   import Toggle from '../foundations/Toggle.svelte'
-  import type { SettingsIntent, SettingsModel, SettingsServerModel } from '../types.js'
+  import type { AccessTokenScope, SettingsIntent, SettingsModel, SettingsServerModel } from '../types.js'
 
   let { model, onIntent }: { model: SettingsModel; onIntent?: (intent: SettingsIntent) => void } = $props()
   let addServer = $state('')
   let tokenDrafts = $state<Record<string, string>>({})
+  let accessLabelDrafts = $state<Record<string, string>>({})
+  let accessScopeDrafts = $state<Record<string, AccessTokenScope>>({})
+  let accessCreated = $state<Record<string, number>>({})
   const emit = (intent: SettingsIntent): void => onIntent?.(intent)
   const tokenStatus = (server: SettingsServerModel): string =>
     server.message ?? (server.status === 'needs-token'
@@ -26,6 +29,20 @@
     const token = (tokenDrafts[server.url] ?? '').trim()
     if (token !== '') emit({ type: 'update-server-token', url: server.url, token })
   }
+  const submitAccessToken = (server: SettingsServerModel): void => {
+    const label = (accessLabelDrafts[server.url] ?? '').trim()
+    if (label === '') return
+    emit({
+      type: 'create-access-token',
+      url: server.url,
+      label,
+      scope: accessScopeDrafts[server.url] ?? 'report',
+    })
+  }
+  const dateText = (at: number): string =>
+    at === 0
+      ? 'unknown'
+      : new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 
   let previousServerCount = $state<number | null>(null)
   $effect(() => {
@@ -37,6 +54,15 @@
       Object.entries(tokenDrafts).filter(([url]) => model.servers.some((server) => server.url === url && server.expanded)),
     )
     if (Object.keys(retained).length !== Object.keys(tokenDrafts).length) tokenDrafts = retained
+    for (const server of model.servers) {
+      const created = server.accessTokens?.created
+      if (created === undefined || accessCreated[server.url] === created) continue
+      if (accessCreated[server.url] !== undefined) {
+        accessLabelDrafts[server.url] = ''
+        accessScopeDrafts[server.url] = 'report'
+      }
+      accessCreated[server.url] = created
+    }
   })
 </script>
 
@@ -64,7 +90,36 @@
               <Button label={server.status === 'connected' ? 'Update' : 'Connect'} kind="primary" size="compact" disabled={server.pending === true} onclick={() => submitToken(server)} />
             </div>
             <p class:error={server.message !== undefined} class="subtle" role="status">{tokenStatus(server)}</p>
-            {#if server.isAdmin}<svelte:element this={'slot'} name={`server-admin:${server.url}`} />{/if}
+            {#if server.accessTokens !== undefined}
+              <section class="access-tokens" aria-label="Access tokens">
+                <h3>Access tokens</h3>
+                {#if server.accessTokens.status === 'loading'}
+                  <p class="subtle token-note">Loading…</p>
+                {:else if server.accessTokens.status === 'error'}
+                  <p class="subtle token-note">Could not read the tokens on this server.</p>
+                {:else if server.accessTokens.tokens.length === 0}
+                  <p class="subtle token-note">{server.accessTokens.hasMore ? 'No tokens on this page.' : 'No tokens yet. Anyone with the address can read this server.'}</p>
+                {:else}
+                  <div class="access-list">
+                    {#each server.accessTokens.tokens as token (token.tokenHash)}
+                      <div class="access-token">
+                        <div class="access-copy"><span title={token.label}>{token.label}</span><small>{token.bootstrap ? "admin · set in the server's environment" : `${token.scope} · ${dateText(token.createdAt)}`}</small></div>
+                        {#if !token.bootstrap}<Button label={`Delete ${token.label}`} kind="ghost" size="compact" iconOnly ariaDisabled={token.pending === true} onclick={() => emit({ type: 'revoke-access-token', url: server.url, tokenHash: token.tokenHash, label: token.label })}>×</Button>{/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+                {#if server.accessTokens.hasMore}<Button label="Load more" kind="ghost" size="compact" disabled={server.accessTokens.loadingMore === true} onclick={() => emit({ type: 'load-more-access-tokens', url: server.url })} />{/if}
+                <div class="new-token">
+                  <div class="new-token-row">
+                    <input data-caelestis-draft={`token-label:${server.url}`} type="text" maxlength="128" value={accessLabelDrafts[server.url] ?? ''} oninput={(event) => accessLabelDrafts[server.url] = event.currentTarget.value} placeholder="Who is it for?" aria-label="New token label" onkeydown={(event) => { if (event.key === 'Enter') submitAccessToken(server) }} />
+                    <select aria-label="New token scope" value={accessScopeDrafts[server.url] ?? 'report'} onchange={(event) => accessScopeDrafts[server.url] = event.currentTarget.value as AccessTokenScope}><option value="read">Read</option><option value="report">Report</option><option value="admin">Admin</option></select>
+                    <Button label="Create" kind="primary" size="compact" disabled={server.accessTokens.creating === true} onclick={() => submitAccessToken(server)} />
+                  </div>
+                  {#if server.accessTokens.createError !== undefined}<p class="error token-error" role="status">{server.accessTokens.createError}</p>{/if}
+                </div>
+              </section>
+            {/if}
             <Button label="Disconnect" kind="danger" size="compact" disabled={server.pending === true} onclick={() => emit({ type: 'disconnect-server', url: server.url })} />
           </div>
         {/if}
@@ -107,6 +162,18 @@
   .server-name { min-inline-size: 0; flex: 1; overflow: hidden; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
   .badge { padding: 0.15rem 0.4rem; border-radius: 999px; background: color-mix(in oklch, var(--caelestis-danger) 15%, transparent); color: var(--caelestis-danger); font-size: 0.65rem; }.badge.warning { background: color-mix(in oklch, var(--caelestis-warning) 18%, transparent); color: var(--caelestis-warning); }
   .server-body { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.45rem 0 0.35rem 1.25rem; }.server-body .token-row { padding: 0; }
+  .access-tokens { margin-block-start: 0.35rem; }
+  .access-tokens h3 { margin: 0 0 0.3rem; color: var(--caelestis-muted-text); font-size: 0.72rem; }
+  .access-list { display: flex; flex-direction: column; }
+  .access-token { display: flex; align-items: center; gap: 0.5rem; min-block-size: 2.4rem; padding-block: 0.2rem; }
+  .access-copy { display: flex; min-inline-size: 0; flex: 1; flex-direction: column; }
+  .access-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .access-copy small { color: var(--caelestis-muted-text); font-size: 0.7rem; }
+  .token-note { margin-inline: 0; }
+  .new-token { display: flex; flex-direction: column; gap: 0.25rem; margin-block-start: 0.5rem; }
+  .new-token-row { display: flex; gap: 0.4rem; }
+  .new-token-row select { inline-size: 6.5rem; flex: 0 0 auto; }
+  .token-error { margin: 0; font-size: 0.72rem; }
   .error { color: var(--caelestis-danger); }
   .profile { margin: 0.35rem 0.75rem; padding: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); }
   .metric { display: flex; justify-content: space-between; gap: 1rem; padding-block: 0.15rem; font-size: 0.72rem; }.metric span { color: var(--caelestis-muted-text); }.metric strong { font-variant-numeric: tabular-nums; }

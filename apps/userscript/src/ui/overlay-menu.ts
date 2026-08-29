@@ -61,7 +61,6 @@ import {
   placementSeq,
 } from '../templates/move.js'
 import { isPaintOpen } from '../wplace-paint.js'
-import { isColourPickerOpen } from './colour-picker.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
 import {
@@ -164,7 +163,6 @@ let openFor: string | null = null
 /** The menu we built, held by reference — identity is ours to keep, not to look up by id. */
 let menuNode: HTMLElement | null = null
 const isAnyColourPickerOpen = (): boolean =>
-  isColourPickerOpen() ||
   (menuNode?.shadowRoot?.querySelector('[data-caelestis-colour-picker]') ?? null) !== null
 /**
  * Which template {@link menuNode} was built for.

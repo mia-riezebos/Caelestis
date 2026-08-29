@@ -42,9 +42,17 @@ export interface ConfirmDialogModel {
   readonly confirmLabel: string
 }
 
+export interface OneTimeSecretDialogModel {
+  readonly id: string
+  readonly label: string
+  readonly value: string
+  readonly copyStatus?: 'copied' | 'unavailable'
+}
+
 export interface NotificationsModel {
   readonly toasts: readonly ToastModel[]
   readonly confirm: ConfirmDialogModel | null
+  readonly oneTimeSecret?: OneTimeSecretDialogModel | null
 }
 
 export type NotificationsIntent =
@@ -54,6 +62,8 @@ export type NotificationsIntent =
       readonly id: string
       readonly value: boolean
     }
+  | { readonly type: 'copy-one-time-secret'; readonly id: string }
+  | { readonly type: 'resolve-one-time-secret'; readonly id: string }
 
 export interface NotificationsProps {
   model?: NotificationsModel
@@ -93,6 +103,27 @@ export type SettingsBooleanKey =
   | 'debugLogging'
   | 'performanceProfiling'
 
+export type AccessTokenScope = 'read' | 'report' | 'admin'
+
+export interface SettingsAccessTokenModel {
+  readonly tokenHash: string
+  readonly label: string
+  readonly scope: AccessTokenScope
+  readonly createdAt: number
+  readonly bootstrap: boolean
+  readonly pending?: boolean
+}
+
+export interface SettingsAccessTokensModel {
+  readonly status: 'loading' | 'ready' | 'error'
+  readonly tokens: readonly SettingsAccessTokenModel[]
+  readonly hasMore: boolean
+  readonly loadingMore?: boolean
+  readonly creating?: boolean
+  readonly createError?: string
+  readonly created: number
+}
+
 export interface SettingsServerModel {
   readonly url: string
   readonly name: string
@@ -104,6 +135,7 @@ export interface SettingsServerModel {
   readonly isAdmin: boolean
   readonly pending?: boolean
   readonly message?: string
+  readonly accessTokens?: SettingsAccessTokensModel
 }
 
 export interface ProfileMetricModel {
@@ -134,6 +166,19 @@ export type SettingsIntent =
   | { readonly type: 'prefetch-server'; readonly url: string }
   | { readonly type: 'update-server-token'; readonly url: string; readonly token: string }
   | { readonly type: 'disconnect-server'; readonly url: string }
+  | { readonly type: 'load-more-access-tokens'; readonly url: string }
+  | {
+      readonly type: 'create-access-token'
+      readonly url: string
+      readonly label: string
+      readonly scope: AccessTokenScope
+    }
+  | {
+      readonly type: 'revoke-access-token'
+      readonly url: string
+      readonly tokenHash: string
+      readonly label: string
+    }
   | {
       readonly type: 'set-colour-navigation-order'
       readonly value: SettingsModel['colourNavigationOrder']

@@ -7,6 +7,9 @@
   let { model = EMPTY_MODEL, onIntent }: NotificationsProps = $props()
   let dialog = $state<HTMLDialogElement>()
   let cancel = $state<HTMLButtonElement>()
+  let secretDialog = $state<HTMLDialogElement>()
+  let copySecret = $state<HTMLButtonElement>()
+  let secretField = $state<HTMLInputElement>()
   let resolvedId: string | null = null
 
   const answer = (value: boolean): void => {
@@ -37,6 +40,16 @@
     })
   })
 
+  $effect(() => {
+    const current = model.oneTimeSecret ?? null
+    if (current === null || secretDialog === undefined) return
+    const currentDialog = secretDialog
+    void tick().then(() => {
+      if (!currentDialog.open) currentDialog.showModal()
+      copySecret?.focus()
+    })
+  })
+
   const dismiss = (id: string): void => {
     const intent: NotificationsIntent = { type: 'dismiss-toast', id }
     onIntent?.(intent)
@@ -58,6 +71,26 @@
       </div>
     {/each}
   </div>
+{/if}
+
+{#if model.oneTimeSecret !== undefined && model.oneTimeSecret !== null}
+  <dialog bind:this={secretDialog} oncancel={(event) => event.preventDefault()} aria-labelledby="secret-title">
+    <div class="dialog-box">
+      <header><h2 id="secret-title">Copy this access token</h2></header>
+      <div class="dialog-body">
+        <p class="lead">The token for {model.oneTimeSecret.label}.</p>
+        <p class="note">It is shown once. The server stores only a hash, so there is no way to see it again — if it is lost, revoke it and make another.</p>
+        <input bind:this={secretField} class="secret" aria-label="Access token" readonly value={model.oneTimeSecret.value} onfocus={(event) => event.currentTarget.select()} />
+        <div class="dialog-actions">
+          <button class="button quiet" type="button" onclick={() => onIntent?.({ type: 'resolve-one-time-secret', id: model.oneTimeSecret?.id ?? '' })}>I have copied it</button>
+          <button bind:this={copySecret} class:success={model.oneTimeSecret.copyStatus === 'copied'} class:warning={model.oneTimeSecret.copyStatus === 'unavailable'} class="button primary" type="button" onclick={() => {
+            if (model.oneTimeSecret?.copyStatus === 'unavailable') secretField?.focus()
+            else onIntent?.({ type: 'copy-one-time-secret', id: model.oneTimeSecret?.id ?? '' })
+          }}>{model.oneTimeSecret.copyStatus === 'copied' ? 'Copied' : model.oneTimeSecret.copyStatus === 'unavailable' ? 'Select it and copy' : 'Copy'}</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
 {/if}
 
 {#if model.confirm !== null}
@@ -173,6 +206,10 @@
 
   .button:hover { background: color-mix(in oklch, currentColor 8%, transparent); }
   .button.danger { min-inline-size: 8rem; border-color: transparent; background: var(--caelestis-danger, oklch(0.59 0.2 27)); color: white; }
+  .button.primary { min-inline-size: 8rem; border-color: transparent; background: var(--caelestis-primary, oklch(0.58 0.17 252)); color: white; }
+  .button.success { background: var(--caelestis-success, oklch(0.63 0.16 154)); }
+  .button.warning { background: var(--caelestis-warning, oklch(0.68 0.15 75)); color: black; }
+  .secret { inline-size: 100%; min-block-size: 2.5rem; margin-block-start: 1rem; padding-inline: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-raised-surface, color-mix(in oklch, var(--caelestis-surface) 88%, black)); color: inherit; font: 500 0.85rem ui-monospace, monospace; }
   .button:focus-visible, .toast button:focus-visible { outline: 3px solid color-mix(in oklch, var(--caelestis-focus, oklch(0.62 0.17 252)) 55%, transparent); outline-offset: 2px; }
 
   @media (prefers-color-scheme: dark) {

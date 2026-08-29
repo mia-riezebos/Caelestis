@@ -2,6 +2,7 @@ import type { CaelestisNotifications, NotificationsIntent } from '@caelestis/ui/
 import type {
   ConfirmDialogModel,
   NotificationsModel,
+  OneTimeSecretDialogModel,
   ToastKind,
   ToastModel,
 } from '@caelestis/ui'
@@ -14,6 +15,7 @@ let root: CaelestisNotifications | null = null
 let sequence = 0
 let toasts: ToastModel[] = []
 let confirm: ConfirmDialogModel | null = null
+let oneTimeSecret: OneTimeSecretDialogModel | null = null
 let pendingConfirm:
   | {
       readonly id: string
@@ -21,9 +23,12 @@ let pendingConfirm:
       readonly restoreFocusTo: HTMLElement | null
     }
   | undefined
+let pendingSecret:
+  | { readonly id: string; readonly resolve: () => void }
+  | undefined
 const timers = new Map<string, number>()
 
-const model = (): NotificationsModel => ({ toasts: [...toasts], confirm })
+const model = (): NotificationsModel => ({ toasts: [...toasts], confirm, oneTimeSecret })
 
 const clearToastTimer = (id: string): void => {
   const timer = timers.get(id)
@@ -35,8 +40,11 @@ const resetDetachedState = (): void => {
   for (const id of timers.keys()) clearToastTimer(id)
   toasts = []
   confirm = null
+  oneTimeSecret = null
   pendingConfirm?.resolve(false)
   pendingConfirm = undefined
+  pendingSecret?.resolve()
+  pendingSecret = undefined
 }
 
 const render = (): void => {
@@ -53,6 +61,15 @@ const finishConfirmation = (id: string, value: boolean): void => {
   pending.resolve(value)
 }
 
+const finishSecret = (id: string): void => {
+  if (pendingSecret?.id !== id) return
+  const pending = pendingSecret
+  pendingSecret = undefined
+  oneTimeSecret = null
+  render()
+  pending.resolve()
+}
+
 const handleIntent = (intent: NotificationsIntent): void => {
   switch (intent.type) {
     case 'dismiss-toast':
@@ -62,6 +79,29 @@ const handleIntent = (intent: NotificationsIntent): void => {
       break
     case 'resolve-confirm':
       finishConfirmation(intent.id, intent.value)
+      break
+    case 'copy-one-time-secret':
+      if (oneTimeSecret?.id !== intent.id) break
+      if (navigator.clipboard === undefined) {
+        oneTimeSecret = { ...oneTimeSecret, copyStatus: 'unavailable' }
+        render()
+        break
+      }
+      void navigator.clipboard.writeText(oneTimeSecret.value).then(
+        () => {
+          if (oneTimeSecret?.id !== intent.id) return
+          oneTimeSecret = { ...oneTimeSecret, copyStatus: 'copied' }
+          render()
+        },
+        () => {
+          if (oneTimeSecret?.id !== intent.id) return
+          oneTimeSecret = { ...oneTimeSecret, copyStatus: 'unavailable' }
+          render()
+        },
+      )
+      break
+    case 'resolve-one-time-secret':
+      finishSecret(intent.id)
       break
   }
 }
@@ -128,5 +168,16 @@ export const requestConfirmation = (request: ConfirmationRequest): Promise<boole
 
   return new Promise((resolve) => {
     pendingConfirm = { id, resolve, restoreFocusTo: request.restoreFocusTo }
+  })
+}
+
+export const showOneTimeSecret = (label: string, value: string): Promise<void> => {
+  ensureRoot()
+  if (pendingSecret !== undefined) finishSecret(pendingSecret.id)
+  const id = `secret-${++sequence}`
+  oneTimeSecret = { id, label, value }
+  render()
+  return new Promise((resolve) => {
+    pendingSecret = { id, resolve }
   })
 }

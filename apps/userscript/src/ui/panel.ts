@@ -55,8 +55,15 @@ import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
-import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
-import { isColourPickerOpen } from './colour-picker.js'
+import {
+  accessTokensModel,
+  createServerAccessToken,
+  forgetCachedTokens,
+  loadMoreAccessTokens,
+  prefetchAccessTokens,
+  refreshAccessTokens,
+  revokeServerAccessToken,
+} from './access-tokens.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
@@ -227,7 +234,7 @@ const refreshView = (): void => {
   const root = document.getElementById(PANEL_ID)
   if (root === null) return
   const held =
-    isColourPickerOpen() ||
+    (root.shadowRoot?.querySelector('[data-caelestis-colour-picker]') ?? null) !== null ||
     isTreeDragActive() ||
     heldPanelPointers.size > 0 ||
     root.querySelector('.caelestis-dragging') !== null ||
@@ -402,6 +409,9 @@ const settingsModel = (): SettingsModel => {
         tokenSaved: server.token !== null,
         ...(server.tokenUsable === undefined ? {} : { tokenUsable: server.tokenUsable }),
         isAdmin: server.isAdmin,
+        ...(server.isAdmin && expandedServers.has(server.url)
+          ? { accessTokens: accessTokensModel(server, refreshSettings) }
+          : {}),
         ...(pendingServers.has(server.url) ? { pending: true } : {}),
         ...(message === undefined ? {} : { message }),
       }
@@ -559,8 +569,11 @@ const handleSettingsIntent = (intent: SettingsIntent): void => {
       void connectServer(intent.url)
       break
     case 'toggle-server':
-      if (intent.expanded) expandedServers.add(intent.url)
-      else expandedServers.delete(intent.url)
+      if (intent.expanded) {
+        expandedServers.add(intent.url)
+        const server = getState().servers.find((candidate) => candidate.url === intent.url)
+        if (server?.isAdmin === true) refreshAccessTokens(server, refreshSettings)
+      } else expandedServers.delete(intent.url)
       refreshSettings()
       break
     case 'prefetch-server': {
@@ -574,6 +587,23 @@ const handleSettingsIntent = (intent: SettingsIntent): void => {
     case 'disconnect-server': {
       const server = getState().servers.find((candidate) => candidate.url === intent.url)
       if (server !== undefined) void disconnectServer(server)
+      break
+    }
+    case 'load-more-access-tokens': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server?.isAdmin === true) loadMoreAccessTokens(server, refreshSettings)
+      break
+    }
+    case 'create-access-token': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server?.isAdmin === true)
+        createServerAccessToken(server, intent.label, intent.scope, refreshSettings)
+      break
+    }
+    case 'revoke-access-token': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server?.isAdmin === true)
+        revokeServerAccessToken(server, intent.tokenHash, intent.label, refreshSettings)
       break
     }
     case 'set-colour-navigation-order':
@@ -609,14 +639,6 @@ const handleSettingsIntent = (intent: SettingsIntent): void => {
       break
   }
 }
-
-const settingsSlots = (): HTMLElement[] =>
-  getState().servers.flatMap((server) => {
-    if (!server.isAdmin || !expandedServers.has(server.url)) return []
-    const section = accessTokenSection(server)
-    section.slot = `server-admin:${server.url}`
-    return [section]
-  })
 
 const appearanceModel = (): AppearanceEditorModel => {
   const state = getState()
@@ -879,7 +901,7 @@ const showView = (view: View): void => {
   if (panel === null) return
 
   if (view === 'settings') settingsModel()
-  panel.replaceChildren(...(view === 'settings' ? settingsSlots() : []))
+  panel.replaceChildren()
   if (view === 'tree') {
     activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
     void primeFromCache(rerenderTree)
