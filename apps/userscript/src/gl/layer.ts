@@ -616,8 +616,8 @@ const visitIntersections = (
 
         const u0 = (source.inset + sourceStart - source.x + cutLeft - left) / source.textureWidth
         const u1 = (source.inset + sourceStart - source.x + cutRight - left) / source.textureWidth
-        const v0 = (source.inset + cutTop - top) / source.textureHeight
-        const v1 = (source.inset + cutBottom - top) / source.textureHeight
+        const v0 = (source.inset - topMargin + cutTop - top) / source.textureHeight
+        const v1 = (source.inset - topMargin + cutBottom - top) / source.textureHeight
 
         corner(screenLeft, screenTop, bufferWidth, bufferHeight, u0, v0, corners, 0)
         corner(screenRight, screenTop, bufferWidth, bufferHeight, u1, v0, corners, 6)
