@@ -1,4 +1,11 @@
-import { decodeMismatchMask, encodeMismatchMask, type MismatchMask, WRONG } from '@caelestis/shared'
+import {
+  decodeMismatchMask,
+  encodeMismatchMask,
+  MATCH,
+  type MismatchMask,
+  TRANSPARENT_INDEX,
+  WRONG,
+} from '@caelestis/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlacedTemplate } from './local-store.js'
 import { markLocalX } from './mismatch-marks.js'
@@ -599,6 +606,37 @@ describe('visible mismatch answer retention', () => {
     changed?.({ x: 0, y: 0 }, [0, 0, 255])
     beginMismatchFrame()
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+  })
+
+  it('restores a server match after an erased draft pixel', async () => {
+    const selected = {
+      ...template(210),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.pixelsAvailable = false
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([MATCH])),
+    )
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+
+    harness.draft[0] = TRANSPARENT_INDEX
+    changed?.({ x: 0, y: 0 }, [0, 0, TRANSPARENT_INDEX])
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
+    endMismatchFrame()
+
+    harness.draft[0] = 255
+    changed?.({ x: 0, y: 0 }, [0, 0, 255])
+    beginMismatchFrame()
+    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(0)
     endMismatchFrame()
   })
 
