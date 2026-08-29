@@ -4,6 +4,9 @@
 
   let {
     buckets,
+    paceBuckets = [],
+    paceResolution = null,
+    paceFrom = null,
     resolution,
     from,
     to,
@@ -11,6 +14,12 @@
     anchorMismatched,
   }: {
     buckets: readonly HistoryBucket[]
+    /** Recent fine-grained history used when the full-range tier cannot represent a short window. */
+    paceBuckets?: readonly HistoryBucket[]
+    /** Bucket width selected for `paceBuckets`, including when sparse history returns no rows. */
+    paceResolution?: number | null
+    /** First selected-resolution bucket whose absence means zero activity rather than pruned data. */
+    paceFrom?: number | null
     /** Bucket width in seconds; buckets are summed across templates per bucket start. */
     resolution: number
     from: number
@@ -47,8 +56,9 @@
     storedWindows.value = [...next]
   }
 
-  /** Disable a window when its tier provides fewer than two samples. */
-  const windowUsable = (seconds: number): boolean => seconds >= 2 * resolution
+  /** A rolling window needs at least two samples from whichever retained tier supplies it. */
+  const windowUsable = (seconds: number, bucketSeconds: number): boolean =>
+    seconds >= 2 * bucketSeconds
 
   interface Point {
     t: number
@@ -123,25 +133,66 @@
 
   const visiblePoints = $derived(points.filter((p) => p.t >= selFrom && p.t <= selTo))
 
-  /** px/h at each point for one window, clipped where the window is not fully covered. */
-  const paceSeries = (windowSeconds: number): { t: number; v: number }[] => {
+  interface PacePoint {
+    t: number
+    cumPlaced: number
+  }
+
+  const retainedPacePoints = $derived.by<PacePoint[]>(() => {
+    if (paceResolution === null || paceFrom === null) return []
+    const placedByStart = new Map<number, number>()
+    for (const bucket of paceBuckets) {
+      placedByStart.set(bucket.bucketStart, (placedByStart.get(bucket.bucketStart) ?? 0) + bucket.placed)
+    }
+    const firstBucket = Math.ceil(paceFrom / paceResolution) * paceResolution
+    const filled: PacePoint[] = []
+    let cumPlaced = 0
+    for (let t = firstBucket; t < to; t += paceResolution) {
+      cumPlaced += placedByStart.get(t) ?? 0
+      filled.push({ t, cumPlaced })
+    }
+    return filled
+  })
+
+  /** px/h at each point for one window, clipped where the source tier is not fully covered. */
+  const paceSeries = (
+    source: readonly PacePoint[],
+    bucketSeconds: number,
+    windowSeconds: number,
+  ): { t: number; v: number }[] => {
     const series: { t: number; v: number }[] = []
-    const steps = Math.round(windowSeconds / resolution)
-    for (let i = steps; i < points.length; i++) {
-      const now = points[i]
-      const before = points[i - steps]
+    const steps = Math.round(windowSeconds / bucketSeconds)
+    for (let i = steps; i < source.length; i++) {
+      const now = source[i]
+      const before = source[i - steps]
       if (now === undefined || before === undefined) continue
       series.push({ t: now.t, v: ((now.cumPlaced - before.cumPlaced) / windowSeconds) * 3_600 })
     }
     return series
   }
 
+  const paceWindows = $derived(
+    WINDOWS.map((window) => {
+      const source = windowUsable(window.seconds, resolution)
+        ? { points, resolution }
+        : paceResolution !== null && windowUsable(window.seconds, paceResolution)
+          ? { points: retainedPacePoints, resolution: paceResolution }
+          : null
+      const series =
+        source === null
+          ? []
+          : paceSeries(source.points, source.resolution, window.seconds).filter(
+              (point) => point.t >= selFrom && point.t <= selTo,
+            )
+      return { ...window, usable: series.length > 0, series }
+    }),
+  )
+
   const activePaces = $derived(
-    WINDOWS.filter((w) => enabledWindows.has(w.key) && windowUsable(w.seconds)).map(
+    paceWindows.filter((w) => enabledWindows.has(w.key) && w.usable).map(
       (w, _, all) => ({
         ...w,
         rank: WINDOWS.findIndex((x) => x.key === w.key) / Math.max(1, WINDOWS.length - 1),
-        series: paceSeries(w.seconds).filter((p) => p.t >= selFrom && p.t <= selTo),
         count: all.length,
       }),
     ),
@@ -326,15 +377,8 @@
     selTo = to
   }
 
-  const hoverPace = (windowSeconds: number, t: number): number | null => {
-    const steps = Math.round(windowSeconds / resolution)
-    const index = points.findIndex((p) => p.t === t)
-    if (index < steps) return null
-    const now = points[index]
-    const before = points[index - steps]
-    if (now === undefined || before === undefined) return null
-    return ((now.cumPlaced - before.cumPlaced) / windowSeconds) * 3_600
-  }
+  const hoverPace = (series: readonly { t: number; v: number }[], t: number): number | null =>
+    series.find((point) => point.t === t)?.v ?? null
 </script>
 
 <div class="relative" bind:clientWidth={width}>
@@ -346,8 +390,8 @@
       <span class="size-2.5 rounded-xs bg-error/60"></span> painted, mismatched
     </span>
     <span class="ms-2 text-base-content/40">pace</span>
-    {#each WINDOWS as window, index (window.key)}
-      {@const usable = windowUsable(window.seconds)}
+    {#each paceWindows as window, index (window.key)}
+      {@const usable = window.usable}
       <button
         class="inline-flex items-center gap-1.5 rounded-full px-1.5 py-0.5 transition-colors
           {usable ? 'hover:bg-base-200' : 'cursor-not-allowed opacity-35'}
@@ -355,7 +399,7 @@
         disabled={!usable}
         title={usable
           ? `toggle the ${window.key} rolling pace line`
-          : `needs finer data than the current ${resolution}s buckets`}
+          : `no retained data is fine enough for the ${window.key} pace line`}
         onclick={() => toggleWindow(window.key)}
       >
         <span
@@ -431,6 +475,8 @@
 
       {#each activePaces as pace (pace.key)}
         <path
+          data-pace-window={pace.key}
+          data-series-start={pace.series[0]?.t}
           d={linePath(pace.series)}
           fill="none"
           stroke={paceColor(pace.rank)}
@@ -527,7 +573,7 @@
         <div class="mt-0.5 tabular-nums">correct {hover.cumCorrect.toLocaleString()} px</div>
         <div class="tabular-nums">mismatched {hover.cumMismatched.toLocaleString()} px</div>
         {#each activePaces as pace (pace.key)}
-          {@const value = hoverPace(pace.seconds, hover.t)}
+          {@const value = hoverPace(pace.series, hover.t)}
           {#if value !== null}
             <div class="tabular-nums text-base-content/70">
               pace {pace.key} · {formatCount(value)} px/h

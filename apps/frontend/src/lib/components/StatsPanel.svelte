@@ -1,5 +1,10 @@
 <script lang="ts">
-  import type { ContributionDay, HistoryBucket, LeaderboardEntry } from '@caelestis/shared'
+  import type {
+    ContributionDay,
+    HistoryBucket,
+    HistoryResponse,
+    LeaderboardEntry,
+  } from '@caelestis/shared'
   import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
@@ -23,12 +28,17 @@
   // One fixed window; every pace horizon is a line in the chart, not a mode of the panel.
   const WINDOW_SECONDS = 604_800
   const RESOLUTION = 900
+  // A rolling window needs at least two buckets. Ask the server for whatever retained tier can
+  // still satisfy the shortest line, without copying the server's decay ladder into the client.
+  const SHORTEST_PACE_WINDOW_SECONDS = 1_800
+  const MAX_PACE_BUCKET_SECONDS = SHORTEST_PACE_WINDOW_SECONDS / 2
 
   const now = Math.floor(Date.now() / 1000)
   const from = Math.floor((now - WINDOW_SECONDS) / RESOLUTION) * RESOLUTION
   const to = Math.ceil(now / RESOLUTION) * RESOLUTION
 
   let history = $state<HistoryBucket[] | null>(null)
+  let paceHistory = $state<HistoryResponse | null>(null)
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   let failed = $state(false)
@@ -37,6 +47,7 @@
     if (templateIds.length === 0) return
     const generation = { cancelled: false }
     history = null
+    paceHistory = null
     failed = false
     getHistory(templateIds, from, to)
       .then((response) => {
@@ -45,6 +56,12 @@
       .catch(() => {
         if (!generation.cancelled) failed = true
       })
+    getHistory(templateIds, from, to, { maxResolution: MAX_PACE_BUCKET_SECONDS })
+      .then((response) => {
+        if (!generation.cancelled) paceHistory = response
+      })
+      // The coarse history still renders if a mixed-version deployment does not know this query.
+      .catch(() => {})
     return () => {
       generation.cancelled = true
     }
@@ -120,6 +137,9 @@
     {:else}
       <ProgressPaceChart
         buckets={history}
+        paceBuckets={paceHistory?.buckets ?? []}
+        paceResolution={paceHistory?.resolution ?? null}
+        paceFrom={paceHistory?.coverageStart ?? null}
         resolution={history[0]?.resolution ?? RESOLUTION}
         {from}
         {to}

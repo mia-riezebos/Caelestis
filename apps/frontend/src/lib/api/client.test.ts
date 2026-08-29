@@ -73,4 +73,17 @@ describe('API request recovery', () => {
     expect(historyUrl).toContain('from=10&to=20')
     expect(historyUrl).not.toContain('resolution')
   })
+
+  it('can bound history granularity without naming a decay-ladder tier', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ buckets: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetch)
+
+    await getHistory(['template'], 10, 20, { maxResolution: 1_800 / 2 })
+
+    const historyUrl = String(fetch.mock.calls[0]?.[0])
+    expect(historyUrl).toContain('maxResolution=900')
+    expect(historyUrl).not.toMatch(/[?&]resolution=/)
+  })
 })

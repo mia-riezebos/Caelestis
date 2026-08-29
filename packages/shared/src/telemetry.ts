@@ -160,6 +160,10 @@ export interface HistoryBucket {
 
 /** Folded pace history for a set of templates at one resolution over a half-open range. */
 export interface HistoryResponse {
+  /** Selected bucket width when the caller bounds granularity. */
+  readonly resolution?: number
+  /** First bucket start whose selected-resolution coverage the server still guarantees. */
+  readonly coverageStart?: Seconds
   readonly buckets: readonly HistoryBucket[]
 }
 
