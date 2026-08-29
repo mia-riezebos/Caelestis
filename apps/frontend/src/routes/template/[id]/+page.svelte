@@ -156,15 +156,27 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     }
   })
 
+  /** Playback rate: 1× advances 60 timeline frames per second; the popout scales that. */
+  const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4] as const
+  const storedSpeed = persisted<number>('caelestis:timelapse-speed', 1)
+  const speed = $derived(Math.min(4, Math.max(0.05, storedSpeed.value)))
+
   $effect(() => {
     if (!playing) return
+    // One 60fps tick per interval; `speed` frames advance per tick, accumulated fractionally so
+    // 0.25× steps every fourth tick and 4× steps four frames at once, without a second clock.
+    let accumulated = 0
     const interval = setInterval(() => {
+      accumulated += speed
+      const step = Math.floor(accumulated)
+      if (step === 0) return
+      accumulated -= step
       if (scrub >= timeline.length) {
         playing = false
       } else {
-        scrub += 1
+        scrub = Math.min(timeline.length, scrub + step)
       }
-    }, 350)
+    }, 1000 / 60)
     return () => clearInterval(interval)
   })
 
@@ -287,6 +299,44 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
           >
             {#if playing}<Pause class="size-4" />{:else}<Play class="size-4" />{/if}
           </button>
+          <div class="dropdown dropdown-top">
+            <button
+              tabindex="0"
+              class="btn btn-sm btn-ghost w-14 tabular-nums"
+              aria-label="playback speed, currently {speed.toFixed(2)}×"
+            >
+              {speed.toFixed(2).replace(/0$/, '')}×
+            </button>
+            <div
+              class="dropdown-content z-20 mb-1 flex w-64 flex-col gap-3 rounded-xl border-[1.5px] border-base-300 bg-base-100 p-3 shadow-md"
+            >
+              <div class="flex items-center gap-2">
+                <Slider
+                  type="single"
+                  min={0.05}
+                  max={4}
+                  step={0.05}
+                  value={speed}
+                  onValueChange={(value: number) => (storedSpeed.value = value)}
+                  class="flex-1"
+                  aria-label="playback speed"
+                />
+                <span class="w-12 text-end text-xs tabular-nums text-base-content/70">
+                  {speed.toFixed(2)}×
+                </span>
+              </div>
+              <div class="grid grid-cols-4 gap-1">
+                {#each SPEED_PRESETS as preset (preset)}
+                  <button
+                    class="btn btn-xs {speed === preset ? 'btn-primary' : 'btn-ghost'} tabular-nums"
+                    onclick={() => (storedSpeed.value = preset)}
+                  >
+                    {preset}×
+                  </button>
+                {/each}
+              </div>
+            </div>
+          </div>
           <Slider
             type="single"
             min={0}
