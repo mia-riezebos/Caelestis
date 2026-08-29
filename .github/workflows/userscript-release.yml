@@ -14,6 +14,11 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
   workflow_dispatch:
+    inputs:
+      retry_announcement:
+        description: Retry the current version's verified Discord announcement
+        type: boolean
+        default: false
 
 concurrency:
   group: userscript-release
@@ -110,7 +115,11 @@ jobs:
             "$STABLE" "$VERSIONED" "$CHECKSUMS"
 
       - name: Verify published installers
-        if: steps.changesets.outputs.has-changesets == 'false' && steps.existing.outputs.exists == 'false'
+        if: >-
+          steps.changesets.outputs.has-changesets == 'false' &&
+          (steps.existing.outputs.exists == 'false' ||
+          github.run_attempt > 1 ||
+          inputs.retry_announcement)
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
@@ -123,7 +132,11 @@ jobs:
           (cd "$download" && sha256sum --check SHA256SUMS)
 
       - name: Announce release in Discord
-        if: steps.changesets.outputs.has-changesets == 'false' && steps.existing.outputs.exists == 'false'
+        if: >-
+          steps.changesets.outputs.has-changesets == 'false' &&
+          (steps.existing.outputs.exists == 'false' ||
+          github.run_attempt > 1 ||
+          inputs.retry_announcement)
         env:
           DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
           NOTES: ${{ steps.release.outputs.notesPath }}

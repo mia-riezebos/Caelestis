@@ -7,6 +7,7 @@ const SUMMARY_LIMIT = 200
 const DETAIL_LIMIT = 240
 const DETAIL_COUNT_LIMIT = 5
 const USERSCRIPT_DECLARATION = /^['"]?@caelestis\/userscript['"]?:\s*(?:patch|minor|major)\s*$/m
+const SENTENCE_SEGMENTER = new Intl.Segmenter('en', { granularity: 'sentence' })
 
 const changesetBody = (content, path) => {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(content)
@@ -26,7 +27,12 @@ export const validateUserscriptChangeset = (content, path = 'changeset.md') => {
   if (summary.length > SUMMARY_LIMIT) {
     throw new Error(`${path}: summary exceeds ${SUMMARY_LIMIT} characters; split atomic changes`)
   }
-  if (!/[.!?]$/.test(summary)) throw new Error(`${path}: summary must be one complete sentence`)
+  const sentences = [...SENTENCE_SEGMENTER.segment(summary)].filter(
+    ({ segment }) => segment.trim().length > 0,
+  )
+  if (sentences.length !== 1 || !/[.!?]$/.test(summary)) {
+    throw new Error(`${path}: summary must be exactly one complete sentence`)
+  }
 
   const details = []
   for (const paragraph of detailParagraphs) {
@@ -65,6 +71,12 @@ export const assertPendingChangesetImmutable = ({ current, base, path }) => {
   }
 }
 
+export const validatePendingUserscriptChangeset = ({ current, base, path }) => {
+  const baseIsUserscript = base !== undefined && changesetBody(base, path) !== null
+  if (baseIsUserscript) assertPendingChangesetImmutable({ current, base, path })
+  return validateUserscriptChangeset(current, path)
+}
+
 const baseFile = (root, baseRef, path) => {
   try {
     return execFileSync('git', ['show', `${baseRef}:${path}`], {
@@ -92,11 +104,10 @@ export const checkUserscriptReleaseNotes = ({ root, baseRef }) => {
     .sort()) {
     const path = `.changeset/${name}`
     const current = readFileSync(resolve(root, path), 'utf8')
-    if (!validateUserscriptChangeset(current, path)) continue
+    const base =
+      baseRef === undefined || baseRef.length === 0 ? undefined : baseFile(root, baseRef, path)
+    if (!validatePendingUserscriptChangeset({ current, base, path })) continue
     checked += 1
-    if (baseRef !== undefined && baseRef.length > 0) {
-      assertPendingChangesetImmutable({ current, base: baseFile(root, baseRef, path), path })
-    }
   }
   return checked
 }
