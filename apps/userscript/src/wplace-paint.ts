@@ -38,8 +38,8 @@ export const selectPaintColour = (index: number): boolean => {
 /**
  * Wplace's paint drawer close button has no label or title. Locate it from the native palette's
  * stable structure instead: palette swatch -> wrapper -> grid -> palette section -> drawer, then
- * the last direct button in the drawer header. Keeping this traversal here avoids teaching the
- * shortcut controller about Wplace's DOM.
+ * the header containing its titled Undo control and the last direct button in that header. Keeping
+ * this traversal here avoids teaching the shortcut controller about Wplace's DOM.
  */
 const paintDrawerOf = (swatch: Element): HTMLElement | null => {
   const drawer = swatch.parentElement?.parentElement?.parentElement?.parentElement
@@ -49,12 +49,33 @@ const paintDrawerOf = (swatch: Element): HTMLElement | null => {
 const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
   const drawer = paintDrawerOf(swatch)
   if (drawer === null) return null
-  const header = Array.from(drawer.children).find((child) => child.querySelector('h2') !== null)
+  const header = Array.from(drawer.children).find(
+    (child) => child.querySelector('button[title="Undo"]') !== null,
+  )
   if (header === undefined) return null
   const directButtons = Array.from(header.children).filter(
     (child): child is HTMLButtonElement => child instanceof HTMLButtonElement,
   )
   return directButtons.at(-1) ?? null
+}
+
+/** Wplace's authoritative submit control inside the mounted paint drawer. */
+const paintDrawerCommitButton = (swatch: Element): HTMLButtonElement | null => {
+  const drawer = paintDrawerOf(swatch)
+  if (drawer === null) return null
+  for (const button of drawer.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {
+    const dock = button.parentElement
+    if (
+      dock?.classList.contains('absolute') === true &&
+      dock.classList.contains('bottom-0') &&
+      dock.classList.contains('left-1/2') &&
+      dock.classList.contains('-translate-x-1/2') &&
+      button.textContent?.trim().toLowerCase().startsWith('paint') === true
+    ) {
+      return button
+    }
+  }
+  return null
 }
 
 /**
@@ -99,17 +120,18 @@ const paintDockButton = (): HTMLButtonElement | null => {
 }
 
 /**
- * Drive Wplace's own paint-mode control. Prefer an exact accessible label, then the current
- * structurally unique bottom-centre primary control. The latter is needed because Wplace's live
- * Paint button has dynamic timer text but no aria-label or title. Neither path searches arbitrary
- * page text, so a template action or dialog button cannot be mistaken for paint mode.
+ * Open Wplace's paint mode, or submit its current draft when it is already open. Prefer an exact
+ * accessible label for opening, then the current structurally unique bottom-centre primary control.
+ * The latter is needed because Wplace's live Paint button has dynamic timer text but no aria-label
+ * or title. Neither path searches arbitrary page text, so a template action or dialog button cannot
+ * be mistaken for paint mode.
  */
-export const togglePaintMode = (): boolean => {
+export const performPaintAction = (): boolean => {
   const swatch = document.querySelector('[id^="color-"]')
   if (swatch !== null) {
-    const close = paintDrawerCloseButton(swatch)
-    if (close === null) return false
-    close.click()
+    const commit = paintDrawerCommitButton(swatch)
+    if (commit === null || commit.disabled) return false
+    commit.click()
     return true
   }
   const labels = new Set(['paint', 'open paint', 'paint pixel'])
@@ -127,6 +149,26 @@ export const togglePaintMode = (): boolean => {
     return true
   }
   return false
+}
+
+/** Discard the current native Wplace draft, leaving unrelated Escape handling alone when closed. */
+export const cancelPaintDraft = (): boolean => {
+  const swatch = document.querySelector('[id^="color-"]')
+  if (swatch === null) return false
+  const close = paintDrawerCloseButton(swatch)
+  if (close === null || close.disabled) return false
+  close.click()
+  return true
+}
+
+/** Toggle Wplace's own theme state through the exact native control kept in its settings DOM. */
+export const toggleWplaceTheme = (): boolean => {
+  const button = document.querySelector<HTMLButtonElement>(
+    'button[aria-label="Dark mode"], button[aria-label="Light mode"]',
+  )
+  if (button === null || button.disabled) return false
+  button.click()
+  return true
 }
 
 export const onPaintSelectionChange = (listener: () => void): void => {

@@ -24,7 +24,9 @@ describe('shortcut help', () => {
     expect(dialog?.open).toBe(true)
     expect(dialog?.textContent).toContain('Keyboard shortcuts')
     expect(dialog?.textContent).toContain('` or Shift+/')
-    expect(dialog?.textContent).toContain('Paint drawer')
+    expect(dialog?.textContent).toContain('Open or commit paint draft')
+    expect(dialog?.textContent).toContain('Cancel paint draft')
+    expect(dialog?.textContent).toContain('Light / dark theme')
     expect(dialog?.textContent).toContain('Cmd+Shift+Z')
     expect(dialog?.textContent).toContain('Redo drafted pixel')
     expect(dialog?.textContent).toContain('Toggle contrast rings')
@@ -61,11 +63,11 @@ describe('shortcut help', () => {
     expect(next?.dataset.shortcutSet).toBe('colour-cycle')
     expect(unused).not.toBeInstanceOf(HTMLButtonElement)
     expect(
-      ['Digit1', 'KeyQ', 'KeyA', 'KeyZ'].map(
+      ['Escape', 'Digit1', 'KeyQ', 'KeyA', 'KeyZ'].map(
         (code) =>
           map?.querySelector<HTMLElement>(`[data-keyboard-key="${code}"]`)?.dataset.keyUnits,
       ),
-    ).toEqual(['1', '1', '1', '1'])
+    ).toEqual(['1.25', '1', '1', '1', '1'])
     expect(map?.querySelector<HTMLElement>('[data-keyboard-key="Tab"]')?.dataset.keyUnits).toBe(
       '1.5',
     )

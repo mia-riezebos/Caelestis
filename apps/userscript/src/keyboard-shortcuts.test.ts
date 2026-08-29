@@ -30,7 +30,9 @@ const harness = vi.hoisted(() => ({
   refreshMenu: vi.fn(),
   toggleMenu: vi.fn(),
   togglePanel: vi.fn(),
-  togglePaint: vi.fn(() => true),
+  paintAction: vi.fn(() => true),
+  cancelPaint: vi.fn(() => true),
+  toggleTheme: vi.fn(() => true),
   undoPaint: vi.fn(() => true),
   redoPaint: vi.fn(() => true),
   toggleShortcutHelp: vi.fn(),
@@ -64,8 +66,10 @@ vi.mock('./ui/overlay-menu.js', () => ({
 vi.mock('./ui/panel.js', () => ({ togglePanel: harness.togglePanel }))
 vi.mock('./ui/shortcut-help.js', () => ({ toggleShortcutHelp: harness.toggleShortcutHelp }))
 vi.mock('./wplace-paint.js', () => ({
+  cancelPaintDraft: harness.cancelPaint,
+  performPaintAction: harness.paintAction,
   redoPaintDraft: harness.redoPaint,
-  togglePaintMode: harness.togglePaint,
+  toggleWplaceTheme: harness.toggleTheme,
   undoPaintDraft: harness.undoPaint,
 }))
 
@@ -124,14 +128,24 @@ describe('keyboard shortcut actions', () => {
     expect(harness.setAppearance).toHaveBeenCalledWith('focused', { opacity: 0.6 })
   })
 
-  it('cycles remaining colours and delegates paint mode to Wplace', () => {
+  it('cycles remaining colours and delegates paint commit, cancel, and theme to Wplace', () => {
     press('a')
     press('d')
     press('b')
+    press('Escape')
+    press('l')
 
     expect(harness.cycleColour).toHaveBeenNthCalledWith(1, -1)
     expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)
-    expect(harness.togglePaint).toHaveBeenCalledOnce()
+    expect(harness.paintAction).toHaveBeenCalledOnce()
+    expect(harness.cancelPaint).toHaveBeenCalledOnce()
+    expect(harness.toggleTheme).toHaveBeenCalledOnce()
+  })
+
+  it('leaves Escape available when no paint draft is open', () => {
+    harness.cancelPaint.mockReturnValueOnce(false)
+
+    expect(press('Escape').defaultPrevented).toBe(false)
   })
 
   it('delegates repeatable Mac history only through Cmd', () => {

@@ -128,9 +128,13 @@
         keyboardKeys: ['KeyA', 'KeyD'],
       },
       {
-        id: 'paint', category: 'Painting', title: 'Open the paint drawer',
-        description: 'B starts or closes Wplace’s native draft-painting flow.',
-        rows: [{ key: 'B', label: 'Paint drawer' }], keyboardKeys: ['KeyB'],
+        id: 'paint', category: 'Painting', title: 'Open, commit, or cancel a paint draft',
+        description: 'B opens Wplace’s paint drawer, then commits its draft. Escape cancels and discards the open draft.',
+        rows: [
+          { key: 'B', label: 'Open or commit paint draft' },
+          { key: 'Esc', label: 'Cancel paint draft' },
+        ],
+        keyboardKeys: ['KeyB', 'Escape'],
       },
       {
         id: 'pencil', category: 'Painting', title: 'Switch pencil and eraser',
@@ -160,6 +164,11 @@
         id: 'panel', category: 'Overlay', title: 'Open the Caelestis panel',
         description: 'C toggles the main template and settings panel.',
         rows: [{ key: 'C', label: 'Caelestis panel' }], keyboardKeys: ['KeyC'],
+      },
+      {
+        id: 'theme', category: 'Overlay', title: 'Toggle Wplace theme',
+        description: 'L switches Wplace between its native light and dark themes.',
+        rows: [{ key: 'L', label: 'Light / dark theme' }], keyboardKeys: ['KeyL'],
       },
       {
         id: 'rings', category: 'Overlay', title: 'Toggle contrast rings',
@@ -208,6 +217,7 @@
   function keyboardRowsFor(platform: ShortcutHelpPlatform): readonly (readonly KeyboardKey[])[] {
     return [
       [
+        { code: 'Escape', legend: 'Esc', width: 1.25 },
         { code: 'Backquote', legend: '`' }, { code: 'Digit1', legend: '1' },
         { code: 'Digit2', legend: '2' }, { code: 'Digit3', legend: '3' },
         { code: 'Digit4', legend: '4' }, { code: 'Digit5', legend: '5' },

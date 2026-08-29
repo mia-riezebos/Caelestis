@@ -14,7 +14,13 @@ import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
 import { togglePanel } from './ui/panel.js'
 import { toggleShortcutHelp } from './ui/shortcut-help.js'
-import { redoPaintDraft, togglePaintMode, undoPaintDraft } from './wplace-paint.js'
+import {
+  cancelPaintDraft,
+  performPaintAction,
+  redoPaintDraft,
+  toggleWplaceTheme,
+  undoPaintDraft,
+} from './wplace-paint.js'
 
 const triggerMapRepaint = (): void => {
   const map = getMap() as { triggerRepaint?: () => void } | null
@@ -165,9 +171,16 @@ export const installKeyboardShortcuts = (
       cycleFocusedColour(shortcut === 'cycle-colour-previous' ? -1 : 1)
       return
     }
-    if (shortcut === 'toggle-paint') {
-      event.preventDefault()
-      togglePaintMode()
+    if (shortcut === 'paint-action') {
+      if (performPaintAction()) event.preventDefault()
+      return
+    }
+    if (shortcut === 'cancel-paint') {
+      if (cancelPaintDraft()) event.preventDefault()
+      return
+    }
+    if (shortcut === 'toggle-theme') {
+      if (toggleWplaceTheme()) event.preventDefault()
       return
     }
 

@@ -12,12 +12,13 @@ describe('Wplace paint controls', () => {
   const paintDrawer = () => {
     const drawer = document.createElement('div')
     const header = document.createElement('div')
+    const cancel = document.createElement('button')
     const heading = document.createElement('h2')
     const undo = document.createElement('button')
     undo.title = 'Undo'
     const redo = document.createElement('button')
     redo.title = 'Redo'
-    header.append(heading, undo, redo)
+    header.append(heading, undo, redo, cancel)
     const paletteSection = document.createElement('div')
     const paletteGrid = document.createElement('div')
     const swatchWrapper = document.createElement('div')
@@ -26,8 +27,16 @@ describe('Wplace paint controls', () => {
     swatchWrapper.appendChild(swatch)
     paletteGrid.appendChild(swatchWrapper)
     paletteSection.appendChild(paletteGrid)
-    drawer.append(header, paletteSection)
-    return { drawer, redo, undo }
+    const footer = document.createElement('div')
+    const commitWrapper = document.createElement('div')
+    commitWrapper.className = 'absolute bottom-0 left-1/2 -translate-x-1/2'
+    const commit = document.createElement('button')
+    commit.className = 'btn btn-primary'
+    commit.textContent = 'Paint (0:04)'
+    commitWrapper.appendChild(commit)
+    footer.appendChild(commitWrapper)
+    drawer.append(header, paletteSection, footer)
+    return { cancel, commit, drawer, redo, undo }
   }
 
   it('selects only an exact native palette swatch', async () => {
@@ -54,9 +63,9 @@ describe('Wplace paint controls', () => {
     const paintClick = vi.fn()
     paint.addEventListener('click', paintClick)
     document.body.append(unrelated, paint)
-    const { togglePaintMode } = await import('./wplace-paint.js')
+    const { performPaintAction } = await import('./wplace-paint.js')
 
-    expect(togglePaintMode()).toBe(true)
+    expect(performPaintAction()).toBe(true)
     expect(paintClick).toHaveBeenCalledOnce()
     expect(unrelatedClick).not.toHaveBeenCalled()
   })
@@ -77,42 +86,50 @@ describe('Wplace paint controls', () => {
     paint.addEventListener('click', paintClick)
     dock.appendChild(paint)
     document.body.append(unrelated, dock)
-    const { togglePaintMode } = await import('./wplace-paint.js')
+    const { performPaintAction } = await import('./wplace-paint.js')
 
-    expect(togglePaintMode()).toBe(true)
+    expect(performPaintAction()).toBe(true)
     expect(paintClick).toHaveBeenCalledOnce()
     expect(unrelatedClick).not.toHaveBeenCalled()
   })
 
-  it('uses the native unlabeled drawer close control while the paint drawer is mounted', async () => {
-    const drawer = document.createElement('div')
-    const header = document.createElement('div')
-    const crosshair = document.createElement('button')
-    const headingGroup = document.createElement('div')
-    headingGroup.appendChild(document.createElement('h2'))
-    const close = document.createElement('button')
-    const closeClick = vi.fn()
-    close.addEventListener('click', closeClick)
-    header.append(crosshair, headingGroup, close)
-    const paletteSection = document.createElement('div')
-    const paletteGrid = document.createElement('div')
-    const swatchWrapper = document.createElement('div')
-    const swatch = document.createElement('button')
-    swatch.id = 'color-1'
-    swatchWrapper.appendChild(swatch)
-    paletteGrid.appendChild(swatchWrapper)
-    paletteSection.appendChild(paletteGrid)
-    drawer.append(header, paletteSection)
+  it('commits through the native bottom-centre Paint control while the drawer is mounted', async () => {
+    const { commit, drawer } = paintDrawer()
+    const commitClick = vi.fn()
+    commit.addEventListener('click', commitClick)
     const paint = document.createElement('button')
     paint.title = 'Paint'
     const paintClick = vi.fn()
     paint.addEventListener('click', paintClick)
     document.body.append(drawer, paint)
-    const { togglePaintMode } = await import('./wplace-paint.js')
+    const { performPaintAction } = await import('./wplace-paint.js')
 
-    expect(togglePaintMode()).toBe(true)
-    expect(closeClick).toHaveBeenCalledOnce()
+    expect(performPaintAction()).toBe(true)
+    expect(commitClick).toHaveBeenCalledOnce()
     expect(paintClick).not.toHaveBeenCalled()
+  })
+
+  it('cancels through the native unlabeled drawer close control', async () => {
+    const { cancel, drawer } = paintDrawer()
+    const cancelClick = vi.fn()
+    cancel.addEventListener('click', cancelClick)
+    document.body.appendChild(drawer)
+    const { cancelPaintDraft } = await import('./wplace-paint.js')
+
+    expect(cancelPaintDraft()).toBe(true)
+    expect(cancelClick).toHaveBeenCalledOnce()
+  })
+
+  it('toggles Wplace theme through its native light or dark mode control', async () => {
+    const theme = document.createElement('button')
+    theme.setAttribute('aria-label', 'Dark mode')
+    const clicked = vi.fn()
+    theme.addEventListener('click', clicked)
+    document.body.appendChild(theme)
+    const { toggleWplaceTheme } = await import('./wplace-paint.js')
+
+    expect(toggleWplaceTheme()).toBe(true)
+    expect(clicked).toHaveBeenCalledOnce()
   })
 
   it('moves through Wplace authoritative draft history only while its controls are enabled', async () => {
