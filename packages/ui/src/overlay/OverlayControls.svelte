@@ -45,11 +45,11 @@
 </div>
 
 <style>
-  .dialog { display: flex; max-block-size: inherit; flex-direction: column; overflow-y: auto; padding: 0.5rem 0.625rem 0.625rem; border-radius: 0.5rem; background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow, 0 16px 48px rgb(0 0 0 / 0.3)); font: 400 0.875rem/1.35 ui-sans-serif, system-ui, sans-serif; }
+  .dialog { --caelestis-content-inset: 1rem; display: flex; max-block-size: inherit; flex-direction: column; overflow-y: auto; padding: var(--caelestis-content-inset); border-radius: 0.5rem; background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow, 0 16px 48px rgb(0 0 0 / 0.3)); font: 400 0.875rem/1.35 ui-sans-serif, system-ui, sans-serif; }
   header { display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; }
   header strong { min-inline-size: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
-  .lifecycle { padding: 0.4rem 0.75rem 0.2rem; }
-  .failure, .confirm { margin: 0.35rem 0.65rem 0; border-radius: var(--caelestis-card-radius, 0.65rem); }
+  .lifecycle { padding: 0.4rem 0 0.2rem; }
+  .failure, .confirm { margin: 0.35rem 0 0; border-radius: var(--caelestis-card-radius, 0.65rem); }
   .failure { padding: 0.45rem 0.55rem; background: color-mix(in oklch, var(--caelestis-danger) 14%, var(--caelestis-raised-surface)); color: var(--caelestis-danger); }
   .confirm { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.55rem 0.65rem; background: color-mix(in oklch, var(--caelestis-warning) 16%, var(--caelestis-raised-surface)); }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }

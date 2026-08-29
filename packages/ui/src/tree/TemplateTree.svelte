@@ -343,7 +343,7 @@
 
 <style>
   :global(*) { box-sizing: border-box; }
-  .toolbar { position: relative; z-index: 2; display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; margin: 0.75rem 0.75rem 0; }
+  .toolbar { position: relative; z-index: 2; display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; margin: 0.75rem var(--caelestis-content-inset, 1rem) 0; }
   .search { display: flex; flex: 1; align-items: center; gap: 0.5rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.75rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   .search svg { inline-size: 1rem; block-size: 1rem; opacity: 0.55; fill: currentColor; }
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
@@ -351,7 +351,7 @@
   select { padding-inline: 0.75rem 2rem; }
   .scroller { flex: 1; min-block-size: 0; overflow-y: auto; }
   .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
-  .row { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.25rem 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
+  .row { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; min-block-size: 2rem; margin-inline: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; outline: none; }
   .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; block-size: 100%; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.28; pointer-events: none; }
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
   .row:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: -2px; }

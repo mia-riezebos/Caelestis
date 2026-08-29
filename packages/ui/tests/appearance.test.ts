@@ -61,6 +61,13 @@ describe('appearance editor', () => {
       ),
     ).toEqual(['Appearance', 'Markers', 'Colours'])
     expect(document.querySelectorAll('[data-caelestis-section-icon]')).toHaveLength(3)
+    const section = document
+      .querySelector('[data-caelestis-section-title]')
+      ?.closest<HTMLElement>('.section')
+    const opacity = document.querySelector<HTMLInputElement>('[aria-label="Opacity"]')
+    expect(getComputedStyle(section as Element).paddingLeft).toBe('16px')
+    expect(getComputedStyle(opacity?.closest('label') as Element).paddingTop).toBe('8px')
+    expect(document.querySelectorAll('[aria-label="Reset size"]')).toHaveLength(0)
 
     void unmount(component)
   })

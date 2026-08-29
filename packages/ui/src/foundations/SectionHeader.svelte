@@ -30,7 +30,7 @@
 </div>
 
 <style>
-  .section { display: flex; align-items: center; gap: 0.5rem; padding: 1.25rem 0.75rem 0.5rem; color: var(--caelestis-text, inherit); }
+  .section { display: flex; align-items: center; gap: 0.5rem; padding: 1.25rem var(--caelestis-content-inset, 1rem) 0.5rem; color: var(--caelestis-text, inherit); }
   .chip { display: grid; flex: 0 0 auto; place-items: center; inline-size: 1.75rem; block-size: 1.75rem; border-radius: 0.5rem; background: var(--caelestis-raised-surface, oklch(0.92 0.01 264)); }
   h2 { margin: 0; color: inherit; font: 600 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
   .actions { display: flex; margin-inline-start: auto; align-items: center; }

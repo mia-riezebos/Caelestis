@@ -73,13 +73,14 @@ describe('panel shell', () => {
     expect(panel.style.width).toBe('360px')
   })
 
-  it('keeps the original Wplace panel and header-control geometry', async () => {
+  it('matches Wplace panel and header-control geometry', async () => {
     const panel = new CaelestisPanel()
     panel.model = model({ view: 'appearance', appearance })
     document.body.append(panel)
     await tick()
 
     const surface = panel.shadowRoot?.querySelector<HTMLElement>('.panel')
+    const header = panel.shadowRoot?.querySelector<HTMLElement>('header')
     const settings = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Settings"]')
     const appearanceButton = panel.shadowRoot?.querySelector<HTMLElement>(
       '[aria-label="Appearance"]',
@@ -88,6 +89,7 @@ describe('panel shell', () => {
     const toggle = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Contrast outline"]')
     const range = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Opacity"]')
     expect(getComputedStyle(surface as Element).borderRadius).toBe('12px')
+    expect(getComputedStyle(header as Element).padding).toBe('16px 24px')
     expect(getComputedStyle(settings as Element).blockSize).toBe('1.5rem')
     expect(getComputedStyle(settings as Element).borderRadius).toBe('999px')
     expect(getComputedStyle(preset as Element).blockSize).toBe('2rem')

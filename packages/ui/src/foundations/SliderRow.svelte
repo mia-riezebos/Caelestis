@@ -12,6 +12,7 @@
     disabled?: boolean
     control?: string
     depth?: number
+    resettable?: boolean
     onInput?: (value: number) => void
     onCommit?: (value: number) => void
     onReset?: (value: number) => void
@@ -30,6 +31,7 @@
     disabled = false,
     control,
     depth,
+    resettable = true,
     onInput,
     onCommit,
     onReset,
@@ -87,7 +89,7 @@
       onblur={() => setTimeout(commit, 0)}
     />
     <span class="readout">{format(local)}</span>
-    <button
+    {#if resettable}<button
       type="button"
       hidden={Object.is(local, defaultValue)}
       disabled={disabled}
@@ -95,12 +97,12 @@
       aria-label={`Reset ${label.toLowerCase()}`}
       title={`Reset ${label.toLowerCase()}`}
       onclick={reset}
-    ><svg viewBox="0 -960 960 960" aria-hidden="true"><path d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z" /></svg></button>
+    ><svg viewBox="0 -960 960 960" aria-hidden="true"><path d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z" /></svg></button>{/if}
   </span>
 </label>
 
 <style>
-  label { display: grid; grid-template-columns: minmax(5rem, auto) minmax(0, 1fr); align-items: center; gap: 0.75rem; min-block-size: 0; padding-block: 0.25rem; color: var(--caelestis-text, inherit); font: 400 0.875rem/1.2 ui-sans-serif, system-ui, sans-serif; }
+  label { display: grid; grid-template-columns: minmax(5rem, auto) minmax(0, 1fr); align-items: center; gap: 0.75rem; min-block-size: 0; padding: 0.5rem 0; color: var(--caelestis-text, inherit); font: 400 0.875rem/1.2 ui-sans-serif, system-ui, sans-serif; }
   label.compact { grid-template-columns: minmax(3.5rem, auto) minmax(0, 1fr); gap: 0.5rem; font-size: 0.75rem; }
   label.disabled { opacity: 0.45; }
   .control { display: flex; min-inline-size: 0; align-items: center; gap: 0.75rem; }
@@ -117,7 +119,7 @@
   button:hover { background: color-mix(in oklab, currentColor 10%, transparent); }
   button svg { inline-size: 0.75rem; block-size: 0.75rem; fill: currentColor; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--caelestis-focus, currentColor); outline-offset: 2px; }
-  .hierarchy { grid-template-columns: minmax(0, 1fr) 8.5rem; padding-block: 0.375rem; padding-inline-start: calc(1.25rem * var(--depth)); }
+  .hierarchy { grid-template-columns: minmax(0, 1fr) 8.5rem; padding-block: 0.5rem; padding-inline-start: calc(1.25rem * var(--depth)); }
   .hierarchy .control { gap: 0.5rem; }
   .hierarchy.compact { grid-template-columns: minmax(0, 1fr) 8.5rem; padding-block: 0.25rem; }
   .hierarchy:is([data-depth='1'], [data-depth='2']) .name { font-size: 0.75rem; opacity: 0.8; }

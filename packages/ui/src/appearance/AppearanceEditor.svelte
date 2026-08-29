@@ -99,7 +99,7 @@
       {/snippet}
     </SettingRow>
     <div class:disabled={!model.values.markMismatch} class="nested">
-      <SliderRow {...markerSizeSlider} {compact} depth={1} format={format(markerSizeSlider)} onInput={(value) => sliderInput('markerSize', value)} onCommit={(value) => sliderCommit('markerSize', value)} onReset={(value) => sliderCommit('markerSize', value)} />
+      <SliderRow {...markerSizeSlider} {compact} depth={1} resettable={false} format={format(markerSizeSlider)} onInput={(value) => sliderInput('markerSize', value)} onCommit={(value) => sliderCommit('markerSize', value)} onReset={(value) => sliderCommit('markerSize', value)} />
       <SettingRow label="Colour" {compact} depth={1}>
         {#snippet children()}
           <ColourInput label="Marker colour" value={model.values.markerColour} disabled={!model.values.markMismatch} onPreview={(value) => emit({ type: 'preview-colour', key: 'markerColour', value })} onCommit={(value) => emit({ type: 'commit-colour', key: 'markerColour', value })} />
@@ -110,14 +110,14 @@
           <Toggle label="Include unpainted pixels" checked={model.values.markUnpainted} {compact} disabled={!model.values.markMismatch} onChange={(value) => emit({ type: 'set-boolean', key: 'markUnpainted', value })} />
         {/snippet}
       </SettingRow>
-      <SliderRow {...unpaintedSlider} {compact} depth={2} format={format(unpaintedSlider)} onInput={(value) => sliderInput('unpaintedLimit', value)} onCommit={(value) => sliderCommit('unpaintedLimit', value)} onReset={(value) => sliderCommit('unpaintedLimit', value)} />
+      <SliderRow {...unpaintedSlider} {compact} depth={2} resettable={false} format={format(unpaintedSlider)} onInput={(value) => sliderInput('unpaintedLimit', value)} onCommit={(value) => sliderCommit('unpaintedLimit', value)} onReset={(value) => sliderCommit('unpaintedLimit', value)} />
       <SettingRow label="Dim other colours" hint="While following the selected colour" {compact} depth={1}>
         {#snippet children()}
           <Toggle label="Dim other colours" checked={model.values.dimOthers} {compact} disabled={!model.values.markMismatch} onChange={(value) => emit({ type: 'set-boolean', key: 'dimOthers', value })} />
         {/snippet}
       </SettingRow>
       <div>
-        <SliderRow {...otherOpacitySlider} {compact} depth={2} format={format(otherOpacitySlider)} onInput={(value) => sliderInput('otherOpacity', value)} onCommit={(value) => sliderCommit('otherOpacity', value)} onReset={(value) => sliderCommit('otherOpacity', value)} />
+        <SliderRow {...otherOpacitySlider} {compact} depth={2} resettable={false} format={format(otherOpacitySlider)} onInput={(value) => sliderInput('otherOpacity', value)} onCommit={(value) => sliderCommit('otherOpacity', value)} onReset={(value) => sliderCommit('otherOpacity', value)} />
         <SettingRow label="Marked in" {compact} depth={2}>
           {#snippet children()}
             <div class="same-colour">
@@ -135,7 +135,7 @@
       {/snippet}
     </SettingRow>
     <div class:disabled={!model.values.markSelectedColour} class="nested">
-      <SliderRow {...selectedMarkerSizeSlider} {compact} depth={1} format={format(selectedMarkerSizeSlider)} onInput={(value) => sliderInput('selectedMarkerSize', value)} onCommit={(value) => sliderCommit('selectedMarkerSize', value)} onReset={(value) => sliderCommit('selectedMarkerSize', value)} />
+      <SliderRow {...selectedMarkerSizeSlider} {compact} depth={1} resettable={false} format={format(selectedMarkerSizeSlider)} onInput={(value) => sliderInput('selectedMarkerSize', value)} onCommit={(value) => sliderCommit('selectedMarkerSize', value)} onReset={(value) => sliderCommit('selectedMarkerSize', value)} />
       <SettingRow label="Colour" {compact} depth={1}>
         {#snippet children()}
           <ColourInput label="Selected colour marker colour" value={model.values.selectedMarkerColour} disabled={!model.values.markSelectedColour} onPreview={(value) => emit({ type: 'preview-colour', key: 'selectedMarkerColour', value })} onCommit={(value) => emit({ type: 'commit-colour', key: 'selectedMarkerColour', value })} />
@@ -197,7 +197,7 @@
   .defaults input:checked { grid-template-columns: 1fr 1fr 0fr; background: var(--caelestis-surface); color: var(--caelestis-primary); }
   fieldset { min-inline-size: 0; margin: 0; padding: 0; border: 0; }
   fieldset:disabled { opacity: 0.7; pointer-events: none; }
-  .sliders, .marker-settings { padding-inline: 0.75rem; }
+  .sliders, .marker-settings { padding-inline: var(--caelestis-content-inset, 1rem); }
   .compact .sliders, .compact .marker-settings { padding-inline: 0.25rem; }
   .disabled { opacity: 0.45; }
   .presets, .same-colour, .colour-toolbar { display: flex; align-items: center; gap: 0.25rem; }
@@ -212,9 +212,9 @@
   .preset-icon.small::after { content: ''; position: absolute; display: block; inset: 0.21875rem; background: currentColor; }
   .preset-icon.full { background: currentColor; }
   .preset-icon.corner { background: currentColor; clip-path: polygon(0 0, 100% 0, 0 100%); }
-  .colour-toolbar { flex-wrap: wrap; justify-content: space-between; padding: 0 0.75rem 0.5rem; }
+  .colour-toolbar { flex-wrap: wrap; justify-content: space-between; padding: 0 var(--caelestis-content-inset, 1rem) 0.5rem; }
   .compact .colour-toolbar { padding-inline: 0; }
-  .palette { container-type: inline-size; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; padding: 0 0.75rem; }
+  .palette { container-type: inline-size; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; padding: 0 var(--caelestis-content-inset, 1rem); }
   .compact .palette { padding-inline: 0; }
   @container (min-width: 17.5rem) { .palette { grid-template-columns: repeat(8, 1fr); } }
   @container (min-width: 35.5rem) { .palette { grid-template-columns: repeat(16, 1fr); } }

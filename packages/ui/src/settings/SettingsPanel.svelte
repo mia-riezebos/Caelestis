@@ -150,13 +150,13 @@
 
 <style>
   .settings { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 400 0.875rem/1.35 ui-sans-serif, system-ui, sans-serif; }
-  .connect, .token-row { display: flex; gap: 0.5rem; padding-inline: 0.75rem; }
+  .connect, .token-row { display: flex; gap: 0.5rem; padding: 0 var(--caelestis-content-inset, 1rem); }
   input, select { min-inline-size: 0; block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; font: inherit; }
   input { flex: 1; padding-inline: 0.6rem; }
   select { max-inline-size: 11rem; }
-  .message, .subtle { margin: 0.3rem 0.75rem; color: var(--caelestis-muted-text); font-size: 0.72rem; }
+  .message, .subtle { margin: 0.3rem var(--caelestis-content-inset, 1rem); color: var(--caelestis-muted-text); font-size: 0.72rem; }
   .servers { display: flex; flex-direction: column; }
-  .server { padding: 0.35rem 0.75rem; }
+  .server { padding: 0.35rem var(--caelestis-content-inset, 1rem); }
   .server-head { display: flex; inline-size: 100%; align-items: center; gap: 0.5rem; min-block-size: 2rem; padding: 0; border: 0; background: transparent; color: inherit; }
   .caret { font-size: 1.2rem; transition: transform 120ms; }.caret.open { transform: rotate(90deg); }
   .server-name { min-inline-size: 0; flex: 1; overflow: hidden; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
@@ -175,7 +175,7 @@
   .new-token-row select { inline-size: 6.5rem; flex: 0 0 auto; }
   .token-error { margin: 0; font-size: 0.72rem; }
   .error { color: var(--caelestis-danger); }
-  .profile { margin: 0.35rem 0.75rem; padding: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); }
+  .profile { margin: 0.35rem var(--caelestis-content-inset, 1rem); padding: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); }
   .metric { display: flex; justify-content: space-between; gap: 1rem; padding-block: 0.15rem; font-size: 0.72rem; }.metric span { color: var(--caelestis-muted-text); }.metric strong { font-variant-numeric: tabular-nums; }
   .profile-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; margin-block-start: 0.5rem; }.profile-actions span { margin-inline-end: auto; color: var(--caelestis-muted-text); font-size: 0.72rem; }
   input:focus-visible, select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }

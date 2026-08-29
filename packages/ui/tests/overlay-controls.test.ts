@@ -50,13 +50,13 @@ const model: OverlayControlsModel = {
 }
 
 describe('overlay controls', () => {
-  it('keeps the original compact menu inset', () => {
+  it('uses Wplace compact-menu insets', () => {
     const component = mount(OverlayControls, { target: document.body, props: { model } })
     flushSync()
 
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
     const editor = document.querySelector<HTMLElement>('.editor')
-    expect(getComputedStyle(dialog as Element).padding).toBe('8px 10px 10px')
+    expect(getComputedStyle(dialog as Element).padding).toBe('16px')
     expect(getComputedStyle(editor as Element).paddingTop).toBe('0px')
     void unmount(component)
   })
