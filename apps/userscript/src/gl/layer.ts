@@ -1042,10 +1042,10 @@ export const outlineLayer = {
     // an earlier partial frame, then mark only entries actually prepared below.
     for (const entry of gpu.values()) entry.palettePreparedForOverlay = false
     if (isOverlayPeekActive() || !isDrawingTiles()) return
-    const map = getMap() as { isMoving?: () => boolean; triggerRepaint?: () => void } | null
-    // The current frame's tile quads are emitted later in the layer stack. During motion the last
-    // complete frame is stale, so omit this decorative pass until the map settles.
-    if (map?.isMoving?.() === true) return
+    const map = getMap() as { triggerRepaint?: () => void } | null
+    // The current frame's tile quads are emitted later in the layer stack, so this underlay uses
+    // the previous complete frame while the map moves. That can trail by one frame, but retaining
+    // the outline is less disruptive than making it disappear throughout every pan and zoom.
     const completed = completedQuads()
     if (completed.length === 0) return
     // Match the shader's close-zoom cutoff on the CPU too. At distant zoom there is no room for an

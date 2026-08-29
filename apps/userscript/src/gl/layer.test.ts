@@ -367,7 +367,7 @@ describe('overlay layer', () => {
     expect(context.texImage2D).not.toHaveBeenCalled()
   })
 
-  it('omits the outline while the map moves or the template setting is off', async () => {
+  it('keeps the outline visible while the map moves', async () => {
     const { outlineLayer, overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }
     const context = gl()
@@ -378,14 +378,24 @@ describe('overlay layer', () => {
 
     harness.moving = true
     outlineLayer.draw(context, null)
-    expect(context.drawArrays).not.toHaveBeenCalled()
+    expect(context.drawArrays).toHaveBeenCalledOnce()
 
+    vi.mocked(context.drawArrays).mockClear()
     harness.moving = false
     harness.contrastOutline = false
     outlineLayer.draw(context, null)
     expect(context.drawArrays).not.toHaveBeenCalled()
+  })
 
-    harness.contrastOutline = true
+  it('omits the outline when there is not enough room to draw its ring', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    vi.mocked(context.drawArrays).mockClear()
+
     harness.completedTileSize = 1_000
     outlineLayer.draw(context, null)
     expect(context.drawArrays).not.toHaveBeenCalled()
