@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.5.1
+
+### Patch Changes
+
+- 4fedf45: Match Caelestis rail controls to Wplace's light and dark button surfaces, borders, shadows, and interaction states.
+
 ## 0.5.0
 
 ### Minor Changes
