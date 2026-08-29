@@ -6,8 +6,7 @@ on:
       - apps/userscript/**
       - packages/shared/**
       - .changeset/**
-      - .github/scripts/prepare-userscript-release.mjs
-      - .github/scripts/prepare-userscript-release.test.mjs
+      - .github/scripts/*userscript-release*.mjs
       - .github/workflows/userscript-ci.yml
       - package.json
       - pnpm-lock.yaml
@@ -20,8 +19,7 @@ on:
       - apps/userscript/**
       - packages/shared/**
       - .changeset/**
-      - .github/scripts/prepare-userscript-release.mjs
-      - .github/scripts/prepare-userscript-release.test.mjs
+      - .github/scripts/*userscript-release*.mjs
       - .github/workflows/userscript-ci.yml
       - package.json
       - pnpm-lock.yaml
@@ -44,6 +42,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
@@ -60,6 +60,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Check release tooling
+        env:
+          CHANGESET_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
         run: pnpm test:release
 
       - name: Build userscript and dependencies
