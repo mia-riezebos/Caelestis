@@ -158,6 +158,13 @@ interface KeyboardKey {
   readonly width?: number
 }
 
+const KEY_UNIT_EM = 4
+const KEY_GAP_EM = 0.5
+
+/** Keep every row on one physical key pitch; multi-unit keys occupy that many pitches. */
+const keyboardKeyBasis = (units: number): string =>
+  `${units * KEY_UNIT_EM + (units - 1) * KEY_GAP_EM}em`
+
 const KEYBOARD_ROWS: readonly (readonly KeyboardKey[])[] = [
   [
     { code: 'Backquote', legend: '`' },
@@ -168,7 +175,7 @@ const KEYBOARD_ROWS: readonly (readonly KeyboardKey[])[] = [
     { code: 'Digit5', legend: '5' },
   ],
   [
-    { code: 'Tab', legend: 'Tab', width: 1.25 },
+    { code: 'Tab', legend: 'Tab', width: 1.5 },
     { code: 'KeyQ', legend: 'Q' },
     { code: 'KeyW', legend: 'W' },
     { code: 'KeyE', legend: 'E' },
@@ -176,7 +183,7 @@ const KEYBOARD_ROWS: readonly (readonly KeyboardKey[])[] = [
     { code: 'KeyT', legend: 'T' },
   ],
   [
-    { code: 'CapsLock', legend: 'Caps', width: 1.5 },
+    { code: 'CapsLock', legend: 'Caps', width: 1.75 },
     { code: 'KeyA', legend: 'A' },
     { code: 'KeyS', legend: 'S' },
     { code: 'KeyD', legend: 'D' },
@@ -184,7 +191,7 @@ const KEYBOARD_ROWS: readonly (readonly KeyboardKey[])[] = [
     { code: 'KeyG', legend: 'G' },
   ],
   [
-    { code: 'ShiftLeft', legend: 'Shift', width: 1.8 },
+    { code: 'ShiftLeft', legend: 'Shift', width: 2.25 },
     { code: 'KeyZ', legend: 'Z' },
     { code: 'KeyX', legend: 'X' },
     { code: 'KeyC', legend: 'C' },
@@ -192,9 +199,9 @@ const KEYBOARD_ROWS: readonly (readonly KeyboardKey[])[] = [
     { code: 'KeyB', legend: 'B' },
   ],
   [
-    { code: 'ControlOrMeta', legend: 'Ctrl / ⌘', width: 1.8 },
-    { code: 'AltLeft', legend: 'Alt / ⌥', width: 1.45 },
-    { code: 'Space', legend: 'Space', width: 3.2 },
+    { code: 'ControlOrMeta', legend: 'Ctrl / ⌘', width: 1.25 },
+    { code: 'AltLeft', legend: 'Alt / ⌥', width: 1.25 },
+    { code: 'Space', legend: 'Space', width: 3.75 },
   ],
 ]
 
@@ -244,7 +251,9 @@ const makeKeyboardMap = (): KeyboardMap => {
       const set = setByKeyboardKey.get(definition.code)
       const key = document.createElement(set === undefined ? 'span' : 'button')
       key.className = `caelestis-keymap-key${set === undefined ? '' : ' caelestis-keymap-key--bound'}`
-      key.style.setProperty('--caelestis-key-width', String(definition.width ?? 1))
+      const units = definition.width ?? 1
+      key.dataset.keyUnits = String(units)
+      key.style.setProperty('--caelestis-key-basis', keyboardKeyBasis(units))
       key.textContent = definition.legend
       key.dataset.keyboardKey = definition.code
       if (key instanceof HTMLButtonElement && set !== undefined) {
@@ -398,10 +407,13 @@ export const toggleShortcutHelp = (): void => {
   const groups = document.createElement('div')
   groups.className = 'caelestis-shortcut-groups'
   groups.append(makeGroup('Painting'), makeGroup('Overlay'))
+  const layout = document.createElement('div')
+  layout.className = 'caelestis-shortcut-layout'
+  layout.append(groups, keyboardMap.element)
   const note = document.createElement('p')
   note.className = 'caelestis-shortcut-note'
   note.textContent = 'Shortcuts pause while you are typing in a field.'
-  content.append(keyboardMap.element, groups, note)
+  content.append(layout, note)
   box.append(header, content)
   dialog.appendChild(box)
 

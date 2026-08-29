@@ -25,6 +25,9 @@ describe('shortcut help', () => {
     expect(dialog?.querySelectorAll('kbd').length).toBeGreaterThanOrEqual(14)
     expect(dialog?.querySelectorAll('.caelestis-shortcut-groups > section')).toHaveLength(2)
     expect(dialog?.querySelector('.caelestis-keymap')).not.toBeNull()
+    const layout = dialog?.querySelector('.caelestis-shortcut-layout')
+    expect(layout?.children[0]?.classList.contains('caelestis-shortcut-groups')).toBe(true)
+    expect(layout?.children[1]?.classList.contains('caelestis-keymap')).toBe(true)
     const box = dialog?.querySelector<HTMLElement>('.caelestis-shortcut-box')
     expect(box?.style.getPropertyValue('max-height')).toBe('var(--caelestis-shortcut-max-height)')
     expect(box?.style.getPropertyPriority('max-height')).toBe('important')
@@ -54,6 +57,25 @@ describe('shortcut help', () => {
     expect(previous?.dataset.shortcutSet).toBe('colour-cycle')
     expect(next?.dataset.shortcutSet).toBe('colour-cycle')
     expect(unused).not.toBeInstanceOf(HTMLButtonElement)
+    const oneUnitKeys = ['Digit1', 'KeyQ', 'KeyA', 'KeyZ'].map((code) =>
+      map?.querySelector<HTMLElement>(`[data-keyboard-key="${code}"]`),
+    )
+    expect(oneUnitKeys.map((key) => key?.dataset.keyUnits)).toEqual(['1', '1', '1', '1'])
+    expect(oneUnitKeys.map((key) => key?.style.getPropertyValue('--caelestis-key-basis'))).toEqual([
+      '4em',
+      '4em',
+      '4em',
+      '4em',
+    ])
+    expect(map?.querySelector<HTMLElement>('[data-keyboard-key="Tab"]')?.dataset.keyUnits).toBe(
+      '1.5',
+    )
+    expect(
+      map?.querySelector<HTMLElement>('[data-keyboard-key="CapsLock"]')?.dataset.keyUnits,
+    ).toBe('1.75')
+    expect(
+      map?.querySelector<HTMLElement>('[data-keyboard-key="ShiftLeft"]')?.dataset.keyUnits,
+    ).toBe('2.25')
 
     previous?.focus()
 

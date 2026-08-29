@@ -580,6 +580,12 @@ caelestis-template-admin {
   --caelestis-shortcut-max-height: 91.666dvh;
   max-width: 58rem;
 }
+.caelestis-shortcut-layout {
+  display: grid;
+  grid-template-columns: minmax(20rem, 0.85fr) minmax(26rem, 1.15fr);
+  gap: 1.5rem;
+  align-items: start;
+}
 .caelestis-keymap {
   --tt-in-dur: 150ms;
   --tt-out-dur: 50ms;
@@ -591,10 +597,10 @@ caelestis-template-admin {
   isolation: isolate;
   display: grid;
   flex: none;
-  grid-template-columns: minmax(20rem, 24rem) minmax(12rem, 1fr);
-  gap: 2.75rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
   align-items: center;
-  margin: 0 0 1.5rem;
+  margin: 0;
   padding: 1rem;
   border: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
   border-radius: 0.75rem;
@@ -602,35 +608,27 @@ caelestis-template-admin {
   overflow: hidden;
 }
 .caelestis-keymap-keyboard {
+  --caelestis-key-gap: 0.5em;
   position: relative;
   z-index: 2;
   display: flex;
-  width: 100%;
+  width: max-content;
+  max-width: 100%;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: var(--caelestis-key-gap);
+  margin-inline: auto;
+  font-size: 0.6875rem;
 }
 .caelestis-keymap-row {
   display: flex;
-  gap: 0.375rem;
-}
-.caelestis-keymap-row:nth-child(2) {
-  margin-inline-start: 0.375rem;
-}
-.caelestis-keymap-row:nth-child(3) {
-  margin-inline-start: 0.75rem;
-}
-.caelestis-keymap-row:nth-child(4) {
-  margin-inline-start: 1.125rem;
-}
-.caelestis-keymap-row:nth-child(5) {
-  width: calc(100% - 1.5rem);
-  margin-inline-start: 1.5rem;
+  width: max-content;
+  gap: var(--caelestis-key-gap);
 }
 .caelestis-keymap-key {
   display: inline-flex;
   min-width: 0;
-  height: 2.35rem;
-  flex: var(--caelestis-key-width) 1 0;
+  height: 3.5em;
+  flex: 0 0 var(--caelestis-key-basis);
   align-items: center;
   justify-content: center;
   padding: 0 0.25rem;
@@ -642,7 +640,7 @@ caelestis-template-admin {
     inset 0 -1px 0 color-mix(in srgb, var(--color-base-content, currentColor) 8%, transparent);
   color: var(--color-base-content, currentColor);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.675rem;
+  font-size: 1em;
   font-weight: 700;
   line-height: 1;
   opacity: 0.3;
@@ -677,7 +675,7 @@ button.caelestis-keymap-key {
   position: relative;
   z-index: 2;
   display: grid;
-  min-height: 7rem;
+  min-height: 5.5rem;
   align-items: center;
   margin: 0;
 }
@@ -696,7 +694,8 @@ button.caelestis-keymap-key {
 .caelestis-keymap-callout-detail {
   opacity: 0;
   transform: scale(var(--tt-scale));
-  transform-origin: 0 50%;
+  transform-origin: 50% 0;
+  text-align: center;
   transition:
     opacity var(--tt-out-dur) var(--tt-out-ease),
     transform var(--tt-out-dur) var(--tt-out-ease);
@@ -750,10 +749,12 @@ button.caelestis-keymap-key {
 .caelestis-shortcut-groups {
   display: grid;
   flex: none;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 1.5rem;
-  padding-block-start: 1.5rem;
-  border-block-start: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
+  padding: 1rem;
+  border: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--color-base-200, rgba(0, 0, 0, 0.08)) 58%, transparent);
 }
 .caelestis-shortcut-group-title {
   margin-block-end: 0.625rem;
@@ -805,29 +806,18 @@ button.caelestis-keymap-key {
   .caelestis-shortcut-box {
     --caelestis-shortcut-max-height: 85dvh;
   }
-  .caelestis-keymap {
+  .caelestis-shortcut-layout {
     grid-template-columns: 1fr;
-    gap: 1rem;
+  }
+  .caelestis-keymap {
+    grid-row: 2;
   }
   .caelestis-keymap-keyboard {
-    max-width: 24rem;
-    margin-inline: auto;
-  }
-  .caelestis-keymap-key {
-    height: 2.125rem;
-    font-size: 0.625rem;
+    font-size: 0.5625rem;
   }
   .caelestis-keymap-callout {
     min-height: 4.5rem;
     text-align: center;
-  }
-  .caelestis-keymap-callout-detail {
-    transform-origin: 50% 0;
-  }
-}
-@media (max-width: 35rem) {
-  .caelestis-shortcut-groups {
-    grid-template-columns: 1fr;
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -12,5 +12,6 @@ Scale contrast rings with canvas pixels instead of device pixels, and add R to t
 focused template or global defaults.
 Add repeatable Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z shortcuts for Wplace's native per-pixel draft undo
 and redo history. Default contrast rings to 5% of a canvas pixel and fade their visibility toggle.
-Show the shortcut reference as both a categorized list and an interactive left-hand QWERTY map,
-with grouped key explanations, and let physical Backquote toggle it alongside Shift+/.
+Show the shortcut reference as a categorized list beside an interactive, correctly staggered
+left-hand QWERTY map with grouped key explanations, and let physical Backquote toggle it alongside
+Shift+/.
