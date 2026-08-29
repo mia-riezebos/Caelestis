@@ -35,15 +35,15 @@ const bucket = (resolution: number, bucketStart: number): HistoryBucket => ({
 describe('rolling pace retention', () => {
   it('keeps short windows selectable when only the recent history is granular enough', () => {
     const buckets = [bucket(3_600, 0), bucket(3_600, 3_600), bucket(3_600, 7_200)]
-    const paceBuckets = [3_600, 4_500, 5_400, 6_300, 7_200, 8_100].map((start) =>
-      bucket(900, start),
-    )
+    const paceBuckets = [bucket(900, 4_500)]
 
     mounted = mount(ProgressPaceChart, {
       target: document.body,
       props: {
         buckets,
         paceBuckets,
+        paceResolution: 900,
+        paceFrom: 3_600,
         resolution: 3_600,
         from: 0,
         to: 9_000,

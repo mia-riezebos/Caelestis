@@ -5,6 +5,8 @@
   let {
     buckets,
     paceBuckets = [],
+    paceResolution = null,
+    paceFrom = null,
     resolution,
     from,
     to,
@@ -14,6 +16,10 @@
     buckets: readonly HistoryBucket[]
     /** Recent fine-grained history used when the full-range tier cannot represent a short window. */
     paceBuckets?: readonly HistoryBucket[]
+    /** Bucket width selected for `paceBuckets`, including when sparse history returns no rows. */
+    paceResolution?: number | null
+    /** First selected-resolution bucket whose absence means zero activity rather than pruned data. */
+    paceFrom?: number | null
     /** Bucket width in seconds; buckets are summed across templates per bucket start. */
     resolution: number
     from: number
@@ -132,14 +138,13 @@
     cumPlaced: number
   }
 
-  const paceResolution = $derived(paceBuckets[0]?.resolution ?? null)
   const retainedPacePoints = $derived.by<PacePoint[]>(() => {
-    if (paceResolution === null || paceBuckets.length === 0) return []
+    if (paceResolution === null || paceFrom === null) return []
     const placedByStart = new Map<number, number>()
     for (const bucket of paceBuckets) {
       placedByStart.set(bucket.bucketStart, (placedByStart.get(bucket.bucketStart) ?? 0) + bucket.placed)
     }
-    const firstBucket = Math.min(...placedByStart.keys())
+    const firstBucket = Math.ceil(paceFrom / paceResolution) * paceResolution
     const filled: PacePoint[] = []
     let cumPlaced = 0
     for (let t = firstBucket; t < to; t += paceResolution) {

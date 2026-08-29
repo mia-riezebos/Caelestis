@@ -1,5 +1,10 @@
 <script lang="ts">
-  import type { ContributionDay, HistoryBucket, LeaderboardEntry } from '@caelestis/shared'
+  import type {
+    ContributionDay,
+    HistoryBucket,
+    HistoryResponse,
+    LeaderboardEntry,
+  } from '@caelestis/shared'
   import { getContributions, getHistory, getLeaderboard } from '$lib/api/client'
   import ContributionHeatmap from '$lib/components/charts/ContributionHeatmap.svelte'
   import ProgressPaceChart from '$lib/components/charts/ProgressPaceChart.svelte'
@@ -33,7 +38,7 @@
   const to = Math.ceil(now / RESOLUTION) * RESOLUTION
 
   let history = $state<HistoryBucket[] | null>(null)
-  let paceHistory = $state<HistoryBucket[]>([])
+  let paceHistory = $state<HistoryResponse | null>(null)
   let contributions = $state<readonly ContributionDay[] | null>(null)
   let leaderboard = $state<readonly LeaderboardEntry[] | null>(null)
   let failed = $state(false)
@@ -42,7 +47,7 @@
     if (templateIds.length === 0) return
     const generation = { cancelled: false }
     history = null
-    paceHistory = []
+    paceHistory = null
     failed = false
     getHistory(templateIds, from, to)
       .then((response) => {
@@ -53,7 +58,7 @@
       })
     getHistory(templateIds, from, to, { maxResolution: MAX_PACE_BUCKET_SECONDS })
       .then((response) => {
-        if (!generation.cancelled) paceHistory = [...response.buckets]
+        if (!generation.cancelled) paceHistory = response
       })
       // The coarse history still renders if a mixed-version deployment does not know this query.
       .catch(() => {})
@@ -132,7 +137,9 @@
     {:else}
       <ProgressPaceChart
         buckets={history}
-        paceBuckets={paceHistory}
+        paceBuckets={paceHistory?.buckets ?? []}
+        paceResolution={paceHistory?.resolution ?? null}
+        paceFrom={paceHistory?.coverageStart ?? null}
         resolution={history[0]?.resolution ?? RESOLUTION}
         {from}
         {to}

@@ -1444,6 +1444,11 @@ describe('telemetry read responses', () => {
   it('accepts a history response and rejects a misaligned or disordered bucket', () => {
     const response = { buckets: [validBucket] }
     expect(Schema.decodeUnknownSync(HistoryResponse)(response)).toEqual(response)
+    const bounded = { resolution: 900, coverageStart: 1_749_988_800, buckets: [validBucket] }
+    expect(Schema.decodeUnknownSync(HistoryResponse)(bounded)).toEqual(bounded)
+    expectRejected(HistoryResponse, { resolution: 900, buckets: [] })
+    expectRejected(HistoryResponse, { coverageStart: 1_749_988_800, buckets: [] })
+    expectRejected(HistoryResponse, { resolution: 900, coverageStart: 1_749_988_801, buckets: [] })
     expectRejected(HistoryResponse, { buckets: [{ ...validBucket, bucketStart: 1_749_988_801 }] })
     expectRejected(HistoryResponse, { buckets: [{ ...validBucket, resolution: 61 }] })
     expectRejected(HistoryResponse, { buckets: [{ ...validBucket, correct: 6 }] })

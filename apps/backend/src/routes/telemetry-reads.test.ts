@@ -298,6 +298,8 @@ describe('telemetry read routes', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({
+      resolution: 900,
+      coverageStart: to - 7 * 86_400,
       buckets: [
         {
           templateId,

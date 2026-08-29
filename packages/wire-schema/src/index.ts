@@ -694,9 +694,22 @@ export const HistoryBucket = HistoryBucketStruct.pipe(
   ),
 )
 
-export const HistoryResponse = Schema.Struct({
+const HistoryResponseStruct = Schema.Struct({
+  resolution: Schema.optionalKey(LadderResolution),
+  coverageStart: Schema.optionalKey(Seconds),
   buckets: boundedArray(HistoryBucket, MAX_HISTORY_BUCKETS),
 })
+
+export const HistoryResponse = HistoryResponseStruct.pipe(
+  Schema.check(
+    booleanFilter((response: Schema.Schema.Type<typeof HistoryResponseStruct>) => {
+      if (response.resolution === undefined || response.coverageStart === undefined) {
+        return response.resolution === undefined && response.coverageStart === undefined
+      }
+      return response.coverageStart % response.resolution === 0
+    }, 'resolution and coverageStart must appear together and the boundary must align to the resolution'),
+  ),
+)
 
 const ContributionDayStruct = Schema.Struct({
   templateId: Identifier,
