@@ -53,6 +53,20 @@ describe('rail control', () => {
     expect(getComputedStyle(button as Element).borderRadius).toBe('999px')
   })
 
+  it('uses Wplace raised surfaces for inactive controls in every theme', async () => {
+    const control = new CaelestisRailControl()
+    control.model = { id: 'panel', label: 'Caelestis', pressed: false }
+    document.body.append(control)
+    await tick()
+
+    const styles = [...(control.shadowRoot?.querySelectorAll('style') ?? [])]
+      .map((style) => style.textContent)
+      .join('\n')
+    expect(styles).toMatch(/--button-base-colour:\s*var\(--caelestis-raised-surface/)
+    expect(styles).toMatch(/border:\s*var\(--border,\s*1px\)/)
+    expect(styles).toContain('0 4px 6px -1px')
+  })
+
   it('uses the complete Material palette glyph', async () => {
     const control = new CaelestisRailControl()
     control.model = { id: 'colour', label: 'Show only the selected colour', pressed: false }
