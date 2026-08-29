@@ -211,6 +211,10 @@ export interface RailControlModel {
   readonly danger?: boolean
 }
 
+export interface PaletteProgressModel {
+  readonly value: string
+}
+
 export type RailControlIntent = { readonly type: 'activate'; readonly id: RailControlId }
 
 export type TreeIcon =
@@ -223,6 +227,14 @@ export type TreeIcon =
   | 'extension'
   | 'kebab'
   | 'palette'
+  | 'check'
+  | 'rename'
+  | 'move'
+  | 'trash'
+  | 'eye'
+  | 'eyeOff'
+  | 'reset'
+  | 'download'
 
 export interface TreeProgressModel {
   readonly completed: number
@@ -313,6 +325,37 @@ export interface TemplateTreeModel {
   readonly sort: TreeSortModel
   readonly entries: readonly TreeEntryModel[]
   readonly renamingKey?: string
+  readonly contextMenu?: TreeContextMenuModel
+  readonly operation?: TreeOperationModel
+}
+
+export interface TreeContextMenuItemModel {
+  readonly id: string
+  readonly label: string
+  readonly icon: TreeIcon
+  readonly danger?: boolean
+}
+
+export interface TreeContextMenuModel {
+  readonly id: string
+  readonly x: number
+  readonly y: number
+  readonly items: readonly TreeContextMenuItemModel[]
+}
+
+export interface TreeOperationOptionModel {
+  readonly value: string
+  readonly label: string
+}
+
+export interface TreeOperationModel {
+  readonly id: string
+  readonly label: string
+  readonly options?: readonly TreeOperationOptionModel[]
+  readonly note?: string
+  readonly confirmLabel?: string
+  readonly pending?: boolean
+  readonly cancellable?: boolean
 }
 
 export type TemplateTreeIntent =
@@ -325,6 +368,14 @@ export type TemplateTreeIntent =
   | { readonly type: 'rename'; readonly key: string; readonly name: string }
   | { readonly type: 'cancel-rename'; readonly key: string }
   | { readonly type: 'drag-state'; readonly active: boolean }
+  | { readonly type: 'context-menu-action'; readonly menuId: string; readonly actionId: string }
+  | { readonly type: 'dismiss-context-menu'; readonly menuId: string }
+  | {
+      readonly type: 'tree-operation-confirm'
+      readonly operationId: string
+      readonly value: string
+    }
+  | { readonly type: 'tree-operation-cancel'; readonly operationId: string }
   | {
       readonly type: 'drop'
       readonly draggedKey: string

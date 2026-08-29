@@ -10,7 +10,7 @@ import {
 } from '../templates/local-store.js'
 import type { MoveReservation } from '../templates/move.js'
 import { movingId } from '../templates/move.js'
-import { toast } from './toast.js'
+import { toast } from '../ui/toast.js'
 
 type RefreshServer = (server: ConnectedServer, rerender: () => void) => Promise<void>
 

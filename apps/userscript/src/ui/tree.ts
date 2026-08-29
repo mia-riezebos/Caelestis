@@ -5,7 +5,19 @@ import type {
   TreeActionModel,
   TreeEntryModel,
   TreeRowModel,
-} from '@caelestis/ui'
+} from '@caelestis/ui/elements'
+import { goToLocalTemplate, goToServerTemplate } from '../application/tree-navigation.js'
+import {
+  hasRefreshedServer,
+  isSameServerPlacement,
+  isServerRefreshing,
+  nodeTreeKey,
+  refreshServerSnapshot,
+  renderedParent,
+  rowsFor,
+  serverSnapshotError,
+  serverTemplateTreeKey,
+} from '../application/tree-server-state.js'
 import { moveLocalFolder, renameLocalFolder, setLocalFolderVisible } from '../local-folders.js'
 import type { ServerTemplate } from '../server-cache.js'
 import {
@@ -43,47 +55,30 @@ import {
 } from './progress.js'
 import { isReorderable } from './sort.js'
 import { toast } from './toast.js'
-import { goToLocalTemplate, goToServerTemplate } from './tree-navigation.js'
 import {
   MAX_RENDERED_ROWS,
   orderedTreeItems as orderedItems,
   placeTreeKey as placeAmongVisibleSiblings,
 } from './tree-order.js'
 import {
-  bindTreeDropRoot,
-  currentRenamingKey,
-  finishRenaming,
-  finishTreeRoot,
-  isTreeExpanded as isExpanded,
-  isTreeDragActive as isLegacyTreeDragActive,
-  type RowAction,
-  type SiblingLevel,
-  type TreeRowOptions,
-  treeConnector,
-  treeRow,
-} from './tree-row.js'
-import {
-  hasRefreshedServer,
-  isSameServerPlacement,
-  isServerRefreshing,
-  nodeTreeKey,
-  refreshServerSnapshot,
-  renderedParent,
-  rowsFor,
-  serverSnapshotError,
-  serverTemplateTreeKey,
-} from './tree-server-state.js'
-import {
   groupedTreeSource as groupedSource,
   treeMatcher as matcherFor,
   type TreeItem,
   type TreeSource,
 } from './tree-source.js'
+import {
+  currentRenamingKey,
+  finishRenaming,
+  isTreeExpanded as isExpanded,
+  type RowAction,
+  type SiblingLevel,
+  type TreeRowOptions,
+} from './tree-state.js'
 
-export { startRenaming } from './tree-row.js'
+export { startRenaming } from './tree-state.js'
 
 let modelTreeDragActive = false
-export const isTreeDragActive = (): boolean => isLegacyTreeDragActive() || modelTreeDragActive
+export const isTreeDragActive = (): boolean => modelTreeDragActive
 
 /**
  * The tree: one root per source, plus `Local`.
@@ -227,85 +222,6 @@ interface TreeOutput<Result> {
     run: () => void,
   ) => void
   readonly finish: () => Result
-}
-
-const domTreeOutput = (): TreeOutput<HTMLElement> => {
-  const wrap = document.createElement('div')
-  wrap.setAttribute('role', 'tree')
-  wrap.className = 'flex flex-col'
-  wrap.style.gap = '0.125rem'
-  wrap.style.paddingTop = '0.5rem'
-  wrap.style.paddingBottom = '0.5rem'
-  bindTreeDropRoot(wrap)
-  return {
-    row: (options) => wrap.appendChild(treeRow(options)),
-    notice: (text, depth, branches = [], action) => {
-      wrap.appendChild(
-        action === undefined
-          ? childText(text, depth, branches)
-          : childRetry(text, depth, action.run),
-      )
-    },
-    action: (_key, depth, label, title, run) => {
-      const actionWrap = document.createElement('div')
-      actionWrap.setAttribute('role', 'treeitem')
-      actionWrap.setAttribute('aria-level', String(depth + 1))
-      actionWrap.className = 'flex justify-center'
-      actionWrap.style.padding = '0.5rem 0.75rem 0'
-      const button = document.createElement('button')
-      button.className = 'btn btn-sm btn-ghost'
-      button.title = title
-      button.textContent = label
-      button.addEventListener('click', run)
-      actionWrap.appendChild(button)
-      wrap.appendChild(actionWrap)
-    },
-    finish: () => {
-      finishTreeRoot(wrap)
-      return wrap
-    },
-  }
-}
-
-const childText = (text: string, depth: number, branches: readonly boolean[] = []): HTMLElement => {
-  const el = document.createElement('p')
-  el.setAttribute('role', 'treeitem')
-  el.setAttribute('aria-level', String(depth + 2))
-  el.setAttribute('aria-disabled', 'true')
-  el.className = 'text-xs opacity-60'
-  el.style.padding = '0.125rem 0.75rem 0.375rem'
-  el.dataset.caelestisDepth = String(depth)
-  const connector = treeConnector(branches, true)
-  if (connector === null) {
-    el.style.paddingInlineStart = `${2.5 + depth * 1.125}rem`
-    el.textContent = text
-  } else {
-    el.style.position = 'relative'
-    el.style.marginInline = '0.25rem 0.5rem'
-    el.style.paddingInlineStart = `calc(0.5rem + ${connector.width}px)`
-    const label = document.createElement('span')
-    label.textContent = text
-    el.append(connector.element, label)
-  }
-  return el
-}
-
-const childRetry = (text: string, depth: number, retry: () => void): HTMLElement => {
-  const row = document.createElement('div')
-  row.setAttribute('role', 'treeitem')
-  row.setAttribute('aria-level', String(depth + 2))
-  row.className = 'flex items-center gap-2'
-  row.style.padding = '0.125rem 0.75rem 0.375rem'
-  row.style.paddingLeft = `${2.5 + depth * 1.125}rem`
-  const message = document.createElement('span')
-  message.className = 'text-xs opacity-60'
-  message.textContent = text
-  const button = document.createElement('button')
-  button.className = 'btn btn-xs btn-ghost'
-  button.textContent = 'Retry'
-  button.addEventListener('click', retry)
-  row.append(message, button)
-  return row
 }
 
 /**
@@ -1000,12 +916,6 @@ const buildTree = <Result>(
 
   return output.finish()
 }
-
-export const treeContents = (
-  callbacks: TreeCallbacks,
-  rerender: () => void,
-  query = '',
-): HTMLElement => buildTree(domTreeOutput(), callbacks, rerender, query)
 
 export interface TemplateTreeAdapter {
   readonly model: TemplateTreeModel

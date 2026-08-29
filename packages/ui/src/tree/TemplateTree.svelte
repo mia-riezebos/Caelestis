@@ -22,11 +22,33 @@
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   let admittedQuery = ''
   let admittedRenameKey: string | undefined
+  let admittedOperationId: string | undefined
+  let admittedMenuId: string | undefined
+  let menuInvoker: HTMLElement | null = null
+  let operationSelection = $state('')
 
   $effect(() => {
     if (model.query !== admittedQuery) {
       admittedQuery = model.query
       query = model.query
+    }
+  })
+  $effect(() => {
+    if (model.operation?.id === admittedOperationId) return
+    admittedOperationId = model.operation?.id
+    operationSelection = model.operation?.options?.[0]?.value ?? ''
+  })
+  $effect(() => {
+    const next = model.contextMenu?.id
+    if (next === admittedMenuId) return
+    const previous = admittedMenuId
+    admittedMenuId = next
+    if (next !== undefined) {
+      menuInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    } else if (previous !== undefined) {
+      const target = menuInvoker
+      menuInvoker = null
+      requestAnimationFrame(() => target?.focus())
     }
   })
   $effect(() => {
@@ -50,6 +72,14 @@
     extension: 'M352-120H200q-33 0-56.5-23.5T120-200v-152q48 0 84-30.5t36-77.5q0-47-36-77.5T120-568v-152q0-33 23.5-56.5T200-800h160q0-42 29-71t71-29q42 0 71 29t29 71h160q33 0 56.5 23.5T800-720v160q42 0 71 29t29 71q0 42-29 71t-71 29v160q0 33-23.5 56.5T760-120H608q0-50-31.5-85T500-240q-45 0-76.5 35T392-120Z',
     kebab: 'M480-160q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm0-240q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm0-240q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Z',
     palette: 'M480-80q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 32.5-156t88-127Q256-817 331-848.5T488-880q80 0 151 27.5t124.5 76q53.5 48.5 85 115T880-518q0 115-70 176.5T640-280h-74q-9 0-12.5 5t-3.5 11q0 12 15 34.5t15 51.5q0 50-27.5 74T480-80Z',
+    check: 'M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z',
+    rename: 'M200-200h57l391-391-57-57-391 391v57Zm-80 80v-170l528-527q12-11 26.5-17t30.5-6q16 0 31 6t26 18l55 56q12 11 17.5 26t5.5 30q0 16-5.5 30.5T817-647L290-120H120Z',
+    move: 'M480-80 340-220l57-57 43 43v-127h80v127l43-43 57 57L480-80ZM220-340 80-480l140-140 57 57-43 43h127v80H234l43 43-57 57Zm520 0-57-57 43-43H599v-80h127l-43-43 57-57 140 140-140 140ZM440-599v-127l-43 43-57-57 140-140 140 140-57 57-43-43v127h-80Z',
+    trash: 'M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520Z',
+    eye: 'M480-320q75 0 127.5-52.5T660-500q0-75-52.5-127.5T480-680q-75 0-127.5 52.5T300-500q0 75 52.5 127.5T480-320Zm0 120q-146 0-266-81.5T40-500q54-137 174-218.5T480-800q146 0 266 81.5T920-500q-54 137-174 218.5T480-200Z',
+    eyeOff: 'm637-425-62-62q4-38-23-65.5T487-576l-62-62q13-5 26-7.5t29-2.5q75 0 127.5 52.5T660-468q0 16-2.5 29t-7.5 26ZM806-62 648-220q-35 11-71.5 16.5T500-198q-152 0-275.5-82T44-468q22-57 58-104.5t84-83.5L64-778l51-51 742 742-51 25Z',
+    reset: 'M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z',
+    download: 'M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z',
   }
 
   const search = (event: Event): void => {
@@ -131,6 +161,19 @@
     emit({ type: 'drag-state', active: false })
   }
 
+  const dismissContextMenu = (event: PointerEvent): void => {
+    const menu = model.contextMenu
+    if (menu === undefined) return
+    if (event.composedPath().some((node) => node instanceof HTMLElement && node.dataset.caelestisContextMenu !== undefined)) return
+    emit({ type: 'dismiss-context-menu', menuId: menu.id })
+  }
+
+  const dismissTransient = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape') return
+    if (model.contextMenu !== undefined) emit({ type: 'dismiss-context-menu', menuId: model.contextMenu.id })
+    else if (model.operation !== undefined && model.operation.cancellable !== false) emit({ type: 'tree-operation-cancel', operationId: model.operation.id })
+  }
+
   const commitRename = (row: TreeRowModel): void => {
     const name = renameDraft.trim()
     if (name !== '' && name !== row.name) emit({ type: 'rename', key: row.key, name })
@@ -144,6 +187,8 @@
     })
   }
 </script>
+
+<svelte:window onpointerdown={dismissContextMenu} onkeydown={dismissTransient} />
 
 <div class="toolbar">
   <label class="search">
@@ -161,6 +206,43 @@
     </button>
   {/if}
 </div>
+
+{#if model.operation !== undefined}
+  <section class="operation" aria-live="polite" aria-busy={model.operation.pending === true}>
+    <span>{model.operation.label}</span>
+    {#if model.operation.options !== undefined}
+      <select aria-label={model.operation.label} value={operationSelection} disabled={model.operation.pending === true} onchange={(event) => operationSelection = event.currentTarget.value}>
+        {#each model.operation.options as option}<option value={option.value}>{option.label}</option>{/each}
+      </select>
+    {/if}
+    {#if model.operation.note !== undefined}<small>{model.operation.note}</small>{/if}
+    <div class="operation-actions">
+      {#if model.operation.cancellable !== false}
+        <button type="button" onclick={() => emit({ type: 'tree-operation-cancel', operationId: model.operation?.id ?? '' })}>Cancel</button>
+      {/if}
+      {#if model.operation.confirmLabel !== undefined}
+        <button class="primary" type="button" disabled={model.operation.pending === true || model.operation.options?.length === 0} onclick={() => emit({ type: 'tree-operation-confirm', operationId: model.operation?.id ?? '', value: operationSelection })}>{model.operation.confirmLabel}</button>
+      {/if}
+    </div>
+  </section>
+{/if}
+
+{#if model.contextMenu !== undefined}
+  <div
+    data-caelestis-context-menu
+    class="context-menu"
+    role="menu"
+    style:left={`max(0.5rem, min(${model.contextMenu.x}px, calc(100vw - 11.5rem)))`}
+    style:top={`max(0.5rem, min(${model.contextMenu.y}px, calc(100vh - 18rem)))`}
+  >
+    {#each model.contextMenu.items as item (item.id)}
+      <button class:danger={item.danger === true} type="button" role="menuitem" onclick={() => emit({ type: 'context-menu-action', menuId: model.contextMenu?.id ?? '', actionId: item.id })}>
+        <svg viewBox="0 -960 960 960" aria-hidden="true"><path d={paths[item.icon]} /></svg>
+        <span>{item.label}</span>
+      </button>
+    {/each}
+  </div>
+{/if}
 
 <div class="scroller" data-caelestis-scroller>
   <div bind:this={treeElement} class="tree" role="tree" tabindex="-1" ondrop={drop} ondragend={endDrag}>
@@ -187,7 +269,7 @@
           style:padding-inline-start={connectorWidth === 0 ? '0.45rem' : `calc(0.45rem + ${connectorWidth}px)`}
           onclick={() => { activeKey = entry.key; if (entry.container && !entry.forceExpanded) emit({ type: 'toggle-expanded', key: entry.key }) }}
           onkeydown={(event) => keydown(event, entry)}
-          oncontextmenu={(event) => { if (entry.contextMenu) { event.preventDefault(); emit({ type: 'context-menu', key: entry.key, x: event.clientX, y: event.clientY }) } }}
+          oncontextmenu={(event) => { if (entry.contextMenu) { event.preventDefault(); event.currentTarget.focus(); emit({ type: 'context-menu', key: entry.key, x: event.clientX, y: event.clientY }) } }}
           ondragstart={(event) => startDrag(event, entry)}
           ondragover={(event) => dragOver(event, entry)}
         >
@@ -295,5 +377,17 @@
   .notice { display: flex; align-items: center; gap: 0.5rem; min-block-size: 1.75rem; padding-inline-end: 0.75rem; color: var(--caelestis-muted-text); font-size: 0.72rem; }
   .standalone { display: flex; justify-content: center; padding: 0.5rem 0.75rem; }
   .notice button, .standalone button, .progress-detail button { border: 0; border-radius: 0.45rem; background: var(--caelestis-raised-surface); color: inherit; cursor: pointer; }
+  .operation { display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; margin: 0 0.5rem 0.5rem; padding: 0.625rem 0.75rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-raised-surface); font: 500 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
+  .operation select { min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; }
+  .operation small { color: var(--caelestis-muted-text); }
+  .operation-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+  .operation button, .context-menu button { min-block-size: 2rem; border: 0; border-radius: 0.45rem; background: transparent; color: inherit; cursor: pointer; }
+  .operation button.primary { padding-inline: 0.75rem; background: var(--caelestis-primary); color: var(--caelestis-primary-text, white); }
+  .operation button:disabled { cursor: wait; opacity: 0.55; }
+  .context-menu { position: fixed; z-index: 60; display: flex; inline-size: 11rem; max-inline-size: calc(100vw - 1rem); max-block-size: calc(100vh - 1rem); overflow: auto; flex-direction: column; padding: 0.25rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); background: var(--caelestis-surface); box-shadow: var(--caelestis-shadow); }
+  .context-menu button { display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; padding-inline: 0.5rem; text-align: start; }
+  .context-menu button:hover, .context-menu button:focus-visible { background: var(--caelestis-raised-surface); }
+  .context-menu button.danger { color: var(--caelestis-danger); }
+  .context-menu svg { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   @media (hover: hover) { .row:not(:hover, :focus-within) .actions { opacity: 0; pointer-events: none; } }
 </style>

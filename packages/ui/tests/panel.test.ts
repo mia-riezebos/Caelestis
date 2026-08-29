@@ -2,8 +2,8 @@
 
 import { tick } from 'svelte'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PanelModel } from '../src/index.js'
 import { CaelestisPanel, registerCaelestisUi } from '../src/elements/index.js'
+import type { PanelModel } from '../src/index.js'
 
 beforeAll(() => registerCaelestisUi())
 beforeEach(() => document.body.replaceChildren())

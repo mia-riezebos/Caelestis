@@ -1,11 +1,12 @@
-import type { CaelestisNotifications, NotificationsIntent } from '@caelestis/ui/elements'
 import type {
+  CaelestisNotifications,
   ConfirmDialogModel,
+  NotificationsIntent,
   NotificationsModel,
   OneTimeSecretDialogModel,
   ToastKind,
   ToastModel,
-} from '@caelestis/ui'
+} from '@caelestis/ui/elements'
 import { applyWplaceTheme } from './theme.js'
 
 export const PANEL_ID = 'caelestis-panel'
@@ -23,9 +24,7 @@ let pendingConfirm:
       readonly restoreFocusTo: HTMLElement | null
     }
   | undefined
-let pendingSecret:
-  | { readonly id: string; readonly resolve: () => void }
-  | undefined
+let pendingSecret: { readonly id: string; readonly resolve: () => void } | undefined
 const timers = new Map<string, number>()
 
 const model = (): NotificationsModel => ({ toasts: [...toasts], confirm, oneTimeSecret })
@@ -130,8 +129,7 @@ export const showToast = (message: string, kind: ToastKind = 'info'): void => {
   if (document.getElementById(PANEL_ID) === null) return
   ensureRoot()
 
-  const replaced =
-    kind === 'error' ? toasts : toasts.filter((toast) => toast.kind !== 'error')
+  const replaced = kind === 'error' ? toasts : toasts.filter((toast) => toast.kind !== 'error')
   for (const toast of replaced) clearToastTimer(toast.id)
   toasts = kind === 'error' ? [] : toasts.filter((toast) => toast.kind === 'error')
 
@@ -140,7 +138,10 @@ export const showToast = (message: string, kind: ToastKind = 'info'): void => {
   render()
 
   if (kind !== 'error') {
-    timers.set(id, window.setTimeout(() => removeToast(id), 6000))
+    timers.set(
+      id,
+      window.setTimeout(() => removeToast(id), 6000),
+    )
   }
 }
 

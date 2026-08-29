@@ -18,7 +18,7 @@ const toasts = vi.hoisted(() => ({ toast: vi.fn() }))
 vi.mock('../state.js', () => state)
 vi.mock('../templates/local-store.js', () => store)
 vi.mock('../templates/move.js', () => move)
-vi.mock('./toast.js', () => toasts)
+vi.mock('../ui/toast.js', () => toasts)
 
 const server = {
   url: 'https://example.test',

@@ -11,6 +11,34 @@ import type {
   SettingsIntent,
   SettingsModel,
 } from '@caelestis/ui/elements'
+import {
+  accessTokensModel,
+  createServerAccessToken,
+  forgetCachedTokens,
+  loadMoreAccessTokens,
+  prefetchAccessTokens,
+  refreshAccessTokens,
+  revokeServerAccessToken,
+} from '../application/access-tokens.js'
+import { cancelDestinationAdmissions } from '../application/transplant.js'
+import {
+  cancelTreeActionSetup,
+  copyServerTemplateToLocal,
+  copyToServer,
+  createFolder,
+  dropOnServerNode,
+  handleTreeActionPresentationIntent,
+  importTemplate,
+  moveBranch,
+  openContextMenu,
+  treeActionPresentation,
+  treeActionUsesServer,
+} from '../application/tree-actions.js'
+import {
+  forgetServerRows,
+  onServerSnapshot,
+  primeFromCache,
+} from '../application/tree-server-state.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { redraw } from '../main.js'
 import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
@@ -55,42 +83,19 @@ import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { ownedColours, refreshAccount } from '../wplace-account.js'
 import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
-import {
-  accessTokensModel,
-  createServerAccessToken,
-  forgetCachedTokens,
-  loadMoreAccessTokens,
-  prefetchAccessTokens,
-  refreshAccessTokens,
-  revokeServerAccessToken,
-} from './access-tokens.js'
 import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { frameQueue } from './frame-queue.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
 import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
 import { progressChangesCanReorder } from './sort.js'
-import { installStyles } from './styles.js'
 import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID } from './toast.js'
-import { cancelDestinationAdmissions } from './transplant.js'
 import {
   isTreeDragActive,
   type TemplateTreeAdapter,
   type TreeCallbacks,
   templateTreeAdapter,
 } from './tree.js'
-import {
-  cancelTreeActionSetup,
-  copyServerTemplateToLocal,
-  copyToServer,
-  createFolder,
-  dropOnServerNode,
-  importTemplate,
-  moveBranch,
-  openContextMenu,
-  treeActionUsesServer,
-} from './tree-actions.js'
-import { forgetServerRows, onServerSnapshot, primeFromCache } from './tree-server-state.js'
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -237,28 +242,13 @@ const refreshView = (): void => {
     (root.shadowRoot?.querySelector('[data-caelestis-colour-picker]') ?? null) !== null ||
     isTreeDragActive() ||
     heldPanelPointers.size > 0 ||
-    root.querySelector('.caelestis-dragging') !== null ||
     (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
   if (held) {
     owedRefresh = true
     return
   }
   owedRefresh = false
-  // What the user has typed survives the rebuild. A view is rebuilt from stored state, and a field
-  // being filled in is not stored state yet, so redrawing over it threw the half-typed address away
-  // — most visibly on the blur that pays this debt back, which is exactly when a rebuild lands.
-  const drafts = new Map<string, string>()
-  for (const field of root.querySelectorAll<HTMLInputElement>('[data-caelestis-draft]')) {
-    const key = field.dataset.caelestisDraft
-    if (key !== undefined && field.value !== '') drafts.set(key, field.value)
-  }
   showView(currentView)
-  if (drafts.size === 0) return
-  for (const field of root.querySelectorAll<HTMLInputElement>('[data-caelestis-draft]')) {
-    const draft = field.dataset.caelestisDraft
-    const kept = draft === undefined ? undefined : drafts.get(draft)
-    if (kept !== undefined) field.value = kept
-  }
 }
 
 let manifestTreeRefreshQueued = false
@@ -785,7 +775,7 @@ const panelModel = (width = panelWidthForViewport(getState().panelWidth)): Panel
   minWidth: minimumPanelWidth(),
   maxWidth: maximumPanelWidth(),
   ...(currentView === 'tree' && activeTreeAdapter !== null
-    ? { tree: activeTreeAdapter.model }
+    ? { tree: { ...activeTreeAdapter.model, ...treeActionPresentation() } }
     : {}),
   ...(currentView === 'appearance' ? { appearance: appearanceModel() } : {}),
   ...(currentView === 'settings' ? { settings: settingsModel() } : {}),
@@ -825,6 +815,9 @@ const buildSveltePanel = (): CaelestisPanel => {
         setState({ panelWidth: intent.width })
         break
       case 'tree':
+        if (handleTreeActionPresentationIntent(intent.intent)) {
+          break
+        }
         if (intent.intent.type === 'search') {
           searchQuery = intent.intent.query
           rerenderTree()
@@ -901,7 +894,6 @@ const showView = (view: View): void => {
   if (panel === null) return
 
   if (view === 'settings') settingsModel()
-  panel.replaceChildren()
   if (view === 'tree') {
     activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
     void primeFromCache(rerenderTree)
@@ -1035,7 +1027,6 @@ export const installPanel = (): void => {
   loadState()
   void refreshStoredServers(refreshView)
   installServerConnectionRetry(refreshView)
-  installStyles()
   const rail = railContainer()
   rail.append(railButton(), colourModeButton(), mismatchModeButton())
   syncRailButtonState()

@@ -45,7 +45,9 @@ describe('confirmDestructive', () => {
     await settle()
     const root = document.querySelector('caelestis-notifications')
     const dialog = root?.shadowRoot?.querySelector('dialog')
-    expect(dialog?.querySelector<HTMLInputElement>('[aria-label="Access token"]')?.value).toBe('only-copy')
+    expect(dialog?.querySelector<HTMLInputElement>('[aria-label="Access token"]')?.value).toBe(
+      'only-copy',
+    )
     const done = [...(dialog?.querySelectorAll('button') ?? [])].find(
       (button) => button.textContent?.trim() === 'I have copied it',
     )

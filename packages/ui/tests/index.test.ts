@@ -2,12 +2,13 @@
 
 import { tick } from 'svelte'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { TemplateAdmin, TemplateState } from '../src/index.js'
 import {
+  CaelestisPaletteProgress,
   CaelestisTemplateAdmin,
   CaelestisTemplateState,
   registerCaelestisUi,
 } from '../src/elements/index.js'
+import { PaletteProgress, TemplateAdmin, TemplateState } from '../src/index.js'
 
 beforeAll(() => registerCaelestisUi())
 
@@ -15,6 +16,15 @@ describe('@caelestis/ui', () => {
   it('exposes ordinary Svelte components from the root entry', () => {
     expect(TemplateState).toBeTypeOf('function')
     expect(TemplateAdmin).toBeTypeOf('function')
+    expect(PaletteProgress).toBeTypeOf('function')
+  })
+
+  it('renders Wplace palette progress through an independently mounted shared root', async () => {
+    const progress = new CaelestisPaletteProgress()
+    progress.model = { value: '1,234' }
+    document.body.append(progress)
+    await tick()
+    expect(progress.shadowRoot?.textContent).toContain('1,234')
   })
 
   it('registers idempotently and renders inside shadow DOM', async () => {

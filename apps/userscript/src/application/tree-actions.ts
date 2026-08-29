@@ -1,4 +1,10 @@
 import { nodeSlug, WORLD_PIXELS } from '@caelestis/shared'
+import type {
+  TemplateTreeIntent,
+  TreeContextMenuModel,
+  TreeIcon,
+  TreeOperationModel,
+} from '@caelestis/ui/elements'
 import { warn } from '../debug.js'
 import { createLocalFolder, removeLocalFolder } from '../local-folders.js'
 import { viewportCentre } from '../main.js'
@@ -37,18 +43,18 @@ import { beginMove, movingId, reserveMove, stopMoveForDeletion } from '../templa
 import { centreOf, navigateTo } from '../templates/navigate.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
 import { templateAsWplace, wplaceFilename } from '../templates/wplace-export.js'
-import { whileBusy } from './button.js'
-import { confirmDestructive } from './confirm.js'
+import { confirmDestructive } from '../ui/confirm.js'
+import { toast } from '../ui/toast.js'
+import type { TreeTarget } from '../ui/tree.js'
+import { startRenaming } from '../ui/tree-state.js'
 import {
   claimFolderPublication,
   setFolderTemplatesPublished,
   templatesInFolderSubtree,
 } from './folder-publication.js'
-import { type IconName, icon } from './icons.js'
 import { importTemplatesToServer } from './import-to-server.js'
-import { SURFACE_RADIUS } from './metrics.js'
+import { runWhileBusy } from './operation-lock.js'
 import { serverDestinations } from './server-destinations.js'
-import { PANEL_ID, toast } from './toast.js'
 import {
   copyCurrentLocalTemplateToServer,
   copyLocalTemplateToServer,
@@ -58,9 +64,7 @@ import {
   type Source,
   transplant,
 } from './transplant.js'
-import type { TreeTarget } from './tree.js'
 import { goToLocalTemplate } from './tree-navigation.js'
-import { startRenaming } from './tree-row.js'
 import {
   findServerNode,
   findServerTemplate,
@@ -74,6 +78,99 @@ import {
   templatesForServer,
   templatesOfNode,
 } from './tree-server-state.js'
+
+type ContextAction = { readonly id: string; readonly run: () => void }
+type OperationState = {
+  model: TreeOperationModel
+  readonly onConfirm?: (value: string) => void
+  readonly onCancel?: () => void
+  readonly rerender: () => void
+}
+
+let contextMenu: TreeContextMenuModel | undefined
+let contextActions: readonly ContextAction[] = []
+let contextRerender: (() => void) | undefined
+let operation: OperationState | undefined
+let presentationId = 0
+
+export const treeActionPresentation = (): Pick<
+  import('@caelestis/ui/elements').TemplateTreeModel,
+  'contextMenu' | 'operation'
+> => ({
+  ...(contextMenu === undefined ? {} : { contextMenu }),
+  ...(operation === undefined ? {} : { operation: operation.model }),
+})
+
+const closeContextMenu = (rerender = true): void => {
+  const changed = contextMenu !== undefined
+  const refresh = contextRerender
+  contextMenu = undefined
+  contextActions = []
+  contextRerender = undefined
+  if (changed && rerender) refresh?.()
+}
+
+const showOperation = (
+  model: Omit<TreeOperationModel, 'id'>,
+  rerender: () => void,
+  handlers: { readonly onConfirm?: (value: string) => void; readonly onCancel?: () => void } = {},
+): string => {
+  operation?.onCancel?.()
+  const id = `tree-operation-${++presentationId}`
+  operation = { model: { ...model, id }, rerender, ...handlers }
+  rerender()
+  return id
+}
+
+const updateOperation = (id: string, patch: Partial<TreeOperationModel>): void => {
+  if (operation?.model.id !== id) return
+  operation.model = { ...operation.model, ...patch, id }
+  operation.rerender()
+}
+
+const closeOperation = (id: string, rerender = true): void => {
+  if (operation?.model.id !== id) return
+  const refresh = operation.rerender
+  operation = undefined
+  if (rerender) refresh()
+}
+
+export const handleTreeActionPresentationIntent = (intent: TemplateTreeIntent): boolean => {
+  if (intent.type === 'dismiss-context-menu') {
+    if (contextMenu?.id !== intent.menuId) return true
+    const refresh = contextRerender
+    contextMenu = undefined
+    contextActions = []
+    contextRerender = undefined
+    refresh?.()
+    return true
+  }
+  if (intent.type === 'context-menu-action') {
+    if (contextMenu?.id !== intent.menuId) return true
+    const action = contextActions.find((candidate) => candidate.id === intent.actionId)
+    const refresh = contextRerender
+    contextMenu = undefined
+    contextActions = []
+    contextRerender = undefined
+    refresh?.()
+    action?.run()
+    return true
+  }
+  if (intent.type === 'tree-operation-cancel') {
+    if (operation?.model.id !== intent.operationId) return true
+    const current = operation
+    operation = undefined
+    current.onCancel?.()
+    current.rerender()
+    return true
+  }
+  if (intent.type === 'tree-operation-confirm') {
+    if (operation?.model.id !== intent.operationId || operation.model.pending === true) return true
+    operation.onConfirm?.(intent.value)
+    return true
+  }
+  return false
+}
 
 type RetriableMutationResult =
   | { readonly ok: true }
@@ -364,61 +461,34 @@ const moveServerTemplate = async (target: TreeTarget, rerender: () => void): Pro
     return
   }
 
-  const panel = document.getElementById(PANEL_ID)
-  if (panel === null) return
-  panel.querySelector('[data-caelestis-move]')?.remove()
-  const box = document.createElement('div')
-  box.setAttribute('data-caelestis-move', '')
-  box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, {
-    margin: '0 0.5rem 0.5rem',
-    padding: '0.625rem 0.75rem',
-  })
-
-  const label = document.createElement('span')
-  label.textContent = `Move “${target.name}” to:`
-  const chooser = document.createElement('select')
-  chooser.className = 'select select-xs select-bordered'
-  for (const destination of destinations.slice(0, MAX_DESTINATIONS)) {
-    const option = document.createElement('option')
-    option.value = destination.nodeId ?? ''
-    option.textContent = destination.label
-    chooser.appendChild(option)
-  }
-  const truncated = document.createElement('span')
-  truncated.className = 'opacity-60'
-  truncated.textContent =
-    destinations.length > MAX_DESTINATIONS
-      ? `Showing the first ${MAX_DESTINATIONS} of ${destinations.length} folders.`
-      : ''
-  truncated.style.display = destinations.length > MAX_DESTINATIONS ? '' : 'none'
-
-  const buttons = document.createElement('div')
-  buttons.className = 'flex gap-2 justify-end'
-  const cancel = document.createElement('button')
-  cancel.className = 'btn btn-xs btn-ghost'
-  cancel.textContent = 'Cancel'
-  cancel.addEventListener('click', () => box.remove())
-  const go = document.createElement('button')
-  go.className = 'btn btn-xs btn-primary'
-  go.textContent = 'Move'
-  go.addEventListener('click', () => {
-    void whileBusy(
-      go,
-      async () => {
-        const result = await patchTemplate(server, templateId, {
-          nodeId: chooser.value === '' ? null : chooser.value,
+  let id = ''
+  id = showOperation(
+    {
+      label: `Move “${target.name}” to:`,
+      options: destinations.slice(0, MAX_DESTINATIONS).map((destination) => ({
+        value: destination.nodeId ?? '',
+        label: destination.label,
+      })),
+      ...(destinations.length > MAX_DESTINATIONS
+        ? { note: `Showing the first ${MAX_DESTINATIONS} of ${destinations.length} folders.` }
+        : {}),
+      confirmLabel: 'Move',
+    },
+    rerender,
+    {
+      onConfirm: (value) => {
+        updateOperation(id, { pending: true, cancellable: false })
+        void runWhileBusy(`template:move:${templateId}`, async () => {
+          const result = await patchTemplate(server, templateId, {
+            nodeId: value === '' ? null : value,
+          })
+          closeOperation(id)
+          if (!result.ok) toast(result.message, 'error')
+          void refreshCurrentNodes(server, rerender, true)
         })
-        box.remove()
-        if (!result.ok) toast(result.message, 'error')
-        void refreshCurrentNodes(server, rerender, true)
       },
-      `template:move:${templateId}`,
-    )
-  })
-  buttons.append(cancel, go)
-  box.append(label, chooser, truncated, buttons)
-  panel.appendChild(box)
+    },
+  )
 }
 
 /**
@@ -721,102 +791,72 @@ const replaceServerArtwork = async (target: TreeTarget, rerender: () => void): P
     return
   }
 
-  const panel = document.getElementById(PANEL_ID)
-  if (panel === null) return
-  panel.querySelector('[data-caelestis-replace]')?.remove()
-  const box = document.createElement('div')
-  box.setAttribute('data-caelestis-replace', '')
-  box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, {
-    margin: '0 0.5rem 0.5rem',
-    padding: '0.625rem 0.75rem',
-  })
-
-  const label = document.createElement('span')
-  label.textContent = `Replace “${target.name}” with:`
-  const chooser = document.createElement('select')
-  chooser.className = 'select select-xs select-bordered'
-  for (const candidate of sources) {
-    const option = document.createElement('option')
-    option.value = candidate.id
-    option.textContent = candidate.name
-    chooser.appendChild(option)
-  }
-  const note = document.createElement('span')
-  note.className = 'opacity-60'
-  note.textContent = 'Its position travels with it — the server re-slices from where it sits now.'
-
-  const buttons = document.createElement('div')
-  buttons.className = 'flex gap-2 justify-end'
-  const cancel = document.createElement('button')
-  cancel.className = 'btn btn-xs btn-ghost'
-  cancel.textContent = 'Cancel'
-  // Cancel is honoured while the image is being prepared. Once the request begins the server may
-  // commit it even if the browser aborts, so the button is disabled at that boundary.
   let cancelled = false
-  cancel.addEventListener('click', () => {
-    cancelled = true
-    box.remove()
-  })
-  const go = document.createElement('button')
-  go.className = 'btn btn-xs btn-primary'
-  go.textContent = 'Replace'
-  go.addEventListener('click', () => {
-    // Read fresh rather than using the list captured when the dialog opened: it has been on screen
-    // while the map was in use, and the template may have been moved, renamed or redrawn since.
-    const source = templateById(chooser.value)
-    if (source === undefined) {
-      toast('That template is no longer here.', 'error')
-      box.remove()
-      return
-    }
-    if (movingId() === source.id) {
-      toast(`Finish placing “${source.name}” before replacing from it.`, 'warning')
-      return
-    }
-    void whileBusy(
-      go,
-      async () => {
-        label.textContent = 'Encoding…'
-        const png = await templateAsPng(source)
-        if (png === null) {
-          toast('Could not encode that template.', 'error')
-          box.remove()
-          return
-        }
-        if (!isCurrentTemplate(source) || movingId() === source.id) {
-          toast(`“${source.name}” changed while it was being encoded — try again.`, 'warning')
-          return
-        }
-        // Closing the panel or opening another Replace removes this exact dialog. Its detached
-        // continuation owns no visible Cancel control and must not cross the request boundary.
-        if (cancelled || !box.isConnected) return
-        if (!stillConnected(server)) {
-          toast('That server was disconnected or replaced.', 'warning')
-          return
-        }
-        cancel.disabled = true
-        cancel.classList.add('btn-disabled')
-        label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-        const result = await uploadTemplateVersion(server, templateId, {
-          originX: source.originX,
-          originY: source.originY,
-          name: source.name,
-          png,
-        })
-        box.remove()
-        if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
-        else toast(result.message, 'error')
-        const reconciliation = refreshCurrentNodes(server, rerender, true)
-        if (!result.ok && result.ambiguous === true) await reconciliation
-        else void reconciliation
+  let id = ''
+  id = showOperation(
+    {
+      label: `Replace “${target.name}” with:`,
+      options: sources.map((candidate) => ({ value: candidate.id, label: candidate.name })),
+      note: 'Its position travels with it — the server re-slices from where it sits now.',
+      confirmLabel: 'Replace',
+    },
+    rerender,
+    {
+      onCancel: () => {
+        cancelled = true
       },
-      `template:replace:${templateId}`,
-    )
-  })
-  buttons.append(cancel, go)
-  box.append(label, chooser, note, buttons)
-  panel.appendChild(box)
+      onConfirm: (value) => {
+        // Read fresh rather than using the list captured when the dialog opened: it has been on screen
+        // while the map was in use, and the template may have been moved, renamed or redrawn since.
+        const source = templateById(value)
+        if (source === undefined) {
+          toast('That template is no longer here.', 'error')
+          closeOperation(id)
+          return
+        }
+        if (movingId() === source.id) {
+          toast(`Finish placing “${source.name}” before replacing from it.`, 'warning')
+          return
+        }
+        updateOperation(id, { label: 'Encoding…', pending: true })
+        void runWhileBusy(`template:replace:${templateId}`, async () => {
+          const png = await templateAsPng(source)
+          if (png === null) {
+            toast('Could not encode that template.', 'error')
+            closeOperation(id)
+            return
+          }
+          if (!isCurrentTemplate(source) || movingId() === source.id) {
+            toast(`“${source.name}” changed while it was being encoded — try again.`, 'warning')
+            return
+          }
+          // Closing the panel or opening another operation revokes this exact continuation.
+          if (cancelled || operation?.model.id !== id) return
+          if (!stillConnected(server)) {
+            toast('That server was disconnected or replaced.', 'warning')
+            closeOperation(id)
+            return
+          }
+          updateOperation(id, {
+            label: `Uploading ${Math.round(png.size / 1024)} KB…`,
+            cancellable: false,
+          })
+          const result = await uploadTemplateVersion(server, templateId, {
+            originX: source.originX,
+            originY: source.originY,
+            name: source.name,
+            png,
+          })
+          closeOperation(id)
+          if (result.ok) toast(`Replaced the artwork for “${target.name}”.`)
+          else toast(result.message, 'error')
+          const reconciliation = refreshCurrentNodes(server, rerender, true)
+          if (!result.ok && result.ambiguous === true) await reconciliation
+          else void reconciliation
+        })
+      },
+    },
+  )
 }
 
 /** Publish or unpublish, which is the difference between everyone seeing it and only admins. */
@@ -943,23 +983,8 @@ export const openContextMenu = (
   event: MouseEvent,
   rerender: () => void,
 ): void => {
-  document.querySelector('[data-caelestis-menu]')?.remove()
-  const invoker = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
-  const menu = document.createElement('ul')
-  menu.setAttribute('data-caelestis-menu', '')
-  menu.className = 'menu bg-base-100 shadow-2xl'
-  Object.assign(menu.style, {
-    position: 'fixed',
-    left: `${event.clientX}px`,
-    top: `${event.clientY}px`,
-    zIndex: '60',
-    borderRadius: SURFACE_RADIUS,
-    padding: '0.25rem',
-    width: '11rem',
-  })
-
   const templateId = localTemplateId(target)
-  const rename: readonly [IconName, string, () => void] = [
+  const rename: readonly [TreeIcon, string, () => void] = [
     'rename',
     'Rename',
     () => {
@@ -967,10 +992,10 @@ export const openContextMenu = (
       rerender()
     },
   ]
-  const remove: readonly [IconName, string, () => void] = [
+  const remove: readonly [TreeIcon, string, () => void] = [
     'trash',
     'Delete',
-    () => void applyDelete(target, rerender, invoker),
+    () => void applyDelete(target, rerender),
   ]
   const published = publishedStateOf(target)
   const lifecycle = templateStateOf(target)
@@ -979,7 +1004,7 @@ export const openContextMenu = (
     folderTemplates !== null &&
     folderTemplates.length > 0 &&
     folderTemplates.every((template) => template.published)
-  const folderPublication: readonly [IconName, string, () => void] | null =
+  const folderPublication: readonly [TreeIcon, string, () => void] | null =
     folderTemplates === null
       ? null
       : folderPublished
@@ -989,7 +1014,7 @@ export const openContextMenu = (
             () => void setServerFolderPublished(target, false, rerender),
           ]
         : ['eye', 'Publish folder', () => void setServerFolderPublished(target, true, rerender)]
-  const entries: ReadonlyArray<readonly [IconName, string, () => void]> =
+  const entries: ReadonlyArray<readonly [TreeIcon, string, () => void]> =
     // A template on a server, which is a different set of verbs from either a folder or a local
     // template: it can be moved between folders, published, and replaced with new artwork.
     target.templateId !== undefined
@@ -1059,40 +1084,22 @@ export const openContextMenu = (
             rename,
             remove,
           ]
-  for (const [glyph, label, run] of entries) {
-    const item = document.createElement('li')
-    const button = document.createElement('button')
-    button.className = label === 'Delete' ? 'text-error' : ''
-    button.appendChild(icon(glyph, 'size-4'))
-    const text = document.createElement('span')
-    text.textContent = label
-    button.appendChild(text)
-    button.addEventListener('click', () => {
-      menu.remove()
-      run()
-    })
-    item.appendChild(button)
-    menu.appendChild(item)
+  closeContextMenu(false)
+  const id = `tree-menu-${++presentationId}`
+  contextMenu = {
+    id,
+    x: event.clientX,
+    y: event.clientY,
+    items: entries.map(([glyph, label], index) => ({
+      id: `${id}-${index}`,
+      label,
+      icon: glyph,
+      ...(label === 'Delete' ? { danger: true } : {}),
+    })),
   }
-  document.body.appendChild(menu)
-  // Keep it on screen when the click lands near an edge.
-  const box = menu.getBoundingClientRect()
-  if (box.right > window.innerWidth) menu.style.left = `${window.innerWidth - box.width - 8}px`
-  if (box.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - box.height - 8}px`
-  // Dismiss on a pointerdown *outside* the menu.
-  //
-  // Dismissing on any pointerdown looked right and made every item dead: pointerdown precedes
-  // click, so the menu was removed from the document before the click could reach the button it
-  // was pressed on, and nothing happened. The synthetic `.click()` in the first test bypassed
-  // pointerdown entirely and so never saw it.
-  setTimeout(() => {
-    const dismiss = (event: PointerEvent): void => {
-      if (event.target instanceof Node && menu.contains(event.target)) return
-      menu.remove()
-      window.removeEventListener('pointerdown', dismiss)
-    }
-    window.addEventListener('pointerdown', dismiss)
-  }, 0)
+  contextActions = entries.map(([, , run], index) => ({ id: `${id}-${index}`, run }))
+  contextRerender = rerender
+  rerender()
 }
 
 export const importTemplate = async (target: TreeTarget, rerender: () => void): Promise<void> => {
@@ -1218,43 +1225,30 @@ export const copyToServer = async (
     return
   }
 
-  const panel = document.getElementById(PANEL_ID)
-  if (panel === null) return
   copySetupRunning = true
-  panel.querySelector('[data-caelestis-copy]')?.remove()
-  const box = document.createElement('div')
-  box.setAttribute('data-caelestis-copy', '')
-  box.className = 'alert flex flex-col items-stretch gap-2 text-xs'
-  Object.assign(box.style, {
-    margin: '0 0.5rem 0.5rem',
-    padding: '0.625rem 0.75rem',
-  })
-
-  const label = document.createElement('span')
-  label.textContent = `Finding destinations for “${template.name}”…`
-  const setupCancel = document.createElement('button')
-  setupCancel.className = 'btn btn-xs btn-ghost'
-  setupCancel.style.alignSelf = 'flex-end'
-  setupCancel.textContent = 'Cancel'
   const setupController = new AbortController()
   copySetupController = setupController
   copySetupTargets = new Set(targets.map((server) => server.url))
   let setupCancelled = false
   let setupTimedOut = false
-  setupCancel.addEventListener('click', () => {
-    setupCancelled = true
-    setupController.abort(new Error('copy setup cancelled'))
-    box.remove()
-  })
+  const setupId = showOperation(
+    {
+      label: `Finding destinations for “${template.name}”…`,
+      pending: true,
+      cancellable: true,
+    },
+    rerender,
+    {
+      onCancel: () => {
+        setupCancelled = true
+        setupController.abort(new Error('copy setup cancelled'))
+      },
+    },
+  )
   const setupTimeout = setTimeout(() => {
     setupTimedOut = true
     setupController.abort(new Error('copy setup timed out'))
   }, COPY_SETUP_TIMEOUT_MS)
-  box.append(label, setupCancel)
-  panel.appendChild(box)
-
-  const chooser = document.createElement('select')
-  chooser.className = 'select select-xs select-bordered'
   let listed: Array<readonly [ConnectedServer, ServerNodesResult]>
   try {
     listed = await Promise.all(
@@ -1269,7 +1263,7 @@ export const copyToServer = async (
     copySetupRunning = false
   }
   if (setupController.signal.aborted) {
-    if (!setupCancelled && box.isConnected) {
+    if (!setupCancelled && operation?.model.id === setupId) {
       toast(
         setupTimedOut
           ? 'Finding server folders took too long. Try Copy again.'
@@ -1277,30 +1271,30 @@ export const copyToServer = async (
         'warning',
       )
     }
-    box.remove()
+    closeOperation(setupId)
     return
   }
-  setupCancel.remove()
-  label.textContent = `Copy “${template.name}” to:`
+  if (operation?.model.id !== setupId) return
   const unreachable = listed.filter(([, result]) => result.status === 'unreachable').length
   const notAdmitted = listed.filter(([, result]) => result.status === 'not-admitted').length
   let offered = 0
   let available = 0
+  const options: Array<{ value: string; label: string }> = []
   for (const [server, result] of listed) {
     if (result.status !== 'ok') continue
     const destinations = serverDestinations(result.nodes)
     available += destinations.length
     for (const destination of destinations) {
       if (offered >= MAX_DESTINATIONS) break
-      const option = document.createElement('option')
-      option.value = `${server.url}|${destination.nodeId ?? ''}`
-      option.textContent = `${server.info?.name ?? server.url} · ${destination.label}`
-      chooser.appendChild(option)
+      options.push({
+        value: `${server.url}|${destination.nodeId ?? ''}`,
+        label: `${server.info?.name ?? server.url} · ${destination.label}`,
+      })
       offered++
     }
   }
-  if (chooser.options.length === 0) {
-    box.remove()
+  if (options.length === 0) {
+    closeOperation(setupId)
     toast(
       unreachable > 0
         ? 'Could not ask any of those servers where their folders are.'
@@ -1312,92 +1306,84 @@ export const copyToServer = async (
     return
   }
 
-  const truncated = document.createElement('span')
-  truncated.className = 'opacity-60'
+  let note: string | undefined
   if (available > offered) {
-    truncated.textContent = `Showing the first ${offered} of ${available} folders.`
+    note = `Showing the first ${offered} of ${available} folders.`
   } else if (unreachable > 0) {
-    truncated.textContent = `${unreachable} server${unreachable === 1 ? '' : 's'} could not be asked.`
-  } else {
-    truncated.style.display = 'none'
+    note = `${unreachable} server${unreachable === 1 ? '' : 's'} could not be asked.`
   }
 
-  const buttons = document.createElement('div')
-  buttons.className = 'flex gap-2 justify-end'
-  const cancel = document.createElement('button')
-  cancel.className = 'btn btn-xs btn-ghost'
-  cancel.textContent = 'Cancel'
-  // As in Replace, cancellation is available until the request crosses its commit boundary.
   let cancelled = false
-  cancel.addEventListener('click', () => {
-    cancelled = true
-    box.remove()
-  })
-  const go = document.createElement('button')
-  go.className = 'btn btn-xs btn-primary'
-  go.textContent = 'Copy'
-  go.addEventListener('click', () => {
-    // Split at the last separator, not the first: a node id is a UUID and never contains one, but a
-    // server URL legally can — `new URL` leaves `|` in a path exactly as typed.
-    const chosen = chooser.value ?? ''
-    const cut = chosen.lastIndexOf('|')
-    const url = cut === -1 ? '' : chosen.slice(0, cut)
-    const encodedNodeId = cut === -1 ? undefined : chosen.slice(cut + 1)
-    const server = targets.find((candidate) => candidate.url === url)
-    if (server === undefined || encodedNodeId === undefined) return
-    const nodeId = encodedNodeId === '' ? null : encodedNodeId
-    // The same refusal Delete makes, for the same reason: this dialog stays open while the map is
-    // used, and a placement in progress means the stored origin is the one being dragged away
-    // from. Copying it would put the template on the server at a position nobody chose.
-    if (movingId() === template.id) {
-      toast(`Finish placing “${template.name}” before copying it.`, 'warning')
-      return
-    }
-    void whileBusy(
-      go,
-      async () => {
-        label.textContent = 'Encoding…'
-        const result = await copyCurrentLocalTemplateToServer(
-          templateId,
-          template.name,
-          server,
-          nodeId,
-          (connected) => refreshCurrentNodes(connected, rerender, true),
-          {
-            beforeUpload: (png) => {
-              // The dialog may have been replaced or its panel closed while encoding. Only the
-              // exact still-visible operation is allowed to cross the upload boundary.
-              if (cancelled || !box.isConnected) return false
-              cancel.disabled = true
-              cancel.classList.add('btn-disabled')
-              label.textContent = `Uploading ${Math.round(png.size / 1024)} KB…`
-              return true
-            },
-          },
-        )
-        if (!result.ok && result.cancelled === true) return
-        if (!result.ok && result.missing === true) {
-          box.remove()
-          toast(result.message, 'error')
-          return
-        }
-        if (!result.ok && result.retryable === true) {
-          cancel.disabled = false
-          cancel.classList.remove('btn-disabled')
-          label.textContent = `Copy “${template.name}” to:`
-          toast(result.message, 'warning')
-          return
-        }
-        box.remove()
-        if (result.ok) toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
-        else toast(result.message, 'error')
+  let id = ''
+  id = showOperation(
+    {
+      label: `Copy “${template.name}” to:`,
+      options,
+      ...(note === undefined ? {} : { note }),
+      confirmLabel: 'Copy',
+    },
+    rerender,
+    {
+      onCancel: () => {
+        cancelled = true
       },
-      `template:copy:${templateId}`,
-    )
-  })
-  buttons.append(cancel, go)
-  box.append(label, chooser, truncated, buttons)
-  panel.appendChild(box)
+      onConfirm: (chosen) => {
+        // Split at the last separator, not the first: a node id is a UUID and never contains one, but a
+        // server URL legally can — `new URL` leaves `|` in a path exactly as typed.
+        const cut = chosen.lastIndexOf('|')
+        const url = cut === -1 ? '' : chosen.slice(0, cut)
+        const encodedNodeId = cut === -1 ? undefined : chosen.slice(cut + 1)
+        const server = targets.find((candidate) => candidate.url === url)
+        if (server === undefined || encodedNodeId === undefined) return
+        const nodeId = encodedNodeId === '' ? null : encodedNodeId
+        // The same refusal Delete makes, for the same reason: this dialog stays open while the map is
+        // used, and a placement in progress means the stored origin is the one being dragged away
+        // from. Copying it would put the template on the server at a position nobody chose.
+        if (movingId() === template.id) {
+          toast(`Finish placing “${template.name}” before copying it.`, 'warning')
+          return
+        }
+        updateOperation(id, { label: 'Encoding…', pending: true })
+        void runWhileBusy(`template:copy:${templateId}`, async () => {
+          const result = await copyCurrentLocalTemplateToServer(
+            templateId,
+            template.name,
+            server,
+            nodeId,
+            (connected) => refreshCurrentNodes(connected, rerender, true),
+            {
+              beforeUpload: (png) => {
+                if (cancelled || operation?.model.id !== id) return false
+                updateOperation(id, {
+                  label: `Uploading ${Math.round(png.size / 1024)} KB…`,
+                  cancellable: false,
+                })
+                return true
+              },
+            },
+          )
+          if (!result.ok && result.cancelled === true) return
+          if (!result.ok && result.missing === true) {
+            closeOperation(id)
+            toast(result.message, 'error')
+            return
+          }
+          if (!result.ok && result.retryable === true) {
+            updateOperation(id, {
+              label: `Copy “${template.name}” to:`,
+              pending: false,
+              cancellable: true,
+            })
+            toast(result.message, 'warning')
+            return
+          }
+          closeOperation(id)
+          if (result.ok) toast(`Copied “${template.name}” to ${server.info?.name ?? server.url}.`)
+          else toast(result.message, 'error')
+        })
+      },
+    },
+  )
 }
 
 /** `lf:<id>` is a Local folder; `local` is the Local root. */
@@ -1508,6 +1494,9 @@ const refreshCurrentNodes = async (
 
 export const cancelTreeActionSetup = (reason: Error): void => {
   copySetupController?.abort(reason)
+  operation?.onCancel?.()
+  operation = undefined
+  closeContextMenu(false)
 }
 
 export const treeActionUsesServer = (serverUrl: string): boolean =>

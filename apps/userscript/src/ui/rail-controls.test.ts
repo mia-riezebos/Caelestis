@@ -49,7 +49,9 @@ describe('global mismatch-marker rail control', () => {
     syncMismatchModeState()
     await Promise.resolve()
 
-    expect(button.shadowRoot?.querySelector('button')?.title).toBe('Hide global mismatch markers (W)')
+    expect(button.shadowRoot?.querySelector('button')?.title).toBe(
+      'Hide global mismatch markers (W)',
+    )
     expect(button.model.pressed).toBe(true)
   })
 

@@ -1,4 +1,4 @@
-import type { AccessTokenScope, SettingsAccessTokensModel } from '@caelestis/ui'
+import type { AccessTokenScope, SettingsAccessTokensModel } from '@caelestis/ui/elements'
 import {
   type AccessToken,
   type AccessTokenPage,
@@ -9,9 +9,9 @@ import {
   revokeAccessToken,
   sameServerConnection,
 } from '../state.js'
-import { confirmDestructive } from './confirm.js'
-import { showOneTimeSecret } from './notification-host.js'
-import { toast } from './toast.js'
+import { confirmDestructive } from '../ui/confirm.js'
+import { showOneTimeSecret } from '../ui/notification-host.js'
+import { toast } from '../ui/toast.js'
 
 /**
  * The tokens a server will accept, for the admin who can change them.

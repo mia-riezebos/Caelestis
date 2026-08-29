@@ -1,16 +1,16 @@
+import type { TreeIcon } from '@caelestis/ui/elements'
 import {
   pixelAccounting,
   type TemplateColourProgress,
   type TemplateProgress,
 } from '../templates/mismatch.js'
-import type { IconName } from './icons.js'
 import { sumColourProgress, sumProgress } from './progress.js'
 
 /** One row, as the domain supplying it sees it. Placement and recursion belong to the renderer. */
 export interface TreeItem {
   readonly key: string
   readonly name: string
-  readonly kind: IconName
+  readonly kind: Extract<TreeIcon, 'folder' | 'image' | 'server'>
   /** Its id as a container, so the renderer can ask for its children. Null for a leaf. */
   readonly childrenOf: string | null
   readonly createdAt?: number
@@ -30,9 +30,9 @@ export interface TreeItem {
   readonly visible: boolean
   readonly setVisible: (on: boolean) => boolean | Promise<boolean>
   readonly canReparent: boolean
-  readonly actions?: ReadonlyArray<{ icon: IconName; label: string; run: () => void }> | undefined
+  readonly actions?: ReadonlyArray<{ icon: TreeIcon; label: string; run: () => void }> | undefined
   readonly leadingActions?:
-    | ReadonlyArray<{ icon: IconName; label: string; run: () => void }>
+    | ReadonlyArray<{ icon: TreeIcon; label: string; run: () => void }>
     | undefined
   readonly onRename?: ((name: string) => void) | undefined
   readonly onContextMenu?: ((event: MouseEvent) => void) | undefined

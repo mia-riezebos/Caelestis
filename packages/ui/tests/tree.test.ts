@@ -39,6 +39,18 @@ const model: TemplateTreeModel = {
       expanded: false,
       visible: true,
       progress: { completed: 75, mismatched: 5, unpainted: 20, known: 100, total: 100 },
+      colourProgress: [
+        {
+          index: 0,
+          name: 'Black',
+          hex: '#000000',
+          completed: 10,
+          mismatched: 2,
+          unpainted: 3,
+          known: 15,
+          total: 15,
+        },
+      ],
       renamable: true,
       draggable: true,
       setSize: 1,
@@ -92,6 +104,79 @@ describe('template tree', () => {
     expect(
       document.querySelector('[data-caelestis-tree-key="local:city"] .connector'),
     ).not.toBeNull()
+    document.querySelector<HTMLButtonElement>('.progress-detail button')?.click()
+    flushSync()
+    expect(document.querySelector<HTMLElement>('.colours span')?.title).toBe('Black')
+    void unmount(component)
+  })
+
+  it('owns context menus and operation choosers while emitting typed intents', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: {
+        model: {
+          ...model,
+          contextMenu: {
+            id: 'menu-1',
+            x: 20,
+            y: 30,
+            items: [{ id: 'delete', label: 'Delete', icon: 'trash', danger: true }],
+          },
+          operation: {
+            id: 'move-1',
+            label: 'Move City to:',
+            options: [
+              { value: 'a', label: 'Folder A' },
+              { value: 'b', label: 'Folder B' },
+            ],
+            confirmLabel: 'Move',
+          },
+        },
+        onIntent,
+      },
+    })
+    flushSync()
+
+    document.querySelector<HTMLButtonElement>('[role="menuitem"]')?.click()
+    expect(onIntent).toHaveBeenCalledWith({
+      type: 'context-menu-action',
+      menuId: 'menu-1',
+      actionId: 'delete',
+    })
+
+    const chooser = document.querySelector<HTMLSelectElement>('[aria-label="Move City to:"]')
+    if (chooser === null) throw new Error('missing operation chooser')
+    chooser.value = 'b'
+    chooser.dispatchEvent(new Event('change', { bubbles: true }))
+    flushSync()
+    document.querySelector<HTMLButtonElement>('.operation button.primary')?.click()
+    expect(onIntent).toHaveBeenCalledWith({
+      type: 'tree-operation-confirm',
+      operationId: 'move-1',
+      value: 'b',
+    })
+    void unmount(component)
+  })
+
+  it('shows drag feedback and emits the resolved drop position', () => {
+    const onIntent = vi.fn()
+    const component = mount(TemplateTree, { target: document.body, props: { model, onIntent } })
+    flushSync()
+    const city = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local:city"]')
+    const local = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
+    const tree = document.querySelector<HTMLElement>('[role="tree"]')
+    city?.dispatchEvent(new DragEvent('dragstart', { bubbles: true }))
+    local?.dispatchEvent(new DragEvent('dragover', { bubbles: true, clientY: 0 }))
+    flushSync()
+    expect(local?.classList.contains('drop-inside')).toBe(true)
+    tree?.dispatchEvent(new DragEvent('drop', { bubbles: true }))
+    expect(onIntent).toHaveBeenCalledWith({
+      type: 'drop',
+      draggedKey: 'local:city',
+      targetKey: 'local',
+      position: 'inside',
+    })
     void unmount(component)
   })
 

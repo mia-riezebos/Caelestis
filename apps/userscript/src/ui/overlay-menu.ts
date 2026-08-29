@@ -69,7 +69,6 @@ import {
 } from './overlay-appearance-state.js'
 import { type OverlayFailureKey as FailureKey, overlayFailures } from './overlay-failures.js'
 import { createRangeGestures } from './range-gestures.js'
-import { installStyles } from './styles.js'
 import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID } from './toast.js'
 
@@ -1650,12 +1649,6 @@ const renderControls = (
   mapCanvas: HTMLCanvasElement,
   templates: readonly PlacedTemplate[],
 ): void => {
-  // The swatches are styled by the shared stylesheet, which only `installPanel` used to install —
-  // and these controls are driven by the map frame, an entirely independent trigger. Without it
-  // `.wts-swatch` loses its `aspect-ratio` and the colour toggles collapse to nothing.
-  // `installStyles` holds its own node, so this is a null check rather than a document lookup, and
-  // it re-installs if the page removes ours.
-  installStyles()
   const live = new Set(templates.map((template) => template.id))
   // Forget what has genuinely gone even on a frame with no map: returning early leaves a deleted
   // template's delete question and failures behind, ready to be handed to the next record that

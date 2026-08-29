@@ -1,7 +1,7 @@
 import type { ServerTemplate } from '../server-cache.js'
 import { previewOriginFor, templateById } from '../templates/local-store.js'
 import { centreOf, centreOfBounds, navigateTo } from '../templates/navigate.js'
-import { toast } from './toast.js'
+import { toast } from '../ui/toast.js'
 
 /** Frame one manifest row even when its pixels have not reached the local catalog yet. */
 export const goToServerTemplate = (bbox: ServerTemplate['bbox']): void => {

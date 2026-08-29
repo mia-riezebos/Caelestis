@@ -2,11 +2,8 @@
 
 import { tick } from 'svelte'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CaelestisNotifications, registerCaelestisUi } from '../src/elements/index.js'
 import type { NotificationsModel } from '../src/index.js'
-import {
-  CaelestisNotifications,
-  registerCaelestisUi,
-} from '../src/elements/index.js'
 
 beforeAll(() => registerCaelestisUi())
 
@@ -87,11 +84,20 @@ describe('notifications', () => {
 
     const dialog = root.shadowRoot?.querySelector('dialog')
     expect(dialog?.textContent).toContain('It is shown once.')
-    expect(dialog?.querySelector<HTMLInputElement>('[aria-label="Access token"]')?.value).toBe('only-copy')
-    const button = (name: string) => [...(dialog?.querySelectorAll('button') ?? [])].find((item) => item.textContent?.trim() === name)
+    expect(dialog?.querySelector<HTMLInputElement>('[aria-label="Access token"]')?.value).toBe(
+      'only-copy',
+    )
+    const button = (name: string) =>
+      [...(dialog?.querySelectorAll('button') ?? [])].find(
+        (item) => item.textContent?.trim() === name,
+      )
     button('Copy')?.click()
-    expect(intent).toHaveBeenCalledWith(expect.objectContaining({ detail: { type: 'copy-one-time-secret', id: 'secret-1' } }))
+    expect(intent).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { type: 'copy-one-time-secret', id: 'secret-1' } }),
+    )
     button('I have copied it')?.click()
-    expect(intent).toHaveBeenCalledWith(expect.objectContaining({ detail: { type: 'resolve-one-time-secret', id: 'secret-1' } }))
+    expect(intent).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { type: 'resolve-one-time-secret', id: 'secret-1' } }),
+    )
   })
 })

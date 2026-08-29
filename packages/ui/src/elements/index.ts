@@ -1,36 +1,26 @@
 import type {
   NotificationsModel,
   OverlayControlsModel,
+  PaletteProgressModel,
   PanelModel,
   RailControlModel,
 } from '../types.js'
 import NotificationsElement from './Notifications.element.svelte'
 import OverlayControlsElement from './OverlayControls.element.svelte'
+import PaletteProgressElement from './PaletteProgress.element.svelte'
 import PanelElement from './Panel.element.svelte'
 import RailControlElement from './RailControl.element.svelte'
 import TemplateAdminElement from './TemplateAdmin.element.svelte'
 import TemplateStateElement from './TemplateState.element.svelte'
 
-export type {
-  AppearanceEditorIntent,
-  AppearanceEditorModel,
-  NotificationsIntent,
-  OverlayControlsIntent,
-  OverlayControlsModel,
-  PanelIntent,
-  PanelModel,
-  RailControlIntent,
-  RailControlModel,
-  SettingsIntent,
-  SettingsModel,
-  TemplateLifecycleChangeDetail,
-} from '../types.js'
+export type * from '../types.js'
 
 export const TEMPLATE_ADMIN_TAG = 'caelestis-template-admin'
 export const TEMPLATE_STATE_TAG = 'caelestis-template-state'
 export const NOTIFICATIONS_TAG = 'caelestis-notifications'
 export const OVERLAY_CONTROLS_TAG = 'caelestis-overlay-controls'
 export const PANEL_TAG = 'caelestis-panel'
+export const PALETTE_PROGRESS_TAG = 'caelestis-palette-progress'
 export const RAIL_CONTROL_TAG = 'caelestis-rail-control'
 
 export type CaelestisTemplateAdmin = HTMLElement & {
@@ -53,6 +43,7 @@ export type CaelestisNotifications = HTMLElement & {
 export type CaelestisOverlayControls = HTMLElement & { model: OverlayControlsModel }
 
 export type CaelestisPanel = HTMLElement & { model: PanelModel }
+export type CaelestisPaletteProgress = HTMLElement & { model: PaletteProgressModel }
 export type CaelestisRailControl = HTMLElement & { model: RailControlModel }
 
 type ElementConstructor<T extends HTMLElement> = {
@@ -69,6 +60,8 @@ export const CaelestisNotifications =
 export const CaelestisOverlayControls =
   OverlayControlsElement.element as ElementConstructor<CaelestisOverlayControls>
 export const CaelestisPanel = PanelElement.element as ElementConstructor<CaelestisPanel>
+export const CaelestisPaletteProgress =
+  PaletteProgressElement.element as ElementConstructor<CaelestisPaletteProgress>
 export const CaelestisRailControl =
   RailControlElement.element as ElementConstructor<CaelestisRailControl>
 
@@ -90,6 +83,9 @@ export const registerCaelestisUi = (): void => {
   if (customElements.get(PANEL_TAG) === undefined) {
     customElements.define(PANEL_TAG, CaelestisPanel)
   }
+  if (customElements.get(PALETTE_PROGRESS_TAG) === undefined) {
+    customElements.define(PALETTE_PROGRESS_TAG, CaelestisPaletteProgress)
+  }
   if (customElements.get(RAIL_CONTROL_TAG) === undefined) {
     customElements.define(RAIL_CONTROL_TAG, CaelestisRailControl)
   }
@@ -102,6 +98,7 @@ declare global {
     'caelestis-notifications': CaelestisNotifications
     'caelestis-overlay-controls': CaelestisOverlayControls
     'caelestis-panel': CaelestisPanel
+    'caelestis-palette-progress': CaelestisPaletteProgress
     'caelestis-rail-control': CaelestisRailControl
   }
 }

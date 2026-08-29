@@ -2,7 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ServerTemplate } from '../server-cache.js'
 import type { ConnectedServer } from '../state.js'
-import type { TreeTarget } from './tree.js'
+import type { TreeTarget } from '../ui/tree.js'
+import { currentRenamingKey, finishRenaming } from '../ui/tree-state.js'
 
 const serverRows = vi.hoisted(() => ({
   rowsFor: vi.fn(),
@@ -14,7 +15,12 @@ vi.mock('./tree-server-state.js', async (importOriginal) => ({
   rowsFor: serverRows.rowsFor,
 }))
 
-import { openContextMenu } from './tree-actions.js'
+import {
+  cancelTreeActionSetup,
+  handleTreeActionPresentationIntent,
+  openContextMenu,
+  treeActionPresentation,
+} from './tree-actions.js'
 
 const server = { url: 'https://templates.example', isAdmin: true } as ConnectedServer
 const target: TreeTarget = {
@@ -27,8 +33,37 @@ const template = (published: boolean): ServerTemplate =>
   ({ id: 'template', nodeId: 'root', published }) as ServerTemplate
 
 afterEach(() => {
-  document.body.replaceChildren()
+  cancelTreeActionSetup(new Error('test cleanup'))
+  finishRenaming()
   vi.clearAllMocks()
+})
+
+const menuText = (): string =>
+  treeActionPresentation()
+    .contextMenu?.items.map(({ label }) => label)
+    .join('') ?? ''
+
+it('dispatches a typed menu selection without a DOM-owned action list', () => {
+  const rerender = vi.fn()
+  openContextMenu(
+    { server: null, nodeId: 'folder', key: 'lf:folder', name: 'Folder' },
+    new MouseEvent('contextmenu', { clientX: 12, clientY: 34 }),
+    rerender,
+  )
+  const menu = treeActionPresentation().contextMenu
+  const rename = menu?.items.find(({ label }) => label === 'Rename')
+  if (menu === undefined || rename === undefined) throw new Error('missing rename menu item')
+
+  expect(
+    handleTreeActionPresentationIntent({
+      type: 'context-menu-action',
+      menuId: menu.id,
+      actionId: rename.id,
+    }),
+  ).toBe(true)
+  expect(treeActionPresentation().contextMenu).toBeUndefined()
+  expect(currentRenamingKey()).toBe('lf:folder')
+  expect(rerender).toHaveBeenCalled()
 })
 
 describe('server folder context menu', () => {
@@ -40,7 +75,7 @@ describe('server folder context menu', () => {
 
     openContextMenu(target, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain('Publish folder')
+    expect(menuText()).toContain('Publish folder')
   })
 
   it('offers recursive unpublication when every descendant is published', () => {
@@ -51,9 +86,7 @@ describe('server folder context menu', () => {
 
     openContextMenu(target, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain(
-      'Unpublish folder',
-    )
+    expect(menuText()).toContain('Unpublish folder')
   })
 })
 
@@ -77,7 +110,7 @@ describe('server template context menu', () => {
 
     openContextMenu(memberTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toBe('Export .wplace')
+    expect(menuText()).toBe('Export .wplace')
   })
 
   it('offers finish and freeze actions for a live template', () => {
@@ -88,10 +121,8 @@ describe('server template context menu', () => {
 
     openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain('Mark finished')
-    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain(
-      'Freeze timelapse',
-    )
+    expect(menuText()).toContain('Mark finished')
+    expect(menuText()).toContain('Freeze timelapse')
   })
 
   it('offers reopen and thaw actions for an archived template', () => {
@@ -102,9 +133,7 @@ describe('server template context menu', () => {
 
     openContextMenu(templateTarget, new MouseEvent('contextmenu'), vi.fn())
 
-    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain(
-      'Reopen template',
-    )
-    expect(document.querySelector('[data-caelestis-menu]')?.textContent).toContain('Thaw timelapse')
+    expect(menuText()).toContain('Reopen template')
+    expect(menuText()).toContain('Thaw timelapse')
   })
 })

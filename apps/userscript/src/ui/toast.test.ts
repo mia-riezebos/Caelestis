@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
 import { registerCaelestisUi } from '@caelestis/ui/elements'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PANEL_ID, toast } from './toast.js'
 
 beforeEach(() => {

@@ -238,15 +238,16 @@ const onPointerUp = (event: PointerEvent): void => {
 }
 
 const swallowNextClick = (): void => {
+  const clickTarget = window
   const swallow = (event: Event): void => {
-    window.removeEventListener('click', swallow, true)
+    clickTarget.removeEventListener('click', swallow, true)
     clearTimeout(timer)
     if (isPageControl(event.target)) return
     event.preventDefault()
     event.stopPropagation()
   }
-  const timer = setTimeout(() => window.removeEventListener('click', swallow, true), 400)
-  window.addEventListener('click', swallow, true)
+  const timer = setTimeout(() => clickTarget.removeEventListener('click', swallow, true), 400)
+  clickTarget.addEventListener('click', swallow, true)
 }
 
 const onPointerCancel = (event: PointerEvent): void => {
