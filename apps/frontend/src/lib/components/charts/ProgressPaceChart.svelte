@@ -198,6 +198,15 @@
     ),
   )
 
+  /** Snap the crosshair to every vertex that is actually rendered, including retained fine data. */
+  const hoverSnapTimes = $derived.by(() => {
+    const times = new Set(visiblePoints.map((point) => point.t))
+    for (const pace of activePaces) {
+      for (const point of pace.series) times.add(point.t)
+    }
+    return [...times].sort((a, b) => a - b)
+  })
+
   /**
    * Ordered ramp anchored at two colours that are legible by construction: the shortest window is
    * the series blue itself, the longest is mostly foreground ink, and every step lies between
@@ -273,19 +282,52 @@
   const formatCount = (v: number): string =>
     v >= 1000 ? `${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k` : String(Math.round(v))
 
-  let hover = $state<Point | null>(null)
+  interface HoverPoint {
+    t: number
+    cumCorrect: number
+    cumMismatched: number
+  }
+
+  const interpolateValue = <T extends { t: number }>(
+    series: readonly T[],
+    t: number,
+    value: (point: T) => number,
+    clamp = false,
+  ): number | null => {
+    let previous: T | undefined
+    for (const point of series) {
+      if (point.t === t) return value(point)
+      if (point.t > t) {
+        if (previous === undefined) return clamp ? value(point) : null
+        const fraction = (t - previous.t) / (point.t - previous.t)
+        return value(previous) + (value(point) - value(previous)) * fraction
+      }
+      previous = point
+    }
+    return previous === undefined || !clamp ? null : value(previous)
+  }
+
+  let hover = $state<HoverPoint | null>(null)
 
   const onPointerMove = (event: PointerEvent): void => {
-    if (visiblePoints.length === 0) return
+    if (hoverSnapTimes.length === 0) return
     const bounds = (event.currentTarget as SVGSVGElement).getBoundingClientRect()
     // Map time through the plot area and exclude the axis gutters.
     const plotX = event.clientX - bounds.left - pad.left
     const t = selFrom + (plotX / (width - pad.left - pad.right)) * (selTo - selFrom)
-    let nearest = visiblePoints[0]
-    for (const point of visiblePoints) {
-      if (nearest === undefined || Math.abs(point.t - t) < Math.abs(nearest.t - t)) nearest = point
+    let nearest = hoverSnapTimes[0]
+    for (const pointTime of hoverSnapTimes) {
+      if (nearest === undefined || Math.abs(pointTime - t) < Math.abs(nearest - t)) nearest = pointTime
     }
-    hover = nearest ?? null
+    if (nearest === undefined) return
+    const cumCorrect = interpolateValue(visiblePoints, nearest, (point) => point.cumCorrect, true)
+    const cumMismatched = interpolateValue(visiblePoints, nearest, (point) => point.cumMismatched, true)
+    if (cumCorrect === null || cumMismatched === null) return
+    hover = {
+      t: nearest,
+      cumCorrect: Math.round(cumCorrect),
+      cumMismatched: Math.round(cumMismatched),
+    }
   }
 
   // ── Brush interactions ───────────────────────────────────────────────────────────────────────
@@ -378,7 +420,7 @@
   }
 
   const hoverPace = (series: readonly { t: number; v: number }[], t: number): number | null =>
-    series.find((point) => point.t === t)?.v ?? null
+    interpolateValue(series, t, (point) => point.v)
 </script>
 
 <div class="relative" bind:clientWidth={width}>

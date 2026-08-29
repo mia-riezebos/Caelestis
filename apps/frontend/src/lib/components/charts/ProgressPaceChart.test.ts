@@ -9,6 +9,7 @@ const stored = new Map<string, string>()
 
 beforeEach(() => {
   stored.clear()
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(640)
   vi.stubGlobal('localStorage', {
     getItem: (key: string) => stored.get(key) ?? null,
     setItem: (key: string, value: string) => stored.set(key, value),
@@ -19,6 +20,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (mounted !== null) await unmount(mounted)
   mounted = null
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   document.body.replaceChildren()
 })
@@ -65,5 +67,44 @@ describe('rolling pace retention', () => {
     const oneHourLine = document.querySelector('path[data-pace-window="1h"]')
     expect(oneHourLine?.getAttribute('data-series-start')).toBe('7200')
     expect(oneHourLine?.getAttribute('d')).toMatch(/^M/)
+  })
+
+  it('snaps the hover timeline to a rendered fine-grained pace point', () => {
+    stored.set('caelestis:pace-windows', JSON.stringify(['30m']))
+    const buckets = [bucket(3_600, 0), bucket(3_600, 3_600), bucket(3_600, 7_200)]
+    const paceBuckets = [bucket(900, 4_500), bucket(900, 5_400)]
+
+    mounted = mount(ProgressPaceChart, {
+      target: document.body,
+      props: {
+        buckets,
+        paceBuckets,
+        paceResolution: 900,
+        paceFrom: 3_600,
+        resolution: 3_600,
+        from: 0,
+        to: 9_000,
+        anchorCorrect: 3,
+        anchorMismatched: 0,
+      },
+    })
+    flushSync()
+
+    const chart = document.querySelector('svg[role="img"]')
+    const paceLine = document.querySelector('path[data-pace-window="30m"]')
+    if (!(chart instanceof SVGSVGElement) || !(paceLine instanceof SVGPathElement)) {
+      throw new Error('missing chart or 30m pace line')
+    }
+    const path = paceLine.getAttribute('d') ?? ''
+    const firstPaceX = Number(/^M([^,]+)/.exec(path)?.[1])
+    chart.getBoundingClientRect = () => ({ left: 0 }) as DOMRect
+
+    chart.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: firstPaceX }))
+    flushSync()
+
+    const hoverLine = [...chart.querySelectorAll('line')].find(
+      (line) => line.getAttribute('class') === 'stroke-base-content/25',
+    )
+    expect(Number(hoverLine?.getAttribute('x1'))).toBe(firstPaceX)
   })
 })
