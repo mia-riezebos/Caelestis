@@ -5,25 +5,41 @@
   "type": "module",
   "exports": {
     ".": {
+      "svelte": "./dist/index.js",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./elements": {
+      "types": "./dist/elements/index.d.ts",
+      "default": "./dist/elements/index.js"
+    },
+    "./theme": {
+      "types": "./dist/theme.d.ts",
+      "default": "./dist/theme.js"
     }
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.check.json",
+    "build": "svelte-package --input src --output dist && vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.check.json",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@caelestis/shared": "workspace:*",
-    "lit": "^3.3.1"
+    "@caelestis/shared": "workspace:*"
+  },
+  "peerDependencies": {
+    "svelte": "^5.56.1"
   },
   "devDependencies": {
+    "@sveltejs/package": "^2.5.8",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "happy-dom": "^20.11.2",
+    "svelte": "^5.56.1",
+    "svelte-check": "^4.7.6",
     "typescript": "^5.7.0",
+    "vite": "^8.2.0",
     "vitest": "^4.1.10"
   }
 }

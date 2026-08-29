@@ -1,8 +1,8 @@
 <script lang="ts">
 import type { CanvasTileSummary, TileKey } from '@caelestis/shared'
+import { ProgressMeter } from '@caelestis/ui'
 import { ChevronRight, Folder } from '@lucide/svelte'
 import FolderSection from '$lib/components/FolderSection.svelte'
-import ProgressMeter from '$lib/components/ProgressMeter.svelte'
 import TemplateCard from '$lib/components/TemplateCard.svelte'
 import * as Collapsible from '$lib/components/ui/collapsible'
 import type { TreeFolder } from '$lib/tree'

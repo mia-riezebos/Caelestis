@@ -1,3 +1,23 @@
+import { WPLACE_PALETTE } from '@caelestis/shared'
+import type {
+  TemplateTreeIntent,
+  TemplateTreeModel,
+  TreeActionModel,
+  TreeEntryModel,
+  TreeRowModel,
+} from '@caelestis/ui/elements'
+import { goToLocalTemplate, goToServerTemplate } from '../application/tree-navigation.js'
+import {
+  hasRefreshedServer,
+  isSameServerPlacement,
+  isServerRefreshing,
+  nodeTreeKey,
+  refreshServerSnapshot,
+  renderedParent,
+  rowsFor,
+  serverSnapshotError,
+  serverTemplateTreeKey,
+} from '../application/tree-server-state.js'
 import { moveLocalFolder, renameLocalFolder, setLocalFolderVisible } from '../local-folders.js'
 import type { ServerTemplate } from '../server-cache.js'
 import {
@@ -8,6 +28,7 @@ import {
   renameNode as renameNodeOnServer,
   renameServer as renameServerOnServer,
   setScopeVisible,
+  setState,
 } from '../state.js'
 import { serverColourProgressFor, serverProgressFor } from '../telemetry.js'
 import {
@@ -25,7 +46,6 @@ import {
 } from '../templates/mismatch.js'
 import { nodeScopeKey } from '../templates/server-nodes.js'
 import { serverTemplateKey } from '../templates/server-sync.js'
-import { icon } from './icons.js'
 import {
   emptyProgress,
   freshestColourProgress,
@@ -33,35 +53,32 @@ import {
   sumColourProgress,
   sumProgress,
 } from './progress.js'
+import { isReorderable } from './sort.js'
 import { toast } from './toast.js'
-import { goToLocalTemplate, goToServerTemplate } from './tree-navigation.js'
-import { MAX_RENDERED_ROWS, orderedTreeItems as orderedItems } from './tree-order.js'
 import {
-  bindTreeDropRoot,
-  finishTreeRoot,
-  isTreeExpanded as isExpanded,
-  type SiblingLevel,
-  treeConnector,
-  treeRow,
-} from './tree-row.js'
-import {
-  hasRefreshedServer,
-  isServerRefreshing,
-  nodeTreeKey,
-  refreshServerSnapshot,
-  renderedParent,
-  rowsFor,
-  serverSnapshotError,
-  serverTemplateTreeKey,
-} from './tree-server-state.js'
+  MAX_RENDERED_ROWS,
+  orderedTreeItems as orderedItems,
+  placeTreeKey as placeAmongVisibleSiblings,
+} from './tree-order.js'
 import {
   groupedTreeSource as groupedSource,
   treeMatcher as matcherFor,
   type TreeItem,
   type TreeSource,
 } from './tree-source.js'
+import {
+  currentRenamingKey,
+  finishRenaming,
+  isTreeExpanded as isExpanded,
+  type RowAction,
+  type SiblingLevel,
+  type TreeRowOptions,
+} from './tree-state.js'
 
-export { isTreeDragActive, startRenaming } from './tree-row.js'
+export { startRenaming } from './tree-state.js'
+
+let modelTreeDragActive = false
+export const isTreeDragActive = (): boolean => modelTreeDragActive
 
 /**
  * The tree: one root per source, plus `Local`.
@@ -189,45 +206,22 @@ interface RenderBudget {
   truncated: boolean
 }
 
-const childText = (text: string, depth: number, branches: readonly boolean[] = []): HTMLElement => {
-  const el = document.createElement('p')
-  el.setAttribute('role', 'treeitem')
-  el.setAttribute('aria-level', String(depth + 2))
-  el.setAttribute('aria-disabled', 'true')
-  el.className = 'text-xs opacity-60'
-  el.style.padding = '0.125rem 0.75rem 0.375rem'
-  el.dataset.caelestisDepth = String(depth)
-  const connector = treeConnector(branches, true)
-  if (connector === null) {
-    el.style.paddingInlineStart = `${2.5 + depth * 1.125}rem`
-    el.textContent = text
-  } else {
-    el.style.position = 'relative'
-    el.style.marginInline = '0.25rem 0.5rem'
-    el.style.paddingInlineStart = `calc(0.5rem + ${connector.width}px)`
-    const label = document.createElement('span')
-    label.textContent = text
-    el.append(connector.element, label)
-  }
-  return el
-}
-
-const childRetry = (text: string, depth: number, retry: () => void): HTMLElement => {
-  const row = document.createElement('div')
-  row.setAttribute('role', 'treeitem')
-  row.setAttribute('aria-level', String(depth + 2))
-  row.className = 'flex items-center gap-2'
-  row.style.padding = '0.125rem 0.75rem 0.375rem'
-  row.style.paddingLeft = `${2.5 + depth * 1.125}rem`
-  const message = document.createElement('span')
-  message.className = 'text-xs opacity-60'
-  message.textContent = text
-  const button = document.createElement('button')
-  button.className = 'btn btn-xs btn-ghost'
-  button.textContent = 'Retry'
-  button.addEventListener('click', retry)
-  row.append(message, button)
-  return row
+interface TreeOutput<Result> {
+  readonly row: (options: TreeRowOptions) => void
+  readonly notice: (
+    text: string,
+    depth: number,
+    branches?: readonly boolean[],
+    action?: { readonly label: string; readonly run: () => void },
+  ) => void
+  readonly action: (
+    key: string,
+    depth: number,
+    label: string,
+    title: string,
+    run: () => void,
+  ) => void
+  readonly finish: () => Result
 }
 
 /**
@@ -239,7 +233,7 @@ const childRetry = (text: string, depth: number, retry: () => void): HTMLElement
  * rather than constrained. This used to be true of Local only.
  */
 const renderLevel = (
-  into: HTMLElement,
+  output: TreeOutput<unknown>,
   source: TreeSource,
   parentId: string | null,
   depth: number,
@@ -270,49 +264,47 @@ const renderLevel = (
     }
     const key = item.key
     const branches = [...ancestorBranches, index < items.length - 1]
-    into.appendChild(
-      treeRow({
-        key,
-        name: item.name,
-        kind: item.kind,
-        depth,
-        branches,
-        container: item.childrenOf !== null,
-        siblings: keys,
-        orderingSiblings: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
-        destinationSiblings: (destinationParentKey) =>
-          destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
-        parentKey,
-        canReparent: item.canReparent,
-        forceExpanded: needle !== '',
-        rerender,
-        onError,
-        checked: item.visible,
-        onToggleChecked: (on) => {
-          void Promise.resolve(item.setVisible(on)).then(
-            (changed) => {
-              if (!changed) onError(`Could not change visibility for “${item.name}”.`)
-              rerender()
-            },
-            (error: unknown) => {
-              onError(`Could not change visibility for “${item.name}”. ${String(error)}`)
-              rerender()
-            },
-          )
-        },
-        ...(item.meta === undefined ? {} : { meta: item.meta }),
-        ...(item.lifecycle === undefined ? {} : { lifecycle: item.lifecycle }),
-        ...(item.progress === undefined ? {} : { progress: item.progress }),
-        ...(item.progressReader === undefined ? {} : { progressReader: item.progressReader }),
-        ...(item.colourProgress === undefined ? {} : { colourProgress: item.colourProgress }),
-        ...(item.leadingActions === undefined ? {} : { leadingActions: item.leadingActions }),
-        ...(item.muted === undefined ? {} : { muted: item.muted }),
-        ...(item.actions === undefined ? {} : { actions: item.actions }),
-        ...(item.onRename === undefined ? {} : { onRename: item.onRename }),
-        ...(item.onContextMenu === undefined ? {} : { onContextMenu: item.onContextMenu }),
-        ...(item.onDropAt === undefined ? {} : { onDropAt: item.onDropAt }),
-      }),
-    )
+    output.row({
+      key,
+      name: item.name,
+      kind: item.kind,
+      depth,
+      branches,
+      container: item.childrenOf !== null,
+      siblings: keys,
+      orderingSiblings: () => orderedItems(allSiblings, rank).map((sibling) => sibling.key),
+      destinationSiblings: (destinationParentKey) =>
+        destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
+      parentKey,
+      canReparent: item.canReparent,
+      forceExpanded: needle !== '',
+      rerender,
+      onError,
+      checked: item.visible,
+      onToggleChecked: (on) => {
+        void Promise.resolve(item.setVisible(on)).then(
+          (changed) => {
+            if (!changed) onError(`Could not change visibility for “${item.name}”.`)
+            rerender()
+          },
+          (error: unknown) => {
+            onError(`Could not change visibility for “${item.name}”. ${String(error)}`)
+            rerender()
+          },
+        )
+      },
+      ...(item.meta === undefined ? {} : { meta: item.meta }),
+      ...(item.lifecycle === undefined ? {} : { lifecycle: item.lifecycle }),
+      ...(item.progress === undefined ? {} : { progress: item.progress }),
+      ...(item.progressReader === undefined ? {} : { progressReader: item.progressReader }),
+      ...(item.colourProgress === undefined ? {} : { colourProgress: item.colourProgress }),
+      ...(item.leadingActions === undefined ? {} : { leadingActions: item.leadingActions }),
+      ...(item.muted === undefined ? {} : { muted: item.muted }),
+      ...(item.actions === undefined ? {} : { actions: item.actions }),
+      ...(item.onRename === undefined ? {} : { onRename: item.onRename }),
+      ...(item.onContextMenu === undefined ? {} : { onContextMenu: item.onContextMenu }),
+      ...(item.onDropAt === undefined ? {} : { onDropAt: item.onDropAt }),
+    })
     budget.remaining--
     if (item.childrenOf === null) continue
     if (needle === '' && !isExpanded(key)) {
@@ -327,7 +319,7 @@ const renderLevel = (
       continue
     }
     renderLevel(
-      into,
+      output,
       source,
       item.childrenOf,
       depth + 1,
@@ -346,15 +338,16 @@ const renderLevel = (
   // Only inside something. "Nothing here" is worth saying about a folder you have just opened; at
   // the top of a source it is the source's own empty state, which says more than this can.
   if (parentId !== null && matching.length === 0) {
-    into.appendChild(childText('Empty.', depth, [...ancestorBranches, false]))
+    output.notice('Empty.', depth, [...ancestorBranches, false])
   }
 }
 
-export const treeContents = (
+const buildTree = <Result>(
+  output: TreeOutput<Result>,
   callbacks: TreeCallbacks,
   rerender: () => void,
   query = '',
-): HTMLElement => {
+): Result => {
   const dropInLocal = async (
     draggedKey: string,
     parentKey: string | null,
@@ -382,15 +375,6 @@ export const treeContents = (
     }
     return null
   }
-  const wrap = document.createElement('div')
-  wrap.setAttribute('role', 'tree')
-  wrap.className = 'flex flex-col'
-  // Breathing room between rows, and between the first row and the search field above it.
-  wrap.style.gap = '0.125rem'
-  wrap.style.paddingTop = '0.5rem'
-  wrap.style.paddingBottom = '0.5rem'
-  bindTreeDropRoot(wrap)
-
   const servers = getState().servers
   const drawnTemplates = localTemplates()
   const localOnly = drawnTemplates.filter((template) => !isServerTemplate(template))
@@ -508,77 +492,75 @@ export const treeContents = (
                 }),
               )
 
-    wrap.appendChild(
-      treeRow({
-        key,
-        name: target.name,
-        // A rack and a folder are different things and read differently at a glance.
-        kind: isLocal ? 'folder' : 'server',
-        depth: 0,
-        container: true,
-        forceExpanded: needle !== '',
-        siblings: ordered,
-        orderingSiblings: () => ordered,
-        destinationSiblings: (destinationParentKey) =>
-          destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
-        parentKey: null,
-        ...(parentProgress === undefined ? {} : { progress: parentProgress }),
-        ...(parentProgress === undefined
-          ? {}
-          : { progressReader: () => readParentProgress() ?? parentProgress }),
-        ...(parentColourProgress === undefined ? {} : { colourProgress: parentColourProgress }),
-        rerender,
-        onError: reportTreeError,
-        /**
-         * Categories reorder among themselves, and only among themselves.
-         *
-         * Without a position handler a category could only be dropped *onto* another row, so the
-         * one place you cannot aim — the gap above the first row — was the only way to reach first
-         * place, and it silently did nothing. Reordering was therefore one-way: a category could be
-         * moved down past its neighbour and never brought back up.
-         *
-         * `canReparent` stays off, so nothing can be filed *inside* a category by dragging.
-         */
-        onDropAt: async (draggedKey, parentKey, beforeKey) => {
-          // Another category, reordering among its own kind.
-          if (parentKey === null && keys.includes(draggedKey)) {
-            return null
-          }
-          // Landing just under a server's own row means its top level, which is otherwise
-          // unreachable: every other destination is a folder, and "no folder" has no other row.
-          if (parentKey === key && server !== undefined && canEdit) {
-            return await callbacks.onDropInServer(server, null, draggedKey, beforeKey)
-          }
+    output.row({
+      key,
+      name: target.name,
+      // A rack and a folder are different things and read differently at a glance.
+      kind: isLocal ? 'folder' : 'server',
+      depth: 0,
+      container: true,
+      forceExpanded: needle !== '',
+      siblings: ordered,
+      orderingSiblings: () => ordered,
+      destinationSiblings: (destinationParentKey) =>
+        destinationParentKey === null ? undefined : siblingLevels.get(destinationParentKey),
+      parentKey: null,
+      ...(parentProgress === undefined ? {} : { progress: parentProgress }),
+      ...(parentProgress === undefined
+        ? {}
+        : { progressReader: () => readParentProgress() ?? parentProgress }),
+      ...(parentColourProgress === undefined ? {} : { colourProgress: parentColourProgress }),
+      rerender,
+      onError: reportTreeError,
+      /**
+       * Categories reorder among themselves, and only among themselves.
+       *
+       * Without a position handler a category could only be dropped *onto* another row, so the
+       * one place you cannot aim — the gap above the first row — was the only way to reach first
+       * place, and it silently did nothing. Reordering was therefore one-way: a category could be
+       * moved down past its neighbour and never brought back up.
+       *
+       * `canReparent` stays off, so nothing can be filed *inside* a category by dragging.
+       */
+      onDropAt: async (draggedKey, parentKey, beforeKey) => {
+        // Another category, reordering among its own kind.
+        if (parentKey === null && keys.includes(draggedKey)) {
           return null
-        },
-        canReparent: canEdit && !isLocal,
-        // A category is a group like a folder is: switching it off takes everything under it off
-        // the canvas, and leaves every row inside saying exactly what it said before.
-        checked: isScopeVisible(key),
-        onToggleChecked: (on) => {
-          if (!setScopeVisible(key, on)) {
-            reportTreeError(`Could not change visibility for “${target.name}”.`)
-          }
-          rerender()
-        },
-        onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
-        onRename: canEdit ? (value) => void renameTarget(target, value, rerender) : undefined,
-        actions: canEdit
-          ? [
-              {
-                icon: 'createFolder',
-                label: 'New folder',
-                run: () => callbacks.onCreateFolder(target),
-              },
-              {
-                icon: 'uploadFile',
-                label: 'Import template',
-                run: () => callbacks.onImportTemplate(target),
-              },
-            ]
-          : undefined,
-      }),
-    )
+        }
+        // Landing just under a server's own row means its top level, which is otherwise
+        // unreachable: every other destination is a folder, and "no folder" has no other row.
+        if (parentKey === key && server !== undefined && canEdit) {
+          return await callbacks.onDropInServer(server, null, draggedKey, beforeKey)
+        }
+        return null
+      },
+      canReparent: canEdit && !isLocal,
+      // A category is a group like a folder is: switching it off takes everything under it off
+      // the canvas, and leaves every row inside saying exactly what it said before.
+      checked: isScopeVisible(key),
+      onToggleChecked: (on) => {
+        if (!setScopeVisible(key, on)) {
+          reportTreeError(`Could not change visibility for “${target.name}”.`)
+        }
+        rerender()
+      },
+      onContextMenu: canEdit ? (event) => callbacks.onContextMenu(target, event) : undefined,
+      onRename: canEdit ? (value) => void renameTarget(target, value, rerender) : undefined,
+      actions: canEdit
+        ? [
+            {
+              icon: 'createFolder',
+              label: 'New folder',
+              run: () => callbacks.onCreateFolder(target),
+            },
+            {
+              icon: 'uploadFile',
+              label: 'Import template',
+              run: () => callbacks.onImportTemplate(target),
+            },
+          ]
+        : undefined,
+    })
     if (!isExpanded(key) && needle === '') continue
 
     if (server !== undefined) {
@@ -590,14 +572,13 @@ export const treeContents = (
           void refreshServerSnapshot(server, rerender)
         }
         if (isServerRefreshing(server)) {
-          wrap.appendChild(childText('Loading folders…', 0))
+          output.notice('Loading folders…', 1)
         } else {
           const message = serverSnapshotError(server) ?? 'Could not load this server.'
-          wrap.appendChild(
-            childRetry(message, 0, () => {
-              void refreshServerSnapshot(server, rerender, true)
-            }),
-          )
+          output.notice(message, 1, [], {
+            label: 'Retry',
+            run: () => void refreshServerSnapshot(server, rerender, true),
+          })
         }
         continue
       } else if (rows !== undefined) {
@@ -753,7 +734,7 @@ export const treeContents = (
         const matches = matcherFor(source, needle)
         const hasMatches = source.children(null).some(matches)
         renderLevel(
-          wrap,
+          output,
           source,
           null,
           1,
@@ -767,21 +748,20 @@ export const treeContents = (
           reportTreeError,
           siblingLevels,
         )
-        if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
+        if (needle !== '' && !hasMatches) output.notice('No matches.', 1)
         else if (known.length === 0 && published.length === 0)
-          wrap.appendChild(childText('No templates published yet.', 0))
+          output.notice('No templates published yet.', 1)
         const refreshError = serverSnapshotError(server)
         if (server.status === 'connected' && refreshError !== undefined) {
-          wrap.appendChild(
-            childRetry(refreshError, 0, () => {
-              void refreshServerSnapshot(server, rerender, true)
-            }),
-          )
+          output.notice(refreshError, 1, [], {
+            label: 'Retry',
+            run: () => void refreshServerSnapshot(server, rerender, true),
+          })
         }
         if (server.status === 'unreachable') {
-          wrap.appendChild(childText(`Could not be reached. ${server.error ?? ''}`.trim(), 0))
+          output.notice(`Could not be reached. ${server.error ?? ''}`.trim(), 1)
         } else if (server.status === 'needs-token') {
-          wrap.appendChild(childText('Needs an access token — add it in settings.', 0))
+          output.notice('Needs an access token — add it in settings.', 1)
         }
         continue
       }
@@ -874,7 +854,7 @@ export const treeContents = (
       const matches = matcherFor(source, needle)
       const hasMatches = source.children(null).some(matches)
       renderLevel(
-        wrap,
+        output,
         source,
         null,
         1,
@@ -888,67 +868,344 @@ export const treeContents = (
         reportTreeError,
         siblingLevels,
       )
-      if (needle !== '' && !hasMatches) wrap.appendChild(childText('No matches.', 0))
-      else if (mine.length === 0) wrap.appendChild(childText('No local templates yet.', 0))
+      if (needle !== '' && !hasMatches) output.notice('No matches.', 1)
+      else if (mine.length === 0) output.notice('No local templates yet.', 1)
       // The hover action exists too, but an empty state is where someone is actually looking for
       // the way in, so it gets a visible button.
-      const actions = document.createElement('div')
-      actions.setAttribute('role', 'treeitem')
-      actions.setAttribute('aria-level', '2')
-      actions.style.padding = '0 0.75rem 0.5rem 2.25rem'
-      const importButton = document.createElement('button')
-      importButton.className = 'btn btn-xs'
-      importButton.textContent = 'Import a template'
-      importButton.title = 'A .wplace file, a Blue Marble export, or an image'
-      importButton.addEventListener('click', () =>
-        callbacks.onImportTemplate({
-          server: null,
-          nodeId: null,
-          key: 'local',
-          name: 'Local',
-        }),
+      output.action(
+        'local-import',
+        1,
+        'Import a template',
+        'A .wplace file, a Blue Marble export, or an image',
+        () =>
+          callbacks.onImportTemplate({
+            server: null,
+            nodeId: null,
+            key: 'local',
+            name: 'Local',
+          }),
       )
-      actions.appendChild(importButton)
-      wrap.appendChild(actions)
       continue
     }
     if (server === undefined) continue
     // No badge for a healthy server: if it is in the list at all, it is connected. Only trouble
     // needs saying, and it says it in words where there is room for them.
     if (server.status === 'connected') {
-      wrap.appendChild(childText('No templates published yet.', 0))
+      output.notice('No templates published yet.', 1)
     } else if (server.status === 'needs-token') {
-      wrap.appendChild(childText('Needs an access token — add it in settings.', 0))
+      output.notice('Needs an access token — add it in settings.', 1)
     } else {
-      wrap.appendChild(childText(`Could not be reached. ${server.error ?? ''}`.trim(), 0))
+      output.notice(`Could not be reached. ${server.error ?? ''}`.trim(), 1)
     }
   }
 
   if (budget.truncated) {
-    wrap.appendChild(
-      childText(
-        `Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} rows. Refine the search to see others.`,
-        0,
-      ),
+    output.notice(
+      `Showing the first ${MAX_RENDERED_ROWS.toLocaleString()} rows. Refine the search to see others.`,
+      1,
     )
   }
 
-  const addWrap = document.createElement('div')
-  addWrap.setAttribute('role', 'treeitem')
-  addWrap.setAttribute('aria-level', '1')
-  addWrap.className = 'flex justify-center'
-  addWrap.style.padding = '0.5rem 0.75rem 0'
-  const add = document.createElement('button')
-  add.className = 'btn btn-sm btn-ghost'
-  add.appendChild(icon('extension', 'size-4 opacity-60'))
-  const addText = document.createElement('span')
-  addText.textContent = servers.length === 0 ? 'Add a server' : 'Add another server'
-  add.appendChild(addText)
-  add.addEventListener('click', callbacks.onAddServer)
-  addWrap.appendChild(add)
-  wrap.appendChild(addWrap)
+  output.action(
+    'add-server',
+    0,
+    servers.length === 0 ? 'Add a server' : 'Add another server',
+    servers.length === 0 ? 'Add a server' : 'Add another server',
+    callbacks.onAddServer,
+  )
 
-  finishTreeRoot(wrap)
+  return output.finish()
+}
 
-  return wrap
+export interface TemplateTreeAdapter {
+  readonly model: TemplateTreeModel
+  readonly handle: (intent: TemplateTreeIntent) => void
+}
+
+const treeIcon = (name: TreeRowOptions['kind']): TreeRowModel['icon'] =>
+  name === 'folder' || name === 'server' ? name : 'image'
+
+const actionIcon = (name: string): TreeActionModel['icon'] => {
+  switch (name) {
+    case 'search':
+    case 'createFolder':
+    case 'uploadFile':
+    case 'extension':
+    case 'palette':
+      return name
+    default:
+      return 'kebab'
+  }
+}
+
+/** Translate the userscript's domain tree into the one model consumed by both Svelte hosts. */
+export const templateTreeAdapter = (
+  callbacks: TreeCallbacks,
+  rerender: () => void,
+  query = '',
+): TemplateTreeAdapter => {
+  const entries: TreeEntryModel[] = []
+  const rows = new Map<string, TreeRowOptions>()
+  const actions = new Map<string, () => void>()
+  let generatedKey = 0
+  const actionModels = (
+    key: string,
+    group: 'leading' | 'row',
+    source: readonly RowAction[],
+  ): readonly TreeActionModel[] =>
+    source.map((action, index) => {
+      const id = `${group}-${index}`
+      actions.set(`${key}:${id}`, action.run)
+      return { id, label: action.label, icon: actionIcon(action.icon) }
+    })
+
+  const output: TreeOutput<void> = {
+    row: (options) => {
+      rows.set(options.key, options)
+      const progress = options.progressReader?.() ?? options.progress
+      const colours = options.colourProgress?.()
+      entries.push({
+        type: 'row',
+        key: options.key,
+        name: options.name,
+        icon: treeIcon(options.kind),
+        depth: options.depth,
+        branches: options.branches ?? [],
+        parentKey: options.parentKey ?? null,
+        container: options.container,
+        expanded: options.forceExpanded === true || isExpanded(options.key),
+        visible: options.checked ?? true,
+        setSize: 0,
+        positionInSet: 0,
+        ...(options.forceExpanded === true ? { forceExpanded: true } : {}),
+        ...(options.muted === true ? { muted: true } : {}),
+        ...(options.meta === undefined ? {} : { meta: options.meta }),
+        ...(options.lifecycle === undefined ? {} : { lifecycle: options.lifecycle }),
+        ...(progress === undefined ? {} : { progress }),
+        ...(colours === undefined
+          ? {}
+          : {
+              colourProgress: colours.flatMap((colour) => {
+                const palette = WPLACE_PALETTE[colour.index]
+                return palette === undefined
+                  ? []
+                  : [{ ...colour, name: palette.name, hex: palette.hex }]
+              }),
+            }),
+        ...(options.leadingActions === undefined
+          ? {}
+          : { leadingActions: actionModels(options.key, 'leading', options.leadingActions) }),
+        ...(options.actions === undefined
+          ? {}
+          : { actions: actionModels(options.key, 'row', options.actions) }),
+        ...(options.onRename === undefined ? {} : { renamable: true }),
+        ...(options.onContextMenu === undefined ? {} : { contextMenu: true }),
+        ...(isReorderable(getState().sort) ? { draggable: true } : {}),
+        ...(options.canReparent === true ? { canReparent: true } : {}),
+      })
+    },
+    notice: (text, depth, branches = [], action) => {
+      const key = `notice-${generatedKey++}`
+      let actionModel: TreeActionModel | undefined
+      if (action !== undefined) {
+        actionModel = { id: 'run', label: action.label, icon: 'kebab' }
+        actions.set(`${key}:run`, action.run)
+      }
+      entries.push({
+        type: 'notice',
+        key,
+        depth,
+        branches,
+        text,
+        ...(actionModel === undefined ? {} : { action: actionModel }),
+      })
+    },
+    action: (key, depth, label, _title, run) => {
+      const action = {
+        id: 'run',
+        label,
+        icon: key === 'add-server' ? 'extension' : 'uploadFile',
+      } as const
+      actions.set(`${key}:run`, run)
+      entries.push({ type: 'action', key, depth, action })
+    },
+    finish: () => undefined,
+  }
+
+  buildTree(output, callbacks, rerender, query)
+
+  const siblingRows = new Map<string, TreeRowModel[]>()
+  for (const entry of entries) {
+    if (entry.type !== 'row') continue
+    const key = entry.parentKey ?? '__root__'
+    const siblings = siblingRows.get(key) ?? []
+    siblings.push(entry)
+    siblingRows.set(key, siblings)
+  }
+  for (const siblings of siblingRows.values()) {
+    siblings.forEach((entry, index) => {
+      const at = entries.indexOf(entry)
+      entries[at] = { ...entry, setSize: siblings.length, positionInSet: index + 1 }
+    })
+  }
+  const renderedRename = currentRenamingKey()
+  if (renderedRename !== null && !rows.has(renderedRename)) finishRenaming()
+
+  const renamingKey = currentRenamingKey()
+  const model: TemplateTreeModel = {
+    query,
+    sort: getState().sort,
+    entries,
+    ...(renamingKey === null ? {} : { renamingKey }),
+  }
+
+  const destinationFor = (
+    target: TreeRowOptions,
+    position: 'before' | 'inside' | 'after',
+  ): { parentKey: string | null; beforeKey: string | null; level: SiblingLevel } | null => {
+    if (position === 'inside') {
+      if (!target.container) return null
+      const level = target.destinationSiblings?.(target.key)
+      if (level === undefined) return null
+      return { parentKey: target.key, beforeKey: level.visible[0] ?? null, level }
+    }
+    const parentKey = target.parentKey ?? null
+    const visible = target.siblings
+    const index = visible.indexOf(target.key)
+    if (index === -1) return null
+    return {
+      parentKey,
+      beforeKey: position === 'before' ? target.key : (visible[index + 1] ?? null),
+      level: { visible, all: target.orderingSiblings ?? (() => visible) },
+    }
+  }
+
+  const applyDrop = (
+    dragged: TreeRowOptions,
+    target: TreeRowOptions,
+    position: 'before' | 'inside' | 'after',
+  ): void => {
+    const destination = destinationFor(target, position)
+    if (destination === null || dragged.key === destination.beforeKey) return
+    const sourceParent = dragged.parentKey ?? null
+    const reparenting = sourceParent !== destination.parentKey
+    if (reparenting && (dragged.canReparent !== true || target.canReparent !== true)) return
+    const place = target.onDropAt
+    if (reparenting && place === undefined) return
+
+    const previousOrder = getState().customOrder
+    let optimisticOrder: readonly string[] | null = null
+    const result = placeAmongVisibleSiblings(
+      destination.level.visible,
+      destination.level.all(),
+      dragged.key,
+      destination.beforeKey,
+      reparenting && isSameServerPlacement(dragged.key, destination.parentKey),
+    )
+    if (result === 'too-many') {
+      target.onError(
+        reparenting
+          ? 'The row was moved, but this level has too many rows to save a custom order safely.'
+          : 'This level has too many rows to save a custom order safely.',
+      )
+    } else if (reparenting && isSameServerPlacement(dragged.key, destination.parentKey)) {
+      optimisticOrder = getState().customOrder
+    }
+    if (!reparenting) {
+      if (place !== undefined) void place(dragged.key, destination.parentKey, destination.beforeKey)
+      rerender()
+      return
+    }
+
+    const rollBackOrder = (): void => {
+      if (
+        optimisticOrder !== null &&
+        getState().customOrder.length === optimisticOrder.length &&
+        getState().customOrder.every((key, index) => key === optimisticOrder?.[index])
+      ) {
+        setState({ customOrder: previousOrder })
+      }
+    }
+    void place?.(dragged.key, destination.parentKey, destination.beforeKey).then(
+      (destinationKey) => {
+        if (destinationKey === null) {
+          rollBackOrder()
+          rerender()
+          return
+        }
+        if (optimisticOrder === null || destinationKey !== dragged.key) {
+          const placed = placeAmongVisibleSiblings(
+            destination.level.visible,
+            destination.level.all(),
+            destinationKey,
+            destination.beforeKey,
+            true,
+          )
+          if (placed === 'too-many') {
+            target.onError(
+              'The row was moved, but this level has too many rows to save a custom order safely.',
+            )
+          }
+        }
+        rerender()
+      },
+      (error: unknown) => {
+        rollBackOrder()
+        target.onError(`Could not move that row. ${String(error)}`)
+        rerender()
+      },
+    )
+  }
+
+  return {
+    model,
+    handle: (intent) => {
+      if (intent.type === 'drag-state') {
+        modelTreeDragActive = intent.active
+        return
+      }
+      if (intent.type === 'action') {
+        actions.get(`${intent.key}:${intent.actionId}`)?.()
+        return
+      }
+      const row = 'key' in intent ? rows.get(intent.key) : undefined
+      switch (intent.type) {
+        case 'toggle-expanded': {
+          const collapsed = new Set(getState().collapsed)
+          if (collapsed.has(intent.key)) collapsed.delete(intent.key)
+          else collapsed.add(intent.key)
+          setState({ collapsed: [...collapsed] })
+          rerender()
+          break
+        }
+        case 'toggle-visible':
+          if (row?.onToggleChecked !== undefined) row.onToggleChecked(intent.visible)
+          break
+        case 'context-menu':
+          row?.onContextMenu?.(
+            new MouseEvent('contextmenu', { clientX: intent.x, clientY: intent.y }),
+          )
+          break
+        case 'rename':
+          finishRenaming()
+          row?.onRename?.(intent.name)
+          break
+        case 'cancel-rename':
+          finishRenaming()
+          rerender()
+          break
+        case 'drop': {
+          const dragged = rows.get(intent.draggedKey)
+          const target = rows.get(intent.targetKey)
+          if (dragged !== undefined && target !== undefined) {
+            applyDrop(dragged, target, intent.position)
+          }
+          break
+        }
+        case 'search':
+        case 'sort':
+          break
+      }
+    },
+  }
 }

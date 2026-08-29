@@ -1,5 +1,5 @@
 import { TILE_SIZE } from '@caelestis/shared'
-import { registerCaelestisUi } from '@caelestis/ui'
+import { registerCaelestisUi } from '@caelestis/ui/elements'
 import {
   canvasPixelAtIn,
   createScreenProjectionCache,

@@ -1,10 +1,56 @@
+import { TRANSPARENT_INDEX, WPLACE_PALETTE } from '@caelestis/shared'
+import type {
+  AppearanceEditorIntent,
+  AppearanceEditorModel,
+  CaelestisPanel,
+  CaelestisRailControl,
+  PanelIntent,
+  PanelModel,
+  RailControlIntent,
+  RailControlModel,
+  SettingsIntent,
+  SettingsModel,
+} from '@caelestis/ui/elements'
+import {
+  accessTokensModel,
+  createServerAccessToken,
+  forgetCachedTokens,
+  loadMoreAccessTokens,
+  prefetchAccessTokens,
+  refreshAccessTokens,
+  revokeServerAccessToken,
+} from '../application/access-tokens.js'
+import { cancelDestinationAdmissions } from '../application/transplant.js'
+import {
+  cancelTreeActionSetup,
+  copyServerTemplateToLocal,
+  copyToServer,
+  createFolder,
+  dropOnServerNode,
+  handleTreeActionPresentationIntent,
+  importTemplate,
+  moveBranch,
+  openContextMenu,
+  treeActionPresentation,
+  treeActionUsesServer,
+} from '../application/tree-actions.js'
+import {
+  forgetServerRows,
+  onServerSnapshot,
+  primeFromCache,
+} from '../application/tree-server-state.js'
 import { isEnabled as isDebugEnabled, log, setEnabled as setDebugEnabled } from '../debug.js'
 import { redraw } from '../main.js'
-import { DEFAULT_MARKER_BUDGET, MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
-import { isProfileEnabled, setProfileEnabled } from '../profile.js'
+import { MARKER_BUDGET_OPTIONS } from '../marker-budget.js'
+import {
+  isProfileEnabled,
+  profileReport,
+  profileSnapshot,
+  resetProfile,
+  setProfileEnabled,
+} from '../profile.js'
 import { forgetServer } from '../server-cache.js'
 import {
-  type ColourNavigationOrder,
   type ConnectedServer,
   cancelServerProbe,
   canonicalServerUrl,
@@ -24,44 +70,34 @@ import {
   upsertServer,
 } from '../state.js'
 import { onServerStatusChange } from '../telemetry.js'
-import { APPEARANCE_CONTROLS, DEFAULT_APPEARANCE } from '../templates/appearance.js'
+import {
+  APPEARANCE_CONTROLS,
+  DEFAULT_APPEARANCE,
+  PIXEL_STYLE_PRESETS,
+  pixelStylePresetOf,
+} from '../templates/appearance.js'
+import { globalHiddenColours } from '../templates/colour-filter.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
 import { pixelAccounting } from '../templates/mismatch.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
-import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
-import { accessTokenSection, forgetCachedTokens, prefetchAccessTokens } from './access-tokens.js'
-import { whileBusy } from './button.js'
-import { isColourPickerOpen } from './colour-picker.js'
-import { coloursSection } from './colours.js'
+import { ownedColours, refreshAccount } from '../wplace-account.js'
+import { isPaintOpen, onPaintSelectionChange, selectedColour } from '../wplace-paint.js'
+import { activeColourPreset, type ColourPresetId, hiddenForPreset } from './colours.js'
 import { frameQueue } from './frame-queue.js'
-import type { IconName } from './icons.js'
-import { icon } from './icons.js'
-import { mismatchSettings } from './marker-settings.js'
 import { CLEAR_OF_RAIL, EDGE, GAP, SURFACE_RADIUS } from './metrics.js'
-import { pixelStylePresets } from './pixel-style-presets.js'
-import { profilePanel } from './profile.js'
-import { refreshProgressIndicators } from './progress.js'
-import { mismatchModeButton, RAIL_BUTTON_CLASS, syncMismatchModeState } from './rail-controls.js'
-import { createRangeGestures } from './range-gestures.js'
-import { sliderRow } from './slider.js'
-import { progressChangesCanReorder, sortControl } from './sort.js'
-import { installStyles } from './styles.js'
-import { PANEL_ID, toast } from './toast.js'
-import { cancelDestinationAdmissions } from './transplant.js'
-import { isTreeDragActive, treeContents } from './tree.js'
+import { panelWidthAfterMount } from './panel-geometry.js'
+import { mismatchModeButton, syncMismatchModeState } from './rail-controls.js'
+import { progressChangesCanReorder } from './sort.js'
+import { applyWplaceTheme } from './theme.js'
+import { PANEL_ID } from './toast.js'
 import {
-  cancelTreeActionSetup,
-  copyServerTemplateToLocal,
-  copyToServer,
-  createFolder,
-  dropOnServerNode,
-  importTemplate,
-  moveBranch,
-  openContextMenu,
-  treeActionUsesServer,
-} from './tree-actions.js'
-import { forgetServerRows, onServerSnapshot, primeFromCache } from './tree-server-state.js'
+  isTreeDragActive,
+  type TemplateTreeAdapter,
+  type TreeCallbacks,
+  templateTreeAdapter,
+} from './tree.js'
+import { findWplaceRail } from './wplace-rail.js'
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -94,33 +130,14 @@ import { forgetServerRows, onServerSnapshot, primeFromCache } from './tree-serve
  * Not by its classes. `.flex.flex-col.items-center.gap-3` is Tailwind utility soup that describes a
  * layout, not an identity — several elements on the page match it, `querySelector` returns whichever
  * comes first in the document, and ours landed in the wrong one. Anchor on the thing we actually
- * mean instead: wplace's own Overlays button, whose parent *is* the rail by definition. Ours then
- * lands directly beneath it, which is where it was asked to go.
+ * mean instead: one of wplace's own rail buttons, whose parent *is* the rail by definition. The
+ * logged-in rail has Overlays; the logged-out rail has Search and Leaderboard. Ours then lands
+ * directly beneath whichever native rail is on screen.
  */
-const ANCHOR_LABEL = 'Overlays'
-
-const findRail = (): { rail: Element; after: Element } | null => {
-  for (const button of document.querySelectorAll('button')) {
-    const label = button.getAttribute('title') ?? button.getAttribute('aria-label') ?? ''
-    if (label.trim() !== ANCHOR_LABEL) continue
-    const rail = button.parentElement
-    if (rail !== null) return { rail, after: button }
-  }
-  return null
-}
 const BUTTON_ID = 'caelestis-rail-button'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
 const minimumPanelWidth = (): number => Math.min(260, maximumPanelWidth())
-/**
- * Every way a pointer gesture stops.
- *
- * `pointerup` alone is the happy path. A gesture the browser takes back for a system swipe fires
- * `pointercancel` instead, and one whose capture is stolen fires `lostpointercapture` — both leave a
- * drag running forever if only the first is listened for.
- */
-const ENDINGS = ['pointerup', 'pointercancel', 'lostpointercapture'] as const
-
 const panelWidthForViewport = (wanted: number): number =>
   Math.min(maximumPanelWidth(), Math.max(minimumPanelWidth(), wanted))
 
@@ -138,43 +155,42 @@ const BUTTON_TOOLTIP = `${APP_NAME} — shared templates (C)`
 
 type View = 'tree' | 'settings' | 'appearance'
 
-/** The header title for each view, and `null` where the panel keeps its own name. */
-const VIEW_TITLE: Record<View, string | null> = {
-  tree: null,
-  settings: 'Settings',
-  appearance: 'Appearance',
-}
-
 let currentView: View = 'tree'
 let open = false
+let alarmBadge = 0
 let searchQuery = ''
-const rangeGestures = createRangeGestures()
 
 /**
  * wplace marks an open rail button by adding `btn-primary`, measured by opening theirs and diffing
  * the class list. Using the same class rather than a colour of our own means our button lights up
  * in whatever their theme calls primary, now and after any theme change.
  */
+const panelRailModel = (): RailControlModel => ({
+  id: 'panel',
+  label: BUTTON_TOOLTIP,
+  pressed: open,
+  expanded: open,
+  controls: PANEL_ID,
+  ...(alarmBadge > 0 ? { badge: alarmBadge } : {}),
+})
+
 const syncRailButtonState = (): void => {
-  const button = document.getElementById(BUTTON_ID)
+  const button = document.getElementById(BUTTON_ID) as CaelestisRailControl | null
   if (button === null) return
-  button.className = open ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
-  button.setAttribute('aria-expanded', String(open))
+  button.model = panelRailModel()
 }
 
-const railButton = (): HTMLButtonElement => {
+const railButton = (): CaelestisRailControl => {
   const existing = document.getElementById(BUTTON_ID)
-  if (existing !== null) return existing as HTMLButtonElement
-  const button = document.createElement('button')
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
   button.id = BUTTON_ID
-  // Exactly the classes wplace's own rail buttons carry.
-  button.className = RAIL_BUTTON_CLASS
-  button.title = BUTTON_TOOLTIP
-  button.setAttribute('aria-label', BUTTON_TOOLTIP)
-  button.setAttribute('aria-expanded', 'false')
-  button.setAttribute('aria-controls', PANEL_ID)
-  button.appendChild(icon('extension'))
-  button.addEventListener('click', togglePanel)
+  button.model = panelRailModel()
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id === 'panel') togglePanel()
+  })
   return button
 }
 
@@ -184,132 +200,8 @@ const railButton = (): HTMLButtonElement => {
  * looked", so it clears itself by being seen.
  */
 export const setAlarmBadge = (count: number): void => {
-  const button = document.getElementById(BUTTON_ID)
-  if (button === null) return
-  const existing = button.querySelector('[data-caelestis-badge]')
-  if (count <= 0) {
-    existing?.remove()
-    return
-  }
-  const badge = existing ?? document.createElement('span')
-  badge.setAttribute('data-caelestis-badge', '')
-  badge.className = 'badge badge-sm badge-error absolute -top-1 -right-1'
-  badge.textContent = String(count)
-  if (existing === null) button.appendChild(badge)
-}
-
-/**
- * A section heading: an icon in a tinted chip, then the name at normal weight and full contrast.
- *
- * Not faded all-caps. A settings pane is scanned for the section you want, and the previous
- * treatment made every heading — the one thing you are actually looking for — the least legible
- * text on the screen.
- */
-const sectionHeader = (title: string, glyph: IconName): HTMLElement => {
-  const row = document.createElement('div')
-  row.className = 'flex items-center gap-2 px-3 pt-5 pb-2'
-  const chip = document.createElement('span')
-  chip.className = 'bg-base-200 flex items-center justify-center'
-  Object.assign(chip.style, {
-    borderRadius: '0.5rem',
-    width: '1.75rem',
-    height: '1.75rem',
-    flex: '0 0 auto',
-  })
-  chip.appendChild(icon(glyph, 'size-4'))
-  const h = document.createElement('h3')
-  h.className = 'text-sm font-semibold'
-  h.textContent = title
-  row.append(chip, h)
-  return row
-}
-
-const treeView = (): HTMLElement => {
-  const view = document.createElement('div')
-  Object.assign(view.style, {
-    display: 'flex',
-    flexDirection: 'column',
-    minHeight: '0',
-    flex: '1',
-  })
-
-  // Search and sort share a row: both are ways of finding one template among many, and giving sort
-  // its own row would push the tree down for a control most people set once.
-  const toolbar = document.createElement('div')
-  toolbar.className = 'flex items-center gap-1'
-  Object.assign(toolbar.style, { margin: '0.75rem 0.75rem 0' })
-
-  const search = document.createElement('label')
-  search.className = 'input input-sm input-bordered flex items-center gap-2'
-  Object.assign(search.style, { flex: '1', minWidth: '0' })
-  const searchIcon = icon('search', 'size-4 opacity-50')
-  const searchInput = document.createElement('input')
-  searchInput.type = 'search'
-  searchInput.style.flex = '1'
-  searchInput.style.minWidth = '0'
-  searchInput.placeholder = 'Search templates'
-  searchInput.setAttribute('aria-label', 'Search templates')
-  searchInput.value = searchQuery
-  search.append(searchIcon, searchInput)
-
-  toolbar.append(
-    search,
-    sortControl(getState().sort, (next) => {
-      setState({ sort: next })
-      showView('tree')
-    }),
-  )
-
-  const body = document.createElement('div')
-  body.dataset.caelestisScroller = ''
-  Object.assign(body.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
-  const renderTree = (): void => {
-    body.replaceChildren(
-      treeContents(
-        {
-          onAddServer: () => showView('settings'),
-          onCreateFolder: (target) => void createFolder(target, rerenderTree),
-          onImportTemplate: (target) => void importTemplate(target, rerenderTree),
-          onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
-          onCopyToServer: (id) => void copyToServer(id, rerenderTree),
-          onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
-            dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
-          onDropInLocal: async (draggedKey, folderId) => {
-            if (draggedKey.startsWith('node:')) {
-              return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree)
-            }
-            if (draggedKey.startsWith('st:')) {
-              return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree)
-            }
-            return null
-          },
-        },
-        rerenderTree,
-        searchQuery,
-      ),
-    )
-  }
-  let searchTimer: ReturnType<typeof setTimeout> | null = null
-  searchInput.addEventListener('input', () => {
-    searchQuery = searchInput.value
-    if (searchTimer !== null) clearTimeout(searchTimer)
-    searchTimer = setTimeout(() => {
-      searchTimer = null
-      rerenderTree()
-    }, 100)
-  })
-  // Claimed here rather than inside `renderTree`, because a closure that is still holding a
-  // reference will go on being called after its view is gone — `primeFromCache` resolves from
-  // IndexedDB long after a state change may have rebuilt everything. Claiming on call let that
-  // stale closure take the tree back and every redraw after it painted a detached element, which is
-  // the very failure the indirection was added to stop.
-  activeTreeRender = renderTree
-  renderTree()
-  // Paint what the servers said last time, then let a live fetch replace it.
-  void primeFromCache(rerenderTree)
-
-  view.append(toolbar, body)
-  return view
+  alarmBadge = Math.max(0, count)
+  syncRailButtonState()
 }
 
 /**
@@ -339,31 +231,16 @@ const refreshView = (): void => {
   const root = document.getElementById(PANEL_ID)
   if (root === null) return
   const held =
-    isColourPickerOpen() ||
+    (root.shadowRoot?.querySelector('[data-caelestis-colour-picker]') ?? null) !== null ||
     isTreeDragActive() ||
     heldPanelPointers.size > 0 ||
-    root.querySelector('.caelestis-dragging') !== null ||
     (root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)
   if (held) {
     owedRefresh = true
     return
   }
   owedRefresh = false
-  // What the user has typed survives the rebuild. A view is rebuilt from stored state, and a field
-  // being filled in is not stored state yet, so redrawing over it threw the half-typed address away
-  // — most visibly on the blur that pays this debt back, which is exactly when a rebuild lands.
-  const drafts = new Map<string, string>()
-  for (const field of root.querySelectorAll<HTMLInputElement>('[data-caelestis-draft]')) {
-    const key = field.dataset.caelestisDraft
-    if (key !== undefined && field.value !== '') drafts.set(key, field.value)
-  }
   showView(currentView)
-  if (drafts.size === 0) return
-  for (const field of root.querySelectorAll<HTMLInputElement>('[data-caelestis-draft]')) {
-    const draft = field.dataset.caelestisDraft
-    const kept = draft === undefined ? undefined : drafts.get(draft)
-    if (kept !== undefined) field.value = kept
-  }
 }
 
 let manifestTreeRefreshQueued = false
@@ -396,35 +273,6 @@ onServerSnapshot((_server, result) => {
 const repayRefresh = (): void => {
   if (!owedRefresh) return
   setTimeout(refreshView, 0)
-}
-
-const settingRow = (label: string, hint: string | null, control: HTMLElement): HTMLElement => {
-  const row = document.createElement('div')
-  row.className = 'flex items-center justify-between gap-4 px-3 py-2'
-  row.style.minHeight = '3rem'
-  const text = document.createElement('div')
-  text.className = 'flex flex-col'
-  const name = document.createElement('span')
-  name.className = 'text-sm'
-  name.textContent = label
-  text.append(name)
-  if (hint !== null) {
-    const sub = document.createElement('span')
-    sub.className = 'text-xs opacity-60'
-    sub.textContent = hint
-    text.appendChild(sub)
-  }
-  row.append(text, control)
-  return row
-}
-
-const checkbox = (value: boolean, onChange: (next: boolean) => void): HTMLInputElement => {
-  const el = document.createElement('input')
-  el.type = 'checkbox'
-  el.className = 'checkbox checkbox-sm'
-  el.checked = value
-  el.addEventListener('change', () => onChange(el.checked))
-  return el
 }
 
 /** Which servers' rows are open. Kept across re-renders, which rebuild the whole pane. */
@@ -499,654 +347,490 @@ const disconnectServer = async (server: ConnectedServer): Promise<void> => {
   }
 }
 
-/**
- * One connected server: its name and state, and everything about it behind a caret.
- *
- * Expandable because a server has more than one thing to say about it and only one of them is worth
- * a line in a list. Collapsed it is a name and whether it is working; open it is the token you
- * connect with, the tokens it will accept from other people, and the way to disconnect.
- *
- * Disconnect lives inside rather than on the collapsed row. It used to sit beside the name, one
- * stray click from throwing a server away, in a list where every other control is harmless — and it
- * is not something anyone reaches for while scanning.
- */
-const serverRow = (server: ConnectedServer): HTMLElement => {
-  const wrap = document.createElement('div')
-  wrap.className = 'px-3 py-2'
-  // Opened for you when it is asking for something, once — the token field is inside, and a row you
-  // have to discover before you can fix it is a row that reads as broken rather than as waiting.
-  if (server.status === 'needs-token' && !autoExpanded.has(server.url)) {
-    autoExpanded.add(server.url)
-    expandedServers.add(server.url)
+let activeTreeAdapter: TemplateTreeAdapter | null = null
+
+const settingsMessages = new Map<string, string>()
+const pendingServers = new Set<string>()
+let addServerPending = false
+let addServerMessage: string | undefined
+let profileStatus: string | undefined
+
+const formatBytes = (value: number | null): string => {
+  if (value === null) return 'Unavailable'
+  if (value < 1024) return `${value} B`
+  const units = ['KiB', 'MiB', 'GiB']
+  let amount = value / 1024
+  let unit = units[0] ?? 'KiB'
+  for (let index = 1; index < units.length && amount >= 1024; index++) {
+    amount /= 1024
+    unit = units[index] ?? unit
   }
-  const open = expandedServers.has(server.url)
-
-  const top = document.createElement('button')
-  top.type = 'button'
-  top.className = 'flex items-center gap-2 w-full'
-  top.setAttribute('aria-expanded', String(open))
-
-  const caret = icon('caret', 'size-3 opacity-60')
-  caret.style.flex = '0 0 auto'
-  caret.style.transition = 'transform 120ms ease-out'
-  caret.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)'
-
-  const name = document.createElement('span')
-  name.className = 'text-sm'
-  name.style.flex = '1'
-  name.style.overflow = 'hidden'
-  name.style.textOverflow = 'ellipsis'
-  name.style.whiteSpace = 'nowrap'
-  name.style.textAlign = 'left'
-  name.textContent = server.info?.name ?? server.url
-  name.title = server.url
-
-  top.append(caret, name)
-  // Only trouble gets a badge. A server that is in this list at all is one you added and one that
-  // works, so "connected" was a green label on every row saying what the absence of a label already
-  // said — and it made the two rows that do need attention harder to pick out, not easier.
-  if (server.status !== 'connected') {
-    const badge = document.createElement('span')
-    badge.className =
-      server.status === 'needs-token'
-        ? 'badge badge-sm badge-warning'
-        : 'badge badge-sm badge-error'
-    badge.textContent = server.status === 'needs-token' ? 'token' : 'offline'
-    top.appendChild(badge)
-  }
-  top.addEventListener('click', () => {
-    if (open) expandedServers.delete(server.url)
-    else expandedServers.add(server.url)
-    showView('settings')
-  })
-  // A pointer arriving at the row is the earliest honest sign someone is about to open it, and the
-  // tokens are the one thing inside that has to be asked for. Fetching now means the expansion opens
-  // at its final height rather than growing a moment later, and it costs a request that was about to
-  // happen anyway.
-  top.addEventListener('pointerenter', () => prefetchAccessTokens(server))
-  wrap.appendChild(top)
-
-  // Why it is offline, which the two words on the row above cannot carry. Nothing extra for a
-  // server wanting a token: the row says so, and what to do about it is one click away.
-  if (!open) {
-    if (server.status === 'unreachable' && server.error !== undefined) {
-      const why = document.createElement('p')
-      why.className = 'text-xs opacity-60'
-      why.style.marginTop = '0.125rem'
-      why.textContent = server.error
-      wrap.appendChild(why)
-    }
-    return wrap
-  }
-
-  const body = document.createElement('div')
-  body.style.marginTop = '0.5rem'
-  body.style.paddingLeft = '1.25rem'
-
-  /**
-   * The token you connect with, always editable.
-   *
-   * It used to appear only while the server was refusing you, so a token that had been accepted
-   * could not be changed without disconnecting and adding the server again — which is exactly what
-   * you need to do when yours is rotated or upgraded to admin.
-   */
-  const codeRow = document.createElement('div')
-  codeRow.className = 'flex gap-2'
-  const code = document.createElement('input')
-  code.dataset.caelestisDraft = `token:${server.url}`
-  code.type = 'password'
-  code.autocomplete = 'off'
-  code.className = 'input input-sm input-bordered'
-  code.style.flex = '1'
-  code.style.minWidth = '0'
-  code.placeholder = server.token === null ? 'Access token' : '••••••••'
-  code.setAttribute('aria-label', 'Your access token for this server')
-  const submit = document.createElement('button')
-  submit.className = 'btn btn-sm btn-primary'
-  submit.textContent = server.status === 'connected' ? 'Update' : 'Connect'
-
-  const status = document.createElement('p')
-  status.className = 'text-xs opacity-60'
-  status.style.marginTop = '0.25rem'
-  status.textContent =
-    server.status === 'needs-token'
-      ? 'This server needs an access token from whoever runs it.'
-      : server.status === 'unreachable'
-        ? (server.error ?? 'Could not be reached.')
-        : server.tokenUsable === false
-          ? 'Your saved token was not accepted. Connected without it.'
-          : server.isAdmin
-            ? 'Your token can change this server.'
-            : 'Your token can read this server.'
-
-  const attempt = async (): Promise<void> => {
-    const value = code.value.trim()
-    if (value === '') return
-    status.className = 'text-xs opacity-60'
-    status.textContent = 'Checking…'
-    const next = await whileBusy(
-      submit,
-      () => probeServer(server.url, value),
-      `server:probe:${server.url}`,
-    )
-    if (next === null) return
-    if (next.superseded === true) return
-    if (!stillConnected(server)) return
-    if (next.status === 'connected') {
-      cancelDestinationAdmissions(server.url)
-      upsertServer(next)
-      // Closed again, because what was open for is done. Left open, a row that opened itself would
-      // stay open on a pane that is otherwise a short list of servers.
-      expandedServers.delete(server.url)
-      showView('settings')
-      return
-    }
-    // A wrong token and an unreachable server are different problems with different fixes, so they
-    // must not share a message.
-    const message =
-      next.status === 'needs-token'
-        ? 'That token was not accepted. Ask whoever runs the server for a current one.'
-        : `Could not reach the server. ${next.error ?? ''}`.trim()
-    // A background redraw during the probe leaves this row's status element detached, and writing
-    // the failure into it put the answer somewhere nobody can see. Say it out loud instead.
-    if (!status.isConnected) {
-      toast(message, 'error')
-      return
-    }
-    status.className = 'text-xs text-error'
-    status.textContent = message
-  }
-
-  submit.addEventListener('click', () => void attempt())
-  code.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') void attempt()
-  })
-  codeRow.append(code, submit)
-  body.append(codeRow, status)
-
-  // Only for someone who can actually use it. The routes are admin-only, so for anyone else this
-  // would be a section that exists to say 403.
-  if (server.isAdmin) body.appendChild(accessTokenSection(server))
-
-  const disconnect = document.createElement('button')
-  disconnect.className = 'btn btn-sm btn-ghost text-error'
-  disconnect.style.marginTop = '0.75rem'
-  disconnect.textContent = 'Disconnect'
-  disconnect.addEventListener('click', () => void disconnectServer(server))
-  body.appendChild(disconnect)
-
-  wrap.appendChild(body)
-  return wrap
+  return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${unit}`
 }
 
-/**
- * How overlays look: the defaults every overlay follows, and the colours any of them may draw.
- *
- * Its own view rather than a section of settings. Settings is a page you visit rarely — a server to
- * connect, a switch to flip once — while this is the page you come back to constantly, and burying
- * a colour grid below server plumbing made the thing used most the thing furthest down.
- *
- * Everything here is a *default*. An overlay that has been given settings of its own ignores all of
- * it; see `hiddenColoursFor`.
- */
-const appearanceView = (): HTMLElement => {
-  const view = document.createElement('div')
-  Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
-  const rerender = (): void => showView('appearance')
+const formatMilliseconds = (value: number): string => `${value.toFixed(value >= 10 ? 1 : 2)} ms`
+
+const settingsModel = (): SettingsModel => {
   const state = getState()
-
-  view.appendChild(sectionHeader('Appearance', 'tune'))
-  view.appendChild(
-    settingRow(
-      'Pixel style',
-      null,
-      pixelStylePresets(state.appearance, (values) => {
-        setState({ appearance: { ...getState().appearance, ...values } })
-        redraw()
-        rerender()
-      }),
-    ),
-  )
-
-  const outline = document.createElement('input')
-  outline.type = 'checkbox'
-  outline.className = 'toggle toggle-sm'
-  outline.checked = state.appearance.contrastOutline
-  outline.setAttribute('aria-label', 'Contrast outline')
-  outline.addEventListener('change', () => {
-    setState({
-      appearance: { ...getState().appearance, contrastOutline: outline.checked },
-    })
-    previewGlobalAppearance(getState().appearance)
-    redraw()
-    rerender()
-  })
-  view.appendChild(
-    settingRow(
-      'Contrast outline',
-      'Visible behind the overlay until Wplace art covers it',
-      outline,
-    ),
-  )
-
-  // Same sliders as the per-overlay menu, deliberately — one vocabulary, learned once.
-  const sliders = document.createElement('div')
-  sliders.className = 'px-3 pb-2'
-  for (const control of APPEARANCE_CONTROLS) {
-    let dirty = false
-    let row: ReturnType<typeof sliderRow>
-    const commit = (): void => {
-      if (!dirty) return
-      dirty = false
-      const next = Number(row.input.value)
-      // Read the live value rather than the one captured when this row was built, so dragging one
-      // slider cannot revert another.
-      setState({
-        appearance: { ...getState().appearance, [control.key]: next },
-      })
+  for (const server of state.servers) {
+    if (server.status === 'needs-token' && !autoExpanded.has(server.url)) {
+      autoExpanded.add(server.url)
+      expandedServers.add(server.url)
     }
-    row = sliderRow({
+  }
+  const snapshot = isProfileEnabled() ? profileSnapshot() : null
+  return {
+    servers: state.servers.map((server) => {
+      const message = settingsMessages.get(server.url)
+      return {
+        url: server.url,
+        name: server.info?.name ?? server.url,
+        status: server.status,
+        ...(server.error === undefined ? {} : { error: server.error }),
+        expanded: expandedServers.has(server.url),
+        tokenSaved: server.token !== null,
+        ...(server.tokenUsable === undefined ? {} : { tokenUsable: server.tokenUsable }),
+        isAdmin: server.isAdmin,
+        ...(server.isAdmin && expandedServers.has(server.url)
+          ? { accessTokens: accessTokensModel(server, refreshSettings) }
+          : {}),
+        ...(pendingServers.has(server.url) ? { pending: true } : {}),
+        ...(message === undefined ? {} : { message }),
+      }
+    }),
+    ...(addServerPending ? { addServerPending: true } : {}),
+    ...(addServerMessage === undefined ? {} : { addServerMessage }),
+    colourNavigationOrder: state.colourNavigationOrder,
+    reportPaints: state.reportPaints,
+    shareTiles: state.shareTiles,
+    debugLogging: isDebugEnabled(),
+    performanceProfiling: isProfileEnabled(),
+    ...(snapshot === null
+      ? {}
+      : {
+          profile: {
+            note: 'CPU and GPU cover measured Caelestis work. Frame timing, long tasks and heap cover the whole tab.',
+            metrics: [
+              {
+                id: 'main',
+                label: 'Measured CPU',
+                value: `${snapshot.cpu.main.dutyPercent.toFixed(2)}%`,
+              },
+              {
+                id: 'worker',
+                label: 'Worker CPU',
+                value: `${snapshot.cpu.worker.dutyPercent.toFixed(2)}%`,
+              },
+              {
+                id: 'gpu',
+                label: 'Overlay GPU',
+                value:
+                  snapshot.gpu.supported === false
+                    ? 'Unavailable'
+                    : snapshot.gpu.count === 0
+                      ? 'Waiting for a frame'
+                      : formatMilliseconds(snapshot.gpu.averageMs),
+              },
+              {
+                id: 'buffers',
+                label: 'Known buffers',
+                value: formatBytes(snapshot.memory.knownTotalBytes),
+              },
+              {
+                id: 'heap',
+                label: 'Page JS heap',
+                value: formatBytes(snapshot.memory.pageUsedJSHeapBytes),
+              },
+              {
+                id: 'frames',
+                label: 'Frame p95',
+                value:
+                  snapshot.frames.count === 0
+                    ? 'Waiting for a frame'
+                    : `${formatMilliseconds(snapshot.frames.p95Ms)} · ${snapshot.frames.estimatedFps?.toFixed(0) ?? '0'} fps`,
+              },
+              {
+                id: 'long-tasks',
+                label: 'Page long tasks',
+                value: `${snapshot.longTasks.count} · ${formatMilliseconds(snapshot.longTasks.totalMs)}`,
+              },
+            ],
+            ...(profileStatus === undefined ? {} : { status: profileStatus }),
+          },
+        }),
+  }
+}
+
+const refreshSettings = (): void => {
+  if (open && currentView === 'settings') showView('settings')
+}
+
+let profileTimer: number | null = null
+const syncProfileTimer = (): void => {
+  const wanted = open && currentView === 'settings' && isProfileEnabled()
+  if (wanted && profileTimer === null) {
+    profileTimer = window.setInterval(refreshSettings, 1_000)
+  } else if (!wanted && profileTimer !== null) {
+    window.clearInterval(profileTimer)
+    profileTimer = null
+  }
+}
+
+const connectServer = async (value: string): Promise<void> => {
+  if (addServerPending) return
+  addServerPending = true
+  addServerMessage = 'Connecting…'
+  refreshSettings()
+  try {
+    let canonical: string | null = null
+    try {
+      canonical = canonicalServerUrl(value)
+    } catch {
+      /* probe reports the address error */
+    }
+    if (canonical !== null && getState().servers.some((server) => server.url === canonical)) {
+      addServerMessage = `${canonical} is already connected.`
+      return
+    }
+    if (canonical !== null && disconnectingServerUrls.has(canonical)) {
+      addServerMessage = `Still disconnecting ${canonical}. Try again in a moment.`
+      return
+    }
+    const server = await probeServer(value, null)
+    if (server.superseded === true) return
+    if (server.status === 'unreachable') {
+      addServerMessage = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
+      return
+    }
+    if (getState().servers.some((one) => one.url === server.url)) {
+      addServerMessage = `${server.url} is already connected.`
+      return
+    }
+    if (!upsertServer(server)) {
+      addServerMessage = `Already connected to ${MAX_CONNECTED_SERVERS} servers. Disconnect one first.`
+      return
+    }
+    addServerMessage = undefined
+  } finally {
+    addServerPending = false
+    refreshSettings()
+  }
+}
+
+const updateServerToken = async (url: string, token: string): Promise<void> => {
+  const server = getState().servers.find((candidate) => candidate.url === url)
+  if (server === undefined || pendingServers.has(url)) return
+  pendingServers.add(url)
+  settingsMessages.set(url, 'Checking…')
+  refreshSettings()
+  try {
+    const next = await probeServer(url, token)
+    if (next.superseded === true || !stillConnected(server)) return
+    if (next.status === 'connected') {
+      cancelDestinationAdmissions(url)
+      upsertServer(next)
+      expandedServers.delete(url)
+      settingsMessages.delete(url)
+      return
+    }
+    settingsMessages.set(
+      url,
+      next.status === 'needs-token'
+        ? 'That token was not accepted. Ask whoever runs the server for a current one.'
+        : `Could not reach the server. ${next.error ?? ''}`.trim(),
+    )
+  } finally {
+    pendingServers.delete(url)
+    refreshSettings()
+  }
+}
+
+const handleSettingsIntent = (intent: SettingsIntent): void => {
+  switch (intent.type) {
+    case 'add-server':
+      void connectServer(intent.url)
+      break
+    case 'toggle-server':
+      if (intent.expanded) {
+        expandedServers.add(intent.url)
+        const server = getState().servers.find((candidate) => candidate.url === intent.url)
+        if (server?.isAdmin === true) refreshAccessTokens(server, refreshSettings)
+      } else expandedServers.delete(intent.url)
+      refreshSettings()
+      break
+    case 'prefetch-server': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server !== undefined) prefetchAccessTokens(server)
+      break
+    }
+    case 'update-server-token':
+      void updateServerToken(intent.url, intent.token)
+      break
+    case 'disconnect-server': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server !== undefined) void disconnectServer(server)
+      break
+    }
+    case 'load-more-access-tokens': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server?.isAdmin === true) loadMoreAccessTokens(server, refreshSettings)
+      break
+    }
+    case 'create-access-token': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server?.isAdmin === true)
+        createServerAccessToken(server, intent.label, intent.scope, refreshSettings)
+      break
+    }
+    case 'revoke-access-token': {
+      const server = getState().servers.find((candidate) => candidate.url === intent.url)
+      if (server?.isAdmin === true)
+        revokeServerAccessToken(server, intent.tokenHash, intent.label, refreshSettings)
+      break
+    }
+    case 'set-colour-navigation-order':
+      setState({ colourNavigationOrder: intent.value })
+      break
+    case 'set-boolean':
+      if (intent.key === 'debugLogging') setDebugEnabled(intent.value)
+      else if (intent.key === 'performanceProfiling') setProfileEnabled(intent.value)
+      else setState({ [intent.key]: intent.value })
+      refreshSettings()
+      break
+    case 'reset-profile':
+      resetProfile()
+      profileStatus = 'Reset'
+      refreshSettings()
+      break
+    case 'copy-profile':
+      if (navigator.clipboard === undefined) {
+        profileStatus = 'Clipboard unavailable'
+        refreshSettings()
+        break
+      }
+      void navigator.clipboard.writeText(profileReport()).then(
+        () => {
+          profileStatus = 'Copied'
+          refreshSettings()
+        },
+        () => {
+          profileStatus = 'Clipboard unavailable'
+          refreshSettings()
+        },
+      )
+      break
+  }
+}
+
+const appearanceModel = (): AppearanceEditorModel => {
+  const state = getState()
+  const effectiveHidden = new Set(globalHiddenColours())
+  const activePixelPreset = pixelStylePresetOf(state.appearance)
+  const activePreset = activeColourPreset(state.hiddenColours)
+  const selected = selectedColour()
+  const selectedColourName = selected === null ? undefined : WPLACE_PALETTE[selected]?.name
+  return {
+    values: state.appearance,
+    sliders: APPEARANCE_CONTROLS.map((control) => ({
+      key: control.key,
       label: control.label,
       value: state.appearance[control.key],
       defaultValue: DEFAULT_APPEARANCE[control.key],
       min: control.min,
       max: control.max,
       step: control.step,
-      format: control.format,
-      disabled: control.key === 'contrastOutlineSize' && !state.appearance.contrastOutline,
-      onInput: (next) => {
-        dirty = true
-        previewGlobalAppearance({
-          ...getState().appearance,
-          [control.key]: next,
-        })
-        redraw()
-      },
-      onReset: (next) => {
-        dirty = false
-        setState({ appearance: { ...getState().appearance, [control.key]: next } })
-        previewGlobalAppearance(getState().appearance)
-        redraw()
-        rerender()
-      },
-    })
-    rangeGestures.bind(row.input, commit)
-    sliders.appendChild(row.element)
-  }
-  view.appendChild(sliders)
-
-  view.appendChild(sectionHeader('Markers', 'search'))
-  const setAppearance = (patch: Partial<typeof state.appearance>): void => {
-    setState({ appearance: { ...getState().appearance, ...patch } })
-  }
-
-  // The same block the per-overlay menu shows, at this pane's density — one place that decides what
-  // these switches are called and which of them qualifies which.
-  const markers = document.createElement('div')
-  markers.className = 'px-3 pb-2'
-  markers.appendChild(
-    mismatchSettings(
-      { ...state.appearance, hiddenColours: state.hiddenColours },
-      (patch) => {
-        setAppearance(patch)
-      },
-      rerender,
-    ),
-  )
-  view.appendChild(markers)
-  const markerBudget = document.createElement('select')
-  markerBudget.className = 'select select-bordered select-sm'
-  for (const value of MARKER_BUDGET_OPTIONS) {
-    const option = document.createElement('option')
-    option.value = String(value)
-    option.textContent =
-      value === DEFAULT_MARKER_BUDGET
-        ? `${value.toLocaleString()} (default)`
-        : value.toLocaleString()
-    option.selected = value === state.markerBudget
-    markerBudget.appendChild(option)
-  }
-  markerBudget.addEventListener('change', () => {
-    setState({ markerBudget: Number(markerBudget.value) })
-  })
-  view.appendChild(
-    settingRow(
-      'Visible marker limit',
-      'Approximate GPU target per marker kind across the viewport. Higher limits use more GPU time.',
-      markerBudget,
-    ),
-  )
-
-  view.appendChild(sectionHeader('Colours', 'palette'))
-  view.appendChild(coloursSection(rerender, refreshView))
-  return view
-}
-
-const settingsView = (): HTMLElement => {
-  const view = document.createElement('div')
-  Object.assign(view.style, { overflowY: 'auto', flex: '1', minHeight: '0' })
-
-  view.appendChild(sectionHeader('Servers', 'server'))
-  const addRow = document.createElement('div')
-  addRow.className = 'px-3 pb-2 flex gap-2'
-  const url = document.createElement('input')
-  url.dataset.caelestisDraft = 'add-server'
-  url.type = 'url'
-  url.className = 'input input-sm input-bordered'
-  url.style.flex = '1'
-  url.style.minWidth = '0'
-  url.placeholder = 'https://templates.example.org'
-  const add = document.createElement('button')
-  add.className = 'btn btn-sm btn-primary'
-  add.textContent = 'Add'
-  const status = document.createElement('p')
-  status.className = 'text-xs px-3 pb-2'
-  status.style.display = 'none'
-
-  const connect = async (): Promise<void> => {
-    const value = url.value.trim()
-    if (value === '') return
-    let canonical: string | null = null
-    try {
-      canonical = canonicalServerUrl(value)
-    } catch {
-      // Let probeServer render the existing invalid-address error below.
-    }
-    if (canonical !== null && getState().servers.some((server) => server.url === canonical)) {
-      status.style.display = ''
-      status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = `${canonical} is already connected.`
-      return
-    }
-    if (canonical !== null && disconnectingServerUrls.has(canonical)) {
-      status.style.display = ''
-      status.className = 'text-xs px-3 pb-2 opacity-60'
-      status.textContent = `Still disconnecting ${canonical}. Try again in a moment.`
-      return
-    }
-    status.style.display = ''
-    status.className = 'text-xs px-3 pb-2 opacity-60'
-    status.textContent = 'Connecting…'
-    // Keyed on the URL being probed rather than on the button, because the settings pane is rebuilt
-    // on any state change and hands back a fresh enabled one — the case `whileBusy`'s own docstring
-    // names, and these two probes are the example in it.
-    const server = await whileBusy(add, () => probeServer(value, null), `server:probe:${value}`)
-    if (server === null) return
-    if (server.superseded === true) return
-    if (server.status === 'unreachable') {
-      status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = `Could not reach ${server.url}. Check the address and that the server allows this origin.`
-      return
-    }
-    const fail = (message: string): void => {
-      status.className = 'text-xs px-3 pb-2 text-error'
-      status.textContent = message
-    }
-    // This probe was anonymous, so writing it over a URL that is already connected replaces a
-    // working token with nothing: a protected server drops to "needs a token" and an open one loses
-    // its admin credential. Adding a server you already have is a no-op with an explanation.
-    if (getState().servers.some((one) => one.url === server.url)) {
-      fail(`${server.url} is already connected.`)
-      return
-    }
-    // `upsertServer` refuses past the limit. Ignoring that cleared the field and redrew the view, so
-    // the thirty-third server looked added and simply was not there.
-    if (!upsertServer(server)) {
-      fail(`Already connected to ${MAX_CONNECTED_SERVERS} servers. Disconnect one first.`)
-      return
-    }
-    url.value = ''
-    // Re-render so the new server's row appears — it is what carries the status badge and, when the
-    // server wants one, the access-token field. Without this the panel reported "needs a token" and
-    // then offered nowhere to type one.
-    showView('settings')
-  }
-
-  add.addEventListener('click', () => void connect())
-  url.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') void connect()
-  })
-  addRow.append(url, add)
-  view.appendChild(addRow)
-  view.appendChild(status)
-
-  for (const server of getState().servers) view.appendChild(serverRow(server))
-
-  const state = getState()
-
-  view.appendChild(sectionHeader('Painting', 'palette'))
-  const navigationOrder = document.createElement('select')
-  navigationOrder.className = 'select select-bordered select-sm'
-  navigationOrder.setAttribute('aria-label', 'Middle-click colour order')
-  for (const [value, label] of [
-    ['unpainted-first', 'Unpainted, then mismatched'],
-    ['mismatched-first', 'Mismatched, then unpainted'],
-  ] satisfies ReadonlyArray<readonly [ColourNavigationOrder, string]>) {
-    const option = document.createElement('option')
-    option.value = value
-    option.textContent = label
-    option.selected = value === state.colourNavigationOrder
-    navigationOrder.appendChild(option)
-  }
-  navigationOrder.addEventListener('change', () => {
-    setState({ colourNavigationOrder: navigationOrder.value as ColourNavigationOrder })
-  })
-  view.appendChild(
-    settingRow(
-      'Middle-click colour order',
-      'Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.',
-      navigationOrder,
-    ),
-  )
-
-  view.appendChild(sectionHeader('Contribution', 'share'))
-  view.appendChild(
-    settingRow(
-      'Report my activity',
-      'Shares paint activity only in areas covered by server templates, and only with the servers providing those templates. Together with shared tiles, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
-      checkbox(state.reportPaints, (next) => setState({ reportPaints: next })),
-    ),
-  )
-  view.appendChild(
-    settingRow(
-      'Share tiles',
-      'Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates. Together with reported activity, this powers progress bars, contribution, pace and progress graphs, and timelapses.',
-      checkbox(state.shareTiles, (next) => setState({ shareTiles: next })),
-    ),
-  )
-
-  view.appendChild(sectionHeader('Diagnostics', 'bug'))
-  view.appendChild(
-    settingRow(
-      'Debug logging',
-      'Verbose console output for bug reports',
-      checkbox(isDebugEnabled(), (next) => {
-        setDebugEnabled(next)
+      format:
+        control.key === 'rotation'
+          ? 'degrees'
+          : control.key === 'contrastOutlineSize'
+            ? 'decimal-pixels'
+            : 'percent',
+      ...(control.key === 'contrastOutlineSize' && !state.appearance.contrastOutline
+        ? { disabled: true }
+        : {}),
+    })),
+    pixelPresets: PIXEL_STYLE_PRESETS.map((preset) => ({
+      id: preset.id,
+      label: preset.label,
+      active: preset.id === activePixelPreset,
+    })),
+    colourPresets: (
+      [
+        ['all', 'All'],
+        ['free', 'Free'],
+        ['premium', 'Premium'],
+        ['owned', 'Owned'],
+      ] as const
+    ).map(([id, label]) => ({
+      id,
+      label,
+      active: id === activePreset,
+      ...(id === 'owned' && ownedColours() === null ? { disabled: true } : {}),
+    })),
+    palette: WPLACE_PALETTE.filter((colour) => colour.index !== TRANSPARENT_INDEX).map(
+      (colour) => ({
+        index: colour.index,
+        name: colour.name,
+        hex: colour.hex,
+        kind: colour.kind,
+        visible: !effectiveHidden.has(colour.index),
       }),
     ),
-  )
-  view.appendChild(
-    settingRow(
-      'Performance profiling',
-      'Measures Caelestis CPU, GPU and known buffers. Profiling adds a small overhead.',
-      checkbox(isProfileEnabled(), (next) => {
-        setProfileEnabled(next)
-        showView('settings')
-      }),
-    ),
-  )
-  if (isProfileEnabled()) view.appendChild(profilePanel())
-  return view
+    onlySelectedColour: state.onlySelectedColour,
+    paintOpen: isPaintOpen(),
+    ...(selectedColourName === undefined ? {} : { selectedColourName }),
+    markerBudget: state.markerBudget,
+    markerBudgetOptions: MARKER_BUDGET_OPTIONS,
+  }
 }
 
-const buildPanel = (): HTMLElement => {
-  const panel = document.createElement('aside')
+const handleAppearanceIntent = (intent: AppearanceEditorIntent): void => {
+  switch (intent.type) {
+    case 'layout':
+      break
+    case 'preview-number':
+    case 'preview-colour':
+      previewGlobalAppearance({ ...getState().appearance, [intent.key]: intent.value })
+      redraw()
+      break
+    case 'commit-number':
+    case 'commit-colour':
+      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      redraw()
+      break
+    case 'set-boolean':
+      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      redraw()
+      break
+    case 'set-colour':
+      setState({ appearance: { ...getState().appearance, [intent.key]: intent.value } })
+      redraw()
+      break
+    case 'pixel-preset': {
+      const preset = PIXEL_STYLE_PRESETS.find((candidate) => candidate.id === intent.id)
+      if (preset === undefined) break
+      setState({ appearance: { ...getState().appearance, ...preset.values } })
+      redraw()
+      break
+    }
+    case 'colour-preset':
+      if (!['all', 'free', 'premium', 'owned'].includes(intent.id)) break
+      setState({ hiddenColours: hiddenForPreset(intent.id as ColourPresetId) })
+      redraw()
+      break
+    case 'toggle-colour': {
+      const base =
+        getState().onlySelectedColour && isPaintOpen()
+          ? globalHiddenColours()
+          : getState().hiddenColours
+      const hidden = new Set(base)
+      if (intent.visible) hidden.delete(intent.index)
+      else hidden.add(intent.index)
+      setState({ hiddenColours: [...hidden], onlySelectedColour: false })
+      redraw()
+      break
+    }
+    case 'only-selected-colour':
+      setState({ onlySelectedColour: intent.value })
+      redraw()
+      break
+    case 'marker-budget':
+      if (MARKER_BUDGET_OPTIONS.some((value) => value === intent.value)) {
+        setState({ markerBudget: intent.value })
+      }
+      break
+  }
+}
+
+const treeCallbacks = (): TreeCallbacks => ({
+  onAddServer: () => showView('settings'),
+  onCreateFolder: (target) => void createFolder(target, rerenderTree),
+  onImportTemplate: (target) => void importTemplate(target, rerenderTree),
+  onContextMenu: (target, event) => openContextMenu(target, event, rerenderTree),
+  onCopyToServer: (id) => void copyToServer(id, rerenderTree),
+  onDropInServer: (server, nodeId, draggedKey, beforeKey) =>
+    dropOnServerNode(server, nodeId, draggedKey, beforeKey, rerenderTree),
+  onDropInLocal: async (draggedKey, folderId) => {
+    if (draggedKey.startsWith('node:')) {
+      return await moveBranch(draggedKey, { kind: 'local', folderId }, rerenderTree)
+    }
+    if (draggedKey.startsWith('st:')) {
+      return await copyServerTemplateToLocal(draggedKey, folderId, rerenderTree)
+    }
+    return null
+  },
+})
+
+const panelModel = (width = panelWidthForViewport(getState().panelWidth)): PanelModel => ({
+  view: currentView,
+  width,
+  minWidth: minimumPanelWidth(),
+  maxWidth: maximumPanelWidth(),
+  ...(currentView === 'tree' && activeTreeAdapter !== null
+    ? { tree: { ...activeTreeAdapter.model, ...treeActionPresentation() } }
+    : {}),
+  ...(currentView === 'appearance' ? { appearance: appearanceModel() } : {}),
+  ...(currentView === 'settings' ? { settings: settingsModel() } : {}),
+})
+
+const currentPanelWidth = (panel: CaelestisPanel): number =>
+  panelWidthAfterMount(panel.getBoundingClientRect().width, panel.model.width)
+
+/** Wplace adapter around the shared panel shell. View contents migrate in the following slices. */
+const buildSveltePanel = (): CaelestisPanel => {
+  const panel = document.createElement('caelestis-panel')
   panel.id = PANEL_ID
   panel.setAttribute('aria-label', PANEL_TITLE)
-  // Fixed to the right edge, clear of the rail. Not a modal: no backdrop and nothing to dismiss, so
-  // the map stays live and you can watch a setting take effect while you change it.
-  panel.className = 'bg-base-100 shadow-2xl'
-  // Layout inline: these must not depend on whether wplace happens to use the same utility.
   Object.assign(panel.style, {
     position: 'fixed',
-    // Clear of the rail on the right, and starting on the same line as it — our surfaces are read
-    // together, so they begin together.
     right: `${CLEAR_OF_RAIL}px`,
     top: `${EDGE}px`,
     bottom: `${EDGE}px`,
-    // wplace's own chrome sits at z-40 (the rail) and z-50 (its overlay layer), and the map canvas
-    // is unpositioned. Sitting at 30 puts us above the canvas and beneath everything of theirs, so
-    // their rail and menus open over our panel rather than being trapped behind it.
     zIndex: '30',
-    width: `${panelWidthForViewport(getState().panelWidth)}px`,
-    display: 'flex',
-    flexDirection: 'column',
+    display: 'block',
     minHeight: '0',
-    color: 'var(--color-base-content, inherit)',
-    borderRadius: SURFACE_RADIUS,
     overflow: 'hidden',
+    borderRadius: SURFACE_RADIUS,
   } satisfies Partial<CSSStyleDeclaration>)
-
-  const handle = document.createElement('div')
-  handle.className = 'caelestis-resize'
-  // A separator that can be moved is a splitter, and a splitter has to be reachable and readable:
-  // the role and the label alone announced a control that could not be focused or operated, which
-  // is a promise the 6px strip could not keep.
-  handle.setAttribute('role', 'separator')
-  handle.setAttribute('aria-label', 'Resize panel')
-  handle.setAttribute('aria-orientation', 'vertical')
-  handle.tabIndex = 0
-  const noteWidth = (width: number): void => noteResizeRange(width, handle)
-  noteWidth(getState().panelWidth)
-  const KEYBOARD_STEP_PX = 16
-  // Held, then committed — the same shape the appearance sliders in this file use. Autorepeat is
-  // about thirty keydowns a second and each `setState` serialises the whole state, writes it to
-  // storage and rebuilds the view, so committing per keypress made holding an arrow key thirty
-  // full panel rebuilds a second. The width itself follows the key; only the record waits.
-  let held = false
-  handle.addEventListener('keydown', (event) => {
-    const step =
-      event.key === 'ArrowLeft'
-        ? KEYBOARD_STEP_PX
-        : event.key === 'ArrowRight'
-          ? -KEYBOARD_STEP_PX
-          : 0
-    if (step === 0) return
-    event.preventDefault()
-    held = true
-    const next = panelWidthForViewport(panel.getBoundingClientRect().width + step)
-    panel.style.width = `${next}px`
-    noteWidth(next)
-    // The template-local controls use this moving left edge as their viewport boundary.
-    redraw()
-  })
-  const commitWidth = (): void => {
-    if (!held) return
-    held = false
-    setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
-  }
-  handle.addEventListener('keyup', commitWidth)
-  handle.addEventListener('blur', commitWidth)
-  let resizing = false
-  handle.addEventListener('pointerdown', (event) => {
-    // Primary button, primary pointer, one at a time. Without this a right-click or a second touch
-    // on the 6px strip started a resize that followed the pointer until the next `pointerup`, and
-    // each extra press bound another set of move and ending listeners.
-    if (!event.isPrimary || event.button !== 0 || resizing) return
-    resizing = true
-    event.preventDefault()
-    handle.classList.add('caelestis-resizing')
-    // Capture is an optimisation, not a requirement — synthetic pointers can lack a capturable id,
-    // and throwing here would abort the whole drag before it started.
-    try {
-      handle.setPointerCapture(event.pointerId)
-    } catch {
-      /* proceed without capture */
+  panel.model = panelModel()
+  applyWplaceTheme(panel)
+  panel.addEventListener('caelestis-panel-intent', (event) => {
+    const intent = (event as CustomEvent<PanelIntent>).detail
+    switch (intent.type) {
+      case 'navigate':
+        showView(intent.view)
+        break
+      case 'close':
+        setOpen(false)
+        break
+      case 'resize-preview':
+        redraw()
+        break
+      case 'resize-commit':
+        setState({ panelWidth: intent.width })
+        break
+      case 'tree':
+        if (handleTreeActionPresentationIntent(intent.intent)) {
+          break
+        }
+        if (intent.intent.type === 'search') {
+          searchQuery = intent.intent.query
+          rerenderTree()
+        } else if (intent.intent.type === 'sort') {
+          setState({ sort: intent.intent.sort })
+          rerenderTree()
+        } else {
+          activeTreeAdapter?.handle(intent.intent)
+        }
+        break
+      case 'appearance':
+        handleAppearanceIntent(intent.intent)
+        break
+      case 'settings':
+        handleSettingsIntent(intent.intent)
+        break
     }
-    const startX = event.clientX
-    const startWidth = panel.getBoundingClientRect().width
-    const move = (moved: PointerEvent): void => {
-      // Dragging the left edge rightwards makes the panel narrower, so the delta is inverted.
-      const next = panelWidthForViewport(startWidth - (moved.clientX - startX))
-      panel.style.width = `${next}px`
-      noteWidth(next)
-      redraw()
-    }
-    // The same three endings every other drag here listens for. Ending on `pointerup` alone left a
-    // cancelled drag — the browser claiming the pointer for a system gesture — with `pointermove`
-    // still bound, so the panel went on resizing under a pointer nobody was pressing.
-    const done = (): void => {
-      resizing = false
-      handle.classList.remove('caelestis-resizing')
-      window.removeEventListener('pointermove', move)
-      for (const ending of ENDINGS) window.removeEventListener(ending, done)
-      setState({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
-    }
-    window.addEventListener('pointermove', move)
-    for (const ending of ENDINGS) window.addEventListener(ending, done)
   })
-  panel.appendChild(handle)
-
-  const header = document.createElement('div')
-  header.className = 'flex items-center gap-2 px-3 py-2 border-b border-base-300'
-  const title = document.createElement('h2')
-  title.className = 'font-semibold text-sm grow'
-  title.textContent = PANEL_TITLE
-
-  // Only present in settings, and it is the primary way back — the gear becomes a state indicator
-  // rather than a toggle, because a gear that also means "leave settings" is a gear that lies.
-  const backButton = document.createElement('button')
-  backButton.setAttribute('data-caelestis-back', '')
-  backButton.className = 'btn btn-ghost btn-xs btn-circle'
-  backButton.title = 'Back to templates'
-  backButton.setAttribute('aria-label', 'Back to templates')
-  backButton.appendChild(icon('arrowBack', 'size-4'))
-  backButton.addEventListener('click', () => showView('tree'))
-
-  const appearanceButton = document.createElement('button')
-  appearanceButton.setAttribute('data-caelestis-appearance', '')
-  appearanceButton.className = 'btn btn-ghost btn-xs btn-circle'
-  appearanceButton.title = 'Appearance'
-  appearanceButton.setAttribute('aria-label', 'Appearance')
-  appearanceButton.setAttribute('aria-pressed', 'false')
-  // A palette, not sliders. Two gear-adjacent glyphs side by side read as two settings buttons and
-  // say nothing about which is which; a palette says what the page is about before it is opened.
-  appearanceButton.appendChild(icon('palette', 'size-4'))
-  appearanceButton.addEventListener('click', () =>
-    showView(currentView === 'appearance' ? 'tree' : 'appearance'),
-  )
-
-  const settingsButton = document.createElement('button')
-  settingsButton.setAttribute('data-caelestis-settings', '')
-  settingsButton.className = 'btn btn-ghost btn-xs btn-circle'
-  settingsButton.title = 'Settings'
-  settingsButton.setAttribute('aria-label', 'Settings')
-  settingsButton.setAttribute('aria-pressed', 'false')
-  settingsButton.appendChild(icon('settings', 'size-4'))
-  settingsButton.addEventListener('click', () =>
-    showView(currentView === 'settings' ? 'tree' : 'settings'),
-  )
-
-  const closeButton = document.createElement('button')
-  closeButton.className = 'btn btn-ghost btn-xs btn-circle'
-  closeButton.title = 'Close'
-  closeButton.setAttribute('aria-label', 'Close')
-  closeButton.appendChild(icon('close', 'size-4'))
-  closeButton.addEventListener('click', () => setOpen(false))
-
-  header.append(backButton, title, appearanceButton, settingsButton, closeButton)
-
-  const body = document.createElement('div')
-  body.setAttribute('data-caelestis-body', '')
-  Object.assign(body.style, {
-    display: 'flex',
-    flexDirection: 'column',
-    minHeight: '0',
-    flex: '1',
-  })
-  body.appendChild(treeView())
-
-  panel.append(header, body)
   return panel
 }
 
@@ -1184,9 +868,13 @@ const stillConnected = (server: ConnectedServer): boolean => isCurrentServerConn
  * element that is no longer in the document. Routing through this makes a stale closure redraw the
  * live tree instead of a detached one.
  */
-let activeTreeRender: (() => void) | null = null
-
-const rerenderTree = (): void => activeTreeRender?.()
+const rerenderTree = (): void => {
+  if (!open || currentView !== 'tree') return
+  const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
+  if (panel === null) return
+  activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
+  panel.model = panelModel(currentPanelWidth(panel))
+}
 
 /**
  * What the splitter reports to assistive technology.
@@ -1194,63 +882,22 @@ const rerenderTree = (): void => activeTreeRender?.()
  * Module-level because the bounds come from the viewport: a window resize moves them, and that
  * handler lives outside the builder that made the handle.
  */
-const noteResizeRange = (width: number, known?: Element): void => {
-  // The caller passes the handle when it has one. The lookup is for the window-resize listener,
-  // which lives outside the builder — and it was also the reason the range never appeared at all:
-  // `buildPanel` sets the initial value before its caller has put the panel in the document, so the
-  // lookup found nothing and a `separator` that had just been made operable announced no range
-  // until the first drag. Passing it also keeps a drag from doing two DOM lookups per pointermove.
-  const handle = known ?? document.getElementById(PANEL_ID)?.querySelector('.caelestis-resize')
-  if (handle === null || handle === undefined) return
-  handle.setAttribute('aria-valuenow', String(Math.round(width)))
-  handle.setAttribute('aria-valuemin', String(Math.round(minimumPanelWidth())))
-  handle.setAttribute('aria-valuemax', String(Math.round(maximumPanelWidth())))
-}
-
-const scrollerIn = (view: Element | null): HTMLElement | null =>
-  view?.querySelector<HTMLElement>('[data-caelestis-scroller]') ??
-  (view instanceof HTMLElement ? view : null)
 
 const showView = (view: View): void => {
-  const staying = currentView === view
   currentView = view
-  const panel = document.getElementById(PANEL_ID)
-  const body = panel?.querySelector('[data-caelestis-body]')
-  const title = panel?.querySelector('h2')
-  if (!body || !title) return
+  const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
+  if (panel === null) return
 
-  /**
-   * Keep the scroll position when re-rendering the view you are already on.
-   *
-   * Every control here re-renders by rebuilding the whole view, which throws away the scroller with
-   * it — so toggling a colour near the bottom of settings jumped back to the top, and toggling the
-   * next one meant scrolling down again. Switching *between* views still starts at the top, which is
-   * right: that is a new thing to read, not the same one redrawn.
-   */
-  const previous = scrollerIn(body.firstElementChild)
-  const scrollTop = staying && previous !== null ? previous.scrollTop : 0
-
-  const next =
-    view === 'settings' ? settingsView() : view === 'appearance' ? appearanceView() : treeView()
-  body.replaceChildren(next)
-  const scroller = scrollerIn(next)
-  if (scrollTop > 0 && scroller !== null) scroller.scrollTop = scrollTop
-  title.textContent = VIEW_TITLE[view] ?? PANEL_TITLE
-
-  const back = panel?.querySelector<HTMLElement>('[data-caelestis-back]')
-  if (back) back.style.visibility = view === 'tree' ? 'hidden' : 'visible'
-
-  for (const [attribute, owns] of [
-    ['data-caelestis-settings', 'settings'],
-    ['data-caelestis-appearance', 'appearance'],
-  ] as const) {
-    const button = panel?.querySelector<HTMLElement>(`[${attribute}]`)
-    if (!button) continue
-    const here = view === owns
-    // btn-active is DaisyUI's pressed state, so it reads as "you are here" in their theme.
-    button.className = `btn btn-ghost btn-xs btn-circle${here ? ' btn-active' : ''}`
-    button.setAttribute('aria-pressed', String(here))
+  if (view === 'settings') settingsModel()
+  if (view === 'tree') {
+    activeTreeAdapter = templateTreeAdapter(treeCallbacks(), rerenderTree, searchQuery)
+    void primeFromCache(rerenderTree)
+  } else {
+    activeTreeAdapter = null
+    if (view === 'appearance') refreshAccount(refreshView)
   }
+  panel.model = panelModel(currentPanelWidth(panel))
+  syncProfileTimer()
   log('install', `panel view: ${view}`)
 }
 
@@ -1261,12 +908,13 @@ const setOpen = (next: boolean): void => {
   if (!open) {
     cancelTreeActionSetup(new Error('panel closed'))
     existing?.remove()
+    syncProfileTimer()
     // Give map-anchored controls the reclaimed width immediately, even while the map is still.
     redraw()
     return
   }
   if (existing !== null) return
-  document.body.appendChild(buildPanel())
+  document.body.appendChild(buildSveltePanel())
   showView(currentView)
   // The panel's measured left edge is now the map controls' right edge.
   redraw()
@@ -1309,7 +957,7 @@ const railContainer = (): HTMLElement => {
  */
 const positionRail = (): void => {
   const rail = railContainer()
-  const theirs = findRail()?.rail.getBoundingClientRect()
+  const theirs = findWplaceRail()?.getBoundingClientRect()
   if (theirs !== undefined && theirs.width > 0) {
     rail.style.left = `${theirs.left}px`
     rail.style.top = `${theirs.bottom + GAP}px`
@@ -1329,14 +977,26 @@ const positionRail = (): void => {
  * opening a panel to reach it costs more than the mode saves. It says nothing while their drawer is
  * shut — there is no selected colour then — which the tooltip carries.
  */
-const colourModeButton = (): HTMLButtonElement => {
+const colourRailModel = (): RailControlModel => {
+  const on = getState().onlySelectedColour
+  const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
+  return {
+    id: 'colour',
+    label: isPaintOpen() ? `${label} (S)` : `${label} — open wplace's paint drawer to pick one (S)`,
+    pressed: on,
+  }
+}
+
+const colourModeButton = (): CaelestisRailControl => {
   const existing = document.getElementById(COLOUR_MODE_ID)
-  if (existing !== null) return existing as HTMLButtonElement
-  const button = document.createElement('button')
+  if (existing !== null) return existing as CaelestisRailControl
+  const button = document.createElement('caelestis-rail-control')
   button.id = COLOUR_MODE_ID
-  button.className = RAIL_BUTTON_CLASS
-  button.appendChild(icon('palette'))
-  button.addEventListener('click', () => {
+  button.model = colourRailModel()
+  applyWplaceTheme(button)
+  button.addEventListener('caelestis-rail-intent', (event) => {
+    const intent = (event as CustomEvent<RailControlIntent>).detail
+    if (intent.id !== 'colour') return
     setState({ onlySelectedColour: !getState().onlySelectedColour })
     syncColourModeState()
   })
@@ -1346,17 +1006,9 @@ const colourModeButton = (): HTMLButtonElement => {
 const COLOUR_MODE_ID = 'caelestis-colour-mode'
 
 export const syncColourModeState = (): void => {
-  const button = document.getElementById(COLOUR_MODE_ID)
+  const button = document.getElementById(COLOUR_MODE_ID) as CaelestisRailControl | null
   if (button === null) return
-  const on = getState().onlySelectedColour
-  button.className = on ? `${RAIL_BUTTON_CLASS} btn-primary` : RAIL_BUTTON_CLASS
-  button.setAttribute('aria-pressed', String(on))
-  const label = on ? 'Showing only the selected colour' : 'Show only the selected colour'
-  // Says why nothing happened, at the moment it does not: the mode needs a colour to follow.
-  button.title = isPaintOpen()
-    ? `${label} (S)`
-    : `${label} — open wplace's paint drawer to pick one (S)`
-  button.setAttribute('aria-label', label)
+  button.model = colourRailModel()
 }
 
 /**
@@ -1370,7 +1022,6 @@ export const installPanel = (): void => {
   loadState()
   void refreshStoredServers(refreshView)
   installServerConnectionRetry(refreshView)
-  installStyles()
   const rail = railContainer()
   rail.append(railButton(), colourModeButton(), mismatchModeButton())
   syncRailButtonState()
@@ -1404,12 +1055,10 @@ export const installPanel = (): void => {
   })
   window.addEventListener('resize', () => {
     positionRail()
-    const panel = document.getElementById(PANEL_ID)
+    const panel = document.getElementById(PANEL_ID) as CaelestisPanel | null
     if (panel === null) return
     const width = panelWidthForViewport(getState().panelWidth)
-    panel.style.width = `${width}px`
-    // The bounds are derived from the viewport, so they moved too.
-    noteResizeRange(width)
+    panel.model = panelModel(width)
     redraw()
   })
   onStateChange(syncColourModeState)
@@ -1430,8 +1079,7 @@ export const installPanel = (): void => {
         refreshView()
         return
       }
-      const panel = document.getElementById(PANEL_ID)
-      if (panel !== null) refreshProgressIndicators(panel)
+      rerenderTree()
     }),
   )
   onServerStatusChange(() => {

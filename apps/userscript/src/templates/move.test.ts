@@ -22,7 +22,6 @@ vi.mock('../main.js', () => ({
   repaint: harness.repaint,
 }))
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
-vi.mock('../ui/icons.js', () => ({ icon: vi.fn(() => ({})) }))
 vi.mock('./local-store.js', () => ({
   clearLocalPreview: harness.clearLocalPreview,
   isDeletingLocal: harness.isDeletingLocal,
@@ -86,6 +85,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -456,6 +456,46 @@ describe('template placement controls', () => {
       stopPropagation: vi.fn(),
     } as unknown as Event)
     expect(harness.previewLocalTemplate).toHaveBeenCalledOnce()
+  })
+
+  it('cleans up the swallowed click after the browser global is released', async () => {
+    vi.useFakeTimers()
+    harness.canvasPixelAt.mockReturnValue({ x: 12, y: 22 })
+    const moves = await import('./move.js')
+    moves.beginMove('test', vi.fn())
+    const pointerdown = listeners.get('pointerdown')
+    const pointerup = listeners.get('pointerup')
+    if (pointerdown === undefined || pointerup === undefined) {
+      throw new Error('expected pointer listeners')
+    }
+    const clickTarget = window
+
+    pointerdown({
+      button: 0,
+      pointerId: 7,
+      clientX: 100,
+      clientY: 100,
+      ctrlKey: true,
+      metaKey: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    pointerup({
+      pointerId: 7,
+      clientX: 100,
+      clientY: 100,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as Event)
+    vi.unstubAllGlobals()
+
+    vi.advanceTimersByTime(400)
+
+    expect(clickTarget.removeEventListener).toHaveBeenCalledWith(
+      'click',
+      expect.any(Function),
+      true,
+    )
   })
 
   it('does not let a second pointer replace or recenter an active drag', async () => {

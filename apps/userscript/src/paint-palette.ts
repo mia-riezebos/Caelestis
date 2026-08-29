@@ -1,4 +1,5 @@
 import { latLngToCanvasPixel, PALETTE_SIZE } from '@caelestis/shared'
+import type { CaelestisPaletteProgress } from '@caelestis/ui/elements'
 import { count, warn } from './debug.js'
 import { getMap } from './map-handle.js'
 import { type ConnectedServer, getState, onStateChange } from './state.js'
@@ -173,16 +174,17 @@ const render = (): void => {
     if (index === null) continue
     wire(element, index)
     const entry = progress.get(index)
-    const existing = element.querySelector<HTMLElement>(':scope > .caelestis-palette-progress')
+    const existing = element.querySelector<CaelestisPaletteProgress>(
+      ':scope > caelestis-palette-progress',
+    )
     if (entry !== undefined && entry.known < entry.total) {
       const label =
         originalLabels.get(element) ?? element.getAttribute('aria-label') ?? `Colour ${index + 1}`
       originalLabels.set(element, label)
       element.setAttribute('aria-label', `${label}. Checking progress for the focused template.`)
-      const badge = existing ?? document.createElement('span')
+      const badge = existing ?? document.createElement('caelestis-palette-progress')
       badge.className = 'caelestis-palette-progress'
-      badge.setAttribute('aria-hidden', 'true')
-      badge.textContent = '…'
+      if (badge.model?.value !== '…') badge.model = { value: '…' }
       if (existing === null) element.appendChild(badge)
       continue
     }
@@ -200,11 +202,10 @@ const render = (): void => {
       'aria-label',
       `${label}. ${remaining.toLocaleString()} ${remaining === 1 ? 'pixel' : 'pixels'} left in the focused template. Middle-click, or select it and press F, to go to its nearest ${navigationLabel} pixel.`,
     )
-    const badge = existing ?? document.createElement('span')
+    const badge = existing ?? document.createElement('caelestis-palette-progress')
     badge.className = 'caelestis-palette-progress'
-    badge.setAttribute('aria-hidden', 'true')
     const text = remaining.toLocaleString()
-    if (badge.textContent !== text) badge.textContent = text
+    if (badge.model?.value !== text) badge.model = { value: text }
     if (existing === null) element.appendChild(badge)
   }
 }

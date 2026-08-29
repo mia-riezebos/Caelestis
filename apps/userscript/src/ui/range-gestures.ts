@@ -37,6 +37,16 @@ export const createRangeGestures = (): RangeGestures => {
   const captureFallbacks = new Map<number, () => void>()
   let heldByKey: HTMLInputElement | null = null
 
+  const isWithin = (root: HTMLElement, input: HTMLInputElement): boolean => {
+    let node: Node | null = input
+    while (node !== null) {
+      if (node === root) return true
+      const tree = node.getRootNode()
+      node = node.parentNode ?? (tree instanceof ShadowRoot ? tree.host : null)
+    }
+    return false
+  }
+
   const finishPointer = (input: HTMLInputElement, pointerId: number, settle: () => void): void => {
     captureFallbacks.get(pointerId)?.()
     heldPointers.delete(pointerId)
@@ -91,9 +101,9 @@ export const createRangeGestures = (): RangeGestures => {
     },
     isHeldWithin: (root) =>
       root !== null &&
-      (heldByKey !== null && root.contains(heldByKey)
+      (heldByKey !== null && isWithin(root, heldByKey)
         ? true
-        : [...heldPointers.values()].some((input) => root.contains(input))),
+        : [...heldPointers.values()].some((input) => isWithin(root, input))),
     releaseDisconnected: (isConnected) => {
       for (const [pointerId, input] of [...heldPointers]) {
         if (isConnected(input)) continue

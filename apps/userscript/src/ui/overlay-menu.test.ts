@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { registerCaelestisUi } from '@caelestis/ui/elements'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { type Appearance, DEFAULT_APPEARANCE } from '../templates/appearance.js'
-import { icon } from './icons.js'
 import { CLEAR_OF_RAIL, GAP, RAIL_BUTTON } from './metrics.js'
 import { PANEL_ID } from './toast.js'
 
@@ -65,6 +65,8 @@ const harness = vi.hoisted(() => ({
   setAppearancePreview: vi.fn(),
   clearAppearancePreview: vi.fn(),
 }))
+
+beforeAll(() => registerCaelestisUi())
 
 vi.mock('../debug.js', () => ({ log: vi.fn(), warn: vi.fn() }))
 vi.mock('../main.js', () => ({
@@ -180,14 +182,30 @@ const connectServerTemplate = (published: boolean, isAdmin = true): void => {
 /** Flush the microtask queue, however many turns the store's continuation chain actually takes. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-const gear = (id: string): HTMLButtonElement => {
+const gear = (id: string): HTMLElement => {
   const button = document.getElementById(`caelestis-overlay-button-${id}`)
   if (button === null) throw new Error(`no gear button for ${id}`)
-  return button as HTMLButtonElement
+  return button
 }
 
+const railModel = (control: HTMLElement): { id: string; expanded?: boolean } =>
+  (control as HTMLElement & { model: { id: string; expanded?: boolean } }).model
+
 const floatingPosition = (element: HTMLElement): { x: number; y: number } => {
-  return { x: Number.parseFloat(element.style.left), y: Number.parseFloat(element.style.top) }
+  const root = element.getRootNode()
+  const positioned = root instanceof ShadowRoot ? (root.host as HTMLElement) : element
+  return { x: Number.parseFloat(positioned.style.left), y: Number.parseFloat(positioned.style.top) }
+}
+
+const focusedControl = async (): Promise<string | undefined> => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  let active = document.activeElement
+  while (active instanceof HTMLElement) {
+    const nested = active.shadowRoot?.activeElement
+    if (!(nested instanceof HTMLElement)) break
+    active = nested
+  }
+  return active instanceof HTMLElement ? active.dataset.caelestisControl : undefined
 }
 
 const menu = (): HTMLElement => {
@@ -196,14 +214,26 @@ const menu = (): HTMLElement => {
   return el
 }
 
-const byKey = (key: string): HTMLElement => {
-  const el = document.querySelector(`[data-caelestis-control="${key}"]`)
+const menuRoot = async (): Promise<ParentNode> => {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  return menu().shadowRoot ?? menu()
+}
+
+const byKey = async (key: string): Promise<HTMLElement> => {
+  const selector = `[data-caelestis-control="${key}"]`
+  let candidate = document.querySelector(selector)
+  if (candidate === null) candidate = (await menuRoot()).querySelector(selector)
+  else await new Promise((resolve) => setTimeout(resolve, 0))
+  const el =
+    candidate?.tagName.toLowerCase() === 'caelestis-rail-control'
+      ? (candidate.shadowRoot?.querySelector('button') ?? candidate)
+      : candidate
   if (el === null) throw new Error(`no control keyed ${key}`)
   return el as HTMLElement
 }
 
-const pixelPreset = (id: 'small' | 'full' | 'corner'): HTMLButtonElement => {
-  const el = menu().querySelector(`[data-caelestis-pixel-preset="${id}"]`)
+const pixelPreset = async (id: 'small' | 'full' | 'corner'): Promise<HTMLButtonElement> => {
+  const el = (await menuRoot()).querySelector(`[data-caelestis-pixel-preset="${id}"]`)
   if (!(el instanceof HTMLButtonElement)) throw new Error(`no ${id} pixel preset`)
   return el
 }
@@ -216,18 +246,19 @@ const byText = (root: ParentNode, text: string): HTMLButtonElement => {
 
 /** A pointer drag, in the order a browser fires it: press, input, release, then change. */
 const drag = (input: HTMLInputElement, to: string): void => {
-  input.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+  input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
   input.value = to
-  input.dispatchEvent(new Event('input'))
-  input.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
-  input.dispatchEvent(new Event('change'))
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
+  input.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
 /** Choose a corner-rounding value through #65's deformable-pixel control. */
-const setRadius = (to = '1'): void => drag(byKey('radius') as HTMLInputElement, to)
+const setRadius = async (to = '1'): Promise<void> =>
+  drag((await byKey('radius')) as HTMLInputElement, to)
 
-const errorText = (): string | null =>
-  menu().querySelector('[data-caelestis-error]')?.textContent ?? null
+const errorText = async (): Promise<string | null> =>
+  (await menuRoot()).querySelector('[data-caelestis-error]')?.textContent ?? null
 
 let mapCanvas: HTMLCanvasElement
 let render: (rerender: () => void, canvas: HTMLCanvasElement) => void
@@ -294,9 +325,9 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    setRadius()
+    await setRadius()
     rerender()
-    byKey('swatch:1').click()
+    ;(await byKey('swatch:1')).click()
     release()
     await settle()
 
@@ -326,8 +357,8 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    setRadius()
-    byKey('swatch:1').click()
+    await setRadius()
+    ;(await byKey('swatch:1')).click()
     release()
     await settle()
 
@@ -347,10 +378,10 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    byKey('swatch:1').click()
+    ;(await byKey('swatch:1')).click()
     await settle()
     rerender()
-    byKey('swatch:2').click()
+    ;(await byKey('swatch:2')).click()
     await settle()
 
     expect(appearanceWritten(0).hiddenColours).toEqual([1])
@@ -363,7 +394,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
     await settle()
     harness.localTemplates.mockReturnValue([template({ visible: false })])
     rerender()
@@ -374,13 +405,13 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     harness.localTemplates.mockReturnValue([template()])
     rerender()
 
-    expect(gear('a')).toBeInstanceOf(HTMLButtonElement)
+    expect(gear('a').tagName).toBe('CAELESTIS-RAIL-CONTROL')
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
     expect(harness.setLocalVisible).toHaveBeenCalledOnce()
     expect(harness.setLocalVisible).toHaveBeenCalledWith('a', false)
   })
 
-  it('removes controls when a visible template is inside a hidden ancestor folder', () => {
+  it('removes controls when a visible template is inside a hidden ancestor folder', async () => {
     const child = template({
       serverUrl: 'https://example.test',
       serverTemplateId: 'remote-a',
@@ -401,21 +432,21 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
   })
 
-  it('rebuilds for the template whose gear was clicked', () => {
+  it('rebuilds for the template whose gear was clicked', async () => {
     harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
     rerender()
     gear('a').click()
     rerender()
-    expect(menu().textContent).toContain('alpha.png')
+    expect((await menuRoot()).textContent).toContain('alpha.png')
 
     gear('b').click()
     rerender()
 
-    expect(menu().textContent).toContain('beta.png')
-    expect(menu().textContent).not.toContain('alpha.png')
+    expect((await menuRoot()).textContent).toContain('beta.png')
+    expect((await menuRoot()).textContent).not.toContain('alpha.png')
   })
 
-  it('follows a rename into the menu title and the gear tooltip', () => {
+  it('follows a rename into the menu title and the gear tooltip', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -424,54 +455,56 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect(menu().textContent).toContain('renamed.png')
+    expect((await menuRoot()).textContent).toContain('renamed.png')
     expect(gear('a').title).toBe('renamed.png — display options (T)')
   })
 
-  it('keeps a dragged slider alive across the repaint it causes', () => {
+  it('keeps a dragged slider alive across the repaint it causes', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
     gear('a').click()
     rerender()
-    const before = byKey('opacity') as HTMLInputElement
-    before.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    const before = (await byKey('opacity')) as HTMLInputElement
+    before.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
 
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.45 } })])
     rerender()
 
     // The element is not replaced under the pointer; the value it holds is in `drafts` either way.
-    expect(byKey('opacity')).toBe(before)
+    expect(await byKey('opacity')).toBe(before)
   })
 
-  it('keeps the Mismatches Size track under the pointer on input', () => {
+  it('keeps the Mismatches Size track under the pointer on input', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    const before = menu().querySelector<HTMLInputElement>(
+    const before = (await menuRoot()).querySelector<HTMLInputElement>(
       'input[type="range"]:not([data-caelestis-control])',
     )
     if (before === null) throw new Error('no Mismatches Size track')
 
-    before.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    before.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     before.value = '17'
-    before.dispatchEvent(new Event('input'))
+    before.dispatchEvent(new Event('input', { bubbles: true }))
 
-    expect(menu().querySelector('input[type="range"]:not([data-caelestis-control])')).toBe(before)
+    expect(
+      (await menuRoot()).querySelector('input[type="range"]:not([data-caelestis-control])'),
+    ).toBe(before)
   })
 
-  it('moves an unfocused slider to a value changed elsewhere', () => {
+  it('moves an unfocused slider to a value changed elsewhere', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.4 } })])
     rerender()
     gear('a').click()
     rerender()
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.4')
+    expect(((await byKey('opacity')) as HTMLInputElement).value).toBe('0.4')
 
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     rerender()
 
     // Outside the signature must not mean frozen: another tab can move this.
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
+    expect(((await byKey('opacity')) as HTMLInputElement).value).toBe('0.9')
   })
 
   it('writes once per slider drag, on release', async () => {
@@ -479,18 +512,18 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    const opacity = (await byKey('opacity')) as HTMLInputElement
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
 
     for (const value of ['0.5', '0.55', '0.6']) {
       opacity.value = value
-      opacity.dispatchEvent(new Event('input'))
+      opacity.dispatchEvent(new Event('input', { bubbles: true }))
     }
     await settle()
     // Each of those used to be a durable write that also cleared the stamped-tile cache.
     expect(harness.setAppearance).not.toHaveBeenCalled()
 
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
     await settle()
 
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
@@ -503,7 +536,7 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    const toggle = byKey('contrastOutline') as HTMLInputElement
+    const toggle = (await byKey('contrastOutline')) as HTMLInputElement
     expect(toggle.checked).toBe(true)
     toggle.click()
     await settle()
@@ -515,14 +548,14 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
       template({ appearance: { contrastOutline: true, contrastOutlineSize: 0.85 } }),
     ])
     rerender()
-    const thickness = byKey('contrastOutlineSize') as HTMLInputElement
+    const thickness = (await byKey('contrastOutlineSize')) as HTMLInputElement
     drag(thickness, '1.25')
     await settle()
 
     expect(appearanceWritten(1).contrastOutlineSize).toBe(1.25)
   })
 
-  it('makes local outline thickness inert while the outline is off', () => {
+  it('makes local outline thickness inert while the outline is off', async () => {
     harness.localTemplates.mockReturnValue([
       template({ appearance: { contrastOutline: false, contrastOutlineSize: 0.85 } }),
     ])
@@ -530,12 +563,12 @@ describe('the open menu tracks intended state, not a snapshot and not a lagging 
     gear('a').click()
     rerender()
 
-    expect((byKey('contrastOutlineSize') as HTMLInputElement).disabled).toBe(true)
+    expect(((await byKey('contrastOutlineSize')) as HTMLInputElement).disabled).toBe(true)
   })
 })
 
 describe('controls are reconciled against the templates that exist', () => {
-  it('closes the open menu of a template deleted elsewhere', () => {
+  it('closes the open menu of a template deleted elsewhere', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -548,7 +581,7 @@ describe('controls are reconciled against the templates that exist', () => {
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
   })
 
-  it('strips every control when the map host is gone', () => {
+  it('strips every control when the map host is gone', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -561,7 +594,7 @@ describe('controls are reconciled against the templates that exist', () => {
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
   })
 
-  it('gives no control to a template that is entirely off screen', () => {
+  it('gives no control to a template that is entirely off screen', async () => {
     // Projection succeeds for any coordinate, so nothing but an explicit box test stops every
     // template in the store from clamping a button onto the same viewport corner.
     harness.localTemplates.mockReturnValue([
@@ -580,8 +613,8 @@ describe('controls are reconciled against the templates that exist', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
-    byKey('confirm-delete').click()
+    ;(await byKey('delete')).click()
+    ;(await byKey('confirm-delete')).click()
     await settle()
 
     expect(harness.removeTreeStateKeys).toHaveBeenCalledWith(new Set(['local:a']))
@@ -595,99 +628,94 @@ describe('refused writes are reported rather than swallowed', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
-    byKey('confirm-delete').click()
+    ;(await byKey('delete')).click()
+    ;(await byKey('confirm-delete')).click()
     await settle()
 
     expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
-    expect(errorText()).toContain('Could not delete')
+    expect(await errorText()).toContain('Could not delete')
     expect(harness.removeTreeStateKeys).not.toHaveBeenCalled()
   })
 
-  it('says so when Move is refused because a placement is already running', () => {
+  it('says so when Move is refused because a placement is already running', async () => {
     harness.isMoving.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
 
-    byKey('move').click()
+    ;(await byKey('move')).click()
 
     expect(harness.beginMove).not.toHaveBeenCalled()
     expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
-    expect(errorText()).toContain('placement already in progress')
+    expect(await errorText()).toContain('placement already in progress')
   })
 })
 
 describe('a rebuild does not take the interaction with it', () => {
-  it('keeps the keyboard where it was', () => {
+  it('keeps the keyboard where it was', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('swatch:5').focus()
+    ;(await byKey('swatch:5')).focus()
 
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe(
-      'swatch:5',
-    )
+    expect(await focusedControl()).toBe('swatch:5')
   })
 
-  it('moves focus into the menu when it opens', () => {
+  it('moves focus into the menu when it opens', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
 
     gear('a').click()
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe('hide')
+    expect(await focusedControl()).toBe('hide')
   })
 })
 
 describe('the menu controls announce their state', () => {
-  it('uses the rail-sized kebab trigger', () => {
+  it('uses the rail-sized kebab trigger', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
 
     const button = gear('a')
-    expect(button.classList.contains('btn-square')).toBe(true)
-    expect(button.classList.contains('btn-xs')).toBe(false)
+    expect(button.tagName).toBe('CAELESTIS-RAIL-CONTROL')
     expect(button.style.width).toBe(`${RAIL_BUTTON}px`)
     expect(button.style.height).toBe(`${RAIL_BUTTON}px`)
     expect(button.style.transform).toBe('')
     expect(button.style.willChange).toBe('')
-    expect(button.querySelector('path')?.getAttribute('d')).toBe(
-      icon('kebab').querySelector('path')?.getAttribute('d'),
-    )
+    expect(railModel(button).id).toBe('overlay-menu')
   })
 
-  it('labels the hide action without announcing a contradictory toggle state', () => {
+  it('labels the hide action without announcing a contradictory toggle state', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
 
-    const hide = byKey('hide')
+    const hide = await byKey('hide')
     expect(hide.getAttribute('aria-label')).toBe('Hide this overlay')
     expect(hide.hasAttribute('aria-pressed')).toBe(false)
   })
 
-  it('tells assistive technology the gear owns a dialog', () => {
+  it('tells assistive technology the gear owns a dialog', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
-    expect(gear('a').getAttribute('aria-expanded')).toBe('false')
+    expect(railModel(gear('a')).expanded).toBe(false)
 
     gear('a').click()
     rerender()
 
-    expect(gear('a').getAttribute('aria-expanded')).toBe('true')
+    expect(railModel(gear('a')).expanded).toBe(true)
     expect(gear('a').getAttribute('aria-haspopup')).toBe('dialog')
     expect(menu().getAttribute('role')).toBe('dialog')
   })
 
-  it('expands hide, move, and delete as rail-sized buttons outside the menu', () => {
+  it('expands hide, move, and delete as rail-sized buttons outside the menu', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -695,13 +723,9 @@ describe('the menu controls announce their state', () => {
 
     const actions = [...document.querySelectorAll('[data-caelestis-rail-action]')]
     expect(actions).toHaveLength(3)
-    expect(menu().querySelector('[data-caelestis-rail-action]')).toBeNull()
+    expect((await menuRoot()).querySelector('[data-caelestis-rail-action]')).toBeNull()
     for (const action of actions) {
-      expect(action).toBeInstanceOf(HTMLButtonElement)
-      expect((action as HTMLElement).classList.contains('btn-square')).toBe(true)
-      expect((action as HTMLElement).classList.contains('shadow-md')).toBe(true)
-      expect((action as HTMLElement).classList.contains('relative')).toBe(true)
-      expect((action as HTMLElement).classList.contains('btn-outline')).toBe(false)
+      expect((action as HTMLElement).tagName).toBe('CAELESTIS-RAIL-CONTROL')
       expect((action as HTMLElement).style.width).toBe(`${RAIL_BUTTON}px`)
       expect((action as HTMLElement).style.height).toBe(`${RAIL_BUTTON}px`)
       expect(floatingPosition(action as HTMLElement).x).toBe(floatingPosition(gear('a')).x)
@@ -714,21 +738,21 @@ describe('the menu controls announce their state', () => {
     expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
   })
 
-  it('replaces the local menu rail with apply and cancel during its move', () => {
+  it('replaces the local menu rail with apply and cancel during its move', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     const { x: left, y: top } = floatingPosition(gear('a'))
     gear('a').click()
     rerender()
 
-    byKey('move').click()
+    ;(await byKey('move')).click()
     rerender()
 
     expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
     expect(document.querySelector('[data-caelestis-rail-action]')).toBeNull()
-    const apply = byKey('apply-move')
-    const cancel = byKey('cancel-move')
+    const apply = await byKey('apply-move')
+    const cancel = await byKey('cancel-move')
     expect(floatingPosition(apply)).toEqual({ x: left, y: top })
     expect(floatingPosition(cancel)).toEqual({ x: left, y: top + RAIL_BUTTON + GAP })
 
@@ -737,15 +761,15 @@ describe('the menu controls announce their state', () => {
     expect(harness.abortMove).not.toHaveBeenCalled()
   })
 
-  it('cancels from the placement rail and restores the kebab after the move ends', () => {
+  it('cancels from the placement rail and restores the kebab after the move ends', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('move').click()
+    ;(await byKey('move')).click()
     rerender()
 
-    byKey('cancel-move').click()
+    ;(await byKey('cancel-move')).click()
     expect(harness.abortMove).toHaveBeenCalledOnce()
 
     harness.isMoving.mockReturnValue(false)
@@ -753,12 +777,12 @@ describe('the menu controls announce their state', () => {
     harness.placementSeq.mockReturnValue(null)
     rerender()
     expect(document.querySelector('[data-caelestis-placement-action]')).toBeNull()
-    expect(gear('a')).toBeInstanceOf(HTMLButtonElement)
+    expect(gear('a').tagName).toBe('CAELESTIS-RAIL-CONTROL')
   })
 })
 
 describe('placement and geometry', () => {
-  it('anchors the gear to the move preview while one is running', () => {
+  it('anchors the gear to the move preview while one is running', async () => {
     harness.localTemplates.mockReturnValue([template({ originX: 0, originY: 0 })])
     harness.previewOriginFor.mockReturnValue({ x: 500, y: 600 })
     rerender()
@@ -769,7 +793,7 @@ describe('placement and geometry', () => {
     expect(harness.screenPointFor).not.toHaveBeenCalledWith(0, 0)
   })
 
-  it('keeps the menu clear of the left viewport edge', () => {
+  it('keeps the menu clear of the left viewport edge', async () => {
     // Top-right corner at x=1, so an unclamped menu would sit at 7px and creep off screen.
     harness.localTemplates.mockReturnValue([template({ originX: -9, width: 10 })])
     rerender()
@@ -815,7 +839,32 @@ describe('placement and geometry', () => {
     }
   }
 
-  it('keeps its trigger and menu clear of the right-hand button rail', () => {
+  it('remeasures after a custom-element menu first connects at zero height', async () => {
+    let menuMeasurements = 0
+    Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+      const isMenu = this instanceof HTMLElement && this.dataset.caelestisSignature !== undefined
+      const height = isMenu && ++menuMeasurements > 1 ? 200 : 0
+      return {
+        width: isMenu ? 240 : 0,
+        height,
+        top: 0,
+        left: 0,
+        right: isMenu ? 240 : 0,
+        bottom: height,
+        x: 0,
+        y: 0,
+      } as DOMRect
+    }
+    harness.localTemplates.mockReturnValue([template()])
+    rerender()
+
+    gear('a').click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(menu().style.maxHeight).toBe('200px')
+  })
+
+  it('keeps its trigger and menu clear of the right-hand button rail', async () => {
     const restore = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })
     onTestFinished(() => {
@@ -833,13 +882,44 @@ describe('placement and geometry', () => {
     expect(Number.parseFloat(menu().style.left) + 240).toBeLessThan(floatingPosition(gear('a')).x)
   })
 
-  it('remeasures the menu when an appearance group expands', () => {
+  it('clears the wider logged-out account controls', () => {
+    const restore = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })
+    onTestFinished(() => {
+      Object.defineProperty(window, 'innerWidth', { value: restore, configurable: true })
+    })
+    menuMeasures(200, 240)
+
+    const accountControls = document.createElement('div')
+    accountControls.getBoundingClientRect = () =>
+      ({ left: 700, right: 792, top: 8, bottom: 156, width: 92, height: 148 }) as DOMRect
+    const login = document.createElement('button')
+    login.textContent = 'Log in'
+    const nativeRail = document.createElement('div')
+    const leaderboard = document.createElement('button')
+    leaderboard.title = 'Leaderboard'
+    const search = document.createElement('button')
+    search.title = 'Search'
+    nativeRail.append(leaderboard, search)
+    accountControls.append(login, nativeRail)
+    document.body.append(accountControls)
+
+    harness.localTemplates.mockReturnValue([template({ originX: 795 })])
+    rerender()
+
+    const usableRight = 700 - GAP
+    expect(floatingPosition(gear('a')).x + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+  })
+
+  it('remeasures the menu when an appearance group expands', async () => {
     harness.ownsGroup.mockReturnValue(false)
     onTestFinished(() => {
       harness.ownsGroup.mockReturnValue(true)
     })
     menuMeasures(() =>
-      byText(menu(), 'Pixels').getAttribute('aria-expanded') === 'true' ? 300 : 100,
+      menu().shadowRoot?.querySelector('.section-toggle')?.getAttribute('aria-expanded') === 'true'
+        ? 300
+        : 100,
     )
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -848,12 +928,12 @@ describe('placement and geometry', () => {
 
     expect(menu().style.maxHeight).toBe('100px')
 
-    byText(menu(), 'Pixels').click()
+    byText(await menuRoot(), 'Pixels').click()
 
     expect(menu().style.maxHeight).toBe('300px')
   })
 
-  it('keeps the local menu and both action rails clear of an open main panel', () => {
+  it('keeps the local menu and both action rails clear of an open main panel', async () => {
     const restore = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })
     onTestFinished(() => {
@@ -877,7 +957,7 @@ describe('placement and geometry', () => {
       expect(floatingPosition(action).x + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
     }
 
-    byKey('move').click()
+    ;(await byKey('move')).click()
     rerender()
     for (const action of document.querySelectorAll<HTMLElement>(
       '[data-caelestis-placement-action]',
@@ -886,7 +966,7 @@ describe('placement and geometry', () => {
     }
   })
 
-  it('samples an open panel boundary once before positioning multiple template controls', () => {
+  it('samples an open panel boundary once before positioning multiple template controls', async () => {
     const panel = document.createElement('aside')
     panel.id = PANEL_ID
     const measure = vi.fn(
@@ -904,7 +984,7 @@ describe('placement and geometry', () => {
     expect(measure).toHaveBeenCalledOnce()
   })
 
-  it('opens the menu to the right when that side has space', () => {
+  it('opens the menu to the right when that side has space', async () => {
     menuMeasures(200, 240)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -916,7 +996,7 @@ describe('placement and geometry', () => {
     )
   })
 
-  it('keeps the expanded action rail inside the viewport', () => {
+  it('keeps the expanded action rail inside the viewport', async () => {
     const restore = window.innerHeight
     Object.defineProperty(window, 'innerHeight', { value: 300, configurable: true })
     onTestFinished(() => {
@@ -959,7 +1039,7 @@ describe('placement and geometry', () => {
     expect(left + width <= gearLeft || left >= gearLeft + RAIL_BUTTON).toBe(true)
   })
 
-  it('sits below the panel rather than over it', () => {
+  it('sits below the panel rather than over it', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -987,7 +1067,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
 
     gear('b').click()
     rerender()
@@ -995,7 +1075,7 @@ describe('deferred work stays tied to the template that asked for it', () => {
     await settle()
 
     // "Could not change visibility for alpha.png" under beta.png's heading is worse than silence.
-    expect(errorText()).toBeNull()
+    expect(await errorText()).toBeNull()
   })
 
   it('does not close another template’s menu when a delete completes', async () => {
@@ -1011,8 +1091,8 @@ describe('deferred work stays tied to the template that asked for it', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
-    byKey('confirm-delete').click()
+    ;(await byKey('delete')).click()
+    ;(await byKey('confirm-delete')).click()
 
     gear('b').click()
     rerender()
@@ -1023,17 +1103,19 @@ describe('deferred work stays tied to the template that asked for it', () => {
     expect(menu().dataset.caelestisTemplate).toBe('b')
   })
 
-  it('keeps a carried delete question naming the template as it is now', () => {
+  it('keeps a carried delete question naming the template as it is now', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
 
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect(menu().querySelector('[data-caelestis-confirm]')?.textContent).toContain('renamed.png')
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')?.textContent).toContain(
+      'renamed.png',
+    )
   })
 
   it('lets the latest visibility request own the intent through an ABA sequence', async () => {
@@ -1049,16 +1131,16 @@ describe('deferred work stays tied to the template that asked for it', () => {
     gear('a').click()
     rerender()
 
-    byKey('hide').click() // hide
-    byKey('hide').click() // show
-    byKey('hide').click() // hide
+    ;(await byKey('hide')).click() // hide
+    ;(await byKey('hide')).click() // show
+    ;(await byKey('hide')).click() // hide
     settled[0]?.()
     await settle()
 
     // The first request's `false` matches the third's, so releasing intent by value would hand
     // ownership back to the store and the menu would flip to "Hide" while a hide is still pending.
     expect(harness.setLocalVisible.mock.calls[0]?.[1]).toBe(false)
-    expect(byKey('hide').getAttribute('aria-label')).toBe('Show this overlay')
+    expect((await byKey('hide')).getAttribute('aria-label')).toBe('Show this overlay')
   })
 
   it('keeps a refused shape reported when a colour change succeeds', async () => {
@@ -1069,14 +1151,14 @@ describe('deferred work stays tied to the template that asked for it', () => {
     gear('a').click()
     rerender()
 
-    setRadius()
-    byKey('swatch:1').click()
+    await setRadius()
+    ;(await byKey('swatch:1')).click()
     await settle()
 
     // The colour landed and the shape did not. One shared `appearance` bucket would let the
     // colour's success clear the shape's banner, and the overlay ends up Full with nothing said.
-    expect(errorText()).toContain('Could not change rounding')
-    expect((byKey('radius') as HTMLInputElement).value).toBe('0')
+    expect(await errorText()).toContain('Could not change rounding')
+    expect(((await byKey('radius')) as HTMLInputElement).value).toBe('0')
   })
 
   it('clears a refused write once the same property succeeds', async () => {
@@ -1087,13 +1169,13 @@ describe('deferred work stays tied to the template that asked for it', () => {
     gear('a').click()
     rerender()
 
-    setRadius()
+    await setRadius()
     await settle()
-    expect(errorText()).toContain('Could not change rounding')
-    setRadius('0.5')
+    expect(await errorText()).toContain('Could not change rounding')
+    await setRadius('0.5')
     await settle()
 
-    expect(errorText()).toBeNull()
+    expect(await errorText()).toBeNull()
   })
 
   it('puts a refused slider back where the store still is', async () => {
@@ -1102,44 +1184,44 @@ describe('deferred work stays tied to the template that asked for it', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
     // Focused, but the gesture is over: `change` has fired. Guarding the refresh on focus rather
     // than on an in-progress gesture leaves the refused value sitting on the thumb indefinitely.
     opacity.focus()
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     drag(opacity, '0.9')
     await settle()
 
     // The map reverted; a thumb left at the refused value says the change took. Re-queried
     // because the refusal is state, so the menu is rebuilt from it rather than patched.
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.4')
+    expect(((await byKey('opacity')) as HTMLInputElement).value).toBe('0.4')
   })
 })
 
 describe('focus goes somewhere deliberate', () => {
-  it('returns to Delete when the question is cancelled', () => {
+  it('returns to Delete when the question is cancelled', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
 
-    byText(menu(), 'Cancel').click()
+    byText(await menuRoot(), 'Cancel').click()
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe('delete')
+    expect(await focusedControl()).toBe('delete')
   })
 
-  it('announces the destructive question rather than a bare Delete', () => {
+  it('announces the destructive question rather than a bare Delete', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
 
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
 
-    const box = menu().querySelector('[data-caelestis-confirm]')
+    const box = (await menuRoot()).querySelector('[data-caelestis-confirm]')
     expect(box?.getAttribute('role')).toBe('alertdialog')
     expect(box?.getAttribute('aria-label')).toContain('This cannot be undone')
   })
@@ -1160,15 +1242,15 @@ describe('an outcome is reported whatever else has happened since', () => {
     gear('a').click()
     rerender()
 
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
     // Anything at all, while the hide is still in flight.
-    setRadius()
+    await setRadius()
     release()
     await settle()
 
     // Tying the report to "am I still the latest request" makes any second click silence the first
     // one's failure, which is the whole guarantee this menu exists to keep.
-    expect(errorText()).toContain('Could not change visibility')
+    expect(await errorText()).toContain('Could not change visibility')
   })
 
   it('reports a write that threw rather than stranding the intent', async () => {
@@ -1178,12 +1260,12 @@ describe('an outcome is reported whatever else has happened since', () => {
     gear('a').click()
     rerender()
 
-    setRadius()
+    await setRadius()
     await settle()
 
-    expect(errorText()).toContain('Could not change rounding')
+    expect(await errorText()).toContain('Could not change rounding')
     // Intent released: the menu must not keep asserting a shape that was never saved.
-    expect((byKey('radius') as HTMLInputElement).value).toBe('0')
+    expect(((await byKey('radius')) as HTMLInputElement).value).toBe('0')
   })
 
   it('reports a refusal that arrived while the template was off screen', async () => {
@@ -1199,7 +1281,7 @@ describe('an outcome is reported whatever else has happened since', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
 
     // Pan the template out of view, let the refusal land, pan back.
     harness.localTemplates.mockReturnValue([template({ originX: 50_000, originY: 50_000 })])
@@ -1209,7 +1291,7 @@ describe('an outcome is reported whatever else has happened since', () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
 
-    expect(errorText()).toContain('Could not change visibility')
+    expect(await errorText()).toContain('Could not change visibility')
   })
 })
 
@@ -1227,7 +1309,7 @@ describe('a frame without a map is not a frame without templates', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
 
     // MapLibre detaches and re-attaches its own canvas; `main.ts` has a test for exactly that.
     const host = mapCanvas.parentElement
@@ -1240,7 +1322,7 @@ describe('a frame without a map is not a frame without templates', () => {
 
     // Treating a missing map as "every template ceased to exist" throws away write ordering and
     // every pending outcome for templates that are all still there.
-    expect(errorText()).toContain('Could not change visibility')
+    expect(await errorText()).toContain('Could not change visibility')
   })
 
   it('forgets a template that has actually gone', async () => {
@@ -1249,9 +1331,9 @@ describe('a frame without a map is not a frame without templates', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
     await settle()
-    expect(errorText()).toContain('Could not change visibility')
+    expect(await errorText()).toContain('Could not change visibility')
 
     harness.localTemplates.mockReturnValue([])
     rerender()
@@ -1260,27 +1342,27 @@ describe('a frame without a map is not a frame without templates', () => {
     gear('a').click()
     rerender()
 
-    expect(errorText()).toBeNull()
+    expect(await errorText()).toBeNull()
   })
 })
 
 describe('a delete already under way cannot be re-asked', () => {
-  it('will not raise a fresh question over a running delete', () => {
+  it('will not raise a fresh question over a running delete', async () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
-    byKey('confirm-delete').click()
+    ;(await byKey('confirm-delete')).click()
     rerender()
 
     // Disabling the question's own buttons is not enough while this one can raise a new question
     // with a fresh, live Cancel over a delete that is already running.
-    expect(byKey('delete').getAttribute('aria-disabled')).toBe('true')
-    expect(byKey('cancel-delete').getAttribute('aria-disabled')).toBe('true')
-    expect(byKey('confirm-delete').textContent).toBe('Deleting…')
+    expect((await byKey('delete')).getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('cancel-delete')).getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('confirm-delete')).textContent).toBe('Deleting…')
   })
 })
 
@@ -1291,8 +1373,8 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     gear('a').click()
     rerender()
 
-    expect(pixelPreset('small').getAttribute('aria-pressed')).toBe('false')
-    pixelPreset('corner').click()
+    expect((await pixelPreset('small')).getAttribute('aria-pressed')).toBe('false')
+    ;(await pixelPreset('corner')).click()
     await settle()
 
     expect(harness.setOwnsGroup).toHaveBeenCalledWith('a', 'pixels', true)
@@ -1308,25 +1390,25 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     })
   })
 
-  it('offers the whole 0..1 range the store accepts', () => {
+  it('offers the whole 0..1 range the store accepts', async () => {
     // `normaliseAppearance` runs on a conflict's remote winner, so another client's 0 arrives here.
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0 } })])
     rerender()
     gear('a').click()
     rerender()
 
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
     expect(opacity.min).toBe('0.05')
     expect(opacity.value).toBe('0.05')
   })
 
-  it('represents the default size exactly rather than snapping off it', () => {
+  it('represents the default size exactly rather than snapping off it', async () => {
     harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
 
-    expect(Number((byKey('size') as HTMLInputElement).value)).toBe(DEFAULT_APPEARANCE.size)
+    expect(Number(((await byKey('size')) as HTMLInputElement).value)).toBe(DEFAULT_APPEARANCE.size)
   })
 
   it('resets one owned slider to the value inherited from settings', async () => {
@@ -1335,10 +1417,10 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
     gear('a').click()
     rerender()
 
-    const input = byKey('size') as HTMLInputElement
+    const input = (await byKey('size')) as HTMLInputElement
     const reset = input
       .closest('label')
-      ?.querySelector<HTMLButtonElement>('.caelestis-slider-reset')
+      ?.querySelector<HTMLButtonElement>('[aria-label="Reset size"]')
     expect(reset?.hidden).toBe(false)
     reset?.click()
 
@@ -1352,35 +1434,35 @@ describe('the slider is only frozen while a gesture is actually in progress', ()
 })
 
 describe('the menu is ours and has a keyboard exit', () => {
-  it('offers move and delete for an unpublished server overlay an admin owns', () => {
+  it('offers move and delete for an unpublished server overlay an admin owns', async () => {
     connectServerTemplate(false)
     harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
     rerender()
     gear('a').click()
     rerender()
 
-    expect(byKey('move')).not.toBeNull()
-    expect(byKey('delete')).not.toBeNull()
-    expect(byKey('hide')).not.toBeNull()
+    expect(await byKey('move')).not.toBeNull()
+    expect(await byKey('delete')).not.toBeNull()
+    expect(await byKey('hide')).not.toBeNull()
   })
 
-  it('keeps published server actions visible but requires unpublishing first', () => {
+  it('keeps published server actions visible but requires unpublishing first', async () => {
     connectServerTemplate(true)
     harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
     rerender()
     gear('a').click()
     rerender()
 
-    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
-    expect(byKey('delete').getAttribute('aria-disabled')).toBe('true')
-    byKey('move').click()
+    expect((await byKey('move')).getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('delete')).getAttribute('aria-disabled')).toBe('true')
+    ;(await byKey('move')).click()
     rerender()
 
-    expect(errorText()).toContain('Unpublish this template before moving it')
+    expect(await errorText()).toContain('Unpublish this template before moving it')
     expect(harness.beginServerMove).not.toHaveBeenCalled()
   })
 
-  it('does not offer server mutations without admin access', () => {
+  it('does not offer server mutations without admin access', async () => {
     connectServerTemplate(false, false)
     harness.localTemplates.mockReturnValue([template({ serverUrl: 'https://example.test' })])
     rerender()
@@ -1399,7 +1481,7 @@ describe('the menu is ours and has a keyboard exit', () => {
     gear('a').click()
     rerender()
 
-    byKey('move').click()
+    ;(await byKey('move')).click()
     const persist = harness.beginServerMove.mock.calls[0]?.[2]
     if (typeof persist !== 'function') throw new Error('server move did not receive persistence')
     await persist(12, 34)
@@ -1419,9 +1501,9 @@ describe('the menu is ours and has a keyboard exit', () => {
     gear('a').click()
     rerender()
 
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
-    byKey('confirm-delete').click()
+    ;(await byKey('confirm-delete')).click()
     await settle()
 
     expect(harness.deleteServerTemplate).toHaveBeenCalledWith(harness.servers[0], 'remote-a', {
@@ -1433,39 +1515,41 @@ describe('the menu is ours and has a keyboard exit', () => {
     expect(harness.listServerContents).toHaveBeenCalledWith(harness.servers[0])
   })
 
-  it('closes on Escape and hands focus back to the gear', () => {
+  it('closes on Escape and hands focus back to the gear', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
 
-    byKey('hide').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    ;(await byKey('hide')).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }),
+    )
     rerender()
 
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
     expect(document.activeElement).toBe(gear('a'))
   })
 
-  it('leaves the keyboard off the gear while the placement it started is running', () => {
+  it('leaves the keyboard off the gear while the placement it started is running', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
 
-    byKey('move').click()
+    ;(await byKey('move')).click()
     rerender()
 
     expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
     // `move.ts` ignores keys aimed at a page control, so a focused gear would take Escape and Enter
     // away from the placement — and Enter would reopen this menu instead of applying it.
     expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
-    expect(document.activeElement).not.toBe(byKey('apply-move'))
-    expect(document.activeElement).not.toBe(byKey('cancel-move'))
+    expect(document.activeElement).not.toBe(await byKey('apply-move'))
+    expect(document.activeElement).not.toBe(await byKey('cancel-move'))
   })
 })
 
 describe('a delete under way owns the template', () => {
-  it('does not queue the delete behind this menu’s own writes', () => {
+  it('does not queue the delete behind this menu’s own writes', async () => {
     // `removeLocalTemplate` sets the store's terminal guard synchronously; that is what stops an
     // in-flight save resurrecting the record. Queueing it behind a slow visibility write means the
     // guard is not set until the bitmaps finish.
@@ -1476,51 +1560,49 @@ describe('a delete under way owns the template', () => {
     gear('a').click()
     rerender()
 
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
-    byKey('confirm-delete').click()
+    ;(await byKey('confirm-delete')).click()
 
     expect(harness.removeLocalTemplate).toHaveBeenCalledWith('a')
   })
 
-  it('stops offering Move and Hide while the delete runs', () => {
+  it('stops offering Move and Hide while the delete runs', async () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
-    byKey('confirm-delete').click()
+    ;(await byKey('confirm-delete')).click()
     rerender()
 
     // Starting a placement for a record that is about to stop existing strands the placement bar.
-    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
-    expect(byKey('hide').getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('move')).getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('hide')).getAttribute('aria-disabled')).toBe('true')
   })
 })
 
 describe('interaction outranks a repaint', () => {
-  it('does not arm a focus jump when the question is already open', () => {
+  it('does not arm a focus jump when the question is already open', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
-    byKey('close').focus()
+    ;(await byKey('close')).focus()
 
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
     // An unrelated rebuild later on must not consume a leftover request and jump to Delete.
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).not.toBe(
-      'confirm-delete',
-    )
+    expect(await focusedControl()).not.toBe('confirm-delete')
   })
 })
 
@@ -1538,15 +1620,15 @@ describe('failure messages are resolved when they are shown', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
 
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
     release()
     await settle()
 
-    expect(errorText()).toContain('renamed.png')
-    expect(errorText()).not.toContain('alpha.png')
+    expect(await errorText()).toContain('renamed.png')
+    expect(await errorText()).not.toContain('alpha.png')
   })
 
   it('gives Move its own slot rather than the visibility one', async () => {
@@ -1557,12 +1639,12 @@ describe('failure messages are resolved when they are shown', () => {
     gear('a').click()
     rerender()
 
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
     await settle()
-    byKey('move').click()
+    ;(await byKey('move')).click()
     rerender()
 
-    const messages = [...menu().querySelectorAll('[data-caelestis-error]')].map(
+    const messages = [...(await menuRoot()).querySelectorAll('[data-caelestis-error]')].map(
       (el) => el.textContent,
     )
     expect(messages).toHaveLength(2)
@@ -1577,15 +1659,19 @@ describe('failure messages are resolved when they are shown', () => {
     gear('a').click()
     rerender()
 
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
     await settle()
-    expect(menu().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
+    expect((await menuRoot()).querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe(
+      'alert',
+    )
 
-    byKey('swatch:1').click()
+    ;(await byKey('swatch:1')).click()
     await settle()
 
     // A rebuild reconstructs the node; a fresh role="alert" would read the old failure out again.
-    expect(menu().querySelector('[data-caelestis-error]')?.hasAttribute('role')).toBe(false)
+    expect((await menuRoot()).querySelector('[data-caelestis-error]')?.hasAttribute('role')).toBe(
+      false,
+    )
   })
 })
 
@@ -1603,34 +1689,34 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     rerender()
     gear('a').click()
     rerender()
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
 
     // Press and hold the thumb; the hold blocks rebuilds, so the refusal has nowhere to land.
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    const opacity = (await byKey('opacity')) as HTMLInputElement
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     release()
     await settle()
-    expect(errorText()).toBeNull()
+    expect(await errorText()).toBeNull()
 
     // Letting go has to let it through: on a static map no other frame is coming.
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
 
-    expect(errorText()).toContain('Could not change visibility')
+    expect(await errorText()).toContain('Could not change visibility')
   })
 
-  it('clears the Move refusal once a placement actually starts', () => {
+  it('clears the Move refusal once a placement actually starts', async () => {
     harness.isMoving.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('move').click()
+    ;(await byKey('move')).click()
     rerender()
-    expect(errorText()).toContain('placement already in progress')
+    expect(await errorText()).toContain('placement already in progress')
 
     harness.isMoving.mockReturnValue(false)
     harness.isDeletingLocal.mockReturnValue(false)
-    byKey('move').click()
+    ;(await byKey('move')).click()
     rerender()
     harness.isMoving.mockReturnValue(false)
     harness.movingId.mockReturnValue(null)
@@ -1640,66 +1726,64 @@ describe('nothing is stranded by a held slider or a running delete', () => {
     rerender()
 
     // Nothing else ever cleared this one, so it outlived the placement it was about.
-    expect(errorText()).toBeNull()
+    expect(await errorText()).toBeNull()
   })
 
-  it('keeps focus on the confirm button once the delete starts', () => {
+  it('keeps focus on the confirm button once the delete starts', async () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
 
-    byKey('confirm-delete').click()
+    ;(await byKey('confirm-delete')).click()
     rerender()
 
     // A `disabled` button cannot hold focus, so confirming from the keyboard would drop it to the
     // document at the exact moment a destructive action is running.
-    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe(
-      'confirm-delete',
-    )
-    expect(byKey('confirm-delete').getAttribute('aria-disabled')).toBe('true')
+    expect(await focusedControl()).toBe('confirm-delete')
+    expect((await byKey('confirm-delete')).getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('stops offering the appearance controls while the delete runs', () => {
+  it('stops offering the appearance controls while the delete runs', async () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
-    byKey('confirm-delete').click()
+    ;(await byKey('confirm-delete')).click()
     rerender()
 
     // The store refuses these anyway, leaving a meaningless banner beside "Deleting…".
     // `readonly` does nothing to a range in any browser, so the lock has to refuse the gesture.
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
     expect(opacity.getAttribute('aria-disabled')).toBe('true')
-    const press = new PointerEvent('pointerdown', { pointerId: 1, cancelable: true })
+    const press = new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, cancelable: true })
     opacity.dispatchEvent(press)
     expect(press.defaultPrevented).toBe(true)
-    expect(byKey('swatch:1').getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('swatch:1')).getAttribute('aria-disabled')).toBe('true')
   })
 })
 
 describe('the delete question is retracted by the gestures that dismiss it', () => {
-  it('does not come back armed after the menu is closed', () => {
+  it('does not come back armed after the menu is closed', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
 
-    byKey('close').click()
+    ;(await byKey('close')).click()
     rerender()
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 })
 
@@ -1724,8 +1808,8 @@ describe('an edit carries the change, not a resolved snapshot', () => {
     gear('a').click()
     rerender()
 
-    byKey('swatch:1').click()
-    byKey('swatch:2').click()
+    ;(await byKey('swatch:1')).click()
+    ;(await byKey('swatch:2')).click()
     release()
     await settle()
 
@@ -1742,14 +1826,14 @@ describe('an edit carries the change, not a resolved snapshot', () => {
     gear('a').click()
     rerender()
 
-    setRadius()
-    byKey('hide').click()
+    await setRadius()
+    ;(await byKey('hide')).click()
     await settle()
 
     // One shared intent, released only by its latest owner, keeps asserting the refused shape for
     // as long as the visibility write is outstanding — and that one never resolves.
-    expect((byKey('radius') as HTMLInputElement).value).toBe('0')
-    expect(errorText()).toContain('Could not change rounding')
+    expect(((await byKey('radius')) as HTMLInputElement).value).toBe('0')
+    expect(await errorText()).toContain('Could not change rounding')
   })
 
   it('names the property a refusal is about', async () => {
@@ -1759,13 +1843,13 @@ describe('an edit carries the change, not a resolved snapshot', () => {
     gear('a').click()
     rerender()
 
-    setRadius('0')
+    await setRadius('0')
     await settle()
-    const size = byKey('size') as HTMLInputElement
+    const size = (await byKey('size')) as HTMLInputElement
     drag(size, '0.5')
     await settle()
 
-    const messages = [...menu().querySelectorAll('[data-caelestis-error]')].map(
+    const messages = [...(await menuRoot()).querySelectorAll('[data-caelestis-error]')].map(
       (el) => el.textContent,
     )
     expect(messages.join(' ')).toContain('rounding')
@@ -1780,8 +1864,8 @@ describe('a real gesture commits what the user chose', () => {
     gear('a').click()
     rerender()
 
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    const opacity = (await byKey('opacity')) as HTMLInputElement
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     drag(opacity, '0.9')
     await settle()
 
@@ -1792,7 +1876,7 @@ describe('a real gesture commits what the user chose', () => {
 })
 
 describe('a delete owns the template whichever surface started it', () => {
-  it('refuses Move for a template the store has already condemned', () => {
+  it('refuses Move for a template the store has already condemned', async () => {
     harness.isDeletingLocal.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1801,31 +1885,31 @@ describe('a delete owns the template whichever surface started it', () => {
 
     // The panel's delete sets the store's terminal guard and then does its IndexedDB work with the
     // record still present. Reading only our own flag starts a placement for a doomed template.
-    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
-    expect(byKey('delete').getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('move')).getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('delete')).getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('keeps the progress box when the menu is closed mid-delete', () => {
+  it('keeps the progress box when the menu is closed mid-delete', async () => {
     harness.removeLocalTemplate.mockImplementation(() => new Promise<boolean>(() => {}))
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
-    byKey('confirm-delete').click()
+    ;(await byKey('confirm-delete')).click()
     rerender()
 
-    byKey('close').click()
+    ;(await byKey('close')).click()
     rerender()
     gear('a').click()
     rerender()
 
     // Without it the controls are all disabled with nothing on screen explaining why.
-    expect(menu().querySelector('[data-caelestis-confirm]')).not.toBeNull()
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).not.toBeNull()
   })
 
-  it('opens onto a control that can take focus while a delete runs', () => {
+  it('opens onto a control that can take focus while a delete runs', async () => {
     harness.isDeletingLocal.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
@@ -1834,15 +1918,15 @@ describe('a delete owns the template whichever surface started it', () => {
     rerender()
 
     // Hide is disabled during a delete, and a disabled control cannot hold focus.
-    expect((document.activeElement as HTMLElement | null)?.dataset.caelestisControl).toBe('close')
+    expect(await focusedControl()).toBe('close')
   })
 
-  it('forgets a template deleted while the map was detached', () => {
+  it('forgets a template deleted while the map was detached', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
 
     const host = mapCanvas.parentElement
@@ -1857,18 +1941,18 @@ describe('a delete owns the template whichever surface started it', () => {
     rerender()
 
     // The old question must not be handed to the new lifetime.
-    expect(menu().querySelector('[data-wts-confirm]')).toBeNull()
+    expect((await menuRoot()).querySelector('[data-wts-confirm]')).toBeNull()
   })
 })
 
 describe('a delete that becomes terminal after the menu exists', () => {
-  it('refuses the action even from a menu built before the delete', () => {
+  it('refuses the action even from a menu built before the delete', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    const move = byKey('move')
-    const hide = byKey('hide')
+    const move = await byKey('move')
+    const hide = await byKey('hide')
 
     // No repaint: the map is idle, so these are the elements the user still has in front of them.
     harness.isDeletingLocal.mockReturnValue(true)
@@ -1888,15 +1972,15 @@ describe('repeating an action is never silently a no-op', () => {
     gear('a').click()
     rerender()
 
-    byKey('swatch:1').click()
+    ;(await byKey('swatch:1')).click()
     rerender()
-    expect(byKey('swatch:1').dataset.on).toBe('false')
-    byKey('swatch:1').click()
+    expect((await byKey('swatch:1')).getAttribute('aria-pressed')).toBe('false')
+    ;(await byKey('swatch:1')).click()
     rerender()
 
     // The updater is a toggle. Latest-wins makes the second click read as no change at all, while
     // the queued writes compose back to visible — the menu and the map disagreeing.
-    expect(byKey('swatch:1').dataset.on).toBe('true')
+    expect((await byKey('swatch:1')).getAttribute('aria-pressed')).toBe('true')
   })
 
   it('writes once for a held arrow key, not once per repeat', async () => {
@@ -1904,19 +1988,19 @@ describe('repeating an action is never silently a no-op', () => {
     rerender()
     gear('a').click()
     rerender()
-    const size = byKey('size') as HTMLInputElement
+    const size = (await byKey('size')) as HTMLInputElement
 
-    size.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    size.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
     for (const value of ['0.4', '0.45', '0.5']) {
       size.value = value
-      size.dispatchEvent(new Event('input'))
-      size.dispatchEvent(new Event('change'))
+      size.dispatchEvent(new Event('input', { bubbles: true }))
+      size.dispatchEvent(new Event('change', { bubbles: true }))
     }
     await settle()
     // `size` is in the stamped-tile cache key, so one write per key repeat re-stamps at scale 3.
     expect(harness.setAppearance).not.toHaveBeenCalled()
 
-    size.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    size.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowRight' }))
     await settle()
 
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
@@ -1930,7 +2014,7 @@ describe('a pointer drag in the order a browser actually fires it', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
     // Chromium dispatches a range's `change` from its stop-dragging work, *after* pointerup
     // handlers. Every earlier test fired `change` first, which is the one order that hides this.
@@ -1945,10 +2029,10 @@ describe('a pointer drag in the order a browser actually fires it', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
     // Tab does not move the thumb, and its keyup lands on whatever it focused next.
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Tab' }))
     drag(opacity, '0.7')
     await settle()
 
@@ -1958,13 +2042,13 @@ describe('a pointer drag in the order a browser actually fires it', () => {
 })
 
 describe('a held slider holds its own menu, not the next one', () => {
-  it('still switches templates while a slider is held', () => {
+  it('still switches templates while a slider is held', async () => {
     harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
     rerender()
     gear('a').click()
     rerender()
-    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(
-      new PointerEvent('pointerdown', { pointerId: 1 }),
+    ;((await byKey('opacity')) as HTMLInputElement).dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }),
     )
 
     gear('b').click()
@@ -1973,7 +2057,7 @@ describe('a held slider holds its own menu, not the next one', () => {
     // Two touches: one holding A's thumb, one tapping B's gear. Keeping A's menu would park A's
     // handlers beside B — the wrong-template failure this relay opened with.
     expect(menu().dataset.caelestisTemplate).toBe('b')
-    expect(menu().textContent).toContain('beta.png')
+    expect((await menuRoot()).textContent).toContain('beta.png')
   })
 
   it('rebuilds a menu the page has torn off even while held, keeping the value', async () => {
@@ -1981,15 +2065,15 @@ describe('a held slider holds its own menu, not the next one', () => {
     rerender()
     gear('a').click()
     rerender()
-    ;(byKey('opacity') as HTMLInputElement).dispatchEvent(
-      new PointerEvent('pointerdown', { pointerId: 1 }),
+    ;((await byKey('opacity')) as HTMLInputElement).dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }),
     )
 
     // A hostile or careless host removes it; the detached control may never see another event.
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    const opacity = (await byKey('opacity')) as HTMLInputElement
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     opacity.value = '0.62'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     menu().remove()
     rerender()
     await settle()
@@ -2000,18 +2084,18 @@ describe('a held slider holds its own menu, not the next one', () => {
   })
 
   it('commits a marker range when the menu is torn down mid-drag', async () => {
-    harness.localTemplates.mockReturnValue([template()])
+    harness.localTemplates.mockReturnValue([template({ appearance: { markMismatch: true } })])
     rerender()
     gear('a').click()
     rerender()
-    const markerSize = menu().querySelector<HTMLInputElement>(
+    const markerSize = (await menuRoot()).querySelector<HTMLInputElement>(
       'input[type="range"]:not([data-caelestis-control])',
     )
     if (markerSize === null) throw new Error('no Mismatches Size track')
 
-    markerSize.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    markerSize.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     markerSize.value = '17'
-    markerSize.dispatchEvent(new Event('input'))
+    markerSize.dispatchEvent(new Event('input', { bubbles: true }))
     const host = mapCanvas.parentElement
     mapCanvas.remove()
     rerender()
@@ -2028,10 +2112,13 @@ describe('a held slider holds its own menu, not the next one', () => {
     rerender()
     gear('a').click()
     rerender()
-    const swatch = menu().querySelector<HTMLButtonElement>('button[aria-label^="Marker colour:"]')
+    const swatch = (await menuRoot()).querySelector<HTMLElement>(
+      'button[aria-label^="Marker colour:"], input[aria-label="Marker colour"]',
+    )
     if (swatch === null) throw new Error('no marker colour swatch')
     swatch.click()
-    const square = document.querySelector<HTMLElement>('.caelestis-cp-sv')
+    await settle()
+    const square = (await menuRoot()).querySelector<HTMLElement>('.caelestis-cp-sv')
     if (square === null) throw new Error('no colour picker square')
     square.getBoundingClientRect = () =>
       ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }) as DOMRect
@@ -2042,23 +2129,23 @@ describe('a held slider holds its own menu, not the next one', () => {
     square.hasPointerCapture = (pointerId) => captured === pointerId
 
     square.dispatchEvent(
-      new PointerEvent('pointerdown', { pointerId: 7, clientX: 10, clientY: 90 }),
+      new PointerEvent('pointerdown', { bubbles: true, pointerId: 7, clientX: 10, clientY: 90 }),
     )
     square.dispatchEvent(
-      new PointerEvent('pointermove', { pointerId: 7, clientX: 50, clientY: 50 }),
+      new PointerEvent('pointermove', { bubbles: true, pointerId: 7, clientX: 50, clientY: 50 }),
     )
     rerender()
     square.dispatchEvent(
-      new PointerEvent('pointermove', { pointerId: 7, clientX: 80, clientY: 20 }),
+      new PointerEvent('pointermove', { bubbles: true, pointerId: 7, clientX: 80, clientY: 20 }),
     )
     await settle()
 
     expect(harness.setAppearance).not.toHaveBeenCalled()
-    square.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7 }))
+    square.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7 }))
     await settle()
 
     expect(harness.setAppearance).toHaveBeenCalledTimes(1)
-    expect(appearanceWritten(0).markerColour).toBe('#cc2929')
+    expect(appearanceWritten(0).markerColour).toBe('#cc29cc')
   })
 })
 
@@ -2069,32 +2156,32 @@ describe('a refusal retires only when its own subject is satisfied', () => {
     rerender()
     gear('a').click()
     rerender()
-    setRadius()
+    await setRadius()
     await settle()
-    expect(errorText()).toContain('Could not change rounding')
+    expect(await errorText()).toContain('Could not change rounding')
 
     // Another tab sets the very shape this refusal was about. Revision is irrelevant — a pending
     // image never persists one at all.
     harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
 
-    expect(errorText()).toBeNull()
+    expect(await errorText()).toBeNull()
   })
 })
 
 describe('a delete started elsewhere explains itself', () => {
-  it('does not lock the controls natively, so a cleared guard is recoverable', () => {
+  it('does not lock the controls natively, so a cleared guard is recoverable', async () => {
     harness.isDeletingLocal.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    expect(byKey('move').getAttribute('aria-disabled')).toBe('true')
+    expect((await byKey('move')).getAttribute('aria-disabled')).toBe('true')
 
     // A failed panel delete drops the store's guard and notifies nobody. On a static map no frame
     // arrives, so a native `disabled` would leave the menu dead until the map next moved.
     harness.isDeletingLocal.mockReturnValue(false)
-    byKey('move').click()
+    ;(await byKey('move')).click()
 
     expect(harness.beginMove).toHaveBeenCalledWith('a', expect.any(Function))
   })
@@ -2106,31 +2193,31 @@ describe('a slider keeps tracking the store after every kind of gesture', () => 
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
     // A range fires input then change on each arrow press, and `change` under a held key parks the
     // value and returns *before* the dirty marker is cleared.
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
     opacity.value = '0.45'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new Event('change'))
-    opacity.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight' }))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
+    opacity.dispatchEvent(new Event('change', { bubbles: true }))
+    opacity.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowRight' }))
     await settle()
 
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     rerender()
 
-    expect((byKey('opacity') as HTMLInputElement).value).toBe('0.9')
+    expect(((await byKey('opacity')) as HTMLInputElement).value).toBe('0.9')
   })
 })
 
 describe('the menu belongs to us, and to one template at a time', () => {
-  it('retracts a delete question when another template is opened', () => {
+  it('retracts a delete question when another template is opened', async () => {
     harness.localTemplates.mockReturnValue([template(), template({ id: 'b', name: 'beta.png' })])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
 
     gear('b').click()
@@ -2140,7 +2227,7 @@ describe('the menu belongs to us, and to one template at a time', () => {
 
     // ✕ and Escape both retract it; walking away via another gear must not be the one that leaves
     // a live destructive button waiting.
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 
   it('does not flip a swatch back while its own write is landing', async () => {
@@ -2156,52 +2243,52 @@ describe('the menu belongs to us, and to one template at a time', () => {
     gear('a').click()
     rerender()
 
-    byKey('swatch:1').click()
+    ;(await byKey('swatch:1')).click()
     await settle()
     rerender()
 
-    expect(byKey('swatch:1').dataset.on).toBe('false')
+    expect((await byKey('swatch:1')).getAttribute('aria-pressed')).toBe('false')
   })
 })
 
 describe('a condemned template is condemned everywhere', () => {
-  it('renders the progress box as soon as the store says so', () => {
+  it('renders the progress box as soon as the store says so', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
 
     // A delete started from the panel, with the record still present for its IndexedDB round trip.
     harness.isDeletingLocal.mockReturnValue(true)
     rerender()
 
-    expect(byKey('confirm-delete').textContent).toBe('Deleting…')
+    expect((await byKey('confirm-delete')).textContent).toBe('Deleting…')
   })
 
-  it('does not resurrect a dismissed question when an external delete fails', () => {
+  it('does not resurrect a dismissed question when an external delete fails', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
 
     harness.isDeletingLocal.mockReturnValue(true)
     rerender()
-    byKey('close').click()
+    ;(await byKey('close')).click()
     rerender()
     // The panel's delete fails and drops the guard.
     harness.isDeletingLocal.mockReturnValue(false)
     gear('a').click()
     rerender()
 
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 })
 
 describe('a locked slider arms nothing', () => {
-  it('does not block rebuilds after a refused press', () => {
+  it('does not block rebuilds after a refused press', async () => {
     harness.isDeletingLocal.mockReturnValue(true)
     harness.localTemplates.mockReturnValue([template({ appearance: { radius: 1 } })])
     rerender()
@@ -2210,15 +2297,15 @@ describe('a locked slider arms nothing', () => {
 
     // A prevented native range gesture takes no pointer capture, so releasing outside the input
     // never delivers a `pointerup` here.
-    byKey('opacity').dispatchEvent(
-      new PointerEvent('pointerdown', { pointerId: 1, cancelable: true }),
+    ;(await byKey('opacity')).dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, cancelable: true }),
     )
     harness.localTemplates.mockReturnValue([
       template({ name: 'renamed.png', appearance: { radius: 1 } }),
     ])
     rerender()
 
-    expect(menu().textContent).toContain('renamed.png')
+    expect((await menuRoot()).textContent).toContain('renamed.png')
   })
 
   it('commits a drag that returned to its origin rather than losing it', async () => {
@@ -2226,16 +2313,16 @@ describe('a locked slider arms nothing', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     // Another tab moves the store mid-drag; the user still ends where they began.
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     opacity.value = '0.7'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     opacity.value = '0.4'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
     await settle()
 
     // The gesture is what the user asked for, whatever the store did underneath it.
@@ -2244,12 +2331,12 @@ describe('a locked slider arms nothing', () => {
 })
 
 describe('focus saved across a teardown is not focus demanded', () => {
-  it('leaves the keyboard where the user has since put it', () => {
+  it('leaves the keyboard where the user has since put it', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('swatch:5').focus()
+    ;(await byKey('swatch:5')).focus()
 
     const host = mapCanvas.parentElement
     mapCanvas.remove()
@@ -2271,16 +2358,16 @@ describe('a gesture is what the user did, not what the element held', () => {
     rerender()
     gear('a').click()
     rerender()
-    const size = byKey('size') as HTMLInputElement
+    const size = (await byKey('size')) as HTMLInputElement
 
-    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    size.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     size.value = '0.7'
-    size.dispatchEvent(new Event('input'))
+    size.dispatchEvent(new Event('input', { bubbles: true }))
 
     expect(harness.setAppearancePreview).toHaveBeenCalledWith('a', 'size', 0.7)
     expect(harness.setAppearance).not.toHaveBeenCalled()
 
-    size.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    size.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
     await settle()
 
     expect(harness.clearAppearancePreview).toHaveBeenCalledWith('a', 'size', 0.7)
@@ -2293,7 +2380,9 @@ describe('a gesture is what the user did, not what the element held', () => {
     rerender()
 
     // Press the thumb and never move it, while another tab changes the store.
-    byKey('opacity').dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    ;(await byKey('opacity')).dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }),
+    )
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.9 } })])
     const host = mapCanvas.parentElement
     mapCanvas.remove()
@@ -2311,10 +2400,10 @@ describe('a gesture is what the user did, not what the element held', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    const opacity = (await byKey('opacity')) as HTMLInputElement
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     opacity.value = '0.55'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
 
     gear('b').click()
     rerender()
@@ -2334,9 +2423,9 @@ describe('refusals track the world, not our own render schedule', () => {
     rerender()
     gear('a').click()
     rerender()
-    setRadius()
+    await setRadius()
     await settle()
-    byKey('close').click()
+    ;(await byKey('close')).click()
     harness.localTemplates.mockReturnValue([template({ visible: false })])
     rerender()
     expect(document.getElementById('caelestis-overlay-button-a')).toBeNull()
@@ -2356,22 +2445,22 @@ describe('more than one thing can be happening at once', () => {
     rerender()
     gear('a').click()
     rerender()
-    const size = byKey('size') as HTMLInputElement
-    const opacity = byKey('opacity') as HTMLInputElement
+    const size = (await byKey('size')) as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
-    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    size.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     size.value = '0.6'
-    size.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2 }))
+    size.dispatchEvent(new Event('input', { bubbles: true }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 2 }))
     opacity.value = '0.3'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     // Two touches; the second one lifts first.
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2 }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 2 }))
     await settle()
 
     // Rebuilding here would remove the size input mid-gesture, and its release would never come.
-    expect(byKey('size')).toBe(size)
-    size.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    expect(await byKey('size')).toBe(size)
+    size.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
     await settle()
     expect(harness.setAppearance).toHaveBeenCalledWith('a', expect.objectContaining({ size: 0.6 }))
   })
@@ -2381,13 +2470,13 @@ describe('more than one thing can be happening at once', () => {
     rerender()
     gear('a').click()
     rerender()
-    const size = byKey('size') as HTMLInputElement
-    const opacity = byKey('opacity') as HTMLInputElement
-    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    const size = (await byKey('size')) as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
+    size.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     size.value = '0.6'
-    size.dispatchEvent(new Event('input'))
+    size.dispatchEvent(new Event('input', { bubbles: true }))
     opacity.value = '0.3'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
 
     const host = mapCanvas.parentElement
     mapCanvas.remove()
@@ -2406,18 +2495,18 @@ describe('more than one thing can be happening at once', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     opacity.value = '0.7'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     // The panel starts a delete; the drag guard has been suppressing rebuilds throughout.
     harness.isDeletingLocal.mockReturnValue(true)
     rerender()
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
     await settle()
 
-    expect(byKey('confirm-delete').textContent).toBe('Deleting…')
+    expect((await byKey('confirm-delete')).textContent).toBe('Deleting…')
   })
 
   it('announces a second refusal of the same control', async () => {
@@ -2427,15 +2516,17 @@ describe('more than one thing can be happening at once', () => {
     gear('a').click()
     rerender()
 
-    byKey('hide').click()
+    ;(await byKey('hide')).click()
     await settle()
-    const first = menu().querySelector('[data-caelestis-error]')
-    byKey('hide').click()
+    const first = (await menuRoot()).querySelector('[data-caelestis-error]')
+    ;(await byKey('hide')).click()
     await settle()
 
     // Only Move used to get a second announcement; a deliberate retry of anything deserves one.
-    expect(menu().querySelector('[data-caelestis-error]')).not.toBe(first)
-    expect(menu().querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe('alert')
+    expect((await menuRoot()).querySelector('[data-caelestis-error]')).not.toBe(first)
+    expect((await menuRoot()).querySelector('[data-caelestis-error]')?.getAttribute('role')).toBe(
+      'alert',
+    )
   })
 })
 
@@ -2445,21 +2536,21 @@ describe('a pointer gesture ends wherever the pointer does', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     opacity.value = '0.65'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     // A mouse drag that leaves the range: without pointer capture the release never comes back
     // here, and the gesture — with the rebuild suppression it holds — never ends.
-    opacity.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, pointerId: 1 }))
     await settle()
 
     expect(appearanceWritten(0).opacity).toBe(0.65)
     harness.localTemplates.mockReturnValue([template({ appearance: { opacity: 0.65 } })])
     harness.localTemplates.mockReturnValue([template({ name: 'renamed.png' })])
     rerender()
-    expect(menu().textContent).toContain('renamed.png')
+    expect((await menuRoot()).textContent).toContain('renamed.png')
   })
 
   it('waits for every pointer on one slider before ending the gesture', async () => {
@@ -2467,19 +2558,19 @@ describe('a pointer gesture ends wherever the pointer does', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
     // Two pointers on the *same* range. Tracking holds per element makes the first release look
     // like the end of both.
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 2 }))
     opacity.value = '0.55'
-    opacity.dispatchEvent(new Event('input'))
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }))
     await settle()
     expect(harness.setAppearance).not.toHaveBeenCalled()
 
-    opacity.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2 }))
+    opacity.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 2 }))
     await settle()
 
     expect(appearanceWritten(0).opacity).toBe(0.55)
@@ -2490,14 +2581,14 @@ describe('a pointer gesture ends wherever the pointer does', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
     opacity.value = '0.5'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     // The browser blurs the range before the destination button's click runs.
     opacity.dispatchEvent(new Event('blur'))
-    byKey('close').click()
+    ;(await byKey('close')).click()
     rerender()
     await settle()
 
@@ -2506,7 +2597,7 @@ describe('a pointer gesture ends wherever the pointer does', () => {
 })
 
 describe('identity cannot be forged by data or by the host', () => {
-  it('tells apart two templates whose fields collide on a separator', () => {
+  it('tells apart two templates whose fields collide on a separator', async () => {
     // Both are legal: ids and names are arbitrary strings.
     const first = { ...template({ id: 'a|b', name: 'c' }) }
     const second = { ...template({ id: 'a', name: 'b|c' }) }
@@ -2529,11 +2620,11 @@ describe('identity cannot be forged by data or by the host', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
     opacity.value = '0.72'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     // Only the range is taken, so the menu is untouched and neither teardown path notices.
     opacity.remove()
     rerender()
@@ -2549,13 +2640,13 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
     rerender()
     gear('a').click()
     rerender()
-    const opacity = byKey('opacity') as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
 
-    opacity.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    opacity.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
     opacity.value = '0.6'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     // The browser blurs the range on pointerdown, before the click lands.
-    const close = byKey('close')
+    const close = await byKey('close')
     opacity.dispatchEvent(new Event('blur'))
     close.click()
     rerender()
@@ -2566,7 +2657,7 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
     expect(appearanceWritten(0).opacity).toBe(0.6)
   })
 
-  it('closes on Escape after a click on the map', () => {
+  it('closes on Escape after a click on the map', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
@@ -2574,7 +2665,7 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
 
     // The menu deliberately survives this, per the acceptance criteria.
     mapCanvas.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))
     rerender()
 
     expect(document.getElementById('caelestis-overlay-menu')).toBeNull()
@@ -2582,28 +2673,28 @@ describe('an interaction is not swallowed by the edit it interrupts', () => {
 })
 
 describe('an action waits for the state it depends on', () => {
-  it('answers the delete question first on Escape from outside the menu', () => {
+  it('answers the delete question first on Escape from outside the menu', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
-    byKey('delete').click()
+    ;(await byKey('delete')).click()
     rerender()
 
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))
     rerender()
 
     expect(document.getElementById('caelestis-overlay-menu')).not.toBeNull()
-    expect(menu().querySelector('[data-caelestis-confirm]')).toBeNull()
+    expect((await menuRoot()).querySelector('[data-caelestis-confirm]')).toBeNull()
   })
 
-  it('still exits when another page listener prevented the Escape', () => {
+  it('still exits when another page listener prevented the Escape', async () => {
     harness.localTemplates.mockReturnValue([template()])
     rerender()
     gear('a').click()
     rerender()
 
-    const event = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+    const event = new KeyboardEvent('keydown', { bubbles: true, key: 'Escape', cancelable: true })
     // Something else on the page prevents it first; that is not our marker.
     window.addEventListener('keydown', (e) => e.preventDefault(), { once: true })
     window.dispatchEvent(event)
@@ -2619,8 +2710,8 @@ describe('gestures settle when their control stops being reachable', () => {
     rerender()
     gear('a').click()
     rerender()
-    const size = byKey('size') as HTMLInputElement
-    const opacity = byKey('opacity') as HTMLInputElement
+    const size = (await byKey('size')) as HTMLInputElement
+    const opacity = (await byKey('opacity')) as HTMLInputElement
     // Capture unavailable, so both fall back to window-level releases.
     for (const input of [size, opacity]) {
       Object.defineProperty(input, 'setPointerCapture', {
@@ -2629,14 +2720,14 @@ describe('gestures settle when their control stops being reachable', () => {
         },
       })
     }
-    size.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1 }))
-    opacity.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2 }))
+    size.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
+    opacity.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 2 }))
     opacity.value = '0.33'
-    opacity.dispatchEvent(new Event('input'))
+    opacity.dispatchEvent(new Event('input', { bubbles: true }))
     size.remove()
     rerender()
 
-    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2 }))
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 2 }))
     await settle()
 
     // Dropping every fallback when one slider detaches takes the still-live slider's with it.

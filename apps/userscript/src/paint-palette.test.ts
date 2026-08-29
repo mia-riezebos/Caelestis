@@ -137,7 +137,11 @@ describe('Wplace paint palette progress', () => {
 
     installPaintPaletteProgress()
 
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('…')
+    expect(
+      swatch.querySelector<HTMLElement & { model?: { value: string } }>(
+        'caelestis-palette-progress',
+      )?.model?.value,
+    ).toBe('…')
     expect(swatch.getAttribute('aria-label')).toContain('Checking progress')
     expect(swatch.getAttribute('aria-label')).not.toContain('112 pixels left')
 
@@ -150,7 +154,11 @@ describe('Wplace paint palette progress', () => {
     expect(paintPaletteProgress()).toEqual([
       { index: 0, completed: 1, mismatched: 0, unpainted: 1, known: 2, total: 2 },
     ])
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('1')
+    expect(
+      swatch.querySelector<HTMLElement & { model?: { value: string } }>(
+        'caelestis-palette-progress',
+      )?.model?.value,
+    ).toBe('1')
     expect(swatch.getAttribute('aria-label')).toContain('1 pixel left in the focused template')
     expect(swatch.getAttribute('aria-label')).not.toContain('%')
 
@@ -185,7 +193,11 @@ describe('Wplace paint palette progress', () => {
     refreshPaintPaletteFocus()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(paintPaletteProgress()).toEqual(harness.serverProgress)
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('1')
+    expect(
+      swatch.querySelector<HTMLElement & { model?: { value: string } }>(
+        'caelestis-palette-progress',
+      )?.model?.value,
+    ).toBe('1')
 
     harness.serverProgress = [
       { index: 0, completed: 3, mismatched: 0, unpainted: 0, known: 3, total: 3 },
@@ -193,7 +205,7 @@ describe('Wplace paint palette progress', () => {
     harness.statusListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
 
-    expect(swatch.querySelector('.caelestis-palette-progress')).toBeNull()
+    expect(swatch.querySelector('caelestis-palette-progress')).toBeNull()
     expect(swatch.getAttribute('aria-label')).toBe('Black')
 
     swatch.remove()
@@ -204,7 +216,7 @@ describe('Wplace paint palette progress', () => {
     document.body.appendChild(remounted)
     harness.paintListeners.at(-1)?.()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(remounted.querySelector('.caelestis-palette-progress')).toBeNull()
+    expect(remounted.querySelector('caelestis-palette-progress')).toBeNull()
   })
 
   it("cycles unfinished colours in Wplace's rendered palette order", async () => {

@@ -1,5 +1,5 @@
 ---
-'@caelestis/userscript': patch
+'@caelestis/userscript': minor
 ---
 
 Route marker and progress consumers through one canonical pixel-accounting module from cold load
@@ -17,3 +17,6 @@ left-hand QWERTY map with grouped key explanations, and let physical Backquote t
 Shift+/. Hide the keyboard visualizer on mobile, and match both its modifier row and draft-history
 chords to macOS or Windows/Linux conventions. Balance the desktop reference as one split surface
 with a denser scan list and a full-height keyboard pane.
+Move the userscript presentation into the shared Svelte UI package while retaining userscript-owned
+state and operations. Preserve Wplace visual parity, responsive colour grids, template-local menus,
+and both logged-in and logged-out control-rail geometry across the custom-element boundary.

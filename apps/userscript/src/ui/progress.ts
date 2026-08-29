@@ -1,7 +1,5 @@
-import { WPLACE_PALETTE } from '@caelestis/shared'
 import type { TemplateColourProgress, TemplateProgress } from '../templates/mismatch.js'
 
-/** A count-only answer for a template whose pixels have not reached this browser yet. */
 export const emptyProgress = (total: number): TemplateProgress => ({
   completed: 0,
   mismatched: 0,
@@ -10,14 +8,9 @@ export const emptyProgress = (total: number): TemplateProgress => ({
   total: Math.max(0, total),
 })
 
-/** Completion uses the whole template as its denominator; unscanned pixels are not presumed done. */
 export const completionRatio = (progress: TemplateProgress): number =>
   progress.total <= 0 ? 0 : Math.min(1, Math.max(0, progress.completed / progress.total))
 
-export const completionPercent = (progress: TemplateProgress): number =>
-  Math.round(completionRatio(progress) * 100)
-
-/** Add descendant progress without turning unknown pixels into unpainted pixels. */
 export const sumProgress = (entries: readonly TemplateProgress[]): TemplateProgress | undefined => {
   if (entries.length === 0) return undefined
   return entries.reduce<TemplateProgress>(
@@ -50,164 +43,15 @@ export const sumColourProgress = (
       })
     }
   }
-  return [...totals.values()].sort((a, b) => a.index - b.index)
+  return [...totals.values()].sort((left, right) => left.index - right.index)
 }
 
-/** A server template keeps the server's whole-template baseline while browser tiles load. */
 export const freshestProgress = (
   server: TemplateProgress,
   _local: TemplateProgress,
 ): TemplateProgress => server
 
-/** Server per-colour counts stay authoritative for the same reason as aggregate progress. */
 export const freshestColourProgress = (
   server: readonly TemplateColourProgress[],
   _local: readonly TemplateColourProgress[],
 ): readonly TemplateColourProgress[] => server
-
-const number = (value: number): string => Math.max(0, value).toLocaleString()
-
-type ProgressReader = () => TemplateProgress
-type ColourProgressReader = () => readonly TemplateColourProgress[] | undefined
-
-const progressReaders = new WeakMap<HTMLElement, ProgressReader>()
-const colourProgressReaders = new WeakMap<HTMLElement, ColourProgressReader>()
-
-export const progressLabel = (progress: TemplateProgress): string => {
-  const classified = `${number(progress.completed)} completed, ${number(progress.mismatched)} mismatched, ${number(progress.unpainted)} unpainted`
-  const prefix = `${completionPercent(progress)}% complete. `
-  if (progress.total <= progress.known) return `${prefix}${classified}.`
-  return `${prefix}${classified}; ${number(progress.known)} of ${number(progress.total)} pixels scanned.`
-}
-
-const updateProgressIndicator = (root: HTMLElement, progress: TemplateProgress): void => {
-  const label = progressLabel(progress)
-  root.setAttribute('aria-label', label)
-  root.title = label
-
-  const total = Math.max(1, progress.total)
-  for (const [kind, value] of [
-    ['completed', progress.completed],
-    ['mismatched', progress.mismatched],
-    ['unpainted', progress.unpainted],
-  ] as const) {
-    const segment = root.querySelector<HTMLElement>(
-      `.caelestis-progress-segment.${`caelestis-progress-${kind}`}`,
-    )
-    if (segment !== null) {
-      segment.style.width = `${Math.min(100, Math.max(0, (value / total) * 100))}%`
-    }
-    const legend = root.querySelector<HTMLElement>(
-      `.caelestis-progress-legend-item.${`caelestis-progress-${kind}`}`,
-    )
-    if (legend !== null) legend.textContent = number(value)
-  }
-
-  const percent = root.querySelector<HTMLElement>('.caelestis-progress-percent')
-  if (percent !== null) percent.textContent = `${completionPercent(progress)}%`
-  const coverage = root.querySelector<HTMLElement>('.caelestis-progress-coverage')
-  if (coverage !== null) {
-    coverage.hidden = progress.known >= progress.total
-    coverage.textContent = coverage.hidden
-      ? ''
-      : `${Math.round((progress.known / total) * 100)}% scanned`
-  }
-}
-
-/** One three-way meter. Remaining track is deliberately unknown, not a fourth progress segment. */
-export const progressIndicator = (
-  progress: TemplateProgress,
-  placement: 'inline' | 'expanded',
-  read?: ProgressReader,
-): HTMLElement => {
-  const root = document.createElement('span')
-  root.className = `caelestis-progress caelestis-progress--${placement}`
-  root.setAttribute('role', 'img')
-
-  const bar = document.createElement('span')
-  bar.className = 'caelestis-progress-track'
-  for (const kind of ['completed', 'mismatched', 'unpainted'] as const) {
-    const segment = document.createElement('span')
-    segment.className = `caelestis-progress-segment caelestis-progress-${kind}`
-    bar.appendChild(segment)
-  }
-  const meter = document.createElement('span')
-  meter.className = 'caelestis-progress-meter'
-  const percent = document.createElement('span')
-  percent.className = 'caelestis-progress-percent'
-  meter.append(bar, percent)
-  root.appendChild(meter)
-
-  if (placement === 'expanded') {
-    const legend = document.createElement('span')
-    legend.className = 'caelestis-progress-legend'
-    for (const kind of ['completed', 'mismatched', 'unpainted'] as const) {
-      const item = document.createElement('span')
-      item.className = `caelestis-progress-legend-item caelestis-progress-${kind}`
-      legend.appendChild(item)
-    }
-    const coverage = document.createElement('span')
-    coverage.className = 'caelestis-progress-coverage'
-    legend.appendChild(coverage)
-    root.appendChild(legend)
-  }
-
-  updateProgressIndicator(root, progress)
-  if (read !== undefined) progressReaders.set(root, read)
-  return root
-}
-
-/** One compact meter row per colour actually present in the template or aggregate. */
-const renderColourProgress = (
-  root: HTMLElement,
-  entries: readonly TemplateColourProgress[],
-): void => {
-  root.replaceChildren()
-  for (const entry of entries) {
-    const colour = WPLACE_PALETTE[entry.index]
-    if (colour === undefined) continue
-    const row = document.createElement('span')
-    row.className = 'caelestis-progress-colour-row'
-    row.setAttribute('aria-label', `${colour.name}. ${progressLabel(entry)}`)
-
-    const swatch = document.createElement('span')
-    swatch.className = 'caelestis-progress-colour-swatch'
-    swatch.style.backgroundColor = colour.hex
-
-    const name = document.createElement('span')
-    name.className = 'caelestis-progress-colour-name'
-    name.textContent = colour.name
-    name.title = colour.name
-
-    const meter = progressIndicator(entry, 'inline')
-    meter.style.setProperty('--caelestis-progress-completed', colour.hex)
-    meter.removeAttribute('role')
-    meter.removeAttribute('aria-label')
-    meter.removeAttribute('title')
-    row.append(swatch, name, meter)
-    root.appendChild(row)
-  }
-}
-
-export const colourProgressDetails = (
-  entries: readonly TemplateColourProgress[],
-  read?: ColourProgressReader,
-): HTMLElement => {
-  const root = document.createElement('span')
-  root.className = 'caelestis-progress-colours'
-  renderColourProgress(root, entries)
-  if (read !== undefined) colourProgressReaders.set(root, read)
-  return root
-}
-
-/** Refresh only live progress subtrees, preserving every surrounding control and row. */
-export const refreshProgressIndicators = (root: ParentNode): void => {
-  for (const meter of root.querySelectorAll<HTMLElement>('.caelestis-progress')) {
-    const read = progressReaders.get(meter)
-    if (read !== undefined) updateProgressIndicator(meter, read())
-  }
-  for (const details of root.querySelectorAll<HTMLElement>('.caelestis-progress-colours')) {
-    const read = colourProgressReaders.get(details)
-    if (read !== undefined) renderColourProgress(details, read() ?? [])
-  }
-}

@@ -1,19 +1,15 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getState, setState } from '../state.js'
-import type { PlacedTemplate } from '../templates/local-store.js'
-import { startRenaming, type TreeCallbacks, treeContents } from './tree.js'
 import {
   acceptServerSnapshot,
   forgetServerRows,
   nodeTreeKey,
   optimisticallyPlaceServerRow,
   serverTemplateTreeKey,
-} from './tree-server-state.js'
+} from '../application/tree-server-state.js'
+import { getState, setState } from '../state.js'
+import { startRenaming, type TreeCallbacks, templateTreeAdapter } from './tree.js'
 
-const localTemplateHarness = vi.hoisted(() => ({
-  templates: vi.fn(() => [] as PlacedTemplate[]),
-}))
 const navigationHarness = vi.hoisted(() => ({ navigateTo: vi.fn() }))
 const telemetryHarness = vi.hoisted(() => ({
   progress: new Map<
@@ -22,10 +18,6 @@ const telemetryHarness = vi.hoisted(() => ({
   >(),
 }))
 
-vi.mock('../templates/local-store.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../templates/local-store.js')>()),
-  localTemplates: localTemplateHarness.templates,
-}))
 vi.mock('../templates/navigate.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../templates/navigate.js')>()),
   navigateTo: navigationHarness.navigateTo,
@@ -72,14 +64,7 @@ const DESTINATION_NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49683'
 const TEMPLATE_A_ID = '019fed50-87a1-7523-a88c-bdeafad49684'
 const TEMPLATE_B_ID = '019fed50-87a1-7523-a88c-bdeafad49685'
 
-const eventWithTransfer = (type: string, dataTransfer: DataTransfer, clientY = 0): MouseEvent => {
-  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientY })
-  Object.defineProperty(event, 'dataTransfer', { value: dataTransfer })
-  return event
-}
-
 afterEach(() => {
-  localTemplateHarness.templates.mockReturnValue([])
   telemetryHarness.progress.clear()
   forgetServerRows(SERVER_URL)
   setState({
@@ -120,25 +105,10 @@ const serverTemplate = (id: string, nodeId: string | null, name: string, updated
   chunks: [],
 })
 
-const placedTemplate = (): PlacedTemplate => ({
-  id: 'progress-template',
-  name: 'Progress template',
-  source: 'image',
-  originX: 0,
-  originY: 0,
-  width: 2,
-  height: 1,
-  indices: new Uint8Array([0, 4]),
-  moved: 0,
-  opaque: 2,
-  tiles: new Set(),
-  visible: true,
-  everPlaced: true,
-  appearance: null,
-  revision: 1,
-  owns: [],
-  folderId: null,
-})
+const treeRows = (callbacks: TreeCallbacks, query = '') =>
+  templateTreeAdapter(callbacks, vi.fn(), query).model.entries.filter(
+    (entry) => entry.type === 'row',
+  )
 
 describe('tree drag and drop', () => {
   it('commits a Local folder rename through the tree interface', async () => {
@@ -156,12 +126,9 @@ describe('tree drag and drop', () => {
       onDropInServer: vi.fn(),
     }
 
-    const tree = treeContents(callbacks, vi.fn())
-    const input = tree.querySelector<HTMLInputElement>('[data-caelestis-rename]')
-    const save = tree.querySelector<HTMLButtonElement>('[aria-label="Save"]')
-    if (input === null || save === null) throw new Error('expected the inline rename controls')
-    input.value = 'After'
-    save.click()
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    expect(adapter.model.renamingKey).toBe('lf:folder')
+    adapter.handle({ type: 'rename', key: 'lf:folder', name: 'After' })
     await Promise.resolve()
 
     expect(getState().localFolders.find(({ id }) => id === 'folder')?.name).toBe('After')
@@ -190,29 +157,17 @@ describe('tree drag and drop', () => {
       onDropInServer: vi.fn(),
     }
 
-    const tree = treeContents(callbacks, vi.fn())
-    const row = tree.querySelector<HTMLElement>(
-      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
-    )
-    const flyTo = row?.querySelector<HTMLButtonElement>('[aria-label="Go to"]')
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    const key = serverTemplateTreeKey(server, TEMPLATE_A_ID)
+    const row = adapter.model.entries.find((entry) => entry.type === 'row' && entry.key === key)
+    const flyTo =
+      row?.type === 'row'
+        ? row.leadingActions?.find((action) => action.label === 'Go to')
+        : undefined
 
-    expect(flyTo).not.toBeNull()
-    expect(
-      [...(row?.children ?? [])].some(
-        (child) => child instanceof HTMLElement && child.style.width === '1rem',
-      ),
-    ).toBe(false)
-    const connector = row?.querySelector<SVGSVGElement>(':scope > .caelestis-tree-connector')
-    expect(connector).not.toBeNull()
-    expect(connector?.querySelectorAll('line')).toHaveLength(2)
-    expect(row?.style.marginInline).toBe('0.25rem 0.5rem')
-    expect(flyTo?.parentElement?.classList.contains('caelestis-leading-actions')).toBe(true)
-    expect(row?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
-    expect(row?.querySelector('[aria-label="Expand progress"]')).not.toBeNull()
-    expect(row?.textContent).not.toContain('unpublished')
-    expect(row?.classList.contains('caelestis-muted')).toBe(true)
-    expect(flyTo?.classList.contains('caelestis-row-action')).toBe(true)
-    flyTo?.click()
+    expect(row).toEqual(expect.objectContaining({ muted: true, branches: expect.any(Array) }))
+    expect(flyTo).toBeDefined()
+    if (flyTo !== undefined) adapter.handle({ type: 'action', key, actionId: flyTo.id })
     expect(navigationHarness.navigateTo).toHaveBeenCalledWith({
       x: 0.5,
       y: 0.5,
@@ -233,7 +188,7 @@ describe('tree drag and drop', () => {
       templates: [serverTemplate(TEMPLATE_A_ID, null, 'Template', 1)],
     })
     const onContextMenu = vi.fn()
-    const tree = treeContents(
+    const adapter = templateTreeAdapter(
       {
         onAddServer: vi.fn(),
         onCreateFolder: vi.fn(),
@@ -245,11 +200,12 @@ describe('tree drag and drop', () => {
       },
       vi.fn(),
     )
-    const row = tree.querySelector<HTMLElement>(
-      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
-    )
-
-    row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    adapter.handle({
+      type: 'context-menu',
+      key: serverTemplateTreeKey(server, TEMPLATE_A_ID),
+      x: 0,
+      y: 0,
+    })
 
     expect(onContextMenu).toHaveBeenCalledWith(
       expect.objectContaining({ templateId: TEMPLATE_A_ID }),
@@ -272,20 +228,17 @@ describe('tree drag and drop', () => {
       ],
     })
 
-    const keys = [
-      ...treeContents(
-        {
-          onAddServer: vi.fn(),
-          onCreateFolder: vi.fn(),
-          onImportTemplate: vi.fn(),
-          onContextMenu: vi.fn(),
-          onCopyToServer: vi.fn(),
-          onDropInLocal: vi.fn(),
-          onDropInServer: vi.fn(),
-        },
-        vi.fn(),
-      ).querySelectorAll<HTMLElement>('[data-caelestis-key^="st:"]'),
-    ].map((row) => row.dataset.caelestisKey)
+    const keys = treeRows({
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onContextMenu: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onDropInLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    })
+      .filter((row) => row.key.startsWith('st:'))
+      .map((row) => row.key)
 
     expect(keys).toEqual([
       serverTemplateTreeKey(server, TEMPLATE_B_ID),
@@ -327,21 +280,16 @@ describe('tree drag and drop', () => {
       ],
     })
 
-    const keys = [
-      ...treeContents(
-        {
-          onAddServer: vi.fn(),
-          onCreateFolder: vi.fn(),
-          onImportTemplate: vi.fn(),
-          onContextMenu: vi.fn(),
-          onCopyToServer: vi.fn(),
-          onDropInLocal: vi.fn(),
-          onDropInServer: vi.fn(),
-        },
-        vi.fn(),
-      ).querySelectorAll<HTMLElement>('[role="treeitem"]'),
-    ]
-      .map((row) => row.dataset.caelestisKey)
+    const keys = treeRows({
+      onAddServer: vi.fn(),
+      onCreateFolder: vi.fn(),
+      onImportTemplate: vi.fn(),
+      onContextMenu: vi.fn(),
+      onCopyToServer: vi.fn(),
+      onDropInLocal: vi.fn(),
+      onDropInServer: vi.fn(),
+    })
+      .map((row) => row.key)
       .filter((key): key is string => key === done || key === todo || key === folderKey)
 
     expect(keys).toEqual([todo, folderKey, done])
@@ -374,92 +322,18 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
-    const render = () => treeContents(callbacks, vi.fn())
-    let tree = render()
-    const serverRow = tree.querySelector<HTMLElement>(`[data-caelestis-key="server:${SERVER_URL}"]`)
-    const folderRow = tree.querySelector<HTMLElement>(
-      `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
-    )
-    const templateRow = tree.querySelector<HTMLElement>(
-      `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
-    )
+    const rows = treeRows(callbacks)
+    const serverRow = rows.find((row) => row.key === `server:${SERVER_URL}`)
+    const folderRow = rows.find((row) => row.key === nodeTreeKey(server, SOURCE_NODE_ID))
+    const templateRow = rows.find((row) => row.key === serverTemplateTreeKey(server, TEMPLATE_A_ID))
 
-    expect(serverRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
-      '0 of 150 pixels scanned',
-    )
-    expect(folderRow?.querySelector('.caelestis-progress')?.getAttribute('aria-label')).toContain(
-      '0 of 150 pixels scanned',
-    )
-    expect(serverRow?.querySelector(':scope > .caelestis-tree-connector')).toBeNull()
-    expect(folderRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
-    expect(templateRow?.querySelector(':scope > .caelestis-tree-connector')).not.toBeNull()
-    expect(serverRow?.style.marginInline).toBe('0.25rem 0.5rem')
-    expect(folderRow?.style.marginInline).toBe(serverRow?.style.marginInline)
-    expect(folderRow?.getAttribute('aria-setsize')).toBe('1')
-    expect(folderRow?.getAttribute('aria-posinset')).toBe('1')
-    expect(templateRow?.getAttribute('aria-setsize')).toBe('2')
-    expect(templateRow?.getAttribute('aria-posinset')).toBe('2')
-    expect(templateRow?.style.marginInline).toBe(serverRow?.style.marginInline)
-    for (const row of [serverRow, folderRow]) {
-      const tail = row?.querySelector('.caelestis-row-tail')
-      expect(tail?.querySelector(':scope > .caelestis-progress--inline')).not.toBeNull()
-      expect(tail?.querySelector(':scope > .caelestis-actions')).not.toBeNull()
-    }
-
-    folderRow?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')?.click()
-    tree = render()
-    expect(
-      tree
-        .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
-        ?.classList.contains('caelestis-row--expanded-progress'),
-    ).toBe(true)
-    const folderDetail = tree
-      .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
-      ?.querySelector<HTMLElement>('.caelestis-progress--expanded')
-    expect(folderDetail?.style.marginInlineStart).toBe('20px')
-    expect(folderDetail?.style.width).toBe('calc(100% - 20px)')
-
-    tree
-      .querySelector<HTMLElement>(
-        `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
-      )
-      ?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')
-      ?.click()
-    tree = render()
-    const templateDetail = tree
-      .querySelector(`[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`)
-      ?.querySelector<HTMLElement>('.caelestis-progress--expanded')
-    expect(templateDetail?.style.marginInlineStart).toBe('')
-    tree
-      .querySelector<HTMLElement>(
-        `[data-caelestis-key="${serverTemplateTreeKey(server, TEMPLATE_A_ID)}"]`,
-      )
-      ?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
-      ?.click()
-
-    setState({ collapsed: ['local', nodeTreeKey(server, SOURCE_NODE_ID)] })
-    tree = render()
-    const collapsedFolder = tree.querySelector<HTMLElement>(
-      `[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`,
-    )
-    expect(collapsedFolder?.classList.contains('caelestis-row--expanded-progress')).toBe(false)
-    const reopenProgress = collapsedFolder?.querySelector<HTMLButtonElement>(
-      '[aria-label="Expand progress"]',
-    )
-    expect(reopenProgress).not.toBeNull()
-    reopenProgress?.click()
-
-    // The progress action opens its parent as required, then return disclosure to the default.
-    tree = render()
-    expect(
-      tree
-        .querySelector(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
-        ?.classList.contains('caelestis-row--expanded-progress'),
-    ).toBe(true)
-    tree
-      .querySelector<HTMLElement>(`[data-caelestis-key="${nodeTreeKey(server, SOURCE_NODE_ID)}"]`)
-      ?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
-      ?.click()
+    expect(serverRow?.progress).toEqual(expect.objectContaining({ total: 150, known: 0 }))
+    expect(folderRow?.progress).toEqual(expect.objectContaining({ total: 150, known: 0 }))
+    expect(serverRow?.branches ?? []).toHaveLength(0)
+    expect(folderRow?.branches).toBeDefined()
+    expect(templateRow?.branches).toBeDefined()
+    expect(folderRow).toEqual(expect.objectContaining({ setSize: 1, positionInSet: 1 }))
+    expect(templateRow).toEqual(expect.objectContaining({ setSize: 2, positionInSet: 2 }))
   })
 
   it('continues the tree branches through an empty folder placeholder', () => {
@@ -487,70 +361,10 @@ describe('tree drag and drop', () => {
       onDropInServer: vi.fn(),
     }
 
-    const tree = treeContents(callbacks, vi.fn())
-    const placeholder = [...tree.querySelectorAll<HTMLElement>('[aria-disabled="true"]')].find(
-      (row) => row.textContent === 'Empty.',
+    const empty = templateTreeAdapter(callbacks, vi.fn()).model.entries.find(
+      (entry) => entry.type === 'notice' && entry.text === 'Empty.',
     )
-    const connector = placeholder?.querySelector<SVGSVGElement>(
-      ':scope > .caelestis-tree-connector',
-    )
-
-    expect(connector).not.toBeNull()
-    expect(connector?.querySelectorAll('line')).toHaveLength(3)
-    expect(connector?.querySelector('line')?.getAttribute('y2')).toBe('100%')
-  })
-
-  it('keeps colour disclosure beside the expanded meter instead of the row actions', () => {
-    localTemplateHarness.templates.mockReturnValue([placedTemplate()])
-    setState({
-      servers: [],
-      localFolders: [],
-      customOrder: [],
-      collapsed: [],
-      sort: { field: 'custom', direction: 'asc' },
-    })
-    const callbacks: TreeCallbacks = {
-      onAddServer: vi.fn(),
-      onCreateFolder: vi.fn(),
-      onImportTemplate: vi.fn(),
-      onContextMenu: vi.fn(),
-      onCopyToServer: vi.fn(),
-      onDropInLocal: vi.fn(),
-      onDropInServer: vi.fn(),
-    }
-    const render = () => treeContents(callbacks, vi.fn())
-    let tree = render()
-    tree
-      .querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
-      ?.querySelector<HTMLButtonElement>('[aria-label="Expand progress"]')
-      ?.click()
-
-    tree = render()
-    let row = tree.querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
-    const collapse = row?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')
-    const showColours = row?.querySelector<HTMLButtonElement>('[aria-label="Show colour progress"]')
-
-    expect(collapse?.parentElement?.classList.contains('caelestis-actions')).toBe(true)
-    expect(
-      showColours?.parentElement?.classList.contains('caelestis-progress-detail-actions'),
-    ).toBe(true)
-    expect(showColours?.parentElement?.classList.contains('caelestis-actions')).toBe(false)
-    expect(collapse?.parentElement).not.toBe(showColours?.parentElement)
-    expect(showColours?.closest('.caelestis-progress-disclosure')).not.toBeNull()
-    expect(
-      row?.querySelector('.caelestis-progress-disclosure > .caelestis-progress--expanded'),
-    ).not.toBeNull()
-
-    showColours?.click()
-    tree = render()
-    row = tree.querySelector<HTMLElement>('[data-caelestis-key="local:progress-template"]')
-    expect(
-      row
-        ?.querySelector('[aria-label="Hide colour progress"]')
-        ?.closest('.caelestis-progress-disclosure'),
-    ).not.toBeNull()
-    expect(row?.querySelector('.caelestis-progress-colours')).not.toBeNull()
-    row?.querySelector<HTMLButtonElement>('[aria-label="Collapse progress"]')?.click()
+    expect(empty).toEqual(expect.objectContaining({ branches: expect.arrayContaining([true]) }))
   })
 
   it('renders a server reparent eagerly and can roll it back without waiting for a manifest', () => {
@@ -580,10 +394,7 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
-    const rowOrder = (): string[] =>
-      [...treeContents(callbacks, vi.fn()).querySelectorAll<HTMLElement>('[data-caelestis-key]')]
-        .map((row) => row.dataset.caelestisKey)
-        .filter((key): key is string => key !== undefined)
+    const rowOrder = (): string[] => treeRows(callbacks).map((row) => row.key)
 
     expect(rowOrder().indexOf(templateKey)).toBeLessThan(rowOrder().indexOf(destinationKey))
     const optimistic = optimisticallyPlaceServerRow(server, templateKey, DESTINATION_NODE_ID)
@@ -629,16 +440,8 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer,
     }
-    const tree = treeContents(callbacks, vi.fn())
-    const first = tree.querySelector<HTMLElement>(`[data-caelestis-key="${firstKey}"]`)
-    const second = tree.querySelector<HTMLElement>(`[data-caelestis-key="${secondKey}"]`)
-    if (first === null || second === null) throw new Error('expected rendered server templates')
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', firstKey)
-
-    first.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    second.dispatchEvent(eventWithTransfer('dragover', transfer, 1))
-    second.dispatchEvent(eventWithTransfer('drop', transfer, 1))
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    adapter.handle({ type: 'drop', draggedKey: firstKey, targetKey: secondKey, position: 'after' })
     await Promise.resolve()
 
     expect(onDropInServer).toHaveBeenCalledWith(server, SOURCE_NODE_ID, firstKey, null)
@@ -671,30 +474,13 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer,
     }
-    const tree = treeContents(callbacks, vi.fn())
-    const template = tree.querySelector<HTMLElement>(`[data-caelestis-key="${templateKey}"]`)
-    const destinationRow = tree.querySelector<HTMLElement>(
-      `[data-caelestis-key="${nodeTreeKey(server, DESTINATION_NODE_ID)}"]`,
-    )
-    if (template === null || destinationRow === null)
-      throw new Error('expected rendered server rows')
-    vi.spyOn(destinationRow, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 100,
-      bottom: 30,
-      left: 0,
-      width: 100,
-      height: 30,
-      toJSON: () => ({}),
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    adapter.handle({
+      type: 'drop',
+      draggedKey: templateKey,
+      targetKey: nodeTreeKey(server, DESTINATION_NODE_ID),
+      position: 'inside',
     })
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', templateKey)
-
-    template.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    destinationRow.dispatchEvent(eventWithTransfer('dragover', transfer, 15))
-    destinationRow.dispatchEvent(eventWithTransfer('drop', transfer, 15))
     await Promise.resolve()
     await Promise.resolve()
 
@@ -727,32 +513,13 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer,
     }
-    const tree = treeContents(callbacks, vi.fn())
-    const template = tree.querySelector<HTMLElement>(`[data-caelestis-key="${templateKey}"]`)
-    const destinationRow = tree.querySelector<HTMLElement>(
-      `[data-caelestis-key="${nodeTreeKey(server, DESTINATION_NODE_ID)}"]`,
-    )
-    if (template === null || destinationRow === null)
-      throw new Error('expected rendered server rows')
-    vi.spyOn(destinationRow, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 100,
-      bottom: 30,
-      left: 0,
-      width: 100,
-      height: 30,
-      toJSON: () => ({}),
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    adapter.handle({
+      type: 'drop',
+      draggedKey: templateKey,
+      targetKey: nodeTreeKey(server, DESTINATION_NODE_ID),
+      position: 'inside',
     })
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', templateKey)
-
-    template.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    destinationRow.dispatchEvent(eventWithTransfer('dragover', transfer, 15))
-    expect(tree.querySelector('[data-caelestis-placeholder]')).not.toBeNull()
-    // The flex gap is owned by the tree, not by either adjacent element.
-    tree.dispatchEvent(eventWithTransfer('drop', transfer, 15))
     await Promise.resolve()
 
     expect(onDropInServer).toHaveBeenCalledWith(server, DESTINATION_NODE_ID, templateKey, null)
@@ -783,27 +550,13 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer,
     }
-    const tree = treeContents(callbacks, vi.fn())
-    const template = tree.querySelector<HTMLElement>(`[data-caelestis-key="${templateKey}"]`)
-    const root = tree.querySelector<HTMLElement>(`[data-caelestis-key="server:${SERVER_URL}"]`)
-    if (template === null || root === null) throw new Error('expected rendered server rows')
-    vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 100,
-      bottom: 30,
-      left: 0,
-      width: 100,
-      height: 30,
-      toJSON: () => ({}),
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    adapter.handle({
+      type: 'drop',
+      draggedKey: templateKey,
+      targetKey: `server:${SERVER_URL}`,
+      position: 'inside',
     })
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', templateKey)
-
-    template.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    root.dispatchEvent(eventWithTransfer('dragover', transfer, 15))
-    root.dispatchEvent(eventWithTransfer('drop', transfer, 15))
     await Promise.resolve()
     await Promise.resolve()
 
@@ -830,16 +583,13 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
-    const tree = treeContents(callbacks, vi.fn())
-    const parent = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:parent"]')
-    const moving = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:moving"]')
-    if (parent === null || moving === null) throw new Error('expected rendered folder rows')
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', 'lf:moving')
-
-    moving.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    parent.dispatchEvent(eventWithTransfer('dragover', transfer, 1))
-    parent.dispatchEvent(eventWithTransfer('drop', transfer, 1))
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    adapter.handle({
+      type: 'drop',
+      draggedKey: 'lf:moving',
+      targetKey: 'lf:parent',
+      position: 'inside',
+    })
     await Promise.resolve()
 
     expect(getState().localFolders.find(({ id }) => id === 'moving')?.parentId).toBe('parent')
@@ -873,17 +623,13 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
-    const tree = treeContents(callbacks, vi.fn())
-    const local = tree.querySelector<HTMLElement>('[data-caelestis-key="local"]')
-    const server = tree.querySelector<HTMLElement>(`[data-caelestis-key="server:${url}"]`)
-    if (local === null || server === null) throw new Error('expected rendered category rows')
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', 'local')
-
-    local.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    server.dispatchEvent(eventWithTransfer('dragover', transfer, -1))
-    server.dispatchEvent(eventWithTransfer('dragover', transfer, 1))
-    server.dispatchEvent(eventWithTransfer('drop', transfer, 1))
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    adapter.handle({
+      type: 'drop',
+      draggedKey: 'local',
+      targetKey: `server:${url}`,
+      position: 'inside',
+    })
 
     expect(getState().customOrder).toEqual([`server:${url}`, 'local'])
     expect(callbacks.onDropInServer).not.toHaveBeenCalled()
@@ -910,16 +656,13 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
-    const tree = treeContents(callbacks, vi.fn())
-    const moving = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:moving"]')
-    const destination = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:destination"]')
-    if (moving === null || destination === null) throw new Error('expected rendered folder rows')
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', 'lf:moving')
-
-    moving.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    destination.dispatchEvent(eventWithTransfer('dragover', transfer, 1))
-    destination.dispatchEvent(eventWithTransfer('drop', transfer, 1))
+    const adapter = templateTreeAdapter(callbacks, vi.fn())
+    adapter.handle({
+      type: 'drop',
+      draggedKey: 'lf:moving',
+      targetKey: 'lf:destination',
+      position: 'inside',
+    })
     await Promise.resolve()
     await Promise.resolve()
 
@@ -952,16 +695,8 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
-    const tree = treeContents(callbacks, vi.fn(), 'match')
-    const moving = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:moving"]')
-    const b = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:b"]')
-    if (moving === null || b === null) throw new Error('expected rendered filtered rows')
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', 'lf:moving')
-
-    moving.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    b.dispatchEvent(eventWithTransfer('dragover', transfer, 1))
-    b.dispatchEvent(eventWithTransfer('drop', transfer, 1))
+    const adapter = templateTreeAdapter(callbacks, vi.fn(), 'match')
+    adapter.handle({ type: 'drop', draggedKey: 'lf:moving', targetKey: 'lf:b', position: 'after' })
     await Promise.resolve()
     await Promise.resolve()
 
@@ -994,16 +729,13 @@ describe('tree drag and drop', () => {
       onDropInLocal: vi.fn(),
       onDropInServer: vi.fn(),
     }
-    const tree = treeContents(callbacks, vi.fn(), 'match')
-    const moving = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:moving"]')
-    const destination = tree.querySelector<HTMLElement>('[data-caelestis-key="lf:destination"]')
-    if (moving === null || destination === null) throw new Error('expected rendered filtered rows')
-    const transfer = new DataTransfer()
-    transfer.setData('text/plain', 'lf:moving')
-
-    moving.dispatchEvent(eventWithTransfer('dragstart', transfer))
-    destination.dispatchEvent(eventWithTransfer('dragover', transfer, 1))
-    destination.dispatchEvent(eventWithTransfer('drop', transfer, 1))
+    const adapter = templateTreeAdapter(callbacks, vi.fn(), 'match')
+    adapter.handle({
+      type: 'drop',
+      draggedKey: 'lf:moving',
+      targetKey: 'lf:destination',
+      position: 'inside',
+    })
     await Promise.resolve()
     await Promise.resolve()
 

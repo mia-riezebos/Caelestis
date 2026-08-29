@@ -9,6 +9,13 @@ vi.mock('../server-cache.js', async (importOriginal) => ({
 }))
 
 import {
+  acceptServerSnapshot,
+  forgetServerRows,
+  nodeTreeKey,
+  refreshServerSnapshot,
+  serverTemplateAt,
+} from '../application/tree-server-state.js'
+import {
   admittedServerContentsFor,
   type ConnectedServer,
   getState,
@@ -17,15 +24,7 @@ import {
   probeServer,
   setState,
 } from '../state.js'
-import { treeContents } from './tree.js'
-import { treeRow } from './tree-row.js'
-import {
-  acceptServerSnapshot,
-  forgetServerRows,
-  nodeTreeKey,
-  refreshServerSnapshot,
-  serverTemplateAt,
-} from './tree-server-state.js'
+import { templateTreeAdapter } from './tree.js'
 
 const SERVER_ID = '019fed50-87a1-7523-a88c-bdeafad49681'
 const NODE_ID = '019fed50-87a1-7523-a88c-bdeafad49682'
@@ -52,77 +51,12 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-class FakeElement {
-  readonly children: FakeElement[] = []
-  readonly dataset: Record<string, string> = {}
-  readonly style: Record<string, string> = {}
-  readonly classList = {
-    add: vi.fn(),
-    remove: vi.fn(),
-    contains: vi.fn(() => false),
-  }
-  className = ''
-  textContent = ''
-  checked = false
-  disabled = false
-  draggable = false
-  tabIndex = 0
-  title = ''
-  type = ''
-  value = ''
-  scrollWidth = 0
-  clientWidth = 0
-
-  appendChild(child: FakeElement): FakeElement {
-    this.children.push(child)
-    return child
-  }
-
-  append(...children: FakeElement[]): void {
-    this.children.push(...children)
-  }
-
-  setAttribute(name: string, value: string): void {
-    if (name === 'class') this.className = value
-  }
-  addEventListener(): void {}
-  focus(): void {}
-  remove(): void {}
-  contains(child: FakeElement): boolean {
-    return child === this || this.children.some((candidate) => candidate.contains(child))
-  }
-  querySelector(): FakeElement | null {
-    return null
-  }
-  querySelectorAll(): FakeElement[] {
-    return []
-  }
-}
-
-const installFakeDom = (): void => {
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-    callback(0)
-    return 1
-  })
-  vi.stubGlobal('document', {
-    createElement: () => new FakeElement(),
-    createElementNS: () => new FakeElement(),
-  })
-}
-
-const renderedText = (element: FakeElement): string =>
-  [element.textContent, ...element.children.map((child) => renderedText(child))]
-    .filter((text) => text !== '')
+const renderedText = (adapter: ReturnType<typeof templateTreeAdapter>): string =>
+  adapter.model.entries
+    .map((entry) =>
+      entry.type === 'row' ? entry.name : entry.type === 'notice' ? entry.text : entry.action.label,
+    )
     .join(' ')
-
-const elementWithClass = (element: FakeElement, className: string): FakeElement | null => {
-  if (element.className.split(' ').includes(className)) return element
-  for (const child of element.children) {
-    const found = elementWithClass(child, className)
-    if (found !== null) return found
-  }
-  return null
-}
 
 const callbacks = {
   onAddServer: vi.fn(),
@@ -143,26 +77,39 @@ const server = (id: string, season: number, url = 'https://example.com'): Connec
   season,
 })
 
-describe('tree identity and ordering', () => {
-  it('renders explicit visible and hidden icons inside the visibility control', () => {
-    installFakeDom()
-    const row = treeRow({
-      key: 'template-a',
-      name: 'Template A',
-      kind: 'image',
-      depth: 0,
-      container: false,
-      siblings: ['template-a'],
-      checked: false,
-      rerender: vi.fn(),
-      onError: vi.fn(),
-    }) as unknown as FakeElement
+describe('tree model adapter', () => {
+  it('translates tree state and routes typed expansion and action intents', () => {
+    setState({ collapsed: ['local'] })
+    const rerender = vi.fn()
+    const onImportTemplate = vi.fn()
+    const adapter = templateTreeAdapter({ ...callbacks, onImportTemplate }, rerender)
 
-    expect(elementWithClass(row, 'caelestis-eye-off')).not.toBeNull()
-    expect(elementWithClass(row, 'caelestis-eye-on')).not.toBeNull()
-    expect(elementWithClass(row, 'caelestis-eye')?.children[0]?.checked).toBe(false)
+    expect(adapter.model.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'row',
+          key: 'local',
+          name: 'Local',
+          expanded: false,
+          positionInSet: 1,
+          setSize: 1,
+        }),
+        expect.objectContaining({ type: 'action', key: 'add-server' }),
+      ]),
+    )
+
+    adapter.handle({ type: 'toggle-expanded', key: 'local' })
+    expect(getState().collapsed).not.toContain('local')
+    expect(rerender).toHaveBeenCalled()
+
+    adapter.handle({ type: 'action', key: 'local', actionId: 'row-1' })
+    expect(onImportTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'local', server: null }),
+    )
   })
+})
 
+describe('tree identity and ordering', () => {
   it('replaces tree rows when a manifest arrives outside an explicit refresh', () => {
     const connected = server(SERVER_ID, 0)
     setState({ servers: [connected] })
@@ -554,7 +501,6 @@ describe('tree identity and ordering', () => {
   })
 
   it('renders cached folders alongside an unreachable connection warning', async () => {
-    installFakeDom()
     const connected = server(SERVER_ID, 0, 'https://cached.example.com')
     setState({ servers: [connected] })
     vi.stubGlobal(
@@ -585,15 +531,13 @@ describe('tree identity and ordering', () => {
     }
     setState({ servers: [stale] })
 
-    const tree = treeContents(callbacks, vi.fn()) as unknown as FakeElement
-    const text = renderedText(tree)
+    const text = renderedText(templateTreeAdapter(callbacks, vi.fn()))
 
     expect(text).toContain('Cached folder')
     expect(text).toContain('Could not be reached. offline')
   })
 
   it('reports loading rather than an empty server while the first folder fetch is pending', () => {
-    installFakeDom()
     const connected = server(SERVER_ID, 0, 'https://loading.example.com')
     setState({ servers: [connected] })
     vi.stubGlobal(
@@ -601,8 +545,7 @@ describe('tree identity and ordering', () => {
       vi.fn(() => new Promise<Response>(() => {})),
     )
 
-    const tree = treeContents(callbacks, vi.fn()) as unknown as FakeElement
-    const text = renderedText(tree)
+    const text = renderedText(templateTreeAdapter(callbacks, vi.fn()))
 
     expect(text).toContain('Loading folders…')
     expect(text).not.toContain('No templates published yet.')

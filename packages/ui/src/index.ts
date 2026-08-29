@@ -1,29 +1,76 @@
-export {
-  CaelestisTemplateAdmin,
-  type TemplateLifecycleChangeDetail,
-} from './template-admin.js'
-export { CaelestisTemplateState, type TemplateLifecycleState } from './template-state.js'
-
-import { CaelestisTemplateAdmin } from './template-admin.js'
-import { CaelestisTemplateState } from './template-state.js'
-
-export const TEMPLATE_ADMIN_TAG = 'caelestis-template-admin'
-export const TEMPLATE_STATE_TAG = 'caelestis-template-state'
-
-/** Browser-only and idempotent, so both hosts can call it whenever their UI mounts. */
-export const registerCaelestisUi = (): void => {
-  if (typeof customElements === 'undefined') return
-  if (customElements.get(TEMPLATE_STATE_TAG) === undefined) {
-    customElements.define(TEMPLATE_STATE_TAG, CaelestisTemplateState)
-  }
-  if (customElements.get(TEMPLATE_ADMIN_TAG) === undefined) {
-    customElements.define(TEMPLATE_ADMIN_TAG, CaelestisTemplateAdmin)
-  }
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    'caelestis-template-admin': CaelestisTemplateAdmin
-    'caelestis-template-state': CaelestisTemplateState
-  }
-}
+export { default as AppearanceEditor } from './appearance/AppearanceEditor.svelte'
+export { default as ColourInput } from './appearance/ColourInput.svelte'
+export { default as Button } from './foundations/Button.svelte'
+export { default as SectionHeader } from './foundations/SectionHeader.svelte'
+export { default as SettingRow } from './foundations/SettingRow.svelte'
+export { default as SliderRow } from './foundations/SliderRow.svelte'
+export { default as Toggle } from './foundations/Toggle.svelte'
+export { default as Notifications } from './notifications/Notifications.svelte'
+export { default as OverlayControls } from './overlay/OverlayControls.svelte'
+export { default as Panel } from './panel/Panel.svelte'
+export { default as ColourProgress } from './progress/ColourProgress.svelte'
+export { default as PaletteProgress } from './progress/PaletteProgress.svelte'
+export { default as ProgressMeter } from './progress/ProgressMeter.svelte'
+export { default as RailControl } from './rail/RailControl.svelte'
+export { default as SettingsPanel } from './settings/SettingsPanel.svelte'
+export { default as ShortcutHelp } from './shortcut-help/ShortcutHelp.svelte'
+export { default as TemplateAdmin } from './template-admin/TemplateAdmin.svelte'
+export { default as TemplateState } from './template-state/TemplateState.svelte'
+export { default as TemplateTree } from './tree/TemplateTree.svelte'
+export type {
+  AccessTokenScope,
+  AppearanceBooleanKey,
+  AppearanceColourKey,
+  AppearanceEditorIntent,
+  AppearanceEditorModel,
+  AppearanceGroupKey,
+  AppearanceGroupModel,
+  AppearanceNumberKey,
+  AppearancePaletteColourModel,
+  AppearancePresetModel,
+  AppearanceSliderModel,
+  AppearanceValuesModel,
+  ColourProgressSort,
+  ConfirmDialogModel,
+  NotificationsIntent,
+  NotificationsModel,
+  NotificationsProps,
+  OneTimeSecretDialogModel,
+  OverlayControlsIntent,
+  OverlayControlsModel,
+  PaletteProgressModel,
+  PanelIntent,
+  PanelModel,
+  PanelProps,
+  PanelView,
+  RailControlId,
+  RailControlIntent,
+  RailControlModel,
+  SettingsAccessTokenModel,
+  SettingsAccessTokensModel,
+  SettingsBooleanKey,
+  SettingsIntent,
+  SettingsModel,
+  SettingsServerModel,
+  ShortcutHelpIntent,
+  ShortcutHelpModel,
+  ShortcutHelpPlatform,
+  TemplateAdminProps,
+  TemplateLifecycleChangeDetail,
+  TemplateLifecycleState,
+  TemplateStateProps,
+  TemplateTreeIntent,
+  TemplateTreeModel,
+  ToastKind,
+  ToastModel,
+  TreeActionModel,
+  TreeColourProgressModel,
+  TreeContextMenuItemModel,
+  TreeContextMenuModel,
+  TreeEntryModel,
+  TreeOperationModel,
+  TreeOperationOptionModel,
+  TreeProgressModel,
+  TreeRowModel,
+  TreeSortModel,
+} from './types.js'
