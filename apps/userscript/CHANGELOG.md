@@ -1,5 +1,13 @@
 # @caelestis/userscript
 
+## 0.5.2
+
+### Patch Changes
+
+- 51314db: Clear mismatch markers correctly after large batches of drafted pixels.
+- 7fc6ad3: Align contrast outlines with the template pixel row they surround.
+- b3c7cd9: Add B and Escape paint-draft controls plus an L shortcut for Wplace's native light and dark themes.
+
 ## 0.5.1
 
 ### Patch Changes
