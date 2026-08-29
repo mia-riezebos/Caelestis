@@ -72,6 +72,19 @@ describe('appearance editor', () => {
     void unmount(component)
   })
 
+  it('queries palette columns from a containing swatch wrapper', () => {
+    const component = mount(AppearanceEditor, { target: document.body, props: { model } })
+    flushSync()
+
+    const palette = document.querySelector<HTMLElement>('.palette')
+    const swatches = palette?.parentElement
+    expect(swatches?.classList.contains('swatches')).toBe(true)
+    expect(getComputedStyle(swatches as Element).containerType).toBe('inline-size')
+    expect(getComputedStyle(palette as Element).gridTemplateColumns).toBe('repeat(4, 1fr)')
+
+    void unmount(component)
+  })
+
   it('emits previews during slider movement and one commit at the change seam', () => {
     const onIntent = vi.fn()
     const component = mount(AppearanceEditor, { target: document.body, props: { model, onIntent } })

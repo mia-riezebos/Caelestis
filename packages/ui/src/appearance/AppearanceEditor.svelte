@@ -177,12 +177,14 @@
         </button>
       {/if}
     </div>
-    <div class="palette" role="group" aria-label="Visible colours">
-      {#each model.palette as colour (colour.index)}
-        <button type="button" class="palette-swatch" data-on={colour.visible} data-caelestis-control={`swatch:${colour.index}`} style:background={colour.hex} aria-label={`${colour.name}, ${colour.kind}`} aria-pressed={colour.visible} aria-disabled={model.disabled} title={`${colour.name} · ${colour.kind}`} onclick={() => { if (!model.disabled) emit({ type: 'toggle-colour', index: colour.index, visible: !colour.visible }) }}>
-          <span class="swatch-badge" aria-hidden="true"><span><Icon name={colour.visible ? 'eye' : 'eyeOff'} size="78%" /></span></span>
-        </button>
-      {/each}
+    <div class="swatches">
+      <div class="palette" role="group" aria-label="Visible colours">
+        {#each model.palette as colour (colour.index)}
+          <button type="button" class="palette-swatch" data-on={colour.visible} data-caelestis-control={`swatch:${colour.index}`} style:background={colour.hex} aria-label={`${colour.name}, ${colour.kind}`} aria-pressed={colour.visible} aria-disabled={model.disabled} title={`${colour.name} · ${colour.kind}`} onclick={() => { if (!model.disabled) emit({ type: 'toggle-colour', index: colour.index, visible: !colour.visible }) }}>
+            <span class="swatch-badge" aria-hidden="true"><span><Icon name={colour.visible ? 'eye' : 'eyeOff'} size="78%" /></span></span>
+          </button>
+        {/each}
+      </div>
     </div>
     </fieldset>
   </section>
@@ -214,8 +216,9 @@
   .preset-icon.corner { background: currentColor; clip-path: polygon(0 0, 100% 0, 0 100%); }
   .colour-toolbar { flex-wrap: wrap; justify-content: space-between; padding: 0 var(--caelestis-content-inset, 1rem) 0.5rem; }
   .compact .colour-toolbar { padding-inline: 0; }
-  .palette { container-type: inline-size; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; padding: 0 var(--caelestis-content-inset, 1rem); }
-  .compact .palette { padding-inline: 0; }
+  .swatches { container-type: inline-size; padding: 0 var(--caelestis-content-inset, 1rem); }
+  .compact .swatches { padding-inline: 0; }
+  .palette { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
   @container (min-width: 17.5rem) { .palette { grid-template-columns: repeat(8, 1fr); } }
   @container (min-width: 35.5rem) { .palette { grid-template-columns: repeat(16, 1fr); } }
   @container (min-width: 71.5rem) { .palette { grid-template-columns: repeat(32, 1fr); } }
