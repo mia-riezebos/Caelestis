@@ -22,6 +22,10 @@ describe('userscript Changeset release notes', () => {
     )
   })
 
+  it('accepts an inline abbreviation in a single-sentence summary', () => {
+    assert.equal(validateUserscriptChangeset(changeset('Support e.g. imported palettes.')), true)
+  })
+
   it('rejects long aggregate prose', () => {
     assert.throws(
       () =>
@@ -36,6 +40,7 @@ describe('userscript Changeset release notes', () => {
       'Fix the editor. change the renderer.',
       'Fix the editor. `changeRenderer` now works.',
       'Fix the editor. v2 handles the renderer.',
+      'Fix *editor.* Change renderer.',
     ]) {
       assert.throws(
         () => validateUserscriptChangeset(changeset(body)),

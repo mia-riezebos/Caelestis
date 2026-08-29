@@ -7,8 +7,9 @@ const SUMMARY_LIMIT = 200
 const DETAIL_LIMIT = 240
 const DETAIL_COUNT_LIMIT = 5
 const USERSCRIPT_DECLARATION = /^['"]?@caelestis\/userscript['"]?:\s*(?:patch|minor|major)\s*$/m
-const INTERNAL_SENTENCE_END = /[.!?]["')\]]*\s+\S/
+const INTERNAL_SENTENCE_END = /[.!?]["')\]]*\s+\S/g
 const COMPLETE_SENTENCE_END = /[.!?]["')\]]*$/
+const INLINE_ABBREVIATION = /^(?:e\.g\.|i\.e\.)$/i
 
 const changesetBody = (content, path) => {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(content)
@@ -17,8 +18,20 @@ const changesetBody = (content, path) => {
 }
 
 const paragraphs = (body) => body.split(/\r?\n\s*\r?\n/)
-const isOneCompleteSentence = (value) =>
-  COMPLETE_SENTENCE_END.test(value) && !INTERNAL_SENTENCE_END.test(value)
+const markdownText = (value) =>
+  value.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_~`]/g, '')
+
+const isOneCompleteSentence = (value) => {
+  const text = markdownText(value)
+  if (!COMPLETE_SENTENCE_END.test(text)) return false
+
+  for (const match of text.matchAll(INTERNAL_SENTENCE_END)) {
+    const beforeBoundary = text.slice(0, match.index + 1)
+    const token = /\S+$/.exec(beforeBoundary)?.[0]
+    if (token === undefined || !INLINE_ABBREVIATION.test(token)) return false
+  }
+  return true
+}
 
 export const validateUserscriptChangeset = (content, path = 'changeset.md') => {
   const body = changesetBody(content, path)
