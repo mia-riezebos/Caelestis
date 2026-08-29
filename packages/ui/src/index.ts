@@ -13,6 +13,7 @@ export { default as PaletteProgress } from './progress/PaletteProgress.svelte'
 export { default as ProgressMeter } from './progress/ProgressMeter.svelte'
 export { default as RailControl } from './rail/RailControl.svelte'
 export { default as SettingsPanel } from './settings/SettingsPanel.svelte'
+export { default as ShortcutHelp } from './shortcut-help/ShortcutHelp.svelte'
 export { default as TemplateAdmin } from './template-admin/TemplateAdmin.svelte'
 export { default as TemplateState } from './template-state/TemplateState.svelte'
 export { default as TemplateTree } from './tree/TemplateTree.svelte'
@@ -51,6 +52,9 @@ export type {
   SettingsIntent,
   SettingsModel,
   SettingsServerModel,
+  ShortcutHelpIntent,
+  ShortcutHelpModel,
+  ShortcutHelpPlatform,
   TemplateAdminProps,
   TemplateLifecycleChangeDetail,
   TemplateLifecycleState,

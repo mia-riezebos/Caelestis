@@ -4,12 +4,14 @@ import type {
   PaletteProgressModel,
   PanelModel,
   RailControlModel,
+  ShortcutHelpModel,
 } from '../types.js'
 import NotificationsElement from './Notifications.element.svelte'
 import OverlayControlsElement from './OverlayControls.element.svelte'
 import PaletteProgressElement from './PaletteProgress.element.svelte'
 import PanelElement from './Panel.element.svelte'
 import RailControlElement from './RailControl.element.svelte'
+import ShortcutHelpElement from './ShortcutHelp.element.svelte'
 import TemplateAdminElement from './TemplateAdmin.element.svelte'
 import TemplateStateElement from './TemplateState.element.svelte'
 
@@ -22,6 +24,7 @@ export const OVERLAY_CONTROLS_TAG = 'caelestis-overlay-controls'
 export const PANEL_TAG = 'caelestis-panel'
 export const PALETTE_PROGRESS_TAG = 'caelestis-palette-progress'
 export const RAIL_CONTROL_TAG = 'caelestis-rail-control'
+export const SHORTCUT_HELP_TAG = 'caelestis-shortcut-help'
 
 export type CaelestisTemplateAdmin = HTMLElement & {
   finished: boolean
@@ -45,6 +48,7 @@ export type CaelestisOverlayControls = HTMLElement & { model: OverlayControlsMod
 export type CaelestisPanel = HTMLElement & { model: PanelModel }
 export type CaelestisPaletteProgress = HTMLElement & { model: PaletteProgressModel }
 export type CaelestisRailControl = HTMLElement & { model: RailControlModel }
+export type CaelestisShortcutHelp = HTMLElement & { model: ShortcutHelpModel }
 
 type ElementConstructor<T extends HTMLElement> = {
   new (): T
@@ -64,6 +68,8 @@ export const CaelestisPaletteProgress =
   PaletteProgressElement.element as ElementConstructor<CaelestisPaletteProgress>
 export const CaelestisRailControl =
   RailControlElement.element as ElementConstructor<CaelestisRailControl>
+export const CaelestisShortcutHelp =
+  ShortcutHelpElement.element as ElementConstructor<CaelestisShortcutHelp>
 
 /** Browser-only and idempotent, so both hosts can call it whenever their UI mounts. */
 export const registerCaelestisUi = (): void => {
@@ -89,6 +95,9 @@ export const registerCaelestisUi = (): void => {
   if (customElements.get(RAIL_CONTROL_TAG) === undefined) {
     customElements.define(RAIL_CONTROL_TAG, CaelestisRailControl)
   }
+  if (customElements.get(SHORTCUT_HELP_TAG) === undefined) {
+    customElements.define(SHORTCUT_HELP_TAG, CaelestisShortcutHelp)
+  }
 }
 
 declare global {
@@ -100,5 +109,6 @@ declare global {
     'caelestis-panel': CaelestisPanel
     'caelestis-palette-progress': CaelestisPaletteProgress
     'caelestis-rail-control': CaelestisRailControl
+    'caelestis-shortcut-help': CaelestisShortcutHelp
   }
 }

@@ -4,11 +4,12 @@ import { tick } from 'svelte'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   CaelestisPaletteProgress,
+  CaelestisShortcutHelp,
   CaelestisTemplateAdmin,
   CaelestisTemplateState,
   registerCaelestisUi,
 } from '../src/elements/index.js'
-import { PaletteProgress, TemplateAdmin, TemplateState } from '../src/index.js'
+import { PaletteProgress, ShortcutHelp, TemplateAdmin, TemplateState } from '../src/index.js'
 
 beforeAll(() => registerCaelestisUi())
 
@@ -17,6 +18,17 @@ describe('@caelestis/ui', () => {
     expect(TemplateState).toBeTypeOf('function')
     expect(TemplateAdmin).toBeTypeOf('function')
     expect(PaletteProgress).toBeTypeOf('function')
+    expect(ShortcutHelp).toBeTypeOf('function')
+  })
+
+  it('renders shortcut help through the registered shared element', async () => {
+    const help = new CaelestisShortcutHelp()
+    help.model = { platform: 'mac' }
+    document.body.append(help)
+    await tick()
+
+    expect(help.shadowRoot?.querySelector('dialog')?.open).toBe(true)
+    expect(help.shadowRoot?.textContent).toContain('Cmd+Shift+Z')
   })
 
   it('renders Wplace palette progress through an independently mounted shared root', async () => {

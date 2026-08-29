@@ -33,6 +33,8 @@ loading orchestration, mutations, and page layout. The shared components are:
 - `RailControl` and `<caelestis-rail-control>` render the panel, colour, and mismatch rail buttons.
 - `PaletteProgress` and `<caelestis-palette-progress>` decorate Wplace's palette without leaking
   userscript CSS into the page.
+- `ShortcutHelp` and `<caelestis-shortcut-help>` own the platform-aware shortcut reference,
+  interactive keyboard map, responsive list fallback, and native modal presentation.
 
 Host themes cross the Shadow DOM seam through documented `--caelestis-*` custom properties. The
 components also provide usable light and dark defaults.

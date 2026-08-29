@@ -215,6 +215,14 @@ export interface PaletteProgressModel {
   readonly value: string
 }
 
+export type ShortcutHelpPlatform = 'mac' | 'windows-linux'
+
+export interface ShortcutHelpModel {
+  readonly platform: ShortcutHelpPlatform
+}
+
+export type ShortcutHelpIntent = { readonly type: 'close' }
+
 export type RailControlIntent = { readonly type: 'activate'; readonly id: RailControlId }
 
 export type TreeIcon =

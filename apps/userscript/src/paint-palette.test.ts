@@ -137,7 +137,11 @@ describe('Wplace paint palette progress', () => {
 
     installPaintPaletteProgress()
 
-    expect(swatch.querySelector('.caelestis-palette-progress')?.textContent).toBe('…')
+    expect(
+      swatch.querySelector<HTMLElement & { model?: { value: string } }>(
+        'caelestis-palette-progress',
+      )?.model?.value,
+    ).toBe('…')
     expect(swatch.getAttribute('aria-label')).toContain('Checking progress')
     expect(swatch.getAttribute('aria-label')).not.toContain('112 pixels left')
 
