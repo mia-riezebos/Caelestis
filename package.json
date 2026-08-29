@@ -19,7 +19,7 @@
     "inject:watch": "pnpm --filter @caelestis/userscript inject:watch",
     "browser": "pnpm --filter @caelestis/userscript browser",
     "release:version": "changeset version",
-    "test:release": "node --test .github/scripts/prepare-userscript-release.test.mjs"
+    "test:release": "node .github/scripts/check-userscript-release-notes.mjs && node --test .github/scripts/*.test.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",

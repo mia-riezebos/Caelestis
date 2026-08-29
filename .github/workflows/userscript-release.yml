@@ -8,12 +8,17 @@ on:
       - apps/userscript/**
       - packages/shared/**
       - .changeset/**
-      - .github/scripts/prepare-userscript-release.mjs
+      - .github/scripts/*userscript-release*.mjs
       - .github/workflows/userscript-release.yml
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
   workflow_dispatch:
+    inputs:
+      retry_announcement:
+        description: Retry the current version's verified Discord announcement
+        type: boolean
+        default: false
 
 concurrency:
   group: userscript-release
@@ -110,7 +115,11 @@ jobs:
             "$STABLE" "$VERSIONED" "$CHECKSUMS"
 
       - name: Verify published installers
-        if: steps.changesets.outputs.has-changesets == 'false' && steps.existing.outputs.exists == 'false'
+        if: >-
+          steps.changesets.outputs.has-changesets == 'false' &&
+          (steps.existing.outputs.exists == 'false' ||
+          github.run_attempt > 1 ||
+          inputs.retry_announcement)
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
@@ -121,3 +130,21 @@ jobs:
           test "$(sha256sum "$download/caelestis.user.js" | cut -d ' ' -f 1)" = "$SHA256"
           test "$(sha256sum "$download/caelestis-v"*.user.js | cut -d ' ' -f 1)" = "$SHA256"
           (cd "$download" && sha256sum --check SHA256SUMS)
+
+      - name: Announce release in Discord
+        if: >-
+          steps.changesets.outputs.has-changesets == 'false' &&
+          (steps.existing.outputs.exists == 'false' ||
+          github.run_attempt > 1 ||
+          inputs.retry_announcement)
+        env:
+          DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
+          NOTES: ${{ steps.release.outputs.notesPath }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: >-
+          node .github/scripts/post-userscript-release.mjs
+          --version "$VERSION"
+          --tag "$TAG"
+          --notes-file "$NOTES"
+          --repository "$GITHUB_REPOSITORY"
