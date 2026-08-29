@@ -8,7 +8,7 @@ on:
       - apps/userscript/**
       - packages/shared/**
       - .changeset/**
-      - .github/scripts/prepare-userscript-release.mjs
+      - .github/scripts/*userscript-release*.mjs
       - .github/workflows/userscript-release.yml
       - package.json
       - pnpm-lock.yaml
@@ -121,3 +121,17 @@ jobs:
           test "$(sha256sum "$download/caelestis.user.js" | cut -d ' ' -f 1)" = "$SHA256"
           test "$(sha256sum "$download/caelestis-v"*.user.js | cut -d ' ' -f 1)" = "$SHA256"
           (cd "$download" && sha256sum --check SHA256SUMS)
+
+      - name: Announce release in Discord
+        if: steps.changesets.outputs.has-changesets == 'false' && steps.existing.outputs.exists == 'false'
+        env:
+          DISCORD_RELEASE_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
+          NOTES: ${{ steps.release.outputs.notesPath }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: >-
+          node .github/scripts/post-userscript-release.mjs
+          --version "$VERSION"
+          --tag "$TAG"
+          --notes-file "$NOTES"
+          --repository "$GITHUB_REPOSITORY"
