@@ -1855,10 +1855,10 @@ export const setAppearance = async (
   )
 }
 
-/** Toggle one marker switch against the appearance current when its ordered write executes. */
+/** Toggle one appearance switch against the value current when its ordered write executes. */
 export const toggleAppearanceBoolean = async (
   id: string,
-  property: 'markMismatch' | 'markSelectedColour',
+  property: 'contrastOutline' | 'markMismatch' | 'markSelectedColour',
 ): Promise<boolean> =>
   await mutateAppearance(id, (current) => ({ ...current, [property]: !current[property] }))
 

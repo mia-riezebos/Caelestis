@@ -27,6 +27,7 @@ const GROUPS: readonly ShortcutGroup[] = [
     title: 'Overlay',
     rows: [
       { key: 'C', label: 'Caelestis panel' },
+      { key: 'R', label: 'Toggle contrast rings' },
       { key: 'S', label: 'Selected colour only' },
       { key: 'T', label: 'Template display menu' },
       { key: 'V', label: 'Template visibility' },

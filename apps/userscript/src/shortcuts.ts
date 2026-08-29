@@ -13,6 +13,7 @@ export type Shortcut =
   | 'toggle-markers'
   | 'toggle-panel'
   | 'toggle-paint'
+  | 'toggle-rings'
   | 'toggle-selected-colour-markers'
   | 'toggle-template-menu'
   | 'toggle-visibility'
@@ -65,6 +66,8 @@ export const shortcutFor = (
       return 'fly-to-colour'
     case 'g':
       return 'peek-overlays'
+    case 'r':
+      return 'toggle-rings'
     case 'a':
       return 'cycle-colour-previous'
     case 's':

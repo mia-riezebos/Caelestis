@@ -27,6 +27,7 @@ describe('shortcutFor', () => {
     ['d', 'cycle-colour-next'],
     ['f', 'fly-to-colour'],
     ['g', 'peek-overlays'],
+    ['r', 'toggle-rings'],
     ['a', 'cycle-colour-previous'],
     ['s', 'toggle-colour'],
     ['t', 'toggle-template-menu'],

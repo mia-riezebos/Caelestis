@@ -8,3 +8,5 @@ shortcut reference. Keep contrast outlines on the overlay's exact final colour-v
 including selected-only mode, and keep those outlines visible while the map pans and zooms.
 Align outlines from MapLibre's current-frame raster matrices so the underlay does not trail the art
 without delaying the art, overlay, or markers.
+Scale contrast rings with canvas pixels instead of device pixels, and add R to toggle them for the
+focused template or global defaults.

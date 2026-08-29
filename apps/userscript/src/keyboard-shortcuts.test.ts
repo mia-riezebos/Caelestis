@@ -128,6 +128,23 @@ describe('keyboard shortcut actions', () => {
     expect(harness.togglePaint).toHaveBeenCalledOnce()
   })
 
+  it('toggles rings on a focused pixel-owned template or on the global appearance', async () => {
+    harness.focused = { id: 'focused', visible: true, owns: ['pixels'] }
+    expect(press('r').defaultPrevented).toBe(true)
+    await Promise.resolve()
+    expect(harness.toggleAppearanceBoolean).toHaveBeenCalledWith('focused', 'contrastOutline')
+    expect(harness.refreshMenu).toHaveBeenCalledOnce()
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
+
+    harness.focused = { id: 'focused', visible: true, owns: [] }
+    harness.appearance = { ...harness.appearance, contrastOutline: true }
+    expect(press('R').defaultPrevented).toBe(true)
+    expect(harness.setState).toHaveBeenCalledWith({
+      appearance: { ...harness.appearance, contrastOutline: false },
+    })
+    expect(harness.triggerRepaint).toHaveBeenCalledTimes(2)
+  })
+
   it('opens shortcut help from the physical Shift+/ chord', () => {
     const event = press('Dead', { code: 'Slash', shiftKey: true })
 

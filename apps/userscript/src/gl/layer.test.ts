@@ -337,7 +337,7 @@ describe('overlay layer', () => {
 
     expect(context.texSubImage2D).not.toHaveBeenCalled()
     expect(context.uniform1i).toHaveBeenCalledWith('u_darkTheme', 1)
-    expect(context.uniform1f).toHaveBeenCalledWith('u_outlineSize', 1.25)
+    expect(context.uniform1f).toHaveBeenCalledWith('u_outlineWidth', 0.15625)
     expect(context.drawArrays).toHaveBeenCalledOnce()
   })
 
@@ -387,7 +387,7 @@ describe('overlay layer', () => {
     expect(context.drawArrays).not.toHaveBeenCalled()
   })
 
-  it('omits the outline when there is not enough room to draw its ring', async () => {
+  it('keeps the zoom-scaled outline available below one screen pixel per canvas pixel', async () => {
     const { outlineLayer, overlayLayer } = await import('./layer.js')
     harness.fade = { value: 1, done: true }
     const context = gl()
@@ -398,7 +398,7 @@ describe('overlay layer', () => {
 
     harness.completedTileSize = 1_000
     outlineLayer.draw(context, null)
-    expect(context.drawArrays).not.toHaveBeenCalled()
+    expect(context.drawArrays).toHaveBeenCalledOnce()
   })
 
   it('keeps the outline aligned with a fading and transitioning overlay', async () => {

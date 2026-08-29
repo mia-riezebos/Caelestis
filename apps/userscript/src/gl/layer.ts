@@ -1048,12 +1048,7 @@ export const outlineLayer = {
     // a compatibility fallback when private MapLibre state is unavailable.
     const underlay = underlayQuads()
     if (underlay.length === 0) return
-    // Match the shader's close-zoom cutoff on the CPU too. At distant zoom there is no room for an
-    // individual ring, so avoid issuing draws whose every fragment would immediately discard.
-    const tiles = underlay.filter(
-      (tile) => tile.width / TILE_SIZE > 1 / 0.75 && tile.height / TILE_SIZE > 1 / 0.75,
-    )
-    if (tiles.length === 0) return
+    const tiles = underlay
 
     const quadKey = tiles
       .map(({ tile, x, y, width, height }) => `${tile.x}:${tile.y}:${x}:${y}:${width}:${height}`)
@@ -1107,7 +1102,9 @@ export const outlineLayer = {
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
       gl.uniform1i(outlineUniform(gl, 'u_palette'), 1)
       gl.uniform1f(outlineUniform(gl, 'u_fade'), fade * appearance.opacity)
-      gl.uniform1f(outlineUniform(gl, 'u_outlineSize'), appearance.contrastOutlineSize)
+      // Keep the persisted control scale, but render it as 3.125%..25% of a canvas pixel. Unlike a
+      // device-pixel width, this grows and shrinks with Wplace's pixels as the map zooms.
+      gl.uniform1f(outlineUniform(gl, 'u_outlineWidth'), appearance.contrastOutlineSize / 8)
       gl.uniform1f(outlineUniform(gl, 'u_stampSize'), appearance.size)
       gl.uniform1f(outlineUniform(gl, 'u_stampRadius'), appearance.radius)
       gl.uniform2f(

@@ -33,6 +33,23 @@ const toggleMarkerKind = (property: 'markMismatch' | 'markSelectedColour'): void
   setState({ appearance: { ...appearance, [property]: !appearance[property] } })
 }
 
+const toggleRings = (): void => {
+  const focused = focusedTemplate()
+  if (focused !== null && ownsGroup(focused, 'pixels')) {
+    void toggleAppearanceBoolean(focused.id, 'contrastOutline').then((changed) => {
+      if (!changed) return
+      refreshOverlayMenu()
+      triggerMapRepaint()
+    })
+    return
+  }
+  const appearance = getState().appearance
+  setState({
+    appearance: { ...appearance, contrastOutline: !appearance.contrastOutline },
+  })
+  triggerMapRepaint()
+}
+
 const opacityFor = (shortcut: string): number | null => {
   switch (shortcut) {
     case 'set-opacity-20':
@@ -112,6 +129,11 @@ export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
     if (shortcut === 'toggle-markers') {
       event.preventDefault()
       toggleMarkerKind('markMismatch')
+      return
+    }
+    if (shortcut === 'toggle-rings') {
+      event.preventDefault()
+      toggleRings()
       return
     }
     if (shortcut === 'toggle-selected-colour-markers') {
