@@ -4,6 +4,7 @@ import { counters } from './debug.js'
 import {
   captureDraftPixels,
   captureTilePixels,
+  clearDraftPixels,
   consumeBySize,
   currentQuads,
   draftPixels,
@@ -1407,5 +1408,20 @@ describe('transparent browser hooks', () => {
 
     expect(observed).toHaveBeenCalledWith({ x: 8, y: 9 }, [0, 0, 4, 1, 0, 5])
     expect(draftPixels({ x: 8, y: 9 })?.slice(0, 2)).toEqual(new Uint8Array([4, 5]))
+  })
+
+  it('announces canonical server fallback when the paint drawer discards its draft', () => {
+    const observed = vi.fn()
+    onTilePixels(observed)
+    const draft = new Uint8Array(1_000 * 1_000).fill(UNPAINTED)
+    draft[7] = 4
+    draft[1_003] = 5
+    captureDraftPixels({ x: 10, y: 11 }, draft)
+    observed.mockClear()
+
+    clearDraftPixels()
+
+    expect(draftPixels({ x: 10, y: 11 })).toBeNull()
+    expect(observed).toHaveBeenCalledWith({ x: 10, y: 11 }, [7, 0, UNPAINTED, 3, 1, UNPAINTED])
   })
 })

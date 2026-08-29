@@ -1054,6 +1054,8 @@ const tileOfPaintCanvas = new WeakMap<object, TileCoord>()
  * drafted on it.
  */
 const draftOfTile = new Map<string, Uint8Array>()
+/** Non-empty offsets in each draft, so closing Paint can discard them without scanning 1M cells. */
+const draftedOffsets = new Map<string, Set<number>>()
 const KEEP_DRAFT_TILES = 64
 
 export const capturedPixelMemoryBytes = (): number => {
@@ -1071,7 +1073,19 @@ const rememberDraft = (key: string, draft: Uint8Array): void => {
     if (oldest.done) break
     draftOfTile.delete(oldest.value)
     transparentOfTile.delete(oldest.value)
+    draftedOffsets.delete(oldest.value)
   }
+}
+
+const rememberDraftedOffset = (key: string, offset: number, index: number): void => {
+  const held = draftedOffsets.get(key)
+  if (index === UNPAINTED) {
+    held?.delete(offset)
+    if (held?.size === 0) draftedOffsets.delete(key)
+    return
+  }
+  if (held === undefined) draftedOffsets.set(key, new Set([offset]))
+  else held.add(offset)
 }
 
 /** The draft layer for a tile, or null if nothing has been drafted on it. */
@@ -1144,6 +1158,7 @@ const reconcileDraftedTile = (tile: TileCoord): void => {
     // A drafted pixel the canvas gave us no colour for was drafted transparent.
     if (draft[p] === UNPAINTED) {
       draft[p] = TRANSPARENT_INDEX
+      rememberDraftedOffset(key, p, TRANSPARENT_INDEX)
       notifyPixel(tile, p, TRANSPARENT_INDEX)
       count('pixels:drafted transparent')
     }
@@ -1154,6 +1169,7 @@ const reconcileDraftedTile = (tile: TileCoord): void => {
       if (now.has(p) || draft[p] !== TRANSPARENT_INDEX) continue
       // The crosshair is gone, so the pixel is undrafted — back to whatever the server has.
       draft[p] = UNPAINTED
+      rememberDraftedOffset(key, p, UNPAINTED)
       notifyPixel(tile, p, UNPAINTED)
       count('pixels:undrafted a transparent pixel')
     }
@@ -1291,6 +1307,7 @@ const applyWrite = (tile: TileCoord, triples: readonly number[]): boolean => {
     const p = y * TILE_SIZE + x
     if (draft[p] === index) continue
     draft[p] = index
+    rememberDraftedOffset(key, p, index)
     changed++
     changedTriples.push(x, y, index)
     for (const listener of pixelListeners) {
@@ -1326,6 +1343,7 @@ const apply = (
   const at = (p: number, index: number): void => {
     if (into[p] === index) return
     into[p] = index
+    rememberDraftedOffset(tileKey(tile), p, index)
     moved++
     const x = p % TILE_SIZE
     const y = (p - x) / TILE_SIZE
@@ -1375,6 +1393,7 @@ export const captureDraftPixels = (
     const x = changedTriples[i] as number
     const y = changedTriples[i + 1] as number
     const index = changedTriples[i + 2] as number
+    rememberDraftedOffset(key, y * TILE_SIZE + x, index)
     for (const listener of pixelListeners) {
       try {
         listener(tile, tile.x * TILE_SIZE + x, tile.y * TILE_SIZE + y, index)
@@ -1386,6 +1405,27 @@ export const captureDraftPixels = (
   notifyPixelBatch(tile, changedTriples)
   count('pixels:draft captured')
   reconcileDraftedTile(tile)
+}
+
+/** Discard Wplace's local draft state when its Paint drawer closes or cancels. */
+export const clearDraftPixels = (): void => {
+  const changed: Array<{ tile: TileCoord; triples: number[] }> = []
+  for (const [key, offsets] of draftedOffsets) {
+    const [x, y] = key.split('/').map(Number)
+    if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) continue
+    const triples: number[] = []
+    for (const offset of offsets) {
+      const localX = offset % TILE_SIZE
+      triples.push(localX, (offset - localX) / TILE_SIZE, UNPAINTED)
+    }
+    if (triples.length > 0) changed.push({ tile: { x, y }, triples })
+  }
+  // Delete first: every accounting listener now observes the canonical fallback to server pixels.
+  draftOfTile.clear()
+  transparentOfTile.clear()
+  draftedOffsets.clear()
+  for (const one of changed) notifyPixelBatch(one.tile, one.triples)
+  if (changed.length > 0) count('pixels:drafts cleared')
 }
 
 let captureContext: OffscreenCanvasRenderingContext2D | null = null
@@ -2070,6 +2110,12 @@ export const install = (
         ) {
           canvasOfTexture.set(texture, source)
           tileOfTexture.delete(texture)
+          // A CanvasSource upload is the canonical evidence that its pixels changed. The 1x1
+          // putImageData tap normally patches a paint immediately, but Wplace may upload a copied
+          // OffscreenCanvas whose identity is not the canvas it wrote. Mark every uploaded canvas
+          // dirty so the following draft-layer draw re-reads it and corrects any missed or stale
+          // fast-path state. MapLibre uploads these preview canvases only when they change.
+          markCanvasDirty(source)
           return
         }
         if (

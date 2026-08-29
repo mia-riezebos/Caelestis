@@ -7,9 +7,7 @@ import { onLocalChange, type PlacedTemplate } from './templates/local-store.js'
 import {
   type ColourNavigationTarget,
   type ColourTargetKind,
-  colourProgressFor,
-  nearestColourTarget,
-  onMismatchesChanged,
+  pixelAccounting,
   type TemplateColourProgress,
 } from './templates/mismatch.js'
 import { navigateTo } from './templates/navigate.js'
@@ -37,8 +35,9 @@ const progressForTemplate = (
   servers: ReadonlyMap<string, ConnectedServer> = connectedServers(),
 ): readonly TemplateColourProgress[] => {
   if (template === null) return []
+  const accounting = pixelAccounting.read(template)
   if (template.serverUrl === undefined || template.serverTemplateId === undefined)
-    return colourProgressFor(template)
+    return accounting.colours
   const server = servers.get(template.serverUrl)
   if (server === undefined) return []
   // The drawn template already proves the manifest identity and exact pixel total. Depending on the
@@ -48,7 +47,7 @@ const progressForTemplate = (
     id: template.serverTemplateId,
     totalPixels: template.opaque,
   })
-  return progress === null ? [] : freshestColourProgress(progress, colourProgressFor(template))
+  return progress === null ? [] : freshestColourProgress(progress, accounting.colours)
 }
 
 /** The colour counts decorating Wplace's palette belong only to what the viewport is focused on. */
@@ -87,6 +86,7 @@ export const navigateFocusedColour = async (index: number, cycle = false): Promi
   const map = getMap()
   if (map === null) return false
   const reference = latLngToCanvasPixel(map.getCenter())
+  const accounting = pixelAccounting.read(template)
   const order: readonly ColourTargetKind[] =
     getState().colourNavigationOrder === 'mismatched-first'
       ? ['mismatched', 'unpainted']
@@ -99,11 +99,11 @@ export const navigateFocusedColour = async (index: number, cycle = false): Promi
       lastNavigation.target.kind === kind
         ? lastNavigation.target
         : undefined
-    let target = await nearestColourTarget(index, kind, reference, template.id, previous)
+    let target = await accounting.nearest(index, kind, reference, previous)
     // Preserve the configured kind priority. If the excluded pixel is the only target of this kind,
     // wrap to it instead of silently dropping into the lower-priority kind.
     if (target === null && previous !== undefined)
-      target = await nearestColourTarget(index, kind, reference, template.id)
+      target = await accounting.nearest(index, kind, reference)
     if (target === null) continue
     lastNavigation = { index, target }
     navigateTo({ x: target.x + 0.5, y: target.y + 0.5, width: 1, height: 1 })
@@ -174,6 +174,18 @@ const render = (): void => {
     wire(element, index)
     const entry = progress.get(index)
     const existing = element.querySelector<HTMLElement>(':scope > .caelestis-palette-progress')
+    if (entry !== undefined && entry.known < entry.total) {
+      const label =
+        originalLabels.get(element) ?? element.getAttribute('aria-label') ?? `Colour ${index + 1}`
+      originalLabels.set(element, label)
+      element.setAttribute('aria-label', `${label}. Checking progress for the focused template.`)
+      const badge = existing ?? document.createElement('span')
+      badge.className = 'caelestis-palette-progress'
+      badge.setAttribute('aria-hidden', 'true')
+      badge.textContent = '…'
+      if (existing === null) element.appendChild(badge)
+      continue
+    }
     const remaining = entry === undefined ? 0 : Math.max(0, entry.total - entry.completed)
     if (remaining === 0) {
       existing?.remove()
@@ -259,7 +271,7 @@ export const installPaintPaletteProgress = (): void => {
   if (installed) return
   installed = true
   onServerStatusChange(queueRender)
-  onMismatchesChanged(queueRender)
+  pixelAccounting.onChange(queueRender)
   onStateChange(queueRender)
   onLocalChange(queueRender)
   // This watcher already crosses the userscript/page realm reliably and fires when Wplace mounts

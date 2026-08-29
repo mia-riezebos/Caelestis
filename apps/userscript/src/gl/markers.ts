@@ -12,13 +12,7 @@ import {
   isTemplateVisible,
   type PlacedTemplate,
 } from '../templates/local-store.js'
-import {
-  beginMismatchFrame,
-  disagreementsIn,
-  endMismatchFrame,
-  mismatchesIn,
-  progressIn,
-} from '../templates/mismatch.js'
+import { pixelAccounting } from '../templates/mismatch.js'
 import type { MismatchMarks } from '../templates/mismatch-marks.js'
 import { horizontalSpans } from '../templates/placement.js'
 import {
@@ -523,8 +517,9 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const mismatchWork: Work[] = []
   let deferred = false
   for (const template of progressOnly) {
+    const accounting = pixelAccounting.read(template)
     for (const tile of tiles) {
-      if (covers(template, tile) && !progressIn(template, tile.tile)) deferred = true
+      if (covers(template, tile) && !accounting.ensure(tile.tile)) deferred = true
     }
   }
   const { markerBudget, onlySelectedColour } = getState()
@@ -533,6 +528,7 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
   const profiling = isProfileEnabled()
   const mismatchSelection = onlySelectedColour && isPaintOpen() ? selected : -1
   for (const { template, mismatchFade, selectedFade } of wanted) {
+    const accounting = pixelAccounting.read(template)
     const appearance = appearanceOf(template)
     const mismatchStyle: MarkerStyle = {
       size: appearance.markerSize,
@@ -557,28 +553,27 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     }
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
+      const tileAccounting = accounting.tile(tile.tile)
+      if (tileAccounting === null) {
+        deferred = true
+        continue
+      }
       if (selectedFade > 0 && selected >= 0) {
-        const disagreements = disagreementsIn(template, tile.tile)
-        if (disagreements === null) deferred = true
-        else {
-          const marks = colourMarksIn(disagreements, selected)
-          if (marks.length > 0) {
-            selectedWork.push({
-              tile,
-              marks,
-              style: selectedStyle,
-              fade: selectedFade,
-            })
-          }
+        const marks = colourMarksIn(tileAccounting.disagreements, selected)
+        if (marks.length > 0) {
+          selectedWork.push({
+            tile,
+            marks,
+            style: selectedStyle,
+            fade: selectedFade,
+          })
         }
       }
       if (mismatchFade > 0) {
-        const mismatches = mismatchesIn(template, tile.tile)
-        if (mismatches === null) deferred = true
-        else if (mismatches.length > 0) {
+        if (tileAccounting.markers.length > 0) {
           mismatchWork.push({
             tile,
-            marks: mismatches,
+            marks: tileAccounting.markers,
             style: mismatchStyle,
             fade: mismatchFade,
           })
@@ -674,11 +669,9 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
 const drawAll = (gl: WebGL2RenderingContext): void => {
   usedMarkerBuffers.clear()
   beginMarkerBatchFrame()
-  beginMismatchFrame()
   try {
-    drawVisible(gl)
+    pixelAccounting.frame(() => drawVisible(gl))
   } finally {
-    endMismatchFrame()
     endMarkerBatchFrame()
     for (const [pixels, held] of markerBuffers) {
       if (usedMarkerBuffers.has(pixels)) continue

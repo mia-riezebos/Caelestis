@@ -160,6 +160,26 @@ describe('visible mismatch answer retention', () => {
     expect(progressFor(selected)).toMatchObject({ completed: 1, mismatched: 0, known: 1 })
   })
 
+  it('cold-loads every local template tile when a progress consumer asks after reload', async () => {
+    const selected = template(209)
+    harness.templates = [selected]
+    harness.pixels[0] = 0
+    harness.pixelsAvailable = false
+    const { pixelAccounting } = await import('./mismatch.js')
+
+    expect(pixelAccounting.read(selected).colours).toEqual([
+      { index: 0, completed: 0, mismatched: 0, unpainted: 0, known: 0, total: 1 },
+    ])
+    expect(harness.idleCallbacks).toHaveLength(1)
+
+    harness.pixelsAvailable = true
+    harness.idleCallbacks.shift()?.({ timeRemaining: () => 50 })
+
+    expect(pixelAccounting.read(selected).colours).toEqual([
+      { index: 0, completed: 1, mismatched: 0, unpainted: 0, known: 1, total: 1 },
+    ])
+  })
+
   it('exposes unpainted cells independently of the mismatch-marker threshold', async () => {
     const selected = template(203)
     harness.templates = [selected]
@@ -412,10 +432,10 @@ describe('visible mismatch answer retention', () => {
   it('invalidates a busy tile once instead of patching every announced pixel', async () => {
     const selected = template(203)
     harness.templates = [selected]
-    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
-    beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
-    endMismatchFrame()
+    const { pixelAccounting } = await import('./mismatch.js')
+    expect(
+      pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 })?.markers),
+    ).toHaveLength(1)
 
     harness.workerAvailable = true
     harness.workerScan.mockReturnValueOnce(new Promise(() => undefined))
@@ -424,9 +444,9 @@ describe('visible mismatch answer retention', () => {
       | undefined
     listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 1]).flat())
 
-    beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
-    endMismatchFrame()
+    expect(
+      pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 })?.markers),
+    ).toHaveLength(1)
     expect(harness.workerScan).toHaveBeenCalledOnce()
   })
 
@@ -479,10 +499,12 @@ describe('visible mismatch answer retention', () => {
     harness.serverMask = decodeMismatchMask(
       encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
     )
-    const { beginMismatchFrame, endMismatchFrame, mismatchesIn } = await import('./mismatch.js')
-    beginMismatchFrame()
-    expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
-    endMismatchFrame()
+    const { beginMismatchFrame, endMismatchFrame, mismatchesIn, pixelAccounting } = await import(
+      './mismatch.js'
+    )
+    expect(
+      pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 })?.markers),
+    ).toHaveLength(1)
 
     harness.pixels.fill(0)
     harness.workerAvailable = true
@@ -549,5 +571,34 @@ describe('visible mismatch answer retention', () => {
     beginMismatchFrame()
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
     endMismatchFrame()
+  })
+
+  it('removes a selected-colour disagreement as soon as the correct draft pixel is captured', async () => {
+    const selected = {
+      ...template(208),
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.pixelsAvailable = false
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: 0, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    )
+    const { pixelAccounting } = await import('./mismatch.js')
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+
+    const initial = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(initial?.disagreements).toEqual(new Uint32Array([0]))
+    expect(initial?.markers).toBe(initial?.mismatched)
+
+    harness.draft[0] = 0
+    changed?.({ x: 0, y: 0 }, [0, 0, 0])
+    const fixed = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(fixed?.disagreements).toHaveLength(0)
+    expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
   })
 })

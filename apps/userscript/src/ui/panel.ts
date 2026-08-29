@@ -26,7 +26,7 @@ import {
 import { onServerStatusChange } from '../telemetry.js'
 import { APPEARANCE_CONTROLS, DEFAULT_APPEARANCE } from '../templates/appearance.js'
 import { forgetServerTemplates, onLocalChange } from '../templates/local-store.js'
-import { onMismatchesChanged } from '../templates/mismatch.js'
+import { pixelAccounting } from '../templates/mismatch.js'
 import { forgetNodes, nodeScopeKey } from '../templates/server-nodes.js'
 import { endServerGeneration, forgetChunks, serverTemplateKey } from '../templates/server-sync.js'
 import { isPaintOpen, onPaintSelectionChange } from '../wplace-paint.js'
@@ -1423,7 +1423,7 @@ export const installPanel = (): void => {
       if (currentView === 'tree') refreshView()
     }),
   )
-  onMismatchesChanged(
+  pixelAccounting.onChange(
     frameQueue(() => {
       if (currentView !== 'tree') return
       if (progressChangesCanReorder(getState().sort)) {

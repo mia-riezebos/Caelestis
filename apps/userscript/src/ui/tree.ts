@@ -19,8 +19,7 @@ import {
   setTemplateFolder,
 } from '../templates/local-store.js'
 import {
-  colourProgressFor,
-  progressFor,
+  pixelAccounting,
   type TemplateColourProgress,
   type TemplateProgress,
 } from '../templates/mismatch.js'
@@ -413,10 +412,11 @@ export const treeContents = (
     const serverColours = serverColourProgressFor(server, template)
     if (serverColours !== null) {
       return (
-        sumProgress(freshestColourProgress(serverColours, colourProgressFor(drawn))) ?? baseline
+        sumProgress(freshestColourProgress(serverColours, pixelAccounting.read(drawn).colours)) ??
+        baseline
       )
     }
-    return freshestProgress(baseline, progressFor(drawn))
+    return freshestProgress(baseline, pixelAccounting.read(drawn).progress)
   }
   const serverTemplateColourProgress = (
     server: ConnectedServer,
@@ -427,7 +427,7 @@ export const treeContents = (
     const drawn = drawnByServer.get(server.url)?.get(template.id)
     return drawn === undefined
       ? serverProgress
-      : freshestColourProgress(serverProgress, colourProgressFor(drawn))
+      : freshestColourProgress(serverProgress, pixelAccounting.read(drawn).colours)
   }
   const completeColourProgress = (
     overall: TemplateProgress | undefined,
@@ -479,7 +479,7 @@ export const treeContents = (
         : (rowsFor(server)?.templates ?? []).filter((template) => template.published)
     const readParentProgress = (): TemplateProgress | undefined =>
       isLocal
-        ? sumProgress(localOnly.map(progressFor))
+        ? sumProgress(localOnly.map((template) => pixelAccounting.read(template).progress))
         : server === undefined
           ? undefined
           : sumProgress(serverTemplates.map((template) => serverTemplateProgress(server, template)))
@@ -488,7 +488,11 @@ export const treeContents = (
       isLocal
         ? localOnly.length === 0
           ? undefined
-          : () => completeColourProgress(readParentProgress(), localOnly.map(colourProgressFor))
+          : () =>
+              completeColourProgress(
+                readParentProgress(),
+                localOnly.map((template) => pixelAccounting.read(template).colours),
+              )
         : server === undefined ||
             serverTemplates.length === 0 ||
             !serverTemplates.every(
@@ -839,9 +843,9 @@ export const treeContents = (
             kind: 'image',
             childrenOf: null,
             meta: `${template.width}×${template.height}`,
-            progress: progressFor(template),
-            progressReader: () => progressFor(template),
-            colourProgress: () => colourProgressFor(template),
+            progress: pixelAccounting.read(template).progress,
+            progressReader: () => pixelAccounting.read(template).progress,
+            colourProgress: () => pixelAccounting.read(template).colours,
             progressSortable: true,
             visible: template.visible,
             setVisible: (on) => setLocalVisible(template.id, on),

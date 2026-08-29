@@ -106,6 +106,37 @@ export type ColourNavigationExclusion = Pick<
   'kind' | 'templateId' | 'x' | 'y'
 >
 
+/** Every UI projection of one canonical template/tile classification. */
+export interface TilePixelAccounting {
+  /** Wrong-colour pixels only. */
+  readonly mismatched: Mismatches
+  /** Pixels with no server or draft colour. */
+  readonly unpainted: Mismatches
+  /** Wrong-colour and unpainted pixels, merged in spatial order. */
+  readonly disagreements: Mismatches
+  /** The configured marker projection, including unpainted only when its threshold allows it. */
+  readonly markers: Mismatches
+}
+
+/** One synchronous view of the managed accounting state for a template. */
+export interface TemplatePixelAccounting {
+  /** The immutable desired palette indices owned by the template. */
+  readonly wanted: Uint8Array
+  readonly progress: TemplateProgress
+  readonly colours: readonly TemplateColourProgress[]
+  /** Read or schedule one tile's canonical classification. */
+  readonly tile: (tile: TileCoord) => TilePixelAccounting | null
+  /** Ensure aggregate-only accounting exists for this tile. */
+  readonly ensure: (tile: TileCoord) => boolean
+  /** Navigate through locations derived from this same accounting state. */
+  readonly nearest: (
+    index: number,
+    kind: ColourTargetKind,
+    reference: { readonly x: number; readonly y: number },
+    exclude?: ColourNavigationExclusion,
+  ) => Promise<ColourNavigationTarget | null>
+}
+
 const markCoordinate = (mark: number): number => mark & 0xfffff
 
 /** Merge two row-major classifications without losing the renderer's spatial-order invariant. */
@@ -643,8 +674,49 @@ const progressSignature = (template: PlacedTemplate): string =>
 const signature = (template: PlacedTemplate): string =>
   `${progressSignature(template)}|${assertedHidden(template).join(',')}`
 
+/**
+ * Cold progress must cover the template, not merely the part currently in the viewport.
+ *
+ * The marker renderer naturally asks only about visible tiles. Reusing that coverage for palette
+ * counters made a reload look like all offscreen work had become unfinished: unknown pixels were
+ * subtracted from the template total as though they were known failures, and those tiles were never
+ * requested until somebody panned over them. Queue every compact local-template tile in idle time;
+ * exact capture remains bounded by tile-transform's chase limit and wakes this queue as tiles land.
+ */
+const queueIncompleteLocalProgress = (template: PlacedTemplate): void => {
+  if (template.serverUrl !== undefined || template.opaque <= 0) return
+  const key = progressSignature(template)
+  const total = progressTotals.get(template.id)
+  if (
+    total !== undefined &&
+    total.templateSource === template.indices &&
+    total.key === key &&
+    total.asserted >= template.opaque
+  )
+    return
+
+  let pending = false
+  for (const tileKey of templateTileKeys(template)) {
+    const tile = parseTileKey(tileKey)
+    if (tile === null) continue
+    const cacheKey = `${template.id}|${tile.x}/${tile.y}`
+    const held = progressCoverage.get(cacheKey)
+    if (
+      held !== undefined &&
+      held.templateSource === template.indices &&
+      held.key === key &&
+      !staleProgress.has(cacheKey)
+    )
+      continue
+    staleProgress.add(cacheKey)
+    pending = true
+  }
+  if (pending) scheduleIdleScan()
+}
+
 /** Progress for scanned tiles; unknown tiles remain outside the three classified counts. */
 export const progressFor = (template: PlacedTemplate): TemplateProgress => {
+  queueIncompleteLocalProgress(template)
   const total = Math.max(0, template.opaque)
   const held = progressTotals.get(template.id)
   if (
@@ -681,6 +753,7 @@ const colourTotalsFor = (template: PlacedTemplate): Uint32Array => {
 
 /** Exact progress for every colour the template contains. */
 export const colourProgressFor = (template: PlacedTemplate): readonly TemplateColourProgress[] => {
+  queueIncompleteLocalProgress(template)
   const totals = colourTotalsFor(template)
   const held = progressTotals.get(template.id)
   const current =
@@ -1417,6 +1490,29 @@ export const progressIn = (template: PlacedTemplate, tile: TileCoord): boolean =
 }
 
 /**
+ * Materialize every array a tile consumer can ask for from one cached classification record.
+ *
+ * Asking for `all` forces both coordinate lists into the same scan. The four returned projections
+ * therefore cannot come from different source pixels, different draft moments, or different worker
+ * replies; `both` is memoized on that record and the configured projection is derived from it.
+ */
+const tileAccountingFor = (
+  template: PlacedTemplate,
+  tile: TileCoord,
+): TilePixelAccounting | null => {
+  const disagreements = mismatchAnswer(template, tile, 'all')
+  if (disagreements === null) return null
+  const entry = cache.get(`${template.id}|${tile.x}/${tile.y}`)
+  if (entry === undefined || !entry.wrongComplete || !entry.unpaintedComplete) return null
+  return {
+    mismatched: entry.wrong,
+    unpainted: entry.unpainted,
+    disagreements,
+    markers: answerFrom(entry, 'configured', template),
+  }
+}
+
+/**
  * Update one cached answer for one changed pixel, instead of asking the tile again.
  *
  * Painting is the moment this matters. A placed pixel changes exactly one cell, and the write that
@@ -1757,4 +1853,40 @@ onLocalChange(() => {
     if (!current.has(id)) forgetMismatches(id)
   }
   knownTemplateIds = current
+})
+
+/**
+ * The deep module seam for template accounting.
+ *
+ * Capture, worker scheduling, server-mask selection, draft precedence, cache invalidation and
+ * per-pixel patching stay behind this interface. Callers receive only stable typed-array projections
+ * and aggregates from the one managed record. A future Wasm implementation can satisfy this same
+ * interface while TypeScript keeps MapLibre, WebGL and UI ownership.
+ */
+export const pixelAccounting = Object.freeze({
+  read: (template: PlacedTemplate): TemplatePixelAccounting => ({
+    wanted: template.indices,
+    get progress() {
+      return progressFor(template)
+    },
+    get colours() {
+      return colourProgressFor(template)
+    },
+    tile: (tile) => tileAccountingFor(template, tile),
+    ensure: (tile) => progressIn(template, tile),
+    nearest: (index, kind, reference, exclude) =>
+      nearestColourTarget(index, kind, reference, template.id, exclude),
+  }),
+  frame: <Result>(read: () => Result): Result => {
+    beginMismatchFrame()
+    try {
+      return read()
+    } finally {
+      endMismatchFrame()
+    }
+  },
+  wantsTilePixels,
+  onChange: onMismatchesChanged,
+  memoryBytes: mismatchMemoryBytes,
+  revision: mismatchRevision,
 })

@@ -56,11 +56,24 @@ vi.mock('../templates/local-store.js', () => ({
   isTemplateVisible: () => true,
 }))
 vi.mock('../templates/mismatch.js', () => ({
-  beginMismatchFrame: vi.fn(),
-  disagreementsIn: fixture.disagreementsIn,
-  endMismatchFrame: vi.fn(),
-  mismatchesIn: fixture.mismatchesIn,
-  progressIn: fixture.progressIn,
+  pixelAccounting: {
+    read: () => ({
+      ensure: fixture.progressIn,
+      tile: () => {
+        const disagreements = fixture.disagreementsIn()
+        const markers = fixture.mismatchesIn()
+        return disagreements === null || markers === null
+          ? null
+          : {
+              disagreements,
+              markers,
+              mismatched: markers,
+              unpainted: new Uint32Array(0),
+            }
+      },
+    }),
+    frame: (read: () => unknown) => read(),
+  },
 }))
 vi.mock('../templates/placement.js', () => ({
   horizontalSpans: () => [{ worldStart: 0, worldEnd: 1_000 }],

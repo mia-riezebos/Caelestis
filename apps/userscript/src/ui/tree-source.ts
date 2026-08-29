@@ -1,5 +1,5 @@
 import {
-  mismatchRevision,
+  pixelAccounting,
   type TemplateColourProgress,
   type TemplateProgress,
 } from '../templates/mismatch.js'
@@ -76,9 +76,9 @@ export const groupedTreeSource = (
   const colourAvailability = new Map<string | null, boolean>()
   const visiting = new Set<string | null>()
   const colourVisiting = new Set<string | null>()
-  let revision = mismatchRevision()
+  let revision = pixelAccounting.revision()
   const ensureCurrentRevision = (): void => {
-    const current = mismatchRevision()
+    const current = pixelAccounting.revision()
     if (current === revision) return
     revision = current
     totals.clear()

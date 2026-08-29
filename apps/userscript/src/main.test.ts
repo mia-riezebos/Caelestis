@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   stateListeners: [] as Array<() => void>,
   paintListeners: [] as Array<() => void>,
   mismatchListeners: [] as Array<() => void>,
+  clearDraftPixels: vi.fn(),
   triggerRepaint: vi.fn(),
   renderOverlayControls: vi.fn(),
   viewportCentreIn: vi.fn(() => ({ x: 12, y: 34 })),
@@ -75,9 +76,11 @@ vi.mock('./templates/local-store.js', () => ({
   templateIndexMemoryBytes: vi.fn(() => 0),
 }))
 vi.mock('./templates/mismatch.js', () => ({
-  mismatchMemoryBytes: vi.fn(() => 0),
-  onMismatchesChanged: (listener: () => void) => harness.mismatchListeners.push(listener),
-  wantsTilePixels: vi.fn(() => false),
+  pixelAccounting: {
+    memoryBytes: vi.fn(() => 0),
+    onChange: (listener: () => void) => harness.mismatchListeners.push(listener),
+    wantsTilePixels: vi.fn(() => false),
+  },
 }))
 vi.mock('./templates/mismatch-worker.js', () => ({ mismatchWorkerMemoryBytes: vi.fn(() => 0) }))
 vi.mock('./templates/nearest.js', () => ({ focusedTemplate: vi.fn(() => null) }))
@@ -86,6 +89,7 @@ vi.mock('./telemetry.js', () => ({ installTelemetry: vi.fn() }))
 vi.mock('./tile-transform.js', () => ({
   capturedPixelMemoryBytes: vi.fn(() => 0),
   captureTilePixels: vi.fn(),
+  clearDraftPixels: harness.clearDraftPixels,
   install: vi.fn(),
   onTileFrame: (listener: (frame: unknown) => void) => {
     harness.tileFrame = listener
@@ -184,6 +188,20 @@ describe('GL frame lifecycle', () => {
 
     harness.previewListeners.at(-1)?.()
 
+    expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
+    expect(harness.triggerRepaint).toHaveBeenCalledOnce()
+  })
+
+  it('repaints the GL marker layer when Wplace changes the selected paint colour', async () => {
+    await load()
+    const canvas = document.createElement('canvas')
+    harness.tileFrame?.(frame(canvas))
+    harness.renderOverlayControls.mockClear()
+    harness.triggerRepaint.mockClear()
+
+    harness.paintListeners[0]?.()
+
+    expect(harness.clearDraftPixels).toHaveBeenCalledOnce()
     expect(harness.renderOverlayControls).toHaveBeenCalledWith(expect.any(Function), canvas)
     expect(harness.triggerRepaint).toHaveBeenCalledOnce()
   })
