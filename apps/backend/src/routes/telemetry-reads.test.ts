@@ -265,6 +265,52 @@ describe('telemetry read routes', () => {
     })
   })
 
+  it('serves only the retained fine part when a pace window bounds bucket width', async () => {
+    const { app, sql } = await harness()
+    const templateId = await createPublishedTemplate(app)
+    const readToken = await mintToken(app, 'read')
+    const now = Math.floor(Date.now() / 1_000)
+    const to = Math.floor(now / 3_600) * 3_600
+    const from = to - 8 * 86_400
+    await sql.appendBuckets([
+      {
+        templateId,
+        resolution: 3_600,
+        bucketStart: seconds(from),
+        placed: 7,
+        correct: 6,
+        repairs: 1,
+      },
+      {
+        templateId,
+        resolution: 900,
+        bucketStart: seconds(to - 900),
+        placed: 2,
+        correct: 2,
+        repairs: 0,
+      },
+    ])
+
+    const response = await app.request(
+      `/telemetry/history?templateIds=${templateId}&maxResolution=900&from=${from}&to=${to}`,
+      { headers: bearer(readToken) },
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      buckets: [
+        {
+          templateId,
+          resolution: 900,
+          bucketStart: to - 900,
+          placed: 2,
+          correct: 2,
+          repairs: 0,
+        },
+      ],
+    })
+  })
+
   it('coalesces finer retained telemetry when the selected coarse tier is not materialised', async () => {
     const { app, sql } = await harness()
     const templateId = await createPublishedTemplate(app)
@@ -313,6 +359,10 @@ describe('telemetry read routes', () => {
     expect((await query(`resolution=60&from=1&to=2`)).status).toBe(400)
     expect((await query(`templateIds=not-a-uuid&resolution=60&from=1&to=2`)).status).toBe(400)
     expect((await query(`templateIds=${templateId}&resolution=61&from=1&to=2`)).status).toBe(400)
+    expect((await query(`templateIds=${templateId}&maxResolution=59&from=1&to=2`)).status).toBe(400)
+    expect(
+      (await query(`templateIds=${templateId}&resolution=60&maxResolution=900&from=1&to=2`)).status,
+    ).toBe(400)
     expect((await query(`templateIds=${templateId}&resolution=60&from=2&to=2`)).status).toBe(400)
     expect((await query(`templateIds=${templateId}&resolution=60&from=2&to=1`)).status).toBe(400)
     expect((await query(`templateIds=${templateId}&resolution=60&from=x&to=2`)).status).toBe(400)
