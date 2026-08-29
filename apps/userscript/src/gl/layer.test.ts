@@ -17,6 +17,7 @@ const harness = vi.hoisted(() => ({
   visible: true,
   size: 1,
   opacity: 1,
+  hiddenColours: [] as number[],
   transitionedSize: null as number | null,
   fade: { value: 0, done: false },
 }))
@@ -26,7 +27,9 @@ vi.mock('../map-handle.js', () => ({
   getMap: () => harness.map,
 }))
 vi.mock('../templates/appearance.js', () => ({ isPlain: () => true }))
-vi.mock('../templates/colour-filter.js', () => ({ hiddenColoursFor: () => [] }))
+vi.mock('../templates/colour-filter.js', () => ({
+  hiddenColoursFor: () => harness.hiddenColours,
+}))
 vi.mock('../templates/local-store.js', () => ({
   appearanceOf: () => ({
     size: harness.size,
@@ -65,7 +68,10 @@ vi.mock('../tile-transform.js', () => ({
   isDrawingTiles: () => true,
 }))
 vi.mock('./fade.js', () => ({
-  colourFades: { advance: () => ({ value: 1, done: true }), prune: vi.fn() },
+  colourFades: {
+    advance: (_key: string, target: number) => ({ value: target, done: true }),
+    prune: vi.fn(),
+  },
   templateFades: {
     advance: () => harness.fade,
     value: () => harness.fade.value,
@@ -197,6 +203,7 @@ beforeEach(() => {
   harness.visible = true
   harness.size = 1
   harness.opacity = 1
+  harness.hiddenColours = []
   harness.transitionedSize = null
 })
 
@@ -332,6 +339,32 @@ describe('overlay layer', () => {
     expect(context.uniform1i).toHaveBeenCalledWith('u_darkTheme', 1)
     expect(context.uniform1f).toHaveBeenCalledWith('u_outlineSize', 1.25)
     expect(context.drawArrays).toHaveBeenCalledOnce()
+  })
+
+  it('refreshes the shared visibility palette before drawing an outline', async () => {
+    const { outlineLayer, overlayLayer } = await import('./layer.js')
+    harness.fade = { value: 1, done: true }
+    const context = gl()
+    overlayLayer.onAdd(null, context)
+    overlayLayer.draw(context, null)
+    outlineLayer.onAdd(null, context)
+    vi.mocked(context.texImage2D).mockClear()
+    vi.mocked(context.drawArrays).mockClear()
+
+    harness.hiddenColours = [0]
+    outlineLayer.draw(context, null)
+
+    const paletteUpload = vi
+      .mocked(context.texImage2D)
+      .mock.calls.find((call) => call[2] === context.RGBA)
+    expect(paletteUpload).toBeDefined()
+    if (paletteUpload === undefined) throw new Error('visibility palette was not uploaded')
+    expect((paletteUpload[8] as Uint8Array)[3]).toBe(0)
+    expect(context.drawArrays).toHaveBeenCalledOnce()
+
+    vi.mocked(context.texImage2D).mockClear()
+    overlayLayer.draw(context, null)
+    expect(context.texImage2D).not.toHaveBeenCalled()
   })
 
   it('omits the outline while the map moves or the template setting is off', async () => {

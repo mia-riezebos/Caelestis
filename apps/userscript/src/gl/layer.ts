@@ -110,6 +110,8 @@ interface TemplateGpu {
   paletteKey: string | null
   /** Whether any colour in it is still fading, and so whether it needs re-uploading next frame. */
   paletteMoving: boolean
+  /** Whether the earlier outline pass already prepared this frame's shared palette. */
+  palettePreparedForOverlay: boolean
   /** Render generation in which this template was most recently visible. */
   lastUsed: number
 }
@@ -296,6 +298,39 @@ const uploadPalette = (
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+}
+
+/**
+ * Bring the one palette texture shared by the outline and overlay to the requested visibility.
+ *
+ * The outline sits earlier in MapLibre's layer stack, so it must prepare the texture first. The
+ * overlay then consumes that exact preparation instead of advancing the same colour ramps again a
+ * few milliseconds later. Besides keeping both passes on the same pixels and alpha, this matters
+ * on the final fade frame: if the overlay were the first pass to upload alpha zero, MapLibre could
+ * retain the stale outline drawn immediately before it without scheduling another repaint.
+ */
+const preparePalette = (
+  gl: WebGL2RenderingContext,
+  entry: TemplateGpu,
+  templateId: string,
+  hidden: readonly number[],
+  now: number,
+  pass: 'outline' | 'overlay',
+): boolean => {
+  if (pass === 'overlay' && entry.palettePreparedForOverlay) {
+    entry.palettePreparedForOverlay = false
+    return entry.paletteMoving
+  }
+
+  const paletteKey = hidden.join(',')
+  if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
+    const built = buildPalette(templateId, hidden, now)
+    uploadPalette(gl, entry.palette, built.data)
+    entry.paletteKey = paletteKey
+    entry.paletteMoving = built.animating
+  }
+  entry.palettePreparedForOverlay = pass === 'outline'
+  return entry.paletteMoving
 }
 
 /** Maximum side this context accepts, falling back to one whole-template upload in test shims. */
@@ -851,6 +886,7 @@ export const overlayLayer = {
             source: template.indices,
             paletteKey: null,
             paletteMoving: false,
+            palettePreparedForOverlay: false,
             lastUsed: renderGeneration,
           }
           pendingGpu.delete(template.id)
@@ -871,16 +907,9 @@ export const overlayLayer = {
         const appearance = transitioned.appearance
         if (!transitioned.done) animating = true
         const hidden = hiddenColoursFor(appearance)
-        const paletteKey = hidden.join(',')
         // Re-uploaded while anything in it is still moving, not only when the filter changes: the
         // filter changes once, and the fade it starts takes a few hundred milliseconds to arrive.
-        if (entry.paletteKey !== paletteKey || entry.paletteMoving) {
-          const built = buildPalette(template.id, hidden, now)
-          uploadPalette(gl, entry.palette, built.data)
-          entry.paletteKey = paletteKey
-          entry.paletteMoving = built.animating
-          if (built.animating) animating = true
-        }
+        if (preparePalette(gl, entry, template.id, hidden, now, 'overlay')) animating = true
 
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, entry.palette)
@@ -1009,6 +1038,9 @@ export const outlineLayer = {
 
   draw(gl: WebGL2RenderingContext, _args: unknown): void {
     if (outlineProgram === null || outlineVao === null || outlineQuad === null) return
+    // This pass is always before the overlay. Clear any preparation the overlay did not consume in
+    // an earlier partial frame, then mark only entries actually prepared below.
+    for (const entry of gpu.values()) entry.palettePreparedForOverlay = false
     if (isOverlayPeekActive() || !isDrawingTiles()) return
     const map = getMap() as { isMoving?: () => boolean; triggerRepaint?: () => void } | null
     // The current frame's tile quads are emitted later in the layer stack. During motion the last
@@ -1068,6 +1100,8 @@ export const outlineLayer = {
       const spans = horizontalSpans(template)
       if (!intersectsTiles(template, spans, tiles)) continue
       visibleTemplates++
+
+      preparePalette(gl, entry, template.id, hiddenColoursFor(appearance), now, 'outline')
 
       gl.activeTexture(gl.TEXTURE1)
       gl.bindTexture(gl.TEXTURE_2D, entry.palette)
