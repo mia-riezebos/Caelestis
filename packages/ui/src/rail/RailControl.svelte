@@ -38,13 +38,31 @@
 </button>
 
 <style>
-  button { position: relative; display: grid; place-items: center; inline-size: var(--caelestis-touch-target, 2.75rem); block-size: var(--caelestis-touch-target, 2.75rem); padding: 0; border: 1px solid var(--caelestis-border, rgb(255 255 255 / 0.14)); border-radius: 999px; background: var(--caelestis-surface, oklch(0.27 0.025 264)); color: var(--caelestis-text, oklch(0.91 0.015 264)); box-shadow: 0 4px 12px rgb(0 0 0 / 0.25); cursor: pointer; }
-  button.pressed { border-color: transparent; background: var(--caelestis-primary, oklch(0.68 0.15 244)); color: white; }
+  button {
+    --button-base-colour: var(--caelestis-raised-surface, var(--color-base-200, oklch(0.32 0.025 264)));
+    --button-colour: var(--button-base-colour);
+    position: relative;
+    display: grid;
+    place-items: center;
+    inline-size: var(--caelestis-touch-target, 2.5rem);
+    block-size: var(--caelestis-touch-target, 2.5rem);
+    padding: 0;
+    border: var(--border, 1px) solid color-mix(in oklab, var(--button-colour), #000 calc(var(--depth, 1) * 5%));
+    border-radius: 999px;
+    outline-color: var(--button-colour);
+    background: var(--button-colour);
+    color: var(--caelestis-text, oklch(0.91 0.015 264));
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    cursor: pointer;
+    touch-action: manipulation;
+    user-select: none;
+  }
+  button.pressed { --button-base-colour: var(--caelestis-primary, oklch(0.68 0.15 244)); color: white; }
   button.danger { color: var(--caelestis-danger, oklch(0.72 0.18 27)); }
   button[aria-disabled='true'] { cursor: not-allowed; opacity: 0.5; }
-  button:hover { filter: brightness(1.08); }
-  button:active { transform: scale(0.96); }
-  button:focus-visible { outline: 3px solid color-mix(in oklch, var(--caelestis-focus, oklch(0.74 0.14 244)) 55%, transparent); outline-offset: 2px; }
-  .badge { position: absolute; inset-block-start: -0.35rem; inset-inline-end: -0.35rem; display: grid; place-items: center; min-inline-size: 1.2rem; block-size: 1.2rem; padding-inline: 0.25rem; border: 2px solid var(--caelestis-surface, oklch(0.27 0.025 264)); border-radius: 999px; background: var(--caelestis-danger, oklch(0.72 0.18 27)); color: white; font: 800 0.65rem/1 ui-sans-serif, system-ui, sans-serif; }
-  @media (prefers-reduced-motion: no-preference) { button { transition: transform 120ms, filter 160ms, background-color 160ms; } }
+  @media (hover: hover) { button:hover:not([aria-disabled='true']) { --button-colour: color-mix(in oklab, var(--button-base-colour), #000 7%); } }
+  button:active:not([aria-disabled='true']) { translate: 0 0.5px; box-shadow: none; }
+  button:focus-visible { outline: 2px solid var(--button-colour, var(--caelestis-focus, currentColor)); outline-offset: 2px; }
+  .badge { position: absolute; inset-block-start: -0.35rem; inset-inline-end: -0.35rem; display: grid; place-items: center; min-inline-size: 1.2rem; block-size: 1.2rem; padding-inline: 0.25rem; border: 2px solid var(--button-colour); border-radius: 999px; background: var(--caelestis-danger, oklch(0.72 0.18 27)); color: white; font: 800 0.65rem/1 ui-sans-serif, system-ui, sans-serif; }
+  @media (prefers-reduced-motion: no-preference) { button { transition: color 200ms, background-color 200ms, border-color 200ms, box-shadow 200ms, translate 200ms; } }
 </style>
