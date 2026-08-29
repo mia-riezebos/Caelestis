@@ -52,9 +52,27 @@ const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
   return directButtons.at(-1) ?? null
 }
 
+const paintDockButton = (): HTMLButtonElement | null => {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {
+    const dock = button.parentElement
+    if (
+      dock?.classList.contains('absolute') === true &&
+      dock.classList.contains('bottom-3') &&
+      dock.classList.contains('left-1/2') &&
+      dock.classList.contains('z-30') &&
+      dock.classList.contains('-translate-x-1/2')
+    ) {
+      return button
+    }
+  }
+  return null
+}
+
 /**
- * Drive Wplace's own paint-mode control. Exact accessible labels only: a broad text search could
- * click a template action or a dialog button after Wplace changes its chrome.
+ * Drive Wplace's own paint-mode control. Prefer an exact accessible label, then the current
+ * structurally unique bottom-centre primary control. The latter is needed because Wplace's live
+ * Paint button has dynamic timer text but no aria-label or title. Neither path searches arbitrary
+ * page text, so a template action or dialog button cannot be mistaken for paint mode.
  */
 export const togglePaintMode = (): boolean => {
   const swatch = document.querySelector('[id^="color-"]')
@@ -71,6 +89,11 @@ export const togglePaintMode = (): boolean => {
       .toLowerCase()
     if (!labels.has(label)) continue
     button.click()
+    return true
+  }
+  const dockButton = paintDockButton()
+  if (dockButton !== null) {
+    dockButton.click()
     return true
   }
   return false

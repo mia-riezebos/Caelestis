@@ -576,6 +576,65 @@ caelestis-template-admin {
   pointer-events: none;
   text-align: center;
 }
+.caelestis-shortcut-box {
+  max-width: 42rem;
+}
+.caelestis-shortcut-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+.caelestis-shortcut-group-title {
+  margin-block-end: 0.625rem;
+  color: var(--color-base-content, currentColor);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.caelestis-shortcut-list {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.375rem 0.75rem;
+  margin: 0;
+}
+.caelestis-shortcut-list dt,
+.caelestis-shortcut-list dd {
+  margin: 0;
+}
+.caelestis-shortcut-list kbd {
+  display: inline-flex;
+  min-width: 2rem;
+  width: fit-content;
+  min-height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 0.5rem;
+  border: 1px solid var(--color-base-300, rgba(255, 255, 255, 0.14));
+  border-radius: 0.375rem;
+  background: var(--color-base-200, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 1px 0 var(--color-base-300, rgba(255, 255, 255, 0.14));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+.caelestis-shortcut-list dd {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+.caelestis-shortcut-note {
+  margin-block: 1.25rem 0;
+  color: color-mix(in srgb, var(--color-base-content, currentColor) 62%, transparent);
+  font-size: 0.75rem;
+}
+@media (max-width: 35rem) {
+  .caelestis-shortcut-groups {
+    grid-template-columns: 1fr;
+  }
+}
 `
 
 /** Our stylesheet's identity is the node we created, not a page-owned id string. */

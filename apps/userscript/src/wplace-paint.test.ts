@@ -40,6 +40,29 @@ describe('Wplace paint controls', () => {
     expect(unrelatedClick).not.toHaveBeenCalled()
   })
 
+  it('clicks the current bottom-centre Wplace Paint control with dynamic timer text', async () => {
+    const unrelated = document.createElement('button')
+    unrelated.className = 'btn btn-primary'
+    unrelated.textContent = 'Paint template settings'
+    const unrelatedClick = vi.fn()
+    unrelated.addEventListener('click', unrelatedClick)
+
+    const dock = document.createElement('div')
+    dock.className = 'absolute bottom-3 left-1/2 z-30 -translate-x-1/2'
+    const paint = document.createElement('button')
+    paint.className = 'btn btn-lg sm:btn-xl relative btn-primary z-30'
+    paint.textContent = 'Paint (0:08)'
+    const paintClick = vi.fn()
+    paint.addEventListener('click', paintClick)
+    dock.appendChild(paint)
+    document.body.append(unrelated, dock)
+    const { togglePaintMode } = await import('./wplace-paint.js')
+
+    expect(togglePaintMode()).toBe(true)
+    expect(paintClick).toHaveBeenCalledOnce()
+    expect(unrelatedClick).not.toHaveBeenCalled()
+  })
+
   it('uses the native unlabeled drawer close control while the paint drawer is mounted', async () => {
     const drawer = document.createElement('div')
     const header = document.createElement('div')

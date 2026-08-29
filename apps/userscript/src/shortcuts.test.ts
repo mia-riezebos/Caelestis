@@ -6,6 +6,7 @@ const keydown = (
   overrides: Partial<Parameters<typeof shortcutFor>[0]> = {},
 ): Parameters<typeof shortcutFor>[0] => ({
   altKey: false,
+  code: '',
   ctrlKey: false,
   key,
   metaKey: false,
@@ -43,5 +44,12 @@ describe('shortcutFor', () => {
     const input = Object.assign(new EventTarget(), { tagName: 'INPUT' })
     expect(shortcutFor(keydown('t', { target: input }))).toBeNull()
     expect(shortcutFor(keydown('f', { repeat: true }))).toBeNull()
+  })
+
+  it('maps the physical Shift+/ chord even when the layout reports a dead key', () => {
+    expect(shortcutFor(keydown('Dead', { code: 'Slash', shiftKey: true }))).toBe(
+      'show-shortcut-help',
+    )
+    expect(shortcutFor(keydown('?', { code: 'Quote', shiftKey: true }))).toBeNull()
   })
 })

@@ -31,6 +31,7 @@ const harness = vi.hoisted(() => ({
   toggleMenu: vi.fn(),
   togglePanel: vi.fn(),
   togglePaint: vi.fn(() => true),
+  toggleShortcutHelp: vi.fn(),
 }))
 
 vi.mock('./map-handle.js', () => ({
@@ -59,12 +60,13 @@ vi.mock('./ui/overlay-menu.js', () => ({
   toggleOverlayMenu: harness.toggleMenu,
 }))
 vi.mock('./ui/panel.js', () => ({ togglePanel: harness.togglePanel }))
+vi.mock('./ui/shortcut-help.js', () => ({ toggleShortcutHelp: harness.toggleShortcutHelp }))
 vi.mock('./wplace-paint.js', () => ({ togglePaintMode: harness.togglePaint }))
 
 let dispose: (() => void) | null = null
 
-const press = (key: string): KeyboardEvent => {
-  const event = new KeyboardEvent('keydown', { key, cancelable: true })
+const press = (key: string, init: KeyboardEventInit = {}): KeyboardEvent => {
+  const event = new KeyboardEvent('keydown', { key, cancelable: true, ...init })
   window.dispatchEvent(event)
   return event
 }
@@ -124,6 +126,13 @@ describe('keyboard shortcut actions', () => {
     expect(harness.cycleColour).toHaveBeenNthCalledWith(1, -1)
     expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)
     expect(harness.togglePaint).toHaveBeenCalledOnce()
+  })
+
+  it('opens shortcut help from the physical Shift+/ chord', () => {
+    const event = press('Dead', { code: 'Slash', shiftKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(harness.toggleShortcutHelp).toHaveBeenCalledOnce()
   })
 
   it('releases peek if the window loses focus before keyup', () => {

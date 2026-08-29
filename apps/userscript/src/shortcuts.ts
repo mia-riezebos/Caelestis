@@ -3,6 +3,7 @@ export type Shortcut =
   | 'cycle-colour-previous'
   | 'fly-to-colour'
   | 'peek-overlays'
+  | 'show-shortcut-help'
   | 'set-opacity-100'
   | 'set-opacity-20'
   | 'set-opacity-40'
@@ -32,13 +33,16 @@ const isTyping = (target: EventTarget | null): boolean => {
   )
 }
 
-/** Resolve an unmodified, non-typing keydown to one of Caelestis's deliberately few shortcuts. */
+/** Resolve a non-typing keydown to one of Caelestis's deliberately few shortcuts. */
 export const shortcutFor = (
-  event: Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
+  event: Pick<KeyboardEvent, 'altKey' | 'code' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
     Partial<Pick<KeyboardEvent, 'repeat' | 'shiftKey'>>,
 ): Shortcut | null => {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat) return null
+  if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return null
   if (isTyping(event.target)) return null
+  // Physical position is intentional: layouts with dead keys may report `key: 'Dead'` for `?`,
+  // while `code: 'Slash'` still identifies the requested Shift+/ chord exactly.
+  if (event.shiftKey) return event.code === 'Slash' ? 'show-shortcut-help' : null
 
   switch (event.key.toLowerCase()) {
     case '1':
