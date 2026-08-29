@@ -156,27 +156,20 @@ const overlayAlpha = $derived(Math.min(1, Math.max(0, storedOverlay.value)))
     }
   })
 
-  /** Playback rate: 1× advances 60 timeline frames per second; the popout scales that. */
+  /** Playback rate: 1× preserves the original 350 ms cadence; the popout scales that. */
   const SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.5, 2, 4] as const
   const storedSpeed = persisted<number>('caelestis:timelapse-speed', 1)
   const speed = $derived(Math.min(4, Math.max(0.05, storedSpeed.value)))
 
   $effect(() => {
     if (!playing) return
-    // One 60fps tick per interval; `speed` frames advance per tick, accumulated fractionally so
-    // 0.25× steps every fourth tick and 4× steps four frames at once, without a second clock.
-    let accumulated = 0
     const interval = setInterval(() => {
-      accumulated += speed
-      const step = Math.floor(accumulated)
-      if (step === 0) return
-      accumulated -= step
       if (scrub >= timeline.length) {
         playing = false
       } else {
-        scrub = Math.min(timeline.length, scrub + step)
+        scrub += 1
       }
-    }, 1000 / 60)
+    }, 350 / speed)
     return () => clearInterval(interval)
   })
 
