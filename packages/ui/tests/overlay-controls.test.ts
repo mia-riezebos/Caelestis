@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from 'svelte'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushSync, mount, tick, unmount } from 'svelte'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CaelestisOverlayControls, registerCaelestisUi } from '../src/elements/index.js'
 import OverlayControls from '../src/overlay/OverlayControls.svelte'
 import type { OverlayControlsModel } from '../src/types.js'
 
+beforeAll(() => registerCaelestisUi())
 beforeEach(() => document.body.replaceChildren())
 
 const model: OverlayControlsModel = {
@@ -102,5 +104,37 @@ describe('overlay controls', () => {
     expect(onIntent).toHaveBeenCalledWith({ type: 'cancel-delete' })
     expect(onIntent).not.toHaveBeenCalledWith({ type: 'close' })
     void unmount(component)
+  })
+
+  it('keeps the colour picker open for a retargeted shadow-DOM pointer event', async () => {
+    const controls = new CaelestisOverlayControls()
+    controls.model = model
+    document.body.append(controls)
+    await tick()
+
+    const root = controls.shadowRoot
+    const swatch = root?.querySelector<HTMLButtonElement>('[aria-label^="Marker colour:"]')
+    swatch?.click()
+    await tick()
+
+    const picker = root?.querySelector<HTMLElement>('[data-caelestis-colour-picker]')
+    const square = root?.querySelector<HTMLElement>('[aria-label="Saturation and brightness"]')
+    if (picker === null || picker === undefined || square === null || square === undefined) {
+      throw new Error('missing colour picker')
+    }
+    const path = [square, picker, root as ShadowRoot, controls, document.body, document, window]
+    const pointer = new (class extends PointerEvent {
+      override get target(): EventTarget | null {
+        return controls
+      }
+      override composedPath(): EventTarget[] {
+        return path
+      }
+    })('pointerdown')
+
+    window.dispatchEvent(pointer)
+    await tick()
+
+    expect(root?.querySelector('[data-caelestis-colour-picker]')).toBe(picker)
   })
 })

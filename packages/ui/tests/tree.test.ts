@@ -128,6 +128,40 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('reorders expanded containers against their next sibling', () => {
+    const onIntent = vi.fn()
+    const entries: TemplateTreeModel['entries'] = [
+      { ...model.entries[0], expanded: true, setSize: 2, positionInSet: 1 },
+      model.entries[1],
+      {
+        ...model.entries[0],
+        key: 'caelestis',
+        name: 'Caelestis',
+        expanded: false,
+        setSize: 2,
+        positionInSet: 2,
+      },
+    ]
+    const component = mount(TemplateTree, {
+      target: document.body,
+      props: { model: { ...model, entries }, onIntent },
+    })
+    flushSync()
+
+    const local = document.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
+    local?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }),
+    )
+
+    expect(onIntent).toHaveBeenCalledWith({
+      type: 'drop',
+      draggedKey: 'local',
+      targetKey: 'caelestis',
+      position: 'after',
+    })
+    void unmount(component)
+  })
+
   it('owns context menus and operation choosers while emitting typed intents', () => {
     const onIntent = vi.fn()
     const component = mount(TemplateTree, {

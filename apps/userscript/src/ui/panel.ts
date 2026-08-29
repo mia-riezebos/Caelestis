@@ -97,6 +97,7 @@ import {
   type TreeCallbacks,
   templateTreeAdapter,
 } from './tree.js'
+import { findWplaceRail } from './wplace-rail.js'
 
 /**
  * Our button on wplace's right-hand rail, and the panel it opens.
@@ -129,20 +130,10 @@ import {
  * Not by its classes. `.flex.flex-col.items-center.gap-3` is Tailwind utility soup that describes a
  * layout, not an identity — several elements on the page match it, `querySelector` returns whichever
  * comes first in the document, and ours landed in the wrong one. Anchor on the thing we actually
- * mean instead: wplace's own Overlays button, whose parent *is* the rail by definition. Ours then
- * lands directly beneath it, which is where it was asked to go.
+ * mean instead: one of wplace's own rail buttons, whose parent *is* the rail by definition. The
+ * logged-in rail has Overlays; the logged-out rail has Search and Leaderboard. Ours then lands
+ * directly beneath whichever native rail is on screen.
  */
-const ANCHOR_LABEL = 'Overlays'
-
-const findRail = (): { rail: Element; after: Element } | null => {
-  for (const button of document.querySelectorAll('button')) {
-    const label = button.getAttribute('title') ?? button.getAttribute('aria-label') ?? ''
-    if (label.trim() !== ANCHOR_LABEL) continue
-    const rail = button.parentElement
-    if (rail !== null) return { rail, after: button }
-  }
-  return null
-}
 const BUTTON_ID = 'caelestis-rail-button'
 
 const maximumPanelWidth = (): number => Math.min(720, Math.max(0, window.innerWidth - 96))
@@ -966,7 +957,7 @@ const railContainer = (): HTMLElement => {
  */
 const positionRail = (): void => {
   const rail = railContainer()
-  const theirs = findRail()?.rail.getBoundingClientRect()
+  const theirs = findWplaceRail()?.getBoundingClientRect()
   if (theirs !== undefined && theirs.width > 0) {
     rail.style.left = `${theirs.left}px`
     rail.style.top = `${theirs.bottom + GAP}px`

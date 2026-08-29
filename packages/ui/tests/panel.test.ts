@@ -3,7 +3,7 @@
 import { tick } from 'svelte'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaelestisPanel, registerCaelestisUi } from '../src/elements/index.js'
-import type { AppearanceEditorModel, PanelModel } from '../src/index.js'
+import type { AppearanceEditorModel, PanelModel, TemplateTreeModel } from '../src/index.js'
 
 beforeAll(() => registerCaelestisUi())
 beforeEach(() => document.body.replaceChildren())
@@ -55,6 +55,27 @@ const appearance: AppearanceEditorModel = {
   palette: [],
   onlySelectedColour: false,
   paintOpen: false,
+}
+
+const tree: TemplateTreeModel = {
+  query: '',
+  sort: { field: 'custom', direction: 'asc' },
+  entries: [
+    {
+      type: 'row',
+      key: 'local',
+      name: 'Local',
+      icon: 'folder',
+      depth: 0,
+      parentKey: null,
+      container: true,
+      expanded: false,
+      visible: true,
+      contextMenu: true,
+      setSize: 1,
+      positionInSet: 1,
+    },
+  ],
 }
 
 describe('panel shell', () => {
@@ -139,5 +160,34 @@ describe('panel shell', () => {
     expect(intent).toHaveBeenCalledWith(
       expect.objectContaining({ detail: { type: 'resize-commit', width: 376 } }),
     )
+  })
+
+  it('restores a tree row after its shadow-DOM context menu closes', async () => {
+    const panel = new CaelestisPanel()
+    panel.model = model({ tree })
+    document.body.append(panel)
+    await tick()
+
+    const row = panel.shadowRoot?.querySelector<HTMLElement>('[data-caelestis-tree-key="local"]')
+    row?.focus()
+    panel.model = model({
+      tree: {
+        ...tree,
+        contextMenu: {
+          id: 'menu-1',
+          x: 20,
+          y: 30,
+          items: [{ id: 'delete', label: 'Delete', icon: 'trash' }],
+        },
+      },
+    })
+    await tick()
+    panel.shadowRoot?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+
+    panel.model = model({ tree })
+    await tick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+
+    expect(panel.shadowRoot?.activeElement).toBe(row)
   })
 })

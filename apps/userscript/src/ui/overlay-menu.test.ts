@@ -882,6 +882,35 @@ describe('placement and geometry', () => {
     expect(Number.parseFloat(menu().style.left) + 240).toBeLessThan(floatingPosition(gear('a')).x)
   })
 
+  it('clears the wider logged-out account controls', () => {
+    const restore = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })
+    onTestFinished(() => {
+      Object.defineProperty(window, 'innerWidth', { value: restore, configurable: true })
+    })
+    menuMeasures(200, 240)
+
+    const accountControls = document.createElement('div')
+    accountControls.getBoundingClientRect = () =>
+      ({ left: 700, right: 792, top: 8, bottom: 156, width: 92, height: 148 }) as DOMRect
+    const login = document.createElement('button')
+    login.textContent = 'Log in'
+    const nativeRail = document.createElement('div')
+    const leaderboard = document.createElement('button')
+    leaderboard.title = 'Leaderboard'
+    const search = document.createElement('button')
+    search.title = 'Search'
+    nativeRail.append(leaderboard, search)
+    accountControls.append(login, nativeRail)
+    document.body.append(accountControls)
+
+    harness.localTemplates.mockReturnValue([template({ originX: 795 })])
+    rerender()
+
+    const usableRight = 700 - GAP
+    expect(floatingPosition(gear('a')).x + RAIL_BUTTON).toBeLessThanOrEqual(usableRight)
+  })
+
   it('remeasures the menu when an appearance group expands', async () => {
     harness.ownsGroup.mockReturnValue(false)
     onTestFinished(() => {

@@ -28,6 +28,12 @@
   let menuInvoker: HTMLElement | null = null
   let operationSelection = $state('')
 
+  const activeTreeElement = (): HTMLElement | null => {
+    const root = treeElement?.getRootNode()
+    if (!(root instanceof Document || root instanceof ShadowRoot)) return null
+    return root.activeElement instanceof HTMLElement ? root.activeElement : null
+  }
+
   $effect(() => {
     if (model.query !== admittedQuery) {
       admittedQuery = model.query
@@ -45,7 +51,7 @@
     const previous = admittedMenuId
     admittedMenuId = next
     if (next !== undefined) {
-      menuInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      menuInvoker = activeTreeElement()
     } else if (previous !== undefined) {
       const target = menuInvoker
       menuInvoker = null
@@ -104,8 +110,11 @@
     const rows = model.entries.filter((entry): entry is TreeRowModel => entry.type === 'row')
     const index = rows.findIndex((entry) => entry.key === row.key)
     if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
-      const target = event.key === 'ArrowUp' ? rows[index - 1] : rows[index + 1]
-      if (target === undefined || target.parentKey !== row.parentKey) return
+      const siblings = rows.filter((entry) => entry.parentKey === row.parentKey)
+      const siblingIndex = siblings.findIndex((entry) => entry.key === row.key)
+      const target =
+        event.key === 'ArrowUp' ? siblings[siblingIndex - 1] : siblings[siblingIndex + 1]
+      if (target === undefined) return
       event.preventDefault()
       emit({
         type: 'drop',

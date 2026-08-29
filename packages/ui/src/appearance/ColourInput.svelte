@@ -136,8 +136,9 @@
   }
 
   const outside = (event: PointerEvent): void => {
-    if (!open || !(event.target instanceof Node)) return
-    if (popover?.contains(event.target) || anchor?.contains(event.target)) return
+    if (!open) return
+    const path = event.composedPath()
+    if ((popover !== undefined && path.includes(popover)) || (anchor !== undefined && path.includes(anchor))) return
     close(false)
   }
 

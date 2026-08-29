@@ -71,6 +71,7 @@ import { type OverlayFailureKey as FailureKey, overlayFailures } from './overlay
 import { createRangeGestures } from './range-gestures.js'
 import { applyWplaceTheme } from './theme.js'
 import { PANEL_ID } from './toast.js'
+import { findWplaceRightControls } from './wplace-rail.js'
 
 /**
  * The per-overlay menu, anchored to the overlay it configures.
@@ -133,12 +134,18 @@ const CONTROL = 'caelestisControl'
  * The right edge available to controls anchored on the map.
  *
  * The main panel is resizable, so reserving its configured/default width is not enough. Its DOM
- * box is the authority while it exists (the panel removes itself when closed); otherwise the
- * ordinary button-rail clearance remains the boundary. Keep enough room for one reachable button
- * in very narrow viewports, even when the panel itself consumes nearly all of the map.
+ * box is the authority while it exists (the panel removes itself when closed); otherwise Wplace's
+ * live top-right control group is the boundary. That group is wider while logged out because it
+ * includes the Log in button. Keep enough room for one reachable button in very narrow viewports,
+ * even when the panel itself consumes nearly all of the map.
  */
 const localControlsRightEdge = (): number => {
-  const railEdge = window.innerWidth - CLEAR_OF_RAIL
+  const fallbackRailEdge = window.innerWidth - CLEAR_OF_RAIL
+  const wplaceControls = findWplaceRightControls()?.getBoundingClientRect()
+  const railEdge =
+    wplaceControls !== undefined && wplaceControls.width > 0
+      ? Math.min(fallbackRailEdge, wplaceControls.left - RAIL_GAP)
+      : fallbackRailEdge
   const panel = document.getElementById(PANEL_ID)
   if (panel === null) return railEdge
   return Math.max(
