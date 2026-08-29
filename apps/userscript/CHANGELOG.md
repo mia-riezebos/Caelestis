@@ -1,5 +1,11 @@
 # @caelestis/userscript
 
+## 0.5.3
+
+### Patch Changes
+
+- c041f28: Prevent Helium canvas privacy noise from creating false draft mismatch markers.
+
 ## 0.5.2
 
 ### Patch Changes
