@@ -118,10 +118,12 @@ export const getHistory = (
   templateIds: readonly string[],
   from: number,
   to: number,
+  options: { readonly maxResolution?: number } = {},
 ): Promise<HistoryResponse> =>
   json(
     `/telemetry/history?templateIds=${templateIds.map(encodeURIComponent).join(',')}` +
-      `&from=${from}&to=${to}`,
+      `&from=${from}&to=${to}` +
+      (options.maxResolution === undefined ? '' : `&maxResolution=${options.maxResolution}`),
   )
 
 export const getContributions = (

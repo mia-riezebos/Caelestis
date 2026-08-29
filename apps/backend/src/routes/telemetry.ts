@@ -333,20 +333,36 @@ export const createTelemetryRoutes = (
     const requestedResolution = c.req.query('resolution')
     const legacyResolution =
       requestedResolution === undefined ? undefined : wholeNumber(requestedResolution)
+    const requestedMaxResolution = c.req.query('maxResolution')
+    const maxResolution =
+      requestedMaxResolution === undefined ? undefined : wholeNumber(requestedMaxResolution)
     if (
       requestedResolution !== undefined &&
       (typeof legacyResolution !== 'number' || !LADDER_RESOLUTIONS.includes(legacyResolution))
     ) {
       return c.json({ error: `resolution must be one of ${LADDER_RESOLUTIONS.join(', ')}` }, 400)
     }
+    if (
+      requestedMaxResolution !== undefined &&
+      (typeof maxResolution !== 'number' || maxResolution < (LADDER_RESOLUTIONS[0] ?? 0))
+    ) {
+      return c.json({ error: `maxResolution must be at least ${LADDER_RESOLUTIONS[0]}` }, 400)
+    }
+    if (requestedResolution !== undefined && requestedMaxResolution !== undefined) {
+      return c.json({ error: 'resolution and maxResolution cannot be combined' }, 400)
+    }
     const range = parseRange(c.req.query('from'), c.req.query('to'))
     if (range === null) {
       return c.json({ error: 'from and to must be Unix seconds with from < to' }, 400)
     }
+    const selectableTiers =
+      typeof maxResolution === 'number'
+        ? TELEMETRY_HISTORY_TIERS.filter((tier) => tier.resolution <= maxResolution)
+        : TELEMETRY_HISTORY_TIERS
     const resolution =
       typeof legacyResolution === 'number'
         ? legacyResolution
-        : selectTelemetryHistoryResolution(range)
+        : selectHistoryResolution(selectableTiers, range)
     // Buckets carry no publish state of their own, so the ids are resolved through the same gate
     // the manifest applies: to a read-scoped caller an unpublished template's history is as absent
     // as the template — a stale id from an earlier manifest poll answers with nothing, not a 403
