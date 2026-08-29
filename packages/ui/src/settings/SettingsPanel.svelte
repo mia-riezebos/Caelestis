@@ -67,10 +67,10 @@
 </script>
 
 <div class="settings" data-caelestis-scroller>
-  <SectionHeader title="Servers" />
+  <SectionHeader title="Servers" icon="server" />
   <div class="connect">
     <input data-caelestis-draft="add-server" type="url" bind:value={addServer} placeholder="https://templates.example.org" aria-label="Server address" onkeydown={(event) => { if (event.key === 'Enter') submitServer() }} />
-    <Button label="Add" kind="primary" size="compact" disabled={model.addServerPending === true} onclick={submitServer} />
+    <Button label="Add" kind="primary" size="small" disabled={model.addServerPending === true} onclick={submitServer} />
   </div>
   {#if model.addServerMessage !== undefined}<p class="message" role="status">{model.addServerMessage}</p>{/if}
 
@@ -87,7 +87,7 @@
           <div class="server-body">
             <div class="token-row">
               <input data-caelestis-draft={`token:${server.url}`} type="password" autocomplete="off" value={tokenDrafts[server.url] ?? ''} oninput={(event) => tokenDrafts[server.url] = event.currentTarget.value} placeholder={server.tokenSaved ? '••••••••' : 'Access token'} aria-label="Your access token for this server" onkeydown={(event) => { if (event.key === 'Enter') submitToken(server) }} />
-              <Button label={server.status === 'connected' ? 'Update' : 'Connect'} kind="primary" size="compact" disabled={server.pending === true} onclick={() => submitToken(server)} />
+              <Button label={server.status === 'connected' ? 'Update' : 'Connect'} kind="primary" size="small" disabled={server.pending === true} onclick={() => submitToken(server)} />
             </div>
             <p class:error={server.message !== undefined} class="subtle" role="status">{tokenStatus(server)}</p>
             {#if server.accessTokens !== undefined}
@@ -104,7 +104,7 @@
                     {#each server.accessTokens.tokens as token (token.tokenHash)}
                       <div class="access-token">
                         <div class="access-copy"><span title={token.label}>{token.label}</span><small>{token.bootstrap ? "admin · set in the server's environment" : `${token.scope} · ${dateText(token.createdAt)}`}</small></div>
-                        {#if !token.bootstrap}<Button label={`Delete ${token.label}`} kind="ghost" size="compact" iconOnly ariaDisabled={token.pending === true} onclick={() => emit({ type: 'revoke-access-token', url: server.url, tokenHash: token.tokenHash, label: token.label })}>×</Button>{/if}
+                        {#if !token.bootstrap}<Button label={`Delete ${token.label}`} kind="ghost" size="small" iconOnly ariaDisabled={token.pending === true} onclick={() => emit({ type: 'revoke-access-token', url: server.url, tokenHash: token.tokenHash, label: token.label })}>×</Button>{/if}
                       </div>
                     {/each}
                   </div>
@@ -114,29 +114,29 @@
                   <div class="new-token-row">
                     <input data-caelestis-draft={`token-label:${server.url}`} type="text" maxlength="128" value={accessLabelDrafts[server.url] ?? ''} oninput={(event) => accessLabelDrafts[server.url] = event.currentTarget.value} placeholder="Who is it for?" aria-label="New token label" onkeydown={(event) => { if (event.key === 'Enter') submitAccessToken(server) }} />
                     <select aria-label="New token scope" value={accessScopeDrafts[server.url] ?? 'report'} onchange={(event) => accessScopeDrafts[server.url] = event.currentTarget.value as AccessTokenScope}><option value="read">Read</option><option value="report">Report</option><option value="admin">Admin</option></select>
-                    <Button label="Create" kind="primary" size="compact" disabled={server.accessTokens.creating === true} onclick={() => submitAccessToken(server)} />
+                    <Button label="Create" kind="primary" size="small" disabled={server.accessTokens.creating === true} onclick={() => submitAccessToken(server)} />
                   </div>
                   {#if server.accessTokens.createError !== undefined}<p class="error token-error" role="status">{server.accessTokens.createError}</p>{/if}
                 </div>
               </section>
             {/if}
-            <Button label="Disconnect" kind="danger" size="compact" disabled={server.pending === true} onclick={() => emit({ type: 'disconnect-server', url: server.url })} />
+            <Button label="Disconnect" kind="danger-ghost" size="small" disabled={server.pending === true} onclick={() => emit({ type: 'disconnect-server', url: server.url })} />
           </div>
         {/if}
       </section>
     {/each}
   </div>
 
-  <SectionHeader title="Painting" />
+  <SectionHeader title="Painting" icon="palette" />
   <SettingRow label="Middle-click colour order" hint="Visits remaining pixels only inside the template intersecting the viewport centre; nearest is used only in empty space.">
     {#snippet children()}<select aria-label="Middle-click colour order" value={model.colourNavigationOrder} onchange={(event) => emit({ type: 'set-colour-navigation-order', value: event.currentTarget.value as SettingsModel['colourNavigationOrder'] })}><option value="unpainted-first">Unpainted, then mismatched</option><option value="mismatched-first">Mismatched, then unpainted</option></select>{/snippet}
   </SettingRow>
 
-  <SectionHeader title="Contribution" />
+  <SectionHeader title="Contribution" icon="share" />
   <SettingRow label="Report my activity" hint="Shares paint activity only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Report my activity" checked={model.reportPaints} onChange={(value) => emit({ type: 'set-boolean', key: 'reportPaints', value })} />{/snippet}</SettingRow>
   <SettingRow label="Share tiles" hint="Shares fetched tiles only in areas covered by server templates, and only with the servers providing those templates.">{#snippet children()}<Toggle label="Share tiles" checked={model.shareTiles} onChange={(value) => emit({ type: 'set-boolean', key: 'shareTiles', value })} />{/snippet}</SettingRow>
 
-  <SectionHeader title="Diagnostics" />
+  <SectionHeader title="Diagnostics" icon="bug" />
   <SettingRow label="Debug logging" hint="Verbose console output for bug reports">{#snippet children()}<Toggle label="Debug logging" checked={model.debugLogging} onChange={(value) => emit({ type: 'set-boolean', key: 'debugLogging', value })} />{/snippet}</SettingRow>
   <SettingRow label="Performance profiling" hint="Measures Caelestis CPU, GPU and known buffers. Profiling adds a small overhead.">{#snippet children()}<Toggle label="Performance profiling" checked={model.performanceProfiling} onChange={(value) => emit({ type: 'set-boolean', key: 'performanceProfiling', value })} />{/snippet}</SettingRow>
   {#if model.profile !== undefined}
@@ -149,9 +149,9 @@
 </div>
 
 <style>
-  .settings { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 500 0.82rem/1.35 ui-sans-serif, system-ui, sans-serif; }
+  .settings { flex: 1; min-block-size: 0; overflow-y: auto; padding-block-end: 0.75rem; color: var(--caelestis-text); font: 400 0.875rem/1.35 ui-sans-serif, system-ui, sans-serif; }
   .connect, .token-row { display: flex; gap: 0.5rem; padding-inline: 0.75rem; }
-  input, select { min-inline-size: 0; min-block-size: 2rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-raised-surface); color: inherit; }
+  input, select { min-inline-size: 0; block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; font: inherit; }
   input { flex: 1; padding-inline: 0.6rem; }
   select { max-inline-size: 11rem; }
   .message, .subtle { margin: 0.3rem 0.75rem; color: var(--caelestis-muted-text); font-size: 0.72rem; }
@@ -178,4 +178,6 @@
   .profile { margin: 0.35rem 0.75rem; padding: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-card-radius, 0.65rem); }
   .metric { display: flex; justify-content: space-between; gap: 1rem; padding-block: 0.15rem; font-size: 0.72rem; }.metric span { color: var(--caelestis-muted-text); }.metric strong { font-variant-numeric: tabular-nums; }
   .profile-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; margin-block-start: 0.5rem; }.profile-actions span { margin-inline-end: auto; color: var(--caelestis-muted-text); font-size: 0.72rem; }
+  input:focus-visible, select:focus-visible { outline: 2px solid var(--caelestis-focus); outline-offset: 2px; }
+  @media (pointer: coarse) { input, select { font-size: 1rem; } }
 </style>

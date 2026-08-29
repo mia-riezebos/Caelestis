@@ -44,8 +44,8 @@
 </div>
 
 <style>
-  .dialog { display: flex; max-block-size: inherit; flex-direction: column; overflow: hidden; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-panel-radius, 0.75rem); background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow, 0 16px 48px rgb(0 0 0 / 0.3)); font: 500 0.82rem/1.35 ui-sans-serif, system-ui, sans-serif; }
-  header { display: flex; flex: 0 0 auto; align-items: center; gap: 0.5rem; padding: 0.45rem 0.55rem 0.35rem 0.75rem; border-block-end: 1px solid var(--caelestis-border); }
+  .dialog { display: flex; max-block-size: inherit; flex-direction: column; overflow: hidden; border-radius: 0.5rem; background: var(--caelestis-surface); color: var(--caelestis-text); box-shadow: var(--caelestis-shadow, 0 16px 48px rgb(0 0 0 / 0.3)); font: 400 0.75rem/1.35 ui-sans-serif, system-ui, sans-serif; }
+  header { display: flex; flex: 0 0 auto; align-items: center; gap: 0.25rem; padding: 0.5rem 0.625rem 0; }
   header strong { min-inline-size: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lifecycle { padding: 0.4rem 0.75rem 0.2rem; }
   .failure, .confirm { margin: 0.35rem 0.65rem 0; border-radius: var(--caelestis-card-radius, 0.65rem); }

@@ -90,6 +90,20 @@ describe('template tree', () => {
     void unmount(component)
   })
 
+  it('keeps the compact Daisy tree controls and explicit visibility icon', () => {
+    const component = mount(TemplateTree, { target: document.body, props: { model } })
+    flushSync()
+
+    const search = document.querySelector<HTMLElement>('.search')
+    const rowAction = document.querySelector<HTMLElement>('[aria-label="Import template"]')
+    const visibility = document.querySelector<HTMLElement>('.visibility > span')
+    expect(getComputedStyle(search as Element).blockSize).toBe('2rem')
+    expect(getComputedStyle(rowAction as Element).blockSize).toBe('1.5rem')
+    expect(getComputedStyle(visibility as Element).blockSize).toBe('1.5rem')
+    expect(visibility?.querySelector('svg')).not.toBeNull()
+    void unmount(component)
+  })
+
   it('uses roving focus and exposes progress detail on demand', () => {
     const component = mount(TemplateTree, { target: document.body, props: { model } })
     flushSync()

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '../foundations/Icon.svelte'
   import TemplateState from '../template-state/TemplateState.svelte'
   import ProgressMeter from '../progress/ProgressMeter.svelte'
   import { SvelteMap } from 'svelte/reactivity'
@@ -311,7 +312,7 @@
           </span>
           <label class="visibility" title={entry.visible ? `Hide ${entry.name}` : `Show ${entry.name}`}>
             <input type="checkbox" checked={entry.visible} aria-label={`Show ${entry.name}`} onclick={(event) => event.stopPropagation()} onchange={(event) => emit({ type: 'toggle-visible', key: entry.key, visible: event.currentTarget.checked })} />
-            <span aria-hidden="true">{entry.visible ? '●' : '○'}</span>
+            <span aria-hidden="true"><Icon name={entry.visible ? 'eye' : 'eyeOff'} /></span>
           </label>
           {#if disclosure !== undefined && entry.progress !== undefined}
             <div class="progress-detail">
@@ -343,13 +344,13 @@
 <style>
   :global(*) { box-sizing: border-box; }
   .toolbar { position: relative; z-index: 2; display: flex; flex: 0 0 auto; align-items: center; gap: 0.35rem; margin: 0.75rem 0.75rem 0; }
-  .search { display: flex; flex: 1; align-items: center; gap: 0.4rem; min-inline-size: 0; min-block-size: 2.25rem; padding-inline: 0.65rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-raised-surface); }
+  .search { display: flex; flex: 1; align-items: center; gap: 0.4rem; min-inline-size: 0; block-size: 2rem; padding-inline: 0.65rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   .search svg { inline-size: 1rem; block-size: 1rem; opacity: 0.55; fill: currentColor; }
   .search input { flex: 1; min-inline-size: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
-  select, .direction { min-block-size: 2.25rem; border: 1px solid var(--caelestis-border); border-radius: var(--caelestis-field-radius, 0.65rem); background: var(--caelestis-raised-surface); color: inherit; }
+  select, .direction { block-size: 2rem; border: var(--border, 1px) solid color-mix(in oklab, var(--caelestis-text) 20%, transparent); border-radius: var(--caelestis-field-radius, 0.5rem); background: var(--caelestis-surface); color: inherit; box-shadow: 0 1px color-mix(in oklab, var(--caelestis-text) 10%, transparent) inset; }
   .scroller { flex: 1; min-block-size: 0; overflow-y: auto; }
-  .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 500 0.78rem/1.25 ui-sans-serif, system-ui, sans-serif; }
-  .row { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; min-block-size: 2.25rem; padding-block: 0.2rem; padding-inline-end: 0.5rem; border: 1px solid transparent; border-radius: 0.4rem; outline: none; }
+  .tree { display: flex; flex-direction: column; gap: 0.125rem; padding-block: 0.5rem; color: var(--caelestis-text); font: 400 0.875rem/1.25 ui-sans-serif, system-ui, sans-serif; }
+  .row { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; min-block-size: 2rem; padding-block: 0.125rem; padding-inline-end: 0.5rem; border: 1px solid transparent; border-radius: 0.375rem; outline: none; }
   .connector { position: absolute; inset-block: 0; inset-inline-start: 0.45rem; block-size: 100%; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.28; pointer-events: none; }
   .row:hover, .row:focus-visible { background: var(--caelestis-raised-surface); }
   .row:focus-visible { border-color: var(--caelestis-focus); }
@@ -363,12 +364,14 @@
   .kind, .icon-action svg { inline-size: 1rem; block-size: 1rem; flex: 0 0 auto; fill: currentColor; }
   .name { min-inline-size: 2rem; overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
   .rename { min-inline-size: 4rem; flex: 1; }
-  .meta { color: var(--caelestis-muted-text); font-size: 0.68rem; }
+  .meta { color: var(--caelestis-muted-text); font-size: 0.75rem; }
   .actions { display: flex; align-items: center; margin-inline-start: auto; }
-  .icon-action { display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; }
+  .icon-action { display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; }
   .icon-action:hover { background: color-mix(in oklch, currentColor 8%, transparent); }
-  .visibility { position: relative; display: grid; place-items: center; inline-size: 2rem; block-size: 2rem; cursor: pointer; }
-  .visibility input { position: absolute; opacity: 0; }
+  .visibility { position: relative; display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; cursor: pointer; }
+  .visibility input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
+  .visibility > span { display: grid; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border: 1px solid color-mix(in oklab, currentColor 44%, transparent); border-radius: 999px; }
+  .visibility :global(svg) { inline-size: 1rem; block-size: 1rem; fill: currentColor; }
   .visibility:focus-within { outline: 2px solid var(--caelestis-focus); border-radius: 999px; }
   .progress { inline-size: 6.5rem; padding: 0; border: 0; background: transparent; color: inherit; }
   .progress-detail { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 0.5rem; padding: 0.2rem 2.25rem 0.35rem; color: var(--caelestis-muted-text); font-size: 0.68rem; }

@@ -43,6 +43,20 @@ describe('settings panel', () => {
     void unmount(component)
   })
 
+  it('uses the Wplace field and section geometry', () => {
+    const component = mount(SettingsPanel, { target: document.body, props: { model } })
+    flushSync()
+
+    const address = document.querySelector<HTMLElement>('[aria-label="Server address"]')
+    const sectionIcon = document.querySelector<HTMLElement>(
+      '[data-caelestis-section-icon="server"]',
+    )
+    expect(getComputedStyle(address as Element).blockSize).toBe('2rem')
+    expect(getComputedStyle(address as Element).borderRadius).toBe('8px')
+    expect(getComputedStyle(sectionIcon as Element).blockSize).toBe('1.75rem')
+    void unmount(component)
+  })
+
   it('renders token administration and emits operations without owning them', () => {
     const onIntent = vi.fn()
     const adminModel: SettingsModel = {

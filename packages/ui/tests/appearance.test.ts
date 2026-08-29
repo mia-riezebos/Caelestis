@@ -51,6 +51,20 @@ const model: AppearanceEditorModel = {
 }
 
 describe('appearance editor', () => {
+  it('keeps the Wplace section structure and DaisyUI control geometry', () => {
+    const component = mount(AppearanceEditor, { target: document.body, props: { model } })
+    flushSync()
+
+    expect(
+      Array.from(document.querySelectorAll('[data-caelestis-section-title]')).map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(['Appearance', 'Markers', 'Colours'])
+    expect(document.querySelectorAll('[data-caelestis-section-icon]')).toHaveLength(3)
+
+    void unmount(component)
+  })
+
   it('emits previews during slider movement and one commit at the change seam', () => {
     const onIntent = vi.fn()
     const component = mount(AppearanceEditor, { target: document.body, props: { model, onIntent } })

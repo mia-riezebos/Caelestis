@@ -3,7 +3,7 @@
 import { tick } from 'svelte'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaelestisPanel, registerCaelestisUi } from '../src/elements/index.js'
-import type { PanelModel } from '../src/index.js'
+import type { AppearanceEditorModel, PanelModel } from '../src/index.js'
 
 beforeAll(() => registerCaelestisUi())
 beforeEach(() => document.body.replaceChildren())
@@ -15,6 +15,47 @@ const model = (overrides: Partial<PanelModel> = {}): PanelModel => ({
   maxWidth: 720,
   ...overrides,
 })
+
+const appearance: AppearanceEditorModel = {
+  values: {
+    size: 1,
+    radius: 0,
+    translateX: 0,
+    translateY: 0,
+    rotation: 0,
+    opacity: 1,
+    contrastOutline: true,
+    contrastOutlineSize: 1,
+    markMismatch: false,
+    markUnpainted: false,
+    unpaintedLimit: 0.05,
+    markerColour: '#ff00ff',
+    markerSize: 9,
+    markSelectedColour: false,
+    selectedMarkerColour: '#ffffff',
+    selectedMarkerSize: 9,
+    dimOthers: false,
+    otherOpacity: 0.15,
+    otherColour: null,
+  },
+  sliders: [
+    {
+      key: 'opacity',
+      label: 'Opacity',
+      value: 1,
+      defaultValue: 1,
+      min: 0,
+      max: 1,
+      step: 0.05,
+      format: 'percent',
+    },
+  ],
+  pixelPresets: [{ id: 'full', label: 'Full pixel', active: true }],
+  colourPresets: [],
+  palette: [],
+  onlySelectedColour: false,
+  paintOpen: false,
+}
 
 describe('panel shell', () => {
   it('renders the active view around slotted host content', async () => {
@@ -30,6 +71,27 @@ describe('panel shell', () => {
     expect(panel.shadowRoot?.querySelector('slot')).not.toBeNull()
     expect(panel.textContent).toContain('Host settings')
     expect(panel.style.width).toBe('360px')
+  })
+
+  it('keeps the original Wplace panel and header-control geometry', async () => {
+    const panel = new CaelestisPanel()
+    panel.model = model({ view: 'appearance', appearance })
+    document.body.append(panel)
+    await tick()
+
+    const surface = panel.shadowRoot?.querySelector<HTMLElement>('.panel')
+    const settings = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Settings"]')
+    const preset = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Full pixel"]')
+    const toggle = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Contrast outline"]')
+    const range = panel.shadowRoot?.querySelector<HTMLElement>('[aria-label="Opacity"]')
+    expect(getComputedStyle(surface as Element).borderRadius).toBe('12px')
+    expect(getComputedStyle(settings as Element).blockSize).toBe('1.5rem')
+    expect(getComputedStyle(settings as Element).borderRadius).toBe('999px')
+    expect(getComputedStyle(preset as Element).blockSize).toBe('2rem')
+    expect(getComputedStyle(preset as Element).borderRadius).toBe('999px')
+    expect(getComputedStyle(toggle as Element).blockSize).toBe('1.25rem')
+    expect(getComputedStyle(range as Element).appearance).toBe('none')
+    expect(getComputedStyle(range as Element).blockSize).toBe('1rem')
   })
 
   it('emits one composed intent event for navigation and closing', async () => {

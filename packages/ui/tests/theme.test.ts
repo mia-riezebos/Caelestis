@@ -6,6 +6,7 @@ import { applyThemeTokens, themeProperty } from '../src/theme.js'
 describe('theme tokens', () => {
   it('maps typed token names to the public custom-property contract', () => {
     expect(themeProperty('raisedSurface')).toBe('--caelestis-raised-surface')
+    expect(themeProperty('selectorRadius')).toBe('--caelestis-selector-radius')
     expect(themeProperty('touchTarget')).toBe('--caelestis-touch-target')
   })
 
