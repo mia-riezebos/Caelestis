@@ -3,6 +3,7 @@ export type Shortcut =
   | 'cycle-colour-previous'
   | 'fly-to-colour'
   | 'peek-overlays'
+  | 'redo-paint'
   | 'show-shortcut-help'
   | 'set-opacity-100'
   | 'set-opacity-20'
@@ -17,6 +18,7 @@ export type Shortcut =
   | 'toggle-selected-colour-markers'
   | 'toggle-template-menu'
   | 'toggle-visibility'
+  | 'undo-paint'
 
 /**
  * Whether a keystroke belongs to something else on the page.
@@ -39,8 +41,17 @@ export const shortcutFor = (
   event: Pick<KeyboardEvent, 'altKey' | 'code' | 'ctrlKey' | 'key' | 'metaKey' | 'target'> &
     Partial<Pick<KeyboardEvent, 'repeat' | 'shiftKey'>>,
 ): Shortcut | null => {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return null
   if (isTyping(event.target)) return null
+  const command = event.metaKey || event.ctrlKey
+  if (command) {
+    if (event.altKey || (event.metaKey && event.ctrlKey) || event.key.toLowerCase() !== 'z') {
+      return null
+    }
+    // Repeats are intentional here: holding the chord walks Wplace's per-pixel history. Every
+    // other shortcut remains single-shot below.
+    return event.shiftKey ? 'redo-paint' : 'undo-paint'
+  }
+  if (event.altKey || event.repeat) return null
   // Physical position is intentional: layouts with dead keys may report `key: 'Dead'` for `?`,
   // while `code: 'Slash'` still identifies the requested Shift+/ chord exactly.
   if (event.shiftKey) return event.code === 'Slash' ? 'show-shortcut-help' : null

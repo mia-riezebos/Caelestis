@@ -31,6 +31,8 @@ const harness = vi.hoisted(() => ({
   toggleMenu: vi.fn(),
   togglePanel: vi.fn(),
   togglePaint: vi.fn(() => true),
+  undoPaint: vi.fn(() => true),
+  redoPaint: vi.fn(() => true),
   toggleShortcutHelp: vi.fn(),
 }))
 
@@ -61,7 +63,11 @@ vi.mock('./ui/overlay-menu.js', () => ({
 }))
 vi.mock('./ui/panel.js', () => ({ togglePanel: harness.togglePanel }))
 vi.mock('./ui/shortcut-help.js', () => ({ toggleShortcutHelp: harness.toggleShortcutHelp }))
-vi.mock('./wplace-paint.js', () => ({ togglePaintMode: harness.togglePaint }))
+vi.mock('./wplace-paint.js', () => ({
+  redoPaintDraft: harness.redoPaint,
+  togglePaintMode: harness.togglePaint,
+  undoPaintDraft: harness.undoPaint,
+}))
 
 let dispose: (() => void) | null = null
 
@@ -126,6 +132,17 @@ describe('keyboard shortcut actions', () => {
     expect(harness.cycleColour).toHaveBeenNthCalledWith(1, -1)
     expect(harness.cycleColour).toHaveBeenNthCalledWith(2, 1)
     expect(harness.togglePaint).toHaveBeenCalledOnce()
+  })
+
+  it('delegates repeatable undo and redo to Wplace and claims only an available history step', () => {
+    expect(press('z', { metaKey: true }).defaultPrevented).toBe(true)
+    expect(press('z', { ctrlKey: true, repeat: true }).defaultPrevented).toBe(true)
+    expect(press('Z', { metaKey: true, repeat: true, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(harness.undoPaint).toHaveBeenCalledTimes(2)
+    expect(harness.redoPaint).toHaveBeenCalledOnce()
+
+    harness.undoPaint.mockReturnValueOnce(false)
+    expect(press('z', { metaKey: true }).defaultPrevented).toBe(false)
   })
 
   it('toggles rings on a focused pixel-owned template or on the global appearance', async () => {

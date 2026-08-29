@@ -47,6 +47,19 @@ describe('shortcutFor', () => {
     expect(shortcutFor(keydown('f', { repeat: true }))).toBeNull()
   })
 
+  it('maps repeatable platform undo and redo without claiming typing or mixed modifiers', () => {
+    expect(shortcutFor(keydown('z', { metaKey: true }))).toBe('undo-paint')
+    expect(shortcutFor(keydown('z', { ctrlKey: true, repeat: true }))).toBe('undo-paint')
+    expect(shortcutFor(keydown('Z', { metaKey: true, repeat: true, shiftKey: true }))).toBe(
+      'redo-paint',
+    )
+    const textarea = Object.assign(new EventTarget(), { tagName: 'TEXTAREA' })
+    expect(shortcutFor(keydown('z', { ctrlKey: true, target: textarea }))).toBeNull()
+    expect(shortcutFor(keydown('z', { altKey: true, ctrlKey: true }))).toBeNull()
+    expect(shortcutFor(keydown('z', { ctrlKey: true, metaKey: true }))).toBeNull()
+    expect(shortcutFor(keydown('r', { repeat: true }))).toBeNull()
+  })
+
   it('maps the physical Shift+/ chord even when the layout reports a dead key', () => {
     expect(shortcutFor(keydown('Dead', { code: 'Slash', shiftKey: true }))).toBe(
       'show-shortcut-help',

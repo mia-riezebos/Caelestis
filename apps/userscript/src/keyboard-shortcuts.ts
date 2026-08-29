@@ -14,7 +14,7 @@ import { focusedTemplate } from './templates/nearest.js'
 import { refreshOverlayMenu, toggleOverlayMenu } from './ui/overlay-menu.js'
 import { togglePanel } from './ui/panel.js'
 import { toggleShortcutHelp } from './ui/shortcut-help.js'
-import { togglePaintMode } from './wplace-paint.js'
+import { redoPaintDraft, togglePaintMode, undoPaintDraft } from './wplace-paint.js'
 
 const triggerMapRepaint = (): void => {
   const map = getMap() as { triggerRepaint?: () => void } | null
@@ -101,6 +101,11 @@ export const installKeyboardShortcuts = (redraw: () => void): (() => void) => {
     if (shortcut === 'show-shortcut-help') {
       event.preventDefault()
       toggleShortcutHelp()
+      return
+    }
+    if (shortcut === 'undo-paint' || shortcut === 'redo-paint') {
+      const moved = shortcut === 'undo-paint' ? undoPaintDraft() : redoPaintDraft()
+      if (moved) event.preventDefault()
       return
     }
     if (shortcut === 'toggle-panel') {

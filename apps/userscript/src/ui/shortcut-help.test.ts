@@ -19,6 +19,8 @@ describe('shortcut help', () => {
     expect(dialog?.textContent).toContain('Keyboard shortcuts')
     expect(dialog?.textContent).toContain('Shift+/')
     expect(dialog?.textContent).toContain('Paint drawer')
+    expect(dialog?.textContent).toContain('Cmd/Ctrl+Shift+Z')
+    expect(dialog?.textContent).toContain('Redo drafted pixel')
     expect(dialog?.textContent).toContain('Toggle contrast rings')
     expect(dialog?.querySelectorAll('kbd').length).toBeGreaterThanOrEqual(14)
 

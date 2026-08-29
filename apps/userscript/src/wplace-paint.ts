@@ -41,9 +41,14 @@ export const selectPaintColour = (index: number): boolean => {
  * the last direct button in the drawer header. Keeping this traversal here avoids teaching the
  * shortcut controller about Wplace's DOM.
  */
-const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
+const paintDrawerOf = (swatch: Element): HTMLElement | null => {
   const drawer = swatch.parentElement?.parentElement?.parentElement?.parentElement
-  if (drawer === undefined || drawer === null) return null
+  return drawer instanceof HTMLElement ? drawer : null
+}
+
+const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
+  const drawer = paintDrawerOf(swatch)
+  if (drawer === null) return null
   const header = Array.from(drawer.children).find((child) => child.querySelector('h2') !== null)
   if (header === undefined) return null
   const directButtons = Array.from(header.children).filter(
@@ -51,6 +56,31 @@ const paintDrawerCloseButton = (swatch: Element): HTMLButtonElement | null => {
   )
   return directButtons.at(-1) ?? null
 }
+
+/**
+ * Ask Wplace's own paint drawer to move through its authoritative draft history.
+ *
+ * The native controls own pixel recency, redo invalidation after a new paint, and the draft payload
+ * eventually submitted to Wplace. Driving those controls keeps all of that state in one place; the
+ * resulting canvas writes then flow through our canonical pixel-accounting interception exactly
+ * like a hand-painted pixel.
+ */
+const movePaintHistory = (title: 'Undo' | 'Redo'): boolean => {
+  const swatch = document.querySelector('[id^="color-"]')
+  if (swatch === null) return false
+  const drawer = paintDrawerOf(swatch)
+  if (drawer === null) return false
+  const button = drawer.querySelector(`button[title="${title}"]`)
+  if (!(button instanceof HTMLButtonElement) || button.disabled) return false
+  button.click()
+  return true
+}
+
+/** Undo the most recently drafted pixel, if Wplace currently has one. */
+export const undoPaintDraft = (): boolean => movePaintHistory('Undo')
+
+/** Redo the most recently undone draft pixel, if Wplace currently has one. */
+export const redoPaintDraft = (): boolean => movePaintHistory('Redo')
 
 const paintDockButton = (): HTMLButtonElement | null => {
   for (const button of document.querySelectorAll<HTMLButtonElement>('button.btn-primary')) {

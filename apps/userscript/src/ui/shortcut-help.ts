@@ -21,6 +21,8 @@ const GROUPS: readonly ShortcutGroup[] = [
       { key: 'E', label: 'Pencil / eraser (Wplace)' },
       { key: 'F', label: 'Jump to selected colour' },
       { key: 'G', label: 'Hold to peek at the map' },
+      { key: 'Cmd/Ctrl+Z', label: 'Undo drafted pixel' },
+      { key: 'Cmd/Ctrl+Shift+Z', label: 'Redo drafted pixel' },
     ],
   },
   {
