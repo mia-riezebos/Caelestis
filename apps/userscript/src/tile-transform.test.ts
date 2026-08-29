@@ -1478,7 +1478,7 @@ describe('transparent browser hooks', () => {
 
     captureDraftPixels({ x: 8, y: 9 }, first)
 
-    expect(observed).toHaveBeenCalledWith({ x: 8, y: 9 }, [0, 0, 4, 1, 0, 5])
+    expect(observed).toHaveBeenCalledWith({ x: 8, y: 9 }, [0, 0, 4, 1, 0, 5], 'draft')
     expect(draftPixels({ x: 8, y: 9 })?.slice(0, 2)).toEqual(new Uint8Array([4, 5]))
   })
 
@@ -1494,6 +1494,10 @@ describe('transparent browser hooks', () => {
     clearDraftPixels()
 
     expect(draftPixels({ x: 10, y: 11 })).toBeNull()
-    expect(observed).toHaveBeenCalledWith({ x: 10, y: 11 }, [7, 0, UNPAINTED, 3, 1, UNPAINTED])
+    expect(observed).toHaveBeenCalledWith(
+      { x: 10, y: 11 },
+      [7, 0, UNPAINTED, 3, 1, UNPAINTED],
+      'draft',
+    )
   })
 })

@@ -461,9 +461,13 @@ describe('visible mismatch answer retention', () => {
     harness.workerAvailable = true
     harness.workerScan.mockReturnValueOnce(new Promise(() => undefined))
     const listener = harness.onTilePixels.mock.calls[0]?.[0] as
-      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | ((
+          tile: { x: number; y: number },
+          triples: readonly number[],
+          source: 'draft' | 'server',
+        ) => void)
       | undefined
-    listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 1]).flat())
+    listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 1]).flat(), 'server')
 
     expect(
       pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 })?.markers),
@@ -531,9 +535,13 @@ describe('visible mismatch answer retention', () => {
     harness.workerAvailable = true
     harness.workerScan.mockReturnValueOnce(new Promise(() => undefined))
     const listener = harness.onTilePixels.mock.calls[0]?.[0] as
-      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | ((
+          tile: { x: number; y: number },
+          triples: readonly number[],
+          source: 'draft' | 'server',
+        ) => void)
       | undefined
-    listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 0]).flat())
+    listener?.({ x: 0, y: 0 }, Array.from({ length: 33 }, () => [0, 0, 0]).flat(), 'server')
 
     beginMismatchFrame()
     expect(mismatchesIn(selected, { x: 0, y: 0 })).toHaveLength(1)
@@ -621,5 +629,85 @@ describe('visible mismatch answer retention', () => {
     const fixed = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
     expect(fixed?.disagreements).toHaveLength(0)
     expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
+  })
+
+  it('removes a disagreement when the matching draft lands on a non-symmetric row', async () => {
+    const row = 123
+    const selected = {
+      ...template(209),
+      originY: row,
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.pixelsAvailable = false
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask({ left: 0, top: row, width: 1, height: 1 }, new Uint8Array([WRONG])),
+    )
+    const { pixelAccounting } = await import('./mismatch.js')
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((tile: { x: number; y: number }, triples: readonly number[]) => void)
+      | undefined
+
+    const initial = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(initial?.markers).toHaveLength(1)
+
+    harness.draft[row * 1_000] = 0
+    changed?.({ x: 0, y: 0 }, [0, row, 0])
+
+    const fixed = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(fixed?.markers).toHaveLength(0)
+    expect(pixelAccounting.read(selected).progress).toMatchObject({ completed: 1, known: 1 })
+  })
+
+  it('keeps the server mismatch mask authoritative while rescanning a large draft batch', async () => {
+    const row = 123
+    const width = 33
+    const selected = {
+      ...template(210),
+      originY: row,
+      width,
+      indices: new Uint8Array(width),
+      opaque: width,
+      serverUrl: 'https://templates.example',
+      serverTemplateId: 'remote-template',
+      serverVersion: 'remote-version',
+    }
+    harness.templates = [selected]
+    harness.pixelsAvailable = false
+    harness.draft = new Uint8Array(1_000 * 1_000).fill(255)
+    harness.serverMask = decodeMismatchMask(
+      encodeMismatchMask(
+        { left: 0, top: row, width, height: 1 },
+        new Uint8Array(width).fill(WRONG),
+      ),
+    )
+    const { pixelAccounting } = await import('./mismatch.js')
+    const changed = harness.onTilePixels.mock.calls[0]?.[0] as
+      | ((
+          tile: { x: number; y: number },
+          triples: readonly number[],
+          source: 'draft' | 'server',
+        ) => void)
+      | undefined
+
+    const initial = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(initial?.markers).toHaveLength(width)
+
+    const triples: number[] = []
+    for (let x = 0; x < width; x++) {
+      harness.draft[row * 1_000 + x] = 0
+      triples.push(x, row, 0)
+    }
+    changed?.({ x: 0, y: 0 }, triples, 'draft')
+
+    const fixed = pixelAccounting.frame(() => pixelAccounting.read(selected).tile({ x: 0, y: 0 }))
+    expect(fixed?.markers).toHaveLength(0)
+    expect(pixelAccounting.read(selected).progress).toMatchObject({
+      completed: width,
+      known: width,
+    })
   })
 })
