@@ -7,7 +7,8 @@ const SUMMARY_LIMIT = 200
 const DETAIL_LIMIT = 240
 const DETAIL_COUNT_LIMIT = 5
 const USERSCRIPT_DECLARATION = /^['"]?@caelestis\/userscript['"]?:\s*(?:patch|minor|major)\s*$/m
-const SENTENCE_SEGMENTER = new Intl.Segmenter('en', { granularity: 'sentence' })
+const INTERNAL_SENTENCE_END = /[.!?]["')\]]*\s+\S/
+const COMPLETE_SENTENCE_END = /[.!?]["')\]]*$/
 
 const changesetBody = (content, path) => {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(content)
@@ -16,6 +17,8 @@ const changesetBody = (content, path) => {
 }
 
 const paragraphs = (body) => body.split(/\r?\n\s*\r?\n/)
+const isOneCompleteSentence = (value) =>
+  COMPLETE_SENTENCE_END.test(value) && !INTERNAL_SENTENCE_END.test(value)
 
 export const validateUserscriptChangeset = (content, path = 'changeset.md') => {
   const body = changesetBody(content, path)
@@ -27,10 +30,7 @@ export const validateUserscriptChangeset = (content, path = 'changeset.md') => {
   if (summary.length > SUMMARY_LIMIT) {
     throw new Error(`${path}: summary exceeds ${SUMMARY_LIMIT} characters; split atomic changes`)
   }
-  const sentences = [...SENTENCE_SEGMENTER.segment(summary)].filter(
-    ({ segment }) => segment.trim().length > 0,
-  )
-  if (sentences.length !== 1 || !/[.!?]$/.test(summary)) {
+  if (!isOneCompleteSentence(summary)) {
     throw new Error(`${path}: summary must be exactly one complete sentence`)
   }
 
@@ -58,7 +58,7 @@ export const validateUserscriptChangeset = (content, path = 'changeset.md') => {
     if (detail.length > DETAIL_LIMIT) {
       throw new Error(`${path}: detail exceeds ${DETAIL_LIMIT} characters; split atomic changes`)
     }
-    if (!/[.!?]$/.test(detail))
+    if (!isOneCompleteSentence(detail))
       throw new Error(`${path}: each detail must be one complete sentence`)
   }
 

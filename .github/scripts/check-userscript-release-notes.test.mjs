@@ -31,9 +31,29 @@ describe('userscript Changeset release notes', () => {
   })
 
   it('rejects multiple sentences in the summary', () => {
+    for (const body of [
+      'Fix the editor. Change the renderer.',
+      'Fix the editor. change the renderer.',
+      'Fix the editor. `changeRenderer` now works.',
+      'Fix the editor. v2 handles the renderer.',
+    ]) {
+      assert.throws(
+        () => validateUserscriptChangeset(changeset(body)),
+        /summary must be exactly one complete sentence/,
+        body,
+      )
+    }
+  })
+
+  it('rejects multiple sentences in a detail bullet', () => {
     assert.throws(
-      () => validateUserscriptChangeset(changeset('Fix the editor. Change the renderer.')),
-      /summary must be exactly one complete sentence/,
+      () =>
+        validateUserscriptChangeset(
+          changeset(
+            'Keep dense markers useful.\n\n- Protect isolated markers. keep sampling fair.',
+          ),
+        ),
+      /each detail must be one complete sentence/,
     )
   })
 
