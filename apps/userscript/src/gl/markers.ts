@@ -553,24 +553,25 @@ const drawVisible = (gl: WebGL2RenderingContext): void => {
     }
     for (const tile of tiles) {
       if (!covers(template, tile)) continue
-      const tileAccounting = accounting.tile(tile.tile)
-      if (tileAccounting === null) {
-        deferred = true
-        continue
-      }
       if (selectedFade > 0 && selected >= 0) {
-        const marks = colourMarksIn(tileAccounting.disagreements, selected)
-        if (marks.length > 0) {
-          selectedWork.push({
-            tile,
-            marks,
-            style: selectedStyle,
-            fade: selectedFade,
-          })
+        const unpainted = accounting.unpainted(tile.tile)
+        if (unpainted === null) deferred = true
+        else {
+          const marks = colourMarksIn(unpainted, selected)
+          if (marks.length > 0) {
+            selectedWork.push({
+              tile,
+              marks,
+              style: selectedStyle,
+              fade: selectedFade,
+            })
+          }
         }
       }
       if (mismatchFade > 0) {
-        if (tileAccounting.markers.length > 0) {
+        const tileAccounting = accounting.tile(tile.tile)
+        if (tileAccounting === null) deferred = true
+        else if (tileAccounting.markers.length > 0) {
           mismatchWork.push({
             tile,
             marks: tileAccounting.markers,

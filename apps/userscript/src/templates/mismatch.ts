@@ -126,6 +126,8 @@ export interface TemplatePixelAccounting {
   readonly colours: readonly TemplateColourProgress[]
   /** Read or schedule one tile's canonical classification. */
   readonly tile: (tile: TileCoord) => TilePixelAccounting | null
+  /** Read or schedule only the unpainted coordinates needed by the selected-colour guide. */
+  readonly unpainted: (tile: TileCoord) => Mismatches | null
   /** Ensure aggregate-only accounting exists for this tile. */
   readonly ensure: (tile: TileCoord) => boolean
   /** Navigate through locations derived from this same accounting state. */
@@ -1898,6 +1900,7 @@ export const pixelAccounting = Object.freeze({
       return colourProgressFor(template)
     },
     tile: (tile) => tileAccountingFor(template, tile),
+    unpainted: (tile) => mismatchAnswer(template, tile, 'unpainted'),
     ensure: (tile) => progressIn(template, tile),
     nearest: (index, kind, reference, exclude) =>
       nearestColourTarget(index, kind, reference, template.id, exclude),

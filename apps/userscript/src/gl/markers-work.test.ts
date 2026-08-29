@@ -15,8 +15,11 @@ const fixture = vi.hoisted(() => ({
     otherOpacity: 1,
   },
   marks: new Uint32Array(0),
+  unpainted: new Uint32Array(0),
   mismatchesIn: vi.fn(),
   disagreementsIn: vi.fn(),
+  unpaintedIn: vi.fn(),
+  colourMarksIn: vi.fn((marks: Uint32Array) => marks),
   progressIn: vi.fn(() => true),
   markerBudget: 16_384,
   moving: false,
@@ -40,7 +43,7 @@ vi.mock('../templates/appearance.js', () => ({
   isColourHidden: () => false,
   toRgbUnit: () => [1, 0, 1],
 }))
-vi.mock('../templates/colour-marker.js', () => ({ colourMarksIn: (marks: Uint32Array) => marks }))
+vi.mock('../templates/colour-marker.js', () => ({ colourMarksIn: fixture.colourMarksIn }))
 vi.mock('../templates/local-store.js', () => ({
   appearanceOf: () => fixture.appearance,
   displayTemplates: () => [
@@ -59,6 +62,7 @@ vi.mock('../templates/mismatch.js', () => ({
   pixelAccounting: {
     read: () => ({
       ensure: fixture.progressIn,
+      unpainted: fixture.unpaintedIn,
       tile: () => {
         const disagreements = fixture.disagreementsIn()
         const markers = fixture.mismatchesIn()
@@ -68,7 +72,7 @@ vi.mock('../templates/mismatch.js', () => ({
               disagreements,
               markers,
               mismatched: markers,
-              unpainted: new Uint32Array(0),
+              unpainted: fixture.unpainted,
             }
       },
     }),
@@ -178,8 +182,11 @@ describe('marker work selection', () => {
     fixture.appearance.markMismatch = false
     fixture.appearance.markSelectedColour = false
     fixture.marks = new Uint32Array(0)
+    fixture.unpainted = new Uint32Array(0)
     fixture.mismatchesIn.mockReset().mockImplementation(() => fixture.marks)
     fixture.disagreementsIn.mockReset().mockImplementation(() => fixture.marks)
+    fixture.unpaintedIn.mockReset().mockImplementation(() => fixture.unpainted)
+    fixture.colourMarksIn.mockReset().mockImplementation((marks: Uint32Array) => marks)
     fixture.progressIn.mockReset().mockReturnValue(true)
     fixture.markerBudget = 16_384
     fixture.moving = false
@@ -318,15 +325,50 @@ describe('marker work selection', () => {
     fixture.paintOpen = true
     fixture.selected = 1
     fixture.marks = new Uint32Array(1_000)
+    fixture.unpainted = fixture.marks
     const gl = context()
     const { markerLayer } = await import('./markers.js')
     markerLayer.onAdd(null, gl)
 
     markerLayer.render(gl)
 
-    expect(fixture.disagreementsIn).toHaveBeenCalledOnce()
+    expect(fixture.unpaintedIn).toHaveBeenCalledOnce()
+    expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 1)
     expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.marks.length)
     expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.1)
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('does not turn wrong-colour mismatches into selected-colour markers', async () => {
+    fixture.appearance.markSelectedColour = true
+    fixture.paintOpen = true
+    fixture.selected = 1
+    fixture.marks = new Uint32Array([packMismatchMark(1, 1, 1)])
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(fixture.colourMarksIn).toHaveBeenCalledWith(fixture.unpainted, 1)
+    expect(gl.drawArrays).not.toHaveBeenCalled()
+    markerLayer.onRemove(null, gl)
+  })
+
+  it('draws selected-colour markers without waiting for full mismatch accounting', async () => {
+    fixture.appearance.markSelectedColour = true
+    fixture.paintOpen = true
+    fixture.selected = 1
+    fixture.unpainted = new Uint32Array([packMismatchMark(1, 1, 1)])
+    fixture.disagreementsIn.mockReturnValue(null)
+    fixture.mismatchesIn.mockReturnValue(null)
+    const gl = context()
+    const { markerLayer } = await import('./markers.js')
+    markerLayer.onAdd(null, gl)
+
+    markerLayer.render(gl)
+
+    expect(gl.drawArrays).toHaveBeenCalledWith(gl.POINTS, 0, fixture.unpainted.length)
     markerLayer.onRemove(null, gl)
   })
 })
