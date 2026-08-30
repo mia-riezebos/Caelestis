@@ -11,7 +11,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { Ports } from '../ports/index.js'
+import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const TOKEN = 'a'.repeat(64)
@@ -24,7 +24,6 @@ const harness = async () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
   const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
-  const ports: Ports = { blobs, sql, counters }
   await sql.insertNode({
     id: NODE_ID,
     season: 0,
@@ -38,7 +37,12 @@ const harness = async () => {
     blobs,
     sql,
     counters,
-    app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP, currentSeason: 1 }),
+    app: createApp(
+      createBackendRuntime(
+        makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
+      ),
+      { currentSeason: 1 },
+    ),
   }
 }
 

@@ -19,9 +19,11 @@ import {
 } from '@caelestis/shared'
 import { Effect } from 'effect'
 import type {
+  BlobStore,
   ContributionDelta,
   CounterDelta,
-  Ports,
+  CounterStore,
+  SqlStore,
   TelemetryTarget,
   TemplateTileStatusRecord,
   TileObservation,
@@ -99,7 +101,7 @@ interface ClassifiedTarget {
 }
 
 const classifyTarget = async (
-  ports: Pick<Ports, 'blobs'>,
+  ports: { readonly blobs: BlobStore },
   target: TelemetryTarget,
   canvas: Uint8Array,
   observedAt: number,
@@ -185,7 +187,7 @@ export interface MismatchMaskQuery {
 
 /** Read one server-owned classification mask from the latest accepted canvas observation. */
 const readMismatchMaskPromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   query: MismatchMaskQuery,
 ): Promise<MismatchMaskRead> => {
   const targets = await ports.sql.listTelemetryTargets(
@@ -219,7 +221,7 @@ const readMismatchMaskPromise = async (
  * and viewer context.
  */
 const recordObservationPromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   metadata: TileMetadata,
   bytes: Uint8Array,
 ): Promise<void> => {
@@ -255,7 +257,7 @@ const recordObservationPromise = async (
 
 /** Process an offer immediately when the content-addressed bytes already exist. */
 const offerTilePromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   metadata: TileMetadata,
 ): Promise<'ignored' | 'wanted' | 'recorded'> => {
   const targets = await ports.sql.listTelemetryTargets(
@@ -271,7 +273,7 @@ const offerTilePromise = async (
 }
 
 const uploadTilePromise = async (
-  ports: Pick<Ports, 'blobs' | 'sql'>,
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore },
   metadata: TileMetadata,
   bytes: Uint8Array,
 ): Promise<void> => {
@@ -297,7 +299,7 @@ const dayOf = (timestamp: Seconds): Seconds => seconds(Math.floor(timestamp / 86
 
 /** Classify a fully accepted paint against server-owned template chunks and the latest tile anchor. */
 const recordPaintPromise = async (
-  ports: Ports,
+  ports: { readonly blobs: BlobStore; readonly sql: SqlStore; readonly counters: CounterStore },
   event: PaintEvent,
   reporterTokenHash: string,
   includeUnpublished: boolean,

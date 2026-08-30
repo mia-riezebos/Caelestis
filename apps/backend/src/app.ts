@@ -2,30 +2,24 @@ import type { ServerInfo } from '@caelestis/shared'
 import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import type { Ports } from './ports/index.js'
 import { createManifestRoutes } from './routes/manifest.js'
 import { createNodeRoutes } from './routes/nodes.js'
 import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
-import { type BackendRuntime, createBackendRuntime } from './runtime/backend-runtime.js'
+import type { BackendRuntime } from './runtime/backend-runtime.js'
 import { runBackendHttp } from './runtime/hono.js'
 
 /**
  * The Hono app, deliberately free of any runtime binding.
  *
  * Entry points adapt this app to a runtime; the app itself stays portable and only depends on the
- * use-case-shaped ports.
+ * Context services requested by its use cases.
  *
  * @see https://github.com/mia-riezebos/wplace-template-server/issues/12
  */
 export interface AppOptions {
-  /**
-   * The operator's bootstrap credential. Absent means the server has no bootstrap path, which is
-   * the right state once a real admin token has been minted.
-   */
-  readonly bootstrapAdminToken?: string | undefined
   readonly serverId?: string | undefined
   readonly serverName?: string | undefined
   readonly serverDescription?: string | undefined
@@ -33,7 +27,7 @@ export interface AppOptions {
   readonly currentSeason?: number | undefined
 }
 
-export const createAppWithRuntime = (runtime: BackendRuntime, options: AppOptions = {}) => {
+export const createApp = (runtime: BackendRuntime, options: AppOptions = {}) => {
   const app = new Hono()
   // `??` guards `undefined` and nothing else, and every one of these is a wrangler.toml var an
   // operator edits by hand. A non-UUIDv7 id, an empty name or an empty description all passed
@@ -101,15 +95,5 @@ export const createAppWithRuntime = (runtime: BackendRuntime, options: AppOption
 
   return app
 }
-
-/** Compatibility constructor for tests and adapters until #158 removes the global Ports bag. */
-export const createApp = (ports: Ports, options: AppOptions = {}) =>
-  createAppWithRuntime(
-    createBackendRuntime(ports, {
-      bootstrapAdminToken: options.bootstrapAdminToken,
-      openAccess: options.openAccess,
-    }),
-    options,
-  )
 
 export type App = ReturnType<typeof createApp>

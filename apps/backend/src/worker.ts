@@ -1,9 +1,12 @@
 import { D1SqlStore } from './adapters/cloudflare/d1-sql-store.js'
 import { DurableObjectCounterStore } from './adapters/cloudflare/do-counter-store.js'
 import { R2BlobStore } from './adapters/cloudflare/r2-blob-store.js'
-import { type App, createAppWithRuntime } from './app.js'
-import type { Ports } from './ports/index.js'
-import { type BackendRuntime, createBackendRuntime } from './runtime/backend-runtime.js'
+import { type App, createApp } from './app.js'
+import {
+  type BackendRuntime,
+  createBackendRuntime,
+  makeBackendContext,
+} from './runtime/backend-runtime.js'
 import { fetchCanvasTiles } from './telemetry/fetcher.js'
 
 export { TelemetryShard } from './telemetry-shard.js'
@@ -52,17 +55,18 @@ export const prepareBackendForEvent = (env: Env): PreparedBackend => {
     throw new Error(`Unsupported telemetry shard strategy: ${env.SHARD_STRATEGY}`)
   }
   const season = parseSeason(env.SEASON) ?? 0
-  const ports: Ports = {
-    blobs: new R2BlobStore(env.BLOBS),
-    sql: new D1SqlStore(env.DB),
-    counters: new DurableObjectCounterStore(env.TELEMETRY),
-  }
-  const runtime = createBackendRuntime(ports, {
-    bootstrapAdminToken: env.ADMIN_TOKEN,
-    openAccess: env.OPEN_ACCESS === 'true',
-  })
-  const app = createAppWithRuntime(runtime, {
-    bootstrapAdminToken: env.ADMIN_TOKEN,
+  const runtime = createBackendRuntime(
+    makeBackendContext(
+      new R2BlobStore(env.BLOBS),
+      new D1SqlStore(env.DB),
+      new DurableObjectCounterStore(env.TELEMETRY),
+      {
+        bootstrapAdminToken: env.ADMIN_TOKEN,
+        openAccess: env.OPEN_ACCESS === 'true',
+      },
+    ),
+  )
+  const app = createApp(runtime, {
     serverId: env.SERVER_ID,
     serverName: env.SERVER_NAME,
     serverDescription: env.SERVER_DESCRIPTION,

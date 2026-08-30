@@ -1,6 +1,6 @@
 import { type Manifest, type ServerInfo, sha256Hex, tileKey } from '@caelestis/shared'
 import { Effect } from 'effect'
-import type { Ports } from '../ports/index.js'
+import type { SqlStore } from '../ports/index.js'
 import { SqlStoreService } from '../runtime/backend-runtime.js'
 import { SqlStoreReadError } from '../runtime/errors.js'
 
@@ -18,7 +18,7 @@ const MAX_MANIFEST_NODES = 100_000
 const MAX_MANIFEST_TEMPLATES = 100_000
 
 export const assembleManifest = async (
-  ports: Pick<Ports, 'sql'>,
+  ports: { readonly sql: SqlStore },
   options: AssembleManifestOptions,
 ): Promise<Manifest> => {
   const [nodeRecords, templateRecords, tileRecords] = await Promise.all([

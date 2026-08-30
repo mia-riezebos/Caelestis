@@ -4,7 +4,7 @@ import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
 import { createApp } from '../app.js'
-import type { Ports } from '../ports/index.js'
+import { createBackendRuntime, makeBackendContext } from '../runtime/backend-runtime.js'
 
 const BOOTSTRAP = 'bootstrap-operator-token'
 const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
@@ -12,11 +12,7 @@ const NODE_ID = '01890f3e-7b2c-7abc-8def-0123456789ab'
 const harness = async () => {
   const blobs = new MemoryBlobStore()
   const sql = new MemorySqlStore()
-  const ports: Ports = {
-    blobs,
-    sql,
-    counters: new MemoryCounterStore(sql, () => millis(Date.now())),
-  }
+  const counters = new MemoryCounterStore(sql, () => millis(Date.now()))
   await sql.insertNode({
     id: NODE_ID,
     season: 1,
@@ -26,7 +22,10 @@ const harness = async () => {
     description: null,
     createdAt: millis(Date.now()),
   })
-  return { blobs, sql, app: createApp(ports, { bootstrapAdminToken: BOOTSTRAP }) }
+  const runtime = createBackendRuntime(
+    makeBackendContext(blobs, sql, counters, { bootstrapAdminToken: BOOTSTRAP }),
+  )
+  return { blobs, sql, app: createApp(runtime) }
 }
 
 const bearer = (token: string) => ({ headers: { authorization: `Bearer ${token}` } })
