@@ -53,6 +53,23 @@ describe('D1SqlStore', () => {
 
   afterEach(() => d1.close())
 
+  it('retains a status revision for equal fingerprints and advances it atomically on change', async () => {
+    await expect(
+      store.commitStatusProjectionRevision(4, 'a'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBe(1)
+    await expect(
+      store.commitStatusProjectionRevision(4, 'a'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBe(1)
+    await expect(
+      store.commitStatusProjectionRevision(4, 'c'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBe(2)
+
+    const recovered = new D1SqlStore(d1 as unknown as D1Database)
+    await expect(
+      recovered.commitStatusProjectionRevision(4, 'c'.repeat(64), 'b'.repeat(64)),
+    ).resolves.toBe(2)
+  })
+
   it('uses hash indexes for tile blob reference checks', () => {
     for (const [table, indexName] of [
       ['tile_history', 'tile_history_sha256_idx'],

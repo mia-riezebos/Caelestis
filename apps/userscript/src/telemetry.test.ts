@@ -120,6 +120,22 @@ afterEach(() => {
 })
 
 describe('server telemetry client', () => {
+  it('carries an authoritative status revision into the shared coordinator', async () => {
+    harness.state = { ...harness.state, servers: [] }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ revision: 12, templates: [] })),
+    )
+    const { installTelemetry } = await import('./telemetry.js')
+    installTelemetry()
+
+    const resource = coordinator.resources.get('telemetry-status')
+    await expect(resource?.refresh(server, 'connect')).resolves.toEqual({
+      status: 'unchanged',
+      revision: '12',
+    })
+  })
+
   it('admits alarms only for current visible templates whose visibility chain is enabled', async () => {
     vi.stubGlobal(
       'fetch',

@@ -512,7 +512,8 @@ const refreshStatus = async (
       if (
         body === null ||
         !Array.isArray(body.templates) ||
-        body.templates.length > MAX_MANIFEST_TEMPLATES
+        body.templates.length > MAX_MANIFEST_TEMPLATES ||
+        (body.revision !== undefined && (!Number.isSafeInteger(body.revision) || body.revision < 0))
       )
         return { status: 'failed' }
       let changed = false
@@ -541,7 +542,10 @@ const refreshStatus = async (
           }
         }
       }
-      return { status: changed ? 'changed' : 'unchanged' }
+      return {
+        status: changed ? 'changed' : 'unchanged',
+        ...(body.revision === undefined ? {} : { revision: String(body.revision) }),
+      }
     },
   )
 }
