@@ -1,5 +1,5 @@
 import { millis } from '@caelestis/shared'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryBlobStore } from '../adapters/memory/memory-blob-store.js'
 import { MemoryCounterStore } from '../adapters/memory/memory-counter-store.js'
 import { MemorySqlStore } from '../adapters/memory/memory-sql-store.js'
@@ -74,6 +74,8 @@ describe('server and manifest routes', () => {
     app = createApp(ports, serverOptions)
   })
 
+  afterEach(() => vi.restoreAllMocks())
+
   it('serves public server information and reports the configured auth mode', async () => {
     const response = await app.request('/server')
     expect(response.status).toBe(200)
@@ -109,6 +111,20 @@ describe('server and manifest routes', () => {
     expect((await open.request('/manifest', bearer('ABCDEFGHJKMNPQRSTVWXYZ2345'))).status).toBe(401)
     expect((await open.request('/chunks/'.concat('c'.repeat(64)))).status).toBe(404)
     expect((await open.request('/admin/nodes?season=7')).status).toBe(401)
+  })
+
+  it('maps a typed server-settings read failure to the existing 500 response', async () => {
+    const error = new Error('database unavailable')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    sql.readServerSettings = async () => {
+      throw error
+    }
+
+    const response = await app.request('/server')
+
+    expect(response.status).toBe(500)
+    expect(await response.text()).toBe('Internal Server Error')
+    expect(consoleError).toHaveBeenCalledWith(error)
   })
 
   it('honours a weak or listed If-None-Match, and a season query', async () => {

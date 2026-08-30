@@ -1,7 +1,11 @@
 import type { ServerInfo } from '@caelestis/shared'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
+import { type BackendRuntime, SqlStoreService } from '../runtime/backend-runtime.js'
+import { SqlStoreReadError } from '../runtime/errors.js'
+import { runBackendHttp } from '../runtime/hono.js'
 
 const MAX_NAME_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 4096
@@ -18,15 +22,36 @@ export const resolveServerInfo = async (
   base: ServerInfo,
 ): Promise<ServerInfo> => {
   const settings = await ports.sql.readServerSettings()
+  return mergeServerInfo(base, settings)
+}
+
+const mergeServerInfo = (
+  base: ServerInfo,
+  settings: { readonly name: string | null; readonly description: string | null },
+): ServerInfo => {
   const description = settings.description ?? base.description
   const resolved = { id: base.id, name: settings.name ?? base.name, auth: base.auth }
   return description === undefined || description === null ? resolved : { ...resolved, description }
 }
 
-export const createServerRoutes = (ports: Pick<Ports, 'sql'>, base: ServerInfo) => {
+export const resolveServerInfoEffect = (
+  base: ServerInfo,
+): Effect.Effect<ServerInfo, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    const settings = yield* Effect.tryPromise({
+      try: () => sql.readServerSettings(),
+      catch: (cause) => new SqlStoreReadError({ operation: 'readServerSettings', cause }),
+    })
+    return mergeServerInfo(base, settings)
+  })
+
+export const createServerRoutes = (runtime: BackendRuntime, base: ServerInfo) => {
   const routes = new Hono()
   // Public, and deliberately so: this is how a userscript decides whether it needs a token at all.
-  routes.get('/', async (c) => c.json(await resolveServerInfo(ports, base)))
+  routes.get('/', (c) =>
+    runBackendHttp(c, runtime, resolveServerInfoEffect(base), (server) => c.json(server)),
+  )
   return routes
 }
 

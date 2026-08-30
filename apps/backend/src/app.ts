@@ -8,6 +8,7 @@ import { createServerAdminRoutes, createServerRoutes } from './routes/server.js'
 import { createTelemetryRoutes } from './routes/telemetry.js'
 import { createChunkRoutes, createTemplateRoutes, createTileRoutes } from './routes/templates.js'
 import { createTokenRoutes } from './routes/tokens.js'
+import { createBackendRuntime } from './runtime/backend-runtime.js'
 
 /**
  * The Hono app, deliberately free of any runtime binding.
@@ -32,6 +33,7 @@ export interface AppOptions {
 
 export const createApp = (ports: Ports, options: AppOptions = {}) => {
   const app = new Hono()
+  const runtime = createBackendRuntime(ports)
   const auth = {
     sql: ports.sql,
     bootstrapAdminToken: options.bootstrapAdminToken,
@@ -88,7 +90,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.use('/*', cors({ origin: '*', exposeHeaders: ['ETag'], maxAge: 86_400 }))
 
   app.get('/health', (c) => c.json({ ok: true }))
-  app.route('/server', createServerRoutes(ports, server))
+  app.route('/server', createServerRoutes(runtime, server))
   app.route('/admin/server', createServerAdminRoutes(ports, auth))
   app.route('/manifest', createManifestRoutes(ports, auth, { server, currentSeason }))
 
