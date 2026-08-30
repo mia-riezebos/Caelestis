@@ -1,5 +1,8 @@
 import { type Manifest, type ServerInfo, sha256Hex, tileKey } from '@caelestis/shared'
+import { Effect } from 'effect'
 import type { Ports } from '../ports/index.js'
+import { SqlStoreService } from '../runtime/backend-runtime.js'
+import { SqlStoreReadError } from '../runtime/errors.js'
 
 export interface AssembleManifestOptions {
   readonly server: ServerInfo
@@ -131,3 +134,15 @@ export const assembleManifest = async (
   const version = await sha256Hex(new TextEncoder().encode(JSON.stringify(unsigned)))
   return { ...unsigned, version }
 }
+
+/** Assemble the manifest through the runtime service while preserving the deterministic assembler. */
+export const assembleManifestEffect = (
+  options: AssembleManifestOptions,
+): Effect.Effect<Manifest, SqlStoreReadError, SqlStoreService> =>
+  Effect.gen(function* () {
+    const sql = yield* SqlStoreService
+    return yield* Effect.tryPromise({
+      try: () => assembleManifest({ sql }, options),
+      catch: (cause) => new SqlStoreReadError({ operation: 'assembleManifest', cause }),
+    })
+  })

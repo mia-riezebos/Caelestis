@@ -92,7 +92,7 @@ export const createApp = (ports: Ports, options: AppOptions = {}) => {
   app.get('/health', (c) => c.json({ ok: true }))
   app.route('/server', createServerRoutes(runtime, server))
   app.route('/admin/server', createServerAdminRoutes(ports, auth))
-  app.route('/manifest', createManifestRoutes(ports, auth, { server, currentSeason }))
+  app.route('/manifest', createManifestRoutes(runtime, auth, { server, currentSeason }))
 
   app.route('/admin/tokens', createTokenRoutes(auth))
   app.route('/admin/nodes', createNodeRoutes(ports, auth))
