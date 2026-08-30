@@ -42,6 +42,7 @@ const schedules = new Map<string, Schedule>()
 const running = new WeakMap<object, Map<string, Promise<void>>>()
 let installed = false
 let timer: ReturnType<typeof setTimeout> | null = null
+let sweepRun: Promise<void> | null = null
 let requestedResources: Set<string> | null = new Set()
 let requestedReason: ReconciliationReason = 'connect'
 
@@ -71,7 +72,7 @@ const clearTimer = (): void => {
 
 const armTimer = (): void => {
   clearTimer()
-  if (!installed || !activeDocument()) return
+  if (!installed || !activeDocument() || sweepRun !== null) return
   const now = Date.now()
   let next = Number.POSITIVE_INFINITY
   for (const schedule of schedules.values()) {
@@ -160,16 +161,25 @@ const sweep = async (
   for (let offset = 0; offset < work.length; offset += REFRESH_CONCURRENCY) {
     await Promise.all(work.slice(offset, offset + REFRESH_CONCURRENCY).map(async (run) => run()))
   }
-  armTimer()
 }
 
 function runRequestedSweep(): void {
   timer = null
-  const selected = requestedResources
-  const reason = requestedReason
-  requestedResources = null
-  requestedReason = 'interval'
-  void sweep(reason, selected).finally(armTimer)
+  if (sweepRun !== null) return
+  sweepRun = (async () => {
+    let first = true
+    while (activeDocument() && (first || requestedResources !== null)) {
+      first = false
+      const selected = requestedResources
+      const reason = requestedReason
+      requestedResources = null
+      requestedReason = 'interval'
+      await sweep(reason, selected)
+    }
+  })().finally(() => {
+    sweepRun = null
+    armTimer()
+  })
 }
 
 /** Coalesce event bursts into one bounded active-document refresh. */
