@@ -1,4 +1,10 @@
-import { type Millis, millis, PngError, SliceError } from '@caelestis/shared'
+import {
+  type Millis,
+  millis,
+  PngError,
+  SliceError,
+  WORLD_TEMPLATE_SURFACE,
+} from '@caelestis/shared'
 import { Hono } from 'hono'
 import { type AuthOptions, requireScope } from '../auth/middleware.js'
 import type { Ports } from '../ports/index.js'
@@ -65,6 +71,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
     try {
       const caller = c.get('caller')
       const result = await storeTemplate(ports, {
+        surface: WORLD_TEMPLATE_SURFACE,
         season,
         nodeId,
         name,
@@ -130,6 +137,7 @@ export const createTemplateRoutes = (ports: Pick<Ports, 'blobs' | 'sql'>, auth: 
       const caller = c.get('caller')
       const result = await storeTemplate(ports, {
         templateId,
+        surface: existing.surface,
         season: existing.season,
         nodeId: existing.nodeId,
         name: existing.name,

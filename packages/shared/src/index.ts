@@ -32,6 +32,7 @@ export {
 } from './slice.js'
 export * from './slug.js'
 export * from './telemetry.js'
+export * from './template-surface.js'
 export * from './tiles.js'
 export * from './time.js'
 export { uuidV7 } from './uuid.js'

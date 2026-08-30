@@ -2,8 +2,10 @@ import {
   type ContributionDay,
   type Millis,
   type Seconds,
+  sameTemplateSurface,
   seconds,
   type TileHistoryFrame,
+  templateSurface,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -634,6 +636,8 @@ export class D1SqlStore implements SqlStore {
     const previous = await this.database
       .select({
         name: templates.name,
+        surfaceKind: templates.surfaceKind,
+        allianceId: templates.allianceId,
         minX: templateVersions.minX,
         minY: templateVersions.minY,
         maxX: templateVersions.maxX,
@@ -645,9 +649,15 @@ export class D1SqlStore implements SqlStore {
       .limit(1)
     const existing = previous[0]
     if (existing !== undefined) {
+      const existingSurface = templateSurface(existing.surfaceKind, existing.allianceId)
+      if (existingSurface === null || !sameTemplateSurface(existingSurface, version.surface)) {
+        throw new TemplateIdentityError(
+          `template ${version.templateId} belongs to ${existing.surfaceKind}, not ${version.surface.kind}`,
+        )
+      }
       if (existing.minX !== null && existing.maxX !== null) {
         const span = (min: number, max: number) =>
-          max >= min ? max - min : WORLD_PIXELS - min + max
+          version.surface.kind !== 'world' || max >= min ? max - min : WORLD_PIXELS - min + max
         const wasWidth = span(existing.minX, existing.maxX)
         const wasHeight = (existing.maxY ?? 0) - (existing.minY ?? 0)
         const nowWidth = span(version.bbox.minX, version.bbox.maxX)
@@ -665,6 +675,8 @@ export class D1SqlStore implements SqlStore {
       .values({
         id: version.templateId,
         season: version.season,
+        surfaceKind: version.surface.kind,
+        allianceId: version.surface.allianceId,
         nodeId: version.nodeId,
         name: version.name,
         currentVersionId: null,
@@ -737,6 +749,8 @@ export class D1SqlStore implements SqlStore {
     const rows = await this.database
       .select({
         templateId: templates.id,
+        surfaceKind: templates.surfaceKind,
+        allianceId: templates.allianceId,
         season: templates.season,
         nodeId: templates.nodeId,
         name: templates.name,
@@ -757,6 +771,8 @@ export class D1SqlStore implements SqlStore {
       .limit(1)
     const row = rows[0]
     if (row === undefined) return null
+    const surface = templateSurface(row.surfaceKind, row.allianceId)
+    if (surface === null) throw new Error(`template ${row.templateId} has an invalid surface`)
     const colourTotals = parseColourTotals(row.colourTotalsJson)
 
     const chunks = await this.database
@@ -767,6 +783,7 @@ export class D1SqlStore implements SqlStore {
 
     return {
       templateId: row.templateId,
+      surface,
       season: row.season,
       nodeId: row.nodeId,
       name: row.name,
@@ -812,6 +829,8 @@ export class D1SqlStore implements SqlStore {
       .select({
         id: templates.id,
         season: templates.season,
+        surfaceKind: templates.surfaceKind,
+        allianceId: templates.allianceId,
         nodeId: templates.nodeId,
         name: templates.name,
         currentVersionId: templates.currentVersionId,
@@ -826,8 +845,11 @@ export class D1SqlStore implements SqlStore {
       .limit(1)
     const row = rows[0]
     if (row === undefined) return null
+    const surface = templateSurface(row.surfaceKind, row.allianceId)
+    if (surface === null) throw new Error(`template ${row.id} has an invalid surface`)
     return {
       id: row.id,
+      surface,
       season: row.season,
       nodeId: row.nodeId,
       name: row.name,

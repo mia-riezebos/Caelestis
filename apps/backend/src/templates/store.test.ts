@@ -61,6 +61,7 @@ const harness = async () => {
 }
 
 const input = (png: Uint8Array, overrides: { originX?: number; originY?: number } = {}) => ({
+  surface: { kind: 'world', allianceId: null } as const,
   season: 1,
   nodeId: '01890f3e-7b2c-7abc-8def-0123456789ab',
   name: 'Test template',

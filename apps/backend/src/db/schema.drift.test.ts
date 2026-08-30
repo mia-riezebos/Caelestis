@@ -149,4 +149,41 @@ describe('the Drizzle schema and migration history agree', () => {
     })
     database.close()
   })
+
+  it('migrates existing templates onto the world surface', () => {
+    const database = new DatabaseSync(':memory:')
+    const surfaceIndex = migrations.findIndex(
+      ({ name }) => name === '0005_alliance-template-surfaces.sql',
+    )
+    expect(surfaceIndex).toBeGreaterThan(0)
+    database.exec(
+      migrations
+        .slice(0, surfaceIndex)
+        .map(({ sql }) => sql)
+        .join('\n')
+        .replaceAll('--> statement-breakpoint', ''),
+    )
+    database
+      .prepare(
+        `INSERT INTO templates (
+          id, season, node_id, name, current_version_id, published_at,
+          created_with_token, created_by_user_id, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, NULL, ?, NULL, NULL, ?, NULL, ?, ?)`,
+      )
+      .run('legacy', 1, 'Legacy', 'a'.repeat(64), 1_000, 1_000)
+    database.exec(
+      migrations
+        .slice(surfaceIndex)
+        .map(({ sql }) => sql)
+        .join('\n')
+        .replaceAll('--> statement-breakpoint', ''),
+    )
+
+    expect(
+      database
+        .prepare('SELECT surface_kind, alliance_id FROM templates WHERE id = ?')
+        .get('legacy'),
+    ).toEqual({ surface_kind: 'world', alliance_id: null })
+    database.close()
+  })
 })

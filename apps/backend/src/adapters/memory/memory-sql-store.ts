@@ -2,6 +2,7 @@ import {
   type ContributionDay,
   type Millis,
   type Seconds,
+  sameTemplateSurface,
   seconds,
   type TemplateStatus,
   type TileCoord,
@@ -98,7 +99,7 @@ export class MemorySqlStore implements SqlStore {
   private readonly nodes = new Map<string, NodeRecord>()
   private readonly templates = new Map<
     string,
-    Pick<TemplateVersionRecord, 'season' | 'nodeId' | 'name' | 'createdAt'> & {
+    Pick<TemplateVersionRecord, 'surface' | 'season' | 'nodeId' | 'name' | 'createdAt'> & {
       currentVersionId: string
       publishedAt: Millis | null
       timelapseFrozenAt: Millis | null
@@ -401,10 +402,17 @@ export class MemorySqlStore implements SqlStore {
       throw new TemplateNotFoundError(`template does not exist: ${version.templateId}`)
     }
     if (previous !== undefined) {
+      if (!sameTemplateSurface(previous.surface, version.surface)) {
+        throw new TemplateIdentityError(
+          `template ${version.templateId} belongs to ${previous.surface.kind}, not ${version.surface.kind}`,
+        )
+      }
       const current = this.templateVersions.get(previous.currentVersionId)
       const dimensions = (bbox: TemplateVersionRecord['bbox']) => ({
         width:
-          bbox.maxX >= bbox.minX ? bbox.maxX - bbox.minX : WORLD_PIXELS - bbox.minX + bbox.maxX,
+          version.surface.kind !== 'world' || bbox.maxX >= bbox.minX
+            ? bbox.maxX - bbox.minX
+            : WORLD_PIXELS - bbox.minX + bbox.maxX,
         height: bbox.maxY - bbox.minY,
       })
       const was = current === undefined ? null : dimensions(current.bbox)
@@ -418,6 +426,7 @@ export class MemorySqlStore implements SqlStore {
 
     const existingTemplate = previous
     const template = existingTemplate ?? {
+      surface: version.surface,
       season: version.season,
       nodeId: version.nodeId,
       name: version.name,
@@ -462,6 +471,7 @@ export class MemorySqlStore implements SqlStore {
     if (template === undefined) return null
     return {
       id: templateId,
+      surface: template.surface,
       season: template.season,
       nodeId: template.nodeId,
       name: template.name,

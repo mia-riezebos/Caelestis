@@ -25,6 +25,7 @@ const templateVersion = (
   overrides: Partial<TemplateVersionRecord> = {},
 ): TemplateVersionRecord => ({
   templateId: 'template-1',
+  surface: { kind: 'world', allianceId: null },
   season: 1,
   nodeId: 'node-1',
   name: 'Template',
@@ -613,7 +614,15 @@ describe('D1SqlStore', () => {
     // attributed to, so "who uploaded this" answers with a credential and an account.
     d1.sqlite.exec(`
       INSERT INTO nodes VALUES ('attr-node', 1, NULL, '/attr', 'Attr', NULL, NULL, 1);
-      INSERT INTO templates VALUES ('attr-t', 1, 'attr-node', 'T', NULL, NULL, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700, NULL, NULL);
+      INSERT INTO templates (
+        id, season, surface_kind, alliance_id, node_id, name, current_version_id, published_at,
+        created_with_token, created_by_user_id, created_at_ms, updated_at_ms,
+        timelapse_frozen_at_ms, finished_at_ms
+      ) VALUES (
+        'attr-t', 1, 'world', NULL, 'attr-node', 'T', NULL, NULL,
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 1700, 1700,
+        NULL, NULL
+      );
       INSERT INTO template_versions (
         id, template_id, created_at_ms, created_with_token, created_by_user_id,
         min_x, min_y, max_x, max_y, total_pixels
@@ -658,6 +667,7 @@ describe('D1SqlStore', () => {
 
     await store.insertTemplateVersion({
       templateId: 'bulk-t',
+      surface: { kind: 'world', allianceId: null },
       season: 1,
       nodeId: 'bulk-node',
       name: 'Bulk',

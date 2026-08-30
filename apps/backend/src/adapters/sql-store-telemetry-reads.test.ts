@@ -17,6 +17,7 @@ const NEXT_DAY = seconds(1_750_032_000 + 86_400)
 
 const version = (templateId: string, season = 1): TemplateVersionRecord => ({
   templateId,
+  surface: { kind: 'world', allianceId: null },
   season,
   nodeId: null,
   name: templateId,

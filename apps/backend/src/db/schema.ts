@@ -1,4 +1,4 @@
-import type { Millis, Seconds } from '@caelestis/shared'
+import type { Millis, Seconds, TemplateSurfaceKind } from '@caelestis/shared'
 import { WORLD_PIXELS, WORLD_TILES } from '@caelestis/shared'
 import { sql } from 'drizzle-orm'
 import {
@@ -153,6 +153,13 @@ export const templates = sqliteTable(
   {
     id: text('id').primaryKey(),
     season: integer('season').notNull(),
+    surfaceKind: text('surface_kind', {
+      enum: ['world', 'alliance-headquarters', 'alliance-picture', 'alliance-banner'],
+    })
+      .$type<TemplateSurfaceKind>()
+      .notNull()
+      .default('world'),
+    allianceId: integer('alliance_id'),
     nodeId: text('node_id').references(() => nodes.id),
     name: text('name').notNull(),
     currentVersionId: text('current_version_id'),
@@ -202,6 +209,13 @@ export const templates = sqliteTable(
   // Expressed as a composite key against (id, template_id), which is why template_versions carries
   // a unique index on that pair: SQLite requires a foreign key's parent columns to be unique.
   (table) => [
+    check(
+      'templates_surface_check',
+      sql`(${table.surfaceKind} = 'world' AND ${table.allianceId} IS NULL)
+        OR (${table.surfaceKind} IN ('alliance-headquarters', 'alliance-picture', 'alliance-banner')
+          AND typeof(${table.allianceId}) = 'integer' AND ${table.allianceId} > 0)`,
+    ),
+    index('templates_surface_idx').on(table.season, table.surfaceKind, table.allianceId),
     // Same shape rule the reporter columns carry, for the same reason: an author record outlives
     // the credential it names, so the digest is constrained and its existence is not.
     check(

@@ -9,6 +9,7 @@ import {
   quantiseToPalette,
   sha256Hex,
   sliceTemplate,
+  type TemplateSurface,
   type TileKey,
   TRANSPARENT_INDEX,
   tileKey,
@@ -27,6 +28,7 @@ export interface StoreTemplateInput {
    * its name, parent, published state and creation date.
    */
   readonly templateId?: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly nodeId: string | null
   readonly name: string
@@ -180,6 +182,7 @@ export const storeTemplate = async (
   }))
   const version: TemplateVersionRecord = {
     templateId,
+    surface: input.surface,
     season: input.season,
     nodeId: input.nodeId,
     name: input.name,

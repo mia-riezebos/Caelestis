@@ -6,9 +6,13 @@ import {
   type Seconds,
   seconds,
   type TemplateStatus,
+  type TemplateSurface,
+  TILE_SIZE,
   type TileCoord,
   type TileHistoryFrame,
   TRANSPARENT_INDEX,
+  templateSurface,
+  templateSurfaceBounds,
   WORLD_PIXELS,
   WORLD_TILES,
 } from '@caelestis/shared'
@@ -364,6 +368,9 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
   if (!Number.isSafeInteger(version.season) || version.season < 0) {
     fail(`season ${version.season} is not a non-negative integer`)
   }
+  if (templateSurface(version.surface.kind, version.surface.allianceId) === null) {
+    fail(`surface ${version.surface.kind}/${version.surface.allianceId} is invalid`)
+  }
   if (!isDigest(version.createdWithToken))
     fail(`createdWithToken ${version.createdWithToken} is not a sha256 digest`)
   if (
@@ -376,15 +383,26 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
   if (![minX, minY, maxX, maxY, version.totalPixels].every(Number.isSafeInteger)) {
     fail('bounding box and total pixels must be integers')
   }
-  // x wraps through zero so minX may exceed maxX; y does not. Zero width or height is not a
-  // placement. These are the same bounds `template_versions_pixel_bounds_check` states.
-  if (minX < 0 || minX >= WORLD_PIXELS || minY < 0 || minY >= WORLD_PIXELS) {
-    fail('bounding box minimum is outside the canvas')
+  const surfaceBounds = templateSurfaceBounds(version.surface)
+  if (surfaceBounds === null) {
+    // World x wraps through zero, so minX may exceed maxX; y does not.
+    if (minX < 0 || minX >= WORLD_PIXELS || minY < 0 || minY >= WORLD_PIXELS) {
+      fail('bounding box minimum is outside the canvas')
+    }
+    if (maxX < 1 || maxX > WORLD_PIXELS || maxY < 1 || maxY > WORLD_PIXELS) {
+      fail('bounding box maximum is outside the canvas')
+    }
+    if (minX === maxX || minY >= maxY) fail('bounding box covers no pixels')
+  } else if (
+    minX < surfaceBounds.minX ||
+    minY < surfaceBounds.minY ||
+    maxX > surfaceBounds.maxX ||
+    maxY > surfaceBounds.maxY ||
+    minX >= maxX ||
+    minY >= maxY
+  ) {
+    fail('bounding box is outside its alliance surface')
   }
-  if (maxX < 1 || maxX > WORLD_PIXELS || maxY < 1 || maxY > WORLD_PIXELS) {
-    fail('bounding box maximum is outside the canvas')
-  }
-  if (minX === maxX || minY >= maxY) fail('bounding box covers no pixels')
   if (version.totalPixels < 0) fail('total pixels is negative')
   if (version.colourTotals !== undefined) {
     const indices = new Set<number>()
@@ -406,14 +424,28 @@ export const assertValidTemplateVersion = (version: TemplateVersionRecord): void
     }
     if (total !== version.totalPixels) fail('colour totals do not sum to total pixels')
   }
+  const minTile =
+    surfaceBounds === null
+      ? { x: 0, y: 0 }
+      : {
+          x: Math.floor(surfaceBounds.minX / TILE_SIZE),
+          y: Math.floor(surfaceBounds.minY / TILE_SIZE),
+        }
+  const maxTile =
+    surfaceBounds === null
+      ? { x: WORLD_TILES - 1, y: WORLD_TILES - 1 }
+      : {
+          x: Math.floor((surfaceBounds.maxX - 1) / TILE_SIZE),
+          y: Math.floor((surfaceBounds.maxY - 1) / TILE_SIZE),
+        }
   for (const chunk of version.chunks) {
     if (
       !Number.isSafeInteger(chunk.tileX) ||
       !Number.isSafeInteger(chunk.tileY) ||
-      chunk.tileX < 0 ||
-      chunk.tileX >= WORLD_TILES ||
-      chunk.tileY < 0 ||
-      chunk.tileY >= WORLD_TILES
+      chunk.tileX < minTile.x ||
+      chunk.tileX > maxTile.x ||
+      chunk.tileY < minTile.y ||
+      chunk.tileY > maxTile.y
     ) {
       fail(`chunk tile ${chunk.tileX}/${chunk.tileY} is outside the canvas`)
     }
@@ -463,6 +495,7 @@ export interface AccessTokenQuery {
 
 export interface TemplateVersionRecord {
   readonly templateId: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly nodeId: string | null
   readonly name: string
@@ -491,6 +524,7 @@ export interface TemplateVersionRecord {
 /** A template's own row: what it is called and where it sits, with no pixels attached. */
 export interface TemplateRecord {
   readonly id: string
+  readonly surface: TemplateSurface
   readonly season: number
   readonly nodeId: string | null
   readonly name: string

@@ -21,6 +21,7 @@ const version = (
   tiles: readonly { x: number; y: number }[],
 ): TemplateVersionRecord => ({
   templateId,
+  surface: { kind: 'world', allianceId: null },
   season: 0,
   nodeId: null,
   name: templateId,
