@@ -98,6 +98,7 @@ type TileHistoryRow = TileHistoryReporterRow
 interface StoredTemplateAlarmState extends TemplateAlarmState {
   readonly probeDueAt: Millis | null
   readonly probePixelsLost: number | null
+  readonly evaluatedAt: Millis
 }
 
 const tileHistoryRowKey = (row: TileHistoryRow): string =>
@@ -127,7 +128,9 @@ export class MemorySqlStore implements SqlStore {
   private readonly templateVersions = new Map<string, TemplateVersionRecord>()
   private readonly tokens = new Map<string, AccessToken>()
   private readonly canvasTiles = new Map<string, TileObservation>()
+  private readonly serverOwnedCanvasTiles = new Set<string>()
   private readonly templateTileStatuses = new Map<string, TemplateTileStatusRecord>()
+  private readonly serverOwnedTemplateStatuses = new Set<string>()
   private readonly appliedEvents = new Set<string>()
   private readonly painters = new Map<number, { displayName: string; seenAt: Millis }>()
   private readonly contributions = new Map<string, ContributionDelta>()
@@ -707,14 +710,26 @@ export class MemorySqlStore implements SqlStore {
     }
     const key = `${observation.season}\u0000${tileKey(observation.tile)}`
     const held = this.canvasTiles.get(key)
-    if (forceCurrent || held === undefined || held.observedAt <= observation.observedAt) {
+    if (
+      held === undefined ||
+      held.observedAt <= observation.observedAt ||
+      (forceCurrent && !this.serverOwnedCanvasTiles.has(key))
+    ) {
       this.canvasTiles.set(key, { ...observation, tile: { ...observation.tile } })
+      if (forceCurrent) this.serverOwnedCanvasTiles.add(key)
+      else this.serverOwnedCanvasTiles.delete(key)
     }
     for (const status of statuses) {
       const statusKey = `${status.templateId}\u0000${status.versionId}\u0000${tileKey(status.tile)}`
       const current = this.templateTileStatuses.get(statusKey)
-      if (forceCurrent || current === undefined || current.observedAt <= status.observedAt) {
+      if (
+        current === undefined ||
+        current.observedAt <= status.observedAt ||
+        (forceCurrent && !this.serverOwnedTemplateStatuses.has(statusKey))
+      ) {
         this.templateTileStatuses.set(statusKey, { ...status, tile: { ...status.tile } })
+        if (forceCurrent) this.serverOwnedTemplateStatuses.add(statusKey)
+        else this.serverOwnedTemplateStatuses.delete(statusKey)
       }
     }
   }
@@ -1092,6 +1107,9 @@ export class MemorySqlStore implements SqlStore {
     alarmId: string,
   ): Promise<AlarmPolicyResult> {
     const previous = this.alarmStates.get(snapshot.templateId) ?? null
+    if (previous !== null && snapshot.observedAt < previous.evaluatedAt) {
+      return { state: previous, scheduleFollowUp: false }
+    }
     const result = evaluateAlarmSnapshot(previous, snapshot, phase, () => alarmId)
     const obsoleteFollowUp =
       phase.kind === 'follow-up' &&
@@ -1109,7 +1127,11 @@ export class MemorySqlStore implements SqlStore {
             probePixelsLost: previous.probePixelsLost,
           }
         : { probeDueAt: null, probePixelsLost: null }
-    this.alarmStates.set(snapshot.templateId, { ...result.state, ...probe })
+    this.alarmStates.set(snapshot.templateId, {
+      ...result.state,
+      ...probe,
+      evaluatedAt: snapshot.observedAt,
+    })
     return result
   }
 

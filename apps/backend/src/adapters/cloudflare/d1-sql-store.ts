@@ -1227,12 +1227,20 @@ export class D1SqlStore implements SqlStore {
         tileY: observation.tile.y,
         sha256: observation.hash,
         observedAtMs: observation.observedAt,
+        serverOwned: forceCurrent,
       })
       .onConflictDoUpdate({
         target: [canvasTiles.season, canvasTiles.tileX, canvasTiles.tileY],
-        set: { sha256: observation.hash, observedAtMs: observation.observedAt },
+        set: {
+          sha256: observation.hash,
+          observedAtMs: observation.observedAt,
+          serverOwned: forceCurrent,
+        },
         ...(forceCurrent
-          ? {}
+          ? {
+              setWhere: sql`${canvasTiles.serverOwned} = 0
+                OR ${canvasTiles.observedAtMs} <= ${observation.observedAt}`,
+            }
           : { setWhere: lte(canvasTiles.observedAtMs, observation.observedAt) }),
       })
     if (recordHistory) await this.database.batch([history, current])
@@ -1258,6 +1266,7 @@ export class D1SqlStore implements SqlStore {
             blank: status.blank,
             coloursJson: JSON.stringify(status.colours ?? []),
             observedAtMs: status.observedAt,
+            serverOwned: forceCurrent,
           })
           .onConflictDoUpdate({
             target: [
@@ -1272,9 +1281,13 @@ export class D1SqlStore implements SqlStore {
               blank: status.blank,
               coloursJson: JSON.stringify(status.colours ?? []),
               observedAtMs: status.observedAt,
+              serverOwned: forceCurrent,
             },
             ...(forceCurrent
-              ? {}
+              ? {
+                  setWhere: sql`${templateTileStatuses.serverOwned} = 0
+                    OR ${templateTileStatuses.observedAtMs} <= ${status.observedAt}`,
+                }
               : { setWhere: lte(templateTileStatuses.observedAtMs, status.observedAt) }),
           }),
       )
@@ -1461,16 +1474,21 @@ export class D1SqlStore implements SqlStore {
     statements.push(
       this.client
         .prepare(
-          `INSERT INTO canvas_tiles (season, tile_x, tile_y, sha256, observed_at_ms)
-           SELECT ?, ?, ?, ?, ?
+          `INSERT INTO canvas_tiles (
+             season, tile_x, tile_y, sha256, observed_at_ms, server_owned
+           )
+           SELECT ?, ?, ?, ?, ?, ?
            WHERE EXISTS (
              SELECT 1 FROM tile_blob_reservations AS reservation
              INNER JOIN tile_blob_objects AS object ON object.blob_key = reservation.blob_key
              WHERE reservation.id = ? AND reservation.sha256 = ? AND object.state = 'active'
            )
            ON CONFLICT(season, tile_x, tile_y) DO UPDATE SET
-             sha256 = excluded.sha256, observed_at_ms = excluded.observed_at_ms
-           WHERE ? = 1 OR canvas_tiles.observed_at_ms <= excluded.observed_at_ms`,
+             sha256 = excluded.sha256,
+             observed_at_ms = excluded.observed_at_ms,
+             server_owned = excluded.server_owned
+           WHERE canvas_tiles.observed_at_ms <= excluded.observed_at_ms
+             OR (excluded.server_owned = 1 AND canvas_tiles.server_owned = 0)`,
         )
         .bind(
           observation.season,
@@ -1478,9 +1496,9 @@ export class D1SqlStore implements SqlStore {
           observation.tile.y,
           observation.hash,
           observation.observedAt,
+          forceCurrent ? 1 : 0,
           reservationId,
           observation.hash,
-          forceCurrent ? 1 : 0,
         ),
       this.client.prepare('DELETE FROM tile_blob_reservations WHERE id = ?').bind(reservationId),
     )
@@ -1899,6 +1917,9 @@ export class D1SqlStore implements SqlStore {
         .limit(1)
         .then((rows) => rows[0])
       const previousState = previousRow === undefined ? null : storedAlarmState(previousRow)
+      if (previousRow !== undefined && snapshot.observedAt < previousRow.evaluatedAtMs) {
+        return { state: previousState as TemplateAlarmState, scheduleFollowUp: false }
+      }
       const result = evaluateAlarmSnapshot(previousState, snapshot, phase, () => alarmId)
       const alarm = result.state.alarm
       const obsoleteFollowUp =
@@ -1927,6 +1948,7 @@ export class D1SqlStore implements SqlStore {
           : obsoleteFollowUp
             ? (previousRow?.probePixelsLost ?? null)
             : null,
+        evaluatedAtMs: snapshot.observedAt,
         revision: (previousRow?.revision ?? -1) + 1,
       }
       const write =

@@ -83,6 +83,7 @@ export default {
       sql: new D1SqlStore(env.DB),
       counters: new DurableObjectCounterStore(env.TELEMETRY),
     }
+    const gcMode = tileBlobGcMode(env.TILE_BLOB_GC_MODE)
     ctx.waitUntil(
       Promise.all([
         fetchCanvasTiles(ports, { season: parseSeason(env.SEASON) ?? 0 }).finally(async () => {
@@ -90,7 +91,7 @@ export default {
           // reconcile the watcher so that durable work cannot be stranded until the next cron.
           await env.ALARM_WATCHER.getByName('global').schedule()
         }),
-        runTileBlobGc(ports, { mode: tileBlobGcMode(env.TILE_BLOB_GC_MODE) }),
+        runTileBlobGc(ports, { mode: gcMode }),
       ]).then(() => undefined),
     )
   },

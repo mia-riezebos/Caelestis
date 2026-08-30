@@ -285,6 +285,24 @@ describe.each(adapters)('$name telemetry read contract', ({ make }) => {
       true,
     )
 
+    // A slower, older backend request must not roll the authoritative result backward.
+    await store.recordTileObservation(
+      observation({ tile, hash: 'a'.repeat(64), observedAt: millis(500) }),
+      [
+        {
+          templateId: 'template-1',
+          versionId: 'template-1-version',
+          tile,
+          correct: 0,
+          wrong: 1,
+          blank: 0,
+          observedAt: millis(500),
+        },
+      ],
+      false,
+      true,
+    )
+
     await expect(store.readLatestTile(1, tile)).resolves.toMatchObject({
       hash: 'e'.repeat(64),
       observedAt: 1_000,

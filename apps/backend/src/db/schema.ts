@@ -579,6 +579,8 @@ export const canvasTiles = sqliteTable(
     tileY: integer('tile_y').notNull(),
     sha256: text('sha256').notNull(),
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+    /** Distinguishes the backend mirror from client reports when resolving clock skew. */
+    serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.season, table.tileX, table.tileY] }),
@@ -698,6 +700,8 @@ export const templateTileStatuses = sqliteTable(
     blank: integer('blank').notNull(),
     coloursJson: text('colours_json').notNull(),
     observedAtMs: integer('observed_at_ms').$type<Millis>().notNull(),
+    /** Distinguishes backend classification from client-reported classification. */
+    serverOwned: integer('server_owned', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.versionId, table.tileX, table.tileY] }),
@@ -734,6 +738,8 @@ export const templateAlarmStates = sqliteTable(
     lastSeenMs: integer('last_seen_ms').$type<Millis>(),
     probeDueAtMs: integer('probe_due_at_ms').$type<Millis>(),
     probePixelsLost: integer('probe_pixels_lost'),
+    /** Rejects a delayed evaluation whose evidence predates the state already persisted. */
+    evaluatedAtMs: integer('evaluated_at_ms').$type<Millis>().notNull().default(sql`0`),
     /** Optimistic compare-and-swap guard for overlapping cron and follow-up evaluations. */
     revision: integer('revision').notNull().default(0),
   },

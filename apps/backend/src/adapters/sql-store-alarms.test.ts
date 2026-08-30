@@ -134,13 +134,37 @@ describe.each(adapters)('$name alarm-store contract', ({ make }) => {
         { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
         'unused',
       ),
-      store.evaluateTemplateAlarm(snapshot(59_900, PROBE_AT), { kind: 'scan' }, 'unused'),
+      store.evaluateTemplateAlarm(
+        snapshot(59_900, millis(PROBE_AT - 1)),
+        { kind: 'scan' },
+        'unused',
+      ),
     ])
 
     await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
-      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 100 }),
+      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 200 }),
     ])
     await expect(store.nextAlarmProbeAt()).resolves.toBeNull()
+  })
+
+  it('does not let a delayed older snapshot roll an alarm backward', async () => {
+    await store.evaluateTemplateAlarm(snapshot(60_000), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(snapshot(59_900, SIX_HOURS_LATER), { kind: 'scan' }, ALARM_ID)
+    await store.evaluateTemplateAlarm(
+      snapshot(59_800, PROBE_AT),
+      { kind: 'follow-up', alarmId: ALARM_ID, pixelsLost: 100 },
+      'unused',
+    )
+
+    await store.evaluateTemplateAlarm(
+      snapshot(60_000, millis(PROBE_AT - 1)),
+      { kind: 'scan' },
+      'unused',
+    )
+
+    await expect(store.readActiveAlarms(1, false)).resolves.toEqual([
+      expect.objectContaining({ kind: 'sustained-griefing', pixelsLost: 200 }),
+    ])
   })
 
   it('preserves a newer probe when an obsolete follow-up arrives', async () => {

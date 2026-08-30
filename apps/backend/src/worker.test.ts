@@ -36,6 +36,7 @@ const env = () => {
     // `DurableObjectCounterStore` resolves its stub in the constructor, so the namespace has to
     // answer `getByName` even on a path that never calls the shard.
     TELEMETRY: { getByName: () => ({}) },
+    ALARM_WATCHER: { getByName: () => ({ schedule: async () => undefined }) },
     ADMIN_TOKEN: BOOTSTRAP,
   } as unknown as Env
 }
